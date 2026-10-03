@@ -96,5 +96,9 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 
 	h.clearSessionGovernedTasksForUser(userID)
 	h.clearSemanticSessionResidue(userID)
+	// The parent carry is the same pin as the residue. Reset clears the
+	// transcript and the obligation; leaving the carry stored made the next
+	// short reply, and the next process, restore ssh for a task that ended.
+	h.clearParentExecutionCarry(userID)
 	h.clearActiveLocalDocumentsForUser(userID)
 }

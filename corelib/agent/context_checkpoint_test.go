@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
@@ -86,6 +87,7 @@ func TestCheckpointConversationFailsClosedWithoutReaderOrWritableStore(t *testin
 }
 
 func TestCheckpointConversationKeepsOpaqueMultimodalContentInContext(t *testing.T) {
+	root := t.TempDir()
 	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
 	conversation = append(conversation, map[string]interface{}{
 		"role": "user",
@@ -97,13 +99,58 @@ func TestCheckpointConversationKeepsOpaqueMultimodalContentInContext(t *testing.
 	for i := 0; i < 20; i++ {
 		conversation = append(conversation, map[string]string{"role": "user", "content": strings.Repeat("payload ", 200)})
 	}
-	result := CheckpointConversation(conversation, ContextCheckpointOptions{ContextLimit: 4000, Tools: []map[string]interface{}{checkpointReaderTool()}, KeepGroups: 2, Root: t.TempDir()})
-	if result.Applied || result.Reason != "opaque_content" || len(result.Conversation) != len(conversation) {
-		t.Fatalf("multimodal content should fail closed: %+v", result)
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 4000,
+		SessionKey:   "owner-image",
+		Tools:        []map[string]interface{}{checkpointReaderTool()},
+		KeepGroups:   2,
+		Root:         root,
+	})
+	if !result.Applied || result.Handle == nil {
+		t.Fatalf("text around an image must still checkpoint, got %+v", result)
+	}
+	foundImage := false
+	for _, message := range result.Conversation {
+		mm, ok := message.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		blocks, ok := mm["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, block := range blocks {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if kind, _ := bm["type"].(string); kind == "image_url" {
+				foundImage = true
+			}
+		}
+	}
+	if !foundImage {
+		t.Fatal("image was removed from the inline conversation")
+	}
+	stored, err := toolresult.Read(toolresult.ReadOptions{
+		ID:         result.Handle.ID,
+		SessionKey: "owner-image",
+		Root:       root,
+		Limit:      toolresult.MaxReadLimit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored.Content, "payload ") {
+		t.Fatal("spilled checkpoint lost the text around the image")
+	}
+	if strings.Contains(stored.Content, "image_url") {
+		t.Fatal("image was spilled instead of staying inline")
 	}
 }
 
-func TestCheckpointConversationFailsClosedOnMismatchedToolIDs(t *testing.T) {
+func TestCheckpointConversationSpillsMismatchedToolIDsInThePrefix(t *testing.T) {
+	root := t.TempDir()
 	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
 	conversation = append(conversation,
 		map[string]interface{}{"role": "assistant", "content": "", "tool_calls": []interface{}{
@@ -119,10 +166,79 @@ func TestCheckpointConversationFailsClosedOnMismatchedToolIDs(t *testing.T) {
 		SessionKey:   "owner-a",
 		Tools:        []map[string]interface{}{checkpointReaderTool()},
 		KeepGroups:   2,
-		Root:         t.TempDir(),
+		Root:         root,
 	})
-	if result.Applied || result.Reason != "invalid_tool_group" || len(result.Conversation) != len(conversation) {
-		t.Fatalf("mismatched tool IDs must fail closed: %+v", result)
+	if !result.Applied || result.Handle == nil {
+		t.Fatalf("a mismatched pair in the prefix must still checkpoint, got %+v", result)
+	}
+	for _, message := range result.Conversation {
+		if MsgRole(message) == "tool" {
+			t.Fatalf("broken tool pair stayed inline: %#v", message)
+		}
+	}
+	stored, err := toolresult.Read(toolresult.ReadOptions{
+		ID:         result.Handle.ID,
+		SessionKey: "owner-a",
+		Root:       root,
+		Limit:      toolresult.MaxReadLimit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored.Content, "different") {
+		t.Fatal("spilled checkpoint dropped the mismatched tool id")
+	}
+}
+
+func TestCheckpointConversationSpillsMismatchedToolIDsInTheKeptTail(t *testing.T) {
+	root := t.TempDir()
+	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
+	for i := 0; i < 8; i++ {
+		conversation = append(conversation, map[string]string{"role": "user", "content": strings.Repeat("payload ", 400)})
+	}
+	conversation = append(conversation, map[string]string{"role": "user", "content": "CURRENT_QUESTION"})
+	conversation = append(conversation,
+		map[string]interface{}{"role": "assistant", "content": "", "tool_calls": []interface{}{
+			map[string]interface{}{"id": "declared", "type": "function", "function": map[string]interface{}{"name": "bash", "arguments": "{}"}},
+		}},
+		map[string]interface{}{"role": "tool", "tool_call_id": "different", "content": "result"},
+	)
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 4000,
+		SessionKey:   "owner-kept-mismatch",
+		Tools:        []map[string]interface{}{checkpointReaderTool()},
+		KeepGroups:   4,
+		Root:         root,
+	})
+	if !result.Applied || result.Handle == nil {
+		t.Fatalf("a mismatched pair in the kept tail must be spilled, got %+v", result)
+	}
+	for _, message := range result.Conversation {
+		if MsgRole(message) == "tool" {
+			t.Fatalf("broken tool pair stayed inline: %#v", message)
+		}
+	}
+	stored, err := toolresult.Read(toolresult.ReadOptions{
+		ID:         result.Handle.ID,
+		SessionKey: "owner-kept-mismatch",
+		Root:       root,
+		Limit:      toolresult.MaxReadLimit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored.Content, "different") || !strings.Contains(stored.Content, "payload ") {
+		t.Fatal("spilled checkpoint dropped the broken pair or the valid prefix")
+	}
+	foundQuestion := false
+	for _, message := range result.Conversation {
+		_, content := ExtractRoleContent(message)
+		if strings.Contains(content, "CURRENT_QUESTION") {
+			foundQuestion = true
+		}
+	}
+	if !foundQuestion {
+		t.Fatal("the valid message beside the broken pair left the inline conversation")
 	}
 }
 
@@ -319,7 +435,7 @@ func TestCheckpointConversationNoSavingsRemovesUnexposedHandle(t *testing.T) {
 		map[string]string{"role": "user", "content": strings.Repeat("a", 100)},
 		map[string]string{"role": "assistant", "content": strings.Repeat("b", 100)},
 		map[string]string{"role": "user", "content": strings.Repeat("c", 100)},
-		map[string]string{"role": "assistant", "content": strings.Repeat("d", 100)},
+		map[string]string{"role": "assistant", "content": strings.Repeat("d", 15000)},
 	}
 	result := CheckpointConversation(conversation, ContextCheckpointOptions{
 		ContextLimit: 4000,
@@ -347,6 +463,156 @@ func TestCheckpointConversationNoSavingsRemovesUnexposedHandle(t *testing.T) {
 	}
 	if files != 0 {
 		t.Fatalf("no-savings fallback left %d orphan handles", files)
+	}
+}
+
+func TestCheckpointConversationKeepsFittingTail(t *testing.T) {
+	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
+	for i := 0; i < 20; i++ {
+		conversation = append(conversation, map[string]string{
+			"role":    "user",
+			"content": fmt.Sprintf("old %d %s", i, strings.Repeat("x", 2000)),
+		})
+	}
+	for i := 0; i < 4; i++ {
+		conversation = append(conversation, map[string]string{
+			"role":    "user",
+			"content": fmt.Sprintf("recent %d", i),
+		})
+	}
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 8000,
+		SessionKey:   "owner-tail",
+		Tools:        []map[string]interface{}{checkpointReaderTool()},
+		KeepGroups:   4,
+		Root:         t.TempDir(),
+	})
+	if !result.Applied || result.Handle == nil {
+		t.Fatalf("a fitting recent window must still checkpoint the prefix, got %+v", result)
+	}
+	// system + checkpoint preview + the four recent groups.
+	if len(result.Conversation) != 6 {
+		t.Fatalf("inline len = %d, want 6 (prefix should be the handle, not extra groups)", len(result.Conversation))
+	}
+	for i := 0; i < 4; i++ {
+		_, content := ExtractRoleContent(result.Conversation[2+i])
+		want := fmt.Sprintf("recent %d", i)
+		if content != want {
+			t.Fatalf("inline message %d = %q, want %q", i, content, want)
+		}
+	}
+}
+
+func TestCheckpointMessageTokenEstimateStaysNearJSON(t *testing.T) {
+	msgs := []interface{}{
+		map[string]interface{}{
+			"role":    "tool",
+			"content": strings.Repeat("payload ", 5000),
+			"tool_calls": []interface{}{map[string]interface{}{
+				"id": "call-1",
+				"function": map[string]interface{}{
+					"name":      "bash",
+					"arguments": strings.Repeat("echo ", 2000),
+				},
+			}},
+		},
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": strings.Repeat("note ", 1000),
+			"tool_calls": []llm.ToolCall{{
+				ID:   "call-2",
+				Type: "function",
+				Function: llm.ToolCallFunction{
+					Name:      "bash",
+					Arguments: strings.Repeat("echo ", 2000),
+				},
+			}},
+		},
+	}
+	for i, msg := range msgs {
+		got := estimateCheckpointMessageTokens(msg)
+		want := EstimateConversationTokens([]interface{}{msg})
+		if got < want/2 || got > want*2 {
+			t.Fatalf("message %d length estimate %d is too far from the json estimate %d", i, got, want)
+		}
+	}
+}
+
+func TestCheckpointConversationShrinksFewHugeGroups(t *testing.T) {
+	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
+	for i := 0; i < 4; i++ {
+		conversation = append(conversation, map[string]string{
+			"role":    "user",
+			"content": strings.Repeat("archived source ", 2000),
+		})
+	}
+	conversation = append(conversation, map[string]string{"role": "user", "content": "CURRENT"})
+	root := t.TempDir()
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 8000,
+		SessionKey:   "owner-shrink",
+		Tools:        []map[string]interface{}{checkpointReaderTool()},
+		Root:         root,
+	})
+	if !result.Applied || result.Handle == nil {
+		t.Fatalf("a handful of over-budget groups must checkpoint, got %+v", result)
+	}
+	if result.AfterTokens >= result.BeforeTokens {
+		t.Fatalf("shrink did not save tokens: %+v", result)
+	}
+	last, ok := result.Conversation[len(result.Conversation)-1].(map[string]string)
+	if !ok || last["content"] != "CURRENT" {
+		t.Fatalf("current turn was not kept inline: %#v", result.Conversation[len(result.Conversation)-1])
+	}
+	stored, err := toolresult.Read(toolresult.ReadOptions{
+		ID:         result.Handle.ID,
+		SessionKey: "owner-shrink",
+		Root:       root,
+		Limit:      toolresult.MaxReadLimit,
+	})
+	if err != nil || !strings.Contains(stored.Content, "archived source") {
+		t.Fatalf("dropped source was not stored: err=%v truncated=%v", err, stored.Truncated)
+	}
+}
+
+func TestCheckpointConversationKeepsFittingWindowInline(t *testing.T) {
+	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
+	for i := 0; i < 3; i++ {
+		conversation = append(conversation, map[string]string{
+			"role":    "user",
+			"content": strings.Repeat("x", 4500),
+		})
+	}
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 8000,
+		Tools:        []map[string]interface{}{checkpointReaderTool()},
+		Root:         t.TempDir(),
+	})
+	if result.Applied || result.Reason != "protected_window" {
+		t.Fatalf("a window that fits the budget must stay inline, got %+v", result)
+	}
+}
+
+func TestCheckpointConversationKeepsFittingManyGroupsInline(t *testing.T) {
+	conversation := []interface{}{map[string]string{"role": "system", "content": "sys"}}
+	for i := 0; i < 15; i++ {
+		conversation = append(conversation, map[string]string{
+			"role":    "user",
+			"content": strings.Repeat("x", 800),
+		})
+	}
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 8000,
+		SessionKey:   "owner-many-fit",
+		Tools:        []map[string]interface{}{checkpointReaderTool()},
+		KeepGroups:   4,
+		Root:         t.TempDir(),
+	})
+	if result.Applied || result.Reason != "protected_window" {
+		t.Fatalf("a transcript inside the budget must stay inline even with more groups than the keep window, got %+v", result)
+	}
+	if len(result.Conversation) != len(conversation) {
+		t.Fatalf("inline len = %d, want %d", len(result.Conversation), len(conversation))
 	}
 }
 

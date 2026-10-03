@@ -489,28 +489,27 @@ func (mc *Compressor) dedup() int {
 }
 
 func isDuplicateLower(a, b Entry, ca, cb string) bool {
-	// Different non-empty owners are isolated; shared memories can dedup with any owner.
-	if a.OwnerID != "" && b.OwnerID != "" && a.OwnerID != b.OwnerID {
+	// Inactive rows must not delete a live copy. Owners match exactly, so a
+	// shared entry does not absorb a named owner's memory.
+	if !a.IsActive() || !b.IsActive() || !memoryOwnersEqual(a.OwnerID, b.OwnerID) {
+		return false
+	}
+	if MapToCanonical(a.Category) != MapToCanonical(b.Category) {
 		return false
 	}
 
 	if ca == cb {
 		return true
 	}
-	// Use canonical category mapping so Claude-style categories dedup against
-	// their legacy equivalents (e.g. "project" -> "project_knowledge",
-	// "feedback" -> "instruction", "user" -> "user_fact").
-	if MapToCanonical(a.Category) == MapToCanonical(b.Category) {
-		runeA, runeB := len([]rune(ca)), len([]rune(cb))
-		shorter := runeA
-		if runeB < shorter {
-			shorter = runeB
-		}
-		if shorter >= minSubstringLen {
-			if strings.Contains(ca, cb) || strings.Contains(cb, ca) {
-				return true
-			}
-		}
+	// Claude-style categories already matched above, so a contained body is the
+	// same fact written at two lengths.
+	runeA, runeB := len([]rune(ca)), len([]rune(cb))
+	shorter := runeA
+	if runeB < shorter {
+		shorter = runeB
+	}
+	if shorter >= minSubstringLen && (strings.Contains(ca, cb) || strings.Contains(cb, ca)) {
+		return true
 	}
 	return false
 }
@@ -559,7 +558,10 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 	mc.store.mu.RLock()
 	groupSet := make(map[catOwnerKey]bool)
 	for _, e := range mc.store.entries {
-		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: e.OwnerID}] = true
+		if !e.IsActive() {
+			continue
+		}
+		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: strings.TrimSpace(e.OwnerID)}] = true
 	}
 	mc.store.mu.RUnlock()
 
@@ -574,7 +576,7 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 			// Durable task-management entries are 1:1 task identities, not
 			// compressible facts: merging them unions dozens of task-path tags
 			// into one entry and erases every other task from the sidebar.
-			if MapToCanonical(e.Category) == key.Category && e.OwnerID == key.OwnerID && !e.Pinned && !IsDurableTaskManagementEntry(&e) {
+			if e.IsActive() && MapToCanonical(e.Category) == key.Category && strings.TrimSpace(e.OwnerID) == key.OwnerID && !e.Pinned && !IsDurableTaskManagementEntry(&e) {
 				entries = append(entries, e)
 			}
 		}
@@ -948,7 +950,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 	var evictable []Entry
 	for _, e := range snapshot {
 		// 多租户隔离：只处理属于该用户的记忆（或共享记忆）
-		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+		if !namedOwnerVisible(e.OwnerID, filterOwner) {
 			protected = append(protected, e) // 其他用户的记忆视为受保护
 			continue
 		}
@@ -1034,7 +1036,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 				break
 			}
 			// Re-check owner isolation before reviving archived entries.
-			if filterOwner != "" && re.OwnerID != "" && re.OwnerID != filterOwner {
+			if !namedOwnerVisible(re.OwnerID, filterOwner) {
 				continue
 			}
 			reviveIDs = append(reviveIDs, re.ID)

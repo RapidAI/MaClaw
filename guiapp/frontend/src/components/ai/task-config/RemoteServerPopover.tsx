@@ -49,7 +49,7 @@ export function RemoteServerForm({
         border: `1px solid ${t.fieldBorder}`,
         background: t.fieldBg,
         color: t.inputText || t.text,
-        borderRadius: 8,
+        borderRadius: "var(--radius-md, 10px)",
         padding: "0 10px",
         fontSize: 13,
         height: 30,

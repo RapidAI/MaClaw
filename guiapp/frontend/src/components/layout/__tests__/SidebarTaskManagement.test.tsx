@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
 import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
@@ -31,8 +32,11 @@ const {
     restoreCloudWorkspaceTasksMock,
     prepareCloudWorkspaceMock,
     syncCloudWorkspaceFilesMock,
+    getCodingWorkbenchDirectoryMock,
+    deleteCodingWorkbenchEntryMock,
     cloudWorkspaceCacheDirMock,
     listExpertsMock,
+    listLatexTemplatesMock,
     listManagedIndustryExpertsMock,
     getCloudWorkspaceShareMock,
     createCloudWorkspaceShareMock,
@@ -61,8 +65,11 @@ const {
         restoreCloudWorkspaceTasksMock: vi.fn().mockResolvedValue([]),
         prepareCloudWorkspaceMock: vi.fn().mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' }),
         syncCloudWorkspaceFilesMock: vi.fn().mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' }),
+        getCodingWorkbenchDirectoryMock: vi.fn().mockResolvedValue({ root: '', entries: [] }),
+        deleteCodingWorkbenchEntryMock: vi.fn().mockResolvedValue(undefined),
         cloudWorkspaceCacheDirMock: vi.fn().mockResolvedValue({ local_path: '' }),
         listExpertsMock: vi.fn().mockResolvedValue('[]'),
+        listLatexTemplatesMock: vi.fn().mockResolvedValue('{"templates":[]}'),
         listManagedIndustryExpertsMock: vi.fn().mockResolvedValue('[]'),
         getCloudWorkspaceShareMock: vi.fn().mockResolvedValue({ recipients: [] }),
         createCloudWorkspaceShareMock: vi.fn().mockImplementation(async (_id: string, permission: string) => ({
@@ -101,7 +108,17 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CloudWorkspaceCacheDir: cloudWorkspaceCacheDirMock,
     PrepareCloudWorkspace: prepareCloudWorkspaceMock,
     SyncCloudWorkspaceFiles: syncCloudWorkspaceFilesMock,
+    GetCodingWorkbenchDirectory: (...args: unknown[]) => getCodingWorkbenchDirectoryMock(...args),
+    DeleteCodingWorkbenchEntry: (...args: unknown[]) => deleteCodingWorkbenchEntryMock(...args),
+    GetCodingWorkbenchFilePreview: vi.fn(),
+    GetCodingWorkbenchEntryProperties: vi.fn(),
+    IsCodingWorkbenchVSCodeAvailable: vi.fn().mockResolvedValue(false),
+    OpenCodingWorkbenchFileInVSCode: vi.fn(),
+    OpenCodingWorkbenchFileLocally: vi.fn(),
+    DownloadCodingWorkbenchEntry: vi.fn(),
+    ExportLatexSubmissionZip: vi.fn(),
     ListExperts: listExpertsMock,
+    ListLatexTemplates: listLatexTemplatesMock,
     ListManagedIndustryExperts: listManagedIndustryExpertsMock,
     GetCloudWorkspaceShare: getCloudWorkspaceShareMock,
     CreateCloudWorkspaceShare: createCloudWorkspaceShareMock,
@@ -207,10 +224,16 @@ afterEach(async () => {
     prepareCloudWorkspaceMock.mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' });
     syncCloudWorkspaceFilesMock.mockReset();
     syncCloudWorkspaceFilesMock.mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' });
+    getCodingWorkbenchDirectoryMock.mockReset();
+    getCodingWorkbenchDirectoryMock.mockResolvedValue({ root: '', entries: [] });
+    deleteCodingWorkbenchEntryMock.mockReset();
+    deleteCodingWorkbenchEntryMock.mockResolvedValue(undefined);
     cloudWorkspaceCacheDirMock.mockReset();
     cloudWorkspaceCacheDirMock.mockResolvedValue({ local_path: '' });
     listExpertsMock.mockReset();
     listExpertsMock.mockResolvedValue('[]');
+    listLatexTemplatesMock.mockReset();
+    listLatexTemplatesMock.mockResolvedValue('{"templates":[]}');
     listManagedIndustryExpertsMock.mockReset();
     listManagedIndustryExpertsMock.mockResolvedValue('[]');
     __resetCloudWorkspaceDisplayNamesForTests();
@@ -246,6 +269,15 @@ describe('isActiveTaskRow', () => {
         expect(isActiveTaskRow(expertTask, { expertId: 'other' })).toBe(false);
         expect(isActiveTaskRow(expertTask, { projectPath: baseProject.project_path })).toBe(false);
         expect(isActiveTaskRow(baseProject, { expertId: 'paper-review' })).toBe(false);
+    });
+
+    it('highlights only the open LaTeX paper when several share the expert', () => {
+        const older = { ...baseProject, project_path: 'D:/work/tasks/latex-1', tags: ['task_management', 'source:expert:builtin-latex-paper'] };
+        const newer = { ...baseProject, project_path: 'D:/work/tasks/latex-2', tags: ['task_management', 'source:expert:builtin-latex-paper'] };
+        const active = { expertId: 'builtin-latex-paper', projectPath: 'D:\\work\\tasks\\latex-2' };
+        expect(isActiveTaskRow(newer, active)).toBe(true);
+        expect(isActiveTaskRow(older, active)).toBe(false);
+        expect(isActiveTaskRow(older, { expertId: 'builtin-latex-paper' })).toBe(true);
     });
 
     it('highlights a cloud workspace row even when resume rebound the tab onto a cache path', () => {
@@ -2907,6 +2939,64 @@ describe('SidebarTaskManagement', () => {
         expect(Number.parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
     });
 
+    it('closes the task context menu on Escape', () => {
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({
+            setTaskContextMenu,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: baseProject.name,
+                pinned: false,
+            },
+        });
+        fireEvent.keyDown(window, { key: 'Escape', isComposing: true, keyCode: 229 });
+        expect(setTaskContextMenu).not.toHaveBeenCalled();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+    });
+
+    it('closes the task context menu when the list scrolls or the window resizes', () => {
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({
+            setTaskContextMenu,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: baseProject.name,
+                pinned: false,
+            },
+        });
+        fireEvent.scroll(window);
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+        setTaskContextMenu.mockClear();
+        fireEvent(window, new Event('resize'));
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+    });
+
+    it('suppresses the native menu and closes when right-clicking outside', () => {
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({
+            setTaskContextMenu,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: baseProject.name,
+                pinned: false,
+            },
+        });
+        const menu = screen.getByTestId('task-context-menu');
+        expect(fireEvent.contextMenu(menu)).toBe(false);
+        expect(setTaskContextMenu).not.toHaveBeenCalled();
+        const scrim = document.querySelector('.stsm-menu-scrim');
+        expect(scrim).toBeTruthy();
+        expect(fireEvent.contextMenu(scrim as Element)).toBe(false);
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+    });
+
     it('opens edit remote SSH dialog with host/user/port/workdir and test button', async () => {
         const { GetRemoteCodingTaskMeta, UpdateRemoteCodingTaskMeta, TestRemoteSSHConnection } = await import('../../../../wailsjs/go/main/App');
         renderTaskManagement({
@@ -4108,6 +4198,110 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByRole('dialog', { name: '创建任务' })).toBeNull();
     });
 
+    it('opens a cloud workspace file manager and deletes a file from the context menu', async () => {
+        __resetWorkspaceDirectoryCacheForTests();
+        const cachePath = 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_b';
+        syncCloudWorkspaceFilesMock.mockResolvedValue({ local_path: cachePath });
+        getCodingWorkbenchDirectoryMock.mockResolvedValue({
+            root: cachePath,
+            entries: [{ name: 'notes.md', path: 'notes.md', is_dir: false }],
+        });
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 1,
+            workspaces: [{ id: 'cws_b', name: '云端工作区测试1' }],
+            deleted: [],
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(await screen.findByTestId('task-cloud-overview'));
+        expect(syncCloudWorkspaceFilesMock).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('task-cloud-overview-files'));
+        await waitFor(() => expect(syncCloudWorkspaceFilesMock).toHaveBeenCalledWith('cws_b'));
+        const files = await screen.findByTestId('task-cloud-overview-files-dialog');
+        expect(within(files).getByRole('heading', { name: '云端工作区测试1' })).toBeTruthy();
+        const file = await within(files).findByText('notes.md');
+        expect(within(files).queryByTestId('code-preview-workspace-header')).toBeNull();
+        const synced = syncCloudWorkspaceFilesMock.mock.calls.length;
+        let releaseSync: (value: { local_path: string }) => void = () => {};
+        syncCloudWorkspaceFilesMock.mockImplementationOnce(() => new Promise(resolve => {
+            releaseSync = resolve;
+        }));
+        const listed = getCodingWorkbenchDirectoryMock.mock.calls.length;
+        fireEvent.click(within(files).getByRole('button', { name: '刷新云端文件' }));
+        await waitFor(() => expect(syncCloudWorkspaceFilesMock.mock.calls.length).toBeGreaterThan(synced));
+        expect(getCodingWorkbenchDirectoryMock.mock.calls.length).toBe(listed);
+        await act(async () => {
+            releaseSync({ local_path: cachePath });
+        });
+        await waitFor(() => expect(getCodingWorkbenchDirectoryMock.mock.calls.length).toBeGreaterThan(listed));
+        syncCloudWorkspaceFilesMock.mockRejectedValueOnce(new Error('hub down'));
+        fireEvent.click(within(files).getByRole('button', { name: '刷新云端文件' }));
+        expect((await within(files).findByTestId('task-cloud-overview-files-refresh-error')).textContent).toContain('hub down');
+        expect(within(files).getByText('notes.md')).toBeTruthy();
+        fireEvent.click(file);
+        expect(file.closest('button')?.getAttribute('data-selected')).toBe('true');
+        const backdrop = screen.getByTestId('task-cloud-overview-files-dialog');
+        fireEvent.mouseDown(backdrop);
+        fireEvent.mouseEnter(backdrop.querySelector('.mc-cloud-files') as HTMLElement);
+        fireEvent.click(backdrop);
+        expect(screen.getByTestId('task-cloud-overview-files-dialog')).toBeTruthy();
+        fireEvent.contextMenu(file, { clientX: 40, clientY: 40 });
+        expect(screen.getByTestId('code-preview-workspace-context-menu')).toBeTruthy();
+        fireEvent.mouseDown(file);
+        expect(screen.queryByTestId('code-preview-workspace-context-menu')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-files-dialog')).toBeTruthy();
+        fireEvent.contextMenu(file, { clientX: 40, clientY: 40 });
+        const menu = await screen.findByTestId('code-preview-workspace-context-menu');
+        expect(within(menu).queryByTestId('code-preview-workspace-context-preview')).toBeNull();
+        expect(within(menu).getByTestId('code-preview-workspace-context-delete').textContent).toBe('删除');
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('code-preview-workspace-context-menu')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-files-dialog')).toBeTruthy();
+
+        fireEvent.contextMenu(file, { clientX: 40, clientY: 40 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-properties'));
+        expect(await screen.findByTestId('code-preview-workspace-properties')).toBeTruthy();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('code-preview-workspace-properties')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-files-dialog')).toBeTruthy();
+
+        fireEvent.contextMenu(file, { clientX: 40, clientY: 40 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        const confirm = await screen.findByRole('dialog', { name: '删除文件' });
+        fireEvent.click(within(confirm).getByRole('button', { name: '删除' }));
+        await waitFor(() => expect(deleteCodingWorkbenchEntryMock).toHaveBeenCalledWith(cachePath, 'notes.md'));
+        await waitFor(() => expect(within(files).queryByText('notes.md')).toBeNull());
+
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('task-cloud-overview-files-dialog')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
+    });
+
+    it('keeps the cloud overview open when viewing files fails', async () => {
+        syncCloudWorkspaceFilesMock.mockRejectedValue(new Error('hub down'));
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 1,
+            workspaces: [{ id: 'cws_b', name: '云端工作区测试1' }],
+            deleted: [],
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(await screen.findByTestId('task-cloud-overview'));
+        fireEvent.click(screen.getByTestId('task-cloud-overview-files'));
+        const error = await screen.findByTestId('task-cloud-overview-files-error');
+        expect(error.textContent).toContain('hub down');
+        expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('task-cloud-overview-files-dialog')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
+    });
+
     it('cancels an open rename or delete prompt with Escape before closing the overview', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({
             enabled: true,
@@ -5092,7 +5286,7 @@ describe('create dialog expert type picker', () => {
         expect(document.getElementById('task-working-directory')).toBeNull();
         expect(screen.getByTestId('task-expert-picker-toggle').textContent).toContain('Paper Writer');
 
-        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
         await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-paper-writer' })));
         expect(createTask).not.toHaveBeenCalled();
@@ -5121,7 +5315,7 @@ describe('create dialog expert type picker', () => {
         // Back to the expert; the ignored folder must not reach the create call.
         fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
         fireEvent.click(within(screen.getByTestId('task-expert-picker')).getByText('Code Reviewer'));
-        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
         await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-code-reviewer' })));
         expect(createTask).not.toHaveBeenCalled();
     });
@@ -5144,9 +5338,72 @@ describe('create dialog expert type picker', () => {
         // …while the purchase-required placeholder never appears.
         expect(screen.queryByText('Paid Expert')).toBeNull();
 
-        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
         await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'managed-local-1' })));
         expect(createTask).not.toHaveBeenCalled();
+    });
+
+    it('can return to the blank LaTeX template after picking another one', async () => {
+        listExpertsMock.mockResolvedValue(JSON.stringify([{
+            id: 'builtin-latex-paper',
+            name: 'LaTeX Paper',
+            description: 'Writes papers',
+            icon: '📄',
+            system_prompt: '',
+            tools: [],
+            skills: [],
+            builtin: true,
+            created_at: '',
+            updated_at: '',
+        }]));
+        listLatexTemplatesMock.mockResolvedValue(JSON.stringify({
+            templates: [{ id: 'tpl-ieee', name: 'IEEE' }],
+        }));
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ onCreateExpertTask });
+
+        openCreateDialog();
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+        fireEvent.click((await screen.findByText('LaTeX Paper')).closest('button')!);
+        fireEvent.click(screen.getByTestId('task-latex-template-picker-toggle'));
+        const picker = screen.getByTestId('task-latex-template-picker');
+        const ieee = await within(picker).findByText('IEEE');
+        expect(within(picker).getByText('Blank template')).toBeTruthy();
+        fireEvent.click(ieee.closest('button')!);
+        expect(screen.getByTestId('task-latex-template-picker-toggle').textContent).toContain('IEEE');
+
+        fireEvent.click(screen.getByTestId('task-latex-template-picker-toggle'));
+        const reopened = screen.getByTestId('task-latex-template-picker');
+        fireEvent.click(within(reopened).getByText('Blank template').closest('button')!);
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalled());
+        const options = onCreateExpertTask.mock.calls[0][1] as { latexTemplateId?: string; latexTemplateName?: string };
+        expect(options.latexTemplateId).toBe('blank');
+        expect(options.latexTemplateName).toBeUndefined();
+    });
+
+    it('keeps Create & open after an expert is picked and the type switches to cloud', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 0,
+            workspaces: [{ id: 'cws_free', name: 'Free' }],
+            deleted: [],
+        });
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask, onCreateExpertTask, showCloudWorkspaceCreation: true });
+
+        openCreateDialog();
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+        fireEvent.click((await screen.findByText('Code Reviewer')).closest('button')!);
+        expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy();
+
+        fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
+        expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        await waitFor(() => expect(createTask).toHaveBeenCalled());
+        expect(onCreateExpertTask).not.toHaveBeenCalled();
     });
 
     it('hides the expert row for the local coding type and submits createTask with the mode', async () => {

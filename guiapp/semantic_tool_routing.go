@@ -294,6 +294,13 @@ type semanticReplanInput struct {
 	// back from the stored classification.
 	SlimOffice        bool
 	ShortDocumentEdit bool
+	// BaselineWorkspace records that the published plan raised the workspace
+	// ceiling (read/write/shell repeats). A shell archetype already offers
+	// file read, so the extra siblings keep the archetype need id and do not
+	// carry a zz-baseline prefix. Re-deriving "did this plan have baseline?"
+	// from that prefix drops those siblings and the expansion validator
+	// rejects the petition.
+	BaselineWorkspace bool
 }
 
 type semanticRouteDiagnostic struct {
@@ -324,7 +331,10 @@ type semanticPlanPreparation struct {
 	// re-plans without the turn's user text and must mirror the drop instead
 	// of resurrecting non-petitioned lookup legs.
 	conversationLookupReused bool
-	policy                   corelib.EffectiveRoutingPolicy
+	// baselineWorkspace is the applyBaseline decision for this plan. Petition
+	// expansion replays it; need-id prefixes do not preserve a ceiling raise.
+	baselineWorkspace bool
+	policy            corelib.EffectiveRoutingPolicy
 }
 
 func newIMSemanticCapabilityRegistry() *tool.CapabilityRegistry {
@@ -447,29 +457,6 @@ func imSemanticIntentCoverage(result intent.ClassificationResult) (managed bool,
 func imSemanticIntentIsManaged(result intent.ClassificationResult) bool {
 	managed, _ := imSemanticIntentCoverage(result)
 	return managed
-}
-
-// lexicalWebSearchRequest detects an explicit new-search request only when
-// deciding whether prior, trusted lookup evidence may be reused. It is not an
-// intent classifier and must never grant, select, or reclassify a capability.
-func lexicalWebSearchRequest(text string) bool {
-	msg := strings.ToLower(strings.TrimSpace(text))
-	if msg == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"全网搜索", "全网查", "上网搜索", "上网搜", "上网查",
-		"网上搜索", "网上搜", "网上找", "网上查",
-		"在网上搜索", "在网上查找", "在网上找",
-		"联网搜索", "互联网搜索", "联网查",
-		"search the web", "search online", "web search",
-		"google this", "bing this", "look up online",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // normalizeSemanticClassificationForTurn performs only a structural
@@ -1258,6 +1245,22 @@ func semanticBaselineWorkspaceApplies(result intent.ClassificationResult) bool {
 	return false
 }
 
+// semanticApplyBaselineWorkspace is the single ceiling decision. A petition
+// expansion replays its own recorded bit. A failure replan forces the ceiling
+// only when the parent stored it, so a classification that would not re-derive
+// a ceiling-only raise (no zz-baseline prefix) cannot drop those siblings.
+// With neither key set, the classification decides. A slim office turn never
+// grows the ceiling.
+func semanticApplyBaselineWorkspace(ctx context.Context, planning intent.ClassificationResult, slimOffice bool) bool {
+	if semanticPetitionExpansion(ctx) {
+		return semanticPetitionBaseline(ctx)
+	}
+	if semanticForceBaselineWorkspace(ctx) {
+		return !slimOffice
+	}
+	return semanticBaselineWorkspaceApplies(planning) && !slimOffice
+}
+
 // semanticNeedsFromClassificationContext is the request-bound counterpart of
 // semanticNeedsFromClassification.  Need extraction currently uses a supplied
 // UIC result, but it must still share the incoming turn context with future
@@ -1543,13 +1546,15 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 	invocation, turnGeneration := semanticLoopInvocationSnapshotFor(ctx)
 	rootTaskID, turnID := invocation.RootTaskID, invocation.TurnID
 	sessionID := invocation.SessionID
-	requestCtx, cancel := semanticRoutingContext(ctx)
-	defer cancel()
 	// LoopContext.Context observes terminal cancellation only. Register a
 	// sibling cancellation for fresh ingress replacement before any classifier,
 	// catalog, or planner I/O starts, so an old request cannot finish planning
 	// and publish a new surface after its replacement is accepted.
-	requestCtx, cancelReplacement := context.WithCancel(requestCtx)
+	// The routing values are taken after a late tree verdict is adopted.
+	// Building them first planned the timeout profile: a project-task search
+	// that arrived late never received web_fetch, and the light budget then
+	// cleared the parent carry.
+	replacement, cancelReplacement := context.WithCancel(context.Background())
 	defer cancelReplacement()
 	removeReplacementCancel := func() {}
 	if ctx != nil {
@@ -1563,6 +1568,19 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 	h.releaseNamedSkillOnLoopIntent(ctx, userID, userText)
 	if ctx != nil {
 		h.adoptLateTreeSemanticIntent(ctx, userID, userText, ctx.History)
+	}
+	routed, cancelRouted := semanticRoutingContext(ctx)
+	defer cancelRouted()
+	requestCtx, cancel := context.WithCancel(routed)
+	defer cancel()
+	stopReplacement := context.AfterFunc(replacement, cancel)
+	defer stopReplacement()
+	// AfterFunc starts the cancel in another goroutine when the parent is
+	// already done. A replacement that won during adoption must fail this
+	// request before planning, not race the planner.
+	if replacement.Err() != nil {
+		cancel()
+		return nil, nil, true, fmt.Errorf("semantic_turn_replaced")
 	}
 	planningText := markdownFileWritePlanningText(userText, loopHistory(ctx))
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, planningText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
@@ -1692,7 +1710,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		hostConnectionID: "agent-loop-surface:" + newSemanticEphemeralIdentity(),
 		completed:        make(map[string]bool), materialized: make(map[string]bool), schemas: prepared.definitions, parameterSchemas: prepared.schemas,
 		grants: make(map[string]tool.InvocationGrant), retiredGrants: make(map[string]tool.InvocationGrant), rendered: make(map[string]bool), artifacts: newSemanticArtifactBroker(scope, artifactStore, routeState, coordinator), pendingArtifacts: make(map[string][]tool.ArtifactPayload),
-		replan: &semanticReplanInput{UserID: userID, Channel: channel, RootTaskID: prepared.rootTaskID, Classification: classVal, Attachments: cloneSemanticMessageAttachments(attachments), ConversationLookupReused: prepared.conversationLookupReused, BundleKey: semanticArchetypeBundleKeyForTurn(classVal, userText), SlimOffice: semanticResidueSlimOfficeTurn(classVal, userText), ShortDocumentEdit: semanticResidueShortDocumentEdit(classVal, userText)},
+		replan: &semanticReplanInput{UserID: userID, Channel: channel, RootTaskID: prepared.rootTaskID, Classification: classVal, Attachments: cloneSemanticMessageAttachments(attachments), ConversationLookupReused: prepared.conversationLookupReused, BundleKey: semanticArchetypeBundleKeyForTurn(classVal, userText), SlimOffice: semanticResidueSlimOfficeTurn(classVal, userText), ShortDocumentEdit: semanticResidueShortDocumentEdit(classVal, userText), BaselineWorkspace: prepared.baselineWorkspace},
 	}
 	for _, input := range prepared.documentInputs {
 		if err := semanticRoutingRequestErr(requestCtx); err != nil {
@@ -1869,16 +1887,17 @@ func semanticSpentBudgetNote(surface *semanticCallSurface, selectionID string) s
 
 // semanticTurnDeliveryComplete reports that the turn's goal is fully reached:
 // every REQUIRED planned selection completed and at least one completed
-// selection is a current-channel delivery adapter. The closing LLM round trip
-// after this point only produces summary text, so the loop may stop cleanly
-// instead of paying one more call's latency and outage exposure. Optional
-// offers never gate completion: the ambient knowledge/memory lookups and the
-// archetype bundle offers are open offers the model may ignore, and
-// holding the stop hostage to them would make it dead code — production
-// 2026-08-26 turns never called the ambient legs, so the all-selections
-// variant never fired. A turn whose delivery finished while a required
-// selection is still open (deliver, then remind me) does not match: the loop
-// continues.
+// selection delivered the file, on the current channel or to the specified
+// IM target. The closing LLM round trip after this point only produces
+// summary text, so the loop may stop cleanly instead of paying one more
+// call's latency and outage exposure. Optional offers never gate completion:
+// the ambient knowledge/memory lookups and the archetype bundle offers are
+// open offers the model may ignore, and holding the stop hostage to them
+// would make it dead code — production 2026-08-26 turns never called the
+// ambient legs, so the all-selections variant never fired. A turn whose
+// delivery finished while a required selection is still open does not match:
+// the loop continues. A specified-target send that is still awaiting the
+// channel gateway is not completed, so that turn does not stop here.
 func semanticTurnDeliveryComplete(surface *semanticCallSurface) bool {
 	if surface == nil || len(surface.plan.Selections) == 0 || surface.registry == nil || surface.replan == nil {
 		return false
@@ -1886,8 +1905,10 @@ func semanticTurnDeliveryComplete(surface *semanticCallSurface) bool {
 	// Optionality is need-level and the plan does not retain needs; recompute
 	// them deterministically from the stored classification (rule templates
 	// only, no LLM) under the bundle key the plan was published with. Unknown
-	// need IDs fail toward required — a selection whose optionality cannot be
-	// proven must still complete.
+	// base need IDs fail toward required — a selection whose optionality cannot
+	// be proven must still complete. A later repeat sibling is not that case:
+	// the repeat contract makes only the family base an obligation, including
+	// a baseline ceiling the bundle-key recompute does not replay.
 	needsCtx := withSemanticArchetypeBundleKeyOverride(context.Background(), surface.replan.BundleKey)
 	needs, _, err := semanticNeedsFromClassificationContext(needsCtx, surface.registry, surface.replan.Classification)
 	if err != nil {
@@ -2048,6 +2069,10 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// design-latitude test is wider than the catalog, and refusing it here
 	// would close the agent path the workflow entry already declined to take.
 	classification = semanticClassificationForWorkflowLoop(semanticWorkflowAgentLoop(requestCtx), classification)
+	// paper_writing on the LaTeX paper expert is the document already on disk.
+	// This runs before the catalog check so a noise-band score cannot close
+	// the session the template library just opened.
+	classification = semanticReleaseLatexExpertWorkflowTask(userID, userText, classification)
 	classification = semanticReleaseUncataloguedWorkflowTask(userText, classification)
 	// Named skill runs belong to the current agent (skill-doc inject + loop),
 	// the same path the main assistant uses. workflow_task is only a
@@ -2167,6 +2192,18 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err != nil {
 		return nil, true, fmt.Errorf("resolve IM semantic capability needs: %w", err)
 	}
+	var carriedCaps []string
+	if lookupContinuationFetches(requestCtx) && planning.Primary == intent.LabelSearch {
+		// A cold search leaves web_fetch latent. Raising the selection budget
+		// cannot publish a need that was never added. A project-task follow-up
+		// ("does this repo have SSO?") has to open the page it just found.
+		needs = ensureLookupContinuationFetchNeed(needs, planning.Confidence)
+	}
+	if lookupContinuationOpenCeiling(requestCtx) || lookupContinuationFetches(requestCtx) {
+		// The parent turn's bash/ssh stay on this lookup. Baseline read/write
+		// is not added: a carry that was only ssh must not grow a shell.
+		needs, carriedCaps = ensureLookupContinuationCarriedNeeds(needs, h.parentExecutionTools(userID), planning.Confidence)
+	}
 	slimOffice, shortDocumentEdit := semanticOfficeTurnSlim(requestCtx, planning, userText)
 	if slimOffice {
 		needs = withoutAmbientRetrievalNeeds(needs)
@@ -2208,6 +2245,19 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if len(documentInputs) == 0 && activeDocumentUse == activeLocalDocumentPickerMismatch && semanticDocumentReadNeedPresent(needs) {
 		return nil, true, fmt.Errorf("trusted_document_context_picker_mismatch")
 	}
+	// A delivery that consumes an existing document binds the file this task
+	// already materialized. Message attachments and the picker stay first.
+	// A turn that itself generates or writes office consumes that producer
+	// and must not also bind the previous file.
+	if len(documentInputs) == 0 && len(attachments) == 0 && semanticDeliveryConsumesExistingDocument(needs) {
+		producedInputs, produced, producedErr := h.semanticProducedDocumentInputsForTurn(rootTaskID, turnID, sessionID, userID, channel)
+		if producedErr != nil {
+			return nil, true, producedErr
+		}
+		if produced {
+			documentInputs = producedInputs
+		}
+	}
 	needs, err = semanticNeedsForTrustedDocumentInputs(needs, documentInputs)
 	if err != nil {
 		return nil, true, err
@@ -2231,18 +2281,24 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// re-fire; when the parent surface recorded it, mirror it here for every
 	// lookup leg except the petitioned label's own templates.
 	needs = semanticNeedsForPetitionExpansionLookup(needs, requestCtx)
-	applyBaseline := semanticBaselineWorkspaceApplies(planning) && !slimOffice
-	if semanticPetitionExpansion(requestCtx) {
-		applyBaseline = semanticPetitionBaseline(requestCtx)
-	}
+	applyBaseline := semanticApplyBaselineWorkspace(requestCtx, planning, slimOffice)
 	if applyBaseline {
 		needs = agentservice.ExpandBaselineWorkspaceNeeds(registry, imSemanticIntentRuleSet, planning, true, needs)
 	}
 	remaining := semanticResidueRemaining(requestCtx)
+	if lookupContinuationOpenCeiling(requestCtx) || lookupContinuationFetches(requestCtx) {
+		remaining = semanticResidueWithoutLookupCeiling(remaining)
+		remaining = semanticResidueDropSpent(remaining, carriedCaps...)
+	}
 	if !semanticPetitionExpansion(requestCtx) {
 		needs = dropUnusedSessionCompanions(needs, remaining)
 	}
 	needs = clampNeedsToResidueRemaining(needs, remaining)
+	// Drop companions the parent budget already omitted and that the
+	// petitioned label does not declare. Raising the selection cap below
+	// would otherwise put them back, and the expansion validator would
+	// reject the child.
+	needs = semanticNeedsForPetitionWhitelist(needs, requestCtx)
 	if len(needs) == 0 {
 		// The session ceiling is spent and no declared need remains. Stay on
 		// the closed semantic turn so the legacy catalog is not reopened.
@@ -2844,6 +2900,15 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if policy.Enabled {
 		maxSelections, maxSchemaTokens = policy.MaxSelections, policy.MaxSchemaTokens
 	}
+	// The lookup profile caps the plan at the search family. A petition the
+	// host already admitted adds a required wave past that cap, the planner
+	// records it as unmet, and the expansion validator spends the petition
+	// budget on a child it must reject. The whitelist above is the validator's
+	// own set, so the cap must not trim it. This does not widen the live turn's
+	// budget; only this re-plan is uncapped.
+	if semanticPetitionExpansion(requestCtx) {
+		maxSelections, maxSchemaTokens = 0, 0
+	}
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
 		RootTaskID: rootTaskID, SessionID: sessionID, TurnID: turnID, ChannelScope: semanticChannelScope(channel), Snapshot: snapshot, Needs: needs, Facts: facts, Constraints: policyConstraints,
 		Budget: semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
@@ -2856,6 +2921,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		registry: registry, plan: plan, scopePlan: scopePlan, definitions: defsByName, schemas: semanticSchemas,
 		rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs,
 		conversationLookupReused: conversationLookupReused,
+		baselineWorkspace:        applyBaseline,
 		policy:                   policy,
 	}
 	// A managed family never falls through to old name routing: the caller sees
@@ -3353,10 +3419,38 @@ func closedManagedSemanticDefinitions(defs []map[string]interface{}, grants map[
 // Without this, a light turn could enter RunLoop with tools that the first
 // FilterToolDefinitionsByAuthorizer immediately drops to empty.
 func closedManagedSemanticDefinitionsForTurn(defs []map[string]interface{}, surface *semanticCallSurface, light bool) []map[string]interface{} {
+	return closedManagedSemanticDefinitionsKeeping(defs, surface, light, nil)
+}
+
+// closedManagedSemanticDefinitionsKeeping is the light close, plus names the
+// lookup authorizer will still run. The plain light filter drops bash because
+// its effect is sensitive, which is how a restored shell disappears from the
+// list the model is shown.
+func closedManagedSemanticDefinitionsKeeping(defs []map[string]interface{}, surface *semanticCallSurface, light bool, keep func(string) bool) []map[string]interface{} {
 	if surface == nil {
 		return nil
 	}
-	return tool.ClosedManagedDefinitionsForProfile(defs, surface.plan, surface.grants, light)
+	closed := tool.ClosedManagedDefinitions(defs, surface.grants)
+	if !light {
+		return closed
+	}
+	filtered := tool.FilterLightPromptSafeDefinitions(closed, surface.plan, surface.grants)
+	if keep == nil {
+		return filtered
+	}
+	have := make(map[string]bool, len(filtered))
+	for _, def := range filtered {
+		have[extractToolName(def)] = true
+	}
+	for _, def := range closed {
+		name := extractToolName(def)
+		if name == "" || have[name] || !keep(name) {
+			continue
+		}
+		filtered = append(filtered, def)
+		have[name] = true
+	}
+	return filtered
 }
 
 func isLegacySemanticBypassName(name string) bool {
@@ -3567,6 +3661,7 @@ func semanticIntentFromLoopContext(ctx *LoopContext) *intent.ClassificationResul
 type semanticWorkflowLoopKey struct{}
 type semanticPlanningBudgetKey struct{}
 type semanticDestinationKey struct{}
+type semanticParentContinuationKey struct{}
 type semanticExecutionLayerKey struct{}
 type semanticExpertSessionKey struct{}
 type semanticComputerUseActiveKey struct{}
@@ -3724,6 +3819,139 @@ func semanticGroupPermissions(ctx context.Context) *lansengerGroupPermissionPoli
 	return policy
 }
 
+type lookupContinuationFetchKey struct{}
+
+type lookupContinuationOpenCeilingKey struct{}
+
+func withLookupContinuationOpenCeiling(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, lookupContinuationOpenCeilingKey{}, true)
+}
+
+func lookupContinuationOpenCeiling(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	on, _ := ctx.Value(lookupContinuationOpenCeilingKey{}).(bool)
+	return on
+}
+
+func semanticResidueWithoutLookupCeiling(remaining map[string]int) map[string]int {
+	return semanticResidueDropSpent(remaining, "information.search.web", string(tool.CapabilityInformationFetchWeb))
+}
+
+// semanticResidueDropSpent removes a finished ceiling so the next lookup can
+// run. A positive remaining count still limits that capability.
+func semanticResidueDropSpent(remaining map[string]int, keys ...string) map[string]int {
+	if len(remaining) == 0 || len(keys) == 0 {
+		return remaining
+	}
+	out := cloneResidueRemaining(remaining)
+	for _, key := range keys {
+		if limit, ok := out[key]; ok && limit <= 0 {
+			delete(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func withLookupContinuationFetch(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, lookupContinuationFetchKey{}, true)
+}
+
+func lookupContinuationFetches(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	on, _ := ctx.Value(lookupContinuationFetchKey{}).(bool)
+	return on
+}
+
+func ensureLookupContinuationCarriedNeeds(needs []tool.CapabilityNeed, names []string, confidence float64) ([]tool.CapabilityNeed, []string) {
+	if len(names) == 0 {
+		return needs, nil
+	}
+	if confidence <= 0 {
+		confidence = 1
+	}
+	have := make(map[tool.CapabilityID]bool, len(needs))
+	for _, need := range needs {
+		have[need.Capability] = true
+	}
+	var added []string
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		capability, ok := semanticPetitionableCapabilities[name]
+		if !ok || have[capability] || agent.IsLightTurnToolAllowed(name) {
+			continue
+		}
+		have[capability] = true
+		added = append(added, string(capability))
+		base := tool.CapabilityNeed{
+			ID:          lookupCarryNeedIDPrefix + string(capability),
+			Capability:  capability,
+			Polarity:    tool.NeedRequire,
+			Required:    false,
+			Confidence:  confidence,
+			EvidenceIDs: []string{"intent:lookup_continuation_carry"},
+		}
+		// One family, several calls. The lookup iteration cap bounds the
+		// turn; a single invocation would refuse the second bash.
+		needs = append(needs, base)
+		needs = append(needs, tool.ExtendRepeatFamily(base, 1, lookupContinuationIterationBudget, confidence, base.EvidenceIDs)...)
+	}
+	return needs, added
+}
+
+// lookupCarryNeedIDPrefix sorts after need:lookup-continuation:, so a tight
+// selection budget fills web_fetch before the carried shell siblings.
+const lookupCarryNeedIDPrefix = "need:lookup-z-carry:"
+
+func withoutLookupCarryNeeds(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	if len(needs) == 0 {
+		return needs
+	}
+	kept := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if strings.HasPrefix(need.ID, lookupCarryNeedIDPrefix) {
+			continue
+		}
+		kept = append(kept, need)
+	}
+	return kept
+}
+
+func ensureLookupContinuationFetchNeed(needs []tool.CapabilityNeed, confidence float64) []tool.CapabilityNeed {
+	for _, need := range needs {
+		if need.Capability == tool.CapabilityInformationFetchWeb {
+			return needs
+		}
+	}
+	if confidence <= 0 {
+		confidence = 1
+	}
+	base := tool.CapabilityNeed{
+		ID:          "need:lookup-continuation:information.fetch.web",
+		Capability:  tool.CapabilityInformationFetchWeb,
+		Polarity:    tool.NeedRequire,
+		Required:    false,
+		Confidence:  confidence,
+		EvidenceIDs: []string{"intent:lookup_continuation"},
+	}
+	// The page-fetch rule allows several opens. One sibling would refuse the
+	// second page after the first fetch succeeds.
+	needs = append(needs, base)
+	return append(needs, tool.ExtendRepeatFamily(base, 1, 5, confidence, base.EvidenceIDs)...)
+}
+
 func semanticRoutingContext(loop *LoopContext) (context.Context, context.CancelFunc) {
 	if loop != nil {
 		ctx, cancel := loop.Context()
@@ -3750,6 +3978,14 @@ func semanticRoutingContext(loop *LoopContext) (context.Context, context.CancelF
 		}
 		if len(loop.semanticResidueRemaining) > 0 {
 			ctx = withSemanticResidueRemaining(ctx, loop.semanticResidueRemaining)
+		}
+		if lookupContinuationProfile(loop.Runtime.Execution) {
+			// A short lookup inside an open task is a new question. The
+			// previous wave's zero search/fetch ceiling must not close it.
+			ctx = withLookupContinuationOpenCeiling(ctx)
+			if loop.Runtime.SemanticIntent != nil && loop.Runtime.SemanticIntent.Primary == intent.LabelSearch {
+				ctx = withLookupContinuationFetch(ctx)
+			}
 		}
 		return ctx, cancel
 	}
@@ -3789,6 +4025,18 @@ func cloneSemanticMessageAttachments(in []MessageAttachment) []MessageAttachment
 	return out
 }
 
+// semanticFailureReplanPlanContext carries the published bundle and the stored
+// workspace ceiling into the planner. The ceiling key is set only when the
+// parent recorded it. A zero flag leaves classification in charge, so a
+// surface that never stored the bit does not grow read/write/shell siblings.
+func semanticFailureReplanPlanContext(requestCtx context.Context, input semanticReplanInput, bundleKey intent.IntentLabel) context.Context {
+	planCtx := withSemanticSlimOffice(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey), input.SlimOffice, input.ShortDocumentEdit)
+	if input.BaselineWorkspace {
+		planCtx = withSemanticForceBaselineWorkspace(planCtx)
+	}
+	return planCtx
+}
+
 // replanSemanticCallSurface is retained for direct callers that have no loop
 // lifetime. Production callbacks must use the context-bearing variant below:
 // a cancelled/replaced turn must not publish a new model-visible revision.
@@ -3823,7 +4071,7 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 	if strings.TrimSpace(string(bundleKey)) == "" {
 		bundleKey = semanticArchetypeBundleKey(input.Classification)
 	}
-	planCtx := withSemanticSlimOffice(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey), input.SlimOffice, input.ShortDocumentEdit)
+	planCtx := semanticFailureReplanPlanContext(requestCtx, input, bundleKey)
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachmentsWithSession(
 		planCtx, input.UserID, "", input.Channel, input.RootTaskID,
 		semanticReplanTurnID(surface.scope.TurnID, input.Attempts+1), surface.scope.SessionID, &input.Classification, cloneSemanticMessageAttachments(input.Attachments),
@@ -3845,7 +4093,7 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 		}
 	}
 	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
-		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: input.Classification, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts + 1, ConversationLookupReused: input.ConversationLookupReused, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: input.ShortDocumentEdit},
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: input.Classification, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts + 1, ConversationLookupReused: input.ConversationLookupReused, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: input.ShortDocumentEdit, BaselineWorkspace: input.BaselineWorkspace},
 		"replan", strings.TrimSpace(reasonCode))
 }
 
@@ -4043,6 +4291,29 @@ func semanticPetitionPreferredLabel(candidates []intent.IntentLabel) (intent.Int
 	return agentservice.PetitionPreferredLabel(candidates)
 }
 
+// semanticPetitionLabelRewritesBoundFileDelivery reports a petition whose
+// reviewed templates would mint a new document or a second file consumer.
+// Image and voice current-channel templates are a different delivery and
+// stay expandable. The caller uses this only when specified-target is
+// already live, so a delivery still waiting on its producer is unaffected.
+func semanticPetitionLabelRewritesBoundFileDelivery(label intent.IntentLabel) bool {
+	for _, template := range imSemanticIntentRuleSet[label] {
+		switch template.Capability {
+		case agentservice.CapabilityDocumentGenerate, tool.CapabilityDocumentWriteOffice:
+			return true
+		case agentservice.CapabilityArtifactDeliverCurrent:
+			format := ""
+			if template.Qualifiers != nil {
+				format = template.Qualifiers[agentservice.QualifierArtifactFormat]
+			}
+			if format == "" || format == agentservice.ArtifactFormatFile {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // semanticPetitionIsEffectful reports whether the petitioned name resolves to
 // an effectful rule label rather than a read-only one. The caller applies the
 // group-policy gate and the separate effectful budget to these; read-only
@@ -4094,7 +4365,21 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	if strings.TrimSpace(string(bundleKey)) == "" {
 		bundleKey = semanticArchetypeBundleKey(input.Classification)
 	}
-	planCtx := withSemanticPetitionedLabel(withSemanticSlimOffice(withSemanticPetitionBaseline(withSemanticPetitionExpansion(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)), semanticPlanHasBaseline(surface.plan)), input.SlimOffice, input.ShortDocumentEdit), label)
+	// One bit for the planner and the child replan input. The two sites used
+	// to repeat the expression, so a later edit could record a ceiling the
+	// planner did not apply.
+	keepBaseline := input.BaselineWorkspace || semanticPlanHasBaseline(surface.plan)
+	planCtx := withSemanticPetitionedLabel(withSemanticSlimOffice(withSemanticPetitionBaseline(withSemanticPetitionExpansion(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)), keepBaseline), input.SlimOffice, input.ShortDocumentEdit), label)
+	planCtx = withSemanticPetitionParentFamilies(planCtx, surface.plan)
+	// The light execution layer denies document.generate.file so a lookup
+	// cannot grow a PDF by itself. This petition already passed the host
+	// gate for a label whose template needs a full profile. Planning it
+	// under that deny records policy_denied, the validator rejects the
+	// child, and the effectful budget is spent on a plan that was never
+	// installed. The live profile stays light until that child is published.
+	if semanticLabelRequiresFullProfile(label) {
+		planCtx = withSemanticExecutionLayer(planCtx, string(executionLayerFull))
+	}
 	if input.ConversationLookupReused {
 		// The parent dropped its lookup legs on same-topic conversation
 		// evidence; this re-plan has no user text to re-derive that, so mirror
@@ -4124,7 +4409,7 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 		childShortEdit = true
 	}
 	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
-		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: childShortEdit},
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: childShortEdit, BaselineWorkspace: keepBaseline},
 		"petition", "petition_expand:"+strings.TrimSpace(string(label)))
 }
 

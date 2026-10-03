@@ -2,6 +2,7 @@ package workbuddy
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,11 +47,90 @@ func TestProfilesAndAllowlist(t *testing.T) {
 	}
 }
 
+func TestApplyHeadersSkipsStaticAPIKey(t *testing.T) {
+	staticKey := make(http.Header)
+	ApplyHeaders(staticKey, corelib.MaclawLLMConfig{
+		ProviderName: NameGlobal,
+		URL:          GlobalProfile().ChatURL,
+		Key:          "shared-key",
+	})
+	if staticKey.Get("X-Product") != "" || staticKey.Get("User-Agent") != "" || staticKey.Get("X-No-User-Id") != "" || staticKey.Get("X-No-Enterprise-Id") != "" || staticKey.Get("X-No-Department-Info") != "" {
+		t.Fatalf("static key gained account headers: %v", staticKey)
+	}
+
+	login := make(http.Header)
+	ApplyHeaders(login, corelib.MaclawLLMConfig{
+		ProviderName: NameGlobal,
+		URL:          GlobalProfile().ChatURL,
+		AuthType:     "oauth",
+	})
+	if login.Get("X-Product") != Product || login.Get("User-Agent") != UserAgent || login.Get("X-No-User-Id") != "1" || login.Get("X-No-Enterprise-Id") != "1" || login.Get("X-No-Department-Info") != "1" {
+		t.Fatalf("empty login headers = %v", login)
+	}
+}
+
 func TestPrepareBodySkipsRewriteWhenAlreadyCompatible(t *testing.T) {
 	original := []byte(`{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
 	got, stream, ok := PrepareBody(original)
 	if !ok || !stream || string(got) != string(original) {
 		t.Fatalf("rewrote compatible body: %s", got)
+	}
+}
+
+func TestPrepareBodyFlattensObjectToolChoice(t *testing.T) {
+	named, _, ok := PrepareBody([]byte(`{"model":"hy3","stream":true,"reasoning_effort":"high","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"lookup"}}}`))
+	if !ok {
+		t.Fatal("named prepare failed")
+	}
+	var namedObj map[string]any
+	if err := json.Unmarshal(named, &namedObj); err != nil {
+		t.Fatal(err)
+	}
+	if namedObj["tool_choice"] != "required" {
+		t.Fatalf("named tool_choice = %#v, want required", namedObj["tool_choice"])
+	}
+	flat, _, ok := PrepareBody([]byte(`{"model":"hy3","stream":true,"reasoning_effort":"high","messages":[{"role":"system","content":"s"}],"tool_choice":{"type":"function","name":"lookup"}}`))
+	if !ok {
+		t.Fatal("flat prepare failed")
+	}
+	var flatObj map[string]any
+	if err := json.Unmarshal(flat, &flatObj); err != nil {
+		t.Fatal(err)
+	}
+	if flatObj["tool_choice"] != "required" {
+		t.Fatalf("flat tool_choice = %#v, want required", flatObj["tool_choice"])
+	}
+	other, _, ok := PrepareBody([]byte(`{"model":"hy3","stream":true,"reasoning_effort":"high","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}],"tool_choice":{"type":"auto"}}`))
+	if !ok {
+		t.Fatal("typeless prepare failed")
+	}
+	var otherObj map[string]any
+	if err := json.Unmarshal(other, &otherObj); err != nil {
+		t.Fatal(err)
+	}
+	if otherObj["tool_choice"] != "auto" {
+		t.Fatalf("unnamed tool_choice = %#v, want auto", otherObj["tool_choice"])
+	}
+	noneChoice, _, ok := PrepareBody([]byte(`{"model":"hy3","stream":true,"reasoning_effort":"high","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}],"tool_choice":{"type":"none"}}`))
+	if !ok {
+		t.Fatal("none prepare failed")
+	}
+	var noneObj map[string]any
+	if err := json.Unmarshal(noneChoice, &noneObj); err != nil {
+		t.Fatal(err)
+	}
+	if noneObj["tool_choice"] != "none" {
+		t.Fatalf("none tool_choice = %#v, want none", noneObj["tool_choice"])
+	}
+	kept := []byte(`{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}],"tool_choice":"auto"}`)
+	got, _, ok := PrepareBody(kept)
+	if !ok || string(got) != string(kept) {
+		t.Fatalf("string tool_choice was rewritten: %s", got)
+	}
+	keptObject := []byte(`{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"lookup"}}}`)
+	got, _, ok = PrepareBody(keptObject)
+	if !ok || string(got) != string(keptObject) {
+		t.Fatalf("non-hy3 object tool_choice was rewritten: %s", got)
 	}
 }
 

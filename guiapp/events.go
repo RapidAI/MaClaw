@@ -23,6 +23,10 @@ const (
 	// Payload: {url: string}.
 	EventCloudWorkspaceSharePassword = "cloud-workspace-share:password"
 
+	// EventTokenBankCredit opens Token Bank with a gift code to claim.
+	// Payload: {code: string}.
+	EventTokenBankCredit = "token-bank-credit"
+
 	// EventShowConfirm asks the desktop UI to present a CustomDialog confirm.
 	// Payload: {id, title, message, confirmText?, cancelText?, confirmVariant?}.
 	// The frontend resolves it with App.ResolveFrontendConfirm.

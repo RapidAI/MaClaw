@@ -360,6 +360,9 @@ func (s *BlobStore) put(ctx context.Context, tenantID, userID, workspaceID strin
 	if err != nil {
 		return PutResult{}, err
 	}
+	// The ciphertext is a copy. Drop the compressed buffer before the disk
+	// write so it is not held next to the plaintext and the sealed bytes.
+	stored = nil
 	if avail, err := archiveutil.AvailableBytes(dir); err == nil && avail < int64(len(sealed))+4096 {
 		return PutResult{}, ErrDiskFull
 	}
@@ -411,22 +414,12 @@ func (s *BlobStore) Get(ctx context.Context, tenantID, userID, workspaceID, sha2
 	if err != nil {
 		return nil, err
 	}
-	// The encrypted file is not itself the source of truth.  Require a
-	// committed, ready metadata row before exposing bytes; otherwise an orphan
-	// left by a crash between file fsync and metadata finalize could be read by
-	// a client even though it can never be referenced by a manifest.
-	if s.DB != nil {
-		var state string
-		err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(object_state, 'ready') FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex).Scan(&state)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrBlobNotFound
-		}
-		if err != nil {
-			return nil, err
-		}
-		if state != "" && !strings.EqualFold(strings.TrimSpace(state), "ready") {
-			return nil, ErrBlobNotFound
-		}
+	// The encrypted file is not itself the source of truth. One ready-row read
+	// supplies the codec before any disk I/O, so an orphan left between file
+	// fsync and metadata finalize is never decrypted.
+	meta, err := s.loadReadyObjectMeta(ctx, workspaceID, sha256hex)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := s.statObject(path); err != nil {
 		return nil, err
@@ -438,19 +431,94 @@ func (s *BlobStore) Get(ctx context.Context, tenantID, userID, workspaceID, sha2
 		}
 		return nil, err
 	}
+	// statObject ran before the read. A replace between the two can make the
+	// bytes larger than the ciphertext cap; reject them before decrypt.
+	if int64(len(blob)) > s.maxCiphertextBytes() {
+		return nil, ErrBlobTooLarge
+	}
 	stored, _, err := openWorkspace(ctx, s.keyProvider(), tenantID, userID, workspaceID, objectAAD(tenantID, userID, workspaceID), blob)
 	if err != nil {
 		return nil, err
 	}
-	compression, plainSize := s.objectCompression(ctx, workspaceID, sha256hex, int64(len(stored)))
-	plain, err := decompressObject(stored, compression, plainSize)
+	// openWorkspace copies the plaintext out. Drop the ciphertext before
+	// decompress and hashing so both buffers are not live together.
+	sealedSize := int64(len(blob))
+	blob = nil
+	plainSize := meta.plainSize
+	if plainSize <= 0 {
+		plainSize = int64(len(stored))
+	}
+	plain, err := decompressObject(stored, meta.compression, plainSize)
 	if err != nil {
 		return nil, err
 	}
 	if plaintextSHA256(plain) != sha256hex {
+		// Older puts compressed with zstd and stored the plaintext length in
+		// size_bytes, but left compression=none and plain_size_bytes=0. The
+		// declared codec therefore returns those compressed bytes. Accept the
+		// object only when zstd expansion to size_bytes matches the content
+		// hash. Uncompressed bytes that merely start with the zstd magic still
+		// win above, because that hash already matched.
+		recovered, ok := s.recoverUnlabeledZstd(stored, meta.compression, meta.recordedSize)
+		if ok && plaintextSHA256(recovered) == sha256hex {
+			// The heal waits on the single write connection. plain aliases the
+			// compressed frame when the row said it was uncompressed.
+			plain = nil
+			stored = nil
+			s.noteLegacyZstd(ctx, workspaceID, sha256hex, int64(len(recovered)), sealedSize)
+			return recovered, nil
+		}
 		return nil, ErrBlobCorrupt
 	}
 	return plain, nil
+}
+
+// recoverUnlabeledZstd inflates a decrypted payload that still carries a zstd
+// frame while the row says it is uncompressed. recordedSize is size_bytes from
+// the same metadata read. Decompression and the caller's content hash decide
+// acceptance; a frame whose compressed length equals the recorded plaintext
+// length is still eligible.
+func (s *BlobStore) recoverUnlabeledZstd(stored []byte, declared string, recordedSize int64) ([]byte, bool) {
+	if s == nil || strings.EqualFold(strings.TrimSpace(declared), "zstd") || !hasZstdMagic(stored) {
+		return nil, false
+	}
+	if recordedSize <= 0 || recordedSize > s.maxObjectBytes() {
+		return nil, false
+	}
+	plain, err := decompressObject(stored, "zstd", recordedSize)
+	if err != nil {
+		return nil, false
+	}
+	return plain, true
+}
+
+// legacyZstdHealTimeout bounds the metadata repair. BlobStore.DB is Hub's
+// single write connection, and busy_timeout would otherwise hold this
+// download behind an unrelated writer. A timed-out repair leaves the row
+// unchanged; the next read tries again.
+const legacyZstdHealTimeout = 500 * time.Millisecond
+
+// noteLegacyZstd records a successful unlabeled-zstd recovery so the next read
+// uses the declared codec. Failure leaves the row unchanged and does not fail
+// the read that already verified the content hash.
+func (s *BlobStore) noteLegacyZstd(ctx context.Context, workspaceID, sha256hex string, plainSize, storedSize int64) {
+	if s == nil || s.DB == nil || plainSize <= 0 || storedSize <= 0 {
+		return
+	}
+	healCtx, cancel := context.WithTimeout(ctx, legacyZstdHealTimeout)
+	defer cancel()
+	// Always replace both sizes with the lengths just verified. Keeping a
+	// stale positive plain_size and then marking the row zstd makes the next
+	// read decompress to the wrong length and fail closed.
+	_, _ = s.DB.ExecContext(healCtx, `
+		UPDATE cloud_workspace_objects
+		   SET compression = 'zstd',
+		       plain_size_bytes = ?,
+		       stored_size_bytes = ?
+		 WHERE workspace_id = ? AND sha256 = ?
+		   AND COALESCE(object_state, 'ready') = 'ready'
+		   AND lower(COALESCE(compression, '')) <> 'zstd'`,
+		plainSize, storedSize, workspaceID, sha256hex)
 }
 
 // Has reports whether the encrypted object file exists.
@@ -582,19 +650,48 @@ func (s *BlobStore) finalizeObjectMeta(ctx context.Context, workspaceID, sha256h
 	})
 }
 
-func (s *BlobStore) objectCompression(ctx context.Context, workspaceID, sha string, fallback int64) (string, int64) {
+type readyObjectMeta struct {
+	compression  string
+	plainSize    int64
+	recordedSize int64
+}
+
+// loadReadyObjectMeta reads the codec and the ready-state gate in one query.
+// plainSize is plain_size_bytes, or size_bytes when that column was never
+// filled. recordedSize stays the raw size_bytes value so unlabeled zstd can
+// expand to the historical plaintext length. A nil DB returns an uncompressed
+// codec and leaves the length for the caller to take from the decrypted bytes.
+func (s *BlobStore) loadReadyObjectMeta(ctx context.Context, workspaceID, sha string) (readyObjectMeta, error) {
 	if s == nil || s.DB == nil {
-		return "none", fallback
+		return readyObjectMeta{compression: "none"}, nil
 	}
-	var compression string
-	var plainSize int64
-	if err := s.DB.QueryRowContext(ctx, `SELECT compression, plain_size_bytes FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha).Scan(&compression, &plainSize); err != nil {
-		return "none", fallback
+	var compression, state string
+	var plainSize, recordedSize int64
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT COALESCE(compression, 'none'),
+		       COALESCE(plain_size_bytes, 0),
+		       COALESCE(size_bytes, 0),
+		       COALESCE(object_state, 'ready')
+		  FROM cloud_workspace_objects
+		 WHERE workspace_id = ? AND sha256 = ?`,
+		workspaceID, sha).Scan(&compression, &plainSize, &recordedSize, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return readyObjectMeta{}, ErrBlobNotFound
+	}
+	if err != nil {
+		return readyObjectMeta{}, err
+	}
+	if strings.TrimSpace(state) != "" && !strings.EqualFold(strings.TrimSpace(state), "ready") {
+		return readyObjectMeta{}, ErrBlobNotFound
+	}
+	compression = strings.ToLower(strings.TrimSpace(compression))
+	if compression == "" {
+		compression = "none"
 	}
 	if plainSize <= 0 {
-		plainSize = fallback
+		plainSize = recordedSize
 	}
-	return compression, plainSize
+	return readyObjectMeta{compression: compression, plainSize: plainSize, recordedSize: recordedSize}, nil
 }
 
 // PartDir is {objects}/{sha256}.part for plaintext chunk staging.
@@ -744,8 +841,9 @@ func (s *BlobStore) AssembleChunks(tenantID, userID, workspaceID, sha256hex stri
 		parts[i] = raw
 	}
 	out := make([]byte, 0, total)
-	for _, p := range parts {
+	for i, p := range parts {
 		out = append(out, p...)
+		parts[i] = nil
 	}
 	if plaintextSHA256(out) != sha256hex {
 		_ = os.RemoveAll(dir)

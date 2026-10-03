@@ -2641,6 +2641,15 @@ func requireResolvableSymlink(t *testing.T, target, link string) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks are unavailable on this test host: %v", err)
 	}
+	// Some filesystem layers (sandboxed or virtualized volumes on Windows)
+	// silently materialize os.Symlink as a plain copy (file target) or an
+	// empty directory (directory target) instead of a reparse point. Those
+	// degraded stand-ins pass EvalSymlinks with no error, so they must be
+	// caught by the mode check below: the tests only mean anything when a
+	// real symlink exists for the cleanup code to refuse to follow.
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Skipf("symlinks are unavailable on this test host: os.Symlink did not produce a symlink (lstat err=%v)", err)
+	}
 	if _, err := filepath.EvalSymlinks(link); err != nil {
 		t.Skipf("symlink is not resolvable on this test host: %v", err)
 	}

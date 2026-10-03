@@ -1,8 +1,9 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateTaskUnified, RenameCloudWorkspace } from '../../../../../wailsjs/go/main/App';
+import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
-import { defaultTaskDraft, withCloudWorkspace } from '../taskDraft';
+import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace } from '../taskDraft';
+import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
 
 const selectWorkingDirMock = vi.fn();
@@ -10,10 +11,13 @@ vi.mock('../../../../../wailsjs/go/main/App', () => ({
     ListExperts: vi.fn().mockResolvedValue('[]'),
     ListManagedIndustryExperts: vi.fn().mockResolvedValue(''),
     ListWorkflowTemplateSummaries: vi.fn().mockResolvedValue([]),
+    ListLatexTemplates: vi.fn().mockResolvedValue('{"categories":[],"templates":[]}'),
     CloudWorkspaceEntitlement: vi.fn().mockResolvedValue({ workspaces: [] }),
     CreateCloudWorkspace: vi.fn(),
     RenameCloudWorkspace: vi.fn(),
     CreateTaskUnified: vi.fn(),
+    CreateLatexDocument: vi.fn(),
+    SetTabWorkingDir: vi.fn(),
     EnsureCodingWorkbenchArmed: vi.fn().mockResolvedValue(undefined),
     SelectWorkingDir: (...args: unknown[]) => selectWorkingDirMock(...args),
 }));
@@ -199,6 +203,99 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
         });
         expect(activateTab).toHaveBeenCalledWith('tab-1');
         expect(clearComposerDraft).not.toHaveBeenCalled();
+    });
+
+    it('prefills the new-task draft from a LaTeX template or a workflow', async () => {
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({ localGuideVisible: true })));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD, {
+                detail: {
+                    expertId: LATEX_EXPERT_ID,
+                    expertName: 'LaTeX 论文专家',
+                    latexTemplateId: 'tpl-ieee',
+                    latexTemplateName: 'IEEE',
+                },
+            }));
+        });
+        await waitFor(() => {
+            expect(result.current.taskConfig.draft.expertId).toBe(LATEX_EXPERT_ID);
+        });
+        expect(result.current.taskConfig.draft.latexTemplateId).toBe('tpl-ieee');
+        expect(result.current.taskConfig.draft.latexTemplateName).toBe('IEEE');
+        expect(result.current.taskConfig.draft.workflowTemplateId).toBeNull();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD, {
+                detail: { workflowTemplateId: 'coding' },
+            }));
+        });
+        await waitFor(() => {
+            expect(result.current.taskConfig.draft.workflowTemplateId).toBe('coding');
+        });
+        expect(result.current.taskConfig.draft.expertId).toBeNull();
+    });
+
+    it('loads LaTeX templates again after the first catalogue read fails', async () => {
+        let fail = true;
+        vi.mocked(ListLatexTemplates).mockImplementation(async () => {
+            if (fail) throw new Error('busy');
+            return JSON.stringify({ categories: [], templates: [{ id: 'tpl-ieee', name: 'IEEE' }] });
+        });
+        try {
+            const { result } = renderHook(() => useTaskConfigWiring(makeOptions({ localGuideVisible: true })));
+            act(() => {
+                result.current.taskConfig.onDraftChange(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'));
+            });
+            await waitFor(() => {
+                expect(vi.mocked(ListLatexTemplates).mock.calls.length).toBeGreaterThan(0);
+            });
+            fail = false;
+            act(() => {
+                result.current.taskConfig.onPrepareLatexTemplates?.();
+            });
+            await waitFor(() => {
+                expect(result.current.taskConfig.latexTemplates?.some((template) => template.id === 'tpl-ieee')).toBe(true);
+            });
+        } finally {
+            vi.mocked(ListLatexTemplates).mockReset();
+            vi.mocked(ListLatexTemplates).mockResolvedValue('{"categories":[],"templates":[]}');
+        }
+    });
+
+    it('points the LaTeX expert at the folder the document was written into', async () => {
+        vi.mocked(CreateTaskUnified).mockResolvedValue({ projectPath: 'D:/tasks/expert' } as never);
+        vi.mocked(CreateLatexDocument).mockResolvedValue(JSON.stringify({
+            project_path: 'D:/tasks/expert',
+            relative_path: 'main.tex',
+            main_file: 'main.tex',
+            template_id: 'blank',
+            workspace_path: 'F:/latex-test',
+            created: false,
+        }));
+        vi.mocked(SetTabWorkingDir).mockResolvedValue(undefined as never);
+        try {
+            const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+                inputValue: '改一下摘要',
+                localGuideVisible: true,
+            })));
+            act(() => {
+                result.current.taskConfig.onDraftChange(withLocalWorkspace(
+                    withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'),
+                    'F:/latex-test',
+                ));
+            });
+            act(() => {
+                result.current.handleSendWithTaskConfig();
+            });
+            await waitFor(() => {
+                expect(SetTabWorkingDir).toHaveBeenCalledWith('expert-builtin-latex-paper', 'F:/latex-test');
+            });
+        } finally {
+            vi.mocked(CreateTaskUnified).mockReset();
+            vi.mocked(CreateLatexDocument).mockReset();
+            vi.mocked(SetTabWorkingDir).mockReset();
+        }
     });
 
     it('marks the clean local tab as a wizard page when the sidebar button is clicked', async () => {

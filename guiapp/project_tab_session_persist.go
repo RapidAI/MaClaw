@@ -207,6 +207,45 @@ func (p *ProjectTabSessionPersist) LoadSession(tabID string) (*TabSessionData, e
 	return &session, nil
 }
 
+func parseSessionLastActiveAt(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil && !parsed.IsZero() {
+		return parsed, true
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil && !parsed.IsZero() {
+		return parsed, true
+	}
+	return time.Time{}, false
+}
+
+// sessionOutranksLatest decides which snapshot is the paper's transcript.
+// A later activity time wins. When two files share a second-precision stamp,
+// an explicit clear wins over leftover text, and otherwise the fuller copy wins
+// so an unflushed tail is not hidden by the shorter snapshot.
+func sessionOutranksLatest(session, latest *TabSessionData, activeAt, latestAt time.Time, hasTimestamp, latestHasTimestamp bool) bool {
+	if latest == nil {
+		return true
+	}
+	if hasTimestamp != latestHasTimestamp {
+		return hasTimestamp
+	}
+	if activeAt.After(latestAt) {
+		return true
+	}
+	if !hasTimestamp || !activeAt.Equal(latestAt) {
+		return false
+	}
+	sessionCleared := session.ConversationClearedAt > 0 && len(session.Conversation) == 0
+	latestCleared := latest.ConversationClearedAt > 0 && len(latest.Conversation) == 0
+	if sessionCleared != latestCleared {
+		return sessionCleared
+	}
+	return len(session.Conversation) > len(latest.Conversation)
+}
+
 // LoadLatestSessionForProject returns the most recently active persisted tab
 // session for projectPath. A task can be opened from the history list after its
 // tab was closed, so archived index entries remain eligible: closing a tab is
@@ -251,8 +290,7 @@ func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath strin
 		if session.TabID == "" {
 			session.TabID = strings.TrimSuffix(entry.Name(), ".json")
 		}
-		activeAt, parseErr := time.Parse(time.RFC3339, session.LastActiveAt)
-		hasTimestamp := parseErr == nil && !activeAt.IsZero()
+		activeAt, hasTimestamp := parseSessionLastActiveAt(session.LastActiveAt)
 		if !hasTimestamp {
 			if info, infoErr := entry.Info(); infoErr == nil {
 				activeAt = info.ModTime()
@@ -261,9 +299,7 @@ func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath strin
 		// A real saved LastActiveAt is stronger than filesystem metadata. The
 		// latter is only a legacy fallback and can be newer after a copied or
 		// repaired session file, despite containing older conversation content.
-		if latest == nil ||
-			(hasTimestamp && !latestHasTimestamp) ||
-			(hasTimestamp == latestHasTimestamp && activeAt.After(latestAt)) {
+		if sessionOutranksLatest(&session, latest, activeAt, latestAt, hasTimestamp, latestHasTimestamp) {
 			copy := session
 			latest = &copy
 			latestAt = activeAt
@@ -312,9 +348,9 @@ func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath 
 		if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
 			continue
 		}
-		session.Conversation = []interface{}{}
-		session.ConversationClearedAt = time.Now().UnixMilli()
-		session.LastActiveAt = time.Now().UTC().Format(time.RFC3339)
+	session.Conversation = []interface{}{}
+	session.ConversationClearedAt = time.Now().UnixMilli()
+	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
 		encoded, marshalErr := json.MarshalIndent(&session, "", "  ")
 		if marshalErr != nil {
 			errs = append(errs, fmt.Errorf("marshal session %s: %w", entry.Name(), marshalErr))
@@ -357,9 +393,9 @@ func (p *ProjectTabSessionPersist) ClearSessionConversation(tabID string) error 
 		return fmt.Errorf("decode session %s: %w", tabID, err)
 	}
 	session.Conversation = []interface{}{}
-	session.ConversationClearedAt = time.Now().UnixMilli()
-	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339)
-	encoded, err := json.MarshalIndent(&session, "", "  ")
+		session.ConversationClearedAt = time.Now().UnixMilli()
+		session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
+		encoded, err := json.MarshalIndent(&session, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal session %s: %w", tabID, err)
 	}
@@ -383,8 +419,8 @@ func (p *ProjectTabSessionPersist) SaveSession(session *TabSessionData) error {
 		return err
 	}
 
-	// Update last_active_at timestamp.
-	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339)
+	// Nanoseconds so two writes in the same wall-clock second stay ordered.
+	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
 
 	data, err := json.MarshalIndent(session, "", "  ")
 	if err != nil {

@@ -18,6 +18,15 @@ vi.mock('../../wailsjs/go/main/App', () => ({
     ResolveFrontendConfirm: resolveFrontendConfirmMock,
 }));
 
+function QuotedSubjectLauncher({ message, label, title = '删除任务' }: { message: string; label: string; title?: string }) {
+    const { showConfirm } = useDialog();
+    return (
+        <button onClick={() => { void showConfirm(message, title, { confirmText: '删除', cancelText: '取消', confirmVariant: 'danger' }); }}>
+            {label}
+        </button>
+    );
+}
+
 function ConfirmLauncher({ onResult }: { onResult?: (confirmed: boolean) => void }) {
     const { showConfirm } = useDialog();
     return (
@@ -244,6 +253,54 @@ describe('CustomDialog', () => {
         eventsOnMock.mockImplementation(() => vi.fn());
         resolveFrontendConfirmMock.mockReset();
         resolveFrontendConfirmMock.mockResolvedValue(undefined);
+    });
+
+    it('justifies a Han task name without letter-spacing the embedded URL', async () => {
+        render(
+            <DialogProvider>
+                <QuotedSubjectLauncher
+                    label="open-han"
+                    message="确定从列表删除任务「分析仓库 github.com/TencentCloud/Octopus」？此操作不可撤销。"
+                />
+            </DialogProvider>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'open-han' }));
+        const name = await screen.findByText('分析仓库 github.com/TencentCloud/Octopus');
+        expect(name.className).toContain('custom-dialog__subject-name');
+        expect(name.hasAttribute('lang')).toBe(false);
+    });
+
+    it('labels a share take-out with the provider name', async () => {
+        render(
+            <DialogProvider>
+                <QuotedSubjectLauncher
+                    label="open-share"
+                    title="取出分享"
+                    message={'确定从银行取出分享「智谱编程」？\n其模型不再可被调用。此操作不可撤销。'}
+                />
+            </DialogProvider>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'open-share' }));
+        expect((await screen.findByText('确定从银行取出分享？')).className).toContain('custom-dialog__lead--ask');
+        expect(screen.getByText('智谱编程').className).toContain('custom-dialog__subject-name');
+        expect(screen.getByText('其模型不再可被调用。').className).toContain('custom-dialog__follow');
+        expect(screen.getByText('此操作不可撤销').className).toContain('custom-dialog__notice');
+        expect(document.querySelector('.custom-dialog__subject-kicker')).toBeNull();
+    });
+
+    it('leaves an English task name on the document language', async () => {
+        render(
+            <DialogProvider>
+                <QuotedSubjectLauncher
+                    label="open-en"
+                    message='Are you sure you want to delete Skill "release-notes"? This cannot be undone.'
+                />
+            </DialogProvider>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'open-en' }));
+        const name = await screen.findByText('release-notes');
+        expect(name.className).toContain('custom-dialog__subject-name');
+        expect(name.hasAttribute('lang')).toBe(false);
     });
 
     it('renders destructive confirmations with the danger button style', async () => {

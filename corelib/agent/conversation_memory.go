@@ -64,6 +64,14 @@ type ConversationEntry struct {
 	ID           string `json:"_id,omitempty"`
 	ParentID     string `json:"_parent_id,omitempty"`
 	Timestamp    int64  `json:"_ts,omitempty"`
+	// CompactionID marks a context-checkpoint separator. An async summary
+	// replaces that entry in place and does not rewrite newer messages.
+	CompactionID string `json:"compaction_id,omitempty"`
+	// CompactionSource is bounded material for the async summarizer. Cleared
+	// once the summary is written. ToMessage omits it, so it is not sent to the LLM.
+	CompactionSource string `json:"compaction_source,omitempty"`
+	// CompactionFiles is the cumulative read/modified list carried on the checkpoint.
+	CompactionFiles string `json:"compaction_files,omitempty"`
 }
 
 // ResolveAssistantFinishReason returns the LLM finish reason for trajectory/history
@@ -168,19 +176,21 @@ type ConversationArchiver interface {
 // --- Internal types ---
 
 type conversationSession struct {
-	entries             []ConversationEntry
-	activeBranchTipID   string
-	lastAccess          time.Time
-	unfinishedSlot      *UnfinishedTaskSlot
-	activeSlotID        string
-	inFlightTask        string // non-empty while an agent loop is executing; cleared on normal exit
-	inFlightProjectPath string // project path when the in-flight task was set
-	inFlightSetAt       time.Time
-	inFlightRunID       string
-	inFlightSequence    uint64
-	inFlightLastTool    string
-	inFlightSideEffect  string
-	semanticResidue     *SemanticSessionResidue
+	entries              []ConversationEntry
+	activeBranchTipID    string
+	lastAccess           time.Time
+	unfinishedSlot       *UnfinishedTaskSlot
+	activeSlotID         string
+	inFlightTask         string // non-empty while an agent loop is executing; cleared on normal exit
+	inFlightProjectPath  string // project path when the in-flight task was set
+	inFlightSetAt        time.Time
+	inFlightRunID        string
+	inFlightSequence     uint64
+	inFlightLastTool     string
+	inFlightSideEffect   string
+	semanticResidue      *SemanticSessionResidue
+	parentExecutionTools []string
+	parentExecutionKnown bool
 }
 
 type persistedSession struct {
@@ -197,6 +207,12 @@ type persistedSession struct {
 	InFlightLastTool       string                  `json:"in_flight_last_tool,omitempty"`
 	InFlightSideEffect     string                  `json:"in_flight_side_effect,omitempty"`
 	SemanticSessionResidue *SemanticSessionResidue `json:"semantic_session_residue,omitempty"`
+	// ParentExecutionTools are non-light tool names from the previous full
+	// turn. They are not grants and carry no arguments.
+	// ParentExecutionKnown distinguishes "cleared" from "never recorded"
+	// so a restart does not rebuild a carry the last turn dropped.
+	ParentExecutionTools []string `json:"parent_execution_tools,omitempty"`
+	ParentExecutionKnown bool     `json:"parent_execution_known,omitempty"`
 }
 
 // InFlightCheckpoint is evidence for a durable conversation checkpoint. It
@@ -525,10 +541,87 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 			s = &conversationSession{}
 			sh.sessions[userID] = s
 		}
+		if s != nil {
+			entries = adoptCompletedCompactionSummaries(s.entries, entries)
+		}
 		cm.saveEntriesLocked(s, entries, now)
 		sh.mu.Unlock()
 		cm.markDirtyAndScheduleFlush()
 	})
+}
+
+// ReplaceCompactionPlaceholder writes an async checkpoint summary onto the
+// separator entry with compactionID. An empty content clears the pending
+// source and leaves the placeholder text. Entries whose source is already
+// cleared are left alone. Newer messages are not rewritten.
+func (cm *ConversationMemory) ReplaceCompactionPlaceholder(userID, compactionID, content string) bool {
+	if cm == nil || strings.TrimSpace(compactionID) == "" {
+		return false
+	}
+	updated := false
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			sh.mu.Unlock()
+			return
+		}
+		for i := range s.entries {
+			if s.entries[i].CompactionID != compactionID {
+				continue
+			}
+			if strings.TrimSpace(s.entries[i].CompactionSource) == "" {
+				continue
+			}
+			if strings.TrimSpace(content) != "" {
+				s.entries[i].Content = content
+			}
+			s.entries[i].CompactionSource = ""
+			updated = true
+		}
+		if updated {
+			s.lastAccess = time.Now()
+		}
+		sh.mu.Unlock()
+		if updated {
+			cm.markDirtyAndScheduleFlush()
+		}
+	})
+	return updated
+}
+
+// adoptCompletedCompactionSummaries copies a finished checkpoint back onto a
+// stale snapshot that still carries the placeholder source. Save then keeps
+// the summary even if the caller loaded history before the async write landed.
+func adoptCompletedCompactionSummaries(stored, incoming []ConversationEntry) []ConversationEntry {
+	if len(stored) == 0 || len(incoming) == 0 {
+		return incoming
+	}
+	completed := make(map[string]ConversationEntry)
+	for _, entry := range stored {
+		if entry.CompactionID == "" || strings.TrimSpace(entry.CompactionSource) != "" {
+			continue
+		}
+		completed[entry.CompactionID] = entry
+	}
+	if len(completed) == 0 {
+		return incoming
+	}
+	out := append([]ConversationEntry(nil), incoming...)
+	for i := range out {
+		if out[i].CompactionID == "" || strings.TrimSpace(out[i].CompactionSource) == "" {
+			continue
+		}
+		done, ok := completed[out[i].CompactionID]
+		if !ok {
+			continue
+		}
+		out[i].Content = done.Content
+		out[i].CompactionSource = ""
+		out[i].CompactionFiles = done.CompactionFiles
+	}
+	return out
 }
 
 // saveEntriesLocked is Save's branch-preserving mutation. The caller must
@@ -1713,6 +1806,8 @@ func (cm *ConversationMemory) saveToDisk() error {
 				InFlightLastTool:       session.inFlightLastTool,
 				InFlightSideEffect:     session.inFlightSideEffect,
 				SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),
+				ParentExecutionTools:   cloneParentExecutionTools(session.parentExecutionTools),
+				ParentExecutionKnown:   session.parentExecutionKnown,
 			}
 		}
 		sh.mu.RUnlock()
@@ -1801,19 +1896,21 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		sh := cm.shard(userID)
 		sh.mu.Lock()
 		sh.sessions[userID] = &conversationSession{
-			entries:             entries,
-			activeBranchTipID:   session.ActiveBranchTipID,
-			lastAccess:          session.LastAccess,
-			unfinishedSlot:      CloneUnfinishedTaskSlot(session.UnfinishedSlot),
-			activeSlotID:        session.ActiveSlotID,
-			inFlightTask:        session.InFlightTask,
-			inFlightProjectPath: session.InFlightProjectPath,
-			inFlightSetAt:       inFlightSetAt,
-			inFlightRunID:       session.InFlightRunID,
-			inFlightSequence:    session.InFlightSequence,
-			inFlightLastTool:    session.InFlightLastTool,
-			inFlightSideEffect:  session.InFlightSideEffect,
-			semanticResidue:     clonePersistedSemanticResidue(session.SemanticSessionResidue),
+			entries:              entries,
+			activeBranchTipID:    session.ActiveBranchTipID,
+			lastAccess:           session.LastAccess,
+			unfinishedSlot:       CloneUnfinishedTaskSlot(session.UnfinishedSlot),
+			activeSlotID:         session.ActiveSlotID,
+			inFlightTask:         session.InFlightTask,
+			inFlightProjectPath:  session.InFlightProjectPath,
+			inFlightSetAt:        inFlightSetAt,
+			inFlightRunID:        session.InFlightRunID,
+			inFlightSequence:     session.InFlightSequence,
+			inFlightLastTool:     session.InFlightLastTool,
+			inFlightSideEffect:   session.InFlightSideEffect,
+			semanticResidue:      clonePersistedSemanticResidue(session.SemanticSessionResidue),
+			parentExecutionTools: cloneParentExecutionTools(session.ParentExecutionTools),
+			parentExecutionKnown: session.ParentExecutionKnown,
 		}
 		sh.mu.Unlock()
 	}

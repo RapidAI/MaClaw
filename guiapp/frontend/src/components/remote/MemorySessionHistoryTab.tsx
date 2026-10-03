@@ -251,7 +251,7 @@ function fmtDate(s: string, lang: string): string {
     try { return new Date(s).toLocaleString(locale); } catch { return s; }
 }
 
-const inputStyle: CSSProperties = { width: "100%", padding: "6px 10px", fontSize: "0.78rem", border: `1px solid ${colors.border}`, borderRadius: radius.sm, background: colors.surface, color: colors.text, boxSizing: "border-box" };
+const inputStyle: CSSProperties = { width: "100%", padding: "6px 10px", fontSize: "0.78rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, color: colors.text, boxSizing: "border-box" };
 const neutralBtnStyle: CSSProperties = { padding: "6px 10px", fontSize: "0.72rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer", color: colors.textSecondary, whiteSpace: "nowrap" };
 const primaryBtnStyle: CSSProperties = { ...neutralBtnStyle, padding: "6px 14px", fontWeight: 600, border: `1px solid ${colors.primary}`, background: colors.primaryLight, color: colors.primaryDark };
 const dangerBtnStyle: CSSProperties = { ...neutralBtnStyle, fontWeight: 600, border: `1px solid ${colors.danger}`, background: colors.dangerBg, color: colors.danger };

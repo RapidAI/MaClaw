@@ -7,7 +7,7 @@ import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
 import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { dispatchOpenLatexDocument } from "./latexDocumentOpen";
 import { isLatexExpertId } from "../../utils/latexTemplates";
-import { StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
+import { AbandonUnopenedFreshLatexTask, StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
@@ -26,6 +26,12 @@ export interface PendingExpertOpen {
      * reopen that file instead of creating a second blank main.tex beside it.
      */
     latexDocument?: { relativePath?: string };
+    /**
+     * Directory of a LaTeX paper created for this launch. Present only when
+     * the wizard already cleared the shared transcript. If the tab never
+     * opens, that paper is abandoned.
+     */
+    projectPath?: string;
 }
 
 /** Task directory created for an expert. LaTeX experts also name the source file. */
@@ -189,6 +195,13 @@ interface PendingAssistantTabOpenOptions {
     beforeUserProjectOpen?: (projectPath: string, cloudWorkspaceId?: string) => void;
     /** User is about to open or focus an expert task. */
     beforeUserExpertOpen?: (expertId: string) => void;
+    /**
+     * LaTeX wizard launch: archive the previous paper's transcript and clear
+     * the shared expert conversation before the new first message is sent.
+     */
+    resetExpertConversation?: (expertId: string, previousProjectPath?: string) => Promise<void> | void;
+    /** Apply the floor recorded by resetExpertConversation once the tab exists. */
+    markExpertSessionFloor?: (expertId: string) => void;
 }
 
 export function usePendingAssistantTabOpen({
@@ -216,6 +229,8 @@ export function usePendingAssistantTabOpen({
     onEnsureAssistantTabTask,
     beforeUserProjectOpen,
     beforeUserExpertOpen,
+    resetExpertConversation,
+    markExpertSessionFloor,
 }: PendingAssistantTabOpenOptions) {
     const openHistoryDiscussion = useCallback(async (discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
@@ -563,6 +578,10 @@ export function usePendingAssistantTabOpen({
     beforeUserExpertOpenRef.current = beforeUserExpertOpen;
     const sendExpertMessageRef = useRef(sendExpertMessage);
     sendExpertMessageRef.current = sendExpertMessage;
+    const resetExpertConversationRef = useRef(resetExpertConversation);
+    resetExpertConversationRef.current = resetExpertConversation;
+    const markExpertSessionFloorRef = useRef(markExpertSessionFloor);
+    markExpertSessionFloorRef.current = markExpertSessionFloor;
     /** Reject a stale async registration when a newer expert launch wins. */
     const expertOpenRequestRef = useRef(0);
     const expertLangRef = useRef(lang);
@@ -663,6 +682,9 @@ export function usePendingAssistantTabOpen({
             // as the same invocation, so the arity must stay honest.
             const tab = expertTask ? create(expert, expertTask) : create(expert);
             if (!tab) return;
+            if (isLatexExpertId(expertId) && initialMessage) {
+                markExpertSessionFloorRef.current?.(expertId);
+            }
             if (projectPath && relativePath) {
                 dispatchOpenLatexDocument({ projectPath, relativePath });
             }
@@ -695,17 +717,42 @@ export function usePendingAssistantTabOpen({
             sendInitialMessage();
         };
         const ensureTask = ensureExpertTaskRef.current;
+        const startFreshLatex = isLatexExpertId(expertId) && !!initialMessage;
+        // Snapshot before ensureTask. That await can attach the new paper's
+        // path to this same tab, and the old transcript must not follow it.
+        const previousLatexPath = startFreshLatex
+            ? String((getTabListForExpertRef.current?.() || []).find(tab => tab.type === "expert" && tab.expertId === expertId)?.projectPath || "").trim()
+            : "";
+        const openAfterReset = (prepared?: EnsuredExpertTask | void) => {
+            const run = () => {
+                if (requestID !== expertOpenRequestRef.current) return;
+                openExpertTab(prepared);
+            };
+            if (!startFreshLatex) {
+                run();
+                return;
+            }
+            void Promise.resolve(resetExpertConversationRef.current?.(expertId, previousLatexPath)).then(run, (error) => {
+                console.warn("[task_management] latex fresh session reset failed:", error);
+                run();
+            });
+        };
         if (!ensureTask) {
-            openExpertTab();
+            openAfterReset();
             return;
         }
         const existingDocument = pendingExpertOpen.latexDocument;
         // Same arity discipline as create: omit the second argument when there
         // is no LaTeX document so single-argument observers stay consistent.
-        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => openExpertTab(prepared)).catch((error) => {
+        const freshLatexPath = startFreshLatex ? String(pendingExpertOpen.projectPath || "").trim() : "";
+        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => openAfterReset(prepared)).catch((error) => {
             // Task management is the durable entry point for experts. Do not
             // open a tab that cannot be reached again from the sidebar.
             console.error("[task_management] create expert task failed:", error);
+            if (!freshLatexPath) return;
+            void AbandonUnopenedFreshLatexTask(freshLatexPath).catch((abandonError) => {
+                console.warn("[task_management] abandon unopened latex paper failed:", abandonError);
+            });
         });
     }, [pendingExpertOpen]);
     // ↑ ONLY pendingExpertOpen in deps. All callbacks accessed via refs.

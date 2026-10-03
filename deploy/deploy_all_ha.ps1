@@ -465,6 +465,7 @@ function Stage-DeployAssets {
     }
 
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hubcenter\web\admin') -Label 'hubcenter admin web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\home\index.html') -Label 'hubcenter home landing page'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\admin-core.js') -Label 'hubcenter admin core script'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\petstore-admin.js') -Label 'hubcenter pet store admin script'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\css\admin-shell.css') -Label 'hubcenter admin shell stylesheet'
@@ -498,6 +499,8 @@ function Stage-DeployAssets {
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\professional.css') -Label 'hub card store stylesheet'
+    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\home') -Label 'hub home web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\home\index.html') -Label 'hub home landing page'
     # The guide is a Hub-only public page. Read UTF-8 explicitly so Windows
     # PowerShell does not fall back to its ANSI code page for Chinese markers.
     $hubPetPackHelpPath = Join-Path $StageRoot 'hub\web\pet-pack-help\index.html'
@@ -591,7 +594,13 @@ function Build-LocalBinaries {
     $binDir = Join-Path $OutputRoot 'bin'
     $binDirForGo = (New-Item -ItemType Directory -Path $binDir -Force).FullName
     $goCacheRoot = Split-Path -Parent $OutputRoot
-    $goCacheDir = (New-Item -ItemType Directory -Path (Join-Path $goCacheRoot '.gocache') -Force).FullName
+    # DEPLOY_GO_GOCACHE: optional persistent shared cache override (skips per-run cold compile).
+    # Unset = legacy behavior (per-run .gocache under buildRoot, fully cold every run).
+    if (-not [string]::IsNullOrWhiteSpace($env:DEPLOY_GO_GOCACHE)) {
+        $goCacheDir = (New-Item -ItemType Directory -Path $env:DEPLOY_GO_GOCACHE -Force).FullName
+    } else {
+        $goCacheDir = (New-Item -ItemType Directory -Path (Join-Path $goCacheRoot '.gocache') -Force).FullName
+    }
 
     function Quote-CmdArg {
         param([string]$Value)

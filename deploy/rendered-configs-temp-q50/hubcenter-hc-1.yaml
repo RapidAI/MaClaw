@@ -1,0 +1,68 @@
+server:
+  listen_host: 0.0.0.0
+  listen_port: 9388
+  public_base_url: https://hubs.mypapers.top
+
+ha:
+  enabled: true
+  self_fqdn: hubs.mypapers.top
+  private_key_path: ./data/ha_node_key.pem
+  cluster_secret: Ke94Qd4aXfw3Sbpvj6CAgxLNY4PEXbQHFAmYiCt+k0PVW8+kguNr9RQyOgUlp4hb
+  sync_interval_seconds: 5
+  push_debounce_seconds: 5
+  # 2026-09-25: 1000 ops can exceed the 128MiB pullOpsResponseBodyLimit
+  # (syncer.go) once the backlog piles up; the LimitReader then truncates the
+  # JSON mid-stream and every retry fails with "unexpected EOF" 鈥?a permanent
+  # replication lock. 100 ops (~15-25MB worst case) stays far below the cap.
+  pull_batch_size: 100
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  # 2026-09-27: 50000 -> 20000; lower retained-op cap cuts per-prune CPU/IO and
+  # keeps ha_sync_ops churn from bloating the main SQLite file.
+  history_max_retained_ops: 20000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
+  nodes:
+    - fqdn: hubs.mypapers.top
+      node_id: hc-1
+      node_name: hubcenter-1
+      advertise_url: http://hub.mypapers.top:9388
+      public_url: https://hubs.mypapers.top
+      enabled: true
+    - fqdn: hubs.maclaw.top
+      node_id: hc-2
+      node_name: hubcenter-2
+      advertise_url: http://107.172.86.131:9388
+      public_url: https://hubs.maclaw.top
+      enabled: true
+    - fqdn: hubs2.maclaw.top
+      node_id: hc-3
+      node_name: hubcenter-3
+      advertise_url: http://66.154.113.63:9388
+      public_url: https://hubs2.maclaw.top
+      enabled: true
+
+database:
+  driver: sqlite
+  dsn: './data/codeclaw-hubcenter.db'
+  wal: true
+  auto_vacuum: incremental
+  busy_timeout_ms: 10000
+  max_read_open_conns: 4
+  max_read_idle_conns: 4
+  max_write_open_conns: 1
+  max_write_idle_conns: 1
+
+mail:
+  enabled: false
+  provider: smtp
+  smtp_host: smtp.example.com
+  smtp_port: 587
+  smtp_username: no-reply@example.com
+  smtp_password: change-me
+  from_name: MaClaw Hub Center
+  from_email: no-reply@example.com
+
+logging:
+  level: info
+  dir: ./data/logs

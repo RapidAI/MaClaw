@@ -79,6 +79,33 @@ func TestTurnRequiredDeliveryCompleteIgnoresOptionalAndRequiresDelivery(t *testi
 	if TurnRequiredDeliveryComplete(ToolPlan{}, nil, nil) {
 		t.Fatal("empty plan must not complete")
 	}
+	specified := PlannedSelection{
+		ID: "specified", NeedID: "need-specified",
+		Provider: ProviderBinding{Kind: "channel"},
+		FitProof: FitProof{MatchedCapability: "artifact.deliver.specified_target"},
+	}
+	specifiedPlan := ToolPlan{Selections: []PlannedSelection{search, specified}}
+	if TurnRequiredDeliveryComplete(specifiedPlan, map[string]bool{"specified": true}, nil) {
+		t.Fatal("required search still open must not complete a specified-target send")
+	}
+	if !TurnRequiredDeliveryComplete(specifiedPlan, map[string]bool{"specified": true}, map[string]bool{"need-search": true}) {
+		t.Fatal("a completed specified-target send must end the turn")
+	}
+	if TurnRequiredDeliveryComplete(specifiedPlan, map[string]bool{"search": true}, map[string]bool{"need-search": true}) {
+		t.Fatal("search without the specified-target send must not complete")
+	}
+	// A baseline ceiling raise mints #02+ after the bundle-key recompute. Those
+	// siblings are not obligations. The family base still is, when the host
+	// did not prove it optional.
+	ceiling := PlannedSelection{ID: "read-2", NeedID: "need:fs.read.local:aefb30138088#02"}
+	base := PlannedSelection{ID: "read-1", NeedID: "need:fs.read.local:aefb30138088"}
+	ceilingPlan := ToolPlan{Selections: []PlannedSelection{base, ceiling, deliver}}
+	if !TurnRequiredDeliveryComplete(ceilingPlan, map[string]bool{"deliver": true, "read-1": true}, nil) {
+		t.Fatal("an unclaimed repeat sibling must not gate a delivered turn")
+	}
+	if TurnRequiredDeliveryComplete(ceilingPlan, map[string]bool{"deliver": true}, nil) {
+		t.Fatal("an unproven family base must still gate the turn")
+	}
 }
 
 func TestDocumentGenerateSelectionAndUnissuedReady(t *testing.T) {

@@ -23,6 +23,8 @@ type semanticSessionResidue struct {
 	// session may still plan. LookupFacts records a successful web lookup.
 	Remaining   map[string]int
 	LookupFacts bool
+	// PlanClosed is the host record that this turn's plan hit its ceiling.
+	PlanClosed bool
 }
 
 type semanticResidueStatus string
@@ -47,15 +49,20 @@ func semanticResidueToPersisted(residue semanticSessionResidue) agent.SemanticSe
 		Status:      string(residue.Status),
 		Summary:     residue.Summary,
 		LookupFacts: residue.LookupFacts,
+		PlanClosed:  residue.PlanClosed,
 		Remaining:   cloneResidueRemaining(residue.Remaining),
 	}
 	for _, need := range residue.Needs {
-		out.Needs = append(out.Needs, agent.SemanticSessionResidueNeed{
+		persisted := agent.SemanticSessionResidueNeed{
 			ID:         need.ID,
 			Capability: string(need.Capability),
 			Required:   need.Required,
 			Qualifiers: tool.CloneNeedQualifiers(need.Qualifiers),
-		})
+		}
+		if len(need.EvidenceIDs) > 0 {
+			persisted.EvidenceIDs = append([]string(nil), need.EvidenceIDs...)
+		}
+		out.Needs = append(out.Needs, persisted)
 	}
 	return out
 }
@@ -66,15 +73,83 @@ func semanticResidueFromPersisted(residue agent.SemanticSessionResidue) semantic
 		Status:      semanticResidueStatus(residue.Status),
 		Summary:     residue.Summary,
 		LookupFacts: residue.LookupFacts,
+		PlanClosed:  residue.PlanClosed,
 		Remaining:   cloneResidueRemaining(residue.Remaining),
 	}
 	for _, need := range residue.Needs {
-		out.Needs = append(out.Needs, tool.CapabilityNeed{
+		converted := tool.CapabilityNeed{
 			ID:         need.ID,
 			Capability: tool.CapabilityID(need.Capability),
 			Required:   need.Required,
 			Qualifiers: tool.CloneNeedQualifiers(need.Qualifiers),
-		})
+		}
+		if len(need.EvidenceIDs) > 0 {
+			converted.EvidenceIDs = append([]string(nil), need.EvidenceIDs...)
+		}
+		if semanticResidueAmbientNeed(converted) {
+			continue
+		}
+		out.Needs = append(out.Needs, converted)
+	}
+	out.Remaining = semanticResidueRemainingForNeeds(out.Remaining, out.Needs)
+	return out
+}
+
+// semanticResidueAmbientNeed reports retrieval the host adds beside a plan.
+// It is not an obligation of the desktop task. The id prefix survives in
+// persisted residue after the evidence tag is dropped.
+func semanticResidueAmbientNeed(need tool.CapabilityNeed) bool {
+	if strings.HasPrefix(strings.TrimSpace(need.ID), "need:~ambient:") {
+		return true
+	}
+	for _, evidence := range need.EvidenceIDs {
+		if evidence == "ambient:retrieval" {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticResidueWithoutAmbient(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	if len(needs) == 0 {
+		return nil
+	}
+	out := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if semanticResidueAmbientNeed(need) {
+			continue
+		}
+		out = append(out, need)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// semanticResidueRemainingForNeeds drops counters whose capability is no
+// longer an obligation. A reloaded ambient recall must not keep a ceiling.
+func semanticResidueRemainingForNeeds(remaining map[string]int, needs []tool.CapabilityNeed) map[string]int {
+	if len(remaining) == 0 {
+		return nil
+	}
+	if len(needs) == 0 {
+		return nil
+	}
+	keep := make(map[string]bool, len(needs))
+	for _, need := range needs {
+		if need.Capability != "" {
+			keep[string(need.Capability)] = true
+		}
+	}
+	out := cloneResidueRemaining(remaining)
+	for key := range out {
+		if !keep[key] {
+			delete(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -156,40 +231,6 @@ func (h *IMMessageHandler) storeSemanticSessionResidue(key string, residue seman
 	}
 }
 
-func markOpenTaskAnswerOnly(ctx *LoopContext, residueOpen bool, userText string) bool {
-	if ctx == nil || !residueOpen || !semanticSocialNoToolText(userText) {
-		return false
-	}
-	ctx.semanticTurnAnswerOnly = true
-	return true
-}
-
-// semanticSocialNoToolText is a whole-utterance greeting or thanks. A task
-// glued on ("谢谢，帮我改周报") is not one: the remainder must be a particle.
-func semanticSocialNoToolText(text string) bool {
-	if isTaskAnchorGreetingText(text) {
-		return true
-	}
-	compact := compactSocialUtterance(text)
-	switch compact {
-	case "谢谢", "谢谢你", "感谢", "多谢", "辛苦了", "辛苦", "麻烦了", "麻烦你了",
-		"thanks", "thankyou", "thx", "ty",
-		"再见", "拜拜", "bye", "goodbye", "byebye",
-		"哈哈", "哈哈哈", "呵呵", "嘿嘿":
-		return true
-	}
-	for _, base := range []string{"谢谢", "感谢", "多谢", "辛苦", "哈哈", "呵呵", "thanks", "bye"} {
-		if !strings.HasPrefix(compact, base) || len(compact) == len(base) {
-			continue
-		}
-		switch compact[len(base):] {
-		case "啊", "呀", "哦", "哟", "哈", "呢", "哇", "啦", "there", "ya":
-			return true
-		}
-	}
-	return false
-}
-
 // resetSemanticTurnLocalState drops residue bookkeeping that belongs to one
 // inbound turn. A reused LoopContext otherwise keeps a greeting closure or a
 // spent ceiling, and the next message cannot plan tools.
@@ -201,6 +242,7 @@ func resetSemanticTurnLocalState(ctx *LoopContext) {
 	defer ctx.mu.Unlock()
 	ctx.semanticTurnAnswerOnly = false
 	ctx.semanticSessionCeilingSpent = false
+	ctx.semanticPriorPlanClosed = false
 	ctx.semanticResidueCandidateNeeds = nil
 	ctx.semanticResidueCandidateText = ""
 	ctx.semanticResidueRemaining = nil
@@ -214,212 +256,110 @@ func (h *IMMessageHandler) clearSemanticSessionResidue(key string) {
 		return
 	}
 	h.semanticSessionResidues.Delete(key)
+	h.producedDocuments.Delete(key)
 	if h.memory != nil {
 		h.memory.ClearSemanticSessionResidue(key)
 	}
 }
 
-// semanticUtteranceIsTaskFollowUp reports a short continuation of the open
-// task. A high-confidence new request does not match just because it is short.
-func semanticUtteranceIsTaskFollowUp(text string) bool {
-	if isTaskAnchorContinuationText(text) {
-		return true
-	}
-	if utf8.RuneCountInString(strings.TrimSpace(text)) > 120 {
-		return false
-	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	for _, cue := range []string{"继续", "再改", "发给我", "然后", "再出一版", "再来一版", "continue"} {
-		if strings.Contains(compact, strings.ReplaceAll(cue, " ", "")) {
-			return true
-		}
-	}
-	return false
-}
-
-// semanticFollowUpIsBareCue reports a continuation that does not name a new
-// task. "继续" and "然后再执行一下" stay on the open surface. "然后连上服务器
-// 跑一遍检查" does not.
-func semanticFollowUpIsBareCue(text string) bool {
-	if isTaskAnchorContinuationText(text) {
-		return true
-	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	compact = strings.Trim(compact, "。.!！?？~～啊呀吧呢哦哟")
-	for _, cue := range []string{"然后再", "然后", "再改一版", "再来一版", "再出一版", "再改", "发给我", "继续", "continue"} {
-		if !strings.Contains(compact, cue) {
-			continue
-		}
-		rest := strings.Replace(compact, cue, "", 1)
-		rest = strings.Trim(rest, "。.!！?？~～啊呀吧呢哦哟请")
-		switch rest {
-		case "", "一下", "下", "执行", "执行一下", "再执行", "再执行一下", "跑一下", "做一下", "发给我":
-			return true
-		}
-		return false
-	}
-	return false
-}
-
-func semanticThenRest(text string) (string, bool) {
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	compact = strings.Trim(compact, "。.!！?？~～啊呀吧呢哦哟")
-	var rest string
-	switch {
-	case strings.HasPrefix(compact, "然后再"):
-		rest = strings.TrimPrefix(compact, "然后再")
-	case strings.HasPrefix(compact, "然后"):
-		rest = strings.TrimPrefix(compact, "然后")
-	default:
-		return "", false
-	}
-	rest = strings.Trim(rest, "。.!！?？~～啊呀吧呢哦哟")
-	return rest, rest != ""
-}
-
-func semanticLeadingThenAside(text string) bool {
-	rest, ok := semanticThenRest(text)
-	// "然后查一下这份表" is about the open document, not a web search.
-	return ok && semanticAsideRestIsExternalLookup(rest) && !semanticAsideRestIsDocumentWork(rest) && !semanticAsideRestIsAboutOpenDocument(rest)
-}
-
-func semanticAsideRestIsAboutOpenDocument(rest string) bool {
-	for _, cue := range []string{"这份", "这张表", "这个表", "这个文件", "文档里", "表里", "报告里", "表格里", "上面的", "刚才的"} {
-		if strings.Contains(rest, cue) {
-			return true
-		}
-	}
-	return false
-}
-
-func semanticAsideRestIsExternalLookup(rest string) bool {
-	for _, cue := range []string{"天气", "气温", "预报", "新闻", "股价", "汇率", "搜索", "查一下", "查询", "最新", "几点"} {
-		if strings.Contains(rest, cue) {
-			return true
-		}
-	}
-	return false
-}
-
-func semanticUtteranceNamesExternalLookup(userText string) bool {
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	return semanticAsideRestIsExternalLookup(compact) || lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText)
-}
-
-func semanticLeadingThenDocumentEdit(text string) bool {
-	rest, ok := semanticThenRest(text)
-	return ok && semanticAsideRestIsDocumentWork(rest)
-}
-
-// semanticResidueShortDocumentEdit is a residue continuation that only asks
-// to edit the open document. It keeps that document tool and does not grow
-// download, read, bash, or write_file around it.
-func semanticResidueShortDocumentEdit(result intent.ClassificationResult, userText string) bool {
-	if !strings.Contains(result.Reason, "session residue") {
-		return false
-	}
-	switch result.Primary {
-	case intent.LabelOffice, intent.LabelDocumentGenerate, intent.LabelFileWrite:
-	default:
-		return false
-	}
-	if utf8.RuneCountInString(strings.TrimSpace(userText)) > 24 {
-		return false
-	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	compact = strings.Trim(compact, "。.!！?？~～啊呀吧呢哦哟")
-	if strings.HasPrefix(compact, "然后") && !strings.HasPrefix(compact, "然后再") {
-		compact = strings.TrimPrefix(compact, "然后")
-		compact = strings.Trim(compact, "。.!！?？~～啊呀吧呢哦哟")
-	}
-	return semanticAsideRestIsDocumentWork(compact)
-}
-
-// semanticResidueSlimOfficeTurn is a short residue turn about the open
-// document. "改短一点" and "然后结论是什么" keep the document tool.
-// "继续" and "然后再执行一下" still get the workspace tools.
-func semanticResidueSlimOfficeTurn(result intent.ClassificationResult, userText string) bool {
-	// A replan or petition calls the planner with an empty utterance. That
-	// must not look like a short question and strip the published office tools.
+// semanticResidueDocumentSurfaceTurn is a short turn whose classification
+// already stayed on the open document. The host records that as
+// "session residue document". A continuation that inherited the same file
+// is "session residue continuation" and keeps the workspace tools.
+// An empty utterance is a replan and keeps the published surface.
+func semanticResidueDocumentSurfaceTurn(result intent.ClassificationResult, userText string) bool {
 	if strings.TrimSpace(userText) == "" {
 		return false
 	}
-	if semanticResidueShortDocumentEdit(result, userText) {
-		return true
-	}
-	if !strings.Contains(result.Reason, "session residue") {
+	if !strings.Contains(result.Reason, "session residue document") {
 		return false
 	}
-	switch result.Primary {
-	case intent.LabelOffice, intent.LabelDocumentGenerate, intent.LabelFileWrite:
-	default:
+	if isGenericContinuationPrimary(result) || !semanticPureDocumentEditClassification(result) {
 		return false
 	}
-	if utf8.RuneCountInString(strings.TrimSpace(userText)) > 24 {
-		return false
-	}
-	return !semanticNeedsWorkspaceContinuation(userText)
+	return utf8.RuneCountInString(strings.TrimSpace(userText)) <= 24
 }
 
-func semanticNeedsWorkspaceContinuation(userText string) bool {
-	if !semanticFollowUpIsBareCue(userText) {
-		return false
-	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	compact = strings.Trim(compact, "。.!！?？~～啊呀吧呢哦哟")
-	if semanticAsideRestIsDocumentWork(compact) {
-		return false
-	}
-	return true
+// semanticResidueShortDocumentEdit keeps the document tool and drops the
+// companion bundle. It is the same turn as the slim office surface: the
+// wording does not split an edit from a question while both are this label.
+func semanticResidueShortDocumentEdit(result intent.ClassificationResult, userText string) bool {
+	return semanticResidueDocumentSurfaceTurn(result, userText)
 }
 
-func semanticAsideRestIsDocumentWork(rest string) bool {
-	// Single characters collide with place names: 长 is in 长沙, 加 is in 加拿大.
-	for _, cue := range []string{
-		"改", "写", "删", "标题", "封面", "页边", "发给", "发我",
-		"加上", "加一段", "加一节", "长一点", "短一点", "这一版", "再版",
-	} {
-		if strings.Contains(rest, cue) {
-			return true
+// semanticResidueSlimOfficeTurn drops workspace companions on that same
+// short document turn.
+func semanticResidueSlimOfficeTurn(result intent.ClassificationResult, userText string) bool {
+	return semanticResidueDocumentSurfaceTurn(result, userText)
+}
+
+// semanticResidueTaskMutates reports that the plan changes something the
+// user asked for. A baseline or archetype companion is not that change.
+func semanticResidueTaskMutates(needs []tool.CapabilityNeed) bool {
+	return len(semanticResidueObligationNeeds(needs)) > 0
+}
+
+// semanticResidueObligationNeeds is the work this conversation still has to
+// finish. Ambient retrieval, a read that shared the plan, and a baseline or
+// archetype companion are not that work. A companion ceiling must not keep
+// the real grant closed, and must not become the label a restart restores.
+func semanticResidueObligationNeeds(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	taskNeeds := semanticResidueWithoutAmbient(needs)
+	if len(taskNeeds) == 0 {
+		return nil
+	}
+	out := make([]tool.CapabilityNeed, 0, len(taskNeeds))
+	for _, need := range taskNeeds {
+		if semanticPlanCompanionNeed(need) || !sessionGovernedNeedHasSideEffect(need) {
+			continue
 		}
+		out = append(out, need)
 	}
-	return false
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
-// semanticResidueWaveSpent reports that every tracked capability of this
-// open task has already been used. The task stays open so an explicit
-// revision can renew a wave. A later sentence that names different work
-// must not inherit the zero counts: clamp would drop every need and close
-// the whole turn (production 2026-09-27: a finished knowledge_write ceiling
-// answered "生成一段猫和老鼠游戏的视频" with no tools).
+// semanticResidueWaveSpent reports that the open obligation has used every
+// invocation it was granted. Companions and reads are not that grant: an
+// unused knowledge read, or a spent baseline write, must not keep a spent
+// shell ceiling closed and must not pin a later sentence to that wave.
+//
+// The task stays open so a revision can renew. A sentence that names
+// different work must not inherit the zero counts: clamp would drop the
+// obligation and close the turn (production 2026-09-27). A residue with
+// no obligation still waits until every tracked count is zero.
 func semanticResidueWaveSpent(residue semanticSessionResidue) bool {
 	if residue.Status != semanticResidueOpen || len(residue.Remaining) == 0 {
 		return false
 	}
-	for _, left := range residue.Remaining {
-		if left > 0 {
+	obligation := semanticResidueObligationNeeds(residue.Needs)
+	if len(obligation) == 0 {
+		for _, left := range residue.Remaining {
+			if left > 0 {
+				return false
+			}
+		}
+		return true
+	}
+	for _, need := range obligation {
+		left, tracked := residue.Remaining[string(need.Capability)]
+		if !tracked || left > 0 {
 			return false
 		}
 	}
 	return true
 }
 
-// semanticSpentWaveStays reports an utterance that is still the open task:
-// "继续", "再改一版", a short edit of the open file, or the same shell.
+// semanticSpentWaveStays reports a turn that is still the open task.
+// A continuation label stays. The same work surface stays. The sentence
+// is not read.
 func semanticSpentWaveStays(current intent.ClassificationResult, needs []tool.CapabilityNeed, userText string) bool {
-	if semanticUtteranceIsTaskFollowUp(userText) || semanticFollowUpIsBareCue(userText) {
+	if isGenericContinuationPrimary(current) {
 		return true
 	}
-	if semanticKeepsOpenWorkSurface(current, needs, userText) || semanticLeadingThenDocumentEdit(userText) {
-		return true
-	}
-	if semanticResidueHasDocumentEdit(needs) {
-		compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-		if semanticOpenFileRevision(compact) || semanticAsideRestIsDocumentWork(compact) {
-			return true
-		}
-	}
-	return false
+	return semanticKeepsOpenWorkSurface(current, needs, userText)
 }
 
 // semanticSpentWaveRelease reports a new request sitting on a finished wave.
@@ -463,68 +403,71 @@ func (h *IMMessageHandler) completeSpentSemanticSessionResidue(key string, resid
 }
 
 func decideSemanticResidueRelation(current intent.ClassificationResult, userText string, residue semanticSessionResidue) semanticResidueRelation {
+	return decideSemanticResidueRelationWithBare(current, nil, userText, residue)
+}
+
+func decideSemanticResidueRelationWithBare(current intent.ClassificationResult, bare *intent.ClassificationResult, userText string, residue semanticSessionResidue) semanticResidueRelation {
 	if residue.Status != semanticResidueOpen || len(residue.Needs) == 0 {
-		return semanticResidueNone
-	}
-	if semanticSocialNoToolText(userText) {
 		return semanticResidueNone
 	}
 	// A finished wave does not swallow the next sentence. "再改一版" stays
 	// above, via semanticSpentWaveStays, and renews. A new request plans
 	// from its own classification, without the zero ceiling.
-	if semanticSpentWaveRelease(current, residue, userText) {
+	// A short reply that only restates the open context is not a new request.
+	// The merge stamped the summary's label onto a sentence that did not name it.
+	if semanticSpentWaveRelease(current, residue, userText) && !semanticOpenTaskRestateKeeps(current, userText) {
 		return semanticResidueNone
 	}
-	// "然后改到本机执行" is a follow-up phrase and an explicit machine change.
-	// The machine change wins; a bare "然后再执行一下" stays on the open host.
-	if semanticExplicitSurfaceChange(current, residue.Needs, userText) {
+	// A local label on a remote residue, or a remote label on a local residue,
+	// changes surface. The matching label stays. The sentence is not read.
+	// The same restate is not a surface change either.
+	if semanticExplicitSurfaceChange(current, residue.Needs, userText) && !semanticOpenTaskRestateKeeps(current, userText) {
 		return semanticResidueSwitch
+	}
+	if semanticKeepsOpenShell(current, residue.Needs, userText) {
+		return semanticResidueUnclear
 	}
 	// "然后现在几点" is a clock question. The 然后 does not pull the open
 	// office tools into this turn.
 	if semanticExplicitReadOnlySideQuestion(current, userText) {
 		return semanticResidueNone
 	}
-	// "所以，多的脂肪去哪了？" is unknown on its own. Merging the open summary
-	// ("北京天气") can score live_data at 0.85 and look like a new lookup.
-	// That merge stays on the open task unless the utterance itself names a
-	// lookup ("崇州天气") or a different mutating task ("连上服务器").
-	if semanticTaskContextMerged(current) && !semanticUtteranceNamesExternalLookup(userText) {
-		if current.Confidence >= 0.85 && semanticClassificationHasMutatingFamily(current) && semanticResidueMutatingDisjoint(current, residue.Needs) && !semanticKeepsOpenWorkSurface(current, residue.Needs, userText) && !semanticFollowUpIsBareCue(userText) {
+	// Merging the open summary can stamp that task's label onto a sentence
+	// that did not ask for it. A lookup the bare classification already had
+	// is the sentence's own label and falls through. A short reply whose
+	// merged mutation was already in that context stays on the obligation.
+	// A different mutating task still switches.
+	if semanticTaskContextMerged(current) && !semanticBareAlreadyRequestedLookup(bare) {
+		if semanticOpenTaskRestateKeeps(current, userText) {
+			return semanticResidueUnclear
+		}
+		if current.Confidence >= 0.85 && semanticClassificationHasMutatingFamily(current) && semanticResidueMutatingDisjoint(current, residue.Needs) && !semanticKeepsOpenWorkSurface(current, residue.Needs, userText) {
 			return semanticResidueSwitch
 		}
 		return semanticResidueUnclear
 	}
-	// "崇州天气" after "北京天气", and "重庆天气，生成格式化pdf" after a
-	// spent weather PDF, are new lookups. Continuing would clamp the spent
-	// search and generate grants and reuse the previous city's facts.
-	if semanticFreshLookupAgainstLookupResidue(current, userText, residue) {
+	// An evidence label does not cancel an open lookup document. The
+	// classifier already absorbed the wording, in whatever language.
+	if semanticEvidenceContinuesOpenDeliverable(current, residue) {
+		return semanticResidueContinue
+	}
+	// Lookup and document generation on the same classification is a new
+	// delivery. The previous document's spent ceiling does not apply.
+	if semanticDeclaresLookupDocument(current) {
 		return semanticResidueNone
 	}
-	// "然后连上服务器跑一遍检查" names a different task. A bare "继续" or
-	// "发给我" stays on the open tools and does not adopt a jittered shell.
+	// A sentence the classifier called document generation, with no lookup
+	// label of its own, renders the open lookup. The wording is not read.
+	if semanticRendersOpenLookup(current, residue) {
+		return semanticResidueContinue
+	}
 	if current.Confidence >= 0.85 && semanticClassificationHasMutatingFamily(current) && semanticResidueMutatingDisjoint(current, residue.Needs) {
-		if semanticKeepsOpenWorkSurface(current, residue.Needs, userText) || semanticFollowUpIsBareCue(userText) {
+		if semanticKeepsOpenWorkSurface(current, residue.Needs, userText) {
 			return semanticResidueUnclear
 		}
 		return semanticResidueSwitch
 	}
-	// "再改一版" or "然后改短一点" labeled search keeps the open document and
-	// does not add web_search. "然后北京天气怎么样" is only the weather question.
-	if current.Confidence >= 0.85 && imSemanticIntentIsManaged(current) && !semanticClassificationHasMutatingFamily(current) {
-		if semanticFollowUpIsBareCue(userText) || semanticLeadingThenDocumentEdit(userText) {
-			return semanticResidueUnclear
-		}
-		if semanticLeadingThenAside(userText) {
-			return semanticResidueNone
-		}
-		// "然后结论是什么" is about the open document. Keep its tools and do
-		// not adopt a search label. Weather and news stay outside, above.
-		if _, ok := semanticThenRest(userText); ok {
-			return semanticResidueUnclear
-		}
-	}
-	if semanticUtteranceIsTaskFollowUp(userText) || isGenericContinuationPrimary(current) {
+	if isGenericContinuationPrimary(current) {
 		if semanticKeepsOpenWorkSurface(current, residue.Needs, userText) {
 			return semanticResidueUnclear
 		}
@@ -555,164 +498,128 @@ func semanticKeepsOpenWorkSurface(current intent.ClassificationResult, needs []t
 	if semanticKeepsOpenShell(current, needs, userText) {
 		return true
 	}
-	// A short edit of the file already open ("改短一点") stays on that file.
-	// A short new deliverable ("将ppt生成pdf文档", "把幻灯片导成可打印文档")
-	// does not: the label may still be office, but the sentence is not a
-	// revision, so the previous grant must not replace it.
-	if utf8.RuneCountInString(strings.TrimSpace(userText)) > 24 {
-		return false
-	}
+	// The same document capability stays on the open file. A different
+	// document capability is another delivery. The sentence is not read.
 	if !semanticPureDocumentEditClassification(current) || !semanticResidueHasDocumentEdit(needs) {
 		return false
 	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	// "写" is also how a new file is requested ("写一份新的ppt"). Revision
-	// cues are the edits and the hand-off; creation stays a new delivery.
-	return semanticOpenFileRevision(compact) || semanticUtteranceIsTaskFollowUp(userText) || semanticFollowUpIsBareCue(userText)
-}
-
-func semanticOpenFileRevision(compact string) bool {
-	// In-place edits of the open file. "把标题改成红色" stays.
-	// "把ppt改成pdf" does not: 改成 replaces the file with a new one,
-	// and a bare 改 must not swallow that.
-	for _, cue := range []string{
-		"删", "标题", "封面", "页边",
-		"加上", "加一段", "加一节", "长一点", "短一点", "这一版", "再版",
-	} {
-		if strings.Contains(compact, cue) {
-			return true
-		}
-	}
-	if semanticHandsOffOpenFile(compact) {
-		return true
-	}
-	if strings.Contains(compact, "改成") || strings.Contains(compact, "改为") {
-		return false
-	}
-	return strings.Contains(compact, "改")
-}
-
-// semanticHandsOffOpenFile reports handing the open file to someone.
-// "把ppt发给老板" stays. "做一份发给客户的ppt" is a new file.
-// "发我" inside "研发我" does not.
-func semanticHandsOffOpenFile(compact string) bool {
-	if strings.Contains(compact, "发给") {
-		if strings.Contains(compact, "一份") || strings.Contains(compact, "一个") || strings.Contains(compact, "新的") || strings.Contains(compact, "新做") {
-			return false
-		}
-		return true
-	}
-	for from := 0; from < len(compact); {
-		at := strings.Index(compact[from:], "发我")
-		if at < 0 {
-			return false
-		}
-		at += from
-		if !strings.HasSuffix(compact[:at], "研") {
-			return true
-		}
-		from = at + len("发我")
-	}
-	return false
+	return !semanticResidueMutatingDisjoint(current, needs)
 }
 
 func semanticTaskContextMerged(result intent.ClassificationResult) bool {
 	return strings.Contains(result.Reason, "task-context merge")
 }
 
-// semanticFreshLookupSubjectMinConfidence admits a verified lookup that sits
-// just under the 0.85 relation gate. "重庆天气，生成格式化pdf" scored
-// live_data 0.839 and otherwise continued the previous city's spent PDF grant.
-const semanticFreshLookupSubjectMinConfidence = 0.82
-
-func semanticDeliveryOfFreshLookup(compact string) bool {
-	if !semanticUtteranceNamesFreshLookupSubject(compact) {
+// semanticOpenTaskRestateKeeps reports a short reply whose merged mutation
+// was already the open context's mutation. The sentence did not add a
+// family. A longer sentence can still name different work, and the length
+// gate is the same one semanticSpentWaveRelease uses to let that work leave.
+func semanticOpenTaskRestateKeeps(current intent.ClassificationResult, userText string) bool {
+	if !strings.Contains(current.Reason, "open-task restate") {
 		return false
 	}
-	stripped := compact
-	for _, cue := range []string{"发给我", "发给", "发我"} {
-		stripped = strings.ReplaceAll(stripped, cue, "")
-	}
-	return !semanticAsideRestIsDocumentWork(stripped)
+	return utf8.RuneCountInString(strings.TrimSpace(userText)) <= 24
 }
 
-// semanticFollowUpStaysOnOpenTask is a continuation of the open delivery.
-// "发给我" and "然后" can introduce a new subject, so they do not.
-func semanticFollowUpStaysOnOpenTask(text string) bool {
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	for _, cue := range []string{"继续", "再改", "再出一版", "再来一版", "continue"} {
-		if strings.Contains(compact, cue) {
+// semanticMergedMutationRestates reports that every side effect on merged
+// was already on the classification of the open context. The current
+// sentence did not introduce that family.
+func semanticMergedMutationRestates(context, merged intent.ClassificationResult) bool {
+	want := semanticMutatingCapabilities(merged)
+	if len(want) == 0 {
+		return false
+	}
+	have := semanticMutatingCapabilities(context)
+	for capability := range want {
+		if !have[capability] {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticMutatingCapabilities(current intent.ClassificationResult) map[tool.CapabilityID]bool {
+	out := map[tool.CapabilityID]bool{}
+	for _, capability := range semanticRuleCapabilities(current) {
+		if sessionGovernedNeedHasSideEffect(tool.CapabilityNeed{Capability: capability}) {
+			out[capability] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func semanticBareAlreadyRequestedLookup(bare *intent.ClassificationResult) bool {
+	return bare != nil && semanticResultHasLookupLabel(*bare)
+}
+
+func semanticResultHasLookupLabel(current intent.ClassificationResult) bool {
+	for _, label := range current.Labels() {
+		switch label {
+		case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
 			return true
 		}
 	}
 	return false
 }
 
-func semanticUtteranceNamesFreshLookupSubject(userText string) bool {
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	for _, cue := range []string{"天气", "气温", "预报", "新闻", "股价", "汇率"} {
-		if strings.Contains(compact, cue) {
+// semanticDeclaresLookupDocument reports a classification that asks for
+// evidence and a new document together. That is a new delivery in any wording.
+func semanticDeclaresLookupDocument(current intent.ClassificationResult) bool {
+	if current.Degraded || !semanticResultHasLookupLabel(current) {
+		return false
+	}
+	return current.HasLabel(intent.LabelDocumentGenerate)
+}
+
+// semanticEvidenceContinuesOpenDeliverable reports an evidence-only
+// classification while the open task is still a lookup plus a PDF. The
+// evidence is new; the document obligation stays. A label that itself
+// declares a mutation, or an office file that is not a lookup document,
+// does not match.
+func semanticEvidenceContinuesOpenDeliverable(current intent.ClassificationResult, residue semanticSessionResidue) bool {
+	if current.Degraded || semanticClassificationHasMutatingFamily(current) || !semanticLookupHalf(current) {
+		return false
+	}
+	return semanticResidueIsLookupVisual(residue.Needs) && semanticResidueHasGenerate(residue.Needs)
+}
+
+func semanticResidueHasGenerate(needs []tool.CapabilityNeed) bool {
+	for _, need := range needs {
+		if need.Capability == agentservice.CapabilityDocumentGenerate {
 			return true
 		}
 	}
 	return false
 }
 
-func semanticFreshLookupAgainstLookupResidue(current intent.ClassificationResult, userText string, residue semanticSessionResidue) bool {
-	if current.Degraded || semanticFollowUpIsBareCue(userText) {
+// semanticRendersOpenLookup reports a document render of evidence the open
+// task already holds. A classification that also names a lookup is a new
+// delivery. The utterance is not inspected.
+func semanticRendersOpenLookup(current intent.ClassificationResult, residue semanticSessionResidue) bool {
+	if current.Primary != intent.LabelDocumentGenerate {
 		return false
 	}
-	switch current.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
-	case intent.LabelDocumentGenerate:
-		// "把重庆天气发给我" can be labeled as the PDF itself. A new
-		// lookup subject still needs a fresh grant. "生成pdf报告" with
-		// no new subject stays on the open facts.
-		if !semanticUtteranceNamesFreshLookupSubject(userText) {
+	for _, label := range current.Labels() {
+		switch label {
+		case intent.LabelDocumentGenerate:
+		case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
 			return false
 		}
-	default:
-		return false
 	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	// "然后写成周报" can share a live-data label with the previous weather
-	// card. That is a document request, not another city lookup. "发给我"
-	// only delivers, so "然后把重庆天气发给我" stays a new lookup.
-	if (semanticLeadingThenDocumentEdit(userText) || semanticAsideRestIsDocumentWork(compact)) && !semanticDeliveryOfFreshLookup(compact) {
-		return false
-	}
-	// "继续查一下天气" while a report is open keeps that report. "然后重庆天气，
-	// 生成格式化pdf" after a weather PDF is a new delivery; 然后 alone must
-	// not spend the previous city's grant.
-	namedSubject := semanticUtteranceNamesFreshLookupSubject(userText)
-	if namedSubject && semanticUtteranceIsTaskFollowUp(userText) {
-		if semanticKeepsOpenWorkSurface(current, residue.Needs, userText) {
-			return false
-		}
-		// A previous weather card is spent by "然后把重庆天气发给我" even
-		// when this sentence is only a lookup. "把重庆天气发给我" while a
-		// report is open is a delivery of that lookup, not a revision.
-		// "继续查一下天气" stays with the report.
-		if semanticResidueIsLookupVisual(residue.Needs) || (semanticDeliveryOfFreshLookup(compact) && !semanticFollowUpStaysOnOpenTask(userText)) {
-			return true
-		}
-		if semanticClassificationHasMutatingFamily(current) && semanticResidueHasDocumentWork(residue.Needs) {
-			return current.Confidence >= semanticFreshLookupSubjectMinConfidence
-		}
-		return false
-	}
-	if namedSubject {
-		return current.Confidence >= semanticFreshLookupSubjectMinConfidence
-	}
-	if current.Confidence < 0.85 {
-		return false
-	}
-	return semanticResidueIsLookupVisual(residue.Needs) && !semanticResidueHasDocumentWork(residue.Needs)
+	return semanticResidueIsLookupVisual(residue.Needs) && semanticResidueHasGenerate(residue.Needs)
 }
 
 func semanticResidueIsLookupVisual(needs []tool.CapabilityNeed) bool {
 	saw := false
 	for _, need := range needs {
+		// An office plan's archetype search is not a lookup delivery. Counting
+		// it made "另存一份 PDF" stay on the open document.
+		if semanticPlanCompanionNeed(need) {
+			continue
+		}
 		switch strings.TrimSpace(string(need.Capability)) {
 		case "information.search.web", "information.fetch.web", "visual.render.live_data":
 			saw = true
@@ -722,26 +629,14 @@ func semanticResidueIsLookupVisual(needs []tool.CapabilityNeed) bool {
 }
 
 func semanticResidueHasDocumentWork(needs []tool.CapabilityNeed) bool {
-	for _, need := range needs {
-		switch need.Capability {
-		case tool.CapabilityDocumentWriteOffice, agentservice.CapabilityDocumentGenerate, tool.CapabilityFSWriteLocal:
-			return true
-		}
-	}
-	return false
+	return semanticResidueHasDocumentEdit(needs)
 }
 
-func semanticExplicitReadOnlySideQuestion(current intent.ClassificationResult, userText string) bool {
+func semanticExplicitReadOnlySideQuestion(current intent.ClassificationResult, _ string) bool {
 	if current.Degraded || current.Confidence < 0.85 || semanticClassificationHasMutatingFamily(current) || !imSemanticIntentIsManaged(current) {
 		return false
 	}
-	if semanticPureLabel(current, intent.LabelCurrentTime) && isLocalCurrentTimeQuery(userText) {
-		return true
-	}
-	if semanticPureLabel(current, intent.LabelSearch) || semanticPureLabel(current, intent.LabelLiveData) || semanticPureLabel(current, intent.LabelWebFetch) {
-		return lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText)
-	}
-	return false
+	return semanticPureLabel(current, intent.LabelCurrentTime)
 }
 
 func semanticFollowUpAllowsTaskMerge(result *intent.ClassificationResult, userText string) bool {
@@ -756,52 +651,88 @@ func semanticFollowUpAllowsTaskMerge(result *intent.ClassificationResult, userTe
 	return !semanticExplicitReadOnlySideQuestion(*result, userText)
 }
 
-func semanticExplicitSurfaceChange(current intent.ClassificationResult, needs []tool.CapabilityNeed, userText string) bool {
-	text := strings.ToLower(userText)
-	if semanticResidueHasCapability(needs, tool.CapabilityShellExecuteRemoteHost) && semanticPureLabel(current, intent.LabelShellCommand) && semanticExplicitLocalShell(text) {
+func semanticExplicitSurfaceChange(current intent.ClassificationResult, needs []tool.CapabilityNeed, _ string) bool {
+	if semanticResidueHasObligationCapability(needs, tool.CapabilityShellExecuteRemoteHost) && semanticPureLabel(current, intent.LabelShellCommand) {
 		return true
 	}
-	if semanticResidueHasCapability(needs, tool.CapabilityShellExecuteLocal) && semanticPureLabel(current, intent.LabelSSH) && semanticExplicitRemoteShell(text) {
+	if semanticResidueHasObligationCapability(needs, tool.CapabilityShellExecuteLocal) && semanticPureLabel(current, intent.LabelSSH) {
 		return true
 	}
 	return false
 }
 
-func semanticKeepsOpenShell(current intent.ClassificationResult, needs []tool.CapabilityNeed, userText string) bool {
-	if utf8.RuneCountInString(strings.TrimSpace(userText)) > 24 {
-		return false
-	}
-	openRemote := semanticResidueHasCapability(needs, tool.CapabilityShellExecuteRemoteHost)
-	openLocal := semanticResidueHasCapability(needs, tool.CapabilityShellExecuteLocal)
+func semanticKeepsOpenShell(current intent.ClassificationResult, needs []tool.CapabilityNeed, _ string) bool {
+	openRemote := semanticResidueHasObligationCapability(needs, tool.CapabilityShellExecuteRemoteHost)
+	openLocal := semanticResidueHasObligationCapability(needs, tool.CapabilityShellExecuteLocal)
 	if openRemote == openLocal {
 		return false
 	}
-	text := strings.ToLower(userText)
-	if openRemote && semanticPureLabel(current, intent.LabelShellCommand) && !semanticExplicitLocalShell(text) {
+	if openRemote && semanticPureLabel(current, intent.LabelSSH) {
 		return true
 	}
-	if openLocal && semanticPureLabel(current, intent.LabelSSH) && !semanticExplicitRemoteShell(text) {
+	if openLocal && semanticPureLabel(current, intent.LabelShellCommand) {
 		return true
 	}
 	return false
 }
 
-func semanticExplicitLocalShell(text string) bool {
-	for _, cue := range []string{"本地", "本机", "local"} {
-		if strings.Contains(text, cue) {
+// semanticPureExistingDocumentDelivery is a sentence whose only managed
+// family delivers a document that already exists. Lookup, generate, office,
+// and every other mutating family are a different request.
+func semanticPureExistingDocumentDelivery(current intent.ClassificationResult) bool {
+	if current.Degraded {
+		return false
+	}
+	saw := false
+	for _, label := range current.Labels() {
+		switch label {
+		case intent.LabelDocumentDelivery, intent.LabelAttachmentDelivery:
+			saw = true
+		default:
+			if !label.IsNonCapabilityLabel() && len(imSemanticIntentRuleSet[label]) > 0 {
+				return false
+			}
+		}
+	}
+	return saw
+}
+
+// semanticResidueHasProducedDocument reports an open obligation that already
+// materialized a document. A baseline file write is not that product.
+func semanticResidueHasProducedDocument(needs []tool.CapabilityNeed) bool {
+	for _, need := range needs {
+		if semanticPlanCompanionNeed(need) {
+			continue
+		}
+		switch need.Capability {
+		case agentservice.CapabilityDocumentGenerate, tool.CapabilityDocumentWriteOffice:
 			return true
 		}
 	}
 	return false
 }
 
-func semanticExplicitRemoteShell(text string) bool {
-	for _, cue := range []string{"服务器", "远端", "远程", "ssh"} {
-		if strings.Contains(text, cue) {
-			return true
-		}
+func semanticBareDeliversProducedDocument(bare intent.ClassificationResult, residue semanticSessionResidue) bool {
+	if residue.Status != semanticResidueOpen || !semanticResidueHasProducedDocument(residue.Needs) {
+		return false
 	}
-	return false
+	return semanticPureExistingDocumentDelivery(bare)
+}
+
+// semanticOpenResidueDelivery keeps the bare delivery of a document this task
+// already produced. Inheriting the open generate obligation would render a
+// new file and renew spent search. The caller must not apply the open-turn
+// ceiling: that ceiling is what reopens generate.
+func semanticOpenResidueDelivery(bare intent.ClassificationResult, residue semanticSessionResidue) (intent.ClassificationResult, bool) {
+	if !semanticBareDeliversProducedDocument(bare, residue) {
+		return intent.ClassificationResult{}, false
+	}
+	restored := bare
+	if !strings.Contains(restored.Reason, "session residue delivery") {
+		restored.Reason = strings.TrimSpace(restored.Reason + "; session residue delivery")
+		restored.Reason = strings.TrimPrefix(restored.Reason, "; ")
+	}
+	return restored, true
 }
 
 func semanticPureLabel(current intent.ClassificationResult, want intent.IntentLabel) bool {
@@ -818,8 +749,12 @@ func semanticPureLabel(current intent.ClassificationResult, want intent.IntentLa
 	return saw
 }
 
-func semanticResidueHasCapability(needs []tool.CapabilityNeed, capability tool.CapabilityID) bool {
-	for _, need := range needs {
+// semanticResidueHasObligationCapability ignores a baseline or archetype
+// companion. A managed plan always carries a local shell fallback. That
+// fallback is not an open local task, and counting it cancelled the remote
+// obligation: one of each shell made a matching SSH sentence leave.
+func semanticResidueHasObligationCapability(needs []tool.CapabilityNeed, capability tool.CapabilityID) bool {
+	for _, need := range semanticResidueObligationNeeds(needs) {
 		if need.Capability == capability {
 			return true
 		}
@@ -844,6 +779,9 @@ func semanticPureDocumentEditClassification(current intent.ClassificationResult)
 
 func semanticResidueHasDocumentEdit(needs []tool.CapabilityNeed) bool {
 	for _, need := range needs {
+		if semanticPlanCompanionNeed(need) {
+			continue
+		}
 		switch need.Capability {
 		case tool.CapabilityDocumentWriteOffice, tool.CapabilityFSWriteLocal, agentservice.CapabilityDocumentGenerate:
 			return true
@@ -903,10 +841,8 @@ func semanticRuleCapabilities(result intent.ClassificationResult) []tool.Capabil
 
 func semanticResidueMutatingDisjoint(current intent.ClassificationResult, needs []tool.CapabilityNeed) bool {
 	open := map[tool.CapabilityID]bool{}
-	for _, need := range needs {
-		if sessionGovernedNeedHasSideEffect(need) {
-			open[need.Capability] = true
-		}
+	for _, need := range semanticResidueObligationNeeds(needs) {
+		open[need.Capability] = true
 	}
 	if len(open) == 0 {
 		return true
@@ -919,22 +855,113 @@ func semanticResidueMutatingDisjoint(current intent.ClassificationResult, needs 
 	return true
 }
 
+// semanticOpenResidueClassification rebuilds the open task from its
+// obligation. ClassificationFromGrantedNeeds names whichever need was
+// stored first, and a plan records a knowledge read or a baseline write
+// before the shell it belongs to. After a restart that order became the
+// task. A lookup delivery (search plus a card or a document) keeps
+// evidence first. Any other open obligation is classified from the
+// side-effecting needs that are not companions, and the reads stay
+// secondary labels.
+func semanticResidueWithoutCompanions(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	if len(needs) == 0 {
+		return nil
+	}
+	out := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if semanticPlanCompanionNeed(need) {
+			continue
+		}
+		out = append(out, need)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func semanticOpenResidueClassification(needs []tool.CapabilityNeed) intent.ClassificationResult {
+	taskNeeds := semanticResidueWithoutAmbient(needs)
+	if semanticResidueIsLookupVisual(taskNeeds) {
+		// Stored order keeps the evidence label first. Companions are
+		// omitted: an archetype download on this result is a new acquire
+		// wave, and the spent download ceiling opens.
+		evidence := semanticResidueWithoutCompanions(taskNeeds)
+		if len(evidence) == 0 {
+			evidence = taskNeeds
+		}
+		return agentservice.ClassificationFromGrantedNeeds(evidence, imSemanticIntentRuleSet)
+	}
+	// Companion labels change the ceiling. A baseline download on the
+	// inherited classification is read as a new acquire wave and the shell
+	// grant stays closed.
+	classified := semanticResidueWithoutCompanions(taskNeeds)
+	if len(classified) == 0 {
+		classified = taskNeeds
+	}
+	result := agentservice.ClassificationFromGrantedNeeds(classified, imSemanticIntentRuleSet)
+	obligation := semanticResidueObligationNeeds(classified)
+	if len(obligation) == 0 {
+		return result
+	}
+	lead := agentservice.ClassificationFromGrantedNeeds(obligation, imSemanticIntentRuleSet)
+	if !semanticLabelHasSideEffect(lead.Primary) || result.Primary == lead.Primary {
+		return result
+	}
+	seen := map[intent.IntentLabel]bool{lead.Primary: true}
+	var secondary []intent.IntentLabel
+	for _, label := range append(lead.Labels(), result.Labels()...) {
+		if label == "" || seen[label] || label.IsNonCapabilityLabel() {
+			continue
+		}
+		seen[label] = true
+		secondary = append(secondary, label)
+	}
+	lead.Secondary = secondary
+	if result.Confidence > 0 {
+		lead.Confidence = result.Confidence
+	}
+	if result.Layer != 0 {
+		lead.Layer = result.Layer
+	}
+	return lead
+}
+
+func semanticLabelHasSideEffect(label intent.IntentLabel) bool {
+	for _, template := range imSemanticIntentRuleSet[label] {
+		if template.Capability == "" {
+			continue
+		}
+		if sessionGovernedNeedHasSideEffect(tool.CapabilityNeed{Capability: template.Capability}) {
+			return true
+		}
+	}
+	return false
+}
+
 // semanticClassificationWithOpenResidue folds an open task's granted needs
 // into this turn's classification. Continue unions them with a new managed
-// label. Unclear, continuation, and unknown keep the open needs and do not
-// take a new mutating family from the bare sentence.
+// label. Unclear, continuation, and unknown keep the open obligation and
+// do not take a new mutating family from the bare sentence.
 func semanticClassificationWithOpenResidue(current intent.ClassificationResult, needs []tool.CapabilityNeed, relation semanticResidueRelation) (intent.ClassificationResult, bool) {
 	switch relation {
 	case semanticResidueContinue, semanticResidueUnclear:
 	default:
 		return current, false
 	}
-	inherited := agentservice.ClassificationFromGrantedNeeds(needs, imSemanticIntentRuleSet)
+	inherited := semanticOpenResidueClassification(needs)
 	if !imSemanticIntentIsManaged(inherited) {
 		return current, false
 	}
 	if relation == semanticResidueUnclear || !imSemanticIntentIsManaged(current) || current.Primary.IsNonCapabilityLabel() {
+		// A continuation label inherits the open task and keeps its workspace
+		// tools. A document label that stayed on the same file is only that
+		// file: the planner slims companions from this reason. The sentence
+		// is not read.
 		inherited.Reason = "session residue continuation"
+		if semanticPureDocumentEditClassification(current) && !isGenericContinuationPrimary(current) {
+			inherited.Reason = "session residue document"
+		}
 		return inherited, true
 	}
 	out := current
@@ -954,7 +981,7 @@ func (h *IMMessageHandler) noteSemanticSessionResidueCandidate(ctx *LoopContext,
 	if !strings.EqualFold(strings.TrimSpace(channel), "desktop") || h.isPureCodingWorkbenchSession(userID) {
 		return
 	}
-	needs := grantedNeedsFromPlan(plan)
+	needs := semanticResidueWithoutAmbient(withoutLookupCarryNeeds(grantedNeedsFromPlan(plan)))
 	if len(needs) == 0 {
 		return
 	}
@@ -968,27 +995,39 @@ func (h *IMMessageHandler) settleSemanticSessionResidue(msg IMUserMessage, loopC
 		return
 	}
 	if strings.TrimSpace(resp.Error) != "" || len(loopCtx.semanticResidueCandidateNeeds) == 0 {
+		if loopCtx.semanticSessionCeilingSpent {
+			h.markSemanticSessionPlanClosed(key)
+		}
 		return
 	}
 	previous, _ := h.loadSemanticSessionResidue(key)
 	// A read-only plan must not close an open mutating task, including when
 	// the sentence contains 然后 or 再查. Those cues do not finish the task.
-	if previous.Status == semanticResidueOpen && sessionGovernedNeedsHaveSideEffect(previous.Needs) && !sessionGovernedNeedsHaveSideEffect(loopCtx.semanticResidueCandidateNeeds) {
+	// Baseline write and local shell ride on every managed plan; they are
+	// not that plan's task, and they used to replace the open obligation.
+	candidateMutates := semanticResidueTaskMutates(loopCtx.semanticResidueCandidateNeeds)
+	if previous.Status == semanticResidueOpen && semanticResidueTaskMutates(previous.Needs) && !candidateMutates {
+		if loopCtx.semanticSessionCeilingSpent {
+			h.markSemanticSessionPlanClosed(key)
+		}
 		return
 	}
 	summary := semanticResidueSummary(msg.Text, previous.Summary)
-	if strings.TrimSpace(loopCtx.semanticResidueCandidateText) != "" && !semanticUtteranceIsTaskFollowUp(msg.Text) {
+	if semanticClassificationKeepsPriorTask(loopCtx) && previous.Summary != "" {
+		summary = previous.Summary
+	} else if strings.TrimSpace(loopCtx.semanticResidueCandidateText) != "" && strings.TrimSpace(msg.Text) != "" {
 		summary = semanticResidueSummary(loopCtx.semanticResidueCandidateText, "")
 	}
 	status := semanticResidueOpen
-	if !sessionGovernedNeedsHaveSideEffect(loopCtx.semanticResidueCandidateNeeds) {
+	if !candidateMutates {
 		status = semanticResidueCompleted
 	}
 	used, lookupUsed := loopCtx.semanticResidueUsage()
 	lookupFacts := lookupUsed
-	if semanticUtteranceIsTaskFollowUp(msg.Text) {
+	if semanticClassificationKeepsPriorTask(loopCtx) || strings.TrimSpace(msg.Text) == "" {
 		lookupFacts = lookupFacts || previous.LookupFacts
 	}
+	h.captureProducedDocument(msg, loopCtx.semanticResidueCandidateNeeds, resp)
 	h.storeSemanticSessionResidue(key, semanticSessionResidue{
 		Generation:  previous.Generation + 1,
 		Status:      status,
@@ -996,7 +1035,17 @@ func (h *IMMessageHandler) settleSemanticSessionResidue(msg IMUserMessage, loopC
 		Summary:     summary,
 		Remaining:   residueRemainingAfterUse(loopCtx.semanticResidueCandidateNeeds, used),
 		LookupFacts: lookupFacts,
+		PlanClosed:  loopCtx.semanticSessionCeilingSpent,
 	})
+}
+
+func (h *IMMessageHandler) markSemanticSessionPlanClosed(key string) {
+	residue, ok := h.loadSemanticSessionResidue(key)
+	if !ok {
+		return
+	}
+	residue.PlanClosed = true
+	h.storeSemanticSessionResidue(key, residue)
 }
 
 func residueRemainingAfterUse(needs []tool.CapabilityNeed, used map[string]int) map[string]int {
@@ -1018,37 +1067,121 @@ func residueRemainingAfterUse(needs []tool.CapabilityNeed, used map[string]int) 
 	return remaining
 }
 
-// semanticFollowUpRenewsDownloads reports a continuation that asks for
-// another wave of files. "继续补图" must not inherit a spent download
-// ceiling, or the extra photos the user just asked for never start.
+// semanticClassificationRequestsAcquire reports a turn whose authority is
+// another wave of remote files. The wording is not read.
+func semanticClassificationRequestsAcquire(current intent.ClassificationResult) bool {
+	return current.HasLabel(intent.LabelFileDownload)
+}
 
-func semanticFollowUpRenewsDownloads(text string) bool {
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	for _, cue := range []string{"不要下载", "别下载", "不用下载", "不要补图"} {
-		if strings.Contains(compact, cue) {
-			return false
-		}
+// semanticResidueRemainingForFollowUp copies the open ceiling. A download
+// classification drops only the acquire count, so a new wave is published at
+// DownloadRepeatBudget while the rest of the open grant stays spent.
+func semanticResidueRemainingForFollowUp(remaining map[string]int, planned intent.ClassificationResult) map[string]int {
+	out := cloneResidueRemaining(remaining)
+	if len(out) == 0 || !semanticClassificationRequestsAcquire(planned) {
+		return out
 	}
-	// "继续下" also matches "继续下周的报告", and "再下" matches "再下结论".
-	// Only phrases that ask for more files renew the ceiling.
-	for _, cue := range []string{"补图", "补几张", "补照片", "继续下载", "再下载", "再下几", "再下一张", "下几张", "下载图片", "下载照片", "下载剩下", "接着下载"} {
-		if strings.Contains(compact, cue) {
+	delete(out, string(tool.CapabilityArtifactAcquireRemote))
+	return out
+}
+
+// semanticResidueRenewOpenLookup drops a spent evidence ceiling, and a spent
+// document capability only when this residue still carries it. A zero left
+// by some other family stays spent, including a stale file-write ceiling
+// that baseline expansion would otherwise treat as unlimited.
+func semanticResidueRenewOpenLookup(remaining map[string]int, needs []tool.CapabilityNeed) map[string]int {
+	keys := []string{
+		"information.search.web",
+		string(tool.CapabilityInformationFetchWeb),
+	}
+	seen := map[string]bool{
+		"information.search.web":                   true,
+		string(tool.CapabilityInformationFetchWeb): true,
+	}
+	for _, need := range needs {
+		id := string(need.Capability)
+		if id == "" || seen[id] || !semanticResidueNeedRenewsWithLookup(need) {
+			continue
+		}
+		seen[id] = true
+		keys = append(keys, id)
+	}
+	return semanticResidueDropSpent(remaining, keys...)
+}
+
+func semanticResidueNeedRenewsWithLookup(need tool.CapabilityNeed) bool {
+	if semanticPlanCompanionNeed(need) {
+		return false
+	}
+	switch need.Capability {
+	case agentservice.CapabilityLiveDataVisual,
+		agentservice.CapabilityDocumentGenerate,
+		tool.CapabilityDocumentWriteOffice,
+		tool.CapabilityFSWriteLocal,
+		agentservice.CapabilityArtifactDeliverCurrent:
+		return true
+	default:
+		return false
+	}
+}
+
+func semanticPlanCompanionNeed(need tool.CapabilityNeed) bool {
+	if strings.Contains(need.ID, "zz-baseline:") {
+		return true
+	}
+	for _, evidence := range need.EvidenceIDs {
+		if evidence == "intent:baseline_workspace" || evidence == "intent:archetype_bundle" {
 			return true
 		}
 	}
 	return false
 }
 
-// semanticResidueRemainingForFollowUp copies the open ceiling. A download
-// continuation drops only the acquire count, so a new wave is published at
-// DownloadRepeatBudget while the rest of the open grant stays spent.
-func semanticResidueRemainingForFollowUp(remaining map[string]int, text string) map[string]int {
-	out := cloneResidueRemaining(remaining)
-	if len(out) == 0 || !semanticFollowUpRenewsDownloads(text) {
-		return out
+// semanticResidueRemainingForOpenTurn is the ceiling for a continue or
+// unclear turn. A plan that still asks for evidence renews only that
+// evidence and its document, even when every tracked count is already zero.
+// Any other finished obligation renews that capability. A companion zero,
+// including a baseline file write, stays spent.
+func semanticResidueRemainingForOpenTurn(residue semanticSessionResidue, planned intent.ClassificationResult) map[string]int {
+	remaining := semanticResidueRemainingForFollowUp(residue.Remaining, planned)
+	// A continued render ("生成pdf报告") keeps document_generate as primary,
+	// so it is not a lookup. Its spent generate ceiling must still open, or
+	// a positive search count leaves the PDF clamped. Unrelated zeros stay.
+	if semanticClassificationRequestsLookupEvidence(planned) || semanticContinuesOpenDocument(planned, residue) {
+		return semanticResidueRenewOpenLookup(remaining, residue.Needs)
 	}
-	delete(out, string(tool.CapabilityArtifactAcquireRemote))
+	if semanticResidueWaveSpent(residue) && !semanticClassificationRequestsAcquire(planned) {
+		return semanticResidueRenewSpentObligation(residue, remaining)
+	}
+	return remaining
+}
+
+// semanticResidueRenewSpentObligation drops zero counters for the open
+// obligation. A residue with no such need still renews every zero, which is
+// a fully spent read-only map. Companion ceilings are left at zero.
+func semanticResidueRenewSpentObligation(residue semanticSessionResidue, remaining map[string]int) map[string]int {
+	obligation := semanticResidueObligationNeeds(residue.Needs)
+	if len(obligation) == 0 {
+		return semanticResidueDropSpentCounts(remaining)
+	}
+	out := cloneResidueRemaining(remaining)
+	for _, need := range obligation {
+		key := string(need.Capability)
+		if left, ok := out[key]; !ok || left <= 0 {
+			delete(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
+}
+
+func semanticContinuesOpenDocument(planned intent.ClassificationResult, residue semanticSessionResidue) bool {
+	if planned.Primary != intent.LabelDocumentGenerate || !semanticResidueHasDocumentWork(residue.Needs) {
+		return false
+	}
+	return !semanticClassificationRequestsLookupEvidence(planned)
 }
 
 func cloneResidueRemaining(in map[string]int) map[string]int {
@@ -1103,16 +1236,7 @@ func dropUnusedSessionCompanions(needs []tool.CapabilityNeed, remaining map[stri
 }
 
 func unusedSessionCompanion(need tool.CapabilityNeed, remaining, expanded map[string]int) bool {
-	companion := strings.Contains(need.ID, "zz-baseline:")
-	if !companion {
-		for _, evidence := range need.EvidenceIDs {
-			if evidence == "intent:baseline_workspace" || evidence == "intent:archetype_bundle" {
-				companion = true
-				break
-			}
-		}
-	}
-	if !companion {
+	if !semanticPlanCompanionNeed(need) {
 		return false
 	}
 	limit, tracked := remaining[string(need.Capability)]
@@ -1153,12 +1277,20 @@ func semanticPlanHasBaseline(plan tool.ToolPlan) bool {
 	return false
 }
 
+func semanticClassificationKeepsPriorTask(loopCtx *LoopContext) bool {
+	if loopCtx == nil || loopCtx.Runtime.SemanticIntent == nil {
+		return false
+	}
+	current := *loopCtx.Runtime.SemanticIntent
+	if isGenericContinuationPrimary(current) {
+		return true
+	}
+	return strings.Contains(current.Reason, "session residue")
+}
+
 func semanticResidueSummary(current, previous string) string {
 	current = truncateRunes(strings.TrimSpace(current), 120)
 	previous = strings.TrimSpace(previous)
-	if semanticUtteranceIsTaskFollowUp(current) && previous != "" {
-		return previous
-	}
 	if current != "" {
 		return current
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -383,7 +384,7 @@ func (m *rotatingBreakdownMutatingCallbacks) OnLoopInputBreakdown(LoopInputBreak
 
 func (m *retryFreezeFailureCallbacks) BuildToolsForModelRequest(string, int) []map[string]interface{} {
 	m.calls++
-	if m.calls <= 2 {
+	if m.calls == 1 {
 		return []map[string]interface{}{tooldef.BuildToolDef("first_attempt", "first", map[string]interface{}{"type": "object"})}
 	}
 	return []map[string]interface{}{{
@@ -2043,6 +2044,7 @@ func TestRunLoopBindsResponsesStreamProviderResponseID(t *testing.T) {
 }
 
 func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -2063,7 +2065,7 @@ func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	if got := requests.Load(); got != 2 {
-		t.Fatalf("requests=%d, want stream attempt plus fallback", got)
+		t.Fatalf("requests=%d, want stream attempt plus outer retry", got)
 	}
 	if len(cb.breakdown) != 2 {
 		t.Fatalf("breakdowns=%#v, want one record per actual request", cb.breakdown)
@@ -2088,6 +2090,27 @@ func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
 	}
 }
 
+func useLLMRetryBackoff(t *testing.T, initial time.Duration) {
+	t.Helper()
+	previousInitial := initialLLMRetryBackoff
+	previousMax := maxLLMRetryBackoff
+	initialLLMRetryBackoff = initial
+	if maxLLMRetryBackoff < initial {
+		maxLLMRetryBackoff = initial
+	}
+	t.Cleanup(func() {
+		initialLLMRetryBackoff = previousInitial
+		maxLLMRetryBackoff = previousMax
+	})
+}
+
+func useLLMRouteTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := llmRouteTimeoutOverride
+	llmRouteTimeoutOverride = timeout
+	t.Cleanup(func() { llmRouteTimeoutOverride = previous })
+}
+
 func TestLLMRetryBackoff(t *testing.T) {
 	tests := []struct {
 		attempt int
@@ -2110,6 +2133,7 @@ func TestLLMRetryBackoff(t *testing.T) {
 }
 
 func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -2155,7 +2179,409 @@ func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
 	}
 }
 
+func TestRunLoopOuterRetryRetiresEveryFailedSend(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) < 3 {
+			http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	actualTool := tooldef.BuildToolDef("actual_request_tool", "small", map[string]interface{}{"type": "object"})
+	cb := &requestSurfaceBreakdownCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}, rendered: []map[string]interface{}{actualTool}}
+
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests=%d, want the stream plus two outer retries", got)
+	}
+	if len(cb.breakdown) != 3 {
+		t.Fatalf("breakdowns=%d, want one record per actual request", len(cb.breakdown))
+	}
+	var lifecycle []ToolSurfaceEvent
+	for _, event := range cb.events {
+		if event.Kind == ToolSurfaceEventManifestCreated || event.Kind == ToolSurfaceEventTerminalReason {
+			lifecycle = append(lifecycle, event)
+		}
+	}
+	if len(lifecycle) != 6 {
+		t.Fatalf("manifest/terminal events=%d, want one pair per wire attempt: %+v", len(lifecycle), lifecycle)
+	}
+	wantReasons := []ToolSurfaceDisposition{ToolSurfaceTransportFailure, ToolSurfaceTransportFailure, ToolSurfaceResponseSettled}
+	for i := 0; i < len(wantReasons); i++ {
+		manifest := lifecycle[i*2]
+		terminal := lifecycle[i*2+1]
+		if manifest.Kind != ToolSurfaceEventManifestCreated || terminal.Kind != ToolSurfaceEventTerminalReason {
+			t.Fatalf("attempt %d lifecycle=%+v / %+v, want manifest then terminal", i+1, manifest, terminal)
+		}
+		if terminal.TerminalReason != wantReasons[i] || terminal.PayloadDigest == "" || terminal.PayloadDigest != manifest.PayloadDigest || terminal.AuditDigest != manifest.AuditDigest || terminal.ExpectedToolCount != manifest.ExpectedToolCount || terminal.ReplacementMode != manifest.ReplacementMode {
+			t.Fatalf("attempt %d terminal=%+v manifest=%+v", i+1, terminal, manifest)
+		}
+	}
+}
+
+type hostDeadlineCallbacks struct {
+	mockCallbacks
+	ctx context.Context
+}
+
+func (m *hostDeadlineCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	return m.ctx, func(error) {}, nil
+}
+
+func TestRunLoopOuterRetryReplacesExpiredRouteDeadline(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 200*time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			// The client aborts on its own deadline. The server context does not
+			// fire until this handler reads or writes again, so leave on a timer
+			// that outlives that deadline and then return.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests=%d, want the timed-out attempt plus one fresh-deadline retry", got)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed=%s, want the shortened route deadline rather than the 240s floor", elapsed)
+	}
+}
+
+func TestRunLoopResponsesPartialReadTimeoutRetries(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 200*time.Millisecond)
+	var requests atomic.Int64
+	const success = `{"id":"resp_partial","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"steered retry"}]}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		case 2:
+			// Flush a prefix before blocking. An empty body already kept the
+			// read error; this prefix used to be parsed as broken JSON, which
+			// is not retried, so the fresh route deadline never ran.
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"output":[`)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, success)
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"},
+		maxIter: 1, sysPrompt: "sys",
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "steered retry" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests=%d, want the 503 stream, the partial non-stream read, and one fresh-deadline retry", got)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed=%s, want the shortened route deadline rather than the 240s floor", elapsed)
+	}
+}
+
+func TestRunLoopPartialStreamTimeoutDoesNotRetry(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 200*time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error == "" {
+		t.Fatalf("result=%+v, want the partial stream to fail closed", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want no retry after visible stream output", got)
+	}
+	if !strings.Contains(strings.Join(cb.tokens, ""), "hello") {
+		t.Fatalf("tokens=%q, want the partial delta that blocks the retry", cb.tokens)
+	}
+}
+
+type cancelOnRetryProgressCallbacks struct {
+	hostDeadlineCallbacks
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (m *cancelOnRetryProgressCallbacks) OnProgress(text string) {
+	if strings.Contains(text, "秒后重试") {
+		m.once.Do(func() { m.cancel() })
+	}
+}
+
+type retryProgressCallbacks struct {
+	hostDeadlineCallbacks
+	progress []string
+}
+
+func (m *retryProgressCallbacks) OnProgress(text string) {
+	m.progress = append(m.progress, text)
+}
+
+func TestRunLoopHostCancelDuringInFlightRetryDoesNotAnnounceAnother(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		if n >= 2 {
+			cancel()
+		}
+		http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	cb := &retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}, ctx: ctx}}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "cancelled during LLM retry" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests=%d, want the failed attempt plus one in-flight retry", got)
+	}
+	announced := 0
+	for _, text := range cb.progress {
+		if strings.Contains(text, "秒后重试") {
+			announced++
+		}
+	}
+	if announced != 1 {
+		t.Fatalf("retry announcements=%d (%q), want one countdown and no successor toast", announced, cb.progress)
+	}
+}
+
+func TestRunLoopHostCancelDuringRetryBackoffDoesNotSendSuccessor(t *testing.T) {
+	useLLMRetryBackoff(t, 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	cb := &cancelOnRetryProgressCallbacks{
+		hostDeadlineCallbacks: hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+		}, ctx: ctx},
+		cancel: cancel,
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "cancelled during LLM retry" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want the failed attempt and no successor after host cancel", got)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("host cancel waited out the retry backoff: %s", elapsed)
+	}
+}
+
+func TestRunLoopHostDeadlineDoesNotRetry(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	client := server.Client()
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	var roundTrips atomic.Int64
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		roundTrips.Add(1)
+		return base.RoundTrip(req)
+	})
+	cb := &hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}, ctx: ctx}
+
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, client)
+	if result.Error == "" {
+		t.Fatalf("result=%+v, want host deadline failure", result)
+	}
+	if got := roundTrips.Load(); got != 1 {
+		t.Fatalf("round trips=%d, want the host deadline to stop the retry", got)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed=%s, want the host deadline rather than another route timeout", elapsed)
+	}
+}
+
+func TestRunLoopDoesNotRetryTerminalHubDenial(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "period limit", status: http.StatusTooManyRequests, body: `{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`, want: "当前周期额度已用尽"},
+		{name: "rate wait canceled", status: http.StatusRequestTimeout, body: `{"code":"LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED","message":"request canceled while waiting in Hub user rate-limit queue"}`, want: "限流排队等待时被取消"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useLLMRetryBackoff(t, time.Millisecond)
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			cb := &mockCallbacks{
+				config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+			}
+			result := RunLoop(cb, "test", nil, server.Client())
+			if !strings.Contains(result.Error, tc.want) {
+				t.Fatalf("error=%q, want it to contain %q", result.Error, tc.want)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("requests=%d, want one request and no retry or immediate fallback", got)
+			}
+		})
+	}
+}
+
+func TestRunLoopSSEIdleTimeoutUsesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	previousIdle := llm.SSEIdleTimeout
+	llm.SSEIdleTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { llm.SSEIdleTimeout = previousIdle })
+
+	var mu sync.Mutex
+	var arrivals []time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		arrivals = append(arrivals, time.Now())
+		n := len(arrivals)
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	mu.Lock()
+	got := append([]time.Time(nil), arrivals...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("requests=%d, want the stalled stream plus one outer retry", len(got))
+	}
+	if gap := got[1].Sub(got[0]); gap < 150*time.Millisecond {
+		t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed %s, want the idle abort plus one backoff", elapsed)
+	}
+}
+
 func TestRunLoopOuterRetryUsesFrozenSurfaceBeforeInputBreakdownObserver(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	wireDescriptions := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2192,6 +2618,7 @@ func TestRunLoopOuterRetryUsesFrozenSurfaceBeforeInputBreakdownObserver(t *testi
 }
 
 func TestRunLoopOuterRetryFreezeFailureHasOneUncorrelatedIntegrityTerminal(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -2206,8 +2633,8 @@ func TestRunLoopOuterRetryFreezeFailureHasOneUncorrelatedIntegrityTerminal(t *te
 	if !strings.Contains(result.Error, "surface_integrity_failure") {
 		t.Fatalf("result=%+v", result)
 	}
-	if requests.Load() != 2 || cb.calls != 3 {
-		t.Fatalf("requests=%d renders=%d, want stream/fallback predecessor sends and one failed retry render", requests.Load(), cb.calls)
+	if requests.Load() != 1 || cb.calls != 2 {
+		t.Fatalf("requests=%d renders=%d, want the stream send and one failed retry render", requests.Load(), cb.calls)
 	}
 	var terminals []ToolSurfaceEvent
 	for _, event := range cb.events {
@@ -2215,20 +2642,19 @@ func TestRunLoopOuterRetryFreezeFailureHasOneUncorrelatedIntegrityTerminal(t *te
 			terminals = append(terminals, event)
 		}
 	}
-	if len(terminals) != 3 {
-		t.Fatalf("terminal events=%+v, want stream/fallback predecessors plus failed successor", terminals)
+	if len(terminals) != 2 {
+		t.Fatalf("terminal events=%+v, want the stream predecessor plus the failed retry", terminals)
 	}
-	for _, predecessor := range terminals[:2] {
-		if predecessor.TerminalReason != ToolSurfaceTransportFailure || predecessor.PayloadDigest == "" {
-			t.Fatalf("predecessor terminal=%+v", predecessor)
-		}
+	if predecessor := terminals[0]; predecessor.TerminalReason != ToolSurfaceTransportFailure || predecessor.PayloadDigest == "" {
+		t.Fatalf("predecessor terminal=%+v", predecessor)
 	}
-	if terminal := terminals[2]; terminal.TerminalReason != ToolSurfaceIntegrityFailure || terminal.PayloadDigest != "" || terminal.AuditDigest != "" || terminal.ExpectedToolCount != 0 || terminal.ReplacementMode != "" || terminal.FailureKind != ToolSurfaceFailureIntegrity {
+	if terminal := terminals[1]; terminal.TerminalReason != ToolSurfaceIntegrityFailure || terminal.PayloadDigest != "" || terminal.AuditDigest != "" || terminal.ExpectedToolCount != 0 || terminal.ReplacementMode != "" || terminal.FailureKind != ToolSurfaceFailureIntegrity {
 		t.Fatalf("retry freeze-failure terminal=%+v", terminal)
 	}
 }
 
 func TestRunLoopOuterRetryRebuildsToolSurfaceInsteadOfReusingPredecessor(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	var surfaces [][]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2279,6 +2705,7 @@ func TestRunLoopOuterRetryRebuildsToolSurfaceInsteadOfReusingPredecessor(t *test
 }
 
 func TestRunLoopIssuesSuccessorEpochBeforeReplacementRender(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	var surfaces [][]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2537,6 +2964,7 @@ func TestRunLoopAmbiguousDeliveryContainmentBlocksFallbackAndRetry(t *testing.T)
 }
 
 func TestRunLoopReportsAmbiguousPredecessorBeforeGenericFallback(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -2555,7 +2983,7 @@ func TestRunLoopReportsAmbiguousPredecessorBeforeGenericFallback(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	if requests.Load() != 2 {
-		t.Fatalf("requests=%d, want streaming predecessor plus fallback", requests.Load())
+		t.Fatalf("requests=%d, want streaming predecessor plus outer retry", requests.Load())
 	}
 	if len(cb.starts) != 2 || len(cb.finishes) != 2 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery || cb.finishes[1] != ToolSurfaceResponseConsumed {
 		t.Fatalf("starts=%#v finishes=%#v", cb.starts, cb.finishes)
@@ -2616,6 +3044,19 @@ type retryBackoffReplanCallbacks struct {
 	contexts        atomic.Int32
 }
 
+// operationCancelReplanCallbacks matches the desktop steer path: RequestReplan
+// both advances the revision and cancels the current LLM operation context.
+type operationCancelReplanCallbacks struct {
+	*mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	contexts        atomic.Int32
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+}
+
 type retryBackoffStopCallbacks struct {
 	*deliveryObserverCallbacks
 	requests atomic.Int32
@@ -2663,6 +3104,39 @@ func (m *retryBackoffReplanCallbacks) TransformConversation(conversation []inter
 	}
 	next := append([]interface{}(nil), conversation...)
 	return append(next, map[string]string{"role": "user", "content": "steer during retry backoff"})
+}
+
+func (m *operationCancelReplanCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	m.requestRevision.Store(m.revision.Load())
+	m.contexts.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.cancel = cancel
+	m.mu.Unlock()
+	return ctx, func(error) { cancel() }, nil
+}
+
+func (m *operationCancelReplanCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *operationCancelReplanCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "steer during operation cancel"})
+}
+
+func (m *operationCancelReplanCallbacks) steer() {
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	m.mu.Lock()
+	cancel := m.cancel
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (m *retryBackoffStopCallbacks) ShouldStop() bool {
@@ -3087,6 +3561,106 @@ func TestRunLoop_ReplanInterruptsTransientRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestRunLoop_ReplanCancelDuringRetryBackoffStillSteers(t *testing.T) {
+	var requests atomic.Int32
+	var sawSteer atomic.Bool
+	cb := &operationCancelReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 1 {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				cb.steer()
+			}()
+			return nil, newLLMHTTPError(http.StatusServiceUnavailable, "temporary")
+		}
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "steer during operation cancel") {
+				sawSteer.Store(true)
+			}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"steered after cancel"}}]}`))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered after cancel" || !sawSteer.Load() {
+		t.Fatalf("RunLoop result=%+v sawSteer=%v", result, sawSteer.Load())
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("operation-cancel replan waited through retry backoff: %v", elapsed)
+	}
+	if requests.Load() != 2 || cb.contexts.Load() != 2 {
+		t.Fatalf("requests=%d contexts=%d, want 2/2", requests.Load(), cb.contexts.Load())
+	}
+}
+
+func TestRunLoopEmptyResponseSurvivesOperationFinishCancel(t *testing.T) {
+	var requests atomic.Int32
+	cb := &operationCancelReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 2, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		body := `{"choices":[{"message":{"role":"assistant","content":""}}]}`
+		if n > 1 {
+			body = `{"choices":[{"message":{"role":"assistant","content":"recovered"}}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "recovered" {
+		t.Fatalf("RunLoop result=%+v", result)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d, want the empty reply plus one recovery", requests.Load())
+	}
+	elapsed := time.Since(started)
+	if elapsed < 500*time.Millisecond || elapsed >= 3*time.Second {
+		t.Fatalf("elapsed=%s, want the 1s empty backoff rather than an immediate cancel", elapsed)
+	}
+}
+
+func TestRunLoop_ReplanCancelDuringEmptyBackoffStillSteers(t *testing.T) {
+	var requests atomic.Int32
+	cb := &operationCancelReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 1 {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				cb.steer()
+			}()
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":""}}]}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"steered after empty cancel"}}]}`))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered after empty cancel" {
+		t.Fatalf("RunLoop result=%+v", result)
+	}
+	if elapsed := time.Since(started); elapsed >= 800*time.Millisecond {
+		t.Fatalf("operation-cancel replan waited through empty-response backoff: %v", elapsed)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d, want the empty reply plus the steered replacement", requests.Load())
+	}
+}
+
 func TestRunLoop_StopDuringRetryBackoffDoesNotCreateSuccessorSurface(t *testing.T) {
 	cb := &retryBackoffStopCallbacks{deliveryObserverCallbacks: &deliveryObserverCallbacks{mockCallbacks: mockCallbacks{
 		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key", WireAPI: "responses"},
@@ -3138,6 +3712,35 @@ func TestRunLoop_ReplanBeforeToolCommitPreventsStaleSideEffect(t *testing.T) {
 	}
 	if len(cb.toolCalls) != 0 {
 		t.Fatalf("stale tool executed despite steering: %v", cb.toolCalls)
+	}
+}
+
+func TestRunLoopHostCancelDuringEmptyResponseBackoffDoesNotSendSuccessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+		body := `{"choices":[{"message":{"role":"assistant","content":""}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	cb := &hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"}, maxIter: 2, sysPrompt: "sys",
+	}, ctx: ctx}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client)
+	if result.Error != "cancelled" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want no recovery request after host cancel", got)
+	}
+	if elapsed := time.Since(started); elapsed >= 800*time.Millisecond {
+		t.Fatalf("host cancel waited through empty-response backoff: %s", elapsed)
 	}
 }
 
@@ -5555,6 +6158,32 @@ func TestBuildEmptyResponseRecovery_Error(t *testing.T) {
 	prompt := buildEmptyResponseRecovery(1, "ssh", outcome, "deploy to server")
 	if !strings.Contains(prompt, "错误") || !strings.Contains(prompt, "ssh") {
 		t.Fatal("recovery prompt should mention error and tool name")
+	}
+}
+
+func TestBuildEmptyResponseRecovery_HostDirectiveKeepsNextStep(t *testing.T) {
+	outcome := toolOutcome{
+		kind:      toolOutcomeError,
+		snippet:   "工具 generate_pdf 已由主机授权并加入当前工具面，请立即重新发起对 generate_pdf 的调用（参数不变）。",
+		directive: true,
+	}
+	prompt := buildEmptyResponseRecovery(1, "generate_pdf", outcome, "继续完成 兰州天气")
+	if strings.Contains(prompt, "返回了错误") || strings.Contains(prompt, "尝试其他方法") {
+		t.Fatalf("a host directive must not be described as a failed tool: %q", prompt)
+	}
+	if !strings.Contains(prompt, "generate_pdf") || !strings.Contains(prompt, "不要改用其他方法") || !strings.Contains(prompt, "上一条工具结果") {
+		t.Fatalf("recovery must keep the host next step: %q", prompt)
+	}
+	later := buildEmptyResponseRecovery(2, "generate_pdf", outcome, "继续完成 兰州天气")
+	if strings.Contains(later, "或者告诉用户") || strings.Contains(later, "返回了错误") || strings.Contains(later, "尝试其他方法") {
+		t.Fatalf("a later empty must not offer abandoning the host step: %q", later)
+	}
+	if !strings.Contains(later, "继续完成 兰州天气") || !strings.Contains(later, "上一条工具结果") || !strings.Contains(later, "只做上一条工具结果里写明的下一步") {
+		t.Fatalf("a later empty must keep the goal and the named next step: %q", later)
+	}
+	urgent := buildEmptyResponseRecovery(3, "generate_pdf", outcome, "继续完成 兰州天气")
+	if strings.Contains(urgent, "回复内容或调用工具") || strings.Contains(urgent, "或者告诉用户") {
+		t.Fatalf("an urgent directive must not offer a different next step: %q", urgent)
 	}
 }
 

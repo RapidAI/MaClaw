@@ -394,7 +394,9 @@ describe('SidebarNavRail favorite employees', () => {
 
         const expertsEntry = screen.getByTestId('sidebar-utilities-nav');
         const toolsEntry = screen.getByTestId('sidebar-tools-nav');
-        expect(expertsEntry.textContent).toContain('AI 专家');
+        expect(expertsEntry.textContent).toContain('专业功能');
+        expect(screen.getByTestId('sidebar-pro-features-icon')).toBeTruthy();
+        expect(expertsEntry.textContent).not.toContain('AI 专家');
         expect(expertsEntry.textContent).not.toContain('专家&工具');
         expect(toolsEntry.textContent).toContain('工具');
         expect(toolsEntry.getAttribute('title')).toBe('工具');
@@ -521,7 +523,41 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
     });
 
-    it('keeps skills and MCP only on the extensions menu, not the system menu', () => {
+    it('opens the Token Bank settings tab from the extensions menu', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+        const openSettingsEvents: Array<{ tab?: string }> = [];
+        const listener = (event: Event) => {
+            openSettingsEvents.push((event as CustomEvent<{ tab?: string }>).detail);
+        };
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
+        try {
+            fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+            fireEvent.click(screen.getByTestId('extensions-menu-tokenbank'));
+
+            expect(openSettingsEvents).toEqual([{ tab: 'tokenBank' }]);
+            expect(props.switchTool).not.toHaveBeenCalled();
+            expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
+        } finally {
+            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
+        }
+    });
+
+    it('labels the Token Bank entry per language', () => {
+        const cases: Array<[string, string]> = [
+            ['zh-Hans', 'Token 银行'],
+            ['zh-Hant', 'Token 銀行'],
+            ['en', 'Token Bank'],
+        ];
+
+        for (const [lang, expected] of cases) {
+            const props = renderRail({ lang });
+            fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+            expect(screen.getByTestId('extensions-menu-tokenbank').textContent).toContain(expected);
+            props.unmount();
+        }
+    });
+
+    it('keeps skills, MCP and Token Bank only on the extensions menu, not the system menu', () => {
         renderRail({ lang: 'zh-Hans', gossipAllowed: false, config: {} });
 
         fireEvent.click(screen.getByTestId('system-menu-trigger'));
@@ -532,6 +568,7 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual([
             'extensions-menu-skills',
             'extensions-menu-mcp',
+            'extensions-menu-tokenbank',
         ]);
     });
 
@@ -588,6 +625,138 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
     });
 
+});
+
+describe('SidebarNavRail professional features menu', () => {
+    it('opens AI experts and workflows from the 专业功能 rail entry', () => {
+        const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true });
+        const entry = screen.getByTestId('sidebar-utilities-nav');
+
+        fireEvent.click(entry);
+
+        expect(screen.getByTestId('pro-features-popup-menu')).toBeTruthy();
+        expect(entry.getAttribute('aria-expanded')).toBe('true');
+        expect(entry.getAttribute('aria-haspopup')).toBe('menu');
+        expect(props.switchTool).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByTestId('pro-features-menu-utilities'));
+        expect(props.switchTool).toHaveBeenCalledWith('utilities');
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
+
+        fireEvent.click(entry);
+        fireEvent.click(screen.getByTestId('pro-features-menu-workflows'));
+        expect(props.switchTool).toHaveBeenCalledWith('workflows');
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
+    });
+
+    it('labels the menu in English and Traditional Chinese', () => {
+        const english = renderRail({ lang: 'en', showToolsEntry: true });
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.getByTestId('sidebar-utilities-nav').textContent).toContain('Features');
+        expect(screen.getByTestId('pro-features-menu-utilities').textContent).toContain('AI Experts');
+        expect(screen.getByTestId('pro-features-menu-workflows').textContent).toContain('Workflows');
+        english.unmount();
+
+        renderRail({ lang: 'zh-Hant', showToolsEntry: true });
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.getByTestId('sidebar-utilities-nav').textContent).toContain('專業功能');
+        expect(screen.getByTestId('pro-features-menu-utilities').textContent).toContain('AI 專家');
+        expect(screen.getByTestId('pro-features-menu-workflows').textContent).toContain('工作流');
+    });
+
+    it('marks the 专业功能 entry active on the experts and workflows pages', () => {
+        const experts = renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'utilities' });
+        expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('aria-current')).toBe('page');
+        experts.unmount();
+
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows' });
+        expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('aria-current')).toBe('page');
+    });
+
+    it('marks the open destination inside the professional features menu', () => {
+        const view = renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'utilities' });
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.getByTestId('pro-features-menu-utilities').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('pro-features-menu-workflows').getAttribute('aria-current')).toBeNull();
+        view.unmount();
+
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows' });
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.getByTestId('pro-features-menu-workflows').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('pro-features-menu-utilities').getAttribute('aria-current')).toBeNull();
+        expect(document.activeElement).toBe(screen.getByTestId('pro-features-menu-workflows'));
+    });
+
+    it('opens the only remaining destination directly when workflow is disabled', () => {
+        const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true, config: { show_workflow_entry: false } });
+        const entry = screen.getByTestId('sidebar-utilities-nav');
+
+        fireEvent.click(entry);
+
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
+        expect(entry.getAttribute('aria-haspopup')).toBeNull();
+        expect(props.switchTool).toHaveBeenCalledWith('utilities');
+    });
+
+    it('opens workflows directly when the experts entry is disabled', () => {
+        const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true, showUtilitiesEntry: false });
+        const entry = screen.getByTestId('sidebar-utilities-nav');
+
+        fireEvent.click(entry);
+
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
+        expect(props.switchTool).toHaveBeenCalledWith('workflows');
+    });
+
+    it('hides 专业功能 when both destinations are disabled', () => {
+        renderRail({
+            lang: 'zh-Hans',
+            showToolsEntry: true,
+            showUtilitiesEntry: false,
+            config: { show_workflow_entry: false },
+        });
+
+        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('style')).toContain('display: none');
+    });
+
+    it('does not treat a disabled workflow page as the current professional feature', () => {
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows', config: { show_workflow_entry: false } });
+
+        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('aria-current')).toBeNull();
+        expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(false);
+    });
+
+    it('keeps the professional features menu exclusive with the extensions menu', () => {
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true });
+
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.getByTestId('pro-features-popup-menu')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+
+        fireEvent.mouseDown(screen.getByTestId('sidebar-utilities-nav'));
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
+        expect(screen.getByTestId('pro-features-popup-menu')).toBeTruthy();
+    });
+
+    it('closes the professional features menu when its rail entry is clicked again', () => {
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true });
+        const trigger = screen.getByTestId('sidebar-utilities-nav');
+
+        fireEvent.click(trigger);
+        expect(screen.getByTestId('pro-features-popup-menu')).toBeTruthy();
+
+        fireEvent.mouseDown(trigger);
+        fireEvent.click(trigger);
+
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
+        expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    });
 });
 
 describe('SidebarNavRail library menu', () => {

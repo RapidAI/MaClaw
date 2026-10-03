@@ -248,6 +248,8 @@ func cloudWorkspaceAPIError(status int, data []byte) error {
 		return &cloudWorkspaceBandwidthError{retryAfter: retry}
 	case "CLOUD_WORKSPACE_IN_USE":
 		return fmt.Errorf("云端工作区占用中（其他设备）")
+	case "CLOUD_WORKSPACE_OBJECT_CORRUPT":
+		return fmt.Errorf("%s", cloudWorkspaceTr("A file in this cloud workspace is damaged and cannot be read.", "云端工作区中的文件已损坏，无法读取", "雲端工作區中的檔案已損壞，無法讀取"))
 	case "NOT_FOUND":
 		if strings.Contains(strings.ToLower(payload.Message), "share") {
 			return wrapCloudWorkspaceShareError(errCloudWorkspaceShareRevoked)

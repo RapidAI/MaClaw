@@ -4,15 +4,10 @@
  * LLM cache, language). Session/window-level actions stay in the title bar.
  * Optional statusSlot rides the same row on the right (shell status / warnings).
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { LoadConfig, PatchConfigFields } from "../../../wailsjs/go/main/App";
 import { EVENT_MACLAW_CONFIG_CHANGED } from "../../constants/events";
-import { AssistantQuickModelMenuPopover } from "./AssistantQuickModelMenuPopover";
-import {
-    modelIdsEqual,
-    resolveQuickModelList,
-    resolveQuickModelMenuSections,
-} from "./assistantQuickModelMenu";
+import { AssistantQuickModelSwitcher } from "./AssistantQuickModelSwitcher";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { TTSLevelBars } from "./TTSLevelBars";
@@ -33,6 +28,7 @@ type Props = {
     availableProviders?: SidebarLLMProviderSummary[];
     currentModel?: string;
     modelOptions?: string[];
+    modelMultipliers?: Record<string, number>;
     modelsLoading?: boolean;
     /** Stable provider id (legacy callers may supply a display name as fallback). */
     onSwitchProvider?: (providerID: string) => void;
@@ -52,6 +48,8 @@ type Props = {
     statusSlot?: ReactNode;
     /** Hide the bar without unmounting (search overlay owns the assistant pane). */
     hidden?: boolean;
+    /** The composer toolbar owns the switcher, so this bar should not repeat it. */
+    hideModelChip?: boolean;
 };
 
 const LANG_CYCLE: Record<string, string> = {
@@ -60,15 +58,13 @@ const LANG_CYCLE: Record<string, string> = {
     "zh-Hant": "zh-Hans",
 };
 
-const EMPTY_PROVIDERS: SidebarLLMProviderSummary[] = [];
-
 function langShortLabel(lang: string): string {
     if (lang === "en") return "EN";
     if (lang === "zh-Hant") return "繁";
     return "中";
 }
 
-export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot, hidden = false }: Props) {
+export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot, hidden = false, hideModelChip = false }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -160,96 +156,6 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         });
     }, [nextPatchSeq, isLatestPatch]);
 
-    // Model/provider menu — neutral picker chip; popover is portaled (no green "ON" look).
-    const [menuOpen, setMenuOpen] = useState(false);
-    const modelChipRef = useRef<HTMLButtonElement | null>(null);
-    // State mirror of the chip element so the popover re-measures when the anchor mounts.
-    const [modelChipEl, setModelChipEl] = useState<HTMLButtonElement | null>(null);
-    const setModelChipRef = useCallback((el: HTMLButtonElement | null) => {
-        modelChipRef.current = el;
-        setModelChipEl(el);
-    }, []);
-
-    const providers = availableProviders ?? EMPTY_PROVIDERS;
-    const modelList = useMemo(() => resolveQuickModelList(modelOptions, currentModel), [modelOptions, currentModel]);
-    const { currentProvider, switchableProviders, showProviders, showModels } = useMemo(
-        () => resolveQuickModelMenuSections({
-            providers,
-            modelList,
-            currentModel,
-            modelsLoading,
-            hasSwitchModel: !!onSwitchModel,
-        }),
-        [providers, modelList, currentModel, modelsLoading, onSwitchModel],
-    );
-    const isReadOnlyFollowingCoding = activeProfile === "coding" && codingInheritsAssistant;
-    const hasModelMenu = activeProfile !== "none" && (isReadOnlyFollowingCoding || !!(onSwitchProvider || onSwitchModel))
-        && (providers.length > 0 || modelList.length > 0 || !!String(currentModel || "").trim());
-    // A following coding profile cannot be edited from this shortcut, but the
-    // chip must still disclose the model that will actually be used. Otherwise
-    // users have to leave their task just to answer "what model am I on?".
-    const normalModelChipLabel = isReadOnlyFollowingCoding
-        ? `${tr("Coding · Follows assistant", "编程 · 跟随助手", "編程 · 跟隨助手")}${String(currentModel || "").trim() ? ` · ${String(currentModel).trim()}` : ""}`
-        : `${activeProfile === "coding" ? tr("Coding", "编程", "編程") : tr("Assistant", "助手", "助手")} · ${String(currentModel || "").trim() || currentProvider?.name || tr("Model", "模型", "模型")}`;
-
-    const modelChipLabel = providerSelectionPending && !isReadOnlyFollowingCoding
-        ? `${activeProfile === "coding" ? tr("Coding", "编程", "編程") : tr("Assistant", "助手", "助手")} · ${currentProvider?.name || tr("Provider", "服务商", "服務商")} · ${tr("choose model", "选择模型", "選擇模型")}`
-        : normalModelChipLabel;
-
-    const closeModelMenu = useCallback(() => {
-        setMenuOpen(false);
-        if (!profileSavePending) onDismissModelMenu?.();
-        // Return focus to the chip after dismiss (Escape / outside click / selection).
-        modelChipRef.current?.focus();
-    }, [onDismissModelMenu, profileSavePending]);
-
-    // The bar remains mounted while a System page is shown and its picker is
-    // portaled to document.body. If navigation or an LLM-state refresh removes
-    // the picker, discard a staged provider too: otherwise it could silently
-    // become the starting point for a later, unrelated switch.
-    useEffect(() => {
-        if (menuOpen && (!active || !hasModelMenu)) {
-            setMenuOpen(false);
-            if (!profileSavePending) onDismissModelMenu?.();
-        }
-    }, [active, hasModelMenu, menuOpen, onDismissModelMenu, profileSavePending]);
-
-    // Outside-click / Escape / listbox focus live in AssistantQuickModelMenuPopover.
-
-    const openModelMenu = useCallback(() => {
-        if (profileSavePending) return;
-        if (isReadOnlyFollowingCoding) {
-            onOpenLLMSettings?.();
-            return;
-        }
-        // Side effect stays out of the state updater (StrictMode double-invokes updaters).
-        if (menuOpen) {
-            setMenuOpen(false);
-            onDismissModelMenu?.();
-            return;
-        }
-        setMenuOpen(true);
-        // Refresh catalog; parent falls back to configured model if fetch fails.
-        onOpenModelMenu?.();
-    }, [isReadOnlyFollowingCoding, menuOpen, onDismissModelMenu, onOpenLLMSettings, onOpenModelMenu, profileSavePending]);
-
-    const handleSelectProvider = useCallback((name: string) => {
-        if (profileSavePending) return;
-        // Provider selection only stages the target. Keep the picker open so
-        // the next click can choose its model and commit the two together.
-        // This avoids a misleading transient state where the provider appears
-        // switched while the profile still runs with its previous assignment.
-        onSwitchProvider?.(name);
-    }, [onSwitchProvider, profileSavePending]);
-
-    const handleSelectModel = useCallback((modelId: string) => {
-        if (profileSavePending) return;
-        const next = String(modelId || "").trim();
-        closeModelMenu();
-        if (!next || modelIdsEqual(next, currentModel)) return;
-        onSwitchModel?.(next);
-    }, [closeModelMenu, currentModel, onSwitchModel, profileSavePending]);
-
     const chipStyle = useCallback((active: boolean): CSSProperties => ({
         display: "inline-flex",
         alignItems: "center",
@@ -269,12 +175,6 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         height: 20,
     }), [t.titleBarBorder, t.fieldBg, t.promptColor]);
 
-    // Model chip is a picker, not a boolean switch — never use the green "ON" chip style.
-    const modelChipStyle = useMemo((): CSSProperties => ({
-        ...chipStyle(false),
-        gap: 5,
-    }), [chipStyle]);
-
     const dot = (active: boolean) => (
         <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: active ? "var(--theme-success, #4f7f6f)" : t.promptColor, opacity: active ? 1 : 0.4, transition: "all 150ms ease" }} />
     );
@@ -288,57 +188,26 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         // height) so safe-area padding extends the bar instead of squeezing chips.
         <div data-testid="assistant-quick-settings-bar" hidden={hidden} aria-hidden={hidden || undefined} style={{ display: hidden ? "none" : "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 10px", paddingBottom: "env(safe-area-inset-bottom, 0px)", borderTop: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, overflow: "hidden", flexShrink: 0, boxSizing: "border-box", minWidth: 0 }}>
             <div data-testid="assistant-quick-settings-chips" className="aqs-chips">
-            {hasModelMenu && (
-                <div className="aqs-model-wrap">
-                    <button
-                        type="button"
-                        ref={setModelChipRef}
-                        data-testid="qs-model-chip"
-                        onClick={openModelMenu}
-                        disabled={profileSavePending}
-                        aria-expanded={isReadOnlyFollowingCoding ? undefined : menuOpen}
-                        aria-haspopup={isReadOnlyFollowingCoding ? undefined : "listbox"}
-                        style={modelChipStyle}
-                        // Accessible name comes from visible model label (do not override with a generic aria-label).
-                        title={isReadOnlyFollowingCoding
-                            ? tr("View coding model settings", "查看编程模型设置", "檢視編程模型設定")
-                            : tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}
-                    >
-                        <span className="aqs-model-label">{modelChipLabel}</span>
-                        <svg
-                            width="7"
-                            height="7"
-                            viewBox="0 0 8 8"
-                            aria-hidden="true"
-                            focusable="false"
-                            style={{ transform: menuOpen ? "rotate(180deg)" : "none", transition: "transform 120ms ease", opacity: 0.75 }}
-                        >
-                            <path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                    </button>
-                    {!isReadOnlyFollowingCoding && <AssistantQuickModelMenuPopover
-                        open={menuOpen}
-                        anchorEl={modelChipEl}
-                        theme={t}
-                        listLabel={tr("Select provider or model", "选择服务商或模型", "選擇服務商或模型")}
-                        providersLabel={tr("Providers", "服务商", "服務商")}
-                        modelsLabel={tr("Models", "模型", "模型")}
-                        loadingModelsLabel={tr("Models (loading…)", "模型（加载中…）", "模型（載入中…）")}
-                        emptyModelsLabel={tr("No models listed", "暂无模型列表", "暫無模型列表")}
-                        loadingModelsHint={tr("Loading models…", "正在加载模型…", "正在載入模型…")}
-                        currentProvider={currentProvider}
-                        switchableProviders={switchableProviders}
-                        showProviders={showProviders}
-                        showModels={showModels}
-                        modelList={modelList}
-                        currentModel={currentModel}
-                        modelsLoading={modelsLoading}
-                        onSelectProvider={handleSelectProvider}
-                        onSelectModel={handleSelectModel}
-                        onClose={closeModelMenu}
-                    />
-                    }
-                </div>
+            {!hideModelChip && (
+                <AssistantQuickModelSwitcher
+                    lang={lang}
+                    theme={t}
+                    active={active}
+                    availableProviders={availableProviders}
+                    currentModel={currentModel}
+                    modelOptions={modelOptions}
+                    modelMultipliers={modelMultipliers}
+                    modelsLoading={modelsLoading}
+                    onSwitchProvider={onSwitchProvider}
+                    onSwitchModel={onSwitchModel}
+                    onOpenModelMenu={onOpenModelMenu}
+                    onDismissModelMenu={onDismissModelMenu}
+                    activeProfile={activeProfile}
+                    codingInheritsAssistant={codingInheritsAssistant}
+                    providerSelectionPending={providerSelectionPending}
+                    profileSavePending={profileSavePending}
+                    onOpenLLMSettings={onOpenLLMSettings}
+                />
             )}
             <button type="button" data-testid="qs-tts-toggle" role="switch" aria-checked={!!ttsEnabled} onClick={onToggleTts} style={{ ...chipStyle(!!ttsEnabled), position: "relative" }} title={ttsEnabled ? tr("Voice readback ON - click to disable", "语音播报已开启，点击关闭", "語音播報已開啟，點擊關閉") : tr("Voice readback OFF - click to enable", "语音播报已关闭，点击开启", "語音播報已關閉，點擊開啟")} aria-label={ttsEnabled ? tr("Voice readback ON - click to disable", "语音播报已开启，点击关闭", "語音播報已開啟，點擊關閉") : tr("Voice readback OFF - click to enable", "语音播报已关闭，点击开启", "語音播報已關閉，點擊開啟")}>
                 <span aria-hidden="true" style={{ display: "inline-flex", opacity: ttsPlaying ? 0 : 1, transition: "opacity 150ms" }}>

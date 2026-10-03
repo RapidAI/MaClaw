@@ -228,27 +228,28 @@ func (a *App) deferHubViewerTokenRecovery(delay time.Duration) {
 }
 
 type HubLLMAuthorizedModel struct {
-	Name            string   `json:"name"`
-	ProviderIDs     []string `json:"provider_ids,omitempty"`
-	ServiceGroupIDs []string `json:"service_group_ids,omitempty"`
+	Name              string   `json:"name"`
+	ProviderIDs       []string `json:"provider_ids,omitempty"`
+	ServiceGroupIDs   []string `json:"service_group_ids,omitempty"`
+	BillingMultiplier float64  `json:"billing_multiplier,omitempty"`
 }
 
 type HubLLMActiveGrant struct {
-	ID                string              `json:"id,omitempty"`
-	ServiceGroupID    string              `json:"service_group_id"`
-	Source            string              `json:"source"`
-	CardID            string              `json:"card_id,omitempty"`
-	CardOrderID       string              `json:"card_order_id,omitempty"`
-	StartsAt          string              `json:"starts_at"`
-	ExpiresAt         string              `json:"expires_at"`
-	Permanent         bool                `json:"permanent,omitempty"`
-	RollingFiveHour   bool                `json:"rolling_five_hour,omitempty"`
-	Active            bool                `json:"active"`
-	Status            string              `json:"status,omitempty"`
-	StatusReason      string              `json:"status_reason,omitempty"`
-	CreditsTotal      float64             `json:"credits_total,omitempty"`
-	CreditsUsed       float64             `json:"credits_used,omitempty"`
-	CreditsAvailable  float64             `json:"credits_available,omitempty"`
+	ID               string  `json:"id,omitempty"`
+	ServiceGroupID   string  `json:"service_group_id"`
+	Source           string  `json:"source"`
+	CardID           string  `json:"card_id,omitempty"`
+	CardOrderID      string  `json:"card_order_id,omitempty"`
+	StartsAt         string  `json:"starts_at"`
+	ExpiresAt        string  `json:"expires_at"`
+	Permanent        bool    `json:"permanent,omitempty"`
+	RollingFiveHour  bool    `json:"rolling_five_hour,omitempty"`
+	Active           bool    `json:"active"`
+	Status           string  `json:"status,omitempty"`
+	StatusReason     string  `json:"status_reason,omitempty"`
+	CreditsTotal     float64 `json:"credits_total,omitempty"`
+	CreditsUsed      float64 `json:"credits_used,omitempty"`
+	CreditsAvailable float64 `json:"credits_available,omitempty"`
 	// HeldCredits mirrors the hub's per-group in-flight reservation holds so
 	// the sidebar can explain why spendable credit is below the raw period
 	// window remaining. Older hubs omit the field; zero is a safe default.

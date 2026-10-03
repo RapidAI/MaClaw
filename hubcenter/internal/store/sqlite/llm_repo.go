@@ -140,6 +140,208 @@ func EnsureLLMTables(db *sql.DB) error {
 			PRIMARY KEY (hub_id, tenant_id, request_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_proxy_billing_attempts_completed_at ON llm_proxy_billing_attempts(completed_at)`,
+
+		// -------------------------------------------------------------------
+		// Token Bank (model sharing). All monetary columns are INTEGER
+		// microcredits (1 credit = 1e6) so hubcenter-side arithmetic never
+		// drifts; the only float conversion happens when a hub Grant is minted.
+		// -------------------------------------------------------------------
+
+		// The shared upstream: one row per provider a user hands to the pool.
+		`CREATE TABLE IF NOT EXISTS token_bank_shares (
+			id                    TEXT PRIMARY KEY,
+			owner_user_id         TEXT NOT NULL,
+			owner_email           TEXT NOT NULL,
+			client_instance_id    TEXT NOT NULL DEFAULT '',
+			member_id_prefix      TEXT NOT NULL DEFAULT '',
+			display_name          TEXT NOT NULL,
+			api_url               TEXT NOT NULL,
+			protocol              TEXT NOT NULL DEFAULT 'openai',
+			encrypted_api_key     TEXT NOT NULL,
+			key_fingerprint       TEXT NOT NULL DEFAULT '',
+			status                TEXT NOT NULL DEFAULT 'active',
+			visibility            TEXT NOT NULL DEFAULT 'public',
+			service_group_id      TEXT NOT NULL DEFAULT '',
+			max_input_tokens_per_request  INTEGER NOT NULL DEFAULT 0,
+			max_output_tokens_per_request INTEGER NOT NULL DEFAULT 0,
+			daily_token_cap       INTEGER NOT NULL DEFAULT 0,
+			monthly_token_cap     INTEGER NOT NULL DEFAULT 0,
+			total_earned_micro    INTEGER NOT NULL DEFAULT 0,
+			last_error            TEXT NOT NULL DEFAULT '',
+			paused_reason         TEXT NOT NULL DEFAULT '',
+			created_at            TEXT NOT NULL,
+			updated_at            TEXT NOT NULL,
+			audience_json         TEXT NOT NULL DEFAULT '[]',
+			extra_keys_json       TEXT NOT NULL DEFAULT '[]'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_shares_owner ON token_bank_shares(owner_user_id, status)`,
+		// One key must not be shared twice by the same user. Withdrawal is a hard
+		// delete, so the row simply disappears and stops conflicting.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_shares_dedup ON token_bank_shares(owner_user_id, key_fingerprint)`,
+
+		// One row per shared model. tier/tier_multiplier are the source of truth
+		// for the settlement rate; array_id only says which dispatch group the
+		// member sits in and its multiplier is deliberately neutral.
+		`CREATE TABLE IF NOT EXISTS token_bank_models (
+			id                  TEXT PRIMARY KEY,
+			share_id            TEXT NOT NULL,
+			model_name          TEXT NOT NULL,
+			member_id           TEXT NOT NULL DEFAULT '',
+			array_id            TEXT NOT NULL DEFAULT 'token_bank_mid',
+			tier                TEXT NOT NULL DEFAULT 'mid',
+			tier_multiplier     REAL NOT NULL DEFAULT 1,
+			enabled             INTEGER NOT NULL DEFAULT 1,
+			available           INTEGER NOT NULL DEFAULT 0,
+			last_probe_at       TEXT NOT NULL DEFAULT '',
+			last_probe_error    TEXT NOT NULL DEFAULT '',
+			used_input_tokens   INTEGER NOT NULL DEFAULT 0,
+			used_output_tokens  INTEGER NOT NULL DEFAULT 0,
+			earned_micro        INTEGER NOT NULL DEFAULT 0,
+			canary_until        TEXT NOT NULL DEFAULT '',
+			share_window        TEXT NOT NULL DEFAULT '',
+			UNIQUE(share_id, model_name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_models_share ON token_bank_models(share_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_models_array ON token_bank_models(array_id)`,
+
+		// Per-call settlement detail. owner_user_id and share_display_name are
+		// snapshots: withdrawal deletes the share row, and without them the
+		// history would be orphaned records with no owner and no name.
+		`CREATE TABLE IF NOT EXISTS token_bank_usage (
+			id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id              TEXT NOT NULL,
+			share_id                TEXT NOT NULL,
+			owner_user_id           TEXT NOT NULL DEFAULT '',
+			share_display_name      TEXT NOT NULL DEFAULT '',
+			model_name              TEXT NOT NULL,
+			consumer_hub_id         TEXT NOT NULL DEFAULT '',
+			consumer_tenant_id      TEXT NOT NULL DEFAULT '',
+			input_tokens            INTEGER NOT NULL DEFAULT 0,
+			output_tokens           INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens      INTEGER NOT NULL DEFAULT 0,
+			unit_in_credits_per_10k  REAL NOT NULL DEFAULT 0,
+			unit_out_credits_per_10k REAL NOT NULL DEFAULT 0,
+			price_book_id           TEXT NOT NULL DEFAULT '',
+			tier                    TEXT NOT NULL DEFAULT 'mid',
+			tier_multiplier         REAL NOT NULL DEFAULT 1,
+			fee_rate                REAL NOT NULL DEFAULT 0.1,
+			gross_micro             INTEGER NOT NULL DEFAULT 0,
+			fee_micro               INTEGER NOT NULL DEFAULT 0,
+			net_micro               INTEGER NOT NULL DEFAULT 0,
+			charged_micro           INTEGER NOT NULL DEFAULT 0,
+			net_clamped             INTEGER NOT NULL DEFAULT 0,
+			self_use                INTEGER NOT NULL DEFAULT 0,
+			formula_json            TEXT NOT NULL DEFAULT '',
+			created_at              TEXT NOT NULL,
+			UNIQUE(request_id, share_id, model_name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_usage_share_time ON token_bank_usage(share_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_usage_owner_time ON token_bank_usage(owner_user_id, created_at)`,
+
+		// Platform price book: exact model name wins, then longest prefix glob.
+		`CREATE TABLE IF NOT EXISTS token_bank_price_book (
+			id                            TEXT PRIMARY KEY,
+			model_pattern                 TEXT NOT NULL,
+			unit_input_credits_per_10k    REAL NOT NULL DEFAULT 0,
+			unit_output_credits_per_10k   REAL NOT NULL DEFAULT 0,
+			unit_cached_read_credits_per_10k REAL NOT NULL DEFAULT 0,
+			unit_cache_write_credits_per_10k REAL NOT NULL DEFAULT 0,
+			updated_at                    TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_price_pattern ON token_bank_price_book(model_pattern)`,
+
+		// 24h idempotency for share submission: a double-click must not create
+		// a second share for the same key.
+		`CREATE TABLE IF NOT EXISTS token_bank_share_requests (
+			idempotency_key TEXT PRIMARY KEY,
+			owner_user_id   TEXT NOT NULL,
+			share_id        TEXT NOT NULL,
+			response_json   TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_share_req_owner ON token_bank_share_requests(owner_user_id, created_at)`,
+
+		// Ledger is the source of truth for every balance (append-only). Rows are
+		// never updated, so HA replay via INSERT OR REPLACE is naturally idempotent,
+		// unlike a balance column that two nodes can both read-modify-write.
+		`CREATE TABLE IF NOT EXISTS token_bank_ledger (
+			id           TEXT PRIMARY KEY,
+			user_id      TEXT NOT NULL,
+			bucket       TEXT NOT NULL,
+			amount_micro INTEGER NOT NULL,
+			biz_key      TEXT NOT NULL DEFAULT '',
+			ref_type     TEXT NOT NULL DEFAULT '',
+			ref_id       TEXT NOT NULL DEFAULT '',
+			note         TEXT NOT NULL DEFAULT '',
+			created_at   TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_ledger_user_bucket ON token_bank_ledger(user_id, bucket)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_ledger_bizkey ON token_bank_ledger(biz_key) WHERE biz_key <> ''`,
+
+		// Batch-level dedup for HA replication of the ledger. Row-level INSERT OR
+		// IGNORE already makes redelivery safe; this table exists so a whole
+		// batch is applied once even when it arrives under a different op id, and
+		// so an operator can see whether replication is actually flowing.
+		`CREATE TABLE IF NOT EXISTS token_bank_ledger_batches (
+			batch_id       TEXT PRIMARY KEY,
+			source_node_id TEXT NOT NULL,
+			record_count   INTEGER NOT NULL DEFAULT 0,
+			applied_at     TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_ledger_batch_source ON token_bank_ledger_batches(source_node_id, applied_at)`,
+
+		// Materialized cache of SUM(ledger). Wrong values are recoverable by
+		// rebuild; never treat this as authoritative.
+		`CREATE TABLE IF NOT EXISTS token_bank_accounts (
+			user_id         TEXT PRIMARY KEY,
+			earned_micro    INTEGER NOT NULL DEFAULT 0,
+			received_micro  INTEGER NOT NULL DEFAULT 0,
+			withdrawn_micro INTEGER NOT NULL DEFAULT 0,
+			granted_micro   INTEGER NOT NULL DEFAULT 0,
+			frozen_micro    INTEGER NOT NULL DEFAULT 0,
+			updated_at      TEXT NOT NULL
+		)`,
+
+		// Withdrawal records double as the replay credential: a hub that lost its
+		// registry can be re-issued with the same request_id without a second debit.
+		`CREATE TABLE IF NOT EXISTS token_bank_withdrawals (
+			id           TEXT PRIMARY KEY,
+			request_id   TEXT NOT NULL,
+			user_id      TEXT NOT NULL,
+			hub_id       TEXT NOT NULL DEFAULT '',
+			amount_micro INTEGER NOT NULL,
+			grant_id     TEXT NOT NULL DEFAULT '',
+			kind         TEXT NOT NULL DEFAULT 'self',
+			link_id      TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL DEFAULT 'issued',
+			created_at   TEXT NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_withdraw_req ON token_bank_withdrawals(request_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_withdraw_user_time ON token_bank_withdrawals(user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_withdraw_hub ON token_bank_withdrawals(hub_id)`,
+		// One gift link can debit the claimer once. A second request id would
+		// take the rest of that account after settle has already run.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_withdraw_gift_link ON token_bank_withdrawals(link_id) WHERE kind = 'gift' AND link_id <> ''`,
+
+		// Credit gifting: one link, first claimer wins, single settlement on claim.
+		`CREATE TABLE IF NOT EXISTS credit_share_links (
+			id                 TEXT PRIMARY KEY,
+			code               TEXT NOT NULL,
+			sender_user_id     TEXT NOT NULL,
+			sender_email       TEXT NOT NULL DEFAULT '',
+			credits_micro      INTEGER NOT NULL,
+			status             TEXT NOT NULL DEFAULT 'active',
+			claimed_by_user_id TEXT NOT NULL DEFAULT '',
+			claimed_by_email   TEXT NOT NULL DEFAULT '',
+			origin_node_id     TEXT NOT NULL DEFAULT '',
+			expires_at         TEXT NOT NULL DEFAULT '',
+			created_at         TEXT NOT NULL,
+			claimed_at         TEXT NOT NULL DEFAULT '',
+			revoked_at         TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_share_code ON credit_share_links(code)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_share_sender_status ON credit_share_links(sender_user_id, status)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -169,6 +371,65 @@ func EnsureLLMTables(db *sql.DB) error {
 	}
 	if err := ensureLLMUsageSyncColumns(db); err != nil {
 		return err
+	}
+	if err := ensureTokenBankUsageSelfUseColumn(db); err != nil {
+		return err
+	}
+	if err := ensureTokenBankP2Columns(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureTokenBankP2Columns adds the private-share audience, extra upstream
+// keys, and per-model canary deadline. CREATE TABLE covers a new database;
+// this covers a database created before those columns existed.
+func ensureTokenBankP2Columns(db *sql.DB) error {
+	shareCols, err := tableColumns(db, "token_bank_shares")
+	if err != nil {
+		return err
+	}
+	if !shareCols["audience_json"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_shares ADD COLUMN audience_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return fmt.Errorf("ensure token_bank_shares.audience_json: %w", err)
+		}
+	}
+	if !shareCols["extra_keys_json"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_shares ADD COLUMN extra_keys_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return fmt.Errorf("ensure token_bank_shares.extra_keys_json: %w", err)
+		}
+	}
+	modelCols, err := tableColumns(db, "token_bank_models")
+	if err != nil {
+		return err
+	}
+	if !modelCols["canary_until"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_models ADD COLUMN canary_until TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure token_bank_models.canary_until: %w", err)
+		}
+	}
+	if !modelCols["share_window"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_models ADD COLUMN share_window TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure token_bank_models.share_window: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureTokenBankUsageSelfUseColumn marks a settled call whose consumer hub
+// is linked to the share owner. Older databases settle without the column;
+// CREATE TABLE covers a new one. Self-use still credits the owner, so the
+// column is a label, not a gate.
+func ensureTokenBankUsageSelfUseColumn(db *sql.DB) error {
+	columns, err := tableColumns(db, "token_bank_usage")
+	if err != nil {
+		return err
+	}
+	if columns["self_use"] {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE token_bank_usage ADD COLUMN self_use INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("ensure token_bank_usage.self_use: %w", err)
 	}
 	return nil
 }
@@ -583,7 +844,7 @@ func (r *llmAuthRepo) DeductCredits(ctx context.Context, id string, credits floa
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+			rollbackRawTx(conn)
 		}
 	}()
 

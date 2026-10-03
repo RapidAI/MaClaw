@@ -517,7 +517,7 @@ const inputStyle: CSSProperties = {
     padding: "10px 12px",
     fontSize: "0.85rem",
     border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "6px",
+    borderRadius: "var(--radius-md, 10px)",
     outline: "none",
     transition: "border-color 0.15s",
     boxSizing: "border-box",

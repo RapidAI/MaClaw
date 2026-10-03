@@ -226,6 +226,7 @@ func cloudWorkspaceIsSyncFailure(err error) bool {
 		errors.Is(err, cloudworkspace.ErrNotFound),
 		errors.Is(err, cloudworkspace.ErrRestoreWindow),
 		errors.Is(err, cloudworkspace.ErrBlobNotFound),
+		errors.Is(err, cloudworkspace.ErrBlobCorrupt),
 		errors.Is(err, cloudworkspace.ErrQuota),
 		errors.Is(err, cloudworkspace.ErrWorkspaceSize),
 		errors.Is(err, cloudworkspace.ErrTenantDisk),
@@ -281,6 +282,8 @@ func writeCloudWorkspaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace not found")
 	case errors.Is(err, cloudworkspace.ErrBlobNotFound):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace object not found")
+	case errors.Is(err, cloudworkspace.ErrBlobCorrupt):
+		writeError(w, http.StatusInternalServerError, "CLOUD_WORKSPACE_OBJECT_CORRUPT", "cloud workspace object is corrupt")
 	case errors.Is(err, cloudworkspace.ErrQuota):
 		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_QUOTA", "cloud workspace quota exceeded")
 	case errors.Is(err, cloudworkspace.ErrWorkspaceSize):

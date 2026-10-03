@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,14 +32,28 @@ type llmBillingState struct {
 	officialProviderID string
 	officialPricing    *llmpool.TokenPricingSnapshot
 	officialQuote      *llmservice.OfficialPricingQuote
-	// quotes freezes the local provider price selected at admission time. It is
-	// deliberately request-scoped: an operator changing a time-of-day price
-	// while an upstream call is in flight cannot change that request's debit.
-	quotes             map[string]llmpool.PricingQuoteSnapshot
-	reservationHeld    bool
-	upstreamSent       bool
-	settlementQueued   bool
-	noUpstreamDispatch bool
+	// quotes freezes each logical model's provider price at admission time.
+	// The key is the model plus the provider: several models can share one
+	// provider and still keep distinct ceilings. An operator changing a
+	// time-of-day price while an upstream call is in flight cannot change
+	// that request's debit.
+	quotes          map[string]llmpool.PricingQuoteSnapshot
+	heldQuote       llmpool.PricingQuoteSnapshot
+	heldQuoteSet    bool
+	reservationHeld bool
+	// officialAdmissionGroupFactor is the service-group multiplier without the
+	// capability band. A fallback tier is quoted again, and its band coefficient
+	// has to be combined with this same group factor so the new ceiling is priced
+	// the way settlement will price it. The registry is not on the forward path.
+	officialAdmissionGroupFactor    float64
+	officialAdmissionGroupFactorSet bool
+	upstreamSent                    bool
+	settlementQueued                bool
+	noUpstreamDispatch              bool
+	// dispatchObserved sticks once any attempt was sent or its transport result
+	// was ambiguous. A later local refusal must not prove the whole request
+	// never left Hub.
+	dispatchObserved bool
 }
 
 func withLLMBillingState(ctx context.Context, startedAt time.Time, requestIDs ...string) context.Context {
@@ -133,16 +148,35 @@ func noteOfficialTokenPricing(ctx context.Context, snapshot *llmpool.TokenPricin
 	state.mu.Unlock()
 }
 
+// noteOfficialDispatchObserved records that one attempt left Hub, or that its
+// transport result can no longer prove it did not. The mark sticks for the
+// rest of the request, including availability fallbacks, and it withdraws any
+// earlier local no-dispatch proof.
+func noteOfficialDispatchObserved(ctx context.Context) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.dispatchObserved = true
+	state.noUpstreamDispatch = false
+	state.mu.Unlock()
+}
+
 // noteOfficialNoUpstreamDispatch records a narrow, local proof that Hub never
 // sent the request to HubCenter. It must never be set for HTTP or transport
-// failures, which remain ambiguous after dispatch begins.
+// failures, which remain ambiguous after dispatch begins. One fallback tier
+// refused before forward is not that proof: an earlier attempt may already
+// have been sent, and a later tier may still be sent.
 func noteOfficialNoUpstreamDispatch(ctx context.Context, noUpstreamDispatch bool) {
 	if !noUpstreamDispatch {
 		return
 	}
 	if state := llmBillingStateFrom(ctx); state != nil {
 		state.mu.Lock()
-		state.noUpstreamDispatch = true
+		if !state.dispatchObserved {
+			state.noUpstreamDispatch = true
+		}
 		state.mu.Unlock()
 	}
 }
@@ -156,6 +190,10 @@ func snapshotOfficialNoUpstreamDispatch(ctx context.Context) bool {
 	return false
 }
 
+func llmPricingQuoteKey(logicalModel, providerID string) string {
+	return strings.ToLower(strings.TrimSpace(logicalModel)) + "\x00" + strings.ToLower(strings.TrimSpace(providerID))
+}
+
 func rememberLLMPricingQuote(ctx context.Context, quote llmpool.PricingQuoteSnapshot) {
 	state := llmBillingStateFrom(ctx)
 	if state == nil || strings.TrimSpace(quote.ProviderID) == "" {
@@ -165,7 +203,7 @@ func rememberLLMPricingQuote(ctx context.Context, quote llmpool.PricingQuoteSnap
 	if state.quotes == nil {
 		state.quotes = map[string]llmpool.PricingQuoteSnapshot{}
 	}
-	state.quotes[strings.ToLower(strings.TrimSpace(quote.ProviderID))] = quote
+	state.quotes[llmPricingQuoteKey(quote.LogicalModel, quote.ProviderID)] = quote
 	state.mu.Unlock()
 }
 
@@ -191,7 +229,7 @@ func rememberOfficialPricingQuote(ctx context.Context, serviceReg *llmservice.Re
 	// owns the service-group multiplier. Both must be included in the admission
 	// reservation so a request cannot pass preflight at an understated price.
 	providerMultiplier := llmpool.NormalizeCreditMultiplier(quote.ProviderMultiplier)
-	groupMultiplier := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+	groupMultiplier := officialGroupMultiplier(ctx, serviceReg, serviceGroupIDs, quote.CapabilityMultiplier)
 	_ = startedAt // retained as the pricing-start ownership boundary for callers.
 	frozen, ok := llmpool.NewPricingQuoteSnapshot(requestID, requestID+":"+llmservice.MaClawOfficialProviderID, llmservice.MaClawOfficialProviderID, quote.Pricing, providerMultiplier, groupMultiplier, inputEstimate, outputLimit, quote.ExpiresAt)
 	if !ok {
@@ -216,9 +254,14 @@ func rememberOfficialPricingQuote(ctx context.Context, serviceReg *llmservice.Re
 	}
 	frozen.ServiceGroupIDs = append([]string(nil), serviceGroupIDs...)
 	rememberLLMPricingQuote(ctx, frozen)
+	// Keep the group factor apart from the capability band. Fallback requotes
+	// combine it with the band HubCenter returns for the tier that actually runs.
+	groupFactor := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
 	state.mu.Lock()
 	copyQuote := quote
 	state.officialQuote = &copyQuote
+	state.officialAdmissionGroupFactor = groupFactor
+	state.officialAdmissionGroupFactorSet = true
 	state.mu.Unlock()
 	return nil
 }
@@ -226,7 +269,9 @@ func rememberOfficialPricingQuote(ctx context.Context, serviceReg *llmservice.Re
 // prepareOfficialLLMRequestPricingQuote locks HubCenter's concrete provider and
 // time-of-use base price before Hub reserves the user's Credits. If an older
 // HubCenter does not support quotes, forwarding retains its compatibility path.
-func prepareOfficialLLMRequestPricingQuote(ctx context.Context, serviceReg *llmservice.Registry, providerReg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any) error {
+// A ceiling the balance cannot cover is written onto the forwarded body before
+// the token Hub will attach: HubCenter binds that token to the exact JSON bytes.
+func prepareOfficialLLMRequestPricingQuote(ctx context.Context, serviceReg *llmservice.Registry, providerReg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, userID, email string) error {
 	if model == nil || providerReg == nil {
 		return nil
 	}
@@ -253,9 +298,242 @@ func prepareOfficialLLMRequestPricingQuote(ctx context.Context, serviceReg *llms
 			// error/retry contract (notably 400 validation and local test stubs).
 			return nil
 		}
-		return rememberOfficialPricingQuote(ctx, serviceReg, model, quote, llmservice.ChargedServiceGroupIDs(model, providerID), estimateLLMQuoteInputTokens(forwardBody), llmQuoteOutputTokenLimit(forwardBody))
+		groups := llmservice.ChargedServiceGroupIDs(model, providerID)
+		inputEstimate := estimateLLMQuoteInputTokens(forwardBody)
+		outputLimit := llmQuoteOutputTokenLimit(forwardBody)
+		if strings.TrimSpace(userID) != "" || strings.TrimSpace(email) != "" {
+			allowed, _, _, _, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(serviceReg, userID, email, groups, time.Now().UTC())
+			if allowed && available > 0 {
+				quote, inputEstimate, outputLimit = fitOfficialForwardToBalance(ctx, serviceReg, groups, forwardGroupIDs, available, quote, payload, inputEstimate, outputLimit, forwardBody, nil, body, forwardBody)
+			}
+		}
+		if err := rememberOfficialPricingQuote(ctx, serviceReg, model, quote, groups, inputEstimate, outputLimit); err != nil {
+			return err
+		}
+		alignLLMPricingQuotesToForwardedCeiling(ctx, body, model.Name)
+		return nil
 	}
 	return nil
+}
+
+// provisionalOfficialAdmissionQuote is the reservation Hub would freeze for
+// this HubCenter quote at the given token counts. It uses the same multiplier
+// split as rememberOfficialPricingQuote.
+func provisionalOfficialAdmissionQuote(ctx context.Context, serviceReg *llmservice.Registry, groups []string, quote llmservice.OfficialPricingQuote, inputEstimate, outputLimit int64, billingGroupMultiplier float64) (llmpool.PricingQuoteSnapshot, bool) {
+	groupMultiplier := billingGroupMultiplier
+	if groupMultiplier <= 0 {
+		groupMultiplier = officialGroupMultiplier(ctx, serviceReg, groups, quote.CapabilityMultiplier)
+	}
+	requestID := llmBillingRequestID(ctx)
+	return llmpool.NewPricingQuoteSnapshot(
+		requestID,
+		requestID+":"+llmservice.MaClawOfficialProviderID,
+		llmservice.MaClawOfficialProviderID,
+		quote.Pricing,
+		llmpool.NormalizeCreditMultiplier(quote.ProviderMultiplier),
+		groupMultiplier,
+		inputEstimate,
+		outputLimit,
+		quote.ExpiresAt,
+	)
+}
+
+// fitOfficialForwardToBalance lowers the output ceiling when the quoted worst
+// case does not fit in availableCredits, then asks HubCenter to price that
+// exact body. The token from the larger body is not returned: HubCenter
+// rejects it once the JSON changes. The ceiling is refit from the caller's
+// original fields whenever the new quote's unit price differs, so a cheaper
+// member can raise the ceiling and a more expensive one can lower it. A
+// failed re-quote keeps the last token that still covers its body, or
+// restores the original ceiling when no fitted token does. estimateBody is
+// the rewritten body that will be marshaled again at forward time, and it
+// must be one of bodies so the ceiling lands on those bytes.
+func fitOfficialForwardToBalance(ctx context.Context, serviceReg *llmservice.Registry, chargedGroups, forwardGroupIDs []string, availableCredits float64, quote llmservice.OfficialPricingQuote, quotedPayload []byte, inputEstimate, outputLimit int64, estimateBody map[string]any, billingGroup func(llmservice.OfficialPricingQuote) float64, bodies ...map[string]any) (llmservice.OfficialPricingQuote, int64, int64) {
+	groupOf := func(q llmservice.OfficialPricingQuote) float64 {
+		if billingGroup == nil {
+			return 0
+		}
+		return billingGroup(q)
+	}
+	provisional, ok := provisionalOfficialAdmissionQuote(ctx, serviceReg, chargedGroups, quote, inputEstimate, outputLimit, groupOf(quote))
+	if !ok || provisional.ReservedMicrocredits <= creditsToMicrocredits(availableCredits) {
+		return quote, inputEstimate, outputLimit
+	}
+	availableMicro := creditsToMicrocredits(availableCredits)
+	saved := make([]map[string]any, len(bodies))
+	for i, body := range bodies {
+		saved[i] = snapshotOutputLimitFields(body)
+	}
+	restore := func() {
+		for i, body := range bodies {
+			restoreOutputLimitFields(body, saved[i])
+		}
+	}
+	applyCeiling := func(ceiling int64) {
+		for _, body := range bodies {
+			applyLLMQuoteOutputCeiling(body, ceiling)
+		}
+	}
+	working := provisional
+	matchedQuote := quote
+	matchedPayload := quotedPayload
+	var bestQuote llmservice.OfficialPricingQuote
+	var bestInput, bestLimit int64
+	haveBest := false
+	keepBest := func() (llmservice.OfficialPricingQuote, int64, int64) {
+		if !haveBest {
+			restore()
+			return quote, inputEstimate, outputLimit
+		}
+		restore()
+		applyCeiling(bestLimit)
+		return bestQuote, bestInput, bestLimit
+	}
+	// Two passes cover one price change: fit at the quote in hand, then fit
+	// again at the price HubCenter returns for that body. Each pass starts
+	// from the caller's fields, because a ceiling written for a more expensive
+	// quote must be allowed to rise when the next quote is cheaper.
+	for attempt := 0; attempt < 2; attempt++ {
+		restore()
+		// working may already describe a ceiling fitted at an older price.
+		// Searching from that ceiling treats a quote that fits as done, so a
+		// cheaper rate can never buy the caller's original output back.
+		// Rebase onto the caller's token counts before fitting.
+		if rebased, rebaseOK := requoteAtOutputLimit(working, inputEstimate, outputLimit); rebaseOK {
+			working = rebased
+		}
+		fitted, fitOK := fitLLMQuoteToAvailableBalance(working, availableCredits, estimateBody, bodies...)
+		if !fitOK {
+			return keepBest()
+		}
+		payload, err := json.Marshal(estimateBody)
+		if err != nil {
+			log.Printf("[llm-billing] official output-ceiling requote failed; restoring the quoted body: %v", err)
+			return keepBest()
+		}
+		if bytes.Equal(payload, matchedPayload) {
+			covered, coverOK := provisionalOfficialAdmissionQuote(ctx, serviceReg, chargedGroups, matchedQuote, fitted.InputTokenEstimate, fitted.OutputTokenLimit, groupOf(matchedQuote))
+			if coverOK && covered.ReservedMicrocredits <= availableMicro {
+				return matchedQuote, fitted.InputTokenEstimate, fitted.OutputTokenLimit
+			}
+			return keepBest()
+		}
+		next, err := QuoteViaMaClaw(ctx, payload, store.TenantIDFromContext(ctx), forwardGroupIDs...)
+		if err != nil {
+			log.Printf("[llm-billing] official output-ceiling requote failed; restoring the quoted body: %v", err)
+			return keepBest()
+		}
+		nextSnap, snapOK := provisionalOfficialAdmissionQuote(ctx, serviceReg, chargedGroups, next, fitted.InputTokenEstimate, fitted.OutputTokenLimit, groupOf(next))
+		if !snapOK {
+			log.Printf("[llm-billing] official output-ceiling requote could not be priced; restoring the quoted body")
+			return keepBest()
+		}
+		if nextSnap.ReservedMicrocredits <= availableMicro {
+			bestQuote = next
+			bestInput = fitted.InputTokenEstimate
+			bestLimit = fitted.OutputTokenLimit
+			haveBest = true
+			if sameOfficialAdmissionPrice(working, nextSnap) {
+				return next, fitted.InputTokenEstimate, fitted.OutputTokenLimit
+			}
+		}
+		working = nextSnap
+		matchedQuote = next
+		matchedPayload = payload
+	}
+	if !haveBest {
+		log.Printf("[llm-billing] official output ceiling still exceeds the balance after requote; restoring the quoted body")
+	}
+	return keepBest()
+}
+
+// sameOfficialAdmissionPrice reports whether two frozen quotes reserve Credits
+// at the same unit rates. The output ceiling fitted against one quote is not
+// the maximum the balance can pay once the other quote's rate differs.
+func sameOfficialAdmissionPrice(left, right llmpool.PricingQuoteSnapshot) bool {
+	if left.ProviderMultiplier != right.ProviderMultiplier || left.BillingGroupMultiplier != right.BillingGroupMultiplier {
+		return false
+	}
+	a := left.Pricing.TokenPricing
+	b := right.Pricing.TokenPricing
+	return a.InputCreditsPer10K == b.InputCreditsPer10K &&
+		a.OutputCreditsPer10K == b.OutputCreditsPer10K &&
+		a.MinimumRequestCredits == b.MinimumRequestCredits &&
+		sameOptionalTokenPrice(a.CacheReadCreditsPer10K, b.CacheReadCreditsPer10K) &&
+		sameOptionalTokenPrice(a.CacheWriteCreditsPer10K, b.CacheWriteCreditsPer10K)
+}
+
+func sameOptionalTokenPrice(left, right *float64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+// officialAdmissionHold is the credit amount already reserved for this request
+// and the service-group factor frozen with it. availableGrantCredits subtracts
+// that hold, so a fallback tier cannot fit against the leftover balance: the
+// hold is the budget this request may still spend.
+func officialAdmissionHold(ctx context.Context) (heldMicro int64, groupFactor, admissionCombined float64, ok bool) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return 0, 0, 0, false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.reservationHeld || !state.heldQuoteSet || state.heldQuote.ReservedMicrocredits <= 0 || !state.officialAdmissionGroupFactorSet {
+		return 0, 0, 0, false
+	}
+	return state.heldQuote.ReservedMicrocredits, state.officialAdmissionGroupFactor, state.heldQuote.BillingGroupMultiplier, true
+}
+
+// fallbackBillingGroupMultiplier prices a fallback quote with the admission
+// group factor and the band coefficient on that quote. A quote that omits the
+// band keeps the multiplier the hold already used.
+func fallbackBillingGroupMultiplier(groupFactor, admissionCombined float64, quote llmservice.OfficialPricingQuote) float64 {
+	capability := quote.CapabilityMultiplier
+	if capability <= 0 || math.IsNaN(capability) || math.IsInf(capability, 0) {
+		if admissionCombined > 0 {
+			return admissionCombined
+		}
+		return groupFactor
+	}
+	return llmpool.CombineCreditMultipliers(groupFactor, capability)
+}
+
+// refitOfficialFallbackBodyToHold lowers a fallback body's output ceiling until
+// the quote HubCenter just gave fits inside the credits already held. The
+// selected tier's ceiling is not a safe ceiling for a more expensive fallback:
+// mid admits the largest output its own price can pay, then availability
+// fallback can run high at that same ceiling. No hold returns the quote
+// unchanged so an unlimited grant still forwards. An unaffordable tier returns
+// an error and leaves the body at the caller's ceiling; the caller must not
+// forward it.
+func refitOfficialFallbackBodyToHold(ctx context.Context, body map[string]any, tenantID string, forwardGroupIDs []string) (llmservice.OfficialPricingQuote, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return llmservice.OfficialPricingQuote{}, fmt.Errorf("marshal official fallback quote: %w", err)
+	}
+	quote, err := QuoteViaMaClaw(ctx, payload, tenantID, forwardGroupIDs...)
+	if err != nil {
+		return llmservice.OfficialPricingQuote{}, err
+	}
+	heldMicro, groupFactor, admissionCombined, ok := officialAdmissionHold(ctx)
+	if !ok {
+		return quote, nil
+	}
+	groupFor := func(q llmservice.OfficialPricingQuote) float64 {
+		return fallbackBillingGroupMultiplier(groupFactor, admissionCombined, q)
+	}
+	inputEstimate := estimateLLMQuoteInputTokens(body)
+	outputLimit := llmQuoteOutputTokenLimit(body)
+	fitted, fittedInput, fittedOutput := fitOfficialForwardToBalance(ctx, nil, nil, forwardGroupIDs, llmpool.MicrocreditsToCredits(heldMicro), quote, payload, inputEstimate, outputLimit, body, groupFor, body)
+	check, checkOK := provisionalOfficialAdmissionQuote(ctx, nil, nil, fitted, fittedInput, fittedOutput, groupFor(fitted))
+	if !checkOK || check.ReservedMicrocredits > heldMicro {
+		log.Printf("[llm-billing] official fallback output ceiling exceeds the admission hold; not forwarding this tier")
+		return llmservice.OfficialPricingQuote{}, fmt.Errorf("official fallback output ceiling exceeds the admission hold")
+	}
+	return fitted, nil
 }
 
 func billingUpstreamModel(model *llmservice.AuthorizedModel, providerID string) string {
@@ -306,8 +584,13 @@ func rememberOfficialForwardQuoteForResolved(ctx context.Context, quote llmservi
 	if state.quotes == nil {
 		state.quotes = map[string]llmpool.PricingQuoteSnapshot{}
 	}
-	key := strings.ToLower(strings.TrimSpace(llmservice.MaClawOfficialProviderID))
-	snap := state.quotes[key]
+	// One official admission quote can be retargeted when fallback resolves a
+	// different tier. Several official quotes must not be collapsed onto the
+	// resolved tier: that would bill one model at another's frozen price.
+	key, snap, ok := officialPricingSnapshotLocked(state, resolved)
+	if !ok {
+		key = llmPricingQuoteKey(resolved, llmservice.MaClawOfficialProviderID)
+	}
 	if resolved != "" {
 		snap.LogicalModel = resolved
 	}
@@ -322,7 +605,31 @@ func rememberOfficialForwardQuoteForResolved(ctx context.Context, quote llmservi
 	if src := strings.TrimSpace(quote.PricingSource); src != "" {
 		snap.PricingSource = src
 	}
-	state.quotes[key] = snap
+	newKey := llmPricingQuoteKey(snap.LogicalModel, snap.ProviderID)
+	if ok && key != newKey {
+		delete(state.quotes, key)
+	}
+	state.quotes[newKey] = snap
+}
+
+func officialPricingSnapshotLocked(state *llmBillingState, resolved string) (string, llmpool.PricingQuoteSnapshot, bool) {
+	var keys []string
+	for key, quote := range state.quotes {
+		if strings.EqualFold(strings.TrimSpace(quote.ProviderID), llmservice.MaClawOfficialProviderID) {
+			keys = append(keys, key)
+		}
+	}
+	if resolved != "" {
+		for _, key := range keys {
+			if strings.EqualFold(strings.TrimSpace(state.quotes[key].LogicalModel), resolved) {
+				return key, state.quotes[key], true
+			}
+		}
+	}
+	if len(keys) == 1 {
+		return keys[0], state.quotes[keys[0]], true
+	}
+	return "", llmpool.PricingQuoteSnapshot{}, false
 }
 
 func llmPricingQuoteAppliesToModel(quote llmpool.PricingQuoteSnapshot, model *llmservice.AuthorizedModel) bool {
@@ -337,20 +644,57 @@ func llmPricingQuoteAppliesToModel(quote llmpool.PricingQuoteSnapshot, model *ll
 }
 
 func snapshotLLMPricingQuote(ctx context.Context, providerID string) (llmpool.PricingQuoteSnapshot, bool) {
+	return snapshotLLMPricingQuoteForModel(ctx, providerID, nil)
+}
+
+// snapshotLLMPricingQuoteForModel returns the admission quote for one provider
+// on one logical model. A provider shared by several models has several
+// quotes; looking up the provider alone must not price one model with another
+// model's frozen rate. A provider with exactly one quote still resolves
+// without a model, which is the historical lookup.
+func snapshotLLMPricingQuoteForModel(ctx context.Context, providerID string, model *llmservice.AuthorizedModel) (llmpool.PricingQuoteSnapshot, bool) {
 	state := llmBillingStateFrom(ctx)
 	if state == nil {
 		return llmpool.PricingQuoteSnapshot{}, false
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	quote, ok := state.quotes[strings.ToLower(strings.TrimSpace(providerID))]
-	return quote, ok
+	matches := pricingQuotesForProviderLocked(state.quotes, providerID)
+	if model != nil && strings.TrimSpace(model.Name) != "" {
+		fitted := make([]llmpool.PricingQuoteSnapshot, 0, len(matches))
+		for _, quote := range matches {
+			if llmPricingQuoteAppliesToModel(quote, model) {
+				fitted = append(fitted, quote)
+			}
+		}
+		matches = fitted
+	}
+	if len(matches) != 1 {
+		return llmpool.PricingQuoteSnapshot{}, false
+	}
+	return matches[0], true
+}
+
+func pricingQuotesForProviderLocked(quotes map[string]llmpool.PricingQuoteSnapshot, providerID string) []llmpool.PricingQuoteSnapshot {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	if providerID == "" || len(quotes) == 0 {
+		return nil
+	}
+	matches := make([]llmpool.PricingQuoteSnapshot, 0, 1)
+	for _, quote := range quotes {
+		if strings.ToLower(strings.TrimSpace(quote.ProviderID)) == providerID {
+			matches = append(matches, quote)
+		}
+	}
+	return matches
 }
 
 // prepareLLMPricingQuote freezes a provider/model price before any upstream
-// bytes are sent. A quoted paid route is admitted only when the current
-// metered balance covers the request's conservative input+maximum-output
-// amount. Unlimited grants still bypass a balance reservation, as they have no
+// bytes are sent. A quoted paid route is admitted when the current metered
+// balance covers the prompt plus at least one output token. A requested
+// output ceiling the balance cannot cover is lowered, on the quote and on
+// the forwarded body together, so work continues until the balance is gone.
+// Unlimited grants still bypass a balance reservation, as they have no
 // finite wallet value to compare here.
 func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID, email string, model *llmservice.AuthorizedModel, providerID string, body map[string]any, now time.Time) (llmBillingDenial, error) {
 	groups := llmservice.ChargedServiceGroupIDs(model, providerID)
@@ -406,12 +750,20 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 	// existing registry model. Only finite positive wallet balances participate
 	// in the preflight check.
 	if available > 0 && quote.ReservedMicrocredits > creditsToMicrocredits(available) {
-		held := insufficientCreditsHeld(reg, userID, email, groups, now)
-		return llmBillingDenial{
-			Code:        "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST",
-			Message:     insufficientCreditsMessage(llmpool.MicrocreditsToCredits(quote.ReservedMicrocredits), available, held),
-			HeldCredits: held,
-		}, fmt.Errorf("insufficient credits for quoted request")
+		fitted, ok := fitLLMQuoteToAvailableBalance(quote, available, body, body)
+		if !ok {
+			floor := quote
+			if one, oneOK := requoteAtOutputLimit(quote, quote.InputTokenEstimate, 1); oneOK {
+				floor = one
+			}
+			held := insufficientCreditsHeld(reg, userID, email, groups, now)
+			return llmBillingDenial{
+				Code:        "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST",
+				Message:     insufficientCreditsMessage(llmpool.MicrocreditsToCredits(floor.ReservedMicrocredits), available, held),
+				HeldCredits: held,
+			}, fmt.Errorf("insufficient credits for quoted request")
+		}
+		quote = fitted
 	}
 	if llmBillingRequestID(ctx) != "" {
 		rememberLLMPricingQuote(ctx, quote)
@@ -472,7 +824,9 @@ func reserveLLMRequestPricing(ctx context.Context, system store.SystemSettingsRe
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
-	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	llmservice.LockServiceRegistryMutation()
+	defer llmservice.UnlockServiceRegistryMutation()
+	reg, err := loadCachedLLMServiceRegistryLocked(ctx, system)
 	if err != nil {
 		return llmBillingDenial{Code: "LLM_BILLING_RESERVATION_FAILED", Message: "unable to reserve credits for this request"}, err
 	}
@@ -491,6 +845,10 @@ func reserveLLMRequestPricing(ctx context.Context, system store.SystemSettingsRe
 	}
 	state.mu.Lock()
 	state.reservationHeld = reserved > 0
+	if reserved > 0 {
+		state.heldQuote = chosen
+		state.heldQuoteSet = true
+	}
 	state.mu.Unlock()
 	return llmBillingDenial{}, nil
 }
@@ -516,7 +874,9 @@ func releaseUnsettledLLMBillingReservation(ctx context.Context, system store.Sys
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
-	reg, err := loadCachedLLMServiceRegistry(context.Background(), system)
+	llmservice.LockServiceRegistryMutation()
+	defer llmservice.UnlockServiceRegistryMutation()
+	reg, err := loadCachedLLMServiceRegistryLocked(context.Background(), system)
 	if err != nil || !llmservice.ReleaseBillingReservation(reg, requestID, time.Now().UTC()) {
 		return
 	}
@@ -543,7 +903,9 @@ func releaseKnownUnbilledLLMBillingReservation(ctx context.Context, system store
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
-	reg, err := loadCachedLLMServiceRegistry(context.Background(), system)
+	llmservice.LockServiceRegistryMutation()
+	defer llmservice.UnlockServiceRegistryMutation()
+	reg, err := loadCachedLLMServiceRegistryLocked(context.Background(), system)
 	if err != nil || !llmservice.ReleaseBillingReservation(reg, requestID, time.Now().UTC()) {
 		return
 	}
@@ -567,14 +929,16 @@ func markLLMBillingReservationSent(ctx context.Context, system store.SystemSetti
 	}
 	state.mu.Lock()
 	requestID, held := state.requestID, state.reservationHeld
-	var quote llmpool.PricingQuoteSnapshot
-	for _, candidate := range state.quotes {
-		if IsMaClawProviderRequest(candidate.ProviderID) {
-			quote = candidate
-			break
-		}
-		if candidate.ReservedMicrocredits > quote.ReservedMicrocredits {
-			quote = candidate
+	quote := state.heldQuote
+	if !state.heldQuoteSet {
+		for _, candidate := range state.quotes {
+			if IsMaClawProviderRequest(candidate.ProviderID) {
+				quote = candidate
+				break
+			}
+			if candidate.ReservedMicrocredits > quote.ReservedMicrocredits {
+				quote = candidate
+			}
 		}
 	}
 	state.mu.Unlock()
@@ -583,7 +947,9 @@ func markLLMBillingReservationSent(ctx context.Context, system store.SystemSetti
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
-	reg, err := loadCachedLLMServiceRegistry(context.Background(), system)
+	llmservice.LockServiceRegistryMutation()
+	defer llmservice.UnlockServiceRegistryMutation()
+	reg, err := loadCachedLLMServiceRegistryLocked(context.Background(), system)
 	if err != nil {
 		return err
 	}
@@ -630,7 +996,9 @@ func markReconciledNotFoundBillingReservation(ctx context.Context, system store.
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
-	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	llmservice.LockServiceRegistryMutation()
+	defer llmservice.UnlockServiceRegistryMutation()
+	reg, err := loadCachedLLMServiceRegistryLocked(ctx, system)
 	if err != nil || llmservice.HasBillingRequest(reg, requestID) {
 		return false
 	}
@@ -810,6 +1178,275 @@ func ReconcileSentOfficialBillingReservations(ctx context.Context, system store.
 	return reconcileOfficialBillingReservations(ctx, system, llmservice.SentBillingReservations(reg)), nil
 }
 
+// fitLLMQuoteToAvailableBalance lowers the output ceiling to the largest
+// value the balance can still pay. The forwarded bodies are capped to that
+// same ceiling. estimateBody is the payload whose token estimate feeds the
+// quote; it must be one of bodies so each candidate is priced after its own
+// digits are written. A false result leaves those bodies unchanged and means
+// the balance cannot pay for the prompt plus one output token.
+func fitLLMQuoteToAvailableBalance(quote llmpool.PricingQuoteSnapshot, availableCredits float64, estimateBody map[string]any, bodies ...map[string]any) (llmpool.PricingQuoteSnapshot, bool) {
+	if availableCredits <= 0 || quote.ReservedMicrocredits <= creditsToMicrocredits(availableCredits) {
+		return quote, true
+	}
+	availableMicro := creditsToMicrocredits(availableCredits)
+	requested := quote.OutputTokenLimit
+	saved := make([]map[string]any, len(bodies))
+	for i, body := range bodies {
+		saved[i] = snapshotOutputLimitFields(body)
+	}
+	restore := func() {
+		for i, body := range bodies {
+			restoreOutputLimitFields(body, saved[i])
+		}
+	}
+	// A shorter ceiling is a shorter decimal in the JSON, so it changes the
+	// prompt estimate it is priced against. Searching with the original
+	// estimate stops at the first number that fits and apply cannot raise it
+	// again, which leaves output tokens the balance could still pay for.
+	// Restore the caller's fields before every probe so a higher candidate
+	// can be written, and price that candidate against the body it produces.
+	price := func(limit int64) (llmpool.PricingQuoteSnapshot, bool) {
+		inputEstimate := quote.InputTokenEstimate
+		if estimateBody != nil {
+			restore()
+			for _, body := range bodies {
+				applyLLMQuoteOutputCeiling(body, limit)
+			}
+			inputEstimate = estimateLLMQuoteInputTokens(estimateBody)
+		}
+		return requoteAtOutputLimit(quote, inputEstimate, limit)
+	}
+	limit, fitted, ok := maxAffordableOutputTokens(quote, availableMicro, price)
+	if !ok {
+		restore()
+		return quote, false
+	}
+	restore()
+	for _, body := range bodies {
+		applyLLMQuoteOutputCeiling(body, limit)
+	}
+	if estimateBody != nil {
+		// The winning probe and the final write must describe the same
+		// payload. A drift here would reserve a different prompt than the
+		// one about to be forwarded.
+		finalEstimate := estimateLLMQuoteInputTokens(estimateBody)
+		if finalEstimate != fitted.InputTokenEstimate {
+			refit, refitOK := requoteAtOutputLimit(quote, finalEstimate, limit)
+			if !refitOK || refit.ReservedMicrocredits > availableMicro {
+				restore()
+				return quote, false
+			}
+			fitted = refit
+		}
+	}
+	if limit < requested {
+		log.Printf("[llm-billing] fit output ceiling provider=%s from=%d to=%d reserved=%.3f available=%.3f", quote.ProviderID, requested, limit, llmpool.MicrocreditsToCredits(fitted.ReservedMicrocredits), availableCredits)
+	}
+	return fitted, true
+}
+
+func snapshotOutputLimitFields(body map[string]any) map[string]any {
+	if body == nil {
+		return nil
+	}
+	saved := map[string]any{}
+	for _, key := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
+		if value, ok := body[key]; ok {
+			saved[key] = value
+		}
+	}
+	return saved
+}
+
+func restoreOutputLimitFields(body map[string]any, saved map[string]any) {
+	if body == nil {
+		return
+	}
+	for _, key := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
+		if value, ok := saved[key]; ok {
+			body[key] = value
+		} else {
+			delete(body, key)
+		}
+	}
+}
+
+// maxAffordableOutputTokens is the largest output count at or below the
+// requested ceiling for which price reports a quote inside availableMicro.
+// price must be non-decreasing in the limit: a higher ceiling writes an
+// equal or longer decimal, so both the output hold and the prompt estimate
+// move the same direction. One token is the smallest completion that still
+// counts as continued work.
+func maxAffordableOutputTokens(sample llmpool.PricingQuoteSnapshot, availableMicro int64, price func(limit int64) (llmpool.PricingQuoteSnapshot, bool)) (int64, llmpool.PricingQuoteSnapshot, bool) {
+	one, ok := price(1)
+	if !ok || one.ReservedMicrocredits > availableMicro {
+		return 0, llmpool.PricingQuoteSnapshot{}, false
+	}
+	requested := sample.OutputTokenLimit
+	if requested < 1 {
+		requested = 1
+	}
+	if requested == 1 {
+		return 1, one, true
+	}
+	if full, fullOK := price(requested); fullOK && full.ReservedMicrocredits <= availableMicro {
+		return requested, full, true
+	}
+	lo, hi := int64(1), requested
+	best := int64(1)
+	bestQuote := one
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		q, qOK := price(mid)
+		if qOK && q.ReservedMicrocredits <= availableMicro {
+			best = mid
+			bestQuote = q
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best, bestQuote, true
+}
+
+func requoteAtOutputLimit(quote llmpool.PricingQuoteSnapshot, inputEstimate, outputLimit int64) (llmpool.PricingQuoteSnapshot, bool) {
+	next, ok := llmpool.NewPricingQuoteSnapshot(quote.RequestID, quote.AttemptID, quote.ProviderID, quote.Pricing, quote.ProviderMultiplier, quote.BillingGroupMultiplier, inputEstimate, outputLimit, quote.ExpiresAt)
+	if !ok {
+		return llmpool.PricingQuoteSnapshot{}, false
+	}
+	next.TenantID = quote.TenantID
+	next.LogicalModel = quote.LogicalModel
+	next.UpstreamModel = quote.UpstreamModel
+	if src := strings.TrimSpace(quote.PricingSource); src != "" {
+		next.PricingSource = src
+	}
+	next.ServiceGroupIDs = append([]string(nil), quote.ServiceGroupIDs...)
+	return next, true
+}
+
+// applyLLMQuoteOutputCeiling caps every output-limit field to the reserved
+// ceiling. A body that omitted all of them gains max_tokens so the forwarded
+// request cannot keep a higher provider default than the hold.
+func applyLLMQuoteOutputCeiling(body map[string]any, ceiling int64) {
+	if body == nil || ceiling <= 0 {
+		return
+	}
+	keys := []string{"max_completion_tokens", "max_tokens", "max_output_tokens"}
+	wrote := false
+	for _, key := range keys {
+		if value, ok := llmQuotePositiveInt64(body[key]); ok {
+			wrote = true
+			if value > ceiling {
+				body[key] = ceiling
+			}
+		}
+	}
+	if !wrote {
+		body["max_tokens"] = ceiling
+	}
+}
+
+// capResponsesPayloadToAdmittedCeiling copies the output ceiling admission
+// already wrote onto the chat-shaped body onto the original Responses payload.
+// Responses-wire providers forward that payload, not the chat copy. A hold
+// fitted on the chat copy would otherwise leave max_output_tokens at the
+// caller's full ceiling. Responses APIs enforce max_output_tokens; max_tokens
+// alone does not cap that wire. A smaller max_output_tokens is left as the
+// caller set it. When neither body named an output field, the shared default
+// ceiling is left uninjected.
+func capResponsesPayloadToAdmittedCeiling(responsesBody, admittedBody map[string]any) {
+	if responsesBody == nil || admittedBody == nil {
+		return
+	}
+	admitted, admittedSet := explicitLLMQuoteOutputTokenLimit(admittedBody)
+	current, currentSet := explicitLLMQuoteOutputTokenLimit(responsesBody)
+	if !admittedSet {
+		admitted = defaultLLMPricingQuoteOutputTokenLimit
+	}
+	if !currentSet {
+		current = defaultLLMPricingQuoteOutputTokenLimit
+	}
+	if current > admitted {
+		applyLLMQuoteOutputCeiling(responsesBody, admitted)
+		current = admitted
+	}
+	if _, ok := llmQuotePositiveInt64(responsesBody["max_output_tokens"]); ok {
+		return
+	}
+	if !admittedSet && !currentSet {
+		return
+	}
+	responsesBody["max_output_tokens"] = current
+}
+
+// alignLLMPricingQuotesToForwardedCeiling rebuilds any remembered quote for
+// logicalModel whose output ceiling is above the body that will actually be
+// forwarded. A cheaper provider of this model quoted earlier must not keep a
+// hold for tokens the shared body no longer allows. Quotes for other models
+// keep the ceiling fitted from the caller's original fields; this model's
+// ceiling must not pin theirs.
+func alignLLMPricingQuotesToForwardedCeiling(ctx context.Context, body map[string]any, logicalModel string) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil || body == nil {
+		return
+	}
+	logicalModel = strings.TrimSpace(logicalModel)
+	ceiling := llmQuoteOutputTokenLimit(body)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for id, quote := range state.quotes {
+		if !strings.EqualFold(strings.TrimSpace(quote.LogicalModel), logicalModel) {
+			continue
+		}
+		if quote.OutputTokenLimit <= ceiling {
+			continue
+		}
+		next, ok := requoteAtOutputLimit(quote, quote.InputTokenEstimate, ceiling)
+		if !ok {
+			continue
+		}
+		state.quotes[id] = next
+	}
+}
+
+// applySelectedModelOutputCeiling writes the selected model's fitted output
+// ceiling onto the body that will be forwarded. Catalog admission fits every
+// eligible model from the caller's original fields and then restores those
+// fields, so an unselected model cannot pin the ceiling. Within the selected
+// model the ceiling stays the most restrictive eligible provider, which keeps
+// a failover inside the hold.
+func applySelectedModelOutputCeiling(ctx context.Context, body map[string]any, model *llmservice.AuthorizedModel) {
+	if body == nil || model == nil {
+		return
+	}
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return
+	}
+	name := strings.TrimSpace(model.Name)
+	state.mu.Lock()
+	var ceiling int64
+	found := false
+	for _, quote := range state.quotes {
+		if !strings.EqualFold(strings.TrimSpace(quote.LogicalModel), name) {
+			continue
+		}
+		if quote.OutputTokenLimit <= 0 {
+			continue
+		}
+		if !found || quote.OutputTokenLimit < ceiling {
+			ceiling = quote.OutputTokenLimit
+			found = true
+		}
+	}
+	state.mu.Unlock()
+	if !found || ceiling >= llmQuoteOutputTokenLimit(body) {
+		return
+	}
+	applyLLMQuoteOutputCeiling(body, ceiling)
+	alignLLMPricingQuotesToForwardedCeiling(ctx, body, name)
+}
+
 func estimateLLMQuoteInputTokens(body map[string]any) int64 {
 	if len(body) == 0 {
 		return 0
@@ -821,13 +1458,30 @@ func estimateLLMQuoteInputTokens(body map[string]any) int64 {
 	return int64(corelib.EstimateTextTokens(string(payload)))
 }
 
+// llmQuoteOutputTokenLimit is the largest output cap the forwarded body can
+// still ask for. A smaller sibling only over-reserves; a larger one would be
+// forwarded above the hold, so the reservation follows the maximum.
 func llmQuoteOutputTokenLimit(body map[string]any) int64 {
-	for _, key := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
-		if value, ok := llmQuotePositiveInt64(body[key]); ok {
-			return value
-		}
+	if limit, found := explicitLLMQuoteOutputTokenLimit(body); found {
+		return limit
 	}
 	return defaultLLMPricingQuoteOutputTokenLimit
+}
+
+func explicitLLMQuoteOutputTokenLimit(body map[string]any) (int64, bool) {
+	var limit int64
+	found := false
+	for _, key := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
+		value, ok := llmQuotePositiveInt64(body[key])
+		if !ok {
+			continue
+		}
+		if !found || value > limit {
+			limit = value
+			found = true
+		}
+	}
+	return limit, found
 }
 
 func llmQuotePositiveInt64(value any) (int64, bool) {
@@ -908,7 +1562,7 @@ func computeLLMRequestBilling(ctx context.Context, model *llmservice.AuthorizedM
 		credits = llmservice.EstimateTokenPricingCreditsWithCache(snapshot.InputTokens, snapshot.OutputTokens, snapshot.CachedInputTokens, snapshot.CacheWriteTokens, snapshot.Pricing, multiplier)
 		return credits, multiplier
 	}
-	if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && llmPricingQuoteAppliesToModel(quote, model) {
+	if quote, ok := snapshotLLMPricingQuoteForModel(ctx, providerID, model); ok && llmPricingQuoteAppliesToModel(quote, model) {
 		multiplier = llmpool.CombineCreditMultipliers(quote.ProviderMultiplier, quote.BillingGroupMultiplier)
 		if !hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) {
 			return 0, multiplier
@@ -1023,7 +1677,7 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 	if hasOfficialDirectionalSnapshot {
 		copyPricing := officialSnapshot.Pricing
 		pricing = &copyPricing
-	} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && llmPricingQuoteAppliesToModel(quote, model) {
+	} else if quote, ok := snapshotLLMPricingQuoteForModel(ctx, providerID, model); ok && llmPricingQuoteAppliesToModel(quote, model) {
 		copyPricing := quote.Pricing
 		pricing = &copyPricing
 	} else if !IsMaClawProviderRequest(providerID) {
@@ -1048,7 +1702,7 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 			// probe cannot see that dynamic failure, so label the actual
 			// supplier here instead of re-deriving it from the configuration.
 			usage.PricingSource = llmpool.PricingSourceProvider
-		} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && llmPricingQuoteAppliesToModel(quote, model) && strings.TrimSpace(quote.PricingSource) != "" {
+		} else if quote, ok := snapshotLLMPricingQuoteForModel(ctx, providerID, model); ok && llmPricingQuoteAppliesToModel(quote, model) && strings.TrimSpace(quote.PricingSource) != "" {
 			usage.PricingSource = strings.TrimSpace(quote.PricingSource)
 		} else {
 			usage.PricingSource = llmservice.PricingSourceForProviderRoute(model, providerID, billingUpstreamModel(model, providerID))
@@ -1101,8 +1755,18 @@ func llmUsageReportMultipliers(ctx context.Context, providerID string, serviceRe
 	return 1, llmpool.NormalizeCreditMultiplier(effectiveMultiplier)
 }
 
+func officialGroupMultiplier(ctx context.Context, serviceReg *llmservice.Registry, serviceGroupIDs []string, quotedCapability float64) float64 {
+	groupMultiplier := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+	capability := quotedCapability
+	if capability <= 0 || math.IsNaN(capability) || math.IsInf(capability, 0) {
+		clientModel := llmservice.OfficialForwardMetaFrom(ctx).ClientModel
+		capability = llmservice.CapabilityBillingMultiplierForGroups(serviceReg, serviceGroupIDs, clientModel)
+	}
+	return llmpool.CombineCreditMultipliers(groupMultiplier, capability)
+}
+
 func officialRouteMultipliers(ctx context.Context, providerID string, serviceReg *llmservice.Registry, serviceGroupIDs []string) (providerMultiplier, serviceGroupMultiplier float64) {
-	serviceGroupMultiplier = llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+	serviceGroupMultiplier = officialGroupMultiplier(ctx, serviceReg, serviceGroupIDs, 0)
 	if snapshot := snapshotOfficialTokenPricing(ctx); snapshot != nil {
 		providerMultiplier = llmpool.NormalizeCreditMultiplier(snapshot.ProviderMultiplier)
 		if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && quote.BillingGroupMultiplier > 0 {

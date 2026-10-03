@@ -697,3 +697,97 @@ func TestForwardToProviderSurfacesUpstreamHTTPStatus(t *testing.T) {
 		t.Fatalf("got %+v, want HTTP 429", got)
 	}
 }
+
+func TestMemberProbeFollowsUpstreamRedirect(t *testing.T) {
+	var hit bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, upstream.URL+"/v1/chat/completions", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirect.Close)
+	reply, errMsg, _, _ := testProviderChat(context.Background(), memberProbeHTTPClient(nil, nil), &llmpool.ProviderConfig{
+		ID:     "pool-a-1",
+		APIURL: redirect.URL + "/v1",
+	}, "llama", nil, nil)
+	if errMsg != "" || reply != "pong" || !hit {
+		t.Fatalf("reply=%q err=%q hit=%v", reply, errMsg, hit)
+	}
+}
+
+func TestMemberProbeUsesProviderBudgetNotProxyClient(t *testing.T) {
+	if got := providerProbeTimeout(nil); got < 240*time.Second || got <= 180*time.Second {
+		t.Fatalf("provider budget = %s", got)
+	}
+	if got := MemberProbeContextTimeout(nil); got != providerProbeTimeout(nil)+15*time.Second {
+		t.Fatalf("caller budget = %s", got)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.AddProvider(context.Background(), llmpool.ProviderConfig{
+		ID:             "pool-a-1",
+		APIURL:         upstream.URL + "/v1",
+		Models:         []string{"llama"},
+		AllowedNodeIDs: []string{"hc-2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := UpstreamHopHandler(&ProxyConfig{
+		Service:    svc,
+		NodeID:     "hc-2",
+		HTTPClient: &http.Client{Timeout: time.Nanosecond},
+	}, func(*http.Request) error { return nil })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, upstreamHopPath, strings.NewReader(`{"kind":"test_chat","provider_id":"pool-a-1","model":"llama","report_test_result":true}`))
+	req.Header.Set(upstreamHopHeader, "1")
+	h(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"success":true`) || strings.Contains(rec.Body.String(), "timed out") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestExplicitNodeProbeReportsUpstream429Once(t *testing.T) {
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"slow down"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.AddProvider(context.Background(), llmpool.ProviderConfig{
+		ID:             "pool-a-1",
+		APIURL:         upstream.URL + "/v1",
+		Models:         []string{"llama"},
+		AllowedNodeIDs: []string{"hc-2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := UpstreamHopHandler(&ProxyConfig{Service: svc, NodeID: "hc-2"}, func(*http.Request) error { return nil })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, upstreamHopPath, strings.NewReader(`{"kind":"test_chat","provider_id":"pool-a-1","model":"llama","report_test_result":true}`))
+	req.Header.Set(upstreamHopHeader, "1")
+	h(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"success":false`) || !strings.Contains(rec.Body.String(), "429") {
+		t.Fatalf("explicit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if hits != 1 {
+		t.Fatalf("explicit probe hit upstream %d times", hits)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, upstreamHopPath, strings.NewReader(`{"kind":"test_chat","provider_id":"pool-a-1","model":"llama"}`))
+	req.Header.Set(upstreamHopHeader, "1")
+	h(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("automatic hop status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}

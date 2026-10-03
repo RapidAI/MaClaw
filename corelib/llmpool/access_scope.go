@@ -1,6 +1,9 @@
 package llmpool
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // NormalizeAllowedNodeIDs trims, drops empties, and de-duplicates node IDs
 // while preserving first-seen case and order. An empty result means "all nodes".
@@ -26,6 +29,15 @@ func NormalizeAllowedNodeIDs(ids []string) []string {
 		return nil
 	}
 	return out
+}
+
+// ParseAllowedNodeList splits a human list such as "hc-1, hc-2,hc-3" into
+// node ids. Commas, Chinese commas, semicolons, and whitespace all separate ids.
+func ParseAllowedNodeList(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ',' || r == '，' || r == ';' || r == '；'
+	})
+	return NormalizeAllowedNodeIDs(parts)
 }
 
 // ProviderAllowedOnNode reports whether this HubCenter node may call the

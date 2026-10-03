@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 )
@@ -369,6 +370,88 @@ func templateSearchDocument(tmpl *WorkflowTemplate) string {
 	return b.String()
 }
 
+// templateDecisiveDocument is the chat-closing text. The choice panel keeps
+// templateSearchDocument, phase chain included, because its floor is the
+// lower recall bar. A description that is only that chain is left out here:
+// the chain is the steps, and a step such as 修改建议 is also an ordinary
+// request to edit a document. The template name stays. The type id does not:
+// it is an internal token, and on a name-length document its English words
+// close chat by themselves. A description that continues into a sentence
+// stays in full.
+func templateDecisiveDocument(tmpl *WorkflowTemplate) string {
+	if tmpl == nil {
+		return ""
+	}
+	if proseAfterPhaseChain(tmpl.Description) == "" {
+		// The type id is an internal token (contract_review). On a document
+		// this short it matches the English words inside the id, so
+		// "review this contract" closes chat. The name is what a request
+		// for this project actually says.
+		return strings.TrimSpace(tmpl.Name)
+	}
+	return templateSearchDocument(tmpl)
+}
+
+// phaseChainLabelRunes is the longest arrow-list step that is still a phase
+// label. A longer segment is a sentence and stays searchable.
+const phaseChainLabelRunes = 16
+
+// proseAfterPhaseChain returns the part of desc that is not a leading
+// phase chain. Empty means the description is only that chain.
+func proseAfterPhaseChain(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ""
+	}
+	parts := strings.Split(strings.ReplaceAll(desc, "->", "→"), "→")
+	var prose []string
+	chain := true
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !chain {
+			prose = append(prose, part)
+			continue
+		}
+		if i := strings.Index(part, "。"); i >= 0 {
+			rest := strings.TrimSpace(part[i+len("。"):])
+			if rest != "" {
+				prose = append(prose, rest)
+			}
+			chain = false
+			continue
+		}
+		if utf8.RuneCountInString(part) > phaseChainLabelRunes {
+			prose = append(prose, part)
+			chain = false
+			continue
+		}
+	}
+	return strings.Join(prose, " ")
+}
+
+// foldTemplateHan maps traditional characters used in catalog names and in
+// the sentences that distinguish those projects onto the simplified forms
+// in the index. A request may use the other script; the characters are not
+// a second project.
+func foldTemplateHan(s string) string {
+	return templateHanFold.Replace(s)
+}
+
+var templateHanFold = strings.NewReplacer(
+	"編", "编", "維", "维", "護", "护", "構", "构", "運", "运",
+	"設", "设", "計", "计", "產", "产", "創", "创", "業", "业", "劃", "划",
+	"測", "测", "試", "试", "獻", "献", "綜", "综", "報", "报", "競", "竞",
+	"項", "项", "動", "动", "標", "标", "書", "书", "檢", "检", "審", "审",
+	"盡", "尽", "職", "职", "調", "调", "規", "规", "專", "专", "實", "实",
+	"驗", "验", "請", "请", "論", "论", "寫", "写", "復", "复", "現", "现",
+	"願", "愿", "參", "参", "長", "长", "學", "学", "評", "评", "傑", "杰",
+	"優", "优", "國", "国", "點", "点", "這", "这", "個", "个", "辦", "办",
+	"遠", "远", "務", "务", "複", "复",
+)
+
 func hasStableTopTemplateScore(ranked []TemplateScore) bool {
 	if len(ranked) == 0 || ranked[0].Score <= 0 {
 		return false
@@ -380,12 +463,19 @@ func hasStableTopTemplateScore(ranked []TemplateScore) bool {
 	return ranked[0].Score >= minAbsoluteTemplateScore
 }
 
-// decisiveCatalogScore is how sure the catalog must be when the classifier
-// did not name a template. Incidental n-gram overlap with a long template
-// (a cartoon, an audit log) lands near the noise floor, around 2–4. A request
-// that actually names a panel project lands much higher. The gap between
-// those two is where this cutoff sits.
+// decisiveCatalogScore is how sure the catalog must be before chat closes.
+// Incidental n-gram overlap lands near the noise floor, around 2–4. A request
+// that actually names one panel project lands much higher. The gap between
+// those two is where this cutoff sits. BM25 sums matching terms, so a long
+// sentence can cross the cutoff by touching several templates at once.
 const decisiveCatalogScore = 8
+
+// decisiveCatalogLead is how far the winning template must sit ahead of the
+// next one. A long sentence can lift several templates together. Twice the
+// runner-up is the margin that still keeps a gaokao request, which leads
+// about 3.7× after a filename is added, and leaves a long template-library
+// opening behind.
+const decisiveCatalogLead = 2
 
 // softwareExecutionTemplates are workflows whose ordinary wording is code,
 // games, and server ops. They stay on the agent path. A new panel template
@@ -413,50 +503,129 @@ func builtinTemplateRegistry() *TemplateRegistry {
 	return builtinRegistry
 }
 
+var (
+	decisiveIndexOnce sync.Once
+	decisiveIndex     *bm25.Index
+)
+
+func decisiveCatalogIndex() *bm25.Index {
+	decisiveIndexOnce.Do(func() {
+		reg := builtinTemplateRegistry()
+		idx := bm25.New()
+		var docs []bm25.Doc
+		for _, typ := range reg.AllTypes() {
+			tmpl := reg.Get(typ)
+			if tmpl == nil || tmpl.SemanticOnly || strings.TrimSpace(tmpl.Type) == "" {
+				continue
+			}
+			docs = append(docs, bm25.Doc{ID: tmpl.Type, Text: templateDecisiveDocument(tmpl)})
+		}
+		idx.Rebuild(docs)
+		decisiveIndex = idx
+	})
+	return decisiveIndex
+}
+
 func catalogProjectScores(text string) []TemplateScore {
-	ranked := builtinTemplateRegistry().RankedByText(text)
-	out := make([]TemplateScore, 0, len(ranked))
-	for _, item := range ranked {
-		if softwareExecutionTemplate(item.Type) {
+	idx := decisiveCatalogIndex()
+	// Score applies the short-name conjunction. A request such as 帮我做个竞品分析
+	// is all Han and short, so that conjunction demands every surrounding word
+	// also occur in the template and the name hit is dropped. Overlaps recover
+	// the hit only when this template is just its name and the request ends
+	// with that name. An edit that continues after the name stays out.
+	// Folding happens before either score, so a traditional sentence is
+	// compared with the simplified catalog. A template whose description is a
+	// real sentence stays on Score, so a campus introduction does not close
+	// chat by sharing a school name with that sentence.
+	folded := foldTemplateHan(text)
+	merged := idx.Score(folded)
+	if merged == nil {
+		merged = map[string]float64{}
+	}
+	reg := builtinTemplateRegistry()
+	for id, score := range idx.ScoreOverlaps(folded) {
+		tmpl := reg.Get(id)
+		if tmpl == nil || proseAfterPhaseChain(tmpl.Description) != "" {
 			continue
 		}
-		out = append(out, item)
+		name := foldTemplateHan(strings.TrimSpace(tmpl.Name))
+		// A short request that the person-name rule dropped is recovered only
+		// when it ends with the project name. "帮我做个竞品分析" does. An edit
+		// that keeps talking after the name, "把测试计划里的日期改一下", does not.
+		if name == "" || !strings.HasSuffix(strings.TrimRight(folded, " \t\r\n。！？!?.,，、"), name) {
+			continue
+		}
+		if score > merged[id] {
+			merged[id] = score
+		}
 	}
-	return out
+	ranked := make([]TemplateScore, 0, len(merged))
+	for id, score := range merged {
+		if score <= 0 || softwareExecutionTemplate(id) {
+			continue
+		}
+		ranked = append(ranked, TemplateScore{Type: id, Score: score})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Score == ranked[j].Score {
+			return ranked[i].Type < ranked[j].Type
+		}
+		return ranked[i].Score > ranked[j].Score
+	})
+	return ranked
 }
 
 // CatalogCorroboratesWorkflowProject reports whether the workflow catalog
 // agrees that text is a panel project.
 //
-// The agreement is the catalog's own template score — the same name,
-// description, and phase document MatchByText uses — not a phrase list. A
-// template added to the registry takes part with no further table.
+// The agreement is the catalog's own template score, not a phrase list. A
+// template added to the registry takes part with no further table. Closing
+// chat reads templateDecisiveDocument: the choice panel still searches the
+// phase chain, and a chain with no sentence after it does not close chat.
 //
-// When workflowType is set, that template must clear the catalog noise floor.
-// An invented type on a cartoon does not. A type that misses does not veto a
-// decisive hit on a different template: the model can name a project the text
-// is not. When no named type clears the floor, only a decisive catalog hit
-// counts, so a weak overlap cannot close ordinary chat by itself.
+// When workflowType is set, that template has to be the winner, and it has
+// to lead by decisiveCatalogLead. The classifier names a type because
+// the object looks like a paper or a plan, so the name is not a second
+// measurement and it must not lower the bar to the choice-panel floor (2.25).
+// A different template's score does not confirm the named one. A software
+// type is not a panel name, so it is cleared and the text can still match a
+// panel on its own.
 func CatalogCorroboratesWorkflowProject(text, workflowType string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return false
 	}
-	// A software type describes code, a game, or server ops. It never confirms
-	// a panel project, but it must not hide one either: the text can still be
-	// a decisive match on a panel template.
 	if softwareExecutionTemplate(workflowType) {
 		workflowType = ""
 	}
-	ranked := catalogProjectScores(text)
-	if workflowType != "" {
-		for _, item := range ranked {
-			if item.Type == workflowType && item.Score >= minAbsoluteTemplateScore {
-				return true
-			}
-		}
+	return catalogWinnerDecides(catalogProjectScores(text), workflowType)
+}
+
+func catalogWinnerDecides(ranked []TemplateScore, workflowType string) bool {
+	if len(ranked) == 0 || ranked[0].Score < decisiveCatalogScore {
+		return false
 	}
-	return len(ranked) > 0 && ranked[0].Score >= decisiveCatalogScore
+	if workflowType != "" && ranked[0].Type != workflowType {
+		return false
+	}
+	if len(ranked) < 2 || ranked[1].Score <= 0 {
+		return true
+	}
+	return ranked[0].Score >= ranked[1].Score*decisiveCatalogLead
+}
+
+// CatalogDecisiveWinner is the panel template that closes chat when the
+// classifier did not name a type. Empty when no template is decisive.
+func CatalogDecisiveWinner(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	ranked := catalogProjectScores(text)
+	if !catalogWinnerDecides(ranked, "") {
+		return ""
+	}
+	return ranked[0].Type
 }
 
 // --- Built-in Templates ---

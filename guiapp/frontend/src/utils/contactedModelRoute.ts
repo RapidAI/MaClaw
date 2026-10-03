@@ -6,6 +6,15 @@ export type ContactedProfileSummary = {
     model?: string;
 };
 
+/**
+ * Profile-less tasks created from 新建任务 have no execution profile of their
+ * own. Their turns still use the assistant assignment, so the composer writes
+ * that profile. Coding tasks keep the coding assignment.
+ */
+export function quickModelWriteProfile(activeProfile: string | undefined): "assistant" | "coding" {
+    return activeProfile === "coding" ? "coding" : "assistant";
+}
+
 /** Profile-less local tasks still run on the assistant route. */
 export function contactedProfileForExecution(
     activeProfile: string | undefined,

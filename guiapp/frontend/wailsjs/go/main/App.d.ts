@@ -19,6 +19,8 @@ import {remote} from '../models';
 import {security} from '../models';
 import {doctor} from '../models';
 
+export function AbandonUnopenedFreshLatexTask(arg1:string):Promise<void>;
+
 export function AccumulateLLMLocalCacheRequest(arg1:string,arg2:boolean):Promise<void>;
 
 export function AccumulateLLMTokenUsage(arg1:string,arg2:number,arg3:number):Promise<void>;
@@ -48,6 +50,8 @@ export function SendReferralRegistrationSMS(arg1:string,arg2:string,arg3:string,
 export function RegisterReferralPhone(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
 export function ConsumeReferralHandoff():Promise<main.ReferralHandoffLaunch>;
+
+export function ConsumeCreditGiftHandoff():Promise<main.CreditGiftLaunch>;
 
 export function AddExternalSkillDir(arg1:string):Promise<number>;
 
@@ -1837,6 +1841,8 @@ export function PreviewVirtualRepositoryOperation(arg1:string):Promise<string>;
 
 export function PreviewVirtualRepositoryRootMigration(arg1:string):Promise<string>;
 
+export function ProbeMaclawLLMProviderModel(arg1:string,arg2:string):Promise<corelib.MaclawLLMTestResult>;
+
 export function ProbeMCPServers():Promise<Array<main.MCPServerView>>;
 
 export function ProbeRemoteHub(arg1:string,arg2:string):Promise<main.RemoteProbeResult>;
@@ -2602,3 +2608,23 @@ export function SyncLatexTemplatesFromHub():Promise<string>;
 export function ShareLatexTemplate(arg1:string):Promise<string>;
 export function CreateLatexDocument(arg1:string,arg2:string,arg3:string):Promise<string>;
 export function SyncLatexTemplateShares():Promise<void>;
+export function TokenBankSummary():Promise<Record<string, any>>;
+export function TokenBankListShareAudiences():Promise<Record<string, any>>;
+export function TokenBankListShares(arg1:string):Promise<Record<string, any>>;
+export function TokenBankListShareModels(arg1:string,arg2:string):Promise<Record<string, any>>;
+export function TokenBankSetSharePaused(arg1:string,arg2:boolean):Promise<Record<string, any>>;
+export function TokenBankTakeOutShare(arg1:string):Promise<Record<string, any>>;
+export function TokenBankListWithdrawals():Promise<Record<string, any>>;
+export function TokenBankWithdraw(arg1:string,arg2:number,arg3:boolean):Promise<Record<string, any>>;
+export function TokenBankCreateShare(arg1:main.TokenBankShareInput):Promise<Record<string, any>>;
+export function TokenBankSyncShareModels(arg1:string, arg2:Array<main.TokenBankShareModelInput>):Promise<Record<string, any>>;
+
+export function TokenBankRotateShareKey(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<Record<string, any>>;
+export function TokenBankAddShareKey(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<Record<string, any>>;
+export function TokenBankSetShareVisibility(arg1:string,arg2:string,arg3:Array<{hub_id:string,tenant_id:string}>):Promise<Record<string, any>>;
+export function TokenBankCreateGiftLink(arg1:number,arg2:number):Promise<Record<string, any>>;
+export function TokenBankListGiftLinks():Promise<Record<string, any>>;
+export function TokenBankRevokeGiftLink(arg1:string):Promise<Record<string, any>>;
+export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any>>;
+export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
+export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;

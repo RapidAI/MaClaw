@@ -5,6 +5,8 @@ package guiapp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -24,61 +26,21 @@ import (
 func estimateConversationEntryTokens(entries []agent.ConversationEntry) int {
 	total := 0
 	for _, e := range entries {
-		data, _ := json.Marshal(e)
-		total += estimateBytesToTokens(data)
+		total += entryTokenCount(e)
 	}
 	return total
 }
 
-// estimateConversationTokens estimates the token count for a raw conversation
-// slice ([]interface{}) used inside the agent loop.
-// For Chinese-heavy content the JSON byte length underestimates token count
-// because CJK characters are 3 bytes in UTF-8 but typically 1-2 tokens.
-// We use len/3 instead of len/4 to be more conservative.
-//
-// For multimodal messages (content is []interface{} with image_url blocks),
-// base64 image data is excluded from the estimate since it doesn't consume
-// text tokens — vision tokens are counted separately by the API.
+// estimateConversationTokens is the sum of the per-message count shared with
+// the checkpoint and trimConversation. The first-request gate uses this sum
+// to decide whether the latency budget applies. A separate JSON encoding is
+// larger once arguments contain quotes, so the gate was opening the 24k
+// budget for a transcript the checkpoint still considered inside the
+// provider window.
 func estimateConversationTokens(msgs []interface{}) int {
 	total := 0
 	for _, m := range msgs {
-		mm, ok := m.(map[string]interface{})
-		if !ok {
-			data, _ := json.Marshal(m)
-			total += estimateBytesToTokens(data)
-			continue
-		}
-		// Check if content is a multimodal array (vision messages).
-		if content, ok := mm["content"].([]interface{}); ok {
-			// Estimate each content block, skipping base64 image data.
-			for _, block := range content {
-				bm, ok := block.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				blockType, _ := bm["type"].(string)
-				blockKind := normalizeIMContentBlockKind(blockType)
-				if blockKind == imContentBlockImageURL {
-					// Vision image block — count a fixed ~85 tokens (low-detail)
-					// instead of serializing the huge base64 string.
-					total += 85
-					continue
-				}
-				if blockKind == imContentBlockImage {
-					// Anthropic-style image block — same treatment.
-					total += 85
-					continue
-				}
-				// Text or other block — estimate normally.
-				data, _ := json.Marshal(bm)
-				total += estimateBytesToTokens(data)
-			}
-			// Also count role and other top-level fields (minus content).
-			total += 10 // rough overhead for role, etc.
-		} else {
-			data, _ := json.Marshal(mm)
-			total += estimateBytesToTokens(data)
-		}
+		total += estimateSingleMsgTokens(m)
 	}
 	return total
 }
@@ -129,11 +91,10 @@ func quickSingleMsgTokenEstimate(m interface{}) int {
 	const perMsgOverhead = 12
 	switch v := m.(type) {
 	case map[string]interface{}:
-		// Messages with tool_calls have unpredictable size (function args can
-		// be thousands of bytes). Fall back to json.Marshal for accuracy.
+		// Arguments can be a whole file. Count them by length; encoding the
+		// message to JSON here copies that payload on every fit check.
 		if v["tool_calls"] != nil {
-			data, _ := json.Marshal(v)
-			return estimateBytesToTokens(data)
+			return agent.EstimateMessageTokens(m)
 		}
 		tokens := perMsgOverhead
 		// Handle multimodal content ([]interface{} with image blocks).
@@ -172,36 +133,19 @@ func quickSingleMsgTokenEstimate(m interface{}) int {
 	}
 }
 
-// estimateSingleMsgTokens estimates the token count for a single conversation
-// message. Same logic as estimateConversationTokens but for one message.
+// estimateSingleMsgTokens uses the same allocation-free count as the
+// checkpoint. A separate JSON pass is larger (quotes, escapes, keys), so a
+// transcript the checkpoint left inline was then rewritten with the omission
+// placeholder. Multimodal messages still go through that shared count, which
+// keeps image blocks at a fixed cost. Unknown shapes fall back to JSON.
 func estimateSingleMsgTokens(m interface{}) int {
-	mm, ok := m.(map[string]interface{})
-	if !ok {
+	switch m.(type) {
+	case map[string]interface{}, map[string]string:
+		return agent.EstimateMessageTokens(m)
+	default:
 		data, _ := json.Marshal(m)
 		return estimateBytesToTokens(data)
 	}
-	// Check if content is a multimodal array (vision messages).
-	if content, ok := mm["content"].([]interface{}); ok {
-		total := 0
-		for _, block := range content {
-			bm, ok := block.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			blockType, _ := bm["type"].(string)
-			blockKind := normalizeIMContentBlockKind(blockType)
-			if blockKind == imContentBlockImageURL || blockKind == imContentBlockImage {
-				total += 85
-				continue
-			}
-			data, _ := json.Marshal(bm)
-			total += estimateBytesToTokens(data)
-		}
-		total += 10 // role overhead
-		return total
-	}
-	data, _ := json.Marshal(mm)
-	return estimateBytesToTokens(data)
 }
 
 // defaultContextTokens is re-exported from corelib for local use.
@@ -273,9 +217,10 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		return msgs
 	}
 
-	// Fast short-circuit: use a cheaper estimate (only marshals tool_call msgs,
-	// uses string length for text msgs) to avoid the full O(n) json.Marshal
-	// precompute when the conversation clearly fits within budget.
+	// Fast short-circuit: measure string length, and tool-call arguments by
+	// length, so a large payload is not encoded just to see that the
+	// transcript fits. Text-only messages under-count, so the short-circuit
+	// is trusted only when doubling that estimate stays inside the budget.
 	// The quick estimate under-counts text-only messages, so we require
 	// doubling it stays below budget before trusting the short-circuit.
 	quickEstimate := quickConversationTokenEstimate(msgs)
@@ -368,99 +313,112 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	}
 
 	if bestDropCount > 0 {
-		dropped := groups[:bestDropCount]
-		kept := groups[bestDropCount:]
+		dropped := append([]msgGroup(nil), groups[:bestDropCount]...)
+		kept := append([]msgGroup(nil), groups[bestDropCount:]...)
+		collect := func(gs []msgGroup) []interface{} {
+			out := make([]interface{}, 0)
+			for _, g := range gs {
+				out = append(out, msgs[g.start:g.end]...)
+			}
+			return out
+		}
+		assemble := func(placeholder []interface{}, keptGroups []msgGroup) []interface{} {
+			result := make([]interface{}, 0, len(systemMsg)+len(placeholder)+8)
+			result = append(result, systemMsg...)
+			result = append(result, placeholder...)
+			for _, g := range keptGroups {
+				result = append(result, msgs[g.start:g.end]...)
+			}
+			return result
+		}
 
-		// Try to summarize the dropped messages (one LLM call only).
-		placeholder := fallbackPlaceholder
-		summarized := false
-		if summarizer != nil && len(dropped) > 0 {
-			var sb strings.Builder
-			for _, g := range dropped {
-				for idx := g.start; idx < g.end; idx++ {
-					data, _ := json.Marshal(msgs[idx])
-					sb.Write(data)
-					sb.WriteByte('\n')
-				}
-			}
-			raw := sb.String()
-			if len(raw) > 32000 {
-				// Rune-safe cut: a byte-level slice can split a multi-byte
-				// UTF-8 rune and produce an invalid payload for the
-				// summarization LLM request.
-				raw = truncateUTF8Bytes(raw, 32000) + "\n...(truncated)"
-			}
-			// Summarizer is an LLM call — protect against hangs with a timeout.
-			// If the summarizer doesn't return within 15s, fall back to the
-			// static placeholder. This prevents the agent loop from blocking
-			// indefinitely when the LLM API is overloaded/unreachable.
+		// One summary of the first dropped prefix. A timeout, rejection, or
+		// oversized summary falls back to a deterministic handoff. Dropping
+		// more groups after that does not call the model again.
+		summary := ""
+		fileBlock := ""
+		if summarizer != nil {
+			material, files := liveCompactionMaterial(collect(dropped))
+			fileBlock = files
 			summaryCh := make(chan string, 1)
-			go func() { summaryCh <- summarizer(raw) }()
-			var summary string
+			go func() { summaryCh <- summarizer(material) }()
 			select {
 			case summary = <-summaryCh:
 			case <-time.After(15 * time.Second):
-				log.Printf("[trim-conversation] summarizer timed out after 15s, using fallback placeholder")
+				log.Printf("[trim-conversation] summarizer timed out after 15s, using deterministic handoff")
+				summary = ""
+			}
+			if compactionSummaryUnusable(summary, "") {
+				summary = ""
+			}
+		}
+		for {
+			nextRole := ""
+			if len(kept) > 0 {
+				nextRole = msgRole(msgs[kept[0].start])
+			}
+			var placeholder []interface{}
+			kind := "static"
+			if summary != "" {
+				kind = "summary"
+				placeholder = handoffTurn("[对话历史摘要]\n"+compactionHandoffContent(summary, fileBlock), nextRole)
+			} else if handoff := liveTrimFallbackHandoff(collect(dropped)); handoff != "" {
+				kind = "handoff"
+				placeholder = handoffTurn(handoff, nextRole)
+			} else {
+				placeholder = avoidAdjacentUsers(fallbackPlaceholder, nextRole)
+			}
+			result := assemble(placeholder, kept)
+			if estimateConversationTokens(result) <= msgBudget {
+				log.Printf("[trim-conversation] dropped_groups=%d placeholder=%s msg_budget=%d",
+					len(dropped), kind, msgBudget)
+				return result
 			}
 			if summary != "" {
-				// Cap summary to ~2000 tokens (~5000 chars) to avoid blowing the budget.
-				if len(summary) > 5000 {
-					runes := []rune(summary)
-					if len(runes) > 5000 {
-						summary = string(runes[:5000]) + "…"
-					}
-				}
-				summarized = true
-				placeholder = []interface{}{
-					map[string]string{"role": "user", "content": "[对话历史摘要]\n" + summary},
-					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。", "reasoning_content": ""},
-				}
+				summary = ""
+				continue
 			}
-		}
-
-		var result []interface{}
-		result = append(result, systemMsg...)
-		result = append(result, placeholder...)
-		for _, g := range kept {
-			result = append(result, msgs[g.start:g.end]...)
-		}
-		// If summary made it larger than fallback, just use fallback.
-		if estimateConversationTokens(result) > msgBudget {
-			summarized = false
-			result = result[:0]
-			result = append(result, systemMsg...)
-			result = append(result, fallbackPlaceholder...)
-			for _, g := range kept {
-				result = append(result, msgs[g.start:g.end]...)
+			if len(kept) <= 1 {
+				nextRole := ""
+				if len(kept) > 0 {
+					nextRole = msgRole(msgs[kept[0].start])
+				}
+				result = assemble(avoidAdjacentUsers(fallbackPlaceholder, nextRole), kept)
+				log.Printf("[trim-conversation] dropped_groups=%d placeholder=static msg_budget=%d",
+					len(dropped), msgBudget)
+				return result
 			}
+			dropped = append(dropped, kept[0])
+			kept = kept[1:]
 		}
-		droppedTokens := 0
-		for _, gt := range groupTokens[:bestDropCount] {
-			droppedTokens += gt
-		}
-		placeholderKind := "static"
-		if summarized {
-			placeholderKind = "summary"
-		}
-		log.Printf("[trim-conversation] dropped_groups=%d dropped_tokens~=%d placeholder=%s msg_budget=%d",
-			bestDropCount, droppedTokens, placeholderKind, msgBudget)
-		return result
 	}
 
 	// Even keeping only the last group doesn't fit — try secondary truncation
-	// of tool results within the last group to squeeze it in.
+	// of tool results within the last group to squeeze it in. Prefer a handoff
+	// of everything before that group when the shortened tail still fits.
 	lastG := groups[len(groups)-1]
-	result := truncateLastGroup(msgs, lastG.start, lastG.end, systemMsg, fallbackPlaceholder)
-	if estimateConversationTokens(result) <= msgBudget {
-		log.Printf("[trim-conversation] mode=last_group_truncate msg_budget=%d msgs=%d", msgBudget, len(msgs))
-		return result
+	nextRole := msgRole(msgs[lastG.start])
+	tryFit := func(placeholder []interface{}) ([]interface{}, bool) {
+		result := truncateLastGroup(msgs, lastG.start, lastG.end, systemMsg, placeholder)
+		if estimateConversationTokens(result) <= msgBudget {
+			return result, true
+		}
+		result = truncateAssistantContent(result, msgBudget)
+		if estimateConversationTokens(result) <= msgBudget {
+			return result, true
+		}
+		return nil, false
 	}
-
-	// Still over budget — aggressively truncate assistant content in the result
-	// while keeping tool-call pairs intact.
-	result = truncateAssistantContent(result, msgBudget)
-	if estimateConversationTokens(result) <= msgBudget {
-		log.Printf("[trim-conversation] mode=assistant_content_truncate msg_budget=%d msgs=%d", msgBudget, len(msgs))
+	if lastG.start > 1 {
+		if handoff := liveTrimFallbackHandoff(msgs[1:lastG.start]); handoff != "" {
+			if result, ok := tryFit(handoffTurn(handoff, nextRole)); ok {
+				log.Printf("[trim-conversation] mode=last_group_handoff msg_budget=%d msgs=%d", msgBudget, len(msgs))
+				return result
+			}
+		}
+	}
+	if result, ok := tryFit(avoidAdjacentUsers(fallbackPlaceholder, nextRole)); ok {
+		log.Printf("[trim-conversation] mode=last_group_truncate msg_budget=%d msgs=%d", msgBudget, len(msgs))
 		return result
 	}
 
@@ -476,9 +434,23 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		if msgRole(msgs[i]) != "user" {
 			continue
 		}
-		result := make([]interface{}, 0, len(systemMsg)+len(fallbackPlaceholder)+len(msgs)-i)
+		placeholder := fallbackPlaceholder
+		if i > 1 {
+			if handoff := liveTrimFallbackHandoff(msgs[1:i]); handoff != "" {
+				candidate := handoffTurn(handoff, "user")
+				trial := make([]interface{}, 0, len(systemMsg)+len(candidate)+len(msgs)-i)
+				trial = append(trial, systemMsg...)
+				trial = append(trial, candidate...)
+				trial = append(trial, msgs[i:]...)
+				if estimateConversationTokens(trial) <= msgBudget {
+					log.Printf("[trim-conversation] mode=tail_keep_handoff from_idx=%d msg_budget=%d", i, msgBudget)
+					return trial
+				}
+			}
+		}
+		result := make([]interface{}, 0, len(systemMsg)+len(placeholder)+1+len(msgs)-i)
 		result = append(result, systemMsg...)
-		result = append(result, fallbackPlaceholder...)
+		result = append(result, avoidAdjacentUsers(placeholder, "user")...)
 		result = append(result, msgs[i:]...)
 		log.Printf("[trim-conversation] mode=tail_keep_over_budget from_idx=%d msg_budget=%d", i, msgBudget)
 		return result
@@ -488,9 +460,145 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	// the provider-valid minimal fallback rather than risking an orphaned tool
 	// result.
 	log.Printf("[trim-conversation] mode=minimal_system_only msg_budget=%d msgs=%d", msgBudget, len(msgs))
-	result = make([]interface{}, 0, len(systemMsg)+len(fallbackPlaceholder))
-	result = append(result, systemMsg...)
-	return append(result, fallbackPlaceholder...)
+	minimal := make([]interface{}, 0, len(systemMsg)+len(fallbackPlaceholder))
+	minimal = append(minimal, systemMsg...)
+	return append(minimal, fallbackPlaceholder...)
+}
+
+// liveTrimFallbackHandoff is the no-model note used when live trim cannot
+// get a summary. It keeps the latest user requests, file paths, and any
+// previous summary, and stays bounded so it can replace the one-line omission.
+func liveTrimFallbackHandoff(msgs []interface{}) string {
+	entries := messagesToEntries(msgs)
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[上下文恢复] 更早的对话因长度限制被压缩。请基于下面的要点和最近的原文继续，不要重复已完成的工作。")
+	prev := previousCompactionSummary(entries)
+	var users []string
+	seenUser := map[string]bool{}
+	addUser := func(text string) {
+		text = strings.Join(strings.Fields(text), " ")
+		if text == "" || seenUser[text] {
+			return
+		}
+		seenUser[text] = true
+		users = append(users, trimOneLine(text, 180))
+	}
+	for _, entry := range entries {
+		if entry.Role != "user" {
+			continue
+		}
+		text, ok := entry.Content.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if strings.HasPrefix(text, "[上下文恢复]") {
+			if prev == "" {
+				if parsed := handoffSectionBullets(text, "先前摘要:"); len(parsed) > 0 {
+					prev = parsed[len(parsed)-1]
+				}
+			}
+			for _, item := range handoffSectionBullets(text, "用户要求:") {
+				addUser(item)
+			}
+			continue
+		}
+		if corelib.IsSyntheticUserContent(text) {
+			continue
+		}
+		addUser(text)
+	}
+	if len(users) > 6 {
+		users = users[len(users)-6:]
+	}
+	if prev != "" {
+		b.WriteString("\n\n先前摘要:\n- ")
+		b.WriteString(trimOneLine(prev, 600))
+		b.WriteByte('\n')
+	}
+	if len(users) > 0 {
+		b.WriteString("\n用户要求:\n")
+		for _, text := range users {
+			b.WriteString("- ")
+			b.WriteString(text)
+			b.WriteByte('\n')
+		}
+	}
+	readFiles, modifiedFiles := compactionFileLists(entries)
+	if len(readFiles) > 20 {
+		readFiles = readFiles[len(readFiles)-20:]
+	}
+	if len(modifiedFiles) > 20 {
+		modifiedFiles = modifiedFiles[len(modifiedFiles)-20:]
+	}
+	if block := formatCompactionFileLists(readFiles, modifiedFiles); block != "" {
+		b.WriteByte('\n')
+		b.WriteString(block)
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func handoffTurn(text, nextRole string) []interface{} {
+	return avoidAdjacentUsers([]interface{}{
+		map[string]string{"role": "user", "content": text},
+	}, nextRole)
+}
+
+// avoidAdjacentUsers inserts a short assistant ack when a user placeholder
+// would otherwise sit directly against another user message.
+func avoidAdjacentUsers(placeholder []interface{}, nextRole string) []interface{} {
+	if len(placeholder) == 0 || nextRole == "assistant" || nextRole == "tool" {
+		return placeholder
+	}
+	if msgRole(placeholder[len(placeholder)-1]) != "user" {
+		return placeholder
+	}
+	out := append([]interface{}{}, placeholder...)
+	out = append(out, map[string]string{
+		"role":              "assistant",
+		"content":           "好的，我已了解之前被省略的工作。",
+		"reasoning_content": "",
+	})
+	return out
+}
+
+func trimOneLine(text string, maxRunes int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		return string(runes[:maxRunes])
+	}
+	return text
+}
+
+func handoffSectionBullets(text, header string) []string {
+	var out []string
+	in := false
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == header {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		if trim == "" {
+			continue
+		}
+		if !strings.HasPrefix(trim, "- ") {
+			break
+		}
+		item := strings.TrimSpace(strings.TrimPrefix(trim, "- "))
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // truncateLastGroup builds a result from system + placeholder + the last
@@ -669,6 +777,355 @@ const compactionRecoveryPrefix = `[上下文恢复] 之前的对话因长度限�
 
 `
 
+// compactionPlaceholder is the synchronous checkpoint text. The async summary
+// replaces it when the model returns a complete handoff.
+const compactionPlaceholder = "[...中间的工具调用和执行细节已省略...]"
+
+// compactionSummaryRuneCap is the largest summary that may be stored.
+// A longer result was cut off and must not become the checkpoint.
+const compactionSummaryRuneCap = 5000
+
+const compactionUpdatePrompt = `你正在更新一份已有的上下文交接摘要。规则:
+- 保留上一份摘要中的目标、约束、关键决定和已完成项
+- 只并入新进展；已完成的事项从待完成移到当前进度
+- 保留精确的文件路径、函数名和报错
+- 仍使用这四个部分: 当前进度、重要上下文、待完成工作、关键数据
+
+上一份摘要:
+%s
+
+新增的对话材料:
+%s
+`
+
+const (
+	compactionPreviousOpen  = "<previous-summary>\n"
+	compactionPreviousClose = "\n</previous-summary>"
+	compactionDroppedOpen   = "<dropped>\n"
+	compactionDroppedClose  = "\n</dropped>"
+	compactionReadOpen      = "<read-files>\n"
+	compactionReadClose     = "\n</read-files>"
+	compactionModifiedOpen  = "<modified-files>\n"
+	compactionModifiedClose = "\n</modified-files>"
+)
+
+// compactionSummaryUnusable reports whether a summarizer result must be discarded.
+// Incomplete, empty, or tool-calling output is not a checkpoint.
+func compactionSummaryUnusable(content, finishReason string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(finishReason)) {
+	case "length", "max_tokens", "error", "tool_calls", "tool_use":
+		return true
+	}
+	if strings.Contains(content, `"tool_calls"`) || strings.Contains(content, "<tool_call") {
+		return true
+	}
+	if len([]rune(content)) > compactionSummaryRuneCap {
+		return true
+	}
+	return false
+}
+
+func compactionPromptFor(material string) string {
+	prev, dropped := splitCompactionSource(material)
+	if prev == "" {
+		body := material
+		if dropped != "" {
+			body = dropped
+		}
+		return compactionHandoffPrompt + body
+	}
+	body := dropped
+	if body == "" {
+		body = material
+	}
+	return fmt.Sprintf(compactionUpdatePrompt, prev, body)
+}
+
+func splitCompactionSource(material string) (prev, dropped string) {
+	prev = firstTaggedSection(material, compactionPreviousOpen, compactionPreviousClose)
+	dropped = firstTaggedSection(material, compactionDroppedOpen, compactionDroppedClose)
+	return prev, dropped
+}
+
+func firstTaggedSection(s, open, close string) string {
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
+}
+
+func buildCompactionSource(previous, dropped string) string {
+	var b strings.Builder
+	if strings.TrimSpace(previous) != "" {
+		b.WriteString(compactionPreviousOpen)
+		b.WriteString(strings.TrimSpace(previous))
+		b.WriteString(compactionPreviousClose)
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(dropped) != "" {
+		b.WriteString(compactionDroppedOpen)
+		b.WriteString(strings.TrimSpace(dropped))
+		b.WriteString(compactionDroppedClose)
+	}
+	return b.String()
+}
+
+func compactionPlaceholderContent(fileBlock string) string {
+	if strings.TrimSpace(fileBlock) == "" {
+		return compactionPlaceholder
+	}
+	return compactionPlaceholder + "\n\n" + fileBlock
+}
+
+func compactionHandoffContent(summary, fileBlock string) string {
+	body := compactionRecoveryPrefix + strings.TrimSpace(summary)
+	if strings.TrimSpace(fileBlock) != "" {
+		body += "\n\n" + fileBlock
+	}
+	return body
+}
+
+func newCompactionID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("cmp-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func previousCompactionSummary(entries []agent.ConversationEntry) string {
+	finished := ""
+	pending := ""
+	for _, entry := range entries {
+		if body := compactionSummaryBody(entry); body != "" {
+			// A later finished summary already covers earlier pending material.
+			finished = body
+			pending = ""
+			continue
+		}
+		// The async summary has not landed. Keep the pending source so a
+		// second compaction does not discard the conversation it described.
+		if next := pendingCompactionMaterial(entry.CompactionSource); next != "" {
+			pending = next
+		}
+	}
+	switch {
+	case finished != "" && pending != "":
+		if strings.Contains(pending, finished) {
+			return pending
+		}
+		return capCompactionText(finished+"\n\n"+pending, 12000)
+	case finished != "":
+		return finished
+	default:
+		return pending
+	}
+}
+
+func pendingCompactionMaterial(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	prev, dropped := splitCompactionSource(source)
+	var b strings.Builder
+	if prev != "" {
+		b.WriteString(prev)
+	}
+	if dropped != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(dropped)
+	}
+	if b.Len() == 0 {
+		b.WriteString(source)
+	}
+	return capCompactionText(b.String(), 12000)
+}
+
+func capCompactionText(s string, maxRunes int) string {
+	runes := []rune(s)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return s
+	}
+	if maxRunes < 32 {
+		return string(runes[:maxRunes])
+	}
+	head := maxRunes * 2 / 3
+	tail := maxRunes - head - 1
+	if tail < 1 {
+		tail = 1
+		head = maxRunes - tail - 1
+	}
+	return string(runes[:head]) + "\n…\n" + string(runes[len(runes)-tail:])
+}
+
+func compactionSummaryBody(entry agent.ConversationEntry) string {
+	text, ok := entry.Content.(string)
+	if !ok {
+		return ""
+	}
+	idx := strings.Index(text, compactionRecoveryPrefix)
+	if idx < 0 {
+		return ""
+	}
+	body := strings.TrimSpace(text[idx+len(compactionRecoveryPrefix):])
+	if cut := strings.Index(body, compactionReadOpen); cut >= 0 {
+		body = strings.TrimSpace(body[:cut])
+	}
+	return body
+}
+
+func formatCompactionFileLists(readFiles, modifiedFiles []string) string {
+	readFiles = dedupePaths(readFiles)
+	modifiedFiles = dedupePaths(modifiedFiles)
+	if len(readFiles) == 0 && len(modifiedFiles) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(readFiles) > 0 {
+		b.WriteString(compactionReadOpen)
+		for _, path := range readFiles {
+			b.WriteString(path)
+			b.WriteByte('\n')
+		}
+		b.WriteString(strings.TrimPrefix(compactionReadClose, "\n"))
+	}
+	if len(modifiedFiles) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(compactionModifiedOpen)
+		for _, path := range modifiedFiles {
+			b.WriteString(path)
+			b.WriteByte('\n')
+		}
+		b.WriteString(strings.TrimPrefix(compactionModifiedClose, "\n"))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func compactionFileLists(entries []agent.ConversationEntry) (readFiles, modifiedFiles []string) {
+	for _, entry := range entries {
+		text, _ := entry.Content.(string)
+		readFiles = append(readFiles, taggedPathLines(text, compactionReadOpen, compactionReadClose)...)
+		modifiedFiles = append(modifiedFiles, taggedPathLines(text, compactionModifiedOpen, compactionModifiedClose)...)
+		// Recovery handoffs list paths as bullets instead of read/modified tags.
+		readFiles = append(readFiles, handoffSectionBullets(text, "涉及文件:")...)
+		for _, call := range assistantToolCalls(entry) {
+			switch classifyAgentToolKind(call.name) {
+			case agentToolKindReadFile:
+				if call.path != "" {
+					readFiles = append(readFiles, call.path)
+				}
+			case agentToolKindWriteFile, agentToolKindEditFile:
+				if call.path != "" {
+					modifiedFiles = append(modifiedFiles, call.path)
+				}
+			}
+		}
+	}
+	return dedupePaths(readFiles), dedupePaths(modifiedFiles)
+}
+
+type namedToolCall struct {
+	id   string
+	name string
+	path string
+}
+
+func assistantToolCalls(entry agent.ConversationEntry) []namedToolCall {
+	if entry.Role != "assistant" || entry.ToolCalls == nil {
+		return nil
+	}
+	data, err := json.Marshal(entry.ToolCalls)
+	if err != nil {
+		return nil
+	}
+	var calls []map[string]interface{}
+	if json.Unmarshal(data, &calls) != nil {
+		return nil
+	}
+	var out []namedToolCall
+	for _, call := range calls {
+		id, _ := call["id"].(string)
+		name, _ := call["name"].(string)
+		args := toolArgumentsJSON(call["arguments"])
+		if fn, ok := call["function"].(map[string]interface{}); ok {
+			if fnName, _ := fn["name"].(string); fnName != "" {
+				name = fnName
+			}
+			if fnArgs := toolArgumentsJSON(fn["arguments"]); fnArgs != "" {
+				args = fnArgs
+			}
+		}
+		out = append(out, namedToolCall{id: id, name: name, path: extractKeyToolArg(name, args)})
+	}
+	return out
+}
+
+func toolArgumentsJSON(raw interface{}) string {
+	switch v := raw.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "null" || text == "" {
+			return ""
+		}
+		return text
+	}
+}
+
+func taggedPathLines(text, open, close string) []string {
+	block := firstTaggedSection(text, open, close)
+	if block == "" {
+		return nil
+	}
+	var paths []string
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths
+}
+
+func dedupePaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
 // makeSummarizer returns a summarizer callback that uses doSimpleLLMRequest
 // to condense dropped conversation history into a structured handoff summary.
 //
@@ -677,16 +1134,26 @@ const compactionRecoveryPrefix = `[上下文恢复] 之前的对话因长度限�
 // document with 4 sections (progress, context, TODOs, critical data).
 func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) string {
 	return func(text string) string {
-		msgs := []interface{}{
-			map[string]string{"role": "user", "content": compactionHandoffPrompt + text},
-		}
-		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-trim-summary"})
-		result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), msgs, httpClient, 30*time.Second)
-		if err != nil || result == nil || result.Content == "" {
-			return ""
-		}
-		return result.Content
+		return summarizeCompactionMaterial(cfg, httpClient, text)
 	}
+}
+
+// summarizeCompactionMaterial asks for a handoff summary. When material contains
+// a previous summary, the prompt updates that checkpoint instead of rewriting it.
+// Incomplete model output is discarded.
+func summarizeCompactionMaterial(cfg corelib.MaclawLLMConfig, httpClient *http.Client, material string) string {
+	if httpClient == nil || strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return ""
+	}
+	msgs := []interface{}{
+		map[string]string{"role": "user", "content": compactionPromptFor(material)},
+	}
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-trim-summary"})
+	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), msgs, httpClient, 30*time.Second)
+	if err != nil || result == nil || compactionSummaryUnusable(result.Content, result.FinishReason) {
+		return ""
+	}
+	return strings.TrimSpace(result.Content)
 }
 
 // guardedCompactionSummarizer wraps makeSummarizer with the nil/unconfigured
@@ -769,49 +1236,22 @@ func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summar
 	const maxTier1 = 10
 	const maxPreservedUserTokens = 8000 // Codex uses 20K; conservative for smaller contexts
 
-	// Build entry groups once — used by tier-1 extraction, recentStart
-	// group-alignment, and groupAlignedSlice. This is the single source of
-	// truth for group boundaries in this compaction pass.
-	groups := agent.BuildEntryGroups(entries)
-
-	tier1Indices := extractTurnBoundaryIndices(entries, maxTier1)
-
 	// First pass: compute recent window.
 	// When triggered by entry count: keep the last `limit` entries.
-	// When triggered by token overflow only: scan backwards to find how
-	// many entries fit within 70% of maxTokens (leaving room for the
-	// compacted summary).
+	// When triggered by token overflow only: scan backwards within 70% of
+	// maxTokens. finalizeRecentCut then tightens either path to ~30% and
+	// splits an oversized tool group instead of dropping it whole.
 	var recentStart int
 	if entryOverLimit {
 		recentStart = len(entries) - limit
-		// Group-align so we don't split a tool-call group.
-		g := agent.GroupContaining(groups, recentStart)
-		if g != nil && recentStart > g.Start {
-			recentStart = g.End
-		}
 	} else {
-		// Token-only overflow: density-aware split.
-		tokenBudget := maxTokens * 7 / 10
-		runningTokens := 0
-		recentStart = 0
-		for i := len(entries) - 1; i >= 0; i-- {
-			entryData, _ := json.Marshal(entries[i])
-			entryTokens := estimateBytesToTokens(entryData)
-			if runningTokens+entryTokens > tokenBudget {
-				recentStart = i + 1
-				break
-			}
-			runningTokens += entryTokens
-		}
-		// Group-align so we don't split a tool-call group.
-		g := agent.GroupContaining(groups, recentStart)
-		if g != nil && recentStart > g.Start {
-			recentStart = g.End
-		}
+		recentStart = recentStartByTokenBudget(entries, maxTokens*7/10)
 	}
 	if recentStart < 0 {
 		recentStart = 0
 	}
+	entries, recentStart = finalizeRecentCut(entries, recentStart, maxTokens)
+	tier1Indices := extractTurnBoundaryIndices(entries, maxTier1)
 
 	// Count tier-1 entries outside the recent window.
 	outsideTier1 := 0
@@ -822,31 +1262,24 @@ func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summar
 	}
 
 	// If all tier-1 entries are inside the recent window, simple FIFO.
-	// Use groups to ensure we never cut in the middle of a tool_calls group.
-	if outsideTier1 == 0 {
+	// A token budget still needs a checkpoint for the entries it drops.
+	if outsideTier1 == 0 && maxTokens <= 0 {
 		trimmed := groupAlignedSlice(entries, recentStart)
 		return trimmed
 	}
 
 	// Second pass: shrink recent window to make room for outside tier-1.
-	recentCount := limit - outsideTier1
-	if recentCount < limit/2 {
-		recentCount = limit / 2
-	}
-	recentStart = len(entries) - recentCount
-	if recentStart < 0 {
-		recentStart = 0
-	}
-	// Group-align the second-pass recentStart so we never split a
-	// tool_calls group between outsideSet and the recent window.
-	// Without this, an assistant(tool_calls) at index N can end up in
-	// outsideSet while its tool result at N+1 falls into the recent window
-	// (excluded from outsideSet), producing an orphaned tool_calls message.
-	{
-		g := agent.GroupContaining(groups, recentStart)
-		if g != nil && recentStart > g.Start {
-			recentStart = g.End
+	if outsideTier1 > 0 {
+		recentCount := limit - outsideTier1
+		if recentCount < limit/2 {
+			recentCount = limit / 2
 		}
+		recentStart = len(entries) - recentCount
+		if recentStart < 0 {
+			recentStart = 0
+		}
+		entries, recentStart = finalizeRecentCut(entries, recentStart, maxTokens)
+		tier1Indices = extractTurnBoundaryIndices(entries, maxTier1)
 	}
 
 	// Build a set of outside-tier-1 indices against the FINAL recentStart
@@ -859,10 +1292,14 @@ func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summar
 	}
 
 	// If recalculation moved all tier-1 inside, fall back to FIFO.
-	if len(outsideSet) == 0 {
+	if len(outsideSet) == 0 && maxTokens <= 0 {
 		trimmed := groupAlignedSlice(entries, recentStart)
 		return trimmed
 	}
+	if recentStart == 0 {
+		return entries
+	}
+	recentCount := len(entries) - recentStart
 
 	// --- Collect preserved user messages from the dropped region ---
 	// Codex CLI's collect_user_messages + build_compacted_history pattern:
@@ -911,34 +1348,368 @@ func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summar
 	// operations, final assistant summaries) instead of raw entry dumps.
 	// This produces much higher quality summaries because the LLM receives
 	// organized context rather than truncated role/text lines.
-	separator := "[...中间的工具调用和执行细节已省略...]"
-	if summarizer != nil {
-		droppedEntries := make([]agent.ConversationEntry, 0, recentStart)
-		for i := 0; i < recentStart; i++ {
-			if outsideSet[i] {
-				continue // tier-1, already preserved
-			}
-			droppedEntries = append(droppedEntries, entries[i])
+	readFiles, modifiedFiles := compactionFileLists(entries)
+	fileBlock := formatCompactionFileLists(readFiles, modifiedFiles)
+	separator := compactionPlaceholderContent(fileBlock)
+	droppedEntries := make([]agent.ConversationEntry, 0, recentStart)
+	for i := 0; i < recentStart; i++ {
+		if outsideSet[i] {
+			continue // tier-1, already preserved
 		}
-		if len(droppedEntries) > 0 {
-			structuredInput := buildCompactionSummarizerInput(droppedEntries)
-			if structuredInput != "" {
-				if summary := summarizer(structuredInput); summary != "" {
-					separator = compactionRecoveryPrefix + summary
-				}
-			}
+		// The handoff payload is merged via previousCompactionSummary.
+		// Leaving the expanded text in the dropped section repeats it.
+		if isCompactionHandoffEntry(entries[i]) {
+			continue
+		}
+		droppedEntries = append(droppedEntries, entries[i])
+	}
+	structuredInput := buildCompactionSummarizerInput(droppedEntries)
+	// Only material that is actually leaving the transcript. A handoff that
+	// tier-1 kept is already visible, and its source must not be copied again.
+	var carried []agent.ConversationEntry
+	for i := 0; i < recentStart; i++ {
+		if !outsideSet[i] {
+			carried = append(carried, entries[i])
+		}
+	}
+	previous := previousCompactionSummary(carried)
+	compactionSource := buildCompactionSource(previous, structuredInput)
+	compactionID := ""
+	if compactionSource != "" {
+		compactionID = newCompactionID()
+	}
+	if summarizer != nil && compactionSource != "" {
+		if summary := summarizer(compactionSource); summary != "" && !compactionSummaryUnusable(summary, "") {
+			separator = compactionHandoffContent(summary, fileBlock)
+			compactionSource = ""
+			compactionID = ""
 		}
 	}
 
 	result = append(result, agent.ConversationEntry{
-		Role:    "system",
-		Content: separator,
+		Role:             "system",
+		Content:          separator,
+		CompactionID:     compactionID,
+		CompactionSource: compactionSource,
+		CompactionFiles:  fileBlock,
 	})
 	// Append the recent window, aligned to group boundaries so we never
 	// start with orphaned tool messages from a split group.
 	result = append(result, groupAlignedSlice(entries, recentStart)...)
 
 	return result
+}
+
+func entryTokenCount(entry agent.ConversationEntry) int {
+	// CompactionSource is summarizer input, not model context. Counting it
+	// makes a pending checkpoint look over budget and trims real turns.
+	data, _ := json.Marshal(entry.ToMessage())
+	return estimateBytesToTokens(data)
+}
+
+func recentStartByTokenBudget(entries []agent.ConversationEntry, keepBudget int) int {
+	if keepBudget <= 0 || len(entries) == 0 {
+		return 0
+	}
+	running := 0
+	start := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		tokens := entryTokenCount(entries[i])
+		if running+tokens > keepBudget {
+			return i + 1
+		}
+		running += tokens
+	}
+	return start
+}
+
+// finalizeRecentCut keeps about 30% of maxTokens when a token budget is set,
+// and splits a boundary tool group that does not fit. Without a token budget
+// it only moves the cut forward to the next group boundary.
+func finalizeRecentCut(entries []agent.ConversationEntry, recentStart, maxTokens int) ([]agent.ConversationEntry, int) {
+	if recentStart < 0 {
+		recentStart = 0
+	}
+	if recentStart > len(entries) {
+		recentStart = len(entries)
+	}
+	if maxTokens <= 0 {
+		return entries, alignRecentStartDropGroup(entries, recentStart)
+	}
+	keepBudget := maxTokens * 3 / 10
+	if keepBudget < 400 {
+		keepBudget = 400
+	}
+	tokenStart := recentStartByTokenBudget(entries, keepBudget)
+	if tokenStart > recentStart {
+		recentStart = tokenStart
+	}
+	return splitOrDropBoundaryGroup(entries, recentStart, keepBudget)
+}
+
+func alignRecentStartDropGroup(entries []agent.ConversationEntry, recentStart int) int {
+	groups := agent.BuildEntryGroups(entries)
+	g := agent.GroupContaining(groups, recentStart)
+	if g != nil && recentStart > g.Start && recentStart < g.End {
+		return g.End
+	}
+	return recentStart
+}
+
+func splitOrDropBoundaryGroup(entries []agent.ConversationEntry, recentStart, keepBudget int) ([]agent.ConversationEntry, int) {
+	groups := agent.BuildEntryGroups(entries)
+	g := agent.GroupContaining(groups, recentStart)
+	if g == nil {
+		return entries, recentStart
+	}
+	needsSplit := (recentStart > g.Start && recentStart < g.End) ||
+		(recentStart == g.Start && groupTokenCount(entries, *g) > keepBudget)
+	if !needsSplit {
+		return entries, recentStart
+	}
+	tailTokens := 0
+	for i := g.End; i < len(entries); i++ {
+		tailTokens += entryTokenCount(entries[i])
+	}
+	budgetForGroup := keepBudget - tailTokens
+	if budgetForGroup < 1 {
+		return entries, g.End
+	}
+	return splitGroupSuffix(entries, *g, budgetForGroup)
+}
+
+func groupTokenCount(entries []agent.ConversationEntry, g agent.EntryGroup) int {
+	total := 0
+	for i := g.Start; i < g.End && i < len(entries); i++ {
+		total += entryTokenCount(entries[i])
+	}
+	return total
+}
+
+// splitGroupSuffix keeps the assistant tool call plus the trailing tool
+// results that fit in keepBudget. Dropped tool results stay before the cut
+// so the checkpoint can summarize them. If the suffix cannot keep a paired
+// tool result, the whole group is dropped from the kept window.
+func splitGroupSuffix(entries []agent.ConversationEntry, g agent.EntryGroup, keepBudget int) ([]agent.ConversationEntry, int) {
+	if g.Start < 0 || g.End > len(entries) || g.End-g.Start < 2 || entries[g.Start].Role != "assistant" {
+		return entries, g.End
+	}
+	assistantTokens := entryTokenCount(entries[g.Start])
+	if assistantTokens >= keepBudget {
+		return entries, g.End
+	}
+	remaining := keepBudget - assistantTokens
+	firstKept := g.End
+	used := 0
+	for i := g.End - 1; i > g.Start; i-- {
+		tokens := entryTokenCount(entries[i])
+		if used+tokens > remaining {
+			break
+		}
+		used += tokens
+		firstKept = i
+	}
+	if firstKept >= g.End {
+		last := entries[g.End-1]
+		maxRunes := remaining * 2
+		if maxRunes < 200 {
+			maxRunes = 200
+		}
+		last.Content = truncateEntryContent(last.Content, maxRunes)
+		if strings.TrimSpace(last.ToolCallID) == "" {
+			return entries, g.End
+		}
+		filtered, ok := filterAssistantToKeptTools(entries[g.Start], []agent.ConversationEntry{last})
+		if !ok {
+			return entries, g.End
+		}
+		droppedTools := append([]agent.ConversationEntry(nil), entries[g.Start+1:g.End-1]...)
+		out := make([]agent.ConversationEntry, 0, len(entries))
+		out = append(out, entries[:g.Start]...)
+		out = append(out, droppedTools...)
+		newStart := len(out)
+		out = append(out, filtered)
+		out = append(out, last)
+		out = append(out, entries[g.End:]...)
+		return out, newStart
+	}
+	keptTools := entries[firstKept:g.End]
+	filtered, ok := filterAssistantToKeptTools(entries[g.Start], keptTools)
+	if !ok {
+		return entries, g.End
+	}
+	droppedTools := append([]agent.ConversationEntry(nil), entries[g.Start+1:firstKept]...)
+	out := make([]agent.ConversationEntry, 0, len(entries))
+	out = append(out, entries[:g.Start]...)
+	out = append(out, droppedTools...)
+	newStart := len(out)
+	out = append(out, filtered)
+	out = append(out, keptTools...)
+	out = append(out, entries[g.End:]...)
+	return out, newStart
+}
+
+func truncateEntryContent(content interface{}, maxRunes int) interface{} {
+	text, ok := content.(string)
+	if !ok || maxRunes <= 0 {
+		return content
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	head := maxRunes * 2 / 3
+	tail := maxRunes - head
+	if tail < 1 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:head]) + "\n…(截断)…\n" + string(runes[len(runes)-tail:])
+}
+
+func messagesToEntries(msgs []interface{}) []agent.ConversationEntry {
+	out := make([]agent.ConversationEntry, 0, len(msgs))
+	for _, msg := range msgs {
+		switch m := msg.(type) {
+		case agent.ConversationEntry:
+			out = append(out, m)
+		case map[string]string:
+			out = append(out, agent.ConversationEntry{Role: m["role"], Content: m["content"]})
+		case map[string]interface{}:
+			entry := agent.ConversationEntry{}
+			if role, ok := m["role"].(string); ok {
+				entry.Role = role
+			}
+			if content, ok := m["content"].(string); ok {
+				entry.Content = content
+			}
+			if id, ok := m["tool_call_id"].(string); ok {
+				entry.ToolCallID = id
+			}
+			if name, ok := m["tool_name"].(string); ok {
+				entry.ToolName = name
+			}
+			if calls, ok := m["tool_calls"]; ok {
+				entry.ToolCalls = calls
+			}
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// liveCompactionMaterial turns dropped request messages into an update-aware
+// summarizer payload plus the cumulative file list to append after the summary.
+func liveCompactionMaterial(msgs []interface{}) (string, string) {
+	entries := messagesToEntries(msgs)
+	readFiles, modifiedFiles := compactionFileLists(entries)
+	fileBlock := formatCompactionFileLists(readFiles, modifiedFiles)
+	structured := buildCompactionSummarizerInput(entries)
+	material := buildCompactionSource(previousCompactionSummary(entries), structured)
+	if strings.TrimSpace(material) == "" {
+		material = boundedMessageText(msgs, 12000)
+	}
+	return material, fileBlock
+}
+
+func boundedMessageText(msgs []interface{}, maxRunes int) string {
+	var b strings.Builder
+	for _, msg := range msgs {
+		entries := messagesToEntries([]interface{}{msg})
+		if len(entries) == 0 {
+			continue
+		}
+		text, _ := entries[0].Content.(string)
+		if text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(entries[0].Role)
+		b.WriteString(": ")
+		b.WriteString(text)
+		if len([]rune(b.String())) >= maxRunes {
+			break
+		}
+	}
+	runes := []rune(b.String())
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes])
+	}
+	return b.String()
+}
+
+func filterAssistantToKeptTools(assistant agent.ConversationEntry, keptTools []agent.ConversationEntry) (agent.ConversationEntry, bool) {
+	keep := make(map[string]bool, len(keptTools))
+	for _, toolEntry := range keptTools {
+		if toolEntry.ToolCallID == "" {
+			return assistant, false
+		}
+		keep[toolEntry.ToolCallID] = true
+	}
+	switch calls := assistant.ToolCalls.(type) {
+	case []llm.ToolCall:
+		filtered := make([]llm.ToolCall, 0, len(keep))
+		for _, call := range calls {
+			if keep[call.ID] {
+				filtered = append(filtered, call)
+			}
+		}
+		if len(filtered) == 0 {
+			return assistant, false
+		}
+		assistant.ToolCalls = filtered
+		return assistant, true
+	case []interface{}:
+		filtered := make([]interface{}, 0, len(keep))
+		for _, item := range calls {
+			tc, ok := item.(map[string]interface{})
+			if !ok {
+				return assistant, false
+			}
+			id, _ := tc["id"].(string)
+			if keep[id] {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) == 0 {
+			return assistant, false
+		}
+		assistant.ToolCalls = filtered
+		return assistant, true
+	default:
+		filtered, ok := filterToolCallMaps(calls, keep)
+		if !ok {
+			return assistant, false
+		}
+		assistant.ToolCalls = filtered
+		return assistant, true
+	}
+}
+
+// filterToolCallMaps keeps tool calls whose id is in keep. History reloaded
+// from JSON or built as a map slice is not []llm.ToolCall; treating that as
+// "cannot split" dropped the whole turn, including a tool result that fit.
+func filterToolCallMaps(calls interface{}, keep map[string]bool) ([]map[string]interface{}, bool) {
+	data, err := json.Marshal(calls)
+	if err != nil {
+		return nil, false
+	}
+	var items []map[string]interface{}
+	if json.Unmarshal(data, &items) != nil || len(items) == 0 {
+		return nil, false
+	}
+	filtered := make([]map[string]interface{}, 0, len(keep))
+	for _, item := range items {
+		id, _ := item["id"].(string)
+		if keep[id] {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, false
+	}
+	return filtered, true
 }
 
 // groupAlignedSlice returns entries[start:] but adjusts start forward to
@@ -997,6 +1768,11 @@ func collectPreservedUserMessages(entries []agent.ConversationEntry, recentStart
 		}
 		text, ok := entries[i].Content.(string)
 		if !ok || text == "" {
+			continue
+		}
+		// A checkpoint handoff is not a user request. Its payload is carried
+		// by CompactionSource; keeping the visible text here repeats it.
+		if isCompactionHandoffEntry(entries[i]) {
 			continue
 		}
 
@@ -1134,11 +1910,28 @@ func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int)
 // This is the MacLaw equivalent of Codex CLI's distinction between
 // "real user messages" and "trigger_turn" messages in fork-turn boundaries.
 func isSyntheticUserMessage(e agent.ConversationEntry) bool {
+	if isCompactionHandoffEntry(e) {
+		return true
+	}
 	text, ok := e.Content.(string)
 	if !ok || text == "" {
 		return false
 	}
 	return corelib.IsSyntheticUserContent(text)
+}
+
+// isCompactionHandoffEntry is a checkpoint or summary placeholder. After the
+// checkpoint is made provider-valid, its role is user and the pending source
+// has been copied into the text, but it is still not something the user typed.
+func isCompactionHandoffEntry(e agent.ConversationEntry) bool {
+	if e.CompactionID != "" || strings.TrimSpace(e.CompactionSource) != "" {
+		return true
+	}
+	text, ok := e.Content.(string)
+	if !ok {
+		return false
+	}
+	return strings.Contains(text, compactionPlaceholder) || strings.Contains(text, compactionRecoveryPrefix)
 }
 
 // extractTurnBoundaryTexts returns the text content of turn-boundary entries.

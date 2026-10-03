@@ -9,6 +9,65 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+func TestFailureReplanPlanContextForcesStoredBaselineOnly(t *testing.T) {
+	search := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98}
+	shell := intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98}
+	forced := semanticFailureReplanPlanContext(context.Background(), semanticReplanInput{
+		BaselineWorkspace: true, Classification: search,
+	}, intent.LabelShellCommand)
+	if !semanticApplyBaselineWorkspace(forced, search, false) {
+		t.Fatal("a stored ceiling must stay on when the classification would not re-derive it")
+	}
+	plain := semanticFailureReplanPlanContext(context.Background(), semanticReplanInput{
+		Classification: search,
+	}, intent.LabelSearch)
+	if semanticApplyBaselineWorkspace(plain, search, false) {
+		t.Fatal("a replan that never recorded a ceiling must leave the classification in charge")
+	}
+	if semanticApplyBaselineWorkspace(forced, search, true) {
+		t.Fatal("slim office must still suppress the stored ceiling")
+	}
+	if !semanticApplyBaselineWorkspace(context.Background(), shell, false) {
+		t.Fatal("shell classification still raises the ceiling when no replan flag is set")
+	}
+	petitionOff := withSemanticPetitionBaseline(withSemanticPetitionExpansion(forced), false)
+	if semanticApplyBaselineWorkspace(petitionOff, shell, false) {
+		t.Fatal("petition expansion must keep its own baseline bit")
+	}
+}
+
+func TestFailureReplanKeepsStoredWorkspaceCeiling(t *testing.T) {
+	cb := petitionTestShellCallbacks(t)
+	surface := cb.semanticSurface
+	if surface.replan == nil || !surface.replan.BaselineWorkspace {
+		t.Fatal("shell plan must record the workspace ceiling")
+	}
+	if semanticPlanHasBaseline(surface.plan) {
+		t.Fatal("a raised read ceiling keeps the archetype need id")
+	}
+	reads := countPlanCapability(surface.plan, tool.CapabilityFSReadLocal)
+	if reads < 2 {
+		t.Fatalf("shell baseline must raise read siblings, got %d", reads)
+	}
+	child, _, err := cb.handler.replanSemanticCallSurface(surface, "dynamic_binding_stale")
+	if err != nil || child == nil || child.replan == nil || !child.replan.BaselineWorkspace {
+		t.Fatalf("replan err=%v", err)
+	}
+	if got := countPlanCapability(child.plan, tool.CapabilityFSReadLocal); got != reads {
+		t.Fatalf("failure replan changed the read ceiling from %d to %d", reads, got)
+	}
+}
+
+func countPlanCapability(plan tool.ToolPlan, capability tool.CapabilityID) int {
+	count := 0
+	for _, selection := range plan.Selections {
+		if selection.FitProof.MatchedCapability == capability {
+			count++
+		}
+	}
+	return count
+}
+
 func TestSemanticDocumentGenerateOmitsWorkspaceShell(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: .98})
 	for _, adapter := range []string{semanticTrustedShellAdapter, semanticTrustedFileWriteAdapter} {
@@ -72,9 +131,10 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 	h.semanticTrustedOfficeWrite = func(string, string, map[string]interface{}) (string, error) { return "ok", nil }
 	registerBuiltinTools(h.registry, h)
 	registerNonCodeTools(h.registry, &App{testHomeDir: t.TempDir()})
-	classification := &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98, Reason: "session residue continuation"}
+	documentTurn := &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98, Reason: "session residue document"}
+	continuation := &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98, Reason: "session residue continuation"}
 	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "改短一点", "desktop", "root-short-edit", "turn-short-edit", classification,
+		"user-1", "改短一点", "desktop", "root-short-edit", "turn-short-edit", documentTurn,
 	)
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("handled=%v err=%v", handled, err)
@@ -94,19 +154,19 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 		t.Fatalf("short edit planned warehouse tools: %+v", surface.plan.Selections)
 	}
 	_, kept, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "继续", "desktop", "root-continue", "turn-continue", classification,
+		"user-1", "继续", "desktop", "root-continue", "turn-continue", continuation,
 	)
 	if err != nil || !handled || kept == nil {
 		t.Fatalf("continue handled=%v err=%v", handled, err)
 	}
 	_, asked, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "然后结论是什么", "desktop", "root-about", "turn-about", classification,
+		"user-1", "然后结论是什么", "desktop", "root-about", "turn-about", documentTurn,
 	)
 	if err != nil || !handled || asked == nil {
 		t.Fatalf("about handled=%v err=%v", handled, err)
 	}
-	if semanticGrantNameForAdapter(asked, semanticTrustedOfficeWriteAdapter) != "" {
-		t.Fatal("a question about the document must not list the office writer")
+	if semanticGrantNameForAdapter(asked, semanticTrustedOfficeWriteAdapter) != "office" {
+		t.Fatal("the same document label keeps the office writer")
 	}
 	if semanticGrantNameForAdapter(asked, semanticTrustedShellAdapter) != "" || planHasCapability(asked.plan, tool.CapabilityKnowledgeReadLocal) {
 		t.Fatalf("a document question grew workspace tools: %+v", asked.plan.Selections)
@@ -118,14 +178,14 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 	if err != nil || replayed == nil {
 		t.Fatalf("question replan: %v", err)
 	}
-	if semanticGrantNameForAdapter(replayed, semanticTrustedOfficeWriteAdapter) != "" {
-		t.Fatal("replanning a document question restored the office writer")
+	if semanticGrantNameForAdapter(replayed, semanticTrustedOfficeWriteAdapter) != "office" {
+		t.Fatal("replanning a short document turn dropped the office writer")
 	}
 	if semanticGrantNameForAdapter(replayed, semanticTrustedFileReadAdapter) == "" {
 		t.Fatal("replanning a document question dropped read_file")
 	}
 	_, petitionSurface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "然后结论是什么", "desktop", "root-petition", "turn-petition", classification,
+		"user-1", "然后结论是什么", "desktop", "root-petition", "turn-petition", documentTurn,
 	)
 	if err != nil || !handled || petitionSurface == nil {
 		t.Fatalf("petition parent handled=%v err=%v", handled, err)
@@ -134,8 +194,8 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 	if err != nil || bashChild == nil {
 		t.Fatalf("bash petition on a document question: %v", err)
 	}
-	if semanticGrantNameForAdapter(bashChild, semanticTrustedOfficeWriteAdapter) != "" {
-		t.Fatal("petitioning bash restored the office writer")
+	if semanticGrantNameForAdapter(bashChild, semanticTrustedOfficeWriteAdapter) != "office" {
+		t.Fatal("petitioning bash dropped the office writer")
 	}
 	if semanticGrantNameForAdapter(bashChild, semanticTrustedShellAdapter) == "" || semanticGrantNameForAdapter(bashChild, semanticTrustedFileReadAdapter) == "" {
 		t.Fatal("petitioning bash must add bash and keep read_file")
@@ -147,7 +207,7 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 		t.Fatalf("继续 must keep warehouse tools: %+v", kept.plan.Selections)
 	}
 	_, runAgain, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "然后再执行一下", "desktop", "root-run", "turn-run", classification,
+		"user-1", "然后再执行一下", "desktop", "root-run", "turn-run", continuation,
 	)
 	if err != nil || !handled || runAgain == nil {
 		t.Fatalf("run again handled=%v err=%v", handled, err)
@@ -155,11 +215,11 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 	if semanticGrantNameForAdapter(runAgain, semanticTrustedShellAdapter) == "" {
 		t.Fatal("然后再执行一下 must still list bash")
 	}
-	if semanticResidueSlimOfficeTurn(*classification, "") {
+	if semanticResidueSlimOfficeTurn(*documentTurn, "") {
 		t.Fatal("a replan without the utterance must not slim the office surface")
 	}
 	_, replay, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "", "desktop", "root-replan", "turn-replan", classification,
+		"user-1", "", "desktop", "root-replan", "turn-replan", documentTurn,
 	)
 	if err != nil || !handled || replay == nil {
 		t.Fatalf("replan handled=%v err=%v", handled, err)

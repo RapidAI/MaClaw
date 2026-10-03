@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    acceptWorkspacePreviewFile,
     codeFileBelongsToPreviewProject,
     filterCodePreviewStateForProject,
     initialState,
@@ -54,6 +55,36 @@ function previewFile(partial: Partial<CodeFile> & Pick<CodeFile, 'filePath' | 'c
         ...partial,
     };
 }
+
+describe('acceptWorkspacePreviewFile', () => {
+    it('stamps an unscoped preview onto the active task', () => {
+        const accepted = acceptWorkspacePreviewFile(
+            previewFile({ filePath: 'D:/tasks/weather/report.pdf', content: '' }),
+            'D:/tasks/weather',
+        );
+        expect(accepted?.projectPath).toBe('D:/tasks/weather');
+    });
+
+    it('refuses a paper that belongs to another task', () => {
+        expect(acceptWorkspacePreviewFile(
+            previewFile({
+                filePath: 'elsarticle/elsarticle-template-num.tex',
+                content: '\\documentclass{elsarticle}',
+                projectPath: 'D:/tasks/latex',
+            }),
+            'D:/tasks/weather',
+        )).toBeNull();
+    });
+
+    it('keeps a paper on the task that owns it', () => {
+        const file = previewFile({
+            filePath: 'elsarticle/elsarticle-template-num.tex',
+            content: '\\documentclass{elsarticle}',
+            projectPath: 'D:/tasks/latex',
+        });
+        expect(acceptWorkspacePreviewFile(file, 'D:/tasks/latex')).toBe(file);
+    });
+});
 
 describe('codeFileBelongsToPreviewProject', () => {
     const cloudRoot = 'C:/Users/ma139/.maclaw/data/cloud-workspaces/tenant_default/cws_scholar';

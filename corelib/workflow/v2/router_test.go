@@ -136,8 +136,11 @@ func TestRoute_ActiveWorkflow_Confirm(t *testing.T) {
 	RegisterBuiltinTemplates(templates)
 	machine := NewStateMachine(store, templates)
 	// Set classifier so "确认" is recognized as confirm
-	machine.SetConfirmClassifier(func(phaseContext, userText string) string {
-		return ClassifyConfirmIntentKeyword(userText)
+	machine.SetConfirmClassifier(func(_, userText string) string {
+		if userText == "confirm" {
+			return "confirm"
+		}
+		return ""
 	})
 	router := NewWorkflowRouter(machine, templates, nil)
 
@@ -146,7 +149,7 @@ func TestRoute_ActiveWorkflow_Confirm(t *testing.T) {
 	machine.RecordOutput("user1", "# Requirements")
 
 	// User confirms
-	result := router.Route("user1", "确认", nil)
+	result := router.Route("user1", "confirm", nil)
 	if result.Target != RouteToWorkflow {
 		t.Fatalf("target = %q, want workflow", result.Target)
 	}
@@ -167,8 +170,47 @@ func TestRoute_ActiveWorkflow_UnrelatedMessage(t *testing.T) {
 
 	// Unrelated short message
 	result := router.Route("user1", "嗯", nil)
-	if result.Target != RouteToAgentLoop {
-		t.Fatalf("target = %q, want agent_loop (unrelated)", result.Target)
+	if result.Target != RouteToWorkflow || result.HandleResult == nil || result.HandleResult.Action != ActionReviewPending {
+		t.Fatalf("unclassified review reply = %#v, want workflow review_pending", result)
+	}
+	state := machine.GetActive("user1")
+	if state == nil || state.ActivePhase() == nil || state.ActivePhase().Output != "# Requirements" || !state.IsWaitingConfirm() {
+		t.Fatalf("review reply must keep the saved phase, got %#v", state)
+	}
+}
+
+func TestRoute_WaitingConfirmSaveErrorStaysInReview(t *testing.T) {
+	store := &failingSaveWorkflowStore{MemoryStore: NewMemoryStore()}
+	templates := NewTemplateRegistry()
+	RegisterBuiltinTemplates(templates)
+	machine := NewStateMachine(store, templates)
+	machine.SetConfirmClassifier(func(_, userText string) string {
+		if userText == "confirm" {
+			return "confirm"
+		}
+		return ""
+	})
+	router := NewWorkflowRouter(machine, templates, nil)
+	store.MemoryStore.states["user1"] = &WorkflowState{
+		ID:     "wf-review-save-error",
+		UserID: "user1",
+		Type:   "coding",
+		Status: StatusActive,
+		Phases: []Phase{{
+			ID:           "requirements",
+			Status:       PhaseWaitingConfirm,
+			Output:       "# Requirements",
+			NeedsConfirm: true,
+		}},
+	}
+
+	result := router.Route("user1", "confirm", nil)
+	if result.Target != RouteToWorkflow || result.HandleResult == nil || result.HandleResult.Action != ActionReviewPending {
+		t.Fatalf("save failure during review = %#v, want review_pending", result)
+	}
+	state := machine.GetActive("user1")
+	if state == nil || state.ActivePhase() == nil || state.ActivePhase().Output != "# Requirements" || !state.IsWaitingConfirm() {
+		t.Fatalf("failed confirm must keep the phase output, got %#v", state)
 	}
 }
 

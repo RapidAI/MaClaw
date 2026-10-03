@@ -54,7 +54,11 @@ func (h *IMMessageHandler) adoptLateTreeSemanticIntent(ctx *LoopContext, userID,
 	from := current.Primary
 	bindLoopSemanticIntent(ctx, &copied)
 	if executionProfileCausedByDegradedIntent(ctx.Runtime.Execution) {
-		ctx.Runtime.Execution = executionProfileFromSemanticIntent(&copied, h.executionContractForRegisteredToolName)
+		// The timeout profile is not the turn. A project-task search that
+		// lands late still has to keep web_fetch and the parent carry; the
+		// light search budget would publish only web_search and then drop bash.
+		profile := executionProfileFromSemanticIntent(&copied, h.executionContractForRegisteredToolName)
+		ctx.Runtime.Execution = h.continuationKeepsParentExecution(profile, userID, userText, &copied)
 	}
 	log.Printf("[semantic-routing] adopted late tree verdict request_id=%q user=%q from=%s to=%s conf=%.2f reason=%q",
 		ctx.Runtime.RequestID, userID, from, copied.Primary, copied.Confidence, copied.Reason)

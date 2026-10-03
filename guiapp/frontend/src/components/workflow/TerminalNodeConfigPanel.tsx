@@ -485,7 +485,9 @@ const searchInputStyle: CSSProperties = {
     padding: "8px 12px",
     fontSize: "0.82rem",
     border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "6px",
+    borderRadius: "var(--radius-md, 10px)",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #1c2733)",
     outline: "none",
     boxSizing: "border-box",
 };
@@ -593,7 +595,9 @@ const configInputStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.8rem",
     border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "4px",
+    borderRadius: "var(--radius-md, 10px)",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #1c2733)",
     outline: "none",
 };
 

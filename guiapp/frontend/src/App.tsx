@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetPosition, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -10,12 +10,13 @@ import lobsterHalf from './assets/images/lobster_half.svg';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { a2a, corelib } from '../wailsjs/go/models';
-import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, type OpenTaskLaunchDetail } from './constants/events';
+import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
 import { CloudWorkspaceShareJoinDialog } from './components/layout/CloudWorkspaceShareDialog';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import type { SessionTab } from './components/remote/sessionTabs';
 import { startVisibleInterval } from './utils/visibleInterval';
+import { defaultModelForQuickProvider } from './components/ai/assistantQuickModelMenu';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
@@ -24,17 +25,7 @@ import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import type { AIExecutionProfile } from './components/ai/AITabTypes';
 import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
 import { SuggestCombobox } from './components/ui/SuggestCombobox';
-
-function clipboardImageExtension(mimeType: string): string {
-    switch (mimeType.toLowerCase()) {
-        case 'image/png': return 'png';
-        case 'image/jpeg': return 'jpg';
-        case 'image/webp': return 'webp';
-        case 'image/bmp': return 'bmp';
-        case 'image/gif': return 'gif';
-        default: return 'png';
-    }
-}
+import { clipboardImageExtension, readClipboardImageBase64 } from './utils/clipboardImage';
 
 const windowMaximizeRestore = createWindowMaximizeRestoreSession({
     getSize: WindowGetSize,
@@ -76,15 +67,6 @@ function getSafeFallbackWindowSize(): { width: number; height: number } {
         width: Math.max(640, Math.min(1360, Math.floor(screenWidth * 0.9))),
         height: Math.max(480, Math.min(850, Math.floor(screenHeight * 0.9))),
     };
-}
-
-function readClipboardImageBase64(file: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
-        reader.onerror = () => reject(reader.error || new Error('Unable to read pasted image'));
-        reader.readAsDataURL(file);
-    });
 }
 
 const BUG_REPORT_SCREENSHOT_MAX_BYTES = 10 * 1024 * 1024;
@@ -131,7 +113,9 @@ function appendProblemReportScreenshotPaths(previous: string[], paths: unknown[]
         .slice(0, 12);
 }
 import { isVirtualEmployeeOnline } from './components/ai/virtualEmployeeStatus';
-import { participantIdentityKeys, participantIdentityMatches } from './components/ai/participantIdentity';
+import { participantIdentityMatches } from './components/ai/participantIdentity';
+import { applyVirtualEmployeeOverrides, favoriteEmployeeAliasIds, favoriteEmployeeIDInAliasSet, filterOnlineVirtualEmployees, isOwnVirtualEmployeeId, mergeVirtualEmployeeList, normalizeFavoriteEmployeeNames, residentVirtualEmployeeAliases, virtualEmployeeFromEventPayload, virtualEmployeeOverrideKey } from './utils/virtualEmployeeEvents';
+import type { VirtualEmployeeEventPatch } from './utils/virtualEmployeeEvents';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from './components/ai/digitalEmployeeFeature';
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
@@ -151,7 +135,10 @@ import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProto
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
 import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
-import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderID, contactedProfileProviderName } from './utils/contactedModelRoute';
+import { capabilityBandName, hubOfficialModelAliases, multipliersFromModelItems } from './utils/capabilityModelLabel';
+
+const EMPTY_MODEL_MULTIPLIERS: Record<string, number> = {};
+import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderID, contactedProfileProviderName, quickModelWriteProfile } from './utils/contactedModelRoute';
 import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
 import { translations } from './i18n/appTranslations';
@@ -204,14 +191,16 @@ import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle 
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
 import {
     LATEX_BLANK_TEMPLATE_ID,
+    LATEX_EXPERT_ID,
     LATEX_TEMPLATES_NAV_TAB,
     createLatexDocumentForTask,
     isLatexExpertId,
-    latexBlankTemplateName,
+    latexExpertStub,
+    latexExpertTaskIsLive,
     type LatexExpertTaskOptions,
     type LatexTemplate,
 } from './utils/latexTemplates';
-import { useLatexPaperLauncher } from './components/ai/useLatexPaperLauncher';
+import { openNewTaskWizard } from './components/ai/task-config/openNewTaskWizard';
 import type { PendingExpertOpen } from './components/ai/usePendingAssistantTabOpen';
 
 const APP_VERSION = appVersion
@@ -298,176 +287,6 @@ const VE_SIDEBAR_LIST_POLL_BASE_MS = 45_000;
 const VE_SIDEBAR_LIST_POLL_MAX_MS = 180_000;
 const VE_SIDEBAR_LIST_POLL_JITTER_MS = 10_000;
 const VE_SIDEBAR_LIST_EVENT_THROTTLE_MS = 1_500;
-
-function virtualEmployeeIdForMachine(machineId: string): string {
-    const cleaned = String(machineId || '').trim().replace(/[\\/ ]/g, '_');
-    return cleaned ? `ve_${cleaned}` : '';
-}
-
-function isOwnVirtualEmployeeId(id: string, machineId?: string): boolean {
-    const normalizedId = String(id || '').trim().toLowerCase();
-    const normalizedMachineId = String(machineId || '').trim().toLowerCase();
-    if (!normalizedId || !normalizedMachineId) return false;
-    return normalizedId === normalizedMachineId || normalizedId === virtualEmployeeIdForMachine(normalizedMachineId).toLowerCase();
-}
-
-function normalizeFavoriteEmployeeNames(value: unknown): Record<string, string> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, rawName]) => {
-        const id = String(key || '').trim();
-        const name = String(rawName || '').trim();
-        if (id && name) acc[id] = name;
-        return acc;
-    }, {});
-}
-
-function favoriteEmployeeAliasIds(veId: string, veList: VirtualEmployeeEntry[]): string[] {
-    const aliases = new Set<string>();
-    const add = (value?: string) => {
-        const id = String(value || '').trim();
-        if (!id) return;
-        aliases.add(id);
-        participantIdentityKeys(id).forEach(key => aliases.add(key));
-    };
-    add(veId);
-    const ve = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
-    add(ve?.id);
-    add(ve?.machine_id);
-    return Array.from(aliases);
-}
-
-function favoriteEmployeeIDInAliasSet(id: string, aliases: Set<string>): boolean {
-    const normalized = String(id || '').trim();
-    if (!normalized) return false;
-    if (aliases.has(normalized)) return true;
-    return participantIdentityKeys(normalized).some(key => aliases.has(key));
-}
-
-function filterOnlineVirtualEmployees(list: VirtualEmployeeEntry[]): VirtualEmployeeEntry[] {
-    return Array.isArray(list) ? list.filter(isVirtualEmployeeOnline) : [];
-}
-
-type VirtualEmployeeEventPatch = Partial<VirtualEmployeeEntry> & { id?: string; machine_id?: string };
-
-function readStringField(source: Record<string, any>, ...keys: string[]): string | undefined {
-    for (const key of keys) {
-        if (Object.prototype.hasOwnProperty.call(source, key)) return String(source[key] || '').trim();
-    }
-    return undefined;
-}
-
-function normalizeVEEventOnlineStatus(value: string | undefined): "online" | "offline" | undefined {
-    const normalized = String(value || '').trim().toLowerCase();
-    if (normalized === 'offline') return 'offline';
-    if (normalized === 'online') return 'online';
-    return undefined;
-}
-
-function readArrayField(source: Record<string, any>, ...keys: string[]): string[] | undefined {
-    for (const key of keys) {
-        if (Object.prototype.hasOwnProperty.call(source, key)) return Array.isArray(source[key]) ? source[key] : [];
-    }
-    return undefined;
-}
-
-function virtualEmployeeFromEventPayload(eventData: any): VirtualEmployeeEventPatch | null {
-    const payload = eventData?.payload && typeof eventData.payload === 'object' ? eventData.payload : eventData;
-    const employee = payload?.employee || payload?.Employee || payload?.virtual_employee || payload?.ve;
-    if (!employee || typeof employee !== 'object') {
-        const root = eventData && typeof eventData === 'object' ? eventData : {};
-        const source = payload && typeof payload === 'object' ? payload : {};
-        const id = readStringField(source, 've_id', 'veId', 'id', 'ID') || readStringField(root, 've_id', 'veId', 'id', 'ID') || '';
-        const machineId = readStringField(source, 'machine_id', 'machineId', 'MachineID') || readStringField(root, 'machine_id', 'machineId', 'MachineID') || '';
-        if (!id && !machineId) return null;
-        const patch: VirtualEmployeeEventPatch = { id, machine_id: machineId };
-        const onlineStatus = normalizeVEEventOnlineStatus(
-            readStringField(source, 'online_status', 'onlineStatus', 'OnlineStatus', 'status', 'Status') ||
-            readStringField(root, 'online_status', 'onlineStatus', 'OnlineStatus', 'status', 'Status')
-        );
-        if (onlineStatus) patch.online_status = onlineStatus;
-        return patch;
-    }
-    const id = readStringField(employee, 'id', 'ID') || '';
-    const machineId = readStringField(employee, 'machine_id', 'MachineID') || '';
-    if (!id && !machineId) return null;
-    const patch: VirtualEmployeeEventPatch = { id, machine_id: machineId };
-    const name = readStringField(employee, 'name', 'Name');
-    if (name !== undefined) patch.name = name;
-    const skillDescription = readStringField(employee, 'skill_description', 'SkillDescription');
-    if (skillDescription !== undefined) patch.skill_description = skillDescription;
-    const avatarDataURL = readStringField(employee, 'avatar_data_url', 'AvatarDataURL');
-    if (avatarDataURL !== undefined) patch.avatar_data_url = avatarDataURL;
-    const rawPolicy = readStringField(employee, 'access_policy', 'AccessPolicy');
-    if (rawPolicy !== undefined) patch.access_policy = rawPolicy === 'whitelist' || rawPolicy === 'blacklist' || rawPolicy === 'per_request' ? rawPolicy : 'public';
-    const status = readStringField(employee, 'status', 'Status');
-    if (status !== undefined) patch.status = status;
-    const rawOnlineStatus = readStringField(employee, 'online_status', 'OnlineStatus')?.toLowerCase();
-    if (rawOnlineStatus !== undefined) patch.online_status = rawOnlineStatus === 'offline' ? 'offline' : 'online';
-    if (Object.prototype.hasOwnProperty.call(employee, 'resident') || Object.prototype.hasOwnProperty.call(employee, 'Resident')) {
-        patch.resident = Boolean(employee.resident || employee.Resident);
-    }
-    const registeredAt = readStringField(employee, 'registered_at', 'RegisteredAt');
-    if (registeredAt !== undefined) patch.registered_at = registeredAt;
-    const whitelist = readArrayField(employee, 'whitelist', 'Whitelist');
-    if (whitelist !== undefined) patch.whitelist = whitelist;
-    return patch;
-}
-
-function completeVirtualEmployeeEntry(next: VirtualEmployeeEventPatch): VirtualEmployeeEntry {
-    const id = String(next.id || next.machine_id || '').trim();
-    return {
-        id,
-        machine_id: next.machine_id,
-        name: next.name || id.slice(0, 8),
-        skill_description: next.skill_description || '',
-        avatar_data_url: next.avatar_data_url,
-        access_policy: next.access_policy || 'public',
-        status: next.status || 'active',
-        online_status: next.online_status || 'online',
-        resident: next.resident,
-        registered_at: next.registered_at,
-        whitelist: next.whitelist,
-    };
-}
-
-function mergeVirtualEmployeeEntry(current: VirtualEmployeeEntry, next: VirtualEmployeeEventPatch): VirtualEmployeeEntry {
-    const merged = { ...current };
-    (['id', 'machine_id', 'name', 'skill_description', 'avatar_data_url', 'access_policy', 'status', 'online_status', 'resident', 'registered_at', 'whitelist'] as const).forEach((key) => {
-        if (next[key] !== undefined) (merged as any)[key] = next[key];
-    });
-    return merged;
-}
-
-function mergeVirtualEmployeeList(prev: VirtualEmployeeEntry[], next: VirtualEmployeeEventPatch): VirtualEmployeeEntry[] {
-    if (!next) return prev;
-    const nextId = String(next.id || '').trim();
-    const nextMachineId = String(next.machine_id || '').trim();
-    const index = prev.findIndex(item => participantIdentityMatches(item.id, nextId) || participantIdentityMatches(item.machine_id, nextId) || participantIdentityMatches(item.id, nextMachineId) || participantIdentityMatches(item.machine_id, nextMachineId));
-    if (index < 0) return next.online_status === 'offline' ? prev : [...prev, completeVirtualEmployeeEntry(next)];
-    const merged = [...prev];
-    merged[index] = mergeVirtualEmployeeEntry(merged[index], next);
-    return merged;
-}
-
-function virtualEmployeeOverrideKey(employee: VirtualEmployeeEventPatch): string {
-    return String(employee.machine_id || employee.id || '').trim();
-}
-
-function applyVirtualEmployeeOverrides(list: VirtualEmployeeEntry[], overrides: Map<string, { employee: VirtualEmployeeEventPatch; expiresAt: number }>, now = Date.now()): VirtualEmployeeEntry[] {
-    let next = list;
-    overrides.forEach((entry, key) => {
-        if (entry.expiresAt <= now) {
-            overrides.delete(key);
-            return;
-        }
-        next = mergeVirtualEmployeeList(next, entry.employee);
-    });
-    return next;
-}
-
-function residentVirtualEmployeeAliases(ve: VirtualEmployeeEntry): string[] {
-    return favoriteEmployeeAliasIds(String(ve.machine_id || ve.id || '').trim() || ve.id, [ve]);
-}
 
 function App() {
     console.log('[startup-trace] App component render begin');
@@ -800,16 +619,6 @@ function App() {
     const agentWorkflowPendingRef = useRef<{ launchId: string; skillName: string; projectPath: string } | null>(null);
     const agentWorkflowLaunchInFlightRef = useRef(false);
     const skillRunLaunchSequenceRef = useRef(0);
-    // A workflow tile stays pending until its project tab has actually been
-    // created. This prevents a fast double-click from creating orphan tasks
-    // while the one-slot assistant-tab handoff is still queued.
-    const workflowTabLaunchRef = useRef<{
-        launchId: string;
-        projectPath: string;
-        resolve: () => void;
-        reject: (error: Error) => void;
-    } | null>(null);
-    const workflowTabLaunchSequenceRef = useRef(0);
 
     const enqueueProjectTabOpen = useCallback((launch: CodingTaskLaunch) => {
         setProjectTabOpenQueue(queue => [...queue, launch]);
@@ -939,20 +748,6 @@ function App() {
             }
             finishAgentWorkflowLaunch();
         }
-        const pendingWorkflow = workflowTabLaunchRef.current;
-        if (pendingWorkflow && result.launchId === pendingWorkflow.launchId) {
-            workflowTabLaunchRef.current = null;
-            if (result.outcome === "opened") {
-                pendingWorkflow.resolve();
-            } else {
-                // A rejected tab has no route back to this task, so do not leave
-                // an inaccessible workflow task in Task Management.
-                void callBackend(() => HideTask(pendingWorkflow.projectPath)).catch((error) => {
-                    console.warn('[workflows] failed to hide rejected workflow task', { projectPath: pendingWorkflow.projectPath, error });
-                });
-                pendingWorkflow.reject(new Error('workflow assistant tab was not opened'));
-            }
-        }
         const pendingSkillRun = skillRunPendingRef.current;
         // Only the receipt for this exact skill request may advance the skill
         // queue. A normal task can be handled while a skill task waits its turn.
@@ -1000,6 +795,28 @@ function App() {
         void callBackend(() => ConsumeReferralHandoff()).then(applyHandoff).catch(() => {});
         return () => { if (typeof unsubscribe === "function") unsubscribe(); };
     }, [requestOnboarding]);
+
+    const [creditGiftLaunch, setCreditGiftLaunch] = useState<{ code: string; seq: number }>({ code: '', seq: 0 });
+    useEffect(() => {
+        const applyGift = (payload: any) => {
+            const code = String(payload?.code || payload?.Code || '').trim();
+            if (!code) return;
+            // The same code has to be a new value. A second click of one link
+            // otherwise never reaches the claim form.
+            setCreditGiftLaunch((current) => ({ code, seq: current.seq + 1 }));
+            setNavTabNow('settings');
+            setSettingsTab('tokenBank');
+        };
+        const unsubscribe = safeEventsOn(EVENT_TOKEN_BANK_CREDIT, applyGift);
+        void callBackend(() => ConsumeCreditGiftHandoff()).then(applyGift).catch(() => {});
+        return () => { if (typeof unsubscribe === "function") unsubscribe(); };
+    }, [setNavTabNow]);
+
+    useEffect(() => {
+        if (navTab !== 'tokenbank') return;
+        setNavTabNow('settings');
+        setSettingsTab('tokenBank');
+    }, [navTab, setNavTabNow]);
 
     const [cloudShareJoinURL, setCloudShareJoinURL] = useState('');
     useEffect(() => {
@@ -1575,16 +1392,25 @@ function App() {
     const [sidebarProviderSummaries, setSidebarProviderSummaries] = useState<SidebarLLMProviderSummary[]>([]);
     const [activeExecutionProfile, setActiveExecutionProfile] = useState<AIExecutionProfile>('none');
     const [llmProfilePanelState, setLLMProfilePanelState] = useState<any>(null);
+    const llmProfilePanelStateRef = useRef<any>(null);
+    llmProfilePanelStateRef.current = llmProfilePanelState;
     const [quickDraftProvider, setQuickDraftProvider] = useState<{ profile: AIExecutionProfile; providerID: string } | null>(null);
     const [quickModelsLoadingForProviderID, setQuickModelsLoadingForProviderID] = useState('');
+    const [quickModelMultipliersByProvider, setQuickModelMultipliersByProvider] = useState<Record<string, Record<string, number>>>({});
+    const [quickFetchedModelsByProvider, setQuickFetchedModelsByProvider] = useState<Record<string, string[]>>({});
     const [quickProfileSavePending, setQuickProfileSavePending] = useState(false);
     const quickProfileSaveSeqRef = useRef(0);
+    const queuedQuickSelectionRef = useRef<{ profile: AIExecutionProfile; providerID: string; model: string } | null>(null);
+    const pendingCatalogApplyRef = useRef<{ profile: AIExecutionProfile; providerID: string } | null>(null);
+    const commitQuickProfileSelectionRef = useRef<(profile: AIExecutionProfile, providerID: string, model: string, revisionOverride?: string) => void>(() => {});
     const quickModelFetchSeqRef = useRef(0);
-    // One live catalog is enough for a given provider + directory generation.
-    // Both the sidebar and the bottom bar can expose the same picker, so this
-    // also prevents two clicks in the same turn from issuing duplicate /models
-    // requests (and, for managed providers, duplicate credential refreshes).
+    // One live catalog request per provider. A second click joins that request
+    // instead of refreshing credentials twice. The latest caller token decides
+    // which response is allowed to update the menu.
     const quickModelFetchesRef = useRef(new Map<string, Promise<any>>());
+    const catalogTokenByProviderRef = useRef(new Map<string, number>());
+    const refreshQuickProfileModelsRef = useRef<(providerID: string) => void>(() => {});
+    const activeExecutionProfileRef = useRef<AIExecutionProfile>('none');
     const llmProfilePanelSeqRef = useRef(0);
     const llmProfileHealthRefreshSeqRef = useRef(0);
     const sidebarTokenUsageSeqRef = useRef(0);
@@ -2829,12 +2655,19 @@ function App() {
 
     useEffect(() => {
         const openExpertFromSearch = (event: Event) => {
-            const detail = (event as CustomEvent<{ expert?: ExpertDefinition; initialMessage?: string }>).detail;
+            const detail = (event as CustomEvent<{ expert?: ExpertDefinition; initialMessage?: string; latexDocument?: { relativePath?: string }; projectPath?: string }>).detail;
             const expert = detail?.expert;
             // Narrow before use: reading `expert.id` in the guard also proves it is defined.
             if (!expert || !String(expert.id || '').trim()) return;
             const initialMessage = String(detail?.initialMessage || '').trim();
-            setPendingExpertOpen({ expert, ...(initialMessage ? { initialMessage } : {}) });
+            const relativePath = String(detail?.latexDocument?.relativePath || '').trim();
+            const projectPath = String(detail?.projectPath || '').trim();
+            setPendingExpertOpen({
+                expert,
+                ...(initialMessage ? { initialMessage } : {}),
+                ...(relativePath ? { latexDocument: { relativePath } } : {}),
+                ...(projectPath ? { projectPath } : {}),
+            });
             setNavTabNow('ai');
         };
         window.addEventListener(OPEN_EXPERT_CONVERSATION_EVENT, openExpertFromSearch);
@@ -3272,37 +3105,20 @@ function App() {
             throw error;
         }
     }, [lang, refreshTasks, showAlert, upsertTaskItem]);
-    /** Create-dialog entry point: register the expert task, then open/focus its assistant tab. */
-    /**
-     * LaTeX template -> paper expert hand-off. See useLatexPaperLauncher for why
-     * the task, the document, the expert and the editor have to be opened in
-     * that order.
-     */
-    const startLatexPaper = useLatexPaperLauncher({
-        lang,
-        showAlert,
-        switchTool,
-        registerTaskItem: upsertTaskItem,
-        openExpert: setPendingExpertOpen,
-        createExpertTask: CreateExpertTask,
-    });
-
-    const createExpertTask = useCallback(async (expert: ExpertDefinition, options?: LatexExpertTaskOptions) => {
-        // The LaTeX paper expert owns a real document, so its task has to exist
-        // before the editor can be opened against it. Reuse the same hand-off as
-        // the library so both entry points behave identically.
-        if (isLatexExpertId(expert?.id)) {
-            const templateId = options?.latexTemplateId || LATEX_BLANK_TEMPLATE_ID;
-            await startLatexPaper({
-                id: templateId,
-                name: options?.latexTemplateName || latexBlankTemplateName(lang),
-            }, expert);
-            return;
-        }
-        await ensureExpertTask(expert);
-        setPendingExpertOpen({ expert });
+    /** Sidebar create dialog: open the new-task page so a local folder can be chosen before the expert task exists. */
+    const createExpertTask = useCallback((expert: ExpertDefinition, options?: LatexExpertTaskOptions) => {
+        const id = String(expert?.id || "").trim();
+        if (!id) return;
         switchTool('ai');
-    }, [ensureExpertTask, lang, startLatexPaper, switchTool]);
+        openNewTaskWizard({
+            expertId: id,
+            expertName: String(expert?.name || "").trim() || id,
+            ...(isLatexExpertId(id) ? {
+                latexTemplateId: options?.latexTemplateId || LATEX_BLANK_TEMPLATE_ID,
+                latexTemplateName: options?.latexTemplateName || null,
+            } : {}),
+        });
+    }, [switchTool]);
     /** Durable registration gateway for every secondary assistant tab. */
     const ensureAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
         const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || '');
@@ -3357,36 +3173,6 @@ function App() {
         return () => window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, revealAI);
     }, [setNavTabNow]);
 
-    const startWorkflowInNewAssistantTab = useCallback(async (workflowType: string, workflowLabel: string) => {
-        if (workflowTabLaunchRef.current) {
-            throw new Error('a workflow assistant tab is already opening');
-        }
-        const title = String(workflowLabel || workflowType).trim() || workflowType;
-        const created = await CreateTask(title, '');
-        if (!created?.project_path) {
-            throw new Error('workflow task was not created');
-        }
-        upsertTaskItem(created);
-        const launchId = `workflow-tab-${++workflowTabLaunchSequenceRef.current}`;
-        const tabOpened = new Promise<void>((resolve, reject) => {
-            workflowTabLaunchRef.current = { launchId, projectPath: created.project_path, resolve, reject };
-        });
-        if (!openCodingTask({
-            launchId,
-            projectPath: created.project_path,
-            taskTitle: created.name || title,
-            prepareMode: 'new-agent',
-            autoSend: false,
-            workflowType,
-        })) {
-            workflowTabLaunchRef.current = null;
-            void callBackend(() => HideTask(created.project_path)).catch((error) => {
-                console.warn('[workflows] failed to hide unopened workflow task', { projectPath: created.project_path, error });
-            });
-            throw new Error('workflow assistant tab was not opened');
-        }
-        await tabOpened;
-    }, [openCodingTask, upsertTaskItem]);
     // Skip the navTab effect's first run: the dedicated mount effect below
     // fires the initial ListTasks and navTab starts as 'ai', so without this
     // guard startup would issue two concurrent ListTasks requests.
@@ -3518,7 +3304,9 @@ function App() {
             const proj = currentRow || taskItemsRef.current.find(p => norm(p.project_path || '') === want);
             console.info("[task_management] open requested", { taskPath: projectPath, foundInList: !!proj });
             const expertID = expertIDFromTaskTags(proj?.tags);
-            if (expertID) {
+            // A new LaTeX paper owns the expert conversation. An older paper
+            // keeps the transcript archived on its project tab.
+            if (expertID && !(isLatexExpertId(expertID) && proj && !latexExpertTaskIsLive(proj, taskItemsRef.current))) {
                 const app = await getWailsAppModule();
                 const rawExperts = typeof app.ListExperts === 'function' ? await app.ListExperts() : '';
                 const expert = parseExpertListJSON(rawExperts).find(item => item.id === expertID);
@@ -3883,8 +3671,15 @@ function App() {
             // Save/provider events invalidate backend probe records. Refresh
             // both the selection and health now instead of showing the safe
             // interim "unverified" state until the next 60-second poll.
+            // The server snapshot does not include the live model catalog, so
+            // reload that after the snapshot is applied.
             void refreshLLMProfilePanelState().then((next) => {
-                if (next) void refreshLLMProfileHealth();
+                if (!next) return;
+                void refreshLLMProfileHealth();
+                const profile = quickModelWriteProfile(activeExecutionProfileRef.current);
+                const summary = profile === 'coding' ? (next as any)?.coding : (next as any)?.assistant;
+                const providerID = String(summary?.provider_id ?? summary?.providerID ?? '').trim();
+                if (providerID) refreshQuickProfileModelsRef.current(providerID);
             });
         });
         // A successful real chat can verify providers that do not support the
@@ -4299,13 +4094,14 @@ function App() {
     // The old provider/model fields above remain temporarily for legacy status
     // refreshes. All visible quick writes below are profile-scoped and never
     // call PatchConfigFields/SetMaclawLLMCurrentModel.
+    const quickWriteProfile = quickModelWriteProfile(activeExecutionProfile);
     const activeProfileSummary = useMemo(() => {
-        if (activeExecutionProfile === 'assistant') return llmProfilePanelState?.assistant ?? null;
-        if (activeExecutionProfile === 'coding') return llmProfilePanelState?.coding ?? null;
-        return null;
-    }, [activeExecutionProfile, llmProfilePanelState]);
+        return quickWriteProfile === 'coding'
+            ? (llmProfilePanelState?.coding ?? null)
+            : (llmProfilePanelState?.assistant ?? null);
+    }, [llmProfilePanelState, quickWriteProfile]);
     const effectiveProfileProviderID = String(activeProfileSummary?.provider_id ?? activeProfileSummary?.providerID ?? '').trim();
-    const selectedQuickProviderID = quickDraftProvider?.profile === activeExecutionProfile
+    const selectedQuickProviderID = quickDraftProvider?.profile === quickWriteProfile
         ? quickDraftProvider.providerID
         : effectiveProfileProviderID;
     const quickProfileProvider = useMemo((): SidebarLLMProviderSummary | null => {
@@ -4325,9 +4121,12 @@ function App() {
             configured: String(activeProfileSummary.health ?? '') !== 'invalid',
         };
     }, [activeProfileSummary, llmProfilePanelState, selectedQuickProviderID]);
-    const quickModel = selectedQuickProviderID === effectiveProfileProviderID
+    const quickModelRaw = selectedQuickProviderID === effectiveProfileProviderID
         ? String(activeProfileSummary?.model ?? '').trim()
         : '';
+    const quickModel = quickProfileProvider?.isHubService
+        ? (capabilityBandName(quickModelRaw) || quickModelRaw)
+        : quickModelRaw;
     const contactedProfileSummary = contactedProfileForExecution(
         activeExecutionProfile,
         llmProfilePanelState ? { assistant: llmProfilePanelState.assistant, coding: llmProfilePanelState.coding } : null,
@@ -4340,10 +4139,17 @@ function App() {
         return !!contactedProviderID && id === contactedProviderID;
     });
     const contactedIsHubService = !!(contactedProviderRecord?.is_hub_service ?? contactedProviderRecord?.isHubService);
-    const quickModelOptions = useMemo(() => buildSidebarModelOptions({
-        configuredModel: quickModel,
-        cachedModels: quickProfileProvider?.models,
-    }), [quickModel, quickProfileProvider?.models]);
+    const quickModelOptions = useMemo(() => {
+        // Official model names are the four aliases. A live catalog must not
+        // swap them for whatever upstream ids the hub advertised this request.
+        if (quickProfileProvider?.isHubService) return hubOfficialModelAliases();
+        return buildSidebarModelOptions({
+            configuredModel: quickModel,
+            cachedModels: quickProfileProvider?.models,
+            fetchedModels: quickFetchedModelsByProvider[selectedQuickProviderID],
+        });
+    }, [quickFetchedModelsByProvider, quickModel, quickProfileProvider?.isHubService, quickProfileProvider?.models, selectedQuickProviderID]);
+    const quickModelMultipliers = quickModelMultipliersByProvider[selectedQuickProviderID] ?? EMPTY_MODEL_MULTIPLIERS;
     const quickProfileProviders = useMemo((): SidebarLLMProviderSummary[] => {
         const providers = (llmProfilePanelState?.providers || []).map((provider: any) => ({
             id: String(provider?.id ?? provider?.ID ?? '').trim() || undefined,
@@ -4356,8 +4162,7 @@ function App() {
             configured: true,
         })).filter((provider: SidebarLLMProviderSummary) => !!provider.id && !!provider.name);
         // The shared picker treats its first provider as the current context.
-        // Keep the selected draft/effective provider there without mutating the
-        // persisted profile until a model is explicitly chosen.
+        // A draft stays first while a provider switch is still saving.
         return providers.sort((a: SidebarLLMProviderSummary, b: SidebarLLMProviderSummary) => {
             if (a.id === selectedQuickProviderID) return -1;
             if (b.id === selectedQuickProviderID) return 1;
@@ -4365,35 +4170,33 @@ function App() {
         });
     }, [llmProfilePanelState, selectedQuickProviderID]);
     useEffect(() => {
-        // A staged provider is valid only while its owning scope and revision
-        // remain current. It is intentionally not persisted until a model is
-        // explicitly selected.
+        // A draft only mirrors the provider shown while its model list or save
+        // is still catching up. A new profile snapshot makes that draft stale.
+        // A selection already written by QuickSave stays on the profile.
+        pendingCatalogApplyRef.current = null;
         setQuickDraftProvider(null);
-        quickModelFetchSeqRef.current += 1;
         setQuickModelsLoadingForProviderID('');
     }, [activeExecutionProfile, llmProfilePanelState?.revision]);
     const dismissQuickProfileProviderDraft = useCallback(() => {
-        // A provider choice becomes real only with the model click. Closing a
-        // menu therefore restores the effective profile instead of leaving an
-        // invisible staged choice that can affect a later, unrelated open.
+        // Closing the menu cancels a provider that is still waiting on its
+        // catalog. A save already in flight, or one that finished, is kept.
+        pendingCatalogApplyRef.current = null;
         if (!quickProfileSavePending) setQuickDraftProvider(null);
     }, [quickProfileSavePending]);
     const refreshQuickProfileModels = useCallback((providerID: string) => {
         providerID = String(providerID || '').trim();
         if (!providerID) return;
-        // A successful profile/directory refresh invalidates prior endpoint and
-        // catalog assumptions even when the profile assignment itself did not
-        // change (for example, a provider URL was edited in another window).
-        // Do not merge an old response into that newer directory.
-        const directoryGeneration = llmProfilePanelSeqRef.current;
-        const fetchKey = `${directoryGeneration}:${providerID}`;
+        // A newer fetch for this provider replaces an older one. Do not key this
+        // off the panel read sequence: a quick save bumps that sequence and would
+        // drop the catalog the open menu is waiting on.
+        const fetchKey = providerID;
         const requestSeq = ++quickModelFetchSeqRef.current;
+        catalogTokenByProviderRef.current.set(providerID, requestSeq);
         setQuickModelsLoadingForProviderID(providerID);
         // The profile directory intentionally omits endpoints and credentials.
         // Resolve them in the backend by stable provider ID, then merge its
-        // catalog into the shared directory. Provider ID plus the directory
-        // generation makes a late response safe after tab navigation *and*
-        // after provider settings are edited in another surface.
+        // catalog into the shared directory. A newer token for this provider
+        // drops an older response.
         let request = quickModelFetchesRef.current.get(fetchKey);
         if (!request) {
             request = callBackend(() => FetchMaclawLLMProfileModels(providerID));
@@ -4409,69 +4212,64 @@ function App() {
             });
         }
         void request.then((items: any) => {
+            if (catalogTokenByProviderRef.current.get(providerID) !== requestSeq) return;
+            const providerRecord = (llmProfilePanelStateRef.current?.providers || []).find((item: any) => String(item?.id ?? item?.ID ?? '').trim() === providerID);
+            const providerIsHub = !!(providerRecord?.is_hub_service ?? providerRecord?.isHubService);
+            if (providerIsHub) {
+                const waiting = pendingCatalogApplyRef.current;
+                if (waiting && waiting.providerID === providerID) {
+                    pendingCatalogApplyRef.current = null;
+                    commitQuickProfileSelectionRef.current(waiting.profile, providerID, capabilityBandName(String(providerRecord?.model ?? providerRecord?.Model ?? '')) || 'auto');
+                }
+                return;
+            }
             const fetched = Array.isArray(items)
                 ? items.map((item) => String(item?.id ?? item?.ID ?? item?.name ?? item?.Name ?? '').trim()).filter(Boolean)
                 : [];
-            if (fetched.length === 0) return;
-            if (directoryGeneration !== llmProfilePanelSeqRef.current) return;
-            setLLMProfilePanelState((previous: any) => {
-                if (!previous?.providers) return previous;
-                return {
-                    ...previous,
-                    providers: previous.providers.map((provider: any) => {
-                        const id = String(provider?.id ?? provider?.ID ?? '').trim();
-                        if (id !== providerID) return provider;
-                        const cached = Array.isArray(provider?.models ?? provider?.Models) ? (provider.models ?? provider.Models) : [];
-                        return { ...provider, models: Array.from(new Set([...cached, ...fetched])) };
-                    }),
-                };
-            });
+            setQuickModelMultipliersByProvider((previous) => ({
+                ...previous,
+                [providerID]: multipliersFromModelItems(Array.isArray(items) ? items : []),
+            }));
+            if (fetched.length > 0) {
+                setQuickFetchedModelsByProvider((previous) => ({ ...previous, [providerID]: fetched }));
+            }
+            const waiting = pendingCatalogApplyRef.current;
+            if (waiting && waiting.providerID === providerID && fetched.length > 0) {
+                pendingCatalogApplyRef.current = null;
+                commitQuickProfileSelectionRef.current(waiting.profile, providerID, fetched[0]);
+            }
         }).catch(() => {
             // The menu already has the configured/cached catalog. A failed live
             // refresh should not interrupt an otherwise valid model change.
         }).finally(() => {
-            if (requestSeq === quickModelFetchSeqRef.current) {
+            if (catalogTokenByProviderRef.current.get(providerID) === requestSeq) {
                 setQuickModelsLoadingForProviderID('');
             }
         });
     }, []);
+    refreshQuickProfileModelsRef.current = refreshQuickProfileModels;
+    activeExecutionProfileRef.current = activeExecutionProfile;
     const handleOpenProfileModelMenu = useCallback(() => {
-        const profile = activeExecutionProfile;
+        const profile = quickWriteProfile;
         const providerID = selectedQuickProviderID;
-        if (!providerID || (profile !== 'assistant' && profile !== 'coding')) return;
+        if (!providerID) return;
         if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
             openLLMSettingsPage();
             return;
         }
         refreshQuickProfileModels(providerID);
-    }, [activeExecutionProfile, activeProfileSummary?.inherit_assistant, openLLMSettingsPage, refreshQuickProfileModels, selectedQuickProviderID]);
-    const handleProfileQuickSwitchProvider = useCallback((providerID: string) => {
-        if (quickProfileSavePending) return;
-        const profile = activeExecutionProfile;
-        if (profile !== 'assistant' && profile !== 'coding') return;
-        if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
-            openLLMSettingsPage();
+    }, [activeProfileSummary?.inherit_assistant, openLLMSettingsPage, quickWriteProfile, refreshQuickProfileModels, selectedQuickProviderID]);
+    const commitQuickProfileSelection = useCallback((profile: AIExecutionProfile, providerID: string, model: string, revisionOverride?: string) => {
+        model = String(model || '').trim();
+        providerID = String(providerID || '').trim();
+        const revision = String(revisionOverride || llmProfilePanelState?.revision || '').trim();
+        if (!model || !providerID || !revision || (profile !== 'assistant' && profile !== 'coding')) return;
+        // An explicit model wins over a catalog id that has not been written yet.
+        pendingCatalogApplyRef.current = null;
+        if (quickProfileSavePending && !revisionOverride) {
+            queuedQuickSelectionRef.current = { profile, providerID, model };
             return;
         }
-        // Provider display names are editable and can be duplicated. The
-        // picker sends its stable id, with the name lookup retained only for
-        // an older caller that did not yet have ids.
-        const provider = quickProfileProviders.find((item) => item.id === providerID)
-            ?? quickProfileProviders.find((item) => item.name === providerID);
-        if (!provider?.id) return;
-        setQuickDraftProvider({ profile, providerID: provider.id });
-        // Keep the combined picker open while the user chooses the model. This
-        // turns provider selection into a staging step instead of forcing a
-        // close-and-reopen loop, while the eventual model click remains the
-        // single atomic profile write.
-        refreshQuickProfileModels(provider.id);
-    }, [activeExecutionProfile, activeProfileSummary?.inherit_assistant, openLLMSettingsPage, quickProfileProviders, quickProfileSavePending, refreshQuickProfileModels]);
-    const handleProfileQuickSwitchModel = useCallback((modelId: string) => {
-        const model = String(modelId || '').trim();
-        const profile = activeExecutionProfile;
-        const providerID = selectedQuickProviderID;
-        const revision = String(llmProfilePanelState?.revision ?? '').trim();
-        if (quickProfileSavePending || !model || !providerID || !revision || (profile !== 'assistant' && profile !== 'coding')) return;
         if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
             openLLMSettingsPage();
             return;
@@ -4492,11 +4290,23 @@ function App() {
             // not start another one here: it would immediately be invalidated
             // by that event refresh and can consume a duplicate network check.
             void refreshSidebarTokenUsage();
-            showToastMessage?.(lang === 'en'
-                ? 'Model updated for future requests.'
-                : lang === 'zh-Hant' ? '模型已更新，將於後續請求生效。' : '模型已更新，将于后续请求生效。');
+            const queued = queuedQuickSelectionRef.current;
+            queuedQuickSelectionRef.current = null;
+            const nextRevision = String(next?.revision ?? next?.Revision ?? '').trim();
+            const followUp = queued && nextRevision && (queued.providerID !== providerID || queued.model !== model);
+            if (!followUp) {
+                showToastMessage?.(lang === 'en'
+                    ? `Switched to "${model}". The next session will use it.`
+                    : lang === 'zh-Hant'
+                        ? `已切換為「${model}」，下次會話將使用該模型。`
+                        : `已切换为「${model}」，下次会话将使用该模型。`);
+            }
+            if (followUp && queued) {
+                queueMicrotask(() => commitQuickProfileSelectionRef.current(queued.profile, queued.providerID, queued.model, nextRevision));
+            }
         }).catch((err) => {
             if (saveSeq !== quickProfileSaveSeqRef.current) return;
+            queuedQuickSelectionRef.current = null;
             const message = String(err || '');
             if (message.includes('follows assistant')) {
                 openLLMSettingsPage();
@@ -4507,7 +4317,50 @@ function App() {
         }).finally(() => {
             if (saveSeq === quickProfileSaveSeqRef.current) setQuickProfileSavePending(false);
         });
-    }, [activeExecutionProfile, activeProfileSummary, lang, llmProfilePanelState?.revision, openLLMSettingsPage, quickProfileSavePending, refreshLLMProfilePanelState, refreshSidebarTokenUsage, selectedQuickProviderID, showAlert, showToastMessage]);
+    }, [activeProfileSummary, lang, llmProfilePanelState?.revision, openLLMSettingsPage, quickProfileSavePending, refreshLLMProfilePanelState, refreshSidebarTokenUsage, showAlert, showToastMessage]);
+    commitQuickProfileSelectionRef.current = commitQuickProfileSelection;
+    const handleProfileQuickSwitchProvider = useCallback((providerID: string) => {
+        if (quickProfileSavePending) return;
+        const profile = quickWriteProfile;
+        if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
+            openLLMSettingsPage();
+            return;
+        }
+        // Provider display names are editable and can be duplicated. The
+        // picker sends its stable id, with the name lookup retained only for
+        // an older caller that did not yet have ids.
+        const provider = quickProfileProviders.find((item) => item.id === providerID)
+            ?? quickProfileProviders.find((item) => item.name === providerID);
+        if (!provider?.id) return;
+        const model = defaultModelForQuickProvider(provider);
+        const sameAssignment = provider.id === effectiveProfileProviderID
+            && model !== ''
+            && model === String(activeProfileSummary?.model ?? '').trim();
+        if (sameAssignment) {
+            pendingCatalogApplyRef.current = null;
+            refreshQuickProfileModels(provider.id);
+            return;
+        }
+        setQuickDraftProvider({ profile, providerID: provider.id });
+        refreshQuickProfileModels(provider.id);
+        // Persist immediately so the next session reads this provider. When the
+        // directory has no model yet, the catalog response applies the first id.
+        // Closing the menu before that response cancels the apply.
+        if (model) {
+            pendingCatalogApplyRef.current = null;
+            commitQuickProfileSelection(profile, provider.id, model);
+        } else {
+            pendingCatalogApplyRef.current = { profile, providerID: provider.id };
+        }
+    }, [activeProfileSummary, commitQuickProfileSelection, effectiveProfileProviderID, openLLMSettingsPage, quickProfileProviders, quickProfileSavePending, quickWriteProfile, refreshQuickProfileModels]);
+    const handleProfileQuickSwitchModel = useCallback((modelId: string) => {
+        const profile = quickWriteProfile;
+        if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
+            openLLMSettingsPage();
+            return;
+        }
+        commitQuickProfileSelection(profile, selectedQuickProviderID, String(modelId || '').trim());
+    }, [activeProfileSummary?.inherit_assistant, commitQuickProfileSelection, openLLMSettingsPage, quickWriteProfile, selectedQuickProviderID]);
 
     const refreshMoASession = useCallback(() => {
         callBackend(() => GetMoASessionState()).then((raw: any) => {
@@ -5555,6 +5408,7 @@ ${instruction}`;
                 onSwitchProvider={handleProfileQuickSwitchProvider}
                 currentModel={quickModel}
                 modelOptions={quickModelOptions}
+                modelMultipliers={quickModelMultipliers}
                 modelsLoading={quickModelsLoadingForProviderID === selectedQuickProviderID}
                 onSwitchModel={handleProfileQuickSwitchModel}
                 onOpenModelMenu={handleOpenProfileModelMenu}
@@ -5622,13 +5476,14 @@ ${instruction}`;
                             contactModelId={contactedModelId}
                             contactIsHubService={contactedIsHubService}
                             modelOptions={quickModelOptions}
+                            modelMultipliers={quickModelMultipliers}
                             modelsLoading={quickModelsLoadingForProviderID === selectedQuickProviderID}
                             onSwitchModel={handleProfileQuickSwitchModel}
                             onOpenModelMenu={handleOpenProfileModelMenu}
                             onDismissModelMenu={dismissQuickProfileProviderDraft}
-                            providerSelectionPending={!!quickDraftProvider && quickDraftProvider.profile === activeExecutionProfile}
+                            providerSelectionPending={!!quickDraftProvider && quickDraftProvider.profile === quickWriteProfile}
                             profileSavePending={quickProfileSavePending}
-                            activeExecutionProfile={activeExecutionProfile}
+                            activeExecutionProfile={quickWriteProfile}
                             codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
                             onOpenLLMSettings={openLLMSettingsPage}
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
@@ -5703,7 +5558,10 @@ ${instruction}`;
                             patchConfigFields={patchConfigFieldsForSettings}
                             onLLMStatusChange={handleSettingsLLMStatusChange}
                             onProviderChanged={handleLLMProviderChanged}
+                            onRequestIdentityVerification={requestOnboarding}
                             showToastMessage={showToastMessage}
+                            tokenBankClaimCode={creditGiftLaunch.code}
+                            tokenBankClaimSeq={creditGiftLaunch.seq}
                             memoryTraceFocus={memoryTraceFocus}
                             imSubTab={imSubTab}
                             setImSubTab={setImSubTab}
@@ -5851,7 +5709,10 @@ ${instruction}`;
                     )}
 
                     {navTab === 'workflows' && (
-                        <WorkflowsPage lang={lang} onStartWorkflow={startWorkflowInNewAssistantTab} />
+                        <WorkflowsPage lang={lang} onStartWorkflow={(workflowType) => {
+                            switchTool('ai');
+                            openNewTaskWizard({ workflowTemplateId: workflowType });
+                        }} />
                     )}
 
                     {navTab === 'skills' && (
@@ -5865,7 +5726,15 @@ ${instruction}`;
                     {navTab === LATEX_TEMPLATES_NAV_TAB && (
                         <LatexTemplateLibraryPage
                             lang={lang}
-                            onUseTemplate={(template: LatexTemplate) => { void startLatexPaper(template); }}
+                            onUseTemplate={(template: LatexTemplate) => {
+                                switchTool('ai');
+                                openNewTaskWizard({
+                                    expertId: LATEX_EXPERT_ID,
+                                    expertName: latexExpertStub(lang).name,
+                                    latexTemplateId: template.id || LATEX_BLANK_TEMPLATE_ID,
+                                    latexTemplateName: template.name,
+                                });
+                            }}
                             onClose={() => switchTool('ai')}
                         />
                     )}
@@ -5950,7 +5819,7 @@ ${instruction}`;
                         }>
 							<UtilitiesPage mode={navTab === 'tools' ? 'tools' : 'experts'} lang={lang} active={navTab === 'utilities' || navTab === 'tools'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => {
                                 switchTool('ai');
-                                setPendingExpertOpen({ expert });
+                                openNewTaskWizard({ expertId: expert.id, expertName: expert.name });
                             }} onOpenVirtualRepositoryTask={(launch) => {
                                 openCodingTask({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host, remoteNeedsReconnect: false });
                             }} />

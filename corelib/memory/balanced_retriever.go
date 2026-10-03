@@ -112,7 +112,7 @@ func proactiveRecallPriorityScore(entry Entry) float64 {
 
 func proactiveRecallBoundaryScore(entry Entry, boundary lifecycle.Boundary) float64 {
 	score := 0.0
-	if boundary.OwnerID != "" && entry.OwnerID != "" && entry.OwnerID == boundary.OwnerID {
+	if strings.TrimSpace(boundary.OwnerID) != "" && strings.TrimSpace(entry.OwnerID) != "" && memoryOwnersEqual(entry.OwnerID, boundary.OwnerID) {
 		score += 0.25
 	}
 	project := semanticNormalizeProjectPath(boundary.ProjectPath)
@@ -127,7 +127,7 @@ func proactiveRecallBoundaryScore(entry Entry, boundary lifecycle.Boundary) floa
 }
 
 func proactiveRecallBoundaryAllowed(entry Entry, boundary lifecycle.Boundary) bool {
-	if boundary.OwnerID != "" && entry.OwnerID != "" && entry.OwnerID != boundary.OwnerID {
+	if strings.TrimSpace(boundary.OwnerID) != "" && strings.TrimSpace(entry.OwnerID) != "" && !memoryOwnersEqual(entry.OwnerID, boundary.OwnerID) {
 		return false
 	}
 	project := semanticNormalizeProjectPath(boundary.ProjectPath)

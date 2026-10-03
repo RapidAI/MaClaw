@@ -133,6 +133,15 @@ func CurrentChannelArtifactDeliverySelection(selection PlannedSelection) bool {
 		strings.EqualFold(strings.TrimSpace(string(selection.FitProof.MatchedCapability)), "artifact.deliver.current_channel")
 }
 
+// SpecifiedTargetArtifactDeliverySelection is the IM-target counterpart of
+// CurrentChannelArtifactDeliverySelection. A completed one ends the turn the
+// same way: the file has left, and another model round can only petition a
+// new document.
+func SpecifiedTargetArtifactDeliverySelection(selection PlannedSelection) bool {
+	return strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "channel") &&
+		strings.EqualFold(strings.TrimSpace(string(selection.FitProof.MatchedCapability)), "artifact.deliver.specified_target")
+}
+
 // CurrentChannelDeliverNeed reports whether a granted need is current-channel
 // delivery. GUI file-deliver binding and headless reviewed attachment deliver
 // share this so a host cannot treat a specified-target send as channel ingress.
@@ -298,9 +307,13 @@ func ScheduleChannelDispatchSelection(selection PlannedSelection) bool {
 }
 
 // TurnRequiredDeliveryComplete reports that every required planned selection
-// completed and at least one completed selection is a current-channel
-// delivery. Optional needs (optionalByNeed) never gate the stop. Hosts still
-// compute optionality from their classification; this helper only applies it.
+// completed and at least one completed selection delivered the artifact,
+// either on the current channel or to the specified IM target. Optional
+// needs (optionalByNeed) never gate the stop. A later repeat sibling is an
+// exposure ceiling even when the host's recomputed need list omitted it:
+// only the family base can be an obligation. Hosts still compute base
+// optionality from their classification; this helper applies that map and
+// the repeat contract.
 func TurnRequiredDeliveryComplete(plan ToolPlan, completed, optionalByNeed map[string]bool) bool {
 	if len(plan.Selections) == 0 {
 		return false
@@ -308,15 +321,26 @@ func TurnRequiredDeliveryComplete(plan ToolPlan, completed, optionalByNeed map[s
 	delivered := false
 	for _, selection := range plan.Selections {
 		if completed[selection.ID] {
-			if CurrentChannelArtifactDeliverySelection(selection) {
+			if CurrentChannelArtifactDeliverySelection(selection) || SpecifiedTargetArtifactDeliverySelection(selection) {
 				delivered = true
 			}
 			continue
 		}
-		if optionalByNeed[selection.NeedID] {
+		if optionalByNeed[selection.NeedID] || repeatSiblingCeiling(selection.NeedID) {
 			continue
 		}
 		return false
 	}
 	return delivered
+}
+
+// repeatSiblingCeiling reports a repeat node that is not the family base.
+// RepeatSiblingRequired makes only index 0 an obligation; ExtendRepeatFamily
+// and an appended sibling are ceilings. A baseline raise mints those IDs
+// after the archetype pass, and a delivery check that rebuilds needs from
+// the bundle key alone does not see them. Treating the unknown suffix as
+// required holds the turn open after the file has already left.
+func repeatSiblingCeiling(needID string) bool {
+	needID = strings.TrimSpace(needID)
+	return needID != "" && RepeatFamilyID(needID) != needID
 }

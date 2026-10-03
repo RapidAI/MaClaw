@@ -300,6 +300,31 @@ func TestCompressorDedupKeepsDifferentOwnersSeparate(t *testing.T) {
 	}
 }
 
+func TestCompressorDedupLeavesSharedAndInactiveUntouched(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	store.SetEntries([]Entry{
+		{ID: "shared", Content: "same preference for editor", Category: CategoryPreference, Status: StatusActive},
+		{ID: "user-a", Content: "same preference for editor", Category: CategoryPreference, Status: StatusActive, OwnerID: "user-a"},
+		{ID: "live", Content: "database backup window is Sunday", Category: CategoryProjectKnowledge, Status: StatusActive, OwnerID: "user-a"},
+		{ID: "dead", Content: "database backup window is Sunday", Category: CategoryProjectKnowledge, Status: StatusSuperseded, OwnerID: "user-a"},
+	})
+	compressor := NewCompressor(store, nil, nil)
+	if removed := compressor.dedup(); removed != 0 {
+		t.Fatalf("dedup removed=%d", removed)
+	}
+	if got := store.SearchDirectByID("live"); len(got) != 1 || !got[0].IsActive() {
+		t.Fatalf("live entry = %+v", got)
+	}
+	if got := store.SearchDirectByID("user-a"); len(got) != 1 {
+		t.Fatalf("named entry = %+v", got)
+	}
+}
+
 func TestCompressorDedupPersistsDuplicateDeleteThroughSQLiteBatch(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(filepath.Join(dir, "mem.json"))

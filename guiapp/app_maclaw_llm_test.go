@@ -184,6 +184,26 @@ func TestPreserveManagedAuthSecretsKeepsOAuthKey(t *testing.T) {
 	}
 }
 
+func TestPreserveManagedAuthSecretsDoesNotAttachOldRefreshToNewGrant(t *testing.T) {
+	existing := []corelib.MaclawLLMProvider{{
+		Name: "xAI-Grok", AuthType: "oauth", Key: "old-access", RefreshToken: "old-refresh",
+		OAuthAccessToken: "old-raw", TokenExpiresAt: 10,
+	}}
+	incoming := []corelib.MaclawLLMProvider{{
+		Name: "xAI-Grok", AuthType: "oauth", Key: "new-access", OAuthAccessToken: "new-raw", TokenExpiresAt: 99,
+	}}
+	got := preserveManagedAuthSecrets(incoming, existing)
+	if got[0].Key != "new-access" || got[0].RefreshToken != "" || got[0].OAuthAccessToken != "new-raw" || got[0].TokenExpiresAt != 99 {
+		t.Fatalf("new grant = %#v", got[0])
+	}
+	withRefresh := incoming
+	withRefresh[0].RefreshToken = "new-refresh"
+	got = preserveManagedAuthSecrets(withRefresh, existing)
+	if got[0].RefreshToken != "new-refresh" {
+		t.Fatalf("refresh = %q, want the new grant's refresh token", got[0].RefreshToken)
+	}
+}
+
 func TestOverlayManagedAuthFromListReplacesStaleOAuthKey(t *testing.T) {
 	got := overlayManagedAuthFromList(
 		corelib.MaclawLLMProvider{Name: "xAI-Grok", AuthType: "oauth", Key: "expired-token", TokenExpiresAt: 1},
@@ -1872,6 +1892,77 @@ func TestSaveMaclawLLMProvidersKeepsTestedProviderIDAcrossRename(t *testing.T) {
 	}
 	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.ProviderID != "provider" {
 		t.Fatalf("rename invalidated assistant profile: %#v", saved.MaclawLLMProfiles)
+	}
+}
+
+func TestProbeMaclawLLMProviderModelUsesRequestedModelWithoutSaving(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			if model, ok := body["model"].(string); ok {
+				seen = append(seen, model)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"model \"default-model\" not found"}}`))
+	}))
+	defer srv.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				ID: "example", Name: "Example", URL: srv.URL, Key: "sk-example",
+				Model: "deepseek-v4.1-flash", Protocol: "openai", ConnectionTestPassed: true,
+			},
+			{ID: "other", Name: "Other", URL: "https://other.example/v1", Model: "other-model", IsCustom: true, ConnectionTestPassed: true},
+		},
+		MaclawLLMCurrentProvider: "Other",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	_, err := app.ProbeMaclawLLMProviderModel("Example", "default-model")
+	if err == nil {
+		t.Fatal("ProbeMaclawLLMProviderModel succeeded, want the catalog model error")
+	}
+	if strings.Contains(err.Error(), `provider "deepseek-v4.1-flash" not found`) {
+		t.Fatalf("probe reported the saved model as the provider: %v", err)
+	}
+	if !strings.Contains(err.Error(), "default-model") {
+		t.Fatalf("probe error = %v, want the catalog model name", err)
+	}
+	if len(seen) == 0 || seen[0] != "default-model" {
+		t.Fatalf("requested models = %#v, want default-model", seen)
+	}
+	for _, model := range seen {
+		if model == "deepseek-v4.1-flash" {
+			t.Fatalf("probe sent the saved model: %#v", seen)
+		}
+	}
+
+	_, missingErr := app.ProbeMaclawLLMProviderModel("deepseek-v4.1-flash", "default-model")
+	if missingErr == nil || missingErr.Error() != `provider "deepseek-v4.1-flash" not found` {
+		t.Fatalf("saved-model lookup error = %v", missingErr)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(saved.MaclawLLMProviders) != 2 {
+		t.Fatalf("providers = %#v, want both providers kept", saved.MaclawLLMProviders)
+	}
+	example := saved.MaclawLLMProviders[0]
+	if example.Name != "Example" || example.Model != "deepseek-v4.1-flash" || !example.ConnectionTestPassed {
+		t.Fatalf("saved example = %#v, want the configured model left untouched", example)
+	}
+	if saved.MaclawLLMProviders[1].Name != "Other" || saved.MaclawLLMProviders[1].Model != "other-model" {
+		t.Fatalf("saved other = %#v, want it unchanged", saved.MaclawLLMProviders[1])
 	}
 }
 

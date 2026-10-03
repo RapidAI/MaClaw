@@ -81,7 +81,7 @@ export const inputStyle: CSSProperties = {
     padding: "7px 10px",
     fontSize: "0.8rem",
     border: `1px solid var(--theme-border)`,
-    borderRadius: 4,
+    borderRadius: "var(--radius-md, 10px)",
     background: "var(--theme-surface)",
     color: "var(--theme-text-primary)",
     boxSizing: "border-box",
@@ -89,7 +89,6 @@ export const inputStyle: CSSProperties = {
 
 export const readonlyInputStyle: CSSProperties = {
     ...inputStyle,
-    background: "var(--theme-surface-muted)",
     color: "var(--theme-text-muted)",
     cursor: "default",
 };

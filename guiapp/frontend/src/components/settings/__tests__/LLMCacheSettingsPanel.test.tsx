@@ -111,6 +111,38 @@ describe("LLMCacheSettingsPanel", () => {
     expect(patch.llm_prompt_cache.stream_synthesis_enabled).toBe(true);
   });
 
+  it("lays out cache-key options in a compact group", () => {
+    render(
+      <LLMCacheSettingsPanel
+        config={new corelib.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
+        setConfig={vi.fn()}
+        lang="zh-Hans"
+      />
+    );
+
+    const group = screen.getByRole("group", { name: "确定性参数与缓存键" });
+    expect(group.classList.contains("llm-cache-settings-key-options__grid")).toBe(true);
+    expect([...group.querySelectorAll(".llm-cache-settings-check span")].map((node) => node.textContent)).toEqual([
+      "归一化默认确定性参数",
+      "缓存键忽略 model 字段",
+      "缓存键忽略 user 字段",
+      "缓存键忽略 metadata 字段",
+    ]);
+    expect(screen.getByText("OpenAI 兼容非流式").closest(".llm-cache-settings-key-options")).toBeNull();
+  });
+
+  it("shows the default cache directory when the saved field is omitted", () => {
+    render(
+      <LLMCacheSettingsPanel
+        config={new corelib.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
+        setConfig={vi.fn()}
+        lang="en"
+      />
+    );
+
+    expect(screen.getByDisplayValue("~/.maclaw/llm_prompt_cache")).toBeTruthy();
+  });
+
   it("renders cache directory as a full-width text input", () => {
     render(
       <LLMCacheSettingsPanel

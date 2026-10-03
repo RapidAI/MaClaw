@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
@@ -164,7 +165,16 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			log.Printf("[semantic-routing] managed surface unavailable user=%q reason=empty surface", opts.UserID)
 			hostReject = semanticHostRejectResponseForManagedSurfaceFailure(nil)
 		} else {
-			tools = closedManagedSemanticDefinitionsForTurn(semanticTools, surface, ctx != nil && ctx.Runtime.Execution.PromptIsLight())
+			lightPrompt := ctx != nil && ctx.Runtime.Execution.PromptIsLight()
+			var keepCarried func(string) bool
+			if lightPrompt && lookupContinuationProfile(ctx.Runtime.Execution) {
+				carried := h.parentExecutionTools(opts.UserID)
+				profile := ctx.Runtime.Execution
+				keepCarried = func(name string) bool {
+					return lookupContinuationCarriedGrant(profile, carried, name)
+				}
+			}
+			tools = closedManagedSemanticDefinitionsKeeping(semanticTools, surface, lightPrompt, keepCarried)
 			if len(tools) == 0 {
 				log.Printf("[semantic-routing] managed surface unavailable user=%q reason=closed surface empty", opts.UserID)
 				hostReject = semanticHostRejectResponseForManagedSurfaceFailure(nil)
@@ -176,13 +186,14 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	if semanticHandled && !loopContextTurnAnswerOnly(ctx) {
 		// prepareAgentLoopTools does not run on this path, so it cannot update
 		// the legacy carry. A light managed turn must drop it; a full one
-		// replaces it with the tools this turn actually rendered. A greeting
-		// leaves the carry untouched.
+		// replaces it with the tools this turn actually rendered. A short
+		// continuation, including a light project-task lookup, keeps it.
+		// A greeting leaves the carry untouched.
 		profile := ExecutionProfile{}
 		if ctx != nil {
 			profile = ctx.Runtime.Execution
 		}
-		h.recordSemanticExecutionSurface(opts.UserID, profile, tools)
+		h.recordSemanticExecutionSurfacePlan(opts.UserID, profile, tools, semanticResidueCandidateNeeds(ctx))
 	}
 	if !semanticHandled {
 		markClassifierTimeoutLookup(ctx)
@@ -247,7 +258,13 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	if ctx != nil {
 		loopID = ctx.ID
 	}
-	conversationStart := h.buildAgentLoopConversationStart(loopID, opts.UserID, userText, systemPrompt, opts.Platform, attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress, allowLocalAttachmentStaging)
+	var turnSemantic *intent.ClassificationResult
+	planClosed := false
+	if ctx != nil {
+		turnSemantic = ctx.Runtime.SemanticIntent
+		planClosed = ctx.semanticPriorPlanClosed
+	}
+	conversationStart := h.buildAgentLoopConversationStart(loopID, opts.UserID, userText, systemPrompt, opts.Platform, attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress, allowLocalAttachmentStaging, turnSemantic, planClosed)
 	if telemetry != nil {
 		telemetry.PreLLMConversationElapsed = conversationStart.Elapsed
 	}

@@ -88,12 +88,31 @@ func (a *App) sendCloudWorkspaceAudit(ctx context.Context, event cloudWorkspaceA
 	return nil
 }
 
-// Audit details are deliberately reduced to a stable, path-free reason code.
-// Raw Go/HTTP errors frequently include absolute cache paths, request URLs or
-// other caller-controlled text; persisting them would violate the audit log's
-// no-content/no-path contract and can leak secrets into support bundles.
+// stripCloudWorkspaceDownloadPath removes the workspace-relative path that
+// pull puts in front of a download error. Reason classification keyword-matches
+// the whole detail, so a filename containing "quota" or "timeout" must not
+// select the reason.
+func stripCloudWorkspaceDownloadPath(detail string) string {
+	head, rest, ok := strings.Cut(detail, ": ")
+	if !ok || head == "" {
+		return detail
+	}
+	if _, safe := cloudWorkspaceSafeRelPath(head); !safe {
+		return detail
+	}
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return detail
+	}
+	return rest
+}
+
+// cloudWorkspaceAuditReason reduces a failure to a stable, path-free reason
+// code. Raw Go/HTTP errors include cache paths, request URLs, and other
+// caller-controlled text; persisting them would violate the audit log's
+// no-content/no-path contract.
 func cloudWorkspaceAuditReason(detail string) string {
-	s := strings.ToLower(strings.TrimSpace(detail))
+	s := strings.ToLower(strings.TrimSpace(stripCloudWorkspaceDownloadPath(detail)))
 	if s == "" {
 		return ""
 	}
@@ -110,6 +129,9 @@ func cloudWorkspaceAuditReason(detail string) string {
 		return "fenced"
 	case strings.Contains(s, "hash mismatch"):
 		return "integrity_mismatch"
+	case strings.Contains(s, "corrupt"), strings.Contains(s, "damaged"),
+		strings.Contains(s, "损坏"), strings.Contains(s, "損壞"):
+		return "object_corrupt"
 	case strings.Contains(s, "revision conflict"), strings.Contains(s, "conflict"):
 		return "conflict"
 	case strings.Contains(s, "quota"), strings.Contains(s, "storage space"):

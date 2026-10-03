@@ -73,10 +73,10 @@ func TestSpecForDocType(t *testing.T) {
 			wantPrefix:  "document",
 		},
 		{
-			name:        "default falls back to document",
+			name:        "default falls back to the file prefix",
 			docType:     DocType("unknown"),
 			projectName: "   ",
-			wantTitle:   "文档",
+			wantTitle:   "document",
 			wantPrefix:  "document",
 		},
 	}
@@ -118,17 +118,16 @@ func TestSpecForDocType_FilePathFallsBackToTypeName(t *testing.T) {
 	if spec.Title == "/tmp/my-project" {
 		t.Fatal("file path should not be used as PDF title")
 	}
-	if spec.Title != "设计文档" {
-		t.Fatalf("expected fallback to type name, got %q", spec.Title)
+	if spec.Title != spec.FileNamePrefix {
+		t.Fatalf("missing title should use the file prefix, got %q", spec.Title)
 	}
 
-	// Windows path
 	spec = specForDocType(DocTypeRequirements, `D:\workprj\aicoder`, "content", GeneratePDFOptions{})
 	if spec.Title == `D:\workprj\aicoder` {
 		t.Fatal("Windows path should not be used as PDF title")
 	}
-	if spec.Title != "需求文档" {
-		t.Fatalf("expected fallback to type name, got %q", spec.Title)
+	if spec.Title != "requirements" {
+		t.Fatalf("missing title should use the file prefix, got %q", spec.Title)
 	}
 
 	// Normal project name should still be used as title

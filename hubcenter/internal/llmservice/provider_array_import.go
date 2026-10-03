@@ -16,13 +16,13 @@ const (
 // ProviderArrayImport is one logical provider and the upstreams that belong to it.
 // Members share the array multiplier and token price.
 type ProviderArrayImport struct {
-	ID                       string                            `json:"id"`
-	Name                     string                            `json:"name"`
-	Timezone                 string                            `json:"timezone,omitempty"`
-	CreditMultiplier         float64                           `json:"credit_multiplier,omitempty"`
-	CreditMultiplierSchedule []llmpool.CreditMultiplierWindow  `json:"credit_multiplier_schedule,omitempty"`
-	TokenPricing             llmpool.TokenPricing              `json:"token_pricing,omitempty"`
-	Providers                []llmpool.ProviderConfig          `json:"providers"`
+	ID                       string                           `json:"id"`
+	Name                     string                           `json:"name"`
+	Timezone                 string                           `json:"timezone,omitempty"`
+	CreditMultiplier         float64                          `json:"credit_multiplier,omitempty"`
+	CreditMultiplierSchedule []llmpool.CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
+	TokenPricing             llmpool.TokenPricing             `json:"token_pricing,omitempty"`
+	Providers                []llmpool.ProviderConfig         `json:"providers"`
 }
 
 // ProviderArrayImportItemResult reports which members were created or updated.
@@ -40,8 +40,19 @@ type ProviderArrayImportResult struct {
 
 // ImportProviderArrays creates or updates providers and places them in the
 // named arrays. The write is all or nothing. An existing provider keeps its
-// paused flag and, when the payload omits api_key, its stored key.
+// paused flag and, when the payload omits api_key, its stored key. A new
+// member is created in service; pause and resume use PATCH enabled.
+// PreviewProviderArrays validates a batch and reports creates and updates
+// without writing.
+func (s *Service) PreviewProviderArrays(ctx context.Context, batch []ProviderArrayImport) (*ProviderArrayImportResult, error) {
+	return s.importProviderArrays(ctx, batch, true)
+}
+
 func (s *Service) ImportProviderArrays(ctx context.Context, batch []ProviderArrayImport) (*ProviderArrayImportResult, error) {
+	return s.importProviderArrays(ctx, batch, false)
+}
+
+func (s *Service) importProviderArrays(ctx context.Context, batch []ProviderArrayImport, dryRun bool) (*ProviderArrayImportResult, error) {
 	if s == nil {
 		return nil, fmt.Errorf("llm service is required")
 	}
@@ -81,6 +92,12 @@ func (s *Service) ImportProviderArrays(ctx context.Context, batch []ProviderArra
 			return nil, fmt.Errorf("duplicate array id %s", arrayID)
 		}
 		seenArrays[strings.ToLower(arrayID)] = struct{}{}
+		if strings.Contains(arrayID, "#") {
+			return nil, fmt.Errorf("arrays[%d] id %q cannot contain #", i, arrayID)
+		}
+		if err := validateProviderDefaultBilling(llmpool.ProviderConfig{TokenPricing: item.TokenPricing}); err != nil {
+			return nil, fmt.Errorf("arrays[%d]: %w", i, err)
+		}
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
 			name = strings.TrimSpace(item.Providers[0].Name)
@@ -105,8 +122,24 @@ func (s *Service) ImportProviderArrays(ctx context.Context, batch []ProviderArra
 				return nil, fmt.Errorf("provider %s is listed more than once (arrays %s and %s)", provider.ID, prev, arrayID)
 			}
 			seenProviders[strings.ToLower(provider.ID)] = arrayID
-			if strings.TrimSpace(provider.Protocol) == "" {
+			switch strings.ToLower(strings.TrimSpace(provider.Protocol)) {
+			case "", "openai":
 				provider.Protocol = "openai"
+			case "anthropic":
+				provider.Protocol = "anthropic"
+			default:
+				return nil, fmt.Errorf("arrays[%d].providers[%d] protocol must be openai or anthropic", i, pi)
+			}
+			if strings.Contains(provider.ID, "#") {
+				return nil, fmt.Errorf("arrays[%d].providers[%d] id %q cannot contain #", i, pi, provider.ID)
+			}
+			tagsSet := provider.CapabilityTags != nil
+			if tagsSet {
+				tags, err := NormalizeCapabilityTags(provider.CapabilityTags)
+				if err != nil {
+					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+				}
+				provider.CapabilityTags = tags
 			}
 			provider.ArrayID = arrayID
 			provider.ArrayIndependent = false
@@ -124,7 +157,7 @@ func (s *Service) ImportProviderArrays(ctx context.Context, batch []ProviderArra
 				if provider.Models == nil {
 					provider.Models = append([]string(nil), existing.Models...)
 				}
-				if provider.CapabilityTags == nil {
+				if !tagsSet {
 					provider.CapabilityTags = append([]string(nil), existing.CapabilityTags...)
 				}
 				provider = mergeUnspecifiedProviderFields(existing, provider)
@@ -136,6 +169,12 @@ func (s *Service) ImportProviderArrays(ctx context.Context, batch []ProviderArra
 					applyImportedArrayBilling(&provider, item)
 				}
 				provider.NormalizeBilling()
+				if err := validateProviderDefaultBilling(provider); err != nil {
+					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+				}
+				if err := validateMemberPolicy(&provider); err != nil {
+					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+				}
 				next.Providers[idx] = provider
 				row.Updated = append(row.Updated, provider.ID)
 				continue
@@ -144,18 +183,63 @@ func (s *Service) ImportProviderArrays(ctx context.Context, batch []ProviderArra
 				applyImportedArrayBilling(&provider, item)
 			}
 			provider.NormalizeBilling()
+			if err := validateProviderDefaultBilling(provider); err != nil {
+				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+			}
+			if err := validateMemberPolicy(&provider); err != nil {
+				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+			}
+			// Pause and resume go through PATCH enabled. A create must not
+			// arrive already paused because the body included "paused".
+			provider.Paused = false
 			next.Providers = append(next.Providers, provider)
 			row.Created = append(row.Created, provider.ID)
 		}
 		if err := applyImportedArrayRecord(next, arrayID, name, item, hasBilling); err != nil {
 			return nil, err
 		}
+		if arr := findProviderArray(next, arrayID); arr != nil {
+			if stored := strings.TrimSpace(arr.Name); stored != "" {
+				row.Name = stored
+			}
+		}
 		result.Arrays = append(result.Arrays, row)
+	}
+	if err := rejectImportedArrayIDCollisions(next, seenArrays); err != nil {
+		return nil, err
+	}
+	if dryRun {
+		return result, nil
 	}
 	if err := s.persistRegistry(ctx, next); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+func rejectImportedArrayIDCollisions(reg *Registry, arrayIDs map[string]struct{}) error {
+	if reg == nil {
+		return nil
+	}
+	for i := range reg.Providers {
+		provider := reg.Providers[i]
+		providerID := strings.TrimSpace(provider.ID)
+		if providerID == "" {
+			continue
+		}
+		if _, imported := arrayIDs[strings.ToLower(providerID)]; !imported {
+			continue
+		}
+		owner := strings.TrimSpace(provider.ArrayID)
+		if strings.EqualFold(owner, providerID) {
+			continue
+		}
+		if owner == "" {
+			owner = providerID
+		}
+		return fmt.Errorf("array id %s matches provider %s in array %s; include that provider in this array or choose another id", providerID, providerID, owner)
+	}
+	return nil
 }
 
 func providerArrayImportHasBilling(item ProviderArrayImport) bool {
@@ -178,10 +262,20 @@ func applyImportedArrayBilling(provider *llmpool.ProviderConfig, item ProviderAr
 func applyImportedArrayRecord(reg *Registry, arrayID, name string, item ProviderArrayImport, hasBilling bool) error {
 	arr := findProviderArray(reg, arrayID)
 	if arr == nil {
-		reg.ProviderArrays = append(reg.ProviderArrays, llmpool.ProviderArray{ID: arrayID, Name: name})
+		createdName := name
+		if canonical, ok := tokenBankArrayName(arrayID); ok {
+			createdName = canonical
+		}
+		reg.ProviderArrays = append(reg.ProviderArrays, llmpool.ProviderArray{ID: arrayID, Name: createdName})
 		arr = &reg.ProviderArrays[len(reg.ProviderArrays)-1]
 	}
-	if strings.TrimSpace(name) != "" {
+	// item.Name is what the request submitted. The caller substitutes the first
+	// provider's name when that field is empty, so a new ordinary array still
+	// has a label. An omitted name is not a rename of a platform array.
+	if err := rejectProtectedArrayRename(arr, item.Name); err != nil {
+		return err
+	}
+	if !providerArrayProtected(arr) && strings.TrimSpace(name) != "" {
 		arr.Name = name
 	}
 	if !hasBilling {

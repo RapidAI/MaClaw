@@ -615,6 +615,7 @@ func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
 			HasCodingSessions: false,
 		},
 		MemoryStore:      app.memoryStore,
+		MemoryOwnerID:    tuiDesktopMemoryOwner,
 		HasKnowledgeBase: app.knowledgeStore != nil,
 	}
 
@@ -1866,7 +1867,7 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 				agent.ConversationEntry{Role: "user", Content: text},
 				agent.ConversationEntry{Role: "assistant", Content: wfResp},
 			)
-			app.history.Save("tui-user", history)
+			app.history.Save("tui-user", agent.TrimHistory(history))
 			return views.ChatResponseMsg{Text: wfResp}
 		}
 
@@ -1966,7 +1967,7 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 				}
 			}
 		}
-		app.history.Save("tui-user", history)
+		app.history.Save("tui-user", agent.TrimHistory(history))
 
 		// --- Online incremental extraction (Mem0-style) ---
 		// Trigger asynchronously after each agent loop to extract salient
@@ -2044,31 +2045,59 @@ func (m *tuiModel) handleSimpleChatSend(text string) tea.Cmd {
 
 		history = append(history, agent.ConversationEntry{Role: "user", Content: text})
 		history = append(history, agent.ConversationEntry{Role: "assistant", Content: answer})
-		app.history.Save("tui-user", history)
+		app.history.Save("tui-user", agent.TrimHistory(history))
 		return views.ChatResponseMsg{Text: answer}
 	}
 }
 
 func simpleChatMessages(history []agent.ConversationEntry, text string) []interface{} {
 	const maxHistoryEntries = 20
+	prefix := contextHandoffPrefixLen(history)
 	start := 0
 	if len(history) > maxHistoryEntries {
 		start = len(history) - maxHistoryEntries
 	}
-	messages := make([]interface{}, 0, len(history)-start+1)
+	if start < prefix {
+		start = prefix
+	}
+	messages := make([]interface{}, 0, prefix+len(history)-start+1)
+	for _, entry := range history[:prefix] {
+		appendSimpleChatEntry(&messages, entry)
+	}
 	for _, entry := range history[start:] {
-		role := strings.TrimSpace(entry.Role)
-		if role != "user" && role != "assistant" && role != "system" {
-			continue
-		}
-		content, ok := entry.Content.(string)
-		if !ok || strings.TrimSpace(content) == "" {
-			continue
-		}
-		messages = append(messages, map[string]interface{}{"role": role, "content": content})
+		appendSimpleChatEntry(&messages, entry)
 	}
 	messages = append(messages, map[string]interface{}{"role": "user", "content": text})
 	return messages
+}
+
+func contextHandoffPrefixLen(history []agent.ConversationEntry) int {
+	if len(history) == 0 || history[0].Role != "user" {
+		return 0
+	}
+	text, ok := history[0].Content.(string)
+	if !ok || !strings.HasPrefix(strings.TrimSpace(text), "[上下文恢复]") {
+		return 0
+	}
+	if len(history) > 1 && history[1].Role == "assistant" {
+		ack, _ := history[1].Content.(string)
+		if strings.Contains(ack, "被省略的工作") {
+			return 2
+		}
+	}
+	return 1
+}
+
+func appendSimpleChatEntry(messages *[]interface{}, entry agent.ConversationEntry) {
+	role := strings.TrimSpace(entry.Role)
+	if role != "user" && role != "assistant" && role != "system" {
+		return
+	}
+	content, ok := entry.Content.(string)
+	if !ok || strings.TrimSpace(content) == "" {
+		return
+	}
+	*messages = append(*messages, map[string]interface{}{"role": role, "content": content})
 }
 
 // --- Skill / MCP async handlers ---
@@ -4006,6 +4035,9 @@ func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) s
 	return buildTuiBtwSystemPrompt(c.app, userText)
 }
 
+// tuiDesktopMemoryOwner matches the GUI desktop user. TUI and GUI share one store.
+const tuiDesktopMemoryOwner = "desktop-user"
+
 func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 	cfg := app.appConfig
 	lang := tuiConfigLang(cfg)
@@ -4023,7 +4055,7 @@ func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 	// Identity.
 	var selfIdentity string
 	if app.memoryStore != nil {
-		selfIdentity = app.memoryStore.SelfIdentitySummary(600)
+		selfIdentity = app.memoryStore.SelfIdentitySummaryForOwner(600, tuiDesktopMemoryOwner, false)
 	}
 	if selfIdentity != "" {
 		if lang == "en" {
@@ -4044,7 +4076,9 @@ func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 
 	// User fact summary.
 	if app.memoryStore != nil {
-		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(memory.UserFactTemplatePromptOptions(tuiBtwSectionFormat(lang, "userInfo"))))
+		factOpts := memory.UserFactTemplatePromptOptions(tuiBtwSectionFormat(lang, "userInfo"))
+		factOpts.OwnerID = tuiDesktopMemoryOwner
+		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(factOpts))
 	}
 
 	return b.String()

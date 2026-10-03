@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
 // RequiredNodeVersion 是项目要求的最低 Node.js 版本。
@@ -1109,8 +1111,9 @@ func (c MaclawLLMConfig) IsResponsesWebSocket() bool {
 // Design principle: the default should be large enough that truncation never
 // happens for models that support it, while relying on the binary-halving
 // downgrade (in stream.go) to auto-discover the actual limit for models that
-// reject the value. API providers charge by actual output consumed, not by
-// max_tokens requested, so over-requesting has zero cost impact.
+// reject the value. Hub admission reserves the worst case of this ceiling and
+// lowers both the hold and the forwarded max_tokens to the remaining balance,
+// so a high default does not block a request the wallet can still pay for.
 func (c MaclawLLMConfig) EffectiveMaxOutputTokens() int {
 	if c.MaxOutputTokens > 0 {
 		return c.MaxOutputTokens
@@ -1187,7 +1190,27 @@ func (c MaclawLLMConfig) UserAgent() string {
 }
 
 func (c MaclawLLMConfig) UpstreamModel() string {
-	return NormalizeCodeGenModelForURL(c.URL, c.Model)
+	model := NormalizeCodeGenModelForURL(c.URL, c.Model)
+	if shouldRewriteHubBand(c, model) {
+		if tier := llmpool.NormalizeOfficialTier(model); tier != "" {
+			model = tier
+		}
+	}
+	return model
+}
+
+// shouldRewriteHubBand reports a MaClaw 官方 request whose short name must
+// leave as official-low/mid/high. HubManaged alone is not enough: that flag
+// also marks first-party prompt handling on other providers.
+func shouldRewriteHubBand(c MaclawLLMConfig, model string) bool {
+	if IsHubManagedLLMEndpoint(c.URL, model) {
+		return true
+	}
+	if !c.HubManaged {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(c.ProviderName))
+	return strings.Contains(name, "maclaw")
 }
 
 func (c MaclawLLMConfig) NeedsConservativeOpenAICompatSanitization() bool {
@@ -1238,8 +1261,12 @@ func IsHubManagedLLMEndpoint(rawURL, model string) bool {
 	if !strings.Contains(text, "/api/llm/v1") {
 		return false
 	}
-	name := strings.ToLower(strings.TrimSpace(model))
-	return name == "" || name == "auto" || name == "default" || strings.HasPrefix(name, "official-")
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "", "auto", "default", "low", "mid", "high":
+		return true
+	default:
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "official-")
+	}
 }
 
 func IsQwenOpenAICompat(cfg MaclawLLMConfig) bool {

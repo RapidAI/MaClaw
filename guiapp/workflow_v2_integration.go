@@ -143,15 +143,15 @@ func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine) bool {
 }
 
 // workflowV2ConfirmClassifier uses LLM to classify user intent during workflow confirmation.
-// Retries once on transient errors (503/timeout) before falling back to keyword matching.
+// Retries once on transient errors. An unavailable classifier does not guess from wording.
 func (a *App) workflowV2ConfirmClassifier(phaseContext, userText string) string {
 	hubClient := a.hubClient()
 	if hubClient == nil {
-		return v2.ClassifyConfirmIntentKeyword(userText)
+		return ""
 	}
 	handler := hubClient.ensureIMHandler()
 	if handler == nil {
-		return v2.ClassifyConfirmIntentKeyword(userText)
+		return ""
 	}
 
 	req := LLMClassifyRequest{
@@ -177,15 +177,12 @@ func (a *App) workflowV2ConfirmClassifier(phaseContext, userText string) string 
 			time.Sleep(2 * time.Second)
 		}
 	}
-	if err != nil {
-		log.Printf("[workflow-v2] confirm classifier LLM failed after retry: %v, falling back to keywords", err)
-		return v2.ClassifyConfirmIntentKeyword(userText)
+	if err != nil || result == nil {
+		log.Printf("[workflow-v2] confirm classifier LLM failed after retry: %v", err)
+		return ""
 	}
 	intent := v2.ParseConfirmClassifierResponse(result.Text)
 	log.Printf("[workflow-v2] confirm classifier: text=%q → intent=%q (latency=%s)", userText, intent, result.Latency.Round(time.Millisecond))
-	if intent == "" {
-		return v2.ClassifyConfirmIntentKeyword(userText)
-	}
 	return intent
 }
 
@@ -518,6 +515,9 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		if resp := h.handleWorkflowReview(h.app.workflowEngine, msg.UserID, trimmed, msg.Platform); resp != nil {
 			return workflowIMRouteResult{Response: resp}
 		}
+		// A marker set above was armed by this review decision, including a
+		// repair loop that leaves the phase pending review. A stale marker was
+		// cleared when review handling began.
 		if marker, ok := h.workflowAgentLoopMarker.Load(msg.UserID); ok {
 			if enabled, _ := marker.(bool); enabled {
 				if _, promptOK := h.stashedPhasePrompt.Load(msg.UserID); !promptOK {
@@ -532,6 +532,11 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 					}
 				}
 				return workflowIMRouteResult{WorkflowAgentLoop: true}
+			}
+		}
+		if h.app.workflowEngine.IsAwaitingReview(msg.UserID) {
+			if barrier := h.reviewBarrierResponse(h.app.workflowEngine, msg.UserID); barrier != nil {
+				return workflowIMRouteResult{Response: barrier}
 			}
 		}
 	}
@@ -752,6 +757,11 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 			h.pendingCancelExecuteRequest.Store(msg.UserID, originalRequest)
 		}
 		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
+	case v2.ActionReviewPending:
+		if resp := h.workflowReviewBarrierFromState(hr.State); resp != nil {
+			return workflowIMRouteResult{Response: resp}
+		}
+		return workflowIMRouteResult{}
 	case v2.ActionPassThrough:
 		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
 	}

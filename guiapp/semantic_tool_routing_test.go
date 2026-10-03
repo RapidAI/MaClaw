@@ -2658,13 +2658,17 @@ func TestRoutingMissRecoverAndInjectionKeepPrivilegeStripped(t *testing.T) {
 		{"function": map[string]interface{}{"name": "download_file"}},
 	}
 	restored, _, _ := h.restoreToolsAfterSkillRecover("user-1", ctx, leaky, agentLoopPhase{})
-	augmented, _ := h.finalizeInjectionAugmentedTools(ctx, "user-1", leaky)
+	augmented, _ := h.finalizeInjectionAugmentedTools(ctx, "user-1", leaky, agentLoopPhase{})
 	for _, got := range [][]map[string]interface{}{restored, augmented} {
+		names := make(map[string]bool, len(got))
 		for _, def := range got {
-			switch extractToolName(def) {
-			case "edit_file", "download_file":
-				t.Fatalf("leftover rebuild must not restore %s", extractToolName(def))
-			}
+			names[extractToolName(def)] = true
+		}
+		if names["download_file"] {
+			t.Fatalf("leftover rebuild must not restore download_file: %#v", got)
+		}
+		if !names["edit_file"] {
+			t.Fatalf("leftover rebuild must keep the edit_file floor: %#v", got)
 		}
 	}
 }
@@ -2722,9 +2726,9 @@ func TestRoutingMissLeftoverDropsPrivilegeAndGovernedGenerate(t *testing.T) {
 			t.Fatalf("routing miss must not expand privilege with %s", name)
 		}
 	}
-	// bash and write_file are the guaranteed basic capability floor: a
-	// routing-miss leftover turn must keep them so basic functionality
-	// survives a degraded or offline planner.
+	// bash, write_file and edit_file are the guaranteed basic capability
+	// floor: a routing-miss leftover turn must keep them so the assistant
+	// can still run a command or change a file after a degraded planner.
 	for _, name := range []string{"read_file", "web_fetch", "bash", "write_file"} {
 		if !names[name] {
 			t.Fatalf("routing miss must keep basic-floor tool %s: %v", name, names)
@@ -2918,13 +2922,18 @@ func TestRoutingMissUnknownIntentStillBoundsLeftover(t *testing.T) {
 		[]map[string]interface{}{
 			{"function": map[string]interface{}{"name": "memory"}},
 			{"function": map[string]interface{}{"name": "edit_file"}},
+			{"function": map[string]interface{}{"name": "edit_lines"}},
 		},
 		nil,
 		nil,
 		ctx,
 	)
-	if len(got) != 1 || extractToolName(got[0]) != "memory" {
-		t.Fatalf("unknown leftover must drop edit_file, got %#v", got)
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[extractToolName(def)] = true
+	}
+	if !names["memory"] || !names["edit_file"] || names["edit_lines"] {
+		t.Fatalf("unknown leftover must keep edit_file and drop edit_lines, got %#v", got)
 	}
 }
 
@@ -2988,15 +2997,15 @@ func TestRoutingMissNilIntentStillBoundsLeftover(t *testing.T) {
 	for _, def := range got {
 		names[extractToolName(def)] = true
 	}
-	// bash/write_file are the guaranteed basic floor and survive a nil-intent
-	// miss; editors and governed publishers still do not leak.
-	for _, name := range []string{"memory", "bash", "write_file"} {
+	// bash/write_file/edit_file are the guaranteed basic floor and survive a
+	// nil-intent miss; governed publishers still do not leak.
+	for _, name := range []string{"memory", "bash", "write_file", "edit_file"} {
 		if !names[name] {
 			t.Fatalf("nil-intent leftover must keep basic-floor %s, got %#v", name, got)
 		}
 	}
-	if names["edit_file"] || names["generate_pdf"] {
-		t.Fatalf("nil-intent leftover must drop edit_file/generate_pdf, got %#v", got)
+	if names["generate_pdf"] {
+		t.Fatalf("nil-intent leftover must drop generate_pdf, got %#v", got)
 	}
 }
 
@@ -3041,13 +3050,18 @@ func TestRoutingMissChatProjectionAlsoStripsPrivilege(t *testing.T) {
 		[]map[string]interface{}{
 			{"function": map[string]interface{}{"name": "memory"}},
 			{"function": map[string]interface{}{"name": "edit_file"}},
+			{"function": map[string]interface{}{"name": "download_file"}},
 		},
 		nil,
 		nil,
 		ctx,
 	)
-	if len(got) != 1 || extractToolName(got[0]) != "memory" {
-		t.Fatalf("chat leftover must drop edit_file, got %#v", got)
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[extractToolName(def)] = true
+	}
+	if !names["memory"] || !names["edit_file"] || names["download_file"] {
+		t.Fatalf("chat leftover must keep edit_file and drop download_file, got %#v", got)
 	}
 }
 

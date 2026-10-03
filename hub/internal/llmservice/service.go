@@ -971,6 +971,12 @@ func hasActiveWindowGrantForOwnerGroup(reg *Registry, owner userAccountRef, serv
 		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
 			continue
 		}
+		// Token-bank quota is permanent and runs beside card windows. It is not
+		// the service window a queued point card was stacked behind, so it must
+		// not pull a scheduled card forward to now.
+		if strings.EqualFold(strings.TrimSpace(grant.Source), TokenBankGrantSource) {
+			continue
+		}
 		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
@@ -999,7 +1005,10 @@ func nextGrantStart(reg *Registry, owner userAccountRef, serviceGroupID string, 
 			continue
 		}
 		// Track the latest expiry among active grants for queuing.
-		if g.ExpiresAt.After(latestActiveExpiry) {
+		// A token-bank grant stores year 9999 so the quota stays valid. That
+		// sentinel is not a service window: queuing a duration card, welcome
+		// credit, or invitation after it would leave the new grant unusable.
+		if !strings.EqualFold(strings.TrimSpace(g.Source), TokenBankGrantSource) && g.ExpiresAt.After(latestActiveExpiry) {
 			latestActiveExpiry = g.ExpiresAt
 		}
 		if !hasActiveWithCredits {
@@ -1219,7 +1228,8 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 			continue
 		}
 		for _, model := range group.Models {
-			if model.Name == "" || len(model.ProviderIDs) == 0 {
+			providerIDs := effectiveModelProviderIDs(&model)
+			if model.Name == "" || len(providerIDs) == 0 {
 				continue
 			}
 			idx, ok := modelIndex[strings.ToLower(model.Name)]
@@ -1231,6 +1241,7 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 					Priority:                      model.Priority,
 					ResolutionTier:                model.ResolutionTier,
 					CreditMultiplier:              normalizeCreditMultiplier(model.CreditMultiplier),
+					BillingMultiplier:             llmpool.CapabilityBillingMultiplier(model.Name, model.BillingMultiplier),
 					ProviderCapabilityTags:        map[string][]string{},
 					ProviderPriorities:            map[string]int{},
 					ProviderResolutionTiers:       map[string]int{},
@@ -1246,7 +1257,7 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 				idx = len(models) - 1
 				modelIndex[strings.ToLower(model.Name)] = idx
 			}
-			for _, providerID := range model.ProviderIDs {
+			for _, providerID := range providerIDs {
 				cfg, ok := model.providerConfigByID(providerID)
 				if !ok {
 					cfg = ModelServiceProviderConfig{
@@ -1589,11 +1600,16 @@ func grantNewUserLimitCardForRegistry(ctx context.Context, system SystemSettings
 // left unchanged. Status/account reads use this so recharge-card holders see the
 // overlay without a separate admin issuance.
 func EnsureNewUserLimitCardForUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) (bool, error) {
-	reg, err := LoadRegistry(ctx, system)
-	if err != nil {
-		return false, err
-	}
-	return ensureNewUserLimitCardForRegistry(ctx, system, reg, userID, email)
+	var issued bool
+	err := WithServiceRegistryMutation(func() error {
+		reg, err := LoadRegistry(ctx, system)
+		if err != nil {
+			return err
+		}
+		issued, err = ensureNewUserLimitCardForRegistry(ctx, system, reg, userID, email)
+		return err
+	})
+	return issued, err
 }
 
 func ensureNewUserLimitCardForRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry, userID, email string) (bool, error) {
@@ -2490,8 +2506,9 @@ func EstimateCreditsWithFloor(tokens int64, multiplier float64, tokensPerCredit 
 	return credits
 }
 
-// BillingGroupMultiplier resolves the only multiplier that may affect a user
-// credit charge. Provider/model CreditMultiplier remains a dispatch concern.
+// BillingGroupMultiplier resolves the service-group price multiplier.
+// Provider/model CreditMultiplier remains a dispatch concern. Capability
+// bands add a separate coefficient via CapabilityBillingMultiplierForGroups.
 func BillingGroupMultiplier(reg *Registry, serviceGroupIDs []string) float64 {
 	if reg == nil {
 		return 1
@@ -2507,6 +2524,45 @@ func BillingGroupMultiplier(reg *Registry, serviceGroupIDs []string) float64 {
 		return 1
 	}
 	return 1
+}
+
+// CapabilityBillingMultiplierForGroups is the fee coefficient for the model
+// the user selected. Unset bands use auto=1, low=0.5, mid=1, high=2.
+func CapabilityBillingMultiplierForGroups(reg *Registry, serviceGroupIDs []string, clientModel string) float64 {
+	canon := llmpool.CanonicalClientModel(clientModel)
+	if reg != nil {
+		if configured, ok := storedCapabilityMultiplier(reg, serviceGroupIDs, clientModel, true); ok {
+			return llmpool.CapabilityBillingMultiplier(canon, configured)
+		}
+		if configured, ok := storedCapabilityMultiplier(reg, serviceGroupIDs, canon, false); ok {
+			return llmpool.CapabilityBillingMultiplier(canon, configured)
+		}
+	}
+	return llmpool.CapabilityBillingMultiplier(canon, 0)
+}
+
+func storedCapabilityMultiplier(reg *Registry, serviceGroupIDs []string, want string, exact bool) (float64, bool) {
+	want = strings.TrimSpace(want)
+	if reg == nil || want == "" {
+		return 0, false
+	}
+	for _, id := range serviceGroupIDs {
+		group := reg.FindModelServiceGroup(id)
+		if group == nil {
+			continue
+		}
+		for _, model := range group.Models {
+			name := strings.TrimSpace(model.Name)
+			matched := exact && strings.EqualFold(name, want)
+			if !exact {
+				matched = llmpool.CanonicalClientModel(name) == llmpool.CanonicalClientModel(want)
+			}
+			if matched {
+				return model.BillingMultiplier, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // ResolveTokenPricingForProvider returns the model-route pricing configured
@@ -3211,6 +3267,26 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 	for _, id := range serviceGroupIDs {
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
+	total := spendableGrantCredits(reg, owner, serviceGroupSet, now)
+	// Holds are not grant usage. They only reduce admission availability until
+	// actual usage is finalized or the hold expires/releases.
+	if total > 0 {
+		total -= reservedBillingCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
+		if total < 0 {
+			total = 0
+		}
+	}
+	return roundCredits(total)
+}
+
+// spendableGrantCredits is the owner's remaining grant balance on the selected
+// groups before in-flight holds. Admission subtracts holds from this number.
+// A background decision that should wait until credits are actually consumed
+// uses the result directly.
+func spendableGrantCredits(reg *Registry, owner userAccountRef, serviceGroupSet map[string]struct{}, now time.Time) float64 {
+	if reg == nil || owner.empty() || len(serviceGroupSet) == 0 {
+		return 0
+	}
 	limitCardGroupSet := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, serviceGroupSet, now)
 	total := 0.0
 	seenLimitCardGroups := map[string]struct{}{}
@@ -3242,15 +3318,7 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 		}
 		total += availableGrantCredits(grant, now)
 	}
-	// Holds are not grant usage. They only reduce admission availability until
-	// actual usage is finalized or the hold expires/releases.
-	if total > 0 {
-		total -= reservedBillingCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
-		if total < 0 {
-			total = 0
-		}
-	}
-	return roundCredits(total)
+	return total
 }
 
 func hasEarlyStartableUnmeteredUnlimitedGrant(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {

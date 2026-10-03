@@ -20,6 +20,9 @@ export const EVENT_PROJECT_INDEX_CHANGED = "project-index:changed";
 /** Backend needs a share-link password before joining a cloud workspace. Payload: {url:string}. */
 export const EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD = "cloud-workspace-share:password";
 
+/** A maclaw://credit/<code> launch. Payload: {code:string}. */
+export const EVENT_TOKEN_BANK_CREDIT = "token-bank-credit";
+
 /** Backend asks the desktop UI to present a custom confirm dialog. */
 export const EVENT_SHOW_CONFIRM = "show-confirm";
 

@@ -20,6 +20,15 @@ func TestNormalizeAllowedNodeIDs(t *testing.T) {
 	}
 }
 
+func TestParseAllowedNodeList(t *testing.T) {
+	t.Parallel()
+	got := ParseAllowedNodeList(" hc-1, hc-2,hc-3 ； hc-1 ")
+	want := []string{"hc-1", "hc-2", "hc-3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseAllowedNodeList() = %#v, want %#v", got, want)
+	}
+}
+
 func TestProviderAllowedOnNode(t *testing.T) {
 	t.Parallel()
 	all := ProviderConfig{ID: "openai"}

@@ -446,7 +446,7 @@ func (ie *InferenceEngine) findFacts(
 // factAllowed checks visibility constraints (owner, project, temporal, status).
 func (ie *InferenceEngine) factAllowed(fact SemanticFact, ownerID, projectLower string, now time.Time) bool {
 	// Owner isolation.
-	if ownerID != "" && fact.OwnerID != "" && fact.OwnerID != ownerID {
+	if !namedOwnerVisible(fact.OwnerID, ownerID) {
 		return false
 	}
 	// Project scope.

@@ -87,8 +87,6 @@ func (h *IMMessageHandler) updateTaskIdentityAnchorFromUserText(userID, userText
 				anchor.OriginalRequest = current
 			}
 		case isTaskAnchorContinuationText(userText):
-			// Restarted tabs send "继续改进 ppt" first. Recover the original
-			// request from history; do not scan history for weather/casual turns.
 			anchor.OriginalRequest = h.recoverOriginalTaskRequest(userID)
 		}
 	}
@@ -427,7 +425,7 @@ func firstSubstantiveTaskRequest(entries []agent.ConversationEntry) string {
 
 func isSubstantiveTaskRequest(text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "[系统]") || isTaskAnchorContinuationText(text) || isTaskAnchorGreetingText(text) {
+	if text == "" || strings.HasPrefix(text, "[系统]") || isTaskAnchorContinuationText(text) {
 		return false
 	}
 	if extractTaskAnchorSubject(text) != "" || len(extractTaskAnchorSourcePaths(text)) > 0 {
@@ -440,65 +438,8 @@ func isSubstantiveTaskRequest(text string) bool {
 	return false
 }
 
-func compactSocialUtterance(text string) string {
-	compact := strings.ToLower(strings.TrimSpace(text))
-	return strings.NewReplacer(
-		"！", "", "!", "",
-		"。", "", ".", "",
-		"？", "", "?", "",
-		"，", "", ",", "",
-		"、", "",
-		"～", "", "~", "",
-		"…", "",
-		" ", "", "　", "",
-	).Replace(compact)
-}
-
-func isTaskAnchorGreetingText(text string) bool {
-	compact := compactSocialUtterance(text)
-	switch compact {
-	case "你好", "您好", "哈喽", "嗨", "在吗", "在么", "在不在",
-		"早上好", "下午好", "晚上好", "早安", "晚安", "早",
-		"hello", "hi", "hey", "hola",
-		"goodmorning", "goodafternoon", "goodevening":
-		return true
-	}
-	// "你好啊" / "hi there" is still a greeting. "你好，帮我改周报" is not:
-	// the remainder has to be only a social particle.
-	for _, base := range []string{"你好", "您好", "哈喽", "嗨", "早上好", "下午好", "晚上好", "hello", "hi", "hey"} {
-		if !strings.HasPrefix(compact, base) || len(compact) == len(base) {
-			continue
-		}
-		switch compact[len(base):] {
-		case "啊", "呀", "哦", "哟", "哈", "呢", "哇", "啦", "there", "ya":
-			return true
-		}
-	}
-	return false
-}
-
 func isTaskAnchorContinuationText(text string) bool {
-	if hasTaskAnchorTopicSignal(text) {
-		return false
-	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	if compact == "" {
-		return true
-	}
-	cues := []string{
-		"继续改进", "继续改", "继续做", "忘掉前面", "不用管前面", "忽略前面",
-		"太朴素", "更新云端", "需要专业风格", "ppt需要",
-	}
-	for _, cue := range cues {
-		if strings.Contains(compact, strings.ReplaceAll(cue, " ", "")) && utf8RuneCount(text) <= 80 {
-			return true
-		}
-	}
-	switch compact {
-	case "继续", "continue", "goon":
-		return true
-	}
-	return false
+	return strings.TrimSpace(text) == ""
 }
 
 func hasTaskAnchorTopicSignal(text string) bool {

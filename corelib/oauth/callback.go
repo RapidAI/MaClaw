@@ -2,10 +2,14 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -106,7 +110,7 @@ func (s *CallbackServer) WaitForCodeCtx(ctx context.Context) (string, error) {
 	case err := <-s.errCh:
 		return "", err
 	case <-ctx.Done():
-		return "", fmt.Errorf("oauth cancelled")
+		return "", oauthWaitErr(ctx)
 	}
 }
 
@@ -120,8 +124,15 @@ func (s *CallbackServer) WaitForCallbackCtx(ctx context.Context) (code, state st
 	case err := <-s.errCh:
 		return "", "", err
 	case <-ctx.Done():
-		return "", "", fmt.Errorf("oauth cancelled")
+		return "", "", oauthWaitErr(ctx)
 	}
+}
+
+func oauthWaitErr(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("timed out waiting for authorization")
+	}
+	return fmt.Errorf("oauth cancelled")
 }
 
 // Stop 关闭 HTTP 服务器并释放端口。
@@ -140,7 +151,11 @@ func writeOAuthCORS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	allowHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
+	if allowHeaders == "" {
+		allowHeaders = "Content-Type, Authorization"
+	}
+	w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
 	w.Header().Set("Access-Control-Allow-Private-Network", "true")
 	w.Header().Set("Vary", "Origin")
 }
@@ -165,15 +180,28 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 	}
 
 	code := r.FormValue("code")
+	state := r.FormValue("state")
+	if code == "" && r.Body != nil && strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "json") {
+		var payload struct {
+			Code  string `json:"code"`
+			State string `json:"state"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
+		if json.Unmarshal(body, &payload) == nil {
+			code = strings.TrimSpace(payload.Code)
+			if state == "" {
+				state = strings.TrimSpace(payload.State)
+			}
+		}
+	}
 	if code == "" {
-		// Probes / CORS preflights from the IdP page must not abort the wait.
+		// Probes from the IdP page must not abort the wait.
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, successHTML)
-	state := r.FormValue("state")
 	select {
 	case s.codeCh <- code:
 	default:

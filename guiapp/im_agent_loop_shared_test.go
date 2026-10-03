@@ -1480,7 +1480,7 @@ func TestLocalFileWorkFenceSurvivesToolRecoveryAndAugmentation(t *testing.T) {
 		t.Fatalf("recovery bypassed local-file Computer Use fence: %#v", restoredNames)
 	}
 
-	augmented, _ := h.finalizeInjectionAugmentedTools(ctx, "desktop-user:local-file-recovery", h.getTools())
+	augmented, _ := h.finalizeInjectionAugmentedTools(ctx, "desktop-user:local-file-recovery", h.getTools(), agentLoopPhase{})
 	augmentedNames := toolNameSetForWorkflowFilterTest(augmented)
 	if augmentedNames["computer_observe"] || augmentedNames["computer_click"] || !augmentedNames["read_file"] {
 		t.Fatalf("augmentation bypassed local-file Computer Use fence: %#v", augmentedNames)

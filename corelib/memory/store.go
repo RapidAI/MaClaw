@@ -23,29 +23,32 @@ import (
 
 // Store provides persistent long-term memory storage.
 type Store struct {
-	mu               sync.RWMutex
-	entries          []Entry
-	contentHashIdx   map[string]int // ContentHash -> index in entries for O(1) dedup lookup
-	path             string
-	dirty            bool
-	dirtyGen         uint64
-	saveCh           chan struct{}
-	stopCh           chan struct{}
-	stopOnce         sync.Once
-	maxItems         int
-	bm25             *bm25Index
-	vecIndex         *vectorIndex
-	graph            *memoryGraph
-	embedder         embedding.Embedder // nil until SetEmbedder is called
-	embedderGen      uint64             // increments whenever SetEmbedder changes the embedder
-	archive          *ArchiveStore      // cold storage for evicted entries
-	tmt              *TemporalTree
-	gating           *RecallGating
-	partMgr          *partitionManager            // category-based partitioned persistence
-	lastSemanticHits map[string]SemanticSearchHit // debug: last semantic recall explanation by entry ID
-	lastDerivedFacts []DerivedFact                // debug: last inference engine results
-	lastRecallTrace  RecallTrace                  // debug: last RecallDynamic retrieval signals
-	eventSink        lifecycle.EventSink          // shared experience lifecycle sink
+	mu                  sync.RWMutex
+	entries             []Entry
+	contentHashIdx      map[string]int // contentHashIndexKey(hash, owner) -> index; owners do not share a slot
+	path                string
+	dirty               bool
+	dirtyGen            uint64
+	saveCh              chan struct{}
+	stopCh              chan struct{}
+	stopOnce            sync.Once
+	maxItems            int
+	bm25                *bm25Index
+	vecIndex            *vectorIndex
+	graph               *memoryGraph
+	embedder            embedding.Embedder // nil until SetEmbedder is called
+	embedderGen         uint64             // increments whenever SetEmbedder changes the embedder
+	archive             *ArchiveStore      // cold storage for evicted entries
+	tmt                 *TemporalTree
+	gating              *RecallGating
+	partMgr             *partitionManager                       // category-based partitioned persistence
+	lastSemanticHits    map[string]SemanticSearchHit            // debug: latest semantic recall explanation by entry ID
+	lastDerivedFacts    []DerivedFact                           // debug: latest inference engine results
+	semanticHitsByOwner map[string]map[string]SemanticSearchHit // semantic hits for each owner
+	derivedFactsByOwner map[string][]DerivedFact                // derived facts for each owner; empty owner is its own slot
+	lastRecallTrace     RecallTrace                             // debug: latest RecallDynamic retrieval signals
+	recallTraceByOwner  map[string]RecallTrace                  // latest trace for each owner; empty owner is its own slot
+	eventSink           lifecycle.EventSink                     // shared experience lifecycle sink
 
 	// --- Project index ---
 	projIndex     *ProjectIndex  // aggregated project metadata for search
@@ -111,26 +114,95 @@ func (s *Store) SetExperienceEventSink(sink lifecycle.EventSink) {
 
 // rebuildContentHashIdx rebuilds the O(1) ContentHash lookup index from entries.
 // Must be called with s.mu held (write lock).
+func contentHashIndexKey(hash, ownerID string) string {
+	if hash == "" {
+		return ""
+	}
+	return hash + "\x00" + strings.TrimSpace(ownerID)
+}
+
+func memoryOwnersEqual(a, b string) bool {
+	return strings.TrimSpace(a) == strings.TrimSpace(b)
+}
+
+// namedOwnerVisible is the non-strict owner rule. An empty filter sees every
+// row. A named filter sees its own rows and legacy empty-owner rows.
+func namedOwnerVisible(entryOwner, filterOwner string) bool {
+	filterOwner = strings.TrimSpace(filterOwner)
+	if filterOwner == "" {
+		return true
+	}
+	entryOwner = strings.TrimSpace(entryOwner)
+	return entryOwner == "" || entryOwner == filterOwner
+}
+
 func (s *Store) rebuildContentHashIdx() {
 	idx := make(map[string]int, len(s.entries))
 	for i, e := range s.entries {
-		if e.ContentHash != "" {
-			idx[e.ContentHash] = i
+		key := contentHashIndexKey(e.ContentHash, e.OwnerID)
+		if key == "" {
+			continue
 		}
+		if prev, ok := idx[key]; ok && !hashIndexShouldReplace(s.entries, prev, i) {
+			continue
+		}
+		idx[key] = i
 	}
 	s.contentHashIdx = idx
 }
 
-// contentHashIdxAdd adds or updates a hash->index mapping. Must be called
-// with s.mu held.
-func (s *Store) contentHashIdxAdd(hash string, index int) {
-	if hash == "" {
+// contentHashIdxAdd adds or updates a hash+owner index mapping. Must be called
+// with s.mu held. Identical content for a different owner keeps its own slot.
+func (s *Store) contentHashIdxAdd(hash, ownerID string, index int) {
+	key := contentHashIndexKey(hash, ownerID)
+	if key == "" {
 		return
 	}
 	if s.contentHashIdx == nil {
 		s.contentHashIdx = make(map[string]int)
 	}
-	s.contentHashIdx[hash] = index
+	if prev, ok := s.contentHashIdx[key]; ok && !hashIndexShouldReplace(s.entries, prev, index) {
+		return
+	}
+	s.contentHashIdx[key] = index
+}
+
+// hashIndexShouldReplace keeps an active row ahead of a later inactive copy.
+func hashIndexShouldReplace(entries []Entry, prev, next int) bool {
+	if prev < 0 || prev >= len(entries) {
+		return true
+	}
+	if next < 0 || next >= len(entries) {
+		return false
+	}
+	return !(entries[prev].IsActive() && !entries[next].IsActive())
+}
+
+// lookupContentHashLocked returns the entry index for this exact owner and
+// content hash. A shared (empty) owner does not match a named owner.
+// Caller must hold s.mu.
+func (s *Store) lookupContentHashLocked(hash, ownerID string) int {
+	if s.contentHashIdx == nil {
+		return -1
+	}
+	idx, ok := s.contentHashIdx[contentHashIndexKey(hash, ownerID)]
+	if !ok || idx < 0 || idx >= len(s.entries) {
+		return -1
+	}
+	existing := s.entries[idx]
+	if existing.ContentHash != hash || !memoryOwnersEqual(existing.OwnerID, ownerID) {
+		return -1
+	}
+	if existing.IsActive() {
+		return idx
+	}
+	for i := range s.entries {
+		other := s.entries[i]
+		if other.IsActive() && other.ContentHash == hash && memoryOwnersEqual(other.OwnerID, ownerID) {
+			return i
+		}
+	}
+	return -1
 }
 
 // Paginator returns the store's CursorPaginator for cursor-based pagination.
@@ -312,24 +384,6 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		ctxExpanded := ExpandQuery(contextHint)
 		if len(ctxExpanded.Entities) > 0 {
 			entry.Tags = mergeTags(entry.Tags, ctxExpanded.Entities)
-			// Register aliases: each entity from contextHint is a potential alias
-			// for other entities in the same context. This bridges the write-recall
-			// semantic gap (e.g., user says "4090服务器" in context while saving
-			// entry about "api.rapidai.tech").
-			if s.aliasIndex != nil && len(ctxExpanded.Entities) > 1 {
-				for _, entity := range ctxExpanded.Entities {
-					// Register this entity with all other entities as aliases.
-					var others []string
-					for _, other := range ctxExpanded.Entities {
-						if normalize(other) != normalize(entity) {
-							others = append(others, other)
-						}
-					}
-					if len(others) > 0 {
-						s.aliasIndex.Register(entity, others)
-					}
-				}
-			}
 		}
 	}
 
@@ -371,89 +425,49 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 
 	now := time.Now()
 
-	// Idempotent: check by content hash using O(1) index lookup.
-	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
-	s.mu.RLock()
-	if idx, exists := s.contentHashIdx[hash]; exists && idx < len(s.entries) {
-		existingOwner := s.entries[idx].OwnerID
-		ownerOK := entry.OwnerID == "" || existingOwner == "" || existingOwner == entry.OwnerID
-		if ownerOK {
-			updated := s.entries[idx]
-			updated.UpdatedAt = now
-			updated.AccessCount++
-			updated.Tags = mergeTags(updated.Tags, entry.Tags)
-			updated.Entities = mergeStringSlice(updated.Entities, entry.Entities)
-			if updated.ContentHash == "" {
-				updated.ContentHash = hash
-			}
-			s.mu.RUnlock()
-			if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
-				return fmt.Errorf("memory_store: persist updated entry: %w", err)
-			}
-			return nil
+	// Dedup lookup and insert share one write lock so two identical saves cannot
+	// both miss the index and insert. An empty OwnerID matches only other empty
+	// owners; it does not absorb or update a named owner's entry.
+	s.mu.Lock()
+	if idx := s.lookupContentHashLocked(hash, entry.OwnerID); idx >= 0 {
+		updated := s.touchedDuplicateLocked(idx, entry, hash, now, false)
+		s.mu.Unlock()
+		if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
+			return fmt.Errorf("memory_store: persist updated entry: %w", err)
 		}
+		return nil
 	}
-	// Fallback: also check by Content equality for entries with empty ContentHash.
-	// This handles legacy entries that were saved before hashing was introduced.
 	for i := range s.entries {
-		if s.entries[i].ContentHash == "" && s.entries[i].Content == entry.Content {
-			existingOwner := s.entries[i].OwnerID
-			if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
-				continue
-			}
-			updated := s.entries[i]
-			updated.UpdatedAt = now
-			updated.AccessCount++
-			updated.Tags = mergeTags(updated.Tags, entry.Tags)
-			updated.Entities = mergeStringSlice(updated.Entities, entry.Entities)
-			if updated.ContentHash == "" {
-				updated.ContentHash = hash
-			}
-			s.mu.RUnlock()
-			if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
-				return fmt.Errorf("memory_store: persist updated entry: %w", err)
-			}
-			return nil
+		if !s.entries[i].IsActive() || s.entries[i].ContentHash != "" || s.entries[i].Content != entry.Content {
+			continue
 		}
+		if !memoryOwnersEqual(s.entries[i].OwnerID, entry.OwnerID) {
+			continue
+		}
+		updated := s.touchedDuplicateLocked(i, entry, hash, now, false)
+		s.mu.Unlock()
+		if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
+			return fmt.Errorf("memory_store: persist updated entry: %w", err)
+		}
+		return nil
 	}
-	s.mu.RUnlock()
-
-	// Substring dedup: check if the new content is a substring of (or contains)
-	// a recent existing entry. This catches semantically duplicate entries that
-	// differ in wording (e.g. KnowledgeExtractor extracts similar knowledge
-	// points across sessions). Only scan the most recent 50 entries to bound
-	// write latency. When a match is found, merge tags into the existing entry
-	// instead of creating a duplicate.
-	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
-	s.mu.RLock()
 	if substringDupIdx := s.findSubstringDuplicateForEntry(entry); substringDupIdx >= 0 {
 		updated := s.entries[substringDupIdx]
-		updated.UpdatedAt = now
-		updated.AccessCount++
-		updated.Tags = mergeTags(updated.Tags, entry.Tags)
-		updated.Entities = mergeStringSlice(updated.Entities, entry.Entities)
-		// If the new content is a superset (contains the existing content),
-		// update to the longer version to preserve more information.
 		existingLen := len([]rune(updated.Content))
 		newLen := len([]rune(entry.Content))
-		if newLen > existingLen {
-			updated.Content = entry.Content
-			updated.CompactForm = ""
-			updated.ContentHash = hash
-			if len(entry.Embedding) > 0 {
-				updated.Embedding = append([]float32(nil), entry.Embedding...)
-			}
-		}
-		s.mu.RUnlock()
+		contentReplaced := newLen > existingLen
+		updated = s.touchedDuplicateLocked(substringDupIdx, entry, hash, now, contentReplaced)
+		mergedID := updated.ID
+		s.mu.Unlock()
 		if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 			return fmt.Errorf("memory_store: persist merged duplicate: %w", err)
 		}
-		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", updated.ID, newLen > existingLen)
+		if contentReplaced {
+			s.scheduleStoredEntryEmbedding(mergedID)
+		}
+		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", mergedID, contentReplaced)
 		return nil
 	}
-	s.mu.RUnlock()
-
-	s.mu.Lock()
 	err := s.insertPreparedEntryLocked(entry, hash, now, true)
 	s.mu.Unlock()
 	if err != nil {
@@ -557,21 +571,27 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 	}
 
 	s.mu.RLock()
-	duplicateID := ""
 	var updated Entry
 	found := false
 	for _, e := range s.entries {
-		if e.ID != id && e.Content == content {
-			duplicateID = e.ID
+		if e.ID == id {
+			updated = e
+			found = true
 			break
 		}
 	}
-
-	if duplicateID == "" {
+	duplicateID := ""
+	if found {
+		wanted := strings.TrimSpace(content)
 		for _, e := range s.entries {
-			if e.ID == id {
-				updated = e
-				found = true
+			if e.ID == id || !e.IsActive() || !memoryOwnersEqual(e.OwnerID, updated.OwnerID) {
+				continue
+			}
+			if category != "" && MapToCanonical(e.Category) != MapToCanonical(category) {
+				continue
+			}
+			if strings.TrimSpace(e.Content) == wanted {
+				duplicateID = e.ID
 				break
 			}
 		}
@@ -583,6 +603,11 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 	if !found {
 		return fmt.Errorf("memory_store: entry %q not found", id)
 	}
+	contentChanged := strings.TrimSpace(updated.Content) != strings.TrimSpace(content)
+	if contentChanged {
+		updated.InvalidAt = nil
+		updated.Embedding = nil
+	}
 	updated.Content = content
 	updated.Category = category
 	updated.Tags = append([]string(nil), tags...)
@@ -591,6 +616,9 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 	updated.Stale = false // content just updated, clear stale flag
 	if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 		return fmt.Errorf("memory_store: persist updated entry: %w", err)
+	}
+	if contentChanged {
+		s.scheduleStoredEntryEmbedding(id)
 	}
 	return nil
 }
@@ -854,10 +882,10 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 	for i, idx := range indices {
 		if idx < 0 {
 			s.entries = append(s.entries, updated[i])
-			s.contentHashIdxAdd(updated[i].ContentHash, len(s.entries)-1)
+			s.contentHashIdxAdd(updated[i].ContentHash, updated[i].OwnerID, len(s.entries)-1)
 		} else {
 			s.entries[idx] = updated[i]
-			s.contentHashIdxAdd(updated[i].ContentHash, idx)
+			s.contentHashIdxAdd(updated[i].ContentHash, updated[i].OwnerID, idx)
 		}
 	}
 	s.bumpEntriesGen()
@@ -905,7 +933,7 @@ func (s *Store) List(category Category, keyword string) []Entry {
 	kw := strings.ToLower(keyword)
 	var result []Entry
 	for _, e := range s.entries {
-		if category != "" && e.Category != category {
+		if !entryCategorySelected(e.Category, category) {
 			continue
 		}
 		if kw != "" && !containsKeyword(e, kw) {
@@ -954,6 +982,9 @@ func (s *Store) CategoryStatsForProject(projectPath string) []CategoryStat {
 	var order []Category
 
 	for _, e := range s.entries {
+		if !e.IsActive() {
+			continue
+		}
 		canonical := MapToCanonical(e.Category)
 		if canonical == CategorySelfIdentity || canonical == CategorySessionCheckpoint || canonical == CategoryConversationSummary {
 			continue
@@ -1010,6 +1041,9 @@ func (s *Store) categoryStatsLocked() []CategoryStat {
 	catMap := make(map[Category]*info)
 	var order []Category
 	for _, e := range s.entries {
+		if !e.IsActive() {
+			continue
+		}
 		canonical := MapToCanonical(e.Category)
 		if canonical == CategorySelfIdentity || canonical == CategorySessionCheckpoint || canonical == CategoryConversationSummary {
 			continue
@@ -1057,16 +1091,18 @@ func (s *Store) Search(category Category, keyword string, limit int) []Entry {
 	kw := strings.ToLower(keyword)
 	var result []Entry
 	for _, e := range s.entries {
-		if category != "" && e.Category != category {
+		if !e.IsActive() || !entryCategorySelected(e.Category, category) {
 			continue
 		}
 		if kw != "" && !containsKeyword(e, kw) {
 			continue
 		}
 		result = append(result, e)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
+	}
+	if limit > 0 && len(result) > limit {
+		// Entries are appended in insertion order. Keep the newest matches
+		// instead of the slice head.
+		result = append([]Entry(nil), result[len(result)-limit:]...)
 	}
 	return result
 }
@@ -1344,16 +1380,23 @@ func (s *Store) TouchAccess(ids []string) {
 }
 
 // SelfIdentitySummary returns a concatenated summary of all self_identity
-// memory entries. Returns empty string if none exist.
+// memory entries, newest first. Returns empty string if none exist.
 func (s *Store) SelfIdentitySummary(maxRunes int) string {
-	return s.categorySummary(CategorySelfIdentity, maxRunes)
+	return s.categorySummary(CategorySelfIdentity, maxRunes, "", false)
+}
+
+// SelfIdentitySummaryForOwner limits the summary to one owner. Strict mode
+// keeps only that owner. Otherwise legacy empty-owner rows stay visible and
+// other named owners stay out.
+func (s *Store) SelfIdentitySummaryForOwner(maxRunes int, ownerID string, strictOwner bool) string {
+	return s.categorySummary(CategorySelfIdentity, maxRunes, ownerID, strictOwner)
 }
 
 // UserFactSummary returns a compressed one-line summary of all user_fact
 // entries. The summary is capped at maxRunes runes to keep system prompt
 // overhead predictable (~200 tokens). Original entries are NOT modified.
 func (s *Store) UserFactSummary(maxRunes int) string {
-	return s.categorySummary(CategoryUserFact, maxRunes)
+	return s.categorySummary(CategoryUserFact, maxRunes, "", false)
 }
 
 // DisplayContent returns CompactForm if available, otherwise Content.
@@ -1370,23 +1413,38 @@ func DisplayContent(e Entry) string {
 	return text
 }
 
-// categorySummary joins all entries of the given category into a pipe-separated
-// string, capped at maxRunes. Prefers CompactForm when available.
-func (s *Store) categorySummary(cat Category, maxRunes int) string {
+// categorySummary joins entries of the given category into a pipe-separated
+// string, newest first, capped at maxRunes. Prefers CompactForm when available.
+// A non-empty ownerID hides other named owners. strictOwner also hides legacy
+// empty-owner rows.
+func (s *Store) categorySummary(cat Category, maxRunes int, ownerID string, strictOwner bool) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if maxRunes <= 0 {
 		maxRunes = 400
 	}
+	ownerID = strings.TrimSpace(ownerID)
 
-	var parts []string
+	type summaryPart struct {
+		text string
+		at   time.Time
+	}
+	var parts []summaryPart
 	now := time.Now()
 	for _, e := range s.entries {
-		if e.Category != cat || !e.IsActive() {
+		if !e.IsActive() || !recallCategoryMatches(e.Category, cat) {
 			continue
 		}
-		if e.InvalidAt != nil && !e.InvalidAt.After(now) {
+		if ownerID != "" {
+			if strictOwner && !memoryOwnersEqual(e.OwnerID, ownerID) {
+				continue
+			}
+			if !strictOwner && !namedOwnerVisible(e.OwnerID, ownerID) {
+				continue
+			}
+		}
+		if entryExpiredAt(e.InvalidAt, now) {
 			continue
 		}
 		text := strings.TrimSpace(e.CompactForm)
@@ -1396,13 +1454,24 @@ func (s *Store) categorySummary(cat Category, maxRunes int) string {
 		if text == "" {
 			continue
 		}
-		parts = append(parts, text)
+		at := e.UpdatedAt
+		if at.IsZero() {
+			at = e.CreatedAt
+		}
+		parts = append(parts, summaryPart{text: text, at: at})
 	}
 	if len(parts) == 0 {
 		return ""
 	}
+	sort.SliceStable(parts, func(i, j int) bool {
+		return parts[i].at.After(parts[j].at)
+	})
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		texts[i] = part.text
+	}
 
-	summary := strings.Join(parts, " | ")
+	summary := strings.Join(texts, " | ")
 	runes := []rune(summary)
 	if len(runes) > maxRunes {
 		summary = string(runes[:maxRunes]) + "..."
@@ -1682,7 +1751,7 @@ type recallScored struct {
 }
 
 // applyTemporalDemotion demotes stale and temporally-invalidated entries in a
-// scored candidate list. Entries with InvalidAt in the past get score × 0.2;
+// scored candidate list. Entries whose InvalidAt has been reached get score × 0.2;
 // entries marked Stale get score × 0.3. This keeps them discoverable but
 // pushes them below fresh entries in ranking.
 //
@@ -1691,7 +1760,7 @@ type recallScored struct {
 func applyTemporalDemotion(candidates []recallScored, now time.Time) {
 	for i := range candidates {
 		e := &candidates[i].entry
-		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+		if entryExpiredAt(e.InvalidAt, now) {
 			candidates[i].score *= 0.2
 		} else if e.Stale {
 			candidates[i].score *= 0.3
@@ -1793,12 +1862,6 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 		existing[c.entry.ID] = true
 	}
 
-	// Build entry lookup for quick access.
-	entryByID := make(map[string]*Entry, len(s.entries))
-	for i := range s.entries {
-		entryByID[s.entries[i].ID] = &s.entries[i]
-	}
-
 	// Find the actual seed that links to each expanded neighbor and use
 	// that seed's score as the base for the derived score. This prevents
 	// low-relevance seeds from inheriting high scores from unrelated seeds.
@@ -1809,14 +1872,13 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 		seedNeighbors[sid] = s.graph.neighborsOf(sid)
 	}
 
-	for neighborID, expandWeight := range expanded {
-		if existing[neighborID] {
+	for i := range s.entries {
+		neighborID := s.entries[i].ID
+		expandWeight, ok := expanded[neighborID]
+		if !ok || existing[neighborID] || !s.entries[i].IsActive() {
 			continue
 		}
-		e, ok := entryByID[neighborID]
-		if !ok || !e.IsActive() {
-			continue
-		}
+		e := s.entries[i]
 
 		// Derive score: find the best score among seeds that actually link
 		// to this neighbor (not the global best seed).
@@ -1840,7 +1902,7 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 		}
 		derivedScore := bestLinkedSeedScore * expandWeight
 
-		candidates = append(candidates, recallScored{entry: *e, score: derivedScore})
+		candidates = append(candidates, recallScored{entry: e, score: derivedScore})
 		existing[neighborID] = true
 	}
 
@@ -2147,19 +2209,24 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 // frozen UserFactSummary. Tool recall has no such redundancy, so it should
 // not exclude user_fact.
 func (s *Store) RecallDynamicForTool(query string, category Category, projectPath string, ownerID ...string) []Entry {
+	results, _ := s.recallDynamicTool(query, category, projectPath, ownerID...)
+	return results
+}
+
+func (s *Store) recallDynamicTool(query string, category Category, projectPath string, ownerID ...string) ([]Entry, RecallTrace) {
 	start := time.Now()
-	results := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
+	results, trace := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
 		strictProject:         false,
 		excludeWhenNoCategory: toolRecallExcludeCategories,
 	}, ownerID...)
 	s.recordRecallExperienceEvent("dynamic_tool", query, results, lifecycle.EventContext{})
 	s.logRecallIfEnabled("dynamic_tool", query, category, projectPath, ownerID, start, results)
-	return results
+	return results, trace
 }
 
 func (s *Store) recallDynamicWithEventContext(query string, category Category, projectPath string, eventContext lifecycle.EventContext, ownerID ...string) []Entry {
 	start := time.Now()
-	results := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
+	results, _ := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
 		strictProject:         false,
 		excludeWhenNoCategory: proactiveRecallExcludeCategories,
 	}, ownerID...)
@@ -2181,20 +2248,30 @@ type recallFilterOptions struct {
 // shared entries (OwnerID=""). Isolated callers set strictOwner to prevent
 // shared desktop data from crossing into their conversation.
 func filterEntriesForOwner(entries []Entry, ownerID string, strictOwner bool) []Entry {
-	if !strictOwner || strings.TrimSpace(ownerID) == "" || len(entries) == 0 {
+	ownerID = strings.TrimSpace(ownerID)
+	if !strictOwner || ownerID == "" || len(entries) == 0 {
 		return entries
 	}
-	filtered := entries[:0]
+	filtered := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.OwnerID != ownerID {
+		if !memoryOwnersEqual(entry.OwnerID, ownerID) {
 			continue
 		}
-		if entry.Boundary != nil && entry.Boundary.OwnerID != "" && entry.Boundary.OwnerID != ownerID {
+		if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !memoryOwnersEqual(entry.Boundary.OwnerID, ownerID) {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
 	return filtered
+}
+
+func categoryExcludedFromProactiveRecall(category Category) bool {
+	switch MapToCanonical(category) {
+	case CategoryUserFact, CategorySelfIdentity, CategorySessionCheckpoint, CategoryConversationSummary:
+		return true
+	default:
+		return false
+	}
 }
 
 // proactiveRecallExcludeCategories is the exclusion list for system prompt
@@ -2222,253 +2299,28 @@ var toolRecallExcludeCategories = []Category{
 // other projects' project_knowledge is excluded; ScopeGlobal + user_fact + preference always allowed.
 // When strictProject=false: default behavior (soft project filtering) unchanged.
 func (s *Store) recallDynamicCore(query string, category Category, projectPath string, strictProject bool, ownerID ...string) []Entry {
-	return s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
+	entries, _ := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
 		strictProject:         strictProject,
 		excludeWhenNoCategory: proactiveRecallExcludeCategories,
 	}, ownerID...)
+	return entries
 }
 
 // recallDynamicCoreWithOptions is the unified recall engine. The exclusion
-// policy is passed in via opts.excludeWhenNoCategory, making the engine
-// agnostic to caller-specific filtering needs.
-func (s *Store) recallDynamicCoreWithOptions(query string, category Category, projectPath string, opts recallFilterOptions, ownerID ...string) []Entry {
-	// Single time reference for the entire recall operation — ensures consistent
-	// temporal scoring, demotion, and recency calculations across all stages.
-	now := time.Now()
-
-	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
-	expanded := ExpandQuery(query)
-
-	// Alias expansion: augment entities with known aliases from the AliasIndex.
-	// This bridges the write-recall semantic gap by adding alternative terms
-	// that were registered during SaveWithContext.
-	aliasExpanded := expanded.Entities
-	if s.aliasIndex != nil && len(expanded.Entities) > 0 {
-		aliases := s.aliasIndex.Expand(expanded.Entities)
-		if len(aliases) > 0 {
-			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
-		}
-	}
-
-	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
-	// A composite name must be written in the memory. Vector and graph
-	// neighbors of a shared fragment are a different person.
-	nameAnchors := strictRecallAnchors(query)
-	vecScores := map[string]float64{}
-	if len(nameAnchors) == 0 {
-		vecScores = s.vecIndex.score(s.queryEmbeddingCached(query))
-	}
-	semanticScores := map[string]float64{}
-	semanticHitDebug := map[string]SemanticSearchHit{}
-	if s.semanticGraph != nil && len(nameAnchors) == 0 {
-		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
-		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
-			Now:             now,
-			AsOf:            asOf,
-			OwnerID:         firstOwnerID(ownerID...),
-			ProjectPath:     projectPath,
-			RelationHints:   semanticRelationHintsFromQuery(query, expanded),
-			SeedWeights:     semanticSeedWeightsFromEntities(expanded.Entities),
-			MaxHits:         30,
-			MaxVisitedFacts: 500,
-			TemporalMode:    temporalMode,
-		}) {
-			semanticScores[hit.EntryID] = hit.Score
-			semanticHitDebug[hit.EntryID] = hit
-		}
-	}
-	// Multi-hop inference: derive implicit facts from the semantic graph.
-	// Note: s.inferenceEngine is read without s.mu 闁?same pattern as s.semanticGraph
-	// above. Pointer read is safe on 64-bit (atomic at hardware level). Worst case
-	// is reading a stale engine (gives slightly outdated results) or nil (no results).
-	var derivedFacts []DerivedFact
-	if s.inferenceEngine != nil && len(expanded.Entities) > 0 && len(nameAnchors) == 0 {
-		derivedFacts = s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
-			Now:             now,
-			OwnerID:         firstOwnerID(ownerID...),
-			ProjectPath:     projectPath,
-			MaxDerived:      10,
-			MinConfidence:   0.50,
-			MaxVisitedFacts: 200,
-		})
-		// Boost source entries of derived facts so they rank higher.
-		for _, df := range derivedFacts {
-			for _, sf := range df.SourceFacts {
-				if sf.EntryID != "" {
-					semanticScores[sf.EntryID] += df.Confidence * 1.5
-				}
-			}
-		}
-	}
-	// Acquire read lock with timeout to prevent foreground recall from being
-	// permanently blocked by background pipeline write operations. If the lock
-	// cannot be acquired within 10 seconds (e.g. pipeline holding write lock with
-	// writer-starvation blocking readers), return empty results rather than
-	// blocking the agent loop indefinitely.
-	const recallRLockTimeout = 10 * time.Second
+// policy is passed in via opts.excludeWhenNoCategory. Pagination ranks with
+// the same scorer and skips the 15-entry cap.
+func (s *Store) recallDynamicCoreWithOptions(query string, category Category, projectPath string, opts recallFilterOptions, ownerID ...string) ([]Entry, RecallTrace) {
+	filterOwner := firstOwnerID(ownerID...)
+	signals := s.prepareRecallSignals(query, projectPath, filterOwner)
 	if !s.TryRLockWithTimeout(recallRLockTimeout) {
-		log.Printf("[memory_store] RecallDynamic: RLock timeout after %s — returning empty results (pipeline may be holding write lock)", recallRLockTimeout)
-		return nil
+		trace := recallLockTimeoutTrace(query, category, projectPath, filterOwner, signals)
+		s.recordRecallTrace(filterOwner, trace)
+		return nil, trace
 	}
+	candidates := s.scoreRecallCandidatesLocked(signals, query, category, projectPath, filterOwner, opts, true)
 
 	const maxEntries = 15
 	const maxTokens = 2500
-
-	projectLower := semanticNormalizeProjectPath(projectPath)
-
-	// Extract optional ownerID for multi-tenant filtering.
-	filterOwner := ""
-	if len(ownerID) > 0 {
-		filterOwner = ownerID[0]
-	}
-
-	type rawCandidate struct {
-		entry Entry
-		bm25  float64
-		vec   float64
-		sem   float64
-	}
-	var raw []rawCandidate
-
-	for _, e := range s.entries {
-		if !e.IsActive() {
-			continue
-		}
-		if opts.strictProject && projectLower != "" {
-			// Strict project mode: use recallStrictProjectEntryAllowed for
-			// ScopeProject entries, and allow ScopeGlobal + user_fact + preference.
-			if !recallDynamicEntryAllowedStrict(e, category, projectLower, filterOwner) {
-				continue
-			}
-		} else {
-			if !recallDynamicEntryAllowedWithExclusions(e, category, projectLower, filterOwner, opts.excludeWhenNoCategory) {
-				continue
-			}
-		}
-		if len(nameAnchors) > 0 && !entryMentionsAnchors(e, nameAnchors) {
-			continue
-		}
-		b := bm25Scores[e.ID]
-		v := 0.0
-		if vs, ok := vecScores[e.ID]; ok {
-			v = vs
-		}
-		raw = append(raw, rawCandidate{entry: e, bm25: b, vec: v, sem: semanticScores[e.ID]})
-	}
-
-	// Three-way RRF fusion (BM25 + Vec + Tag).
-	bm25Arr := make([]float64, len(raw))
-	vecArr := make([]float64, len(raw))
-	entryArr := make([]Entry, len(raw))
-	for i, c := range raw {
-		bm25Arr[i] = c.bm25
-		vecArr[i] = c.vec
-		entryArr[i] = c.entry
-	}
-	rrfScores := rrfFuseScores(bm25Arr, vecArr, entryArr, projectLower, expanded.QueryTokens)
-
-	var candidates []recallScored
-	for i, c := range raw {
-		fusedRelevance := rrfScores[i]
-		if c.sem > 0 {
-			fusedRelevance += c.sem
-		}
-		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, projectLower, now)
-		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
-	}
-
-	// Tag exact match boost: when a query entity exactly matches an entry's
-	// tag, give a significant score boost. This bridges the "write-recall
-	// semantic gap: e.g. user saved SSH info with tag "4090-server" from
-	// conversation context, and later queries "4090 GPU server".
-	// The BM25/Vec channels may miss this because the content doesn't contain
-	// "4090", but the tag does.
-	if len(expanded.Entities) > 0 {
-		for i := range candidates {
-			boost := tagExactMatchBoost(candidates[i].entry, expanded.Entities)
-			candidates[i].score += boost
-		}
-	}
-
-	// Alias match boost: when alias expansion produced additional entities
-	// that match an entry's tag, apply a moderate boost (+2.0). This is
-	// below tagExactMatchBoost (+5.0) but above baseline.
-	if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
-		// Only the alias-derived entities (not the original ones).
-		aliasOnly := aliasExpanded[len(expanded.Entities):]
-		for i := range candidates {
-			boost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
-			if boost > 0 {
-				// Cap to AliasMatchBoost per entry (below tag boost).
-				if boost > AliasMatchBoost {
-					boost = AliasMatchBoost
-				}
-				candidates[i].score += boost
-			}
-		}
-	}
-
-	// OpenHuman-inspired: apply stability boost/penalty.
-	// Stable knowledge (+2.0) is more reliable; volatile knowledge (-1.0) may be outdated.
-	for i := range candidates {
-		candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
-	}
-
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
-	})
-
-	// 1-hop graph expansion: expand top candidates to discover related entries.
-	preExpandLen := len(candidates)
-	candidates = s.graphExpand(candidates, graphExpandSeeds)
-
-	// Apply tag/alias boost to newly expanded entries — they only have a
-	// graph-derived score and missed the initial boost passes.
-	if len(candidates) > preExpandLen {
-		// Pre-compute alias slice once outside loop.
-		var aliasOnly []string
-		if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
-			aliasOnly = aliasExpanded[len(expanded.Entities):]
-		}
-		for i := preExpandLen; i < len(candidates); i++ {
-			if len(expanded.Entities) > 0 {
-				candidates[i].score += tagExactMatchBoost(candidates[i].entry, expanded.Entities)
-			}
-			if len(aliasOnly) > 0 {
-				aliasBoost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
-				if aliasBoost > AliasMatchBoost {
-					aliasBoost = AliasMatchBoost
-				}
-				candidates[i].score += aliasBoost
-			}
-			candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
-		}
-	}
-
-	// Re-apply the full dynamic visibility contract after graph expansion: graph
-	// edges can cross owner, project, or category boundaries that the seed set had
-	// already filtered out.
-	if opts.strictProject && projectLower != "" {
-		candidates = filterRecallDynamicCandidatesStrict(candidates, category, projectLower, filterOwner)
-	} else {
-		candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, filterOwner, opts.excludeWhenNoCategory)
-	}
-	candidates = filterRecallByAnchors(candidates, nameAnchors)
-	if ClassifyComplexity(query, expanded.Entities, nil) != ComplexitySimple && s.themeManager != nil {
-		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
-	}
-
-	// Temporal demotion: entries marked stale or temporally invalidated are
-	// demoted in score so they rank lower but remain discoverable. Applied
-	// after graphExpand so expanded entries are also subject to demotion.
-	// Implements the Dreaming V3 "stay current over time" principle.
-	applyTemporalDemotion(candidates, now)
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
-	})
-
-	// Recall gating removed from hot path (see memory-simplification-plan.md).
-	// Gating is available via RecallAdaptiveHier for precision-sensitive paths.
 	var result []Entry
 	tokenBudget := maxTokens
 	for _, sc := range candidates {
@@ -2486,210 +2338,33 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 
 	finalSemanticHits := make(map[string]SemanticSearchHit)
 	for _, entry := range result {
-		if hit, ok := semanticHitDebug[entry.ID]; ok {
+		if hit, ok := signals.semanticHits[entry.ID]; ok {
 			finalSemanticHits[entry.ID] = hit
 		}
 	}
-	s.mu.Lock()
-	s.lastSemanticHits = finalSemanticHits
-	s.lastDerivedFacts = derivedFacts
-	s.lastRecallTrace = newRecallTrace(query, category, projectPath, expanded, bm25Scores, vecScores, semanticScores, candidates, result)
-	s.mu.Unlock()
-	return result
+	trace := newRecallTrace(query, category, projectPath, signals.expanded, signals.bm25Scores, signals.vecScores, signals.semanticScores, candidates, result)
+	s.recordRecallDebug(filterOwner, finalSemanticHits, signals.derivedFacts)
+	s.recordRecallTrace(filterOwner, trace)
+	return result, trace
 }
 
-// recallScoredForPagination runs the full multi-signal scoring pipeline
-// (BM25 + Vector + Semantic Graph + Tag matching + Memory Stream Score)
-// but returns the complete sorted []recallScored list instead of applying
-// entry/token limits. Used by CursorPaginator to cache the full candidate
-// set for subsequent page slicing.
+// recallScoredForPagination runs the shared scorer and returns every ranked
+// candidate. Cursor pagination slices that list. It does not apply the
+// 15-entry prompt cap.
 func (s *Store) recallScoredForPagination(query string, category Category, projectPath string, ownerID string) []recallScored {
-	// Single time reference for the entire operation.
-	now := time.Now()
-
-	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
-	expanded := ExpandQuery(query)
-
-	// Alias expansion: augment entities with known aliases from the AliasIndex.
-	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
-	aliasExpanded := expanded.Entities
-	if s.aliasIndex != nil && len(expanded.Entities) > 0 {
-		aliases := s.aliasIndex.Expand(expanded.Entities)
-		if len(aliases) > 0 {
-			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
-		}
+	signals := s.prepareRecallSignals(query, projectPath, ownerID)
+	if !s.TryRLockWithTimeout(recallRLockTimeout) {
+		trace := recallLockTimeoutTrace(query, category, projectPath, ownerID, signals)
+		s.recordRecallTrace(ownerID, trace)
+		return nil
 	}
-
-	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
-	nameAnchors := strictRecallAnchors(query)
-	vecScores := map[string]float64{}
-	if len(nameAnchors) == 0 {
-		vecScores = s.vecIndex.score(s.queryEmbeddingCached(query))
-	}
-	semanticScores := map[string]float64{}
-	if s.semanticGraph != nil && len(nameAnchors) == 0 {
-		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
-		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
-			Now:             now,
-			AsOf:            asOf,
-			OwnerID:         ownerID,
-			ProjectPath:     projectPath,
-			RelationHints:   semanticRelationHintsFromQuery(query, expanded),
-			SeedWeights:     semanticSeedWeightsFromEntities(expanded.Entities),
-			MaxHits:         30,
-			MaxVisitedFacts: 500,
-			TemporalMode:    temporalMode,
-		}) {
-			semanticScores[hit.EntryID] = hit.Score
-		}
-	}
-
-	// Multi-hop inference: derive implicit facts.
-	if s.inferenceEngine != nil && len(expanded.Entities) > 0 && len(nameAnchors) == 0 {
-		derivedFacts := s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
-			Now:             now,
-			OwnerID:         ownerID,
-			ProjectPath:     projectPath,
-			MaxDerived:      10,
-			MinConfidence:   0.50,
-			MaxVisitedFacts: 200,
-		})
-		for _, df := range derivedFacts {
-			for _, sf := range df.SourceFacts {
-				if sf.EntryID != "" {
-					semanticScores[sf.EntryID] += df.Confidence * 1.5
-				}
-			}
-		}
-	}
-
-	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	projectLower := semanticNormalizeProjectPath(projectPath)
-
-	type rawCandidate struct {
-		entry Entry
-		bm25  float64
-		vec   float64
-		sem   float64
-	}
-	var raw []rawCandidate
-
-	for _, e := range s.entries {
-		if !e.IsActive() {
-			continue
-		}
-		if !recallDynamicEntryAllowedWithExclusions(e, category, projectLower, ownerID, proactiveRecallExcludeCategories) {
-			continue
-		}
-		if len(nameAnchors) > 0 && !entryMentionsAnchors(e, nameAnchors) {
-			continue
-		}
-		b := bm25Scores[e.ID]
-		v := 0.0
-		if vs, ok := vecScores[e.ID]; ok {
-			v = vs
-		}
-		raw = append(raw, rawCandidate{entry: e, bm25: b, vec: v, sem: semanticScores[e.ID]})
-	}
-
-	// Three-way RRF fusion.
-	bm25Arr := make([]float64, len(raw))
-	vecArr := make([]float64, len(raw))
-	entryArr := make([]Entry, len(raw))
-	for i, c := range raw {
-		bm25Arr[i] = c.bm25
-		vecArr[i] = c.vec
-		entryArr[i] = c.entry
-	}
-	rrfScores := rrfFuseScores(bm25Arr, vecArr, entryArr, projectLower, expanded.QueryTokens)
-
-	var candidates []recallScored
-	for i, c := range raw {
-		fusedRelevance := rrfScores[i]
-		if c.sem > 0 {
-			fusedRelevance += c.sem
-		}
-		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, projectLower, now)
-		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
-	}
-
-	// Tag exact match boost.
-	if len(expanded.Entities) > 0 {
-		for i := range candidates {
-			boost := tagExactMatchBoost(candidates[i].entry, expanded.Entities)
-			candidates[i].score += boost
-		}
-	}
-
-	// Alias match boost: when alias expansion produced additional entities
-	// that match an entry's tag, apply a moderate boost (+2.0).
-	if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
-		aliasOnly := aliasExpanded[len(expanded.Entities):]
-		for i := range candidates {
-			boost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
-			if boost > 0 {
-				if boost > AliasMatchBoost {
-					boost = AliasMatchBoost
-				}
-				candidates[i].score += boost
-			}
-		}
-	}
-
-	// Stability boost/penalty.
-	for i := range candidates {
-		candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
-	}
-
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
-	})
-
-	// 1-hop graph expansion.
-	preExpandLen := len(candidates)
-	candidates = s.graphExpand(candidates, graphExpandSeeds)
-
-	// Apply tag/alias/stability boost to newly expanded entries.
-	if len(candidates) > preExpandLen {
-		// Pre-compute alias slice once outside loop.
-		var aliasOnly []string
-		if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
-			aliasOnly = aliasExpanded[len(expanded.Entities):]
-		}
-		for i := preExpandLen; i < len(candidates); i++ {
-			if len(expanded.Entities) > 0 {
-				candidates[i].score += tagExactMatchBoost(candidates[i].entry, expanded.Entities)
-			}
-			if len(aliasOnly) > 0 {
-				aliasBoost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
-				if aliasBoost > AliasMatchBoost {
-					aliasBoost = AliasMatchBoost
-				}
-				candidates[i].score += aliasBoost
-			}
-			candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
-		}
-	}
-
-	// Re-apply visibility filters after graph expansion.
-	candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, ownerID, proactiveRecallExcludeCategories)
-	candidates = filterRecallByAnchors(candidates, nameAnchors)
-
-	// Temporal demotion: stale/invalidated entries rank lower.
-	applyTemporalDemotion(candidates, now)
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
-	})
-
-	return candidates
+	return s.scoreRecallCandidatesLocked(signals, query, category, projectPath, ownerID, recallFilterOptions{
+		excludeWhenNoCategory: proactiveRecallExcludeCategories,
+	}, false)
 }
 
-// recallScoredForScroll executes the full multi-signal scoring pipeline and
-// returns scored candidates for scroll session caching. Uses the tool recall
-// exclusion list (less restrictive than proactive recall). Accepts variadic
-// ownerID to match RecallDynamic's signature.
+// recallScoredForScroll caches the shared pagination ranking for one loop.
 func (s *Store) recallScoredForScroll(query string, category Category, projectPath string, ownerID ...string) []recallScored {
 	filterOwner := firstOwnerID(ownerID...)
 	return s.recallScoredForPagination(query, category, projectPath, filterOwner)
@@ -2915,7 +2590,7 @@ func recallDynamicEntryAllowedWithExclusions(e Entry, category Category, project
 	if !recallBoundaryAllowed(e, projectLower, filterOwner) {
 		return false
 	}
-	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+	if !namedOwnerVisible(e.OwnerID, filterOwner) {
 		return false
 	}
 	if category != "" {
@@ -2923,7 +2598,7 @@ func recallDynamicEntryAllowedWithExclusions(e Entry, category Category, project
 	}
 	// No category specified: apply caller's exclusion policy.
 	for _, excluded := range excludeWhenNoCategory {
-		if e.Category == excluded {
+		if MapToCanonical(e.Category) == MapToCanonical(excluded) {
 			return false
 		}
 	}
@@ -2961,7 +2636,7 @@ func recallDynamicEntryAllowedStrict(e Entry, category Category, projectLower, f
 		return false
 	}
 	// Multi-tenant owner filtering (same as non-strict).
-	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+	if !namedOwnerVisible(e.OwnerID, filterOwner) {
 		return false
 	}
 	if !recallBoundaryAllowed(e, projectLower, filterOwner) {
@@ -2972,16 +2647,12 @@ func recallDynamicEntryAllowedStrict(e Entry, category Category, projectLower, f
 		if !recallCategoryMatches(e.Category, category) {
 			return false
 		}
-	} else {
-		// General recall: exclude internal categories (same as non-strict).
-		switch e.Category {
-		case CategoryUserFact, CategorySelfIdentity, CategorySessionCheckpoint, CategoryConversationSummary:
-			return false
-		}
+	} else if categoryExcludedFromProactiveRecall(e.Category) {
+		return false
 	}
-	// Strict project filtering logic:
-	// user_fact and preference are always allowed regardless of scope.
-	if e.Category == CategoryUserFact || e.Category == CategoryPreference {
+	// user_fact and preference stay available from any project tab.
+	canonical := MapToCanonical(e.Category)
+	if canonical == CategoryUserFact || canonical == CategoryPreference {
 		return true
 	}
 	// ScopeGlobal entries are always allowed (archived experience, universal knowledge).
@@ -3029,7 +2700,7 @@ func recallBoundaryAllowed(e Entry, projectLower, filterOwner string) bool {
 		return true
 	}
 	boundary := e.Boundary
-	if filterOwner != "" && boundary.OwnerID != "" && boundary.OwnerID != filterOwner {
+	if !namedOwnerVisible(boundary.OwnerID, filterOwner) {
 		return false
 	}
 	if projectLower != "" && boundary.ProjectPath != "" {
@@ -3043,6 +2714,16 @@ func recallBoundaryAllowed(e Entry, projectLower, filterOwner string) bool {
 
 func recallCategoryMatches(entryCategory, requested Category) bool {
 	return entryCategory == requested || MapToCanonical(entryCategory) == MapToCanonical(requested)
+}
+
+// entryCategorySelected reports whether an entry belongs in a List or Search
+// for the requested category. An empty request keeps every category. Claude-style
+// names match their canonical category, so "user" is visible as user_fact.
+func entryCategorySelected(entryCategory, requested Category) bool {
+	if requested == "" {
+		return true
+	}
+	return recallCategoryMatches(entryCategory, requested)
 }
 
 func limitSearchResults(results []Entry, limit int) []Entry {
@@ -3059,7 +2740,7 @@ func recallDirectEntryAllowed(e Entry, category Category, projectLower, filterOw
 	if !recallBoundaryAllowed(e, projectLower, filterOwner) {
 		return false
 	}
-	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+	if !namedOwnerVisible(e.OwnerID, filterOwner) {
 		return false
 	}
 	if category != "" {
@@ -3166,7 +2847,10 @@ func (s *Store) DetectStale() int {
 			if i == j || !s.entries[j].IsActive() {
 				continue
 			}
-			if s.entries[j].Category != s.entries[i].Category {
+			if MapToCanonical(s.entries[j].Category) != MapToCanonical(s.entries[i].Category) {
+				continue
+			}
+			if !memoryOwnersEqual(s.entries[j].OwnerID, s.entries[i].OwnerID) {
 				continue
 			}
 			if !s.entries[j].UpdatedAt.After(s.entries[i].UpdatedAt) {
@@ -3283,21 +2967,78 @@ func (s *Store) detectTemporallyExpired() int {
 }
 
 func hasOverlappingTags(a, b []string) bool {
-	if len(a) == 0 || len(b) == 0 {
-		// If either has no tags, consider them potentially overlapping
-		// (same category is already a strong signal).
-		return true
+	left := entityTagsForStale(a)
+	right := entityTagsForStale(b)
+	if len(left) == 0 || len(right) == 0 {
+		return false
 	}
-	set := make(map[string]struct{}, len(a))
-	for _, t := range a {
-		set[strings.ToLower(t)] = struct{}{}
+	set := make(map[string]struct{}, len(left))
+	for _, t := range left {
+		set[t] = struct{}{}
 	}
-	for _, t := range b {
-		if _, ok := set[strings.ToLower(t)]; ok {
+	for _, t := range right {
+		if _, ok := set[t]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+// entityTagsForStale drops category labels, paths, and bookkeeping tags.
+// Missing tags are not evidence that two memories describe the same fact.
+func entityTagsForStale(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" || isStructuralMemoryTag(tag) {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
+func isStructuralMemoryTag(tag string) bool {
+	switch tag {
+	case "form_data", "workflow_prefill", "session_checkpoint", "conversation_summary",
+		"online_extracted", "task_sediment", "extracted", "user_fact", "project_knowledge",
+		"preference", "instruction", "self_identity", "profile", "task_artifact",
+		"user", "feedback", "project", "reference":
+		return true
+	}
+	if strings.HasPrefix(tag, "scope:") || strings.HasPrefix(tag, "slot:") || strings.HasPrefix(tag, "project:") || strings.HasPrefix(tag, "session:") {
+		return true
+	}
+	return strings.Contains(tag, "/") || strings.Contains(tag, `\`)
+}
+
+// touchedDuplicateLocked copies an existing entry and merges incoming tags.
+// When replaceContent is set, the longer incoming body replaces the stored one.
+// Caller must hold s.mu. The store slice is not mutated here.
+func (s *Store) touchedDuplicateLocked(idx int, incoming Entry, hash string, now time.Time, replaceContent bool) Entry {
+	updated := s.entries[idx]
+	updated.UpdatedAt = now
+	updated.AccessCount++
+	updated.Tags = mergeTags(updated.Tags, incoming.Tags)
+	updated.Entities = mergeStringSlice(updated.Entities, incoming.Entities)
+	if replaceContent {
+		updated.Content = incoming.Content
+		updated.CompactForm = ""
+		updated.ContentHash = hash
+		if len(incoming.Embedding) > 0 {
+			updated.Embedding = append([]float32(nil), incoming.Embedding...)
+		} else {
+			// The stored vector describes the shorter text. Drop it until the
+			// replacement body is embedded.
+			updated.Embedding = nil
+		}
+	} else if updated.ContentHash == "" {
+		updated.ContentHash = hash
+	}
+	return updated
 }
 
 // ---------------------------------------------------------------------------
@@ -3360,14 +3101,17 @@ func (s *Store) discoverMissingLinks() int {
 	copy(sample, src)
 
 	// Build a tag-to-entryIDs index for tag-overlap link discovery.
+	// Owners are recorded so a later link can require an exact owner match.
 	tagIndex := make(map[string][]string) // tag (lowered) -> entry IDs
+	ownerOf := make(map[string]string, len(s.entries))
 	for _, e := range s.entries {
 		if !e.IsActive() {
 			continue
 		}
+		ownerOf[e.ID] = strings.TrimSpace(e.OwnerID)
 		for _, tag := range e.Tags {
 			tl := strings.ToLower(tag)
-			if len([]rune(tl)) >= 2 {
+			if len([]rune(tl)) >= 2 && !isStructuralMemoryTag(tl) {
 				tagIndex[tl] = append(tagIndex[tl], e.ID)
 			}
 		}
@@ -3397,7 +3141,7 @@ func (s *Store) discoverMissingLinks() int {
 				bestID = id
 			}
 		}
-		if bestID != "" && bestScore > 1.0 {
+		if bestID != "" && bestScore > 1.0 && graphOwnersLinkable(ownerOf, e.ID, bestID) {
 			s.graph.link(bestID, e.ID, bestScore)
 			created++
 		}
@@ -3414,11 +3158,12 @@ func (s *Store) discoverMissingLinks() int {
 			}
 		}
 		for otherID, count := range tagOverlapCounts {
-			if count >= 2 {
-				if _, linked := neighbors[otherID]; !linked {
-					s.graph.link(e.ID, otherID, float64(count)*0.3)
-					created++
-				}
+			if count < 2 || !graphOwnersLinkable(ownerOf, e.ID, otherID) {
+				continue
+			}
+			if _, linked := neighbors[otherID]; !linked {
+				s.graph.link(e.ID, otherID, float64(count)*0.3)
+				created++
 			}
 		}
 	}
@@ -3442,6 +3187,17 @@ func (s *Store) discoverMissingLinks() int {
 		}
 	}
 	return created
+}
+
+// graphOwnersLinkable reports whether both ids are active and share an owner.
+// An empty owner links only with another empty owner.
+func graphOwnersLinkable(ownerOf map[string]string, a, b string) bool {
+	ownerA, okA := ownerOf[a]
+	ownerB, okB := ownerOf[b]
+	if !okA || !okB {
+		return false
+	}
+	return memoryOwnersEqual(ownerA, ownerB)
 }
 
 // backfillContentHashes computes SHA-256 hashes for entries missing them.
@@ -4051,7 +3807,7 @@ func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Tim
 	}
 
 	s.entries = append(s.entries, entry)
-	s.contentHashIdxAdd(entry.ContentHash, len(s.entries)-1)
+	s.contentHashIdxAdd(entry.ContentHash, entry.OwnerID, len(s.entries)-1)
 	s.bm25.addEntry(entry)
 	s.vecIndex.add(entry.ID, entry.Embedding)
 	s.autoLink(entry)
@@ -4254,6 +4010,31 @@ func waitEmbeddingResult(resultC <-chan embeddingResult, budget time.Duration) (
 	}
 }
 
+// scheduleStoredEntryEmbedding fills a missing vector for the entry as currently stored.
+// Call it after a content rewrite has cleared the previous embedding.
+func (s *Store) scheduleStoredEntryEmbedding(entryID string) {
+	if s == nil {
+		return
+	}
+	entryID = strings.TrimSpace(entryID)
+	s.mu.RLock()
+	idx := s.findEntryIndexByIDLocked(entryID)
+	if idx < 0 || len(s.entries[idx].Embedding) > 0 || s.entries[idx].Content == "" {
+		s.mu.RUnlock()
+		return
+	}
+	content := s.entries[idx].Content
+	hash := s.entries[idx].ContentHash
+	emb := s.embedder
+	gen := s.embedderGen
+	s.mu.RUnlock()
+	resultC, started := s.startSaveEmbedText(emb, content)
+	if !started {
+		return
+	}
+	s.updateEntryEmbeddingWhenReady(entryID, hash, gen, resultC)
+}
+
 func (s *Store) updateEntryEmbeddingWhenReady(entryID string, contentHash string, gen uint64, resultC <-chan embeddingResult) {
 	go func() {
 		res := <-resultC
@@ -4266,16 +4047,49 @@ func (s *Store) updateEntryEmbeddingWhenReady(entryID string, contentHash string
 	}()
 }
 
+// applyEntryEmbeddingIfReady writes a late vector only after the latest index
+// rebuild has finished. The rebuild snapshots entries when the write is
+// scheduled, so applying earlier lets that snapshot replace the vector index
+// and drop the vector that was just stored.
 func (s *Store) applyEntryEmbeddingIfReady(entryID string, contentHash string, vec []float32) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	for {
+		select {
+		case <-s.stopCh:
+			return nil
+		default:
+		}
+		s.WaitRebuild()
+		s.mu.Lock()
+		if !s.rebuildSettledLocked() {
+			s.mu.Unlock()
+			continue
+		}
+		err := s.applyEntryEmbeddingLocked(entryID, contentHash, vec)
+		s.mu.Unlock()
+		return err
+	}
+}
 
+func (s *Store) rebuildSettledLocked() bool {
+	done := s.lastRebuildDone
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) applyEntryEmbeddingLocked(entryID string, contentHash string, vec []float32) error {
 	idx := s.findEntryIndexByIDLocked(entryID)
 	if idx < 0 {
 		return nil
 	}
 	entry := s.entries[idx]
-	if entry.ContentHash != contentHash || len(entry.Embedding) > 0 {
+	if len(entry.Embedding) > 0 || !embeddingHashMatches(entry, contentHash) {
 		return nil
 	}
 	entry.Embedding = append([]float32(nil), vec...)
@@ -4285,13 +4099,23 @@ func (s *Store) applyEntryEmbeddingIfReady(entryID string, contentHash string, v
 		}
 	}
 	s.entries[idx] = entry
-	// Only the vector index needs updating — entry content/tags/entities
-	// haven't changed, so BM25/graph/entity/semantic indexes remain valid.
+	// The vector index is refreshed here because the content indexes were
+	// already rebuilt from the pre-embedding snapshot.
 	s.vecIndex.update(entryID, vec)
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}
 	return nil
+}
+
+// embeddingHashMatches reports whether vec was computed for the entry's current text.
+// An empty stored hash falls back to hashing the live content.
+func embeddingHashMatches(entry Entry, contentHash string) bool {
+	liveHash := entry.ContentHash
+	if liveHash == "" {
+		liveHash = computeContentHash(entry.Content)
+	}
+	return liveHash != "" && liveHash == contentHash
 }
 
 func waitForQueryEmbeddingFlight(flight *queryEmbeddingFlight, budget time.Duration) bool {
@@ -4414,12 +4238,18 @@ func (s *Store) autoLink(entry Entry) {
 	}
 
 	// Pre-compute tag overlap counts in one pass.
+	// Only the same owner is eligible. An empty owner does not link to a named one.
 	tagOverlapByID := make(map[string]int)
+	ownerOf := make(map[string]string, len(s.entries))
 	for i := range s.entries {
 		e := &s.entries[i]
 		if e.ID == entry.ID || !e.IsActive() {
 			continue
 		}
+		if !memoryOwnersEqual(entry.OwnerID, e.OwnerID) {
+			continue
+		}
+		ownerOf[e.ID] = strings.TrimSpace(e.OwnerID)
 		if len(entryTagSet) > 0 {
 			overlap := 0
 			for _, tag := range e.Tags {
@@ -4457,6 +4287,10 @@ func (s *Store) autoLink(entry Entry) {
 	var candidates []candidate
 
 	for id := range seen {
+		// ownerOf contains only active entries with the same owner as entry.
+		if _, ok := ownerOf[id]; !ok {
+			continue
+		}
 		bm25 := bm25Scores[id]
 		cosine := 0.0
 		if vecScores != nil {
@@ -4578,9 +4412,7 @@ func (s *Store) backfillEmbeddings(emb embedding.Embedder, gen uint64) {
 		return
 	}
 
-	updates := make([]Entry, 0, len(todo))
 	for _, p := range todo {
-		// Check if store is shutting down.
 		select {
 		case <-s.stopCh:
 			return
@@ -4591,25 +4423,12 @@ func (s *Store) backfillEmbeddings(emb embedding.Embedder, gen uint64) {
 		if err != nil || len(embVec) == 0 {
 			continue
 		}
-
-		s.mu.RLock()
-		if s.embedderGen != gen {
-			s.mu.RUnlock()
+		if s.currentEmbedderGeneration() != gen {
 			return
 		}
-		for i := range s.entries {
-			if s.entries[i].ID == p.id && len(s.entries[i].Embedding) == 0 {
-				updated := s.entries[i]
-				updated.Embedding = append([]float32(nil), embVec...)
-				updates = append(updates, updated)
-				break
-			}
-		}
-		s.mu.RUnlock()
-	}
-
-	if len(updates) > 0 {
-		if err := s.UpdateEntriesByID(updates); err != nil {
+		// Apply only the vector, and only if the text is still the one that was embedded.
+		// A full-entry write here would put this vector on newer text or restore a stale copy.
+		if err := s.applyEntryEmbeddingIfReady(p.id, computeContentHash(p.content), embVec); err != nil {
 			log.Printf("[memory_embed] persist embedding backfill: %v", err)
 		}
 	}
@@ -4631,8 +4450,72 @@ func (s *Store) InferenceEngine() *InferenceEngine { return s.inferenceEngine }
 func (s *Store) LastDerivedFacts() []DerivedFact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]DerivedFact, len(s.lastDerivedFacts))
-	copy(out, s.lastDerivedFacts)
+	return cloneDerivedFacts(s.lastDerivedFacts)
+}
+
+// LastDerivedFactsForOwner returns derived facts from that owner's latest recall.
+// An empty owner reads only the empty-owner slot.
+func (s *Store) LastDerivedFactsForOwner(ownerID string) []DerivedFact {
+	if s == nil {
+		return nil
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneDerivedFacts(s.derivedFactsByOwner[ownerID])
+}
+
+func (s *Store) recordRecallDebug(ownerID string, hits map[string]SemanticSearchHit, facts []DerivedFact) {
+	if s == nil {
+		return
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastSemanticHits = cloneSemanticHits(hits)
+	s.lastDerivedFacts = cloneDerivedFacts(facts)
+	if s.semanticHitsByOwner == nil {
+		s.semanticHitsByOwner = make(map[string]map[string]SemanticSearchHit)
+	}
+	if s.derivedFactsByOwner == nil {
+		s.derivedFactsByOwner = make(map[string][]DerivedFact)
+	}
+	s.semanticHitsByOwner[ownerID] = cloneSemanticHits(hits)
+	s.derivedFactsByOwner[ownerID] = cloneDerivedFacts(facts)
+	if len(s.derivedFactsByOwner) <= recallTraceOwnerCap {
+		return
+	}
+	for key := range s.derivedFactsByOwner {
+		if key == ownerID {
+			continue
+		}
+		delete(s.derivedFactsByOwner, key)
+		delete(s.semanticHitsByOwner, key)
+		break
+	}
+}
+
+func cloneDerivedFacts(in []DerivedFact) []DerivedFact {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]DerivedFact, len(in))
+	for i, fact := range in {
+		fact.SourceFacts = append([]SemanticFact(nil), fact.SourceFacts...)
+		out[i] = fact
+	}
+	return out
+}
+
+func cloneSemanticHits(in map[string]SemanticSearchHit) map[string]SemanticSearchHit {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]SemanticSearchHit, len(in))
+	for id, hit := range in {
+		hit.Paths = append([]string(nil), hit.Paths...)
+		out[id] = hit
+	}
 	return out
 }
 
@@ -4758,7 +4641,7 @@ func (s *Store) findByEntity(entityName string, category Category, projectPath s
 			continue
 		}
 		if scoped {
-			if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+			if !namedOwnerVisible(e.OwnerID, ownerID) {
 				continue
 			}
 			if !recallDirectEntryAllowed(e, category, projectLower, ownerID) {
@@ -4909,10 +4792,11 @@ func (s *Store) HealthReport() *HealthReport {
 	defer s.mu.RUnlock()
 
 	r := &HealthReport{
-		ActiveEntries:  len(s.entries),
-		MaxCapacity:    s.maxItems,
-		EmbedderActive: s.embedder != nil && !embedding.IsNoop(s.embedder),
-		CategoryCounts: make(map[string]int),
+		ActiveEntries:            len(s.entries),
+		MaxCapacity:              s.maxItems,
+		EmbedderActive:           s.embedder != nil && !embedding.IsNoop(s.embedder),
+		CategoryCounts:           make(map[string]int),
+		RecallableCategoryCounts: make(map[string]int),
 	}
 
 	if r.MaxCapacity > 0 {
@@ -4925,17 +4809,29 @@ func (s *Store) HealthReport() *HealthReport {
 
 	var totalAccess int
 	var oldest, newest time.Time
+	now := time.Now()
 
 	for _, e := range s.entries {
 		r.CategoryCounts[string(e.Category)]++
+		switch e.Status {
+		case StatusDormant:
+			r.DormantEntries++
+		case StatusSuperseded:
+			r.SupersededEntries++
+		default:
+			r.RecallableEntries++
+			r.RecallableCategoryCounts[string(MapToCanonical(e.Category))]++
+			if entryExpiredAt(e.InvalidAt, now) {
+				r.InvalidEntries++
+			}
+			if e.Stale {
+				r.StaleEntries++
+			}
+			if e.Pinned {
+				r.PinnedEntries++
+			}
+		}
 		totalAccess += e.AccessCount
-
-		if e.Stale {
-			r.StaleEntries++
-		}
-		if e.Pinned {
-			r.PinnedEntries++
-		}
 		if len(e.Embedding) == 0 {
 			r.NoEmbedding++
 		}
@@ -4997,56 +4893,67 @@ func (s *Store) evictLRU() {
 		return
 	}
 
-	// Separate protected (self_identity) and pinned entries; they are never evicted.
-	var protectedEntries []Entry
-	var evictable []Entry
+	// Each owner gets an equal share of maxItems. Protected entries consume
+	// that owner's share only, so one user's pinned rows cannot wipe another.
+	type ownerBucket struct {
+		protected []Entry
+		evictable []Entry
+	}
+	order := make([]string, 0)
+	groups := make(map[string]*ownerBucket)
+	var candidates []Entry
 	for _, e := range s.entries {
+		if isDormantMemoryCandidate(e) {
+			candidates = append(candidates, e)
+			continue
+		}
+		key := strings.TrimSpace(e.OwnerID)
+		g := groups[key]
+		if g == nil {
+			g = &ownerBucket{}
+			groups[key] = g
+			order = append(order, key)
+		}
 		if e.Category.IsProtected() || e.Pinned || IsDurableTaskManagementEntry(&e) {
-			protectedEntries = append(protectedEntries, e)
+			g.protected = append(g.protected, e)
 		} else {
-			evictable = append(evictable, e)
+			g.evictable = append(g.evictable, e)
 		}
 	}
-
-	target := s.maxItems - len(protectedEntries)
-	if target < 0 {
-		// Protected entries alone exceed maxItems; nothing else can be kept.
-		log.Printf("[memory_store] WARNING: %d protected entries exceed maxItems (%d)", len(protectedEntries), s.maxItems)
-		target = 0
-	}
-	if len(evictable) <= target {
-		return
+	base, extra := 0, 0
+	if len(order) > 0 {
+		base = s.maxItems / len(order)
+		extra = s.maxItems % len(order)
 	}
 
-	indices := make([]int, len(evictable))
-	for i := range indices {
-		indices[i] = i
-	}
-	sort.SliceStable(indices, func(a, b int) bool {
-		ea, eb := evictable[indices[a]], evictable[indices[b]]
-		if ea.AccessCount != eb.AccessCount {
-			return ea.AccessCount < eb.AccessCount
-		}
-		return ea.UpdatedAt.Before(eb.UpdatedAt)
-	})
-
-	excess := len(evictable) - target
-	remove := make(map[int]struct{}, excess)
-	for i := 0; i < excess; i++ {
-		remove[indices[i]] = struct{}{}
-	}
-
-	// Collect evicted entries for archiving.
 	var evicted []Entry
 	kept := make([]Entry, 0, s.maxItems)
-	kept = append(kept, protectedEntries...)
-	for i, e := range evictable {
-		if _, ok := remove[i]; ok {
-			evicted = append(evicted, e)
-		} else {
-			kept = append(kept, e)
+	for i, key := range order {
+		quota := base
+		if i < extra {
+			quota++
 		}
+		g := groups[key]
+		kept = append(kept, g.protected...)
+		room := quota - len(g.protected)
+		if room < 0 {
+			log.Printf("[memory_store] WARNING: owner %q has %d protected entries above quota %d (maxItems %d)", key, len(g.protected), quota, s.maxItems)
+			room = 0
+		}
+		keep, drop := splitEvictableByPriority(g.evictable, room)
+		kept = append(kept, keep...)
+		evicted = append(evicted, drop...)
 	}
+
+	// Quarantine rows use only the slots left after active memories.
+	// They do not take another owner's quota.
+	candidateRoom := s.maxItems - len(kept)
+	if candidateRoom < 0 {
+		candidateRoom = 0
+	}
+	keepCandidates, dropCandidates := splitEvictableByPriority(candidates, candidateRoom)
+	kept = append(kept, keepCandidates...)
+	evicted = append(evicted, dropCandidates...)
 
 	if len(evicted) == 0 {
 		return
@@ -5076,6 +4983,40 @@ func (s *Store) evictLRU() {
 		s.markDirtyLocked()
 	}
 
+}
+
+// splitEvictableByPriority keeps the room highest-priority rows.
+// Lower AccessCount leaves first. Equal counts evict the older UpdatedAt.
+func splitEvictableByPriority(evictable []Entry, room int) (keep, drop []Entry) {
+	if room < 0 {
+		room = 0
+	}
+	if room >= len(evictable) {
+		return evictable, nil
+	}
+	indices := make([]int, len(evictable))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.SliceStable(indices, func(a, b int) bool {
+		ea, eb := evictable[indices[a]], evictable[indices[b]]
+		if ea.AccessCount != eb.AccessCount {
+			return ea.AccessCount < eb.AccessCount
+		}
+		return ea.UpdatedAt.Before(eb.UpdatedAt)
+	})
+	dropSet := make(map[int]struct{}, len(evictable)-room)
+	for i := 0; i < len(evictable)-room; i++ {
+		dropSet[indices[i]] = struct{}{}
+	}
+	for i, entry := range evictable {
+		if _, ok := dropSet[i]; ok {
+			drop = append(drop, entry)
+		} else {
+			keep = append(keep, entry)
+		}
+	}
+	return keep, drop
 }
 
 func (s *Store) persistLoop() {
@@ -5261,11 +5202,9 @@ func containsKeyword(e Entry, kw string) bool {
 // findSubstringDuplicate checks if the new content is a substring of (or
 // contains) a recent existing entry's content. Returns the index of the
 // matching entry, or -1 if no match. Only scans the most recent 50 entries
-// to bound write latency. Caller MUST hold s.mu.Lock.
+// to bound write latency. Caller MUST hold s.mu.
 //
-// Multi-tenant isolation: only matches entries with the same OwnerID or
-// shared entries (empty OwnerID). Different users' entries are never
-// considered duplicates of each other.
+// Owners must match exactly. An empty OwnerID does not merge with a named owner.
 func (s *Store) findSubstringDuplicate(content string, ownerID string) int {
 	return s.findSubstringDuplicateForEntry(Entry{Content: content, OwnerID: ownerID})
 }
@@ -5286,10 +5225,7 @@ func (s *Store) findSubstringDuplicateForEntry(entry Entry) int {
 		start = 0
 	}
 	for i := start; i < len(s.entries); i++ {
-		// Multi-tenant isolation: skip entries from different users.
-		// Empty OwnerID (shared) can match with any user.
-		existingOwner := s.entries[i].OwnerID
-		if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
+		if !s.entries[i].IsActive() || !memoryOwnersEqual(entry.OwnerID, s.entries[i].OwnerID) {
 			continue
 		}
 		// Category isolation: only dedup within the same canonical category.

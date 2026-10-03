@@ -121,6 +121,72 @@ func TestDetachedReadAdoptedWithinGrace(t *testing.T) {
 	}
 }
 
+// TestAwaitResponseKeepsTheBodyAfterTheSchedulingBudget: a caller that is
+// itself waiting on the body must not be handed a budget error. That error
+// makes it cancel the parent context and abort the read.
+func TestAwaitResponseKeepsTheBodyAfterTheSchedulingBudget(t *testing.T) {
+	resetDetachedSimpleLLMReadsForTest(t)
+	var hits atomic.Int32
+	srv := slowSimpleLLMServer(300*time.Millisecond, &hits, detachedTestPayload)
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	msgs := []interface{}{map[string]string{"role": "user", "content": "repair this latex"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := doSimpleLLMRequestWithOptions(ctx, cfg, msgs, srv.Client(), 40*time.Millisecond, simpleLLMRequestOptions{AwaitResponse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Content != "adopted-content" {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+}
+
+// TestLegacyAwaitResponseKeepsTheBodyAfterTheSchedulingBudget: the
+// Responses-WebSocket path cannot detach. AwaitResponse must still release
+// the slot at the budget and return the body.
+func TestLegacyAwaitResponseKeepsTheBodyAfterTheSchedulingBudget(t *testing.T) {
+	resetDetachedSimpleLLMReadsForTest(t)
+	var hits atomic.Int32
+	srv := slowSimpleLLMServer(300*time.Millisecond, &hits, detachedTestPayload)
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	msgs := []interface{}{map[string]string{"role": "user", "content": "repair this latex"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := doSimpleLLMRequestWithOptionsLegacy(ctx, cfg, msgs, srv.Client(), 40*time.Millisecond, simpleLLMRequestOptions{AwaitResponse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Content != "adopted-content" {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+}
+
+// TestLegacyBudgetStillCancelsWhenTheCallerIsNotWaiting: without
+// AwaitResponse the WebSocket path still tears the read down at the budget.
+func TestLegacyBudgetStillCancelsWhenTheCallerIsNotWaiting(t *testing.T) {
+	resetDetachedSimpleLLMReadsForTest(t)
+	var hits atomic.Int32
+	srv := slowSimpleLLMServer(300*time.Millisecond, &hits, detachedTestPayload)
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	msgs := []interface{}{map[string]string{"role": "user", "content": "classify this"}}
+	_, err := doSimpleLLMRequestWithOptionsLegacy(context.Background(), cfg, msgs, srv.Client(), 40*time.Millisecond, simpleLLMRequestOptions{})
+	if !isLLMBudgetFiredError(err) {
+		t.Fatalf("err = %v, want llmBudgetFiredError", err)
+	}
+}
+
 // TestDetachedReadBeyondGraceFallsBackToFreshRequest: an endpoint slower than
 // the grace window cannot be adopted; the retry falls through to a genuine
 // re-send (the legacy late-verdict path) instead of hanging forever.

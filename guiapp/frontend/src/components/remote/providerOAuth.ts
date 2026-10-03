@@ -48,7 +48,7 @@ export function cancelAllNativeOAuth() {
 
 export function oauthBrowserHelp(name: string, t: Translate): string {
     if (name === "xAI-Grok") {
-        return t("Click below to authorize with your xAI account in the browser.", "点击下方按钮，将在浏览器中完成 xAI 账号授权。");
+        return t("Click below to authorize with your xAI account in the browser. After you approve, MaClaw finishes automatically.", "点击下方按钮，将在浏览器中完成 xAI 账号授权。允许后这里会自动完成，不用复制验证码。");
     }
     if (isWorkBuddyProvider(name)) {
         return t("Click below to authorize with your WorkBuddy account in the browser.", "点击下方按钮，将在浏览器中完成 WorkBuddy 账号授权。");
@@ -137,10 +137,12 @@ export async function runProviderOAuthLogin(options: {
         return WaitGitHubCopilotOAuth();
     }
     if (providerName === "xAI-Grok") {
-        // StartXAIOAuth launches the system browser itself, matching
-        // the known-working OpenAI OAuth flow. Waiting here also
-        // prevents the WebView bridge from trying to relaunch a long
-        // xAI OIDC URL.
+        // The browser opens on accounts.x.ai with the approval already filled in.
+        // MaClaw polls until the user allows it, so nothing is pasted back here.
+        onDeviceHint(t(
+            "The browser is opening. Approve the login there and MaClaw finishes by itself. Do not paste a code.",
+            "正在打开浏览器。在页面上点允许即可，这里会自动完成，不用把验证码贴回来。",
+        ));
         return StartXAIOAuth();
     }
     if (isWorkBuddyProvider(providerName)) {

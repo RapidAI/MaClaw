@@ -539,6 +539,14 @@ func (a *App) cloudWorkspaceExecutionDir(projectPath string) string {
 	if projectPath == "" {
 		return ""
 	}
+	// A file-manager browse passes the cache directory SyncCloudWorkspaceFiles
+	// just hydrated. That may be the read-only cache, which must not be
+	// redirected to the writer cache for the same workspace id.
+	if dir, ok := explicitCloudWorkspaceListingDir(projectPath); ok {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
 	canonical := ""
 	if id := a.lookupCloudWorkspaceIDForProject(projectPath); id != "" {
 		canonical = normalizeProjectSessionPath(a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), id))

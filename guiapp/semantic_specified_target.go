@@ -40,3 +40,23 @@ func semanticSpecifiedTargetArtifactDelivery(selection tool.PlannedSelection) bo
 	}
 	return selection.FitProof.MatchedCapability == semanticSpecifiedTargetDeliveryCapability
 }
+
+// semanticDesktopForwardsBoundFile is the desktop/TUI host that must push a
+// specified-target document through imFileSender. An IM channel's gateway
+// already delivers the reply attachment; calling the sender there double-sends.
+func semanticDesktopForwardsBoundFile(platform string) bool {
+	switch normalizeIMMessagePlatformKind(platform) {
+	case imMessagePlatformDesktop, imMessagePlatformTUI:
+		return true
+	default:
+		return false
+	}
+}
+
+// semanticSpecifiedTargetAwaitsGateway reports a specified-target delivery
+// whose transport outcome arrives with the channel gateway. Desktop and TUI
+// observe imFileSender before the adapter returns, so that outcome is the
+// receipt and must not stay pending.
+func semanticSpecifiedTargetAwaitsGateway(selection tool.PlannedSelection, platform string) bool {
+	return semanticSpecifiedTargetArtifactDelivery(selection) && !semanticDesktopForwardsBoundFile(platform)
+}

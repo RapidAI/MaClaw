@@ -68,7 +68,7 @@ type adminHubView struct {
 // marshalled it into every GET /api/admin/hubs response, so a leaked admin
 // token meant takeover of every registered hub.
 //
-// A shadowing field (`HubSecretHash string \`json:"-"\``) does NOT work here:
+// A shadowing field (`HubSecretHash string \`json:"-"\“) does NOT work here:
 // encoding/json drops the outer "-" field during field collection, so the
 // promoted embedded field wins and the secret is still emitted. Verified
 // empirically. The key is therefore removed after marshalling.

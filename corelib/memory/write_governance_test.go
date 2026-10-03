@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+func TestAssessMemoryCandidateAcceptsChinesePreference(t *testing.T) {
+	decision := AssessMemoryCandidate(Entry{Content: "偏好简洁回复", Category: CategoryPreference}, "")
+	if decision.Action != MemoryGovernanceAccept {
+		t.Fatalf("short Chinese preference should be accepted, got %+v", decision)
+	}
+	project := AssessMemoryCandidate(Entry{Content: "这个项目的数据库配置使用本地端口", Category: CategoryProjectKnowledge}, "")
+	if project.Action != MemoryGovernanceAccept {
+		t.Fatalf("Chinese project fact should be accepted, got %+v", project)
+	}
+	greeting := AssessMemoryCandidate(Entry{Content: "谢谢", Category: CategoryProjectKnowledge}, "")
+	if greeting.Action != MemoryGovernanceReject {
+		t.Fatalf("Chinese greeting should be rejected, got %+v", greeting)
+	}
+}
+
 func TestAssessMemoryCandidateRejectsSmallTalk(t *testing.T) {
 	decision := AssessMemoryCandidate(Entry{Content: "thanks", Category: CategoryProjectKnowledge}, "")
 	if decision.Action != MemoryGovernanceReject {

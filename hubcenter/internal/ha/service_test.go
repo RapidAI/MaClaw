@@ -1804,8 +1804,28 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAdminStatus() error = %v", err)
 	}
-	if len(status.Sync.Details) != 8 {
-		t.Fatalf("sync details len = %d, want 8", len(status.Sync.Details))
+	// Assert the exact set of categories rather than a bare count: the count
+	// changes every time a sync category is added, which makes it a test that
+	// only ever reports "someone edited the list". The set is what actually
+	// matters — a category silently disappearing is the real regression.
+	wantKeys := map[string]bool{
+		"routing": true, "system": true, "gossip": true, "skillhub": true,
+		"latex_templates": true, "skillmarket": true, "compute_market": true,
+		"token_bank": true, "news": true, "notifications": true,
+	}
+	gotKeys := map[string]bool{}
+	for _, detail := range status.Sync.Details {
+		gotKeys[detail.Key] = true
+	}
+	for key := range wantKeys {
+		if !gotKeys[key] {
+			t.Fatalf("sync details missing category %q; got %v", key, gotKeys)
+		}
+	}
+	for key := range gotKeys {
+		if !wantKeys[key] {
+			t.Fatalf("sync details has unexpected category %q; want %v", key, wantKeys)
+		}
 	}
 	if status.Sync.PushDebounceSeconds != 180 {
 		t.Fatalf("push debounce seconds = %d, want 180", status.Sync.PushDebounceSeconds)

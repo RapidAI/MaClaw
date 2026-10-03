@@ -10,7 +10,7 @@ import (
 // makes an earlier task's tool names authorization for a later task and lets
 // a repeated injection steadily exhaust the tool budget. Managed semantic
 // turns remain closed until their planner publishes a replacement surface.
-func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, injectionText string, currentTools, baseTools []map[string]interface{}, gateActive bool) ([]map[string]interface{}, int) {
+func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, injectionText string, currentTools, baseTools []map[string]interface{}, gateActive bool, phase agentLoopPhase) ([]map[string]interface{}, int) {
 	if injectionText == "" {
 		return currentTools, estimateToolsTokens(currentTools)
 	}
@@ -19,7 +19,7 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 		return currentTools, estimateToolsTokens(currentTools)
 	}
 	if h.toolRouter == nil {
-		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
+		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools, phase)
 	}
 
 	// Strip injection prefix (e.g. "[用户补充] ", "[用户补充需求——请在当前任务中纳入] ")
@@ -28,7 +28,7 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 	// classification (embedding similarity, keyword matching, etc.).
 	routeText := stripInjectionPrefix(injectionText)
 	if routeText == "" {
-		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
+		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools, phase)
 	}
 
 	// Route the current task direction into a complete replacement candidate.
@@ -37,10 +37,10 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 	// the same non-blocking BM25/L2-only path as the initial tool set.
 	replacement := h.routeToolsForUser("", routeText, allTools, true)
 	log.Printf("[injection-tool-augment] replaced legacy surface with %d routed tools", len(replacement))
-	return h.finalizeInjectionAugmentedTools(ctx, userID, replacement)
+	return h.finalizeInjectionAugmentedTools(ctx, userID, replacement, phase)
 }
 
-func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, userID string, tools []map[string]interface{}) ([]map[string]interface{}, int) {
+func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, userID string, tools []map[string]interface{}, phase agentLoopPhase) ([]map[string]interface{}, int) {
 	catalog := h.unmanagedLegacyHostCatalog()
 	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
 		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, catalog)
@@ -59,7 +59,25 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), h.routingMissFloorDefinitions(), ctx)
-	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, h.filterPolicyRejectedSurfaceTools(catalog))
+	lookupCatalog := h.filterPolicyRejectedSurfaceTools(catalog)
+	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
+	tools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, tools, lookupCatalog)
+	directMode := h.mainLoopInDirectMode(userID, ctx)
+	if loopContextHasClassifierTimeoutLookup(ctx) && executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
+		// The floor pin reopens bash/read_file/write_file/edit_file. Skill
+		// search and truncation still belong to this round; an empty phase
+		// would publish the tools those policies just removed.
+		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, nil)
+	} else {
+		// A non-timeout supplement does not pin the floor, but the fresh
+		// route and workflow ensure can still bring back bash or a tool
+		// this round already blocked.
+		tools = applySkillPreferenceSurface(tools, phase)
+		if directMode {
+			tools = filterDirectModeAllowedTools(tools)
+		}
+		tools = dropTruncationBlockedTools(tools, phase.TruncationBlockedTools)
+	}
 	tools = stripExecutionContractMetadataForLLM(tools)
 	// Injection is a new direction, so it must receive a complete replacement
 	// surface. Do not return the post-filter raw definitions on a planner error:

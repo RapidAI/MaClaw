@@ -1026,6 +1026,10 @@ func workflowInputPayloadFromMessage(text string, attachments []MessageAttachmen
 // Token budget: ~300-500 input + ~10 output vs ~55000 input for full agent loop.
 // Latency: one lightweight classifier call vs the full agent loop.
 func (h *IMMessageHandler) handleWorkflowReview(engine *v2.WorkflowEngine, userID, text, platform string) *IMAgentResponse {
+	// The previous phase loop is finished. Only a review decision that schedules
+	// new work may arm the marker and phase prompt again.
+	h.clearWorkflowReviewCarry(userID)
+
 	ctx := context.Background()
 
 	// Cross-type detection is handled by handleActiveWorkflow BEFORE
@@ -1132,12 +1136,15 @@ When in doubt between "confirm" and "other", prefer "confirm" - the conversation
 
 	if err != nil {
 		log.Printf("[workflow-review] LLM classify failed, keeping review barrier active: %v", err)
-		return h.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentOther, text, platform)
+		return h.reviewBarrierResponse(engine, userID)
 	}
 
 	reviewIntent := normalizeWorkflowReviewIntent(classifyResult.Text)
 	log.Printf("[workflow-review] user=%s text_len=%d intent=%q raw_len=%d (input=%d output=%d latency=%.1fs)",
 		userID, len([]rune(text)), reviewIntent, len([]rune(strings.TrimSpace(classifyResult.Text))), classifyResult.InputTokens, classifyResult.OutputTokens, classifyResult.Latency.Seconds())
+	if reviewIntent == v2.ReviewIntentOther {
+		return h.workflowReviewExecutionBlockedResponse(engine, userID)
+	}
 
 	return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
 }
@@ -1165,48 +1172,21 @@ func (h *IMMessageHandler) workflowReviewPending(userID string, background bool)
 
 func detectWorkflowReviewIntentFast(text string) (v2.ReviewIntent, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
-	trimmed = strings.Trim(trimmed, " \t\r\n.\u3002!\uff01\uff1f?")
 	if trimmed == "" {
 		return v2.ReviewIntentOther, false
 	}
-
-	// Structured button commands from workflow review action buttons.
-	// These are deterministic fast-path routes — no LLM classification needed.
-	if strings.HasPrefix(trimmed, "__wf_review__ ") {
-		action := strings.TrimPrefix(trimmed, "__wf_review__ ")
-		switch action {
-		case "confirm":
-			return v2.ReviewIntentConfirm, true
-		case "abort":
-			return v2.ReviewIntentCancel, true
-		case "supplement_focus":
-			// Pure frontend action (focus input box). The REAL protection is the
-			// early interception in handleWorkflowReview (before this function is
-			// even called). This case exists only as documentation — if supplement_focus
-			// somehow bypasses the early interception, returning false here lets it
-			// fall through to the LLM classifier, which is NOT safe (LLM may classify
-			// as "other" → engine clears phase output). The early interception MUST
-			// remain in place.
-			return v2.ReviewIntentOther, false
-		}
+	// Buttons send a host command. Natural language is classified later.
+	if !strings.HasPrefix(trimmed, "__wf_review__ ") {
+		return v2.ReviewIntentOther, false
 	}
-
-	switch trimmed {
-	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u786e\u5b9a\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u7f16\u7801", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0":
+	switch strings.TrimPrefix(trimmed, "__wf_review__ ") {
+	case "confirm":
 		return v2.ReviewIntentConfirm, true
-	case "\u8df3\u8fc7", "skip", "skip it":
-		return v2.ReviewIntentSkip, true
-	case "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u653e\u5f03", "cancel", "stop", "abort", "quit":
+	case "abort":
 		return v2.ReviewIntentCancel, true
+	default:
+		return v2.ReviewIntentOther, false
 	}
-	if looksLikeWorkflowReviewApproval(trimmed) {
-		return v2.ReviewIntentConfirm, true
-	}
-	switch trimmed {
-	case "ok", "okay", "yes", "y", "go", "go ahead", "start", "continue", "proceed", "approved", "approve", "confirmed", "confirm":
-		return v2.ReviewIntentConfirm, true
-	}
-	return v2.ReviewIntentOther, false
 }
 
 func detectCodingTaskBreakdownReviewAdvanceIntent(engine *v2.WorkflowEngine, userID, text string) (v2.ReviewIntent, bool) {
@@ -1255,14 +1235,6 @@ func looksLikeCodingImplementationAdvance(text string) bool {
 		"mkdir", "create cmake", "create cmakelists", "write cmake", "write cmakelists",
 	}
 	return containsAnyWorkflowReviewMarker(text, markers)
-}
-
-func looksLikeWorkflowReviewApproval(text string) bool {
-	if !strings.Contains(text, "\u7ee7\u7eed") && !strings.Contains(text, "continue") && !strings.Contains(text, "proceed") {
-		return false
-	}
-	approvalMarkers := []string{"\u5408\u7406", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u540c\u610f", "\u786e\u8ba4", "\u901a\u8fc7", "\u597d", "ok", "approve", "approved", "looks good"}
-	return containsAnyWorkflowReviewMarker(text, approvalMarkers)
 }
 
 func detectWorkflowReviewBlockedExecutionIntent(text string) bool {
@@ -1317,10 +1289,13 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 			log.Printf("[workflow-review] V2 ApplyReviewIntent error: user=%s intent=%s err=%v", userID, intent, err)
 			return h.reviewBarrierResponse(engine, userID)
 		}
-		h.recordWorkflowReviewFeedbackExperience(userID, intent, feedback)
-		if intent == v2.ReviewIntentSwitchTask {
-			return h.handleWorkflowInterception(userID, feedback, platform)
+		if hr != nil && hr.Action == v2.ActionReviewPending {
+			if resp := h.workflowReviewBarrierFromState(hr.State); resp != nil {
+				return resp
+			}
+			return h.reviewBarrierResponse(engine, userID)
 		}
+		h.recordWorkflowReviewFeedbackExperience(userID, intent, feedback)
 		if hr == nil {
 			return nil
 		}
@@ -1330,26 +1305,15 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 				engine.MarkPhasePendingReview(userID, v2.PhaseCodingTaskBreakdown, true)
 			}
 		}
+		if intent == v2.ReviewIntentSwitchTask {
+			h.closeWorkflowReviewUI(engine, userID, hr)
+			return h.handleWorkflowInterception(userID, feedback, platform)
+		}
 		// Handle cancellation directly — don't route through mapHandleResultToWorkflowResponse
 		// because it doesn't have lang context for i18n.
 		if hr.Action == v2.ActionCancelled || hr.Action == v2.ActionCancelAndExecute {
-			lang := h.getWorkflowLang()
-			// Emit frontend cleanup events (phase panel reset + fullscreen banner dismiss).
-			// We have hr.State with the cancelled workflow's metadata — use it for
-			// targeted event routing (specific tab/project clears its panel).
-			if hr.State != nil {
-				emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-					"id":             hr.State.ID,
-					"status":         string(v2.StatusCancelled),
-					"type":           hr.State.Type,
-					"project_path":   workflowEventProjectPath(hr.State),
-					"event_scope_id": h.app.getEventScopeID(userID),
-				})
-			}
-			if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-				adapter.ResetSuggestMaximize(userID)
-			}
-			return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowCancelled, lang)}
+			h.closeWorkflowReviewUI(engine, userID, hr)
+			return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowCancelled, h.getWorkflowLang())}
 		}
 		// Map HandleResult to WorkflowResponse for existing handler.
 		resp := mapHandleResultToWorkflowResponse(hr)
@@ -1364,9 +1328,41 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 	}
 	h.recordWorkflowReviewFeedbackExperience(userID, intent, feedback)
 	if intent == v2.ReviewIntentSwitchTask {
+		h.clearWorkflowReviewCarry(userID)
 		return h.handleWorkflowInterception(userID, feedback, platform)
 	}
 	return h.handleWorkflowEngineResponse(engine, userID, resp, platform)
+}
+
+func (h *IMMessageHandler) closeWorkflowReviewUI(engine *v2.WorkflowEngine, userID string, hr *v2.HandleResult) {
+	if h == nil {
+		return
+	}
+	if hr != nil && hr.State != nil && h.app != nil {
+		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+			"id":             hr.State.ID,
+			"status":         string(v2.StatusCancelled),
+			"type":           hr.State.Type,
+			"project_path":   workflowEventProjectPath(hr.State),
+			"event_scope_id": h.app.getEventScopeID(userID),
+		})
+	}
+	if engine != nil {
+		if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+			adapter.ResetSuggestMaximize(userID)
+		}
+	}
+	h.clearWorkflowReviewCarry(userID)
+}
+
+func (h *IMMessageHandler) clearWorkflowReviewCarry(userID string) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	h.workflowAgentLoopMarker.Delete(userID)
+	h.stashedPhasePrompt.Delete(userID)
+	h.pendingV2SubAgentExecution.Delete(userID)
+	h.pendingCodingExecRetryAction.Delete(userID)
 }
 
 // mapHandleResultToWorkflowResponse converts a V2 HandleResult to the WorkflowResponse
@@ -1479,7 +1475,12 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *v2.WorkflowEngin
 	if resp == nil {
 		return nil
 	}
-	if !resp.ShowForm && !resp.RunAgentLoop && engine != nil {
+	if engine != nil && engine.IsAwaitingReview(userID) && !resp.RunAgentLoop && !resp.Complete {
+		if barrier := h.reviewBarrierResponse(engine, userID); barrier != nil {
+			return barrier
+		}
+	}
+	if !resp.ShowForm && !resp.RunAgentLoop && engine != nil && !engine.IsAwaitingReview(userID) {
 		if ws := engine.GetActiveWorkflow(userID); ws != nil {
 			if tmpl := engine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex >= 0 && ws.PhaseIndex < len(tmpl.Phases) {
 				phase := tmpl.Phases[ws.PhaseIndex]
@@ -1529,24 +1530,51 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *v2.WorkflowEngin
 	return nil
 }
 
-func (h *IMMessageHandler) reviewBarrierResponse(engine *v2.WorkflowEngine, userID string) *IMAgentResponse {
-	phaseName := h.workflowReviewPhaseName(engine, userID)
-	if phaseName == "" {
+func (h *IMMessageHandler) workflowReviewBarrierFromState(state *v2.WorkflowState) *IMAgentResponse {
+	if h == nil {
 		return nil
 	}
-	lang := h.getWorkflowLang()
-	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, lang, phaseName)}
+	phaseName := ""
+	if state != nil {
+		if phase := state.ActivePhase(); phase != nil {
+			phaseName = phase.Name
+			if phaseName == "" {
+				phaseName = phase.ID
+			}
+		}
+	}
+	if phaseName == "" {
+		phaseName = "review"
+	}
+	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, h.getWorkflowLang(), phaseName)}
+}
+
+func (h *IMMessageHandler) reviewBarrierResponse(engine *v2.WorkflowEngine, userID string) *IMAgentResponse {
+	if h == nil || engine == nil || engine.GetActiveWorkflow(userID) == nil {
+		return nil
+	}
+	phaseName := h.workflowReviewPhaseName(engine, userID)
+	if phaseName == "" {
+		phaseName = "review"
+	}
+	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, h.getWorkflowLang(), phaseName)}
 }
 
 func (h *IMMessageHandler) workflowReviewExecutionBlockedResponse(engine *v2.WorkflowEngine, userID string) *IMAgentResponse {
+	if h == nil || engine == nil || engine.GetActiveWorkflow(userID) == nil {
+		return nil
+	}
 	phaseName := h.workflowReviewPhaseName(engine, userID)
 	if phaseName == "" {
-		return nil
+		phaseName = "review"
 	}
 	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowReviewExecutionBlock, h.getWorkflowLang(), phaseName)}
 }
 
 func (h *IMMessageHandler) workflowReviewPhaseName(engine *v2.WorkflowEngine, userID string) string {
+	if engine == nil {
+		return ""
+	}
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil {
 		return ""

@@ -17,6 +17,7 @@ import {
     lookupCloudWorkspaceDisplayName,
     rememberCloudWorkspaceDisplayName,
     rememberCloudWorkspaceDisplayNames,
+    subscribeCloudWorkspaceDisplayNames,
     isCloudWorkspacePath,
     isCloudWorkspaceFilePath,
     isCloudWorkspaceTask,
@@ -410,6 +411,11 @@ describe("codingTaskMode", () => {
         expect(cloudWorkspaceNameFromEntitlement(ent, "cws_abc")).toBe("标书项目");
         expect(cloudWorkspaceNameFromEntitlement({ Workspaces: [{ ID: "cws_abc", Name: "标书项目" }] }, "cws_abc")).toBe("标书项目");
         expect(cloudWorkspaceNameFromEntitlement(ent, "cws_old")).toBe("旧项目");
+        expect(cloudWorkspaceNameFromEntitlement({ shared: [{ id: "cws_shared", name: "共享标书" }] }, "cws_shared")).toBe("共享标书");
+        expect(cloudWorkspaceNameFromEntitlement({
+            workspaces: [{ id: "cws_abc", name: "标书项目" }],
+            shared: [{ id: "cws_abc", name: "别人的名字" }],
+        }, "cws_abc")).toBe("标书项目");
         expect(cloudWorkspaceNameFromEntitlement(ent, "missing")).toBe("");
         expect(cloudWorkspaceNameFromEntitlement(null, "cws_abc")).toBe("");
     });
@@ -418,13 +424,40 @@ describe("codingTaskMode", () => {
         __resetCloudWorkspaceDisplayNamesForTests();
         rememberCloudWorkspaceDisplayNames({
             workspaces: [{ id: "cws_abc", name: "标书项目" }],
+            shared: [{ id: "cws_shared", name: "共享标书" }, { id: "cws_abc", name: "别人的名字" }],
+            deleted: [{ id: "cws_abc", name: "已删别名" }],
         });
         expect(lookupCloudWorkspaceDisplayName("cws_abc", "任务标题")).toBe("标书项目");
+        expect(lookupCloudWorkspaceDisplayName("cws_shared")).toBe("共享标书");
         rememberCloudWorkspaceDisplayName("cws_abc", "投标文件");
         expect(lookupCloudWorkspaceDisplayName("cws_abc")).toBe("投标文件");
         expect(lookupCloudWorkspaceDisplayName("missing", "任务标题")).toBe("任务标题");
         __resetCloudWorkspaceDisplayNamesForTests();
         expect(lookupCloudWorkspaceDisplayName("cws_abc", "任务标题")).toBe("任务标题");
+    });
+
+    it("notifies listeners once per name change, including a batched entitlement write", () => {
+        __resetCloudWorkspaceDisplayNamesForTests();
+        const heard = vi.fn();
+        const stop = subscribeCloudWorkspaceDisplayNames(heard);
+        try {
+            rememberCloudWorkspaceDisplayNames({
+                deleted: [{ id: "cws_abc", name: "已删别名" }],
+                shared: [{ id: "cws_abc", name: "别人的名字" }],
+                workspaces: [{ id: "cws_abc", name: "标书项目" }],
+            });
+            expect(lookupCloudWorkspaceDisplayName("cws_abc")).toBe("标书项目");
+            expect(heard).toHaveBeenCalledTimes(1);
+            rememberCloudWorkspaceDisplayName("cws_abc", "标书项目");
+            expect(heard).toHaveBeenCalledTimes(1);
+            rememberCloudWorkspaceDisplayName("cws_abc", "投标文件");
+            expect(heard).toHaveBeenCalledTimes(2);
+        } finally {
+            stop();
+            rememberCloudWorkspaceDisplayName("cws_abc", "再次");
+            expect(heard).toHaveBeenCalledTimes(2);
+            __resetCloudWorkspaceDisplayNamesForTests();
+        }
     });
 
     it("detects local and remote pure coding tags", () => {

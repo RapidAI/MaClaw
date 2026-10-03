@@ -366,7 +366,7 @@
     }
 }
 
-/* --- AI expert section ---------------------------------------------------- */
+/* --- AI expert section (marketplace-style library) ------------------------- */
 
 .utilities-experts {
     margin-top: 28px;
@@ -389,6 +389,58 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    /* The combined-view heading hosts the search toolbar; let it wrap
+     * below the section title on mid-width windows instead of overflowing. */
+    flex-wrap: wrap;
+}
+
+/* Title-line toolbar: pill search field + market entry, right-aligned like
+ * the marketplace reference layout. */
+.utilities-experts__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
+.utilities-experts__search {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    width: min(240px, 46vw);
+    padding: 6px 13px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-text-muted, #8a94a6);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.utilities-experts__search:focus-within {
+    border-color: var(--theme-primary, #2f6fbc);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #2f6fbc) 14%, transparent);
+}
+
+.utilities-experts__search svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+}
+
+.utilities-experts__search input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--theme-text-primary, #1c2733);
+    font: inherit;
+    font-size: 0.78rem;
+}
+
+.utilities-experts__search input::placeholder {
+    color: var(--theme-text-muted, #8a94a6);
 }
 
 .utilities-experts__market-button {
@@ -406,6 +458,45 @@
     flex: 0 0 auto;
 }
 
+/* Source-filter chips row (marketplace category chips). */
+.utilities-experts__filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 2px;
+}
+
+.utilities-experts__filter {
+    padding: 5px 15px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-text-secondary, #44546a);
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.utilities-experts__filter:hover {
+    border-color: var(--theme-primary, #2f6fbc);
+    color: var(--theme-primary, #2f6fbc);
+}
+
+.utilities-experts__filter.is-active {
+    border-color: var(--theme-primary, #2f6fbc);
+    background: var(--theme-primary, #2f6fbc);
+    color: var(--theme-on-primary, #ffffff);
+}
+
+.utilities-experts__filter:focus-visible {
+    outline: 2px solid var(--theme-primary, #2f6fbc);
+    outline-offset: 2px;
+}
+
 .utilities-experts__subtitle {
     margin: 4px 0 0;
     font-size: 0.82rem;
@@ -418,9 +509,11 @@
     color: var(--theme-text-secondary, #44546a);
 }
 
+/* Wider cards: the marketplace layout keeps room for the avatar, description
+ * and capability chips in a comfortable multi-column rhythm. */
 .utilities-experts__grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(173px, 100%), 227px));
+    grid-template-columns: repeat(auto-fill, minmax(min(236px, 100%), 1fr));
     gap: 14px;
 }
 
@@ -429,21 +522,22 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    min-height: 132px;
+    min-height: 152px;
     text-align: left;
-    padding: 12px;
+    padding: 14px 14px 13px;
     border-radius: var(--radius-lg, 14px);
     border: 1px solid var(--theme-border, #d9e1ec);
     background: var(--theme-surface, #ffffff);
     color: var(--theme-text-primary, #1c2733);
     font: inherit;
     box-shadow: var(--shadow-sm, 0 1px 2px rgba(30, 58, 95, 0.06));
-    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 
 .utilities-expert-card:hover {
-    border-color: var(--theme-primary, #2f6fbc);
-    box-shadow: var(--shadow-md, 0 6px 14px rgba(15, 23, 42, 0.08));
+    border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 55%, var(--theme-border, #d9e1ec));
+    box-shadow: var(--shadow-md, 0 8px 20px rgba(15, 23, 42, 0.09));
+    transform: translateY(-1px);
 }
 
 /* HubCenter industry entries are system defaults, never user-editable. A
@@ -457,16 +551,25 @@
     background: color-mix(in srgb, var(--theme-page-bg, #f4f7fb) 72%, transparent);
 }
 .utilities-expert-card__main--disabled { cursor: default; }
-.utilities-expert-card__industry { font-size: .68rem; color: var(--theme-text-secondary, #44546a); line-height: 1.3; }
-.utilities-expert-card__industry-install { margin: 0 10px 10px; min-height: 30px; border: 1px solid var(--theme-primary, #2f6fbc); border-radius: var(--radius-sm, 6px); color: var(--theme-on-primary, #ffffff); background: var(--theme-primary, #2f6fbc); cursor: pointer; font-size: .72rem; }
+.utilities-expert-card__industry-install {
+    margin: 12px 0 0;
+    min-height: 32px;
+    border: 1px solid var(--theme-primary, #2f6fbc);
+    border-radius: var(--radius-sm, 8px);
+    color: var(--theme-on-primary, #ffffff);
+    background: var(--theme-primary, #2f6fbc);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+}
 .utilities-expert-card__industry-install:disabled { opacity: .6; cursor: wait; }
 .utilities-expert-card__industry-install--pending { display: flex; align-items: center; justify-content: center; color: var(--theme-text-secondary, #44546a); background: transparent; border-color: var(--theme-border, #d9e1ec); cursor: wait; }
 
 .utilities-expert-card__main {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
+    align-items: stretch;
     flex: 1;
     min-height: 0;
     min-width: 0;
@@ -485,36 +588,68 @@
     border-radius: var(--radius-md, 8px);
 }
 
+/* Marketplace-style card header: circular avatar + name with a small source
+ * badge (or "optimized from" lineage) underneath. */
+.utilities-expert-card__head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
 .utilities-expert-card__icon {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
-    border-radius: var(--radius-sm, 7px);
-    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, transparent);
-    font-size: 14px;
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--theme-primary, #2f6fbc) 16%, transparent),
+        color-mix(in srgb, var(--theme-primary, #2f6fbc) 6%, transparent));
+    font-size: 20px;
     line-height: 1;
 }
 
-.utilities-expert-card__body {
+.utilities-expert-card__heading {
     display: grid;
-    gap: 2px;
+    gap: 1px;
+    flex: 1;
     min-width: 0;
 }
 
 .utilities-expert-card__title {
     overflow: hidden;
     font-weight: 700;
-    font-size: 0.84rem;
+    font-size: 0.88rem;
     color: var(--theme-text-primary, #1c2733);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.utilities-expert-card__desc {
-    font-size: 0.72rem;
-    color: var(--theme-text-secondary, #44546a);
+.utilities-expert-card__meta {
+    min-width: 0;
+    font-size: 0.66rem;
     line-height: 1.35;
+    color: var(--theme-text-muted, #8a94a6);
+}
+
+.utilities-expert-card__badge,
+/* "优化自：<来源专家名>" lineage line on cards distilled from another expert. */
+.utilities-expert-card__lineage {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+
+.utilities-expert-card__desc {
+    margin-top: 10px;
+    font-size: 0.74rem;
+    color: var(--theme-text-secondary, #44546a);
+    line-height: 1.45;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
@@ -522,14 +657,35 @@
     overflow-wrap: anywhere;
 }
 
-/* "优化自：<来源专家名>" lineage line on cards distilled from another expert. */
-.utilities-expert-card__lineage {
-    font-size: 0.68rem;
-    color: var(--theme-text-secondary, #44546a);
-    line-height: 1.3;
+/* Capability chips pinned toward the card foot. Chip row and CTA both claim
+ * `margin-top: auto` so the leftover space splits evenly and cards without
+ * chips still pin their CTA to the shared bottom edge. */
+.utilities-expert-card__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 11px;
+}
+
+.utilities-expert-card__tag {
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    padding: 2px 10px;
+    border-radius: var(--radius-pill, 999px);
+    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 8%, var(--theme-page-bg, #f4f7fb));
+    color: var(--theme-text-secondary, #44546a);
+    font-size: 0.66rem;
+    line-height: 1.6;
+}
+
+.utilities-expert-card__tag--more {
+    padding: 1px 9px;
+    border: 1px dashed var(--theme-border, #d9e1ec);
+    background: transparent;
+    color: var(--theme-text-muted, #8a94a6);
 }
 
 /* About dialog (opened from the card's 关于 button). Reuses the
@@ -544,10 +700,19 @@
 }
 
 .utilities-expert-card__cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     margin-top: auto;
-    font-size: 0.68rem;
+    padding-top: 11px;
+    font-size: 0.7rem;
     color: var(--theme-primary, #2f6fbc);
     font-weight: 600;
+}
+
+/* Trailing arrow mirrors the tool-card CTA language on the same page. */
+.utilities-expert-card:hover .utilities-expert-card__cta .utilities-tool-card__cta-arrow {
+    transform: translateX(3px);
 }
 
 /* Hover-revealed action row (edit / delete / reset). Always reachable via
@@ -609,11 +774,23 @@
     white-space: nowrap;
 }
 
+/* Search/filter empty state, styled as a quiet dashed panel. */
+.utilities-experts__empty {
+    grid-column: 1 / -1;
+    padding: 26px 16px;
+    border: 1px dashed var(--theme-border, #d9e1ec);
+    border-radius: var(--radius-lg, 14px);
+    background: color-mix(in srgb, var(--theme-surface, #ffffff) 55%, transparent);
+    color: var(--theme-text-secondary, #44546a);
+    font-size: 0.8rem;
+    text-align: center;
+}
+
 /* Hover-only controls cannot be reached reliably on touch devices. Keep the
  * same controls visible there without changing the desktop card density. */
 @media (hover: none), (pointer: coarse) {
     .utilities-expert-card {
-        min-height: 112px;
+        min-height: 136px;
     }
 
     .utilities-expert-card__actions {
@@ -695,6 +872,15 @@
         gap: 8px;
     }
 
+    .utilities-experts__toolbar {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .utilities-experts__search {
+        flex: 1;
+    }
+
     .utilities-experts__grid {
         grid-template-columns: 1fr;
     }
@@ -709,6 +895,10 @@
     .utilities-expert-card,
     .utilities-expert-card__actions {
         transition: none;
+    }
+
+    .utilities-expert-card:hover .utilities-expert-card__cta .utilities-tool-card__cta-arrow {
+        transform: none;
     }
 }
 

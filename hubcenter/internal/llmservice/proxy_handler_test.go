@@ -23,6 +23,28 @@ func TestWriteProxyRequestErrorRetryAfterOnAllProvidersFailed(t *testing.T) {
 	}
 }
 
+// The all-providers-failed error embeds an upstream body snippet. An upstream
+// message that happens to contain a phrase HubCenter maps elsewhere ("not
+// available", "authorization denied") must not reclassify a retryable pool
+// exhaustion into 400/403 — Hub would stop retrying a transient blip.
+func TestWriteProxyRequestErrorUpstreamSnippetCannotMaskPoolExhaustion(t *testing.T) {
+	cases := []struct {
+		snippet string
+		want    int
+	}{
+		{"provider p failed for logical model m upstream model u: HTTP 502 service not available", http.StatusServiceUnavailable},
+		{"provider p failed for logical model m upstream model u: HTTP 401 authorization denied by upstream", http.StatusServiceUnavailable},
+		{"provider p failed for logical model m upstream model u: HTTP 503 tenant bound to node other-node, please redirect", http.StatusServiceUnavailable},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		writeProxyRequestError(rec, fmt.Errorf("all providers failed, last error: %w", errors.New(tc.snippet)))
+		if rec.Code != tc.want {
+			t.Fatalf("snippet %q: status = %d, want %d", tc.snippet, rec.Code, tc.want)
+		}
+	}
+}
+
 func TestWriteProxyRequestErrorNoRetryAfterOnOtherErrors(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeProxyRequestError(rec, errors.New("billing reconciliation failed"))

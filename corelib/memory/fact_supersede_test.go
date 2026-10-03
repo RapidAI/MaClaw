@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSupersedeContradictingFactsMarksOldReachable(t *testing.T) {
@@ -366,5 +367,79 @@ func TestCategorySummarySkipsSuperseded(t *testing.T) {
 	}
 	if got := store.UserFactSummary(400); strings.Contains(got, "Alice") {
 		t.Fatalf("superseded fact leaked into summary: %q", got)
+	}
+}
+
+func TestSelfIdentitySummaryPrefersNewestWithinOwner(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	now := time.Now()
+	if err := store.Save(Entry{Content: strings.Repeat("旧", 40), Category: CategorySelfIdentity, Status: StatusActive, OwnerID: "user-a", UpdatedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{Content: "别人的身份", Category: CategorySelfIdentity, Status: StatusActive, OwnerID: "user-b", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{Content: "新身份", Category: CategorySelfIdentity, Status: StatusActive, OwnerID: "user-a", UpdatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	got := store.SelfIdentitySummaryForOwner(3, "user-a", false)
+	if !strings.HasPrefix(got, "新身份") || strings.Contains(got, "旧") || strings.Contains(got, "别人") {
+		t.Fatalf("summary = %q", got)
+	}
+	if err := store.Save(Entry{Content: "共享身份", Category: CategorySelfIdentity, Status: StatusActive, UpdatedAt: now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	shared := store.SelfIdentitySummaryForOwner(80, "user-a", false)
+	if !strings.Contains(shared, "共享身份") || strings.Contains(shared, "别人") {
+		t.Fatalf("non-strict summary = %q", shared)
+	}
+	strict := store.SelfIdentitySummaryForOwner(80, "user-a", true)
+	if strings.Contains(strict, "共享身份") || strings.Contains(strict, "别人") || !strings.Contains(strict, "新身份") {
+		t.Fatalf("strict summary = %q", strict)
+	}
+}
+
+func TestUserFactSummaryIncludesCanonicalUserCategory(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	if err := store.Save(Entry{Content: "常用编辑器是 vim", Category: CategoryUser, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.UserFactSummary(400); !strings.Contains(got, "vim") {
+		t.Fatalf("summary = %q", got)
+	}
+}
+
+func TestUpdateDuplicateIgnoresInactiveAndOtherOwners(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	const same = "The editor theme is solarized dark"
+	if err := store.Save(Entry{ID: "dead", Content: same, Category: CategoryPreference, Status: StatusSuperseded, OwnerID: "user-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{ID: "other", Content: same, Category: CategoryPreference, Status: StatusActive, OwnerID: "user-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{ID: "live", Content: "temporary preference text", Category: CategoryPreference, Status: StatusActive, OwnerID: "user-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update("live", same, CategoryPreference, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{ID: "live-2", Content: "another preference", Category: CategoryPreference, Status: StatusActive, OwnerID: "user-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update("live-2", same, CategoryPreference, nil); err == nil {
+		t.Fatal("same-owner active duplicate was accepted")
 	}
 }

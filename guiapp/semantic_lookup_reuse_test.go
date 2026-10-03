@@ -13,10 +13,6 @@ func pengzhouWeatherPDFText() string {
 	return "\u5f6d\u5dde\u5929\u6c14\uff0c\u751f\u6210pdf\u7248\u672c\u62a5\u544a"
 }
 
-func nanjingWeatherPDFText() string {
-	return "\u5357\u4eac\u5929\u6c14\uff0c\u751f\u6210pdf\u62a5\u544a"
-}
-
 func shanghaiWeatherPDFText() string {
 	return "\u4e0a\u6d77\u5929\u6c14\uff0c\u751f\u6210pdf\u62a5\u544a"
 }
@@ -34,15 +30,6 @@ func sameTopicPengzhouHistory() []agent.ConversationEntry {
 		{Role: "user", Content: "\u5f6d\u5dde\u5929\u6c14\uff0c\u751f\u6210pdf"},
 		{Role: "tool", ToolName: "web_search", Content: "Pengzhou weather: cloudy, 26C, light rain in the afternoon."},
 		{Role: "assistant", Content: pengzhouWeatherReport()},
-	}
-}
-
-func TestLookupTopicKeyStripsGenerateAffordance(t *testing.T) {
-	if got := lookupTopicKey(pengzhouWeatherPDFText()); got != "\u5f6d\u5dde" {
-		t.Fatalf("topic=%q", got)
-	}
-	if got := lookupTopicKey(nanjingWeatherPDFText()); got != "\u5357\u4eac" {
-		t.Fatalf("nanjing topic=%q", got)
 	}
 }
 

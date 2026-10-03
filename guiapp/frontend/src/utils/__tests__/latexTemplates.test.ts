@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
     LATEX_BLANK_TEMPLATE_ID,
     LATEX_EXPERT_ID,
+    latexExpertTaskIsLive,
     groupLatexTemplatesByCategory,
     isBlankLatexTemplate,
     isLatexExpertId,
     latexBlankTemplateName,
     latexPaperOpeningMessage,
+    latexPaperTaskMessage,
     parseLatexDocumentResult,
     parseLatexTemplateLibrary,
     type LatexTemplateLibrary,
@@ -97,6 +99,32 @@ describe('parseLatexDocumentResult', () => {
 });
 
 describe('latexPaperOpeningMessage', () => {
+    it('keeps the user request and does not ask for an outline again', () => {
+        const message = latexPaperTaskMessage(
+            'zh-Hans',
+            { id: LATEX_BLANK_TEMPLATE_ID, name: '空白模板' },
+            { relative_path: 'main.tex' },
+            '写一篇关于图神经网络的论文',
+        );
+        expect(message).toContain('main.tex');
+        expect(message).toContain('写一篇关于图神经网络的论文');
+        expect(message).not.toContain('先给我一份提纲');
+    });
+
+    it('tells the expert to read an existing paper before the user request', () => {
+        const message = latexPaperTaskMessage(
+            'zh-Hans',
+            { id: LATEX_BLANK_TEMPLATE_ID, name: '空白模板' },
+            { relative_path: 'main.tex', created: false },
+            '把摘要改短',
+        );
+        expect(message).toContain('请先读现有内容');
+        expect(message).toContain('把摘要改短');
+        expect(message).not.toContain('再给修改建议');
+        expect(message).not.toContain('先给我一份提纲');
+        expect(message).not.toContain('我已经建好');
+    });
+
     it('describes a freshly created blank paper', () => {
         const message = latexPaperOpeningMessage('zh-Hans', { id: LATEX_BLANK_TEMPLATE_ID, name: '空白模板' }, { relative_path: 'main.tex', created: true });
         expect(message).toContain('空白');
@@ -153,5 +181,31 @@ describe('latexBlankTemplateName', () => {
         expect(latexBlankTemplateName('zh-Hans')).toBe('空白模板');
         expect(latexBlankTemplateName('zh-Hant')).toBe('空白模板');
         expect(latexBlankTemplateName('en')).toBe('Blank template');
+    });
+});
+
+describe('latexExpertTaskIsLive', () => {
+    const tag = `source:expert:${LATEX_EXPERT_ID}`;
+    it('treats the newest LaTeX paper as the live expert session', () => {
+        const older = { project_path: 'D:/tasks/latex-a', tags: [tag], created_at: '2026-09-30T04:50:00Z' };
+        const newer = { project_path: 'D:/tasks/latex-b', tags: [tag], created_at: '2026-09-30T13:00:00Z' };
+        expect(latexExpertTaskIsLive(newer, [older, newer])).toBe(true);
+        expect(latexExpertTaskIsLive(older, [older, newer])).toBe(false);
+        expect(latexExpertTaskIsLive(older, [older])).toBe(true);
+        expect(latexExpertTaskIsLive({ project_path: 'D:/tasks/other', tags: ['source:expert:other'] }, [older, newer])).toBe(true);
+    });
+
+    it('orders papers by instant when one timestamp is UTC and the other is offset', () => {
+        const earlierLocal = { project_path: 'D:/tasks/latex-9', tags: [tag], created_at: '2026-09-30T14:33:00+08:00' };
+        const laterUtc = { project_path: 'D:/tasks/latex-1', tags: [tag], created_at: '2026-09-30T06:40:00Z' };
+        expect(latexExpertTaskIsLive(laterUtc, [earlierLocal, laterUtc])).toBe(true);
+        expect(latexExpertTaskIsLive(earlierLocal, [earlierLocal, laterUtc])).toBe(false);
+    });
+
+    it('breaks an identical instant with the task directory sequence', () => {
+        const earlierSeq = { project_path: 'D:/tasks/latex-100', tags: [tag], created_at: '2026-09-30T06:40:00Z' };
+        const laterSeq = { project_path: 'D:/tasks/latex-200', tags: [tag], created_at: '2026-09-30T14:40:00+08:00' };
+        expect(latexExpertTaskIsLive(laterSeq, [earlierSeq, laterSeq])).toBe(true);
+        expect(latexExpertTaskIsLive(earlierSeq, [earlierSeq, laterSeq])).toBe(false);
     });
 });

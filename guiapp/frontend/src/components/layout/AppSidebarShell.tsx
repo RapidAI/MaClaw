@@ -129,6 +129,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     onSwitchProvider?: (providerID: string) => void;
     currentModel?: string;
     modelOptions?: string[];
+    modelMultipliers?: Record<string, number>;
     modelsLoading?: boolean;
     onSwitchModel?: (modelId: string) => void;
     onOpenModelMenu?: () => void;
@@ -247,6 +248,7 @@ export const AppSidebarShell = ({
     onSwitchProvider,
     currentModel = '',
     modelOptions = [],
+    modelMultipliers,
     modelsLoading = false,
     onSwitchModel,
     onOpenModelMenu,
@@ -377,6 +379,7 @@ export const AppSidebarShell = ({
                         onSwitchProvider={onSwitchProvider}
                         currentModel={currentModel}
                         modelOptions={modelOptions}
+                        modelMultipliers={modelMultipliers}
                         modelsLoading={modelsLoading}
                         onSwitchModel={onSwitchModel}
                         onOpenModelMenu={onOpenModelMenu}

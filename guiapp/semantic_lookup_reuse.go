@@ -126,6 +126,27 @@ func semanticPetitionBaseline(ctx context.Context) bool {
 	return flag
 }
 
+// semanticForceBaselineWorkspaceKey is set only by a failure replan whose
+// published plan already raised the workspace ceiling. Absence leaves the
+// classification in charge. Forcing the bit off would drop read siblings on
+// surfaces that never recorded the decision.
+type semanticForceBaselineWorkspaceKey struct{}
+
+func withSemanticForceBaselineWorkspace(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticForceBaselineWorkspaceKey{}, true)
+}
+
+func semanticForceBaselineWorkspace(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	flag, _ := ctx.Value(semanticForceBaselineWorkspaceKey{}).(bool)
+	return flag
+}
+
 func withSemanticReusableLookupFacts(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -134,24 +155,25 @@ func withSemanticReusableLookupFacts(ctx context.Context) context.Context {
 }
 
 // semanticReuseStoredLookupFacts reports whether this sentence may consume a
-// web lookup the session already recorded. A classified lookup or a new deck
-// searches again. A later generate, or a short follow-up, may reuse.
-func semanticReuseStoredLookupFacts(text string, current intent.ClassificationResult) bool {
-	if current.Degraded || lexicalFreshLookupRequest(text) || lexicalWebSearchRequest(text) {
+// web lookup the session already recorded. A lookup label is new evidence.
+// A generate or continuation may reuse. A new office classification does not;
+// an office label produced by staying on the open residue does.
+func semanticReuseStoredLookupFacts(_ string, current intent.ClassificationResult) bool {
+	if current.Degraded || semanticResultHasLookupLabel(current) {
 		return false
 	}
-	if semanticUtteranceIsTaskFollowUp(text) {
-		return true
-	}
-	switch current.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelOffice:
-		// A classified lookup or a new deck is a new subject. The old 0.85
-		// cliff reused 崇州's page for "重庆天气，生成格式化pdf" at 0.839.
-		// Generating from the open facts stays on a document label and still
-		// falls through below.
+	if current.Primary == intent.LabelOffice && !strings.Contains(current.Reason, "session residue") {
 		return false
 	}
 	return true
+}
+
+// semanticClassificationRequestsLookupEvidence reports a turn whose
+// authority is new external evidence. The open deliverable may still
+// apply; the previous subject's stored facts and spent evidence ceiling
+// do not.
+func semanticClassificationRequestsLookupEvidence(current intent.ClassificationResult) bool {
+	return semanticLookupHalf(current) || current.Primary == intent.LabelLiveDataVisual
 }
 
 func semanticReusableLookupFacts(ctx context.Context) bool {
@@ -162,14 +184,14 @@ func semanticReusableLookupFacts(ctx context.Context) bool {
 	return flag
 }
 
-func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNeed, ctx context.Context, userText string) ([]tool.CapabilityNeed, bool) {
+func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNeed, ctx context.Context, _ string) ([]tool.CapabilityNeed, bool) {
 	if !semanticNeedsHaveWebLookup(needs) || !semanticNeedsHaveGenerate(needs) || semanticNeedsHaveLiveDataVisual(needs) {
 		return needs, false
 	}
 	// Topic-string alignment is not a fact. Only a host residue that recorded
-	// a successful web lookup for this task, and only when the user did not
-	// ask for a fresh one.
-	if lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText) || !semanticReusableLookupFacts(ctx) {
+	// a successful web lookup for this task, and only when this turn's
+	// classification did not request new evidence.
+	if !semanticReusableLookupFacts(ctx) {
 		return needs, false
 	}
 	kept := make([]tool.CapabilityNeed, 0, len(needs))
@@ -264,6 +286,59 @@ func semanticNeedsForPetitionExpansionLookup(needs []tool.CapabilityNeed, ctx co
 	return kept
 }
 
+// semanticPetitionParentFamiliesKey is the parent plan's repeat families.
+// A petition re-plan rebuilds needs from the classification, which also
+// rebuilds archetype companions the lookup budget had already omitted. The
+// expansion validator rejects those companions and rejects a child that lost
+// a parent family. The whitelist keeps exactly the families the parent
+// already published plus the petitioned label's own templates.
+type semanticPetitionParentFamiliesKey struct{}
+
+func withSemanticPetitionParentFamilies(ctx context.Context, plan tool.ToolPlan) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	families := make(map[string]struct{}, len(plan.Selections))
+	for _, selection := range plan.Selections {
+		id := strings.TrimSpace(selection.NeedID)
+		if id == "" {
+			id = strings.TrimSpace(selection.ID)
+		}
+		if family := tool.RepeatFamilyID(id); family != "" {
+			families[family] = struct{}{}
+		}
+	}
+	return context.WithValue(ctx, semanticPetitionParentFamiliesKey{}, families)
+}
+
+func semanticNeedsForPetitionWhitelist(needs []tool.CapabilityNeed, ctx context.Context) []tool.CapabilityNeed {
+	if ctx == nil || !semanticPetitionExpansion(ctx) {
+		return needs
+	}
+	families, _ := ctx.Value(semanticPetitionParentFamiliesKey{}).(map[string]struct{})
+	label, hasLabel := ctx.Value(semanticPetitionedLabelKey{}).(intent.IntentLabel)
+	if len(families) == 0 && (!hasLabel || label == "") {
+		return needs
+	}
+	templates := imSemanticIntentRuleSet[label]
+	kept := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if family := tool.RepeatFamilyID(need.ID); family != "" {
+			if _, ok := families[family]; ok {
+				kept = append(kept, need)
+				continue
+			}
+		}
+		for _, template := range templates {
+			if need.Capability == template.Capability && sameSemanticQualifiers(need.Qualifiers, template.Qualifiers) {
+				kept = append(kept, need)
+				break
+			}
+		}
+	}
+	return kept
+}
+
 func cloneQualifierMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -282,73 +357,4 @@ func conversationHasReusableLookupFacts(history []agent.ConversationEntry, userT
 	_ = history
 	_ = userText
 	return false
-}
-
-func conversationEntryIsLookupResult(entry agent.ConversationEntry) bool {
-	name := strings.ToLower(strings.TrimSpace(entry.ToolName))
-	if name == "" {
-		return false
-	}
-	switch name {
-	case "web_search", semanticTrustedWebSearchAdapter, "web_fetch", semanticTrustedWebFetchAdapter:
-		return true
-	}
-	return false
-}
-
-func lexicalFreshLookupRequest(text string) bool {
-	msg := strings.ToLower(strings.TrimSpace(text))
-	if msg == "" {
-		return false
-	}
-	for _, marker := range lexicalFreshLookupMarkers() {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func lookupTopicKey(text string) string {
-	text = strings.ToLower(strings.TrimSpace(hostOwnedPDFReportTitle(text)))
-	if text == "" {
-		return ""
-	}
-	for _, noise := range lookupTopicNoise() {
-		text = strings.ReplaceAll(text, noise, " ")
-	}
-	text = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(" \t,.;:!?，。、；：！？", r) {
-			return ' '
-		}
-		return r
-	}, text)
-	return strings.Join(strings.Fields(text), "")
-}
-
-func lookupTopicsAlign(left, right string) bool {
-	left = strings.TrimSpace(left)
-	right = strings.TrimSpace(right)
-	if left == "" || right == "" {
-		return false
-	}
-	return left == right || strings.Contains(left, right) || strings.Contains(right, left)
-}
-
-func lexicalFreshLookupMarkers() []string {
-	return []string{
-		"refresh", "latest", "look up again", "search again",
-		"\u91cd\u65b0\u67e5", "\u518d\u67e5\u4e00\u904d", "\u518d\u67e5\u4e00\u6b21", "\u518d\u67e5\u4e00\u4e0b", "\u518d\u67e5",
-		"\u91cd\u65b0\u641c\u7d22", "\u518d\u641c", "\u5237\u65b0", "\u6700\u65b0", "\u5b9e\u65f6",
-	}
-}
-
-func lookupTopicNoise() []string {
-	return []string{
-		"\u67e5\u8be2", "\u8bf7\u5e2e\u6211", "\u5e2e\u6211", "\u8bf7", "\u4e00\u4e0b",
-		"\u751f\u6210", "generate", "\u4e00\u4efd", "\u7248\u672c",
-		"pdf", "\u62a5\u544a", "report",
-		"\u5929\u6c14", "weather",
-		"\u80a1\u4ef7", "\u6c47\u7387", "stock price", "exchange rate", "\u822a\u73ed",
-	}
 }

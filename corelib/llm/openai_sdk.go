@@ -44,9 +44,13 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 		option.WithResponseBodyInto(&responseBody),
 		option.WithResponseInto(&response),
 	)
-	status := http.StatusOK
+	// The zero status means no HTTP response. Defaulting that to 200 makes a
+	// canceled call look like an empty success and then a JSON parse error.
+	status := 0
 	if response != nil {
 		status = response.StatusCode
+	} else if err == nil {
+		status = http.StatusOK
 	}
 	if err != nil {
 		if apiErr := openAISDKError(err); apiErr != nil {

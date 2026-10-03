@@ -598,6 +598,93 @@ func TestForwardAuthorizedResponsesRequestDoesNotDowngradeStructuredContract(t *
 	}
 }
 
+func TestForwardAuthorizedResponsesRequestCapsOutputCeilingToAdmittedHold(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": "resp-ceiling", "object": "response", "status": "completed", "model": "upstream-model",
+			"output": []any{},
+			"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer upstream.Close()
+
+	responsesBody := map[string]any{"model": "logical", "input": "hello", "max_output_tokens": 65_536, "max_tokens": 80}
+	chatBody := map[string]any{
+		"model":      "logical",
+		"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
+		"max_tokens": 1200,
+	}
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{
+		ID: "resp-ceiling", APIURL: upstream.URL, Model: "upstream-model", Protocol: "openai", WireAPI: "responses",
+	}}}
+	model := &llmservice.AuthorizedModel{Name: "logical", ProviderIDs: []string{"resp-ceiling"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", nil)
+
+	_, statusCode, providerID, _, _, _, rawResponses, err := forwardAuthorizedResponsesRequestWithCache(req, reg, model, responsesBody, chatBody, "logical", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedResponsesRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusOK || providerID != "resp-ceiling" || !rawResponses {
+		t.Fatalf("status/provider/raw = %d/%q/%v, want 200/resp-ceiling/true", statusCode, providerID, rawResponses)
+	}
+	if ceiling, ok := llmQuotePositiveInt64(got["max_output_tokens"]); !ok || ceiling != 1200 {
+		t.Fatalf("forwarded max_output_tokens = %#v, want 1200", got["max_output_tokens"])
+	}
+	if sibling, ok := llmQuotePositiveInt64(got["max_tokens"]); !ok || sibling != 80 {
+		t.Fatalf("forwarded max_tokens = %#v, want the caller's 80", got["max_tokens"])
+	}
+}
+
+func TestStreamAuthorizedResponsesRequestCapsOutputCeilingToAdmittedHold(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": "resp-ceiling-stream", "object": "response", "status": "completed", "model": "upstream-model",
+			"output": []any{},
+			"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer upstream.Close()
+
+	responsesBody := map[string]any{"model": "logical", "input": "hello", "stream": true, "max_output_tokens": 65_536}
+	chatBody := map[string]any{
+		"model":      "logical",
+		"stream":     true,
+		"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
+		"max_tokens": 900,
+	}
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{
+		ID: "resp-ceiling-stream", APIURL: upstream.URL, Model: "upstream-model", Protocol: "openai", WireAPI: "responses",
+	}}}
+	model := &llmservice.AuthorizedModel{Name: "logical", ProviderIDs: []string{"resp-ceiling-stream"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	statusCode, providerID, _, _, _, err := streamAuthorizedResponsesRequest(rec, req, reg, model, responsesBody, chatBody, "logical", "logical", nil)
+	if err != nil {
+		t.Fatalf("streamAuthorizedResponsesRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK || providerID != "resp-ceiling-stream" {
+		t.Fatalf("status/provider = %d/%q, want 200/resp-ceiling-stream", statusCode, providerID)
+	}
+	if ceiling, ok := llmQuotePositiveInt64(got["max_output_tokens"]); !ok || ceiling != 900 {
+		t.Fatalf("forwarded max_output_tokens = %#v, want 900", got["max_output_tokens"])
+	}
+}
+
 func TestForwardAuthorizedModelRequestPreservesMaClawUnavailableStatus(t *testing.T) {
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)

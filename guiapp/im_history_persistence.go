@@ -97,6 +97,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// texts into a slice (no I/O, no locks) — actual persistence is async.
 	trimmed := trimHistoryWithSummaryPrecomputed(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit, estimatedTokens)
 	h.memory.Save(userID, trimmed)
+	h.scheduleCompactionHandoff(userID, trimmed)
 
 	// Index compacted entries for cross-page recall (Requirement 7).
 	// When entries are removed by trimming, index them in the PageIndex so
@@ -227,6 +228,42 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	if !isAnswerCacheHit {
 		h.schedulePostConversationProcessingWithRequestID(userID, requestID, trimmed)
 	}
+}
+
+// scheduleCompactionHandoff fills a checkpoint placeholder after save returns.
+// The model call stays off the response path. A stale snapshot that still
+// holds the placeholder adopts the finished summary on the next Save.
+func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []agent.ConversationEntry) {
+	if h == nil || h.memory == nil {
+		return
+	}
+	var compactionID, source, fileBlock string
+	for _, entry := range trimmed {
+		if entry.CompactionID == "" || strings.TrimSpace(entry.CompactionSource) == "" {
+			continue
+		}
+		compactionID = entry.CompactionID
+		source = entry.CompactionSource
+		fileBlock = entry.CompactionFiles
+	}
+	if compactionID == "" {
+		return
+	}
+	cfg := h.getMaclawLLMConfig()
+	if h.client == nil || strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		h.memory.ReplaceCompactionPlaceholder(userID, compactionID, "")
+		return
+	}
+	client := h.client
+	store := h.memory
+	go func() {
+		summary := summarizeCompactionMaterial(cfg, client, source)
+		content := ""
+		if summary != "" {
+			content = compactionHandoffContent(summary, fileBlock)
+		}
+		store.ReplaceCompactionPlaceholder(userID, compactionID, content)
+	}()
 }
 
 func (h *IMMessageHandler) activePostConversationRequestID(userID string) string {

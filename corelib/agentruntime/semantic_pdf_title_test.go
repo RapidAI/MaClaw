@@ -9,8 +9,12 @@ func TestHostOwnedPDFReportTitle(t *testing.T) {
 	cases := map[string]string{
 		"查询南京天气，并生成pdf报告":                         "查询南京天气",
 		"杭州天气，请帮我生成PDF报告":                         "杭州天气",
-		"生成pdf报告":                                 "报告",
+		"生成pdf报告":                                 "生成pdf报告",
 		"Hangzhou weather, generate a PDF report": "Hangzhou weather",
+		"杭州天气；先记一笔, 然后生成":                         "杭州天气",
+		"杭州天气，生成pdf报告\n\nnotes":                   "杭州天气",
+		"الطقس، تقرير":                            "الطقس",
+		"南京、上海":                                   "南京",
 	}
 	for input, want := range cases {
 		if got := HostOwnedPDFReportTitle(input); got != want {

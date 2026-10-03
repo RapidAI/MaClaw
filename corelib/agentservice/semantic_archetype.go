@@ -93,9 +93,10 @@ func ExpandArchetypeBundleNeeds(registry *coretool.CapabilityRegistry, rules map
 }
 
 // ExpandBaselineWorkspaceNeeds keeps file-read, file-write, and local shell
-// on a managed turn as optional, policy-omittable fallbacks. Capabilities
-// already offered by the primary or archetype stay as they are; baseline
-// only fills gaps so a search turn still has a last-resort command runner.
+// on a managed turn as optional, policy-omittable fallbacks. A capability the
+// primary already offered below the floor is raised to that floor. Baseline
+// still does not add a second family, so a search turn only gains the tools
+// it was missing.
 func ExpandBaselineWorkspaceNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed) []coretool.CapabilityNeed {
 	if !managed {
 		return needs
@@ -160,9 +161,11 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			}
 			budget := coretool.RepeatSiblingBudget(template.MaxInvocations)
 			if entry, exists := offered[template.Capability]; exists {
-				if evidence == baselineWorkspaceEvidence {
-					continue
-				}
+				// The baseline floor raises a one-shot family that is already
+				// on the turn. Skipping it left a paper rewrite with a single
+				// read and a single write: the template was already on disk,
+				// the second file (a .bib) was refused, and the model was told
+				// the earlier write still stood.
 				if entry.ambiguous || budget <= entry.count {
 					continue
 				}

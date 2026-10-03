@@ -60,35 +60,117 @@ func snapshotWorkspaceDocuments(root string) map[string]workspaceDocumentStamp {
 	return snap
 }
 
+// LaTeX compiles next to the .tex (elsarticle/*.pdf), not the workspace root.
+// A root-only list left that PDF off the turn, so the chat had no preview card.
+//
+// The walk is breadth-first and directory names are sorted, so a shallow
+// paper is recorded before a deep tree can spend the directory budget, and
+// both scans stop on the same cutoff. Symlinks are not followed, so a
+// junction cannot pull documents in from outside the workspace.
+const (
+	workspaceDocumentMaxDepth = 4
+	workspaceDocumentMaxDirs  = 1024
+)
+
+func workspaceDocumentSkipDir(name string) bool {
+	if name == "" || strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "node_modules", "vendor", "__pycache__", "venv", "coverage":
+		return true
+	default:
+		return false
+	}
+}
+
+type workspaceDocumentScan struct {
+	files     map[string]workspaceDocumentStamp
+	truncated bool
+}
+
 // snapshotWorkspaceDocumentsIfReadable reports ok only when the directory
 // could be listed. A failed read must not look like an empty baseline, or the
 // next successful list treats every existing document as created this turn.
 func snapshotWorkspaceDocumentsIfReadable(root string) (map[string]workspaceDocumentStamp, bool) {
-	out := map[string]workspaceDocumentStamp{}
+	scan, ok := scanWorkspaceDocuments(root, workspaceDocumentMaxDirs)
+	if !ok {
+		return nil, false
+	}
+	return scan.files, true
+}
+
+func scanWorkspaceDocuments(root string, dirBudget int) (workspaceDocumentScan, bool) {
 	root = strings.TrimSpace(root)
-	if root == "" {
-		return nil, false
+	if root == "" || dirBudget < 1 {
+		return workspaceDocumentScan{}, false
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, false
+	root = filepath.Clean(root)
+	scan := workspaceDocumentScan{files: map[string]workspaceDocumentStamp{}}
+	type dirItem struct {
+		path  string
+		depth int
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !isWorkspaceDocumentName(entry.Name()) {
+	queue := []dirItem{{path: root, depth: 0}}
+	seen := 0
+	for head := 0; head < len(queue); head++ {
+		if seen >= dirBudget {
+			scan.truncated = true
+			break
+		}
+		cur := queue[head]
+		entries, err := os.ReadDir(cur.path)
+		if err != nil {
+			if cur.depth == 0 {
+				return workspaceDocumentScan{}, false
+			}
+			// A child that cannot be listed must not look like an empty
+			// directory. The other scan may still see the files inside it.
+			scan.truncated = true
 			continue
 		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-			continue
+		seen++
+		var children []string
+		for _, entry := range entries {
+			name := entry.Name()
+			// Type bits come from the listing. A symlink or junction is not
+			// followed; a regular file has no type bit and falls through.
+			if entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			if entry.IsDir() {
+				if cur.depth >= workspaceDocumentMaxDepth || workspaceDocumentSkipDir(name) {
+					continue
+				}
+				children = append(children, name)
+				continue
+			}
+			if !isWorkspaceDocumentName(name) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+				continue
+			}
+			full := filepath.Join(cur.path, name)
+			scan.files[deliveredWorkspaceDocKey(full)] = workspaceDocumentStamp{
+				size: info.Size(),
+				mod:  info.ModTime().UnixNano(),
+				path: full,
+			}
 		}
-		full := filepath.Join(root, entry.Name())
-		out[deliveredWorkspaceDocKey(full)] = workspaceDocumentStamp{
-			size: info.Size(),
-			mod:  info.ModTime().UnixNano(),
-			path: full,
+		// Same name order on both scans, so a budget cutoff drops the same
+		// tail instead of a different set of old files each time.
+		sort.Strings(children)
+		for _, name := range children {
+			if len(queue) >= dirBudget {
+				scan.truncated = true
+				break
+			}
+			queue = append(queue, dirItem{path: filepath.Join(cur.path, name), depth: cur.depth + 1})
 		}
 	}
-	return out, true
+	return scan, true
 }
 
 // changedWorkspaceDocuments returns documents created or rewritten since the
@@ -143,15 +225,16 @@ func (c *sharedAgentLoopCallbacks) noteWorkspaceDocumentBaseline() {
 	if root == "" {
 		return
 	}
-	snap, ok := snapshotWorkspaceDocumentsIfReadable(root)
+	scan, ok := scanWorkspaceDocuments(root, workspaceDocumentMaxDirs)
 	if !ok {
 		return
 	}
-	if snap == nil {
-		snap = map[string]workspaceDocumentStamp{}
+	if scan.files == nil {
+		scan.files = map[string]workspaceDocumentStamp{}
 	}
 	c.workspaceDocRoot = root
-	c.workspaceDocBaseline = snap
+	c.workspaceDocBaseline = scan.files
+	c.workspaceDocBaselineTruncated = scan.truncated
 	c.workspaceDocBaselineAt = time.Now()
 }
 
@@ -171,12 +254,18 @@ func (c *sharedAgentLoopCallbacks) attachProducedWorkspaceDocuments() {
 	if c.workspaceDocBaseline == nil {
 		return
 	}
-	after := snapshotWorkspaceDocuments(root)
+	afterScan, ok := scanWorkspaceDocuments(root, workspaceDocumentMaxDirs)
+	after := map[string]workspaceDocumentStamp{}
+	if ok {
+		after = afterScan.files
+	}
 	produced := changedWorkspaceDocuments(c.workspaceDocBaseline, after)
-	// The baseline listed a different directory (task identity before its
-	// workspace child existed, or that child could not be stated yet).
-	// Files already sitting in the child are an earlier round.
-	if baselineRoot != "" && deliveredWorkspaceDocKey(baselineRoot) != deliveredWorkspaceDocKey(root) {
+	// A different baseline directory means files already in the child belong
+	// to an earlier round. A walk that hit its directory budget can disagree
+	// with the other side about which old files it saw; mtime keeps those off
+	// the card and still accepts a file written during this turn.
+	if (baselineRoot != "" && deliveredWorkspaceDocKey(baselineRoot) != deliveredWorkspaceDocKey(root)) ||
+		c.workspaceDocBaselineTruncated || afterScan.truncated {
 		produced = documentsModifiedSince(produced, after, c.workspaceDocBaselineAt)
 	}
 	if len(produced) == 0 {

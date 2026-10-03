@@ -54,6 +54,20 @@ describe('getSettingsTabOptions', () => {
         expect(zhSystem?.groupLabel).toBe('系統');
     });
 
+    it('places Token Bank in Services after IM', () => {
+        const zh = getSettingsTabOptions('zh-Hans');
+        const tokenBank = zh.find((tab) => tab.id === 'tokenBank');
+        expect(tokenBank?.group).toBe('services');
+        expect(tokenBank?.label).toBe('Token 银行');
+        expect(tokenBank?.groupLabel).toBe('服务与集成');
+
+        const services = zh.filter((tab) => tab.group === 'services').map((tab) => tab.id);
+        expect(services).toEqual(['redeem', 'virtualEmployee', 'im', 'tokenBank']);
+
+        expect(getSettingsTabOptions('zh-Hant').find((tab) => tab.id === 'tokenBank')?.label).toBe('Token 銀行');
+        expect(getSettingsTabOptions('en').find((tab) => tab.id === 'tokenBank')?.label).toBe('Token Bank');
+    });
+
     it('keeps group order stable by first appearance', () => {
         const groups = getSettingsTabOptions('en')
             .map((tab) => tab.group)

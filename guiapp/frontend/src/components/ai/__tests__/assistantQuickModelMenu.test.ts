@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    defaultModelForQuickProvider,
     modelIdsEqual,
     resolveQuickModelList,
     resolveQuickModelMenuSections,
@@ -67,5 +68,15 @@ describe('modelIdsEqual', () => {
         expect(modelIdsEqual('grok-4.5', ' grok-4.5 ')).toBe(true);
         expect(modelIdsEqual('a', 'b')).toBe(false);
         expect(modelIdsEqual(undefined, '')).toBe(true);
+    });
+});
+
+describe('defaultModelForQuickProvider', () => {
+    it('uses the configured model, then the first catalog id', () => {
+        expect(defaultModelForQuickProvider({ model: ' auto ', models: ['official-low'] })).toBe('auto');
+        expect(defaultModelForQuickProvider({ isHubService: true, model: 'official-mid', models: ['DeepSeek-V4'] })).toBe('mid');
+        expect(defaultModelForQuickProvider({ isHubService: true, models: ['DeepSeek-V4'] })).toBe('auto');
+        expect(defaultModelForQuickProvider({ models: ['', 'official-mid'] })).toBe('official-mid');
+        expect(defaultModelForQuickProvider(undefined)).toBe('');
     });
 });

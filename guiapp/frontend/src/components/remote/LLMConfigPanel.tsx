@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
-import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, probeProviderModelForShare, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { cancelNamedProviderOAuth, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
@@ -18,17 +18,21 @@ import { LLMConfigToast, type LLMConfigToastData } from "./LLMConfigToast";
 import { LLMProfileAssignments } from "./LLMProfileAssignments";
 import { LLMConfigProviderLimitsFields } from "./LLMConfigProviderLimitsFields";
 import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
+import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard } from "./LLMPanelTuningCards";
 import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
 import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
+import { capabilityModelMenuLabel, hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
+import { LLMConfigProviderShareHeading, TokenBankShareChipButton } from "./TokenBankShareChipButton";
 
 interface Props {
     lang?: string;
     codexModels?: unknown[];
     onStatusChange?: (online: boolean, configured: boolean) => void;
     onProviderChanged?: () => void;
+    onRequestIdentityVerification?: () => void;
 }
 
-export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Props) {
+export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification }: Props) {
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
@@ -54,6 +58,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [dlgProviders, setDlgProviders] = useState<LLMProvider[]>([]);
     const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null);
     const [dlgHubSelected, setDlgHubSelected] = useState(false);
+    const [dlgHubModel, setDlgHubModel] = useState("");
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string; retryable?: boolean } | null>(null);
     const [dlgToast, setDlgToast] = useState<LLMConfigToastData | null>(null);
@@ -348,7 +353,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const hasHubProviderInDialog = dlgProviders.some(p => p.name === HUB_SERVICE_PROVIDER_NAME);
     const hubSelectionAlreadySynced = currentName === HUB_SERVICE_PROVIDER_NAME && hasHubProviderInDialog;
     const hubAvailableModels = (hubServiceStatus?.available_models || []).filter(Boolean);
-    const hubModelLabel = hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto");
+    const hubProviderInDialog = dlgProviders.find(p => p.name === HUB_SERVICE_PROVIDER_NAME);
+    const savedHubModel = String(hubProviderInDialog?.model || hubServiceStatus?.default_model || "auto").trim() || "auto";
+    const selectedHubModel = dlgHubModel || savedHubModel;
+    const hubModelOptions = (() => {
+        const options = hubCapabilityModelOptions(hubAvailableModels);
+        return options.some(id => id.toLowerCase() === selectedHubModel.toLowerCase())
+            ? options
+            : [selectedHubModel, ...options];
+    })();
+    const hubModelDirty = dlgHubModel !== "" && dlgHubModel.toLowerCase() !== savedHubModel.toLowerCase();
 
     /* ── Dialog helpers ── */
 
@@ -369,6 +383,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgTestResult(null);
         setDlgDirty(false);
         setDlgTested(false);
+        setDlgHubModel("");
         setDlgOpen(true);
     }, [providers, currentName, hasHubEntitlement, providerListReady]);
 
@@ -554,6 +569,19 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
         !dlgProvider.key;
 
+    // --- Token Bank share helpers (§7.1) ---------------------------------
+    // Implementations live in LLMConfigPanelShared so this file stays under its
+    // 1600-line guard; they reuse the same model discovery and provider test the
+    // normal dialog uses, so there is one source of truth about whether a
+    // provider works.
+    const shareModelAccess = useMemo(
+        () => ({
+            listModels: (provider: LLMProvider) => listProviderModelsForShare(provider),
+            probeModel: (provider: LLMProvider, model: string) => probeProviderModelForShare(provider, model, t),
+        }),
+        [t],
+    );
+
     const handleFetchProviderModels = useCallback(async () => {
         if (!dlgProvider || !dlgProvider.url) return;
         const isManagedAuth = dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso";
@@ -689,13 +717,48 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgTested(false);
     }, []);
 
+    /** Write the chosen official band onto every profile that uses MaClaw Official. */
+    const saveHubCapabilityModel = useCallback(async (model: string) => {
+        const state = await GetMaclawLLMProfilePanelState() as {
+            providers?: Array<{ id?: string; name?: string; is_hub_service?: boolean }>;
+            profiles?: {
+                assistant?: { provider_id?: string; model?: string };
+                coding?: { provider_id?: string; model?: string; inherit_assistant?: boolean };
+                caption?: { provider_id?: string; model?: string };
+                horizon?: { manager?: { provider_id?: string; model?: string }; auditor?: { provider_id?: string; model?: string }; executor?: { provider_id?: string; model?: string } };
+            };
+            revision?: string;
+        };
+        const hub = (state.providers || []).find(provider => provider.is_hub_service || provider.name === HUB_SERVICE_PROVIDER_NAME);
+        const hubID = String(hub?.id || "").trim();
+        if (!hubID || !state.profiles || !state.revision) {
+            throw new Error(t("Could not save the MaClaw Official model.", "无法保存 MaClaw 官方模型。"));
+        }
+        const next = JSON.parse(JSON.stringify(state.profiles)) as NonNullable<typeof state.profiles>;
+        const assign = (row?: { provider_id?: string; model?: string; inherit_assistant?: boolean }, independent = false) => {
+            if (!row || (independent && row.inherit_assistant)) return;
+            if (String(row.provider_id || "").trim() === hubID) row.model = model;
+        };
+        assign(next.assistant);
+        assign(next.coding, true);
+        assign(next.caption);
+        assign(next.horizon?.manager);
+        assign(next.horizon?.auditor);
+        assign(next.horizon?.executor);
+        await SaveMaclawLLMProfiles(next as never, state.revision);
+    }, [t]);
+
     /** Save Hub service as the current LLM provider (no test needed — Hub-managed). */
     const dlgHandleSaveHubService = useCallback(async () => {
-        if (hubSelectionAlreadySynced) return; // already active and synced
+        if (hubSelectionAlreadySynced && !hubModelDirty) return;
         setDlgSaving(true);
         setDlgTestResult(null);
         try {
-            await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], HUB_SERVICE_PROVIDER_NAME);
+            if (hubSelectionAlreadySynced) {
+                await saveHubCapabilityModel(selectedHubModel);
+            } else {
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], HUB_SERVICE_PROVIDER_NAME);
+            }
             try {
                 const freshData = await GetMaclawLLMProviders();
                 const fresh = (freshData?.providers || dlgProviders).map((p: LLMProvider) => ({ ...p }));
@@ -708,13 +771,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
             onStatusChange?.(true, true);
             onProviderChanged?.();
+            setProviderListRevision(revision => revision + 1);
+            setDlgHubModel("");
             setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
             setTimeout(() => setDlgOpen(false), 800);
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
             setDlgSaving(false);
         }
-    }, [dlgProviders, hubSelectionAlreadySynced, t, onStatusChange, onProviderChanged]);
+    }, [dlgProviders, hubModelDirty, hubSelectionAlreadySynced, onProviderChanged, onStatusChange, saveHubCapabilityModel, selectedHubModel, t]);
 
     const dlgQuickFill = useCallback((epName: string) => {
         const ep = KNOWN_OPENAI_ENDPOINTS.find(x => x.name === epName);
@@ -1000,99 +1065,13 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             )}
 
             {/* Max iterations — inline editable */}
-            <div className="llm-config-card" style={{
-                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
-                border: `1px solid ${colors.border}`, background: colors.surface,
-            }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <label style={{ ...labelStyle, marginBottom: 0 }}>
-                        {t("Agent Max Iterations", "Agent 最大推理轮数")}
-                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
-                            {t("0=unlimited, default 300", "0=不限制，默认 300")}
-                        </span>
-                    </label>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input type="range" min={0} max={300} step={1} value={maxIter}
-                        onChange={e => { const v = Number(e.target.value); setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }}
-                        style={{ flex: 1, accentColor: "var(--theme-primary)" }} />
-                    <input type="number" min={0} max={300} value={maxIter}
-                        onChange={e => { const v = Math.max(0, Math.min(300, Number(e.target.value) || 0)); setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }}
-                        style={{ ...inputStyle, width: 60, textAlign: "center" as const }} />
-                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary, whiteSpace: "nowrap" }}>
-                        {maxIter === 0 ? t("Unlimited", "不限制") : `${maxIter} ${t("rounds", "轮")}`}
-                    </span>
-                </div>
-            </div>
+            <LLMMaxIterationsCard maxIter={maxIter} setMaxIter={v => { setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }} t={t} />
 
             {/* SubAgent concurrency — controls parallel coding tasks */}
-            <div className="llm-config-card" style={{
-                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
-                border: `1px solid ${colors.border}`, background: colors.surface,
-            }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <label style={{ ...labelStyle, marginBottom: 0 }}>
-                        {t("CodingSubAgent Concurrency", "CodingSubAgent 并发数")}
-                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
-                            {t("Parallel tasks without dependencies, default 2", "无依赖任务并行数，默认 2")}
-                        </span>
-                    </label>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input type="range" min={1} max={10} step={1} value={subAgentConc}
-                        onChange={e => { const v = Number(e.target.value); setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }}
-                        style={{ flex: 1, accentColor: "var(--theme-primary)" }} />
-                    <input type="number" min={1} max={10} value={subAgentConc}
-                        onChange={e => { const v = Math.max(1, Math.min(10, Number(e.target.value) || 1)); setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }}
-                        style={{ ...inputStyle, width: 60, textAlign: "center" as const }} />
-                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary, whiteSpace: "nowrap" }}>
-                        {subAgentConc === 1 ? t("Sequential", "顺序执行") : `${subAgentConc} ${t("parallel", "路并行")}`}
-                    </span>
-                </div>
-            </div>
+            <LLMSubAgentConcurrencyCard subAgentConc={subAgentConc} setSubAgentConc={v => { setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }} t={t} />
 
             {/* Thinking (reasoning) mode — global, provider-native request controls */}
-            <div className="llm-config-card" style={{
-                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
-                border: `1px solid ${colors.border}`, background: colors.surface,
-            }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <label style={{ ...labelStyle, marginBottom: 0 }}>
-                        {t("Thinking (Reasoning)", "推理（思考过程）")}
-                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
-                            {t("Global; translated to each provider's supported control", "全局设置；会按服务商支持的参数转换")}
-                        </span>
-                    </label>
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label={t("Thinking mode", "推理模式")} aria-busy={thinkingModeSaving}>
-                    {(["enabled", "disabled"] as const).map(mode => {
-                        const active = thinkingMode === mode;
-                        return (
-                            <button key={mode}
-                                data-testid={`thinking-mode-${mode}`}
-                                type="button"
-                                aria-pressed={active}
-                                disabled={thinkingModeSaving}
-                                onClick={() => { void saveThinkingMode(mode); }}
-                                style={{
-                                    fontSize: "0.76rem", padding: "5px 16px", cursor: thinkingModeSaving ? "wait" : "pointer",
-                                    background: active ? colors.primaryLight : colors.surface,
-                                    color: active ? colors.primaryDark : colors.textSecondary,
-                                    border: `1px solid ${active ? colors.primary : colors.border}`,
-                                    borderRadius: 4, transition: "all 0.15s", opacity: thinkingModeSaving ? 0.7 : 1,
-                                }}>
-                                {mode === "enabled" ? t("On", "开启") : t("Off", "关闭")}
-                            </button>
-                        );
-                    })}
-                </div>
-                <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
-                    {thinkingMode === "enabled"
-                        ? t("Enabled on new requests using the provider's native control. The chat panel shows reasoning only when the provider returns it.", "已在后续请求中按服务商原生参数开启；仅当服务商返回推理内容时，助手面板才会显示“思考过程”。")
-                        : t("Disabled on new requests using the provider's native control. Models without a hard off switch use their lowest reasoning level.", "已在后续请求中按服务商原生参数关闭；没有硬关闭能力的模型会使用最低推理强度。")}
-                </p>
-                {thinkingModeError && <p role="alert" style={{ fontSize: "0.7rem", color: colors.danger, margin: "6px 0 0", lineHeight: 1.4 }}>{thinkingModeError}</p>}
-            </div>
+            <LLMThinkingModeCard thinkingMode={thinkingMode} thinkingModeSaving={thinkingModeSaving} thinkingModeError={thinkingModeError} saveThinkingMode={saveThinkingMode} t={t} />
 
             {/* Multi-model council (MoA) presets — aggregator + reference models */}
             <MoAConfigSection lang={lang} providers={providers} />
@@ -1161,7 +1140,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     const badge: Record<string, string> = {};
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
-                                        <button className="llm-config-provider-chip" key={i} aria-label={tag ? `${p.name} ${tag}` : p.name} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
+                                        <Fragment key={i}>
+                                        <button className="llm-config-provider-chip" aria-label={tag ? `${p.name} ${tag}` : p.name} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                             background: active ? colors.primaryLight : colors.surface,
                                             color: active ? colors.primaryDark : colors.text,
@@ -1181,6 +1161,22 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 }}>{tag}</span>
                                             )}
                                         </button>
+                                        {/* §7.1: only a provider that passed its own connection test and is not
+                                            the platform's own service can be shared. Sharing an untested provider
+                                            would publish a credential nobody has proven works. */}
+                                        {p.connection_test_passed === true && !isHubProvider && (
+                                            <TokenBankShareChipButton
+                                                lang={lang ?? "zh-Hans"}
+                                                providerName={p.name}
+                                                apiURL={p.url}
+                                                apiKey={p.key}
+                                                protocol={p.protocol ?? ""}
+                                                listModels={() => shareModelAccess.listModels(p)}
+                                                probeModel={(model) => shareModelAccess.probeModel(p, model)}
+                                                onRequestVerification={onRequestIdentityVerification}
+                                            />
+                                        )}
+                                        </Fragment>
                                     );
                                 })}
                                 {/* Never offer a destructive-looking empty state while the saved list is unresolved. */}
@@ -1246,14 +1242,39 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                         </span>
                                     </div>
 
-                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+                                    <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 0.7fr) minmax(220px, 1.6fr) minmax(120px, 0.7fr)", gap: 10 }}>
                                         <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Service Status", "\u670d\u52a1\u72b6\u6001")}</div>
                                             <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{hubOfficial.label}</div>
                                         </div>
                                         <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
-                                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Model", "\u6a21\u578b")}</div>
-                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800, wordBreak: "break-word" }}>{hubModelLabel}</div>
+                                            <div id="hub-official-model-label" style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 6, fontWeight: 700 }}>{t("Model", "\u6a21\u578b")}</div>
+                                            <div role="radiogroup" aria-labelledby="hub-official-model-label" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                                {hubModelOptions.map(modelId => {
+                                                    const active = modelId.toLowerCase() === selectedHubModel.toLowerCase();
+                                                    return (
+                                                        <button
+                                                            key={modelId}
+                                                            type="button"
+                                                            role="radio"
+                                                            aria-checked={active}
+                                                            onClick={() => setDlgHubModel(modelId)}
+                                                            style={{
+                                                                fontSize: "0.76rem",
+                                                                fontWeight: 700,
+                                                                padding: "4px 10px",
+                                                                cursor: "pointer",
+                                                                borderRadius: 999,
+                                                                border: `1px solid ${active ? colors.primary : colors.border}`,
+                                                                background: active ? colors.primaryLight : colors.surface,
+                                                                color: active ? colors.primaryDark : colors.text,
+                                                            }}
+                                                        >
+                                                            {capabilityModelMenuLabel(modelId)}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
                                         <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Configuration", "\u914d\u7f6e\u65b9\u5f0f")}</div>
@@ -1274,13 +1295,13 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 marginBottom: 16, padding: "14px", borderRadius: 6,
                                 border: `1px solid ${colors.border}`, background: colors.bg,
                             }}>
-                                <div className="llm-config-form-card__title" style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
-                                    {dlgProvider.import_source
-                                        ? `${dlgProvider.name} ${t("(imported)", "（已导入）")}`
-                                        : dlgProvider.is_custom
-                                        ? t("Custom Provider Configuration", "自定义服务商配置")
-                                        : `${dlgProvider.name} ${t("Configuration", "配置")}`}
-                                </div>
+                                <LLMConfigProviderShareHeading
+                                    lang={lang ?? "zh-Hans"}
+                                    provider={dlgProvider}
+                                    listModels={() => shareModelAccess.listModels(dlgProvider)}
+                                    probeModel={(model) => shareModelAccess.probeModel(dlgProvider, model)}
+                                    onRequestVerification={onRequestIdentityVerification}
+                                />
                                 {dlgProvider.import_source && (
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "0 0 12px 0", lineHeight: 1.4 }}>
                                         {t(
@@ -1550,6 +1571,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                             errorTitle={dlgFailureTitle}
                             hubSelected={dlgHubSelected}
                             hubAlreadySynced={hubSelectionAlreadySynced}
+                            hubModelDirty={hubModelDirty}
                             needsOAuthLogin={dlgNeedsOAuthLogin}
                             oauthBusy={oauthBusy}
                             saving={dlgSaving}

@@ -47,6 +47,27 @@ func cloudWorkspaceSHA256Hex(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func TestCloudWorkspaceCorruptObjectIsClassified(t *testing.T) {
+	if cloudWorkspaceIsSyncFailure(cloudworkspace.ErrBlobCorrupt) {
+		t.Fatal("corrupt object must not be recorded as an unexpected sync failure")
+	}
+	rec := httptest.NewRecorder()
+	writeCloudWorkspaceError(rec, cloudworkspace.ErrBlobCorrupt)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var payload struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != "CLOUD_WORKSPACE_OBJECT_CORRUPT" || !strings.Contains(payload.Message, "corrupt") {
+		t.Fatalf("payload=%+v body=%s", payload, rec.Body.String())
+	}
+}
+
 func TestCloudWorkspaceManifestReadIsLeaseFreeButObjectWriteRequiresLease(t *testing.T) {
 	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
 	id := createCloudWorkspace(t, h, "m1", "A")

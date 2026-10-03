@@ -20,8 +20,9 @@ import (
 // would let a workflow break itself from the inside.
 //
 // On an ordinary chat turn the label is a workflow-panel project only when
-// the catalog corroborates it: the named template has to clear the catalog's
-// own match, or, with no type named, the catalog match has to be decisive.
+// the catalog's winning template is decisive and clearly ahead of the next
+// one. A type the classifier named counts only when that template is the
+// winner; another template's score does not confirm it.
 // The tree's old test — "design decisions, or the same input could come out
 // differently" — also matches a video or animation the user wants made in
 // this conversation. Ordinary chat never auto-starts a workflow, so refusing
@@ -68,11 +69,96 @@ func semanticReleaseUncataloguedWorkflowTask(userText string, result intent.Clas
 	if v2.CatalogCorroboratesWorkflowProject(text, namedType) {
 		return result
 	}
+	return discardWorkflowTask(result, "workflow_task released: utterance is not a catalog workflow project", text)
+}
+
+// semanticReleaseLatexExpertWorkflowTask drops workflow_task when this
+// session is the built-in LaTeX paper expert and the label is that document.
+//
+// The template library opens the expert with the .tex already on disk.
+// paper_writing here is that document. So is a type the catalog does not
+// confirm. An unlabeled workflow_task yields to a decisive winner the model
+// left blank, so a gaokao sentence with no type stays gaokao. Asking for
+// edits is not a panel project: a phase chain is not part of the search
+// document, so 修改建议 does not make contract review the winner. A named
+// type the catalog confirms stays a panel project. The utterance is scored,
+// not scanned for filenames. A surviving document_generate label is a PDF,
+// so that sole label becomes the file edit.
+func semanticReleaseLatexExpertWorkflowTask(userID, userText string, result intent.ClassificationResult) intent.ClassificationResult {
+	if expertIDFromUserID(userID) != builtinLatexExpertID {
+		return result
+	}
+	if !classificationHasLabel(result, intent.LabelWorkflowTask) {
+		return result
+	}
+	if latexExpertKeepsPanel(semanticUserIntentText(userText), result.WorkflowType) {
+		return result
+	}
+	released := discardWorkflowTask(result, "workflow_task released: latex paper expert already owns the document", semanticUserIntentText(userText))
+	return projectSoleSurvivorAsDocumentEdit(released, "latex paper expert plans the document edit")
+}
+
+// latexExpertKeepsPanel reports that this workflow_task is some other project
+// the catalog confirms. paper_writing is the document this expert owns.
+func latexExpertKeepsPanel(text, named string) bool {
+	if v2.WorkflowType(named) == v2.WorkflowPaperWriting {
+		return false
+	}
+	if named != "" {
+		return v2.CatalogCorroboratesWorkflowProject(text, named)
+	}
+	return v2.CatalogDecisiveWinner(text) != ""
+}
+
+// projectSoleSurvivorAsDocumentEdit plans a file edit when dropping
+// workflow_task left no other capability, or left only a PDF. A surviving
+// office, coding, or search label keeps its own plan. Read and shell still
+// come from the managed baseline.
+func projectSoleSurvivorAsDocumentEdit(released intent.ClassificationResult, note string) intent.ClassificationResult {
+	if released.Primary != "" && !soleDocumentGenerate(released) {
+		return released
+	}
+	released.Primary = intent.LabelFileWrite
+	released.Secondary = nil
+	released.WorkflowType = ""
+	released.ToolNames = nil
+	if strings.Contains(released.Reason, note) {
+		return released
+	}
+	if released.Reason == "" {
+		released.Reason = note
+	} else {
+		released.Reason += "; " + note
+	}
+	return released
+}
+
+// soleDocumentGenerate reports a classification whose only capability is
+// making a PDF. Mixed with another family, that PDF label stays.
+func soleDocumentGenerate(result intent.ClassificationResult) bool {
+	return result.Primary == intent.LabelDocumentGenerate && len(result.Secondary) == 0
+}
+
+// projectStoredTurnIntent applies the releases the planner will apply, to the
+// classification stored on the loop. The planner reads that stored value.
+// Leaving workflow_task there makes the legacy router keep generate_pdf.
+func projectStoredTurnIntent(userID, userText string, result *intent.ClassificationResult) *intent.ClassificationResult {
+	if result == nil {
+		return nil
+	}
+	projected := semanticReleaseLatexExpertWorkflowTask(userID, userText, *result)
+	projected = semanticReleaseUncataloguedWorkflowTask(userText, projected)
+	return &projected
+}
+
+// discardWorkflowTask removes the workflow_task label and the template that
+// belonged to it. A surviving office or coding primary keeps its own type.
+func discardWorkflowTask(result intent.ClassificationResult, note, loggedText string) intent.ClassificationResult {
+	if !classificationHasLabel(result, intent.LabelWorkflowTask) {
+		return result
+	}
 	wasPrimary := result.Primary == intent.LabelWorkflowTask
 	released := classificationWithoutWorkflowTask(result)
-	// WorkflowType belongs to the top candidate. Clear it only when that
-	// candidate was the label we dropped. A surviving office/coding primary
-	// keeps its own type.
 	if wasPrimary || released.Primary == "" {
 		released.WorkflowType = ""
 	}
@@ -80,13 +166,12 @@ func semanticReleaseUncataloguedWorkflowTask(userText string, result intent.Clas
 		released.RunnerUp = ""
 		released.RunnerUpScore = 0
 	}
-	const note = "workflow_task released: utterance is not a catalog workflow project"
 	if released.Reason == "" {
 		released.Reason = note
 	} else if !strings.Contains(released.Reason, note) {
 		released.Reason += "; " + note
 	}
-	log.Printf("[semantic-routing] %s text_len=%d", note, len([]rune(text)))
+	log.Printf("[semantic-routing] %s text_len=%d", note, len([]rune(loggedText)))
 	return released
 }
 

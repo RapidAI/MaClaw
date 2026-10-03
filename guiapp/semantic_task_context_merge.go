@@ -36,6 +36,14 @@ func pendingAnswerPrefersTaskMerge(result *intent.ClassificationResult, isPendin
 	if !isPendingAnswer || result == nil {
 		return false
 	}
+	// A pure delivery label is the sentence's own disposition of an existing
+	// document. Merging the open task rewrites that label into the task
+	// (production 2026-10-03: tree document_delivery at 0.70 became live_data,
+	// then the open generate residue rendered a new PDF). A weak or non-delivery
+	// answer still takes its meaning from the question.
+	if semanticPureExistingDocumentDelivery(*result) {
+		return false
+	}
 	return result.Confidence < 0.85
 }
 
@@ -127,5 +135,22 @@ func (h *IMMessageHandler) classifyWithTaskContextMerge(ctx context.Context, msg
 		return intent.ClassificationResult{}, false
 	}
 	result.Reason = strings.TrimSpace(result.Reason + "; task-context merge")
+	// The merged label can be the open context's own reading. Classify that
+	// context without this sentence. When the sentence adds no side effect,
+	// the relation keeps the stored obligation instead of treating the
+	// summary as a new task.
+	if utf8.RuneCountInString(current) <= 24 && result.Confidence >= 0.85 && semanticClassificationHasMutatingFamily(result) {
+		priorText := truncateRunes(strings.Join(priors, "；"), 300)
+		if priorText != "" {
+			priorResult := uic.ClassifyContext(ctx, intent.MessageContext{
+				Text:          semanticUserIntentText(priorText),
+				UserID:        msg.UserID,
+				RecentHistory: recentHistory,
+			})
+			if !priorResult.Degraded && imSemanticIntentIsManaged(priorResult) && semanticMergedMutationRestates(priorResult, result) {
+				result.Reason = strings.TrimSpace(result.Reason + "; open-task restate")
+			}
+		}
+	}
 	return result, true
 }

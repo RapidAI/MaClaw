@@ -1,0 +1,755 @@
+/* Token Bank panel (design doc §6.1).
+ *
+ * Every colour comes from the shared theme tokens in 00-tokens.css, so the panel
+ * follows the app's dark/light switch with no second stylesheet and no
+ * hardcoded surfaces. */
+
+.tbk-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 20px;
+    background: var(--theme-page-bg);
+    color: var(--theme-text-primary);
+}
+
+.tbk-panel__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.tbk-panel__title {
+    margin: 0 0 4px;
+    font-size: 1.05rem;
+}
+
+.tbk-panel__sub {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--theme-text-secondary);
+    max-width: 46ch;
+}
+
+.tbk-panel__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-error {
+    padding: 10px 12px;
+    border: 1px solid var(--theme-danger);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface);
+    color: var(--theme-danger);
+    font-size: 0.82rem;
+}
+
+.tbk-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+}
+
+.tbk-summary__card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-summary__label {
+    font-size: 0.75rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-summary__value {
+    font-size: 1.15rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.tbk-panel .tbk-section h4 {
+    margin: 0;
+}
+
+.tbk-empty {
+    padding: 14px;
+    border: 1px dashed var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    color: var(--theme-text-secondary);
+    font-size: 0.82rem;
+    list-style: none;
+}
+
+.tbk-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Gift links I sent. A card carries the recipient and a full status sentence,
+   so a column stays wide enough for that sentence to wrap about once.
+   auto-fit follows the settings pane: four cards when they fit, fewer when
+   a fixed four-column row would crush the sentence. */
+.tbk-section--gifts {
+    min-width: 0;
+}
+
+.tbk-gift-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.tbk-gift-grid > .tbk-share {
+    min-width: 0;
+}
+
+.tbk-gift-grid .tbk-share__name,
+.tbk-gift-grid .tbk-gift-claim-detail,
+.tbk-gift-grid .tbk-meta,
+.tbk-gift-grid .tbk-gift-claim-detail > span,
+.tbk-gift-grid .tbk-meta > span {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: break-word;
+}
+
+.tbk-gift-grid .tbk-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+/* Stay one chip beside the amount. A phrase wider than the card wraps inside
+   the chip instead of shrinking into a narrow column. */
+.tbk-gift-grid .tbk-pill {
+    flex-shrink: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.tbk-gift-grid > .tbk-share > .tbk-share__actions {
+    margin-top: auto;
+}
+
+/* My shares: three cards a row, nine a page. The section is the container so
+   the count follows the settings pane, not the whole window. */
+.tbk-section--shares {
+    container-type: inline-size;
+    container-name: tbk-shares;
+}
+
+.tbk-share-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    /* An open model list must not stretch the other cards in the row. */
+    align-items: start;
+}
+
+.tbk-share-grid > .tbk-share {
+    min-width: 0;
+    overflow-wrap: break-word;
+}
+
+/* Do not give an open card a definite grid-column. Definite-column items are
+   placed before auto ones, so the card would jump to the first row. */
+
+.tbk-share-grid .tbk-share__name,
+.tbk-share-grid .tbk-list,
+.tbk-share-grid .tbk-model,
+.tbk-share-grid .tbk-model__name {
+    min-width: 0;
+}
+
+/* The fingerprint is one unbroken token. anywhere lets its min-content
+   shrink; break-word would still demand the full hash and widen the column. */
+.tbk-share-grid .tbk-share__fingerprint {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.tbk-share-grid .tbk-model__name {
+    overflow-wrap: anywhere;
+}
+
+.tbk-share-grid .tbk-model > div.tbk-meta {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+.tbk-share-grid > .tbk-share > .tbk-share__actions > button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.tbk-share-pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.tbk-share-pager__status {
+    min-width: 6.5em;
+    text-align: center;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-share-pager button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+@container tbk-shares (max-width: 880px) {
+    .tbk-share-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container tbk-shares (max-width: 560px) {
+    .tbk-share-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.tbk-list--models {
+    margin-top: 2px;
+}
+
+.tbk-share {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-share__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-share__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.tbk-pill {
+    padding: 2px 8px;
+    border-radius: var(--radius-pill, 999px);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    border: 1px solid transparent;
+}
+
+.tbk-pill--on {
+    background: var(--theme-surface-muted);
+    color: var(--theme-success);
+    border-color: var(--theme-success);
+}
+
+.tbk-pill--off {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    border-color: var(--theme-border);
+}
+
+.tbk-pill--wait {
+    background: var(--theme-warning-bg);
+    color: var(--theme-text-primary);
+    border-color: var(--theme-warning);
+}
+
+.tbk-gift-claim-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-gift-claim-detail__who {
+    color: var(--theme-text-primary);
+    /* Prefer the space after the label. Break a long id only when it is wider than the card. */
+    overflow-wrap: anywhere;
+}
+
+.tbk-gift-claim-detail__state--due {
+    color: var(--theme-danger);
+}
+
+.tbk-meta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-share__error {
+    font-size: 0.78rem;
+    color: var(--theme-danger);
+    word-break: break-word;
+}
+
+.tbk-share__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-danger {
+    color: var(--theme-danger);
+    border-color: var(--theme-danger);
+}
+
+.tbk-model {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface-muted);
+}
+
+.tbk-model__name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    flex: 1 1 140px;
+}
+
+.tbk-model__earned {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8rem;
+}
+
+/* Withdrawal history: four cards a row, twenty a page. The section is the
+   container so the count follows the settings pane, not the whole window. */
+.tbk-section--withdrawals {
+    container-type: inline-size;
+    container-name: tbk-withdrawals;
+}
+
+.tbk-withdraw-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.tbk-withdraw {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-withdraw__amount {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+
+.tbk-withdraw__id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+}
+
+.tbk-withdraw .tbk-share__head,
+.tbk-withdraw .tbk-gift-claim-detail,
+.tbk-withdraw .tbk-gift-claim-detail > span {
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* Long hub and grant ids may be one token. The amount stays intact. */
+.tbk-withdraw .tbk-gift-claim-detail > span {
+    overflow-wrap: anywhere;
+}
+
+.tbk-withdraw > .tbk-share__actions {
+    margin-top: auto;
+}
+
+.tbk-withdraw > .tbk-share__actions > button {
+    max-width: 100%;
+    white-space: normal;
+    text-align: start;
+}
+
+/* Four columns until a card would be narrower than the status sentence.
+   The settings pane, not the window, is the container. */
+@container tbk-withdrawals (max-width: 840px) {
+    .tbk-withdraw-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container tbk-withdrawals (max-width: 560px) {
+    .tbk-withdraw-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.tbk-section__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-gift-form,
+.tbk-gift-ticket,
+.tbk-gift-claim {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-gift-form__row,
+.tbk-gift-ticket__linkrow {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.tbk-gift-form input,
+.tbk-gift-claim input {
+    flex: 1 1 160px;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+}
+
+.tbk-gift-ticket__url {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    word-break: break-all;
+}
+
+.tbk-gift-ticket__qr {
+    align-self: flex-start;
+    padding: 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface);
+}
+
+.tbk-gift-note {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-new-models {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+}
+
+/* One dropdown of providers that are configured and connection-tested.
+   The list used to be one card per provider and pushed the rest of the page down.
+   Rows are a custom listbox: a native option cannot draw the provider mark. */
+.tbk-provider-pick {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* Hug the selected name, and stop at 18rem so a long endpoint hint ellipsizes
+   instead of stretching the row. The open list uses this max-width as its floor. */
+.tbk-provider-pick__control {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: fit-content;
+    min-width: 0;
+    max-width: min(100%, 18rem);
+    height: 36px;
+}
+
+.tbk-provider-pick__face {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    width: auto;
+    max-width: 100%;
+    height: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 0 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1.2;
+    text-align: left;
+    cursor: pointer;
+    appearance: none;
+}
+
+.tbk-provider-pick__face:disabled {
+    cursor: default;
+}
+
+.tbk-provider-pick__face:focus,
+.tbk-provider-pick__face:focus-visible {
+    outline: none;
+}
+
+.tbk-provider-pick__field {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.tbk-provider-pick__label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tbk-provider-pick__chevron {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--theme-text-secondary);
+    border-bottom: 1.5px solid var(--theme-text-secondary);
+    transform: translateY(-2px) rotate(45deg);
+}
+
+.tbk-provider-pick__chevron--open {
+    transform: translateY(2px) rotate(225deg);
+}
+
+.tbk-provider-pick__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    color: var(--theme-text-primary);
+}
+
+.tbk-provider-pick__mark--fallback {
+    border: 1px solid var(--theme-border);
+    border-radius: 6px;
+    background: var(--theme-surface-muted);
+}
+
+.tbk-provider-pick__mark svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+
+.tbk-provider-pick__monogram {
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+}
+
+.tbk-provider-pick__menu {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 4px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
+    color: var(--theme-text-primary);
+    /* Above the page, below the confirm dialog (z-index 2000). */
+    z-index: 1300;
+}
+
+.tbk-provider-pick__option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    /* The menu width is the measured text. The row fills that box and
+       ellipsizes once the viewport caps it, instead of spilling sideways. */
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    margin: 0;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: var(--radius-sm, 6px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1.2;
+    text-align: left;
+    cursor: pointer;
+    appearance: none;
+}
+
+.tbk-provider-pick__option-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tbk-provider-pick__option[aria-selected='true'] {
+    background: var(--theme-surface-muted);
+}
+
+.tbk-provider-pick__option--active,
+.tbk-provider-pick__option:hover {
+    background: var(--theme-primary-soft);
+}
+
+.tbk-provider-pick__option:focus,
+.tbk-provider-pick__option:focus-visible {
+    outline: none;
+}
+
+.tbk-provider-pick__control:has(.tbk-provider-pick__face:disabled) {
+    opacity: 0.55;
+}
+
+.tbk-provider-pick__control:focus-within .tbk-provider-pick__face {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+
+.tbk-panel .tbk-provider-pick__deposit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    width: auto;
+    height: 36px;
+    min-height: 36px;
+    margin-left: 0;
+    padding: 0 12px;
+    font-size: 0.9rem;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.tbk-panel .tbk-provider-pick__deposit:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.tbk-provider-pick__deposit:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+    .tbk-provider-pick__chevron {
+        border-right-color: ButtonText;
+        border-bottom-color: ButtonText;
+    }
+
+    .tbk-provider-pick__control:has(.tbk-provider-pick__face:disabled) {
+        opacity: 1;
+    }
+
+    .tbk-provider-pick__face,
+    .tbk-provider-pick__mark--fallback,
+    .tbk-provider-pick__menu,
+    .tbk-provider-pick__option,
+    .tbk-panel .tbk-provider-pick__deposit,
+    .tbk-panel .tbk-provider-pick__deposit:hover,
+    .tbk-panel .tbk-provider-pick__deposit:focus-visible,
+    .tbk-panel .tbk-provider-pick__deposit:disabled {
+        border-color: ButtonText;
+        background: ButtonFace;
+        color: ButtonText;
+        forced-color-adjust: none;
+    }
+
+    .tbk-provider-pick__option[aria-selected='true'],
+    .tbk-provider-pick__option--active,
+    .tbk-provider-pick__option:hover {
+        background: Highlight;
+        color: HighlightText;
+        forced-color-adjust: none;
+    }
+
+    .tbk-provider-pick__control:focus-within .tbk-provider-pick__face,
+    .tbk-panel .tbk-provider-pick__deposit:focus-visible {
+        outline: 2px solid Highlight;
+        box-shadow: none;
+    }
+}

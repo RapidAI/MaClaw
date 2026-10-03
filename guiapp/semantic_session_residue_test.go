@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,78 +42,23 @@ func TestSemanticSessionResidueFollowUpKeepsOffice(t *testing.T) {
 		t.Fatalf("继续 rewritten=%#v ok=%v", rewritten, ok)
 	}
 	search := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.92, Reason: "bare search"}
-	relation = decideSemanticResidueRelation(search, "再改一版", openOfficeResidue())
-	if relation != semanticResidueUnclear {
-		t.Fatalf("再改一版 relation=%s", relation)
-	}
-	rewritten, ok = semanticClassificationWithOpenResidue(search, officeResidueNeeds(), relation)
-	if !ok || !rewritten.HasLabel(intent.LabelOffice) || rewritten.HasLabel(intent.LabelSearch) {
-		t.Fatalf("再改一版 rewritten=%#v ok=%v", rewritten, ok)
+	if decideSemanticResidueRelation(search, "revise it", openOfficeResidue()) != semanticResidueNone {
+		t.Fatal("a search label inherited the open document")
 	}
 	weather := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.95}
-	if decideSemanticResidueRelation(weather, "然后北京天气怎么样", openOfficeResidue()) != semanticResidueNone {
-		t.Fatal("然后北京天气怎么样 pulled office tools into the weather question")
+	if decideSemanticResidueRelation(weather, "Beijing weather", openOfficeResidue()) != semanticResidueNone {
+		t.Fatal("a search label pulled office tools into the question")
 	}
-	if decideSemanticResidueRelation(weather, "然后长沙天气怎么样", openOfficeResidue()) != semanticResidueNone {
-		t.Fatal("然后长沙天气怎么样 was treated as a document edit")
+	office := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.92}
+	if decideSemanticResidueRelation(office, "write a new deck", openOfficeResidue()) != semanticResidueUnclear {
+		t.Fatal("an office label left the open document")
 	}
-	if decideSemanticResidueRelation(weather, "然后加拿大天气怎么样", openOfficeResidue()) != semanticResidueNone {
-		t.Fatal("然后加拿大天气怎么样 was treated as a document edit")
+	lookup := decideSemanticResidueRelation(weather, "check the weather", openOfficeResidue())
+	if lookup != semanticResidueNone {
+		t.Fatalf("evidence on an office residue relation=%s", lookup)
 	}
-	editAside := decideSemanticResidueRelation(weather, "然后改短一点", openOfficeResidue())
-	if editAside != semanticResidueUnclear {
-		t.Fatalf("然后改短一点 labeled search relation=%s", editAside)
-	}
-	if decideSemanticResidueRelation(weather, "然后长一点", openOfficeResidue()) != semanticResidueUnclear {
-		t.Fatal("然后长一点 dropped the open document")
-	}
-	if decideSemanticResidueRelation(weather, "然后加上一段说明", openOfficeResidue()) != semanticResidueUnclear {
-		t.Fatal("然后加上一段说明 dropped the open document")
-	}
-	again := decideSemanticResidueRelation(weather, "然后再改短一点", openOfficeResidue())
-	if again != semanticResidueUnclear {
-		t.Fatalf("然后再改短一点 relation=%s", again)
-	}
-	againRewrite, ok := semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), again)
-	if !ok || !againRewrite.HasLabel(intent.LabelOffice) || againRewrite.HasLabel(intent.LabelSearch) {
-		t.Fatalf("然后再改短一点 rewritten=%#v ok=%v", againRewrite, ok)
-	}
-	if decideSemanticResidueRelation(weather, "然后再北京天气怎么样", openOfficeResidue()) != semanticResidueNone {
-		t.Fatal("然后再北京天气怎么样 pulled office tools into the weather question")
-	}
-	sheet := decideSemanticResidueRelation(weather, "然后查一下这份表", openOfficeResidue())
-	if sheet != semanticResidueUnclear {
-		t.Fatalf("然后查一下这份表 relation=%s", sheet)
-	}
-	sheetRewrite, ok := semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), sheet)
-	if !ok || !sheetRewrite.HasLabel(intent.LabelOffice) || sheetRewrite.HasLabel(intent.LabelSearch) {
-		t.Fatalf("然后查一下这份表 rewritten=%#v ok=%v", sheetRewrite, ok)
-	}
-	if decideSemanticResidueRelation(weather, "然后查一下北京天气", openOfficeResidue()) != semanticResidueNone {
-		t.Fatal("然后查一下北京天气 kept the office tools")
-	}
-	about := decideSemanticResidueRelation(weather, "然后结论是什么", openOfficeResidue())
-	if about != semanticResidueUnclear {
-		t.Fatalf("然后结论是什么 relation=%s", about)
-	}
-	aboutRewrite, ok := semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), about)
-	if !ok || !aboutRewrite.HasLabel(intent.LabelOffice) || aboutRewrite.HasLabel(intent.LabelSearch) {
-		t.Fatalf("然后结论是什么 rewritten=%#v ok=%v", aboutRewrite, ok)
-	}
-	editRewrite, ok := semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), editAside)
-	if !ok || !editRewrite.HasLabel(intent.LabelOffice) || editRewrite.HasLabel(intent.LabelSearch) {
-		t.Fatalf("然后改短一点 rewritten=%#v ok=%v", editRewrite, ok)
-	}
-	lookup := decideSemanticResidueRelation(weather, "继续查一下天气", openOfficeResidue())
-	if lookup != semanticResidueContinue {
-		t.Fatalf("继续查一下天气 relation=%s", lookup)
-	}
-	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.9}, "把重庆天气发给我", openOfficeResidue()) != semanticResidueNone {
-		t.Fatal("把重庆天气发给我 pulled the open report into the weather delivery")
-	}
-	rewritten, ok = semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), lookup)
-	if !ok || !rewritten.HasLabel(intent.LabelOffice) || !rewritten.HasLabel(intent.LabelSearch) {
-		t.Fatalf("继续查一下天气 rewritten=%#v ok=%v", rewritten, ok)
+	if _, ok := semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), lookup); ok {
+		t.Fatal("evidence on an office residue inherited the document")
 	}
 	loaded, ok := h.loadOpenSemanticSessionResidue("desktop-user")
 	if !ok || len(loaded.Needs) != 1 || loaded.Needs[0].Capability != tool.CapabilityDocumentWriteOffice {
@@ -125,42 +71,50 @@ func TestShortShellFollowUpStaysOnOpenSSHSurface(t *testing.T) {
 		Status: semanticResidueOpen,
 		Needs:  []tool.CapabilityNeed{{ID: "need:ssh", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true}},
 	}
-	relation := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.92}, "再执行一下", residue)
-	if relation != semanticResidueUnclear {
-		t.Fatalf("relation=%s", relation)
-	}
-	rewritten, ok := semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.92}, residue.Needs, relation)
-	if !ok || !rewritten.HasLabel(intent.LabelSSH) || rewritten.HasLabel(intent.LabelShellCommand) {
-		t.Fatalf("rewritten=%#v ok=%v", rewritten, ok)
+	switched := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.92}, "run it again", residue)
+	if switched != semanticResidueSwitch {
+		t.Fatalf("local label on a remote residue relation=%s", switched)
 	}
 	local := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.93}, "改到本机执行", residue)
 	if local != semanticResidueSwitch {
 		t.Fatalf("local switch relation=%s", local)
 	}
-	withCue := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.92}, "然后再执行一下", residue)
-	if withCue != semanticResidueUnclear {
-		t.Fatalf("follow-up cue relation=%s", withCue)
+	same := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: 0.92}, "run it again", residue)
+	if same != semanticResidueUnclear {
+		t.Fatalf("matching remote label relation=%s", same)
 	}
-	rewritten, ok = semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.92}, residue.Needs, withCue)
+	rewritten, ok := semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: 0.92}, residue.Needs, same)
 	if !ok || !rewritten.HasLabel(intent.LabelSSH) || rewritten.HasLabel(intent.LabelShellCommand) {
-		t.Fatalf("cued rewritten=%#v ok=%v", rewritten, ok)
+		t.Fatalf("rewritten=%#v ok=%v", rewritten, ok)
+	}
+	kept := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, "run it again", residue)
+	if kept != semanticResidueContinue && kept != semanticResidueUnclear {
+		t.Fatalf("continuation relation=%s", kept)
+	}
+	withBaseline := residue
+	withBaseline.Needs = append(append([]tool.CapabilityNeed(nil), residue.Needs...),
+		tool.CapabilityNeed{ID: "need:zz-baseline:shell.execute.local:bbb", Capability: tool.CapabilityShellExecuteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+	)
+	held := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: 0.92}, "run it again", withBaseline)
+	if held != semanticResidueUnclear {
+		t.Fatalf("baseline local shell cancelled the remote obligation, relation=%s", held)
+	}
+	left := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.92}, "改到本机执行", withBaseline)
+	if left != semanticResidueSwitch {
+		t.Fatalf("baseline local shell held a local command on the remote task, relation=%s", left)
 	}
 }
 
 func TestShortDocumentEditStaysOnOpenOfficeSurface(t *testing.T) {
 	residue := openOfficeResidue()
 	current := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: 0.91}
-	relation := decideSemanticResidueRelation(current, "改短一点", residue)
-	if relation != semanticResidueUnclear {
-		t.Fatalf("relation=%s", relation)
+	relation := decideSemanticResidueRelation(current, "make it shorter", residue)
+	if relation != semanticResidueSwitch {
+		t.Fatalf("file-write on an office residue relation=%s", relation)
 	}
-	rewritten, ok := semanticClassificationWithOpenResidue(current, residue.Needs, relation)
-	if !ok || !rewritten.HasLabel(intent.LabelOffice) || rewritten.HasLabel(intent.LabelFileWrite) {
-		t.Fatalf("rewritten=%#v ok=%v", rewritten, ok)
-	}
-	prefixed := decideSemanticResidueRelation(current, "然后改短一点", residue)
-	if prefixed != semanticResidueUnclear {
-		t.Fatalf("prefixed edit relation=%s", prefixed)
+	prefixed := decideSemanticResidueRelation(current, "and make it shorter", residue)
+	if prefixed != semanticResidueSwitch {
+		t.Fatalf("prefixed file-write relation=%s", prefixed)
 	}
 	long := decideSemanticResidueRelation(
 		intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.93},
@@ -169,6 +123,64 @@ func TestShortDocumentEditStaysOnOpenOfficeSurface(t *testing.T) {
 	)
 	if long != semanticResidueSwitch {
 		t.Fatalf("long document request relation=%s", long)
+	}
+}
+
+func TestArchetypeSearchDoesNotMakeTheOfficeALookup(t *testing.T) {
+	residue := openOfficeResidue()
+	residue.Needs = append(residue.Needs,
+		tool.CapabilityNeed{ID: "need:search:arch", Capability: "information.search.web", EvidenceIDs: []string{"intent:archetype_bundle"}},
+		tool.CapabilityNeed{ID: "need:artifact.acquire.remote:ccc", Capability: tool.CapabilityArtifactAcquireRemote, EvidenceIDs: []string{"intent:archetype_bundle"}},
+		tool.CapabilityNeed{ID: "need:zz-baseline:shell.execute.local:bbb", Capability: tool.CapabilityShellExecuteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+	)
+	long := "请根据当前表格另存一份完整的PDF报告，封面用今天的日期"
+	if got := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.93}, long, residue); got != semanticResidueSwitch {
+		t.Fatalf("archetype search held a new PDF on the office task, relation=%s", got)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, residue.Needs, semanticResidueContinue)
+	if !ok || rewritten.Primary != intent.LabelOffice {
+		t.Fatalf("office rewrite=%#v ok=%v", rewritten, ok)
+	}
+	if rewritten.HasLabel(intent.LabelFileDownload) || rewritten.HasLabel(intent.LabelShellCommand) || rewritten.HasLabel(intent.LabelSearch) {
+		t.Fatalf("companion labels joined the office task: %#v", rewritten)
+	}
+}
+
+func TestLookupCompanionDoesNotReopenAcquire(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:search", Capability: "information.search.web", Required: true},
+			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+			{ID: "need:artifact.acquire.remote:ccc", Capability: tool.CapabilityArtifactAcquireRemote, EvidenceIDs: []string{"intent:archetype_bundle"}},
+			{ID: "need:zz-baseline:fs.write.local:bbb", Capability: tool.CapabilityFSWriteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+		},
+		Remaining: map[string]int{
+			"information.search.web":                     4,
+			"document.generate.file":                     0,
+			string(tool.CapabilityArtifactAcquireRemote): 0,
+			string(tool.CapabilityFSWriteLocal):          0,
+		},
+		LookupFacts: true,
+	}
+	report := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}
+	if got := decideSemanticResidueRelation(report, "生成pdf报告", residue); got != semanticResidueContinue {
+		t.Fatalf("生成pdf报告 relation=%s", got)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(report, residue.Needs, semanticResidueContinue)
+	if !ok || rewritten.Primary != intent.LabelDocumentGenerate || rewritten.HasLabel(intent.LabelFileDownload) || rewritten.HasLabel(intent.LabelFileWrite) {
+		t.Fatalf("companion joined the lookup: %#v ok=%v", rewritten, ok)
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if remaining[string(tool.CapabilityArtifactAcquireRemote)] != 0 || remaining[string(tool.CapabilityFSWriteLocal)] != 0 {
+		t.Fatalf("companion reopened a ceiling: %v", remaining)
+	}
+	if _, spent := remaining["document.generate.file"]; spent {
+		t.Fatalf("generate stayed closed: %v", remaining)
+	}
+	continued, ok := semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, residue.Needs, semanticResidueUnclear)
+	if !ok || continued.Primary != intent.LabelSearch || continued.HasLabel(intent.LabelFileDownload) {
+		t.Fatalf("lookup continuation=%#v ok=%v", continued, ok)
 	}
 }
 
@@ -209,20 +221,20 @@ func TestSemanticSessionResidueHighConfidenceMutatingSwitchLeavesOffice(t *testi
 		t.Fatal("cued switch must not inherit office")
 	}
 	bare := decideSemanticResidueRelation(current, "继续", openOfficeResidue())
-	if bare != semanticResidueUnclear {
-		t.Fatalf("bare continue relation=%s", bare)
+	if bare != semanticResidueSwitch {
+		t.Fatalf("shell label on continue relation=%s", bare)
 	}
-	rewritten, ok := semanticClassificationWithOpenResidue(current, officeResidueNeeds(), bare)
-	if !ok || !rewritten.HasLabel(intent.LabelOffice) || rewritten.HasLabel(intent.LabelShellCommand) {
-		t.Fatalf("bare continue rewritten=%#v ok=%v", rewritten, ok)
+	stay := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, "继续", openOfficeResidue())
+	if stay != semanticResidueContinue && stay != semanticResidueUnclear {
+		t.Fatalf("continuation relation=%s", stay)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, officeResidueNeeds(), stay)
+	if !ok || !rewritten.HasLabel(intent.LabelOffice) {
+		t.Fatalf("continuation rewritten=%#v ok=%v", rewritten, ok)
 	}
 	send := decideSemanticResidueRelation(current, "发给我", openOfficeResidue())
-	if send != semanticResidueUnclear {
-		t.Fatalf("发给我 relation=%s", send)
-	}
-	sendRewrite, ok := semanticClassificationWithOpenResidue(current, officeResidueNeeds(), send)
-	if !ok || !sendRewrite.HasLabel(intent.LabelOffice) || sendRewrite.HasLabel(intent.LabelShellCommand) {
-		t.Fatalf("发给我 rewritten=%#v ok=%v", sendRewrite, ok)
+	if send != semanticResidueSwitch {
+		t.Fatalf("shell label on handoff relation=%s", send)
 	}
 }
 
@@ -241,7 +253,7 @@ func TestTaskContextMergeStaysOnTheOpenLookup(t *testing.T) {
 		Confidence: 0.85,
 		Reason:     "tree-after-embedding: live_data (0.850); task-context merge",
 	}
-	relation := decideSemanticResidueRelation(current, "所以，多的脂肪去哪了？", residue)
+	relation := decideSemanticResidueRelationWithBare(current, &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.3}, "所以，多的脂肪去哪了？", residue)
 	if relation != semanticResidueUnclear {
 		t.Fatalf("relation=%s, want the open lookup kept", relation)
 	}
@@ -260,8 +272,74 @@ func TestTaskContextMergeStaysOnTheOpenLookup(t *testing.T) {
 		Primary: intent.LabelLiveDataVisual, Confidence: 0.9,
 		Reason: "tree-after-embedding: live_data_visual (0.900); task-context merge",
 	}
-	if decideSemanticResidueRelation(named, "崇州天气", residue) != semanticResidueNone {
-		t.Fatal("崇州天气 stayed on the previous card because the summary was merged")
+	bareLookup := intent.ClassificationResult{Primary: intent.LabelLiveDataVisual, Confidence: 0.9}
+	if decideSemanticResidueRelationWithBare(named, &bareLookup, "Chongzhou weather", residue) != semanticResidueNone {
+		t.Fatal("a lookup the bare classification already had stayed on the previous card")
+	}
+}
+
+func TestOpenTaskRestateDoesNotAbandonSpentShell(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status:  semanticResidueOpen,
+		Summary: "更新api2服务器上的omniroute，保存原始配置",
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true},
+		},
+		Remaining: map[string]int{
+			"knowledge.read.local":                        1,
+			string(tool.CapabilityShellExecuteRemoteHost): 0,
+		},
+	}
+	restated := intent.ClassificationResult{
+		Primary:    intent.LabelFileWrite,
+		Confidence: 0.92,
+		Reason:     "tree-after-embedding: file_write (0.920); task-context merge; open-task restate",
+	}
+	if got := decideSemanticResidueRelation(restated, "已经解封", residue); got != semanticResidueUnclear {
+		t.Fatalf("restate relation=%s", got)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(restated, residue.Needs, semanticResidueUnclear)
+	if !ok || rewritten.Primary != intent.LabelSSH {
+		t.Fatalf("restate dropped the shell obligation: %#v ok=%v", rewritten, ok)
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if _, closed := remaining[string(tool.CapabilityShellExecuteRemoteHost)]; closed {
+		t.Fatalf("restate left the shell ceiling closed: %v", remaining)
+	}
+	fresh := restated
+	fresh.Reason = "tree-after-embedding: file_write (0.920); task-context merge"
+	if got := decideSemanticResidueRelation(fresh, "已经解封", residue); got != semanticResidueNone {
+		t.Fatalf("a file task the sentence's merge introduced stayed, relation=%s", got)
+	}
+	local := intent.ClassificationResult{
+		Primary:    intent.LabelShellCommand,
+		Confidence: 0.93,
+		Reason:     "task-context merge; open-task restate",
+	}
+	open := residue
+	open.Remaining = map[string]int{
+		"knowledge.read.local":                        1,
+		string(tool.CapabilityShellExecuteRemoteHost): 1,
+	}
+	if got := decideSemanticResidueRelation(local, "已经解封", open); got != semanticResidueUnclear {
+		t.Fatalf("a restated local shell changed the remote surface, relation=%s", got)
+	}
+	long := "使用agnes ai的视频生成模型，生成一段猫和老鼠游戏的视频。"
+	longRestate := intent.ClassificationResult{
+		Primary:    intent.LabelKnowledgeWrite,
+		Confidence: 0.90,
+		Reason:     "task-context merge; open-task restate",
+	}
+	spentKnowledge := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs:  []tool.CapabilityNeed{{ID: "need:ingest", Capability: tool.CapabilityKnowledgeIngestLocal, Required: true}},
+		Remaining: map[string]int{
+			string(tool.CapabilityKnowledgeIngestLocal): 0,
+		},
+	}
+	if got := decideSemanticResidueRelation(longRestate, long, spentKnowledge); got != semanticResidueNone {
+		t.Fatalf("a long restated request stayed on the spent wave, relation=%s", got)
 	}
 }
 
@@ -279,8 +357,8 @@ func TestNextCityWeatherDoesNotContinueAsScreenshot(t *testing.T) {
 	if decideSemanticResidueRelation(current, "崇州天气", residue) != semanticResidueNone {
 		t.Fatal("崇州天气 continued the spent Beijing weather grant")
 	}
-	if decideSemanticResidueRelation(current, "然后写成周报", residue) == semanticResidueNone {
-		t.Fatal("然后写成周报 was treated as another city lookup")
+	if decideSemanticResidueRelation(current, "write this up as a report", residue) != semanticResidueNone {
+		t.Fatal("a visual label stayed on the open card because of the wording")
 	}
 }
 
@@ -289,24 +367,18 @@ func TestContinueMoreImagesDropsSpentDownloadCeiling(t *testing.T) {
 		string(tool.CapabilityArtifactAcquireRemote): 0,
 		"document.generate.file":                     0,
 	}
-	got := semanticResidueRemainingForFollowUp(in, "继续补图")
+	download := intent.ClassificationResult{Primary: intent.LabelFileDownload, Confidence: 0.9}
+	got := semanticResidueRemainingForFollowUp(in, download)
 	if _, ok := got[string(tool.CapabilityArtifactAcquireRemote)]; ok {
-		t.Fatal("继续补图 kept the spent download ceiling")
+		t.Fatal("a download label kept the spent download ceiling")
 	}
 	if got["document.generate.file"] != 0 {
-		t.Fatal("继续补图 cleared the generate ceiling")
+		t.Fatal("a download label cleared the generate ceiling")
 	}
-	for _, text := range []string{"继续下载剩下的", "再下几张"} {
-		renewed := semanticResidueRemainingForFollowUp(in, text)
-		if _, ok := renewed[string(tool.CapabilityArtifactAcquireRemote)]; ok {
-			t.Fatalf("%s kept the spent download ceiling", text)
-		}
-	}
-	for _, text := range []string{"改短一点", "继续下周的报告", "再下结论", "不要下载了"} {
-		kept := semanticResidueRemainingForFollowUp(in, text)
-		if kept[string(tool.CapabilityArtifactAcquireRemote)] != 0 {
-			t.Fatalf("%s renewed the download ceiling", text)
-		}
+	office := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.9}
+	kept := semanticResidueRemainingForFollowUp(in, office)
+	if kept[string(tool.CapabilityArtifactAcquireRemote)] != 0 {
+		t.Fatal("继续补图 reopened the download ceiling without a download label")
 	}
 }
 
@@ -328,32 +400,68 @@ func TestPPTToPDFDoesNotReloadOpenDownloadGrant(t *testing.T) {
 		t.Fatal("将ppt生成pdf文档 was replaced by the open download grant")
 	}
 	officeOnly := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.88}
-	if decideSemanticResidueRelation(officeOnly, "将ppt生成pdf文档", residue) != semanticResidueNone {
-		t.Fatal("a short ppt-to-pdf request was treated as an edit of the open deck")
+	for _, text := range []string{"make a pdf from the deck", "write a new deck", "turn the deck into a pdf", "send it to me"} {
+		if got := decideSemanticResidueRelation(officeOnly, text, residue); got != semanticResidueUnclear {
+			t.Fatalf("%s relation=%s", text, got)
+		}
 	}
-	if decideSemanticResidueRelation(officeOnly, "把幻灯片导成可打印文档", residue) != semanticResidueNone {
-		t.Fatal("a paraphrased conversion was treated as an edit of the open deck")
+}
+
+func TestBareDocumentDeliveryDoesNotReplayOpenGenerate(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:search", Capability: "information.search.web", Required: true},
+			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+			{ID: "need:deliver", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+		},
+		Remaining: map[string]int{"information.search.web": 0, "document.generate.file": 0, "artifact.deliver.current_channel": 0},
 	}
-	if decideSemanticResidueRelation(officeOnly, "写一份新的ppt", residue) != semanticResidueNone {
-		t.Fatal("写一份新的ppt stayed on the open grant because it contains 写")
+	bare := intent.ClassificationResult{Primary: intent.LabelDocumentDelivery, Confidence: 0.70, Layer: 3, Reason: "tree document_delivery"}
+	restored, ok := semanticOpenResidueDelivery(bare, residue)
+	if !ok || restored.Primary != intent.LabelDocumentDelivery || restored.HasLabel(intent.LabelDocumentGenerate) || restored.HasLabel(intent.LabelLiveData) {
+		t.Fatalf("restored=%#v ok=%v", restored, ok)
 	}
-	if decideSemanticResidueRelation(officeOnly, "把ppt改成pdf", residue) != semanticResidueNone {
-		t.Fatal("把ppt改成pdf stayed on the open grant because it contains 改")
+	if !strings.Contains(restored.Reason, "session residue delivery") {
+		t.Fatalf("reason=%q", restored.Reason)
 	}
-	if decideSemanticResidueRelation(officeOnly, "把标题改成红色", residue) != semanticResidueUnclear {
-		t.Fatal("把标题改成红色 left the open deck")
+	if semanticContinuesOpenDocument(restored, residue) {
+		t.Fatal("delivery continued the open render")
 	}
-	if decideSemanticResidueRelation(officeOnly, "做研发我司的ppt", residue) != semanticResidueNone {
-		t.Fatal("做研发我司的ppt stayed on the open grant because 研发我 contains 发我")
+	merged := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.82, Reason: "tree; task-context merge"}
+	relation := decideSemanticResidueRelationWithBare(merged, &bare, "send the file", residue)
+	if relation != semanticResidueUnclear {
+		t.Fatalf("merged relation=%s", relation)
 	}
-	if decideSemanticResidueRelation(officeOnly, "发给我", residue) != semanticResidueUnclear {
-		t.Fatal("发给我 left the open deck")
+	rewritten, applied := semanticClassificationWithOpenResidue(merged, residue.Needs, relation)
+	if !applied || !rewritten.HasLabel(intent.LabelDocumentGenerate) || rewritten.Primary == intent.LabelDocumentDelivery {
+		t.Fatalf("unclear rewrite=%#v applied=%v", rewritten, applied)
 	}
-	if decideSemanticResidueRelation(officeOnly, "把ppt发给老板", residue) != semanticResidueUnclear {
-		t.Fatal("把ppt发给老板 left the open deck")
+	renewed := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if _, clamped := renewed["document.generate.file"]; clamped {
+		t.Fatalf("replaying generate left the PDF ceiling clamped: %v", renewed)
 	}
-	if decideSemanticResidueRelation(officeOnly, "做一份发给客户的ppt", residue) != semanticResidueNone {
-		t.Fatal("做一份发给客户的ppt stayed on the open grant")
+	city := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate}, Confidence: 0.84,
+	}
+	if _, ok := semanticOpenResidueDelivery(city, residue); ok {
+		t.Fatal("a new lookup document was kept as delivery of the previous file")
+	}
+	report := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}
+	if _, ok := semanticOpenResidueDelivery(report, residue); ok {
+		t.Fatal("a continued render was treated as delivery")
+	}
+	if got := decideSemanticResidueRelation(report, "生成pdf报告", residue); got != semanticResidueContinue {
+		t.Fatalf("生成pdf报告 relation=%s", got)
+	}
+	attachment := intent.ClassificationResult{Primary: intent.LabelAttachmentDelivery, Confidence: 0.70, Layer: 3}
+	if _, ok := semanticOpenResidueDelivery(attachment, residue); !ok {
+		t.Fatal("attachment delivery of a produced document was not kept")
+	}
+	empty := residue
+	empty.Needs = []tool.CapabilityNeed{{ID: "need:search", Capability: "information.search.web", Required: true}}
+	if _, ok := semanticOpenResidueDelivery(bare, empty); ok {
+		t.Fatal("delivery was restored when the task had not produced a document")
 	}
 }
 
@@ -380,23 +488,108 @@ func TestNextCityWeatherPDFDoesNotContinueSpentGenerate(t *testing.T) {
 	if decideSemanticResidueRelation(current, "然后重庆天气，生成格式化pdf", residue) != semanticResidueNone {
 		t.Fatal("然后重庆天气，生成格式化pdf spent the previous city's PDF grant")
 	}
-	if decideSemanticResidueRelation(current, "然后把重庆天气发给我", residue) != semanticResidueNone {
-		t.Fatal("然后把重庆天气发给我 was treated as an edit of the previous PDF")
+	if decideSemanticResidueRelation(current, "send me Chongqing weather as a pdf", residue) != semanticResidueNone {
+		t.Fatal("a lookup plus a document continued the spent PDF grant")
 	}
 	lookupOnly := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.90}
-	if decideSemanticResidueRelation(lookupOnly, "然后把重庆天气发给我", residue) != semanticResidueNone {
-		t.Fatal("a lookup-only resend of Chongqing weather kept the spent grant")
+	if got := decideSemanticResidueRelation(lookupOnly, "然后把重庆天气发给我", residue); got != semanticResidueContinue {
+		t.Fatalf("lookup-only follow-up relation=%s", got)
 	}
 	modest := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.70}
-	if decideSemanticResidueRelation(modest, "然后把重庆天气发给我", residue) != semanticResidueNone {
-		t.Fatal("a modest lookup resend kept the spent weather grant")
+	if got := decideSemanticResidueRelation(modest, "Lanzhou weather", residue); got != semanticResidueContinue {
+		t.Fatalf("evidence-only relation=%s", got)
 	}
 	asPDF := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Secondary: []intent.IntentLabel{intent.LabelLiveData}, Confidence: 0.9}
 	if decideSemanticResidueRelation(asPDF, "把重庆天气发给我", residue) != semanticResidueNone {
 		t.Fatal("a PDF-labeled resend of Chongqing weather kept the spent grant")
 	}
-	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}, "生成pdf报告", residue) == semanticResidueNone {
-		t.Fatal("生成pdf报告 was treated as a new city lookup")
+	if got := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}, "生成pdf报告", residue); got != semanticResidueContinue {
+		t.Fatalf("生成pdf报告 relation=%s", got)
+	}
+	report := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}
+	rewritten, ok := semanticClassificationWithOpenResidue(report, residue.Needs, semanticResidueContinue)
+	if !ok || rewritten.Primary != intent.LabelDocumentGenerate {
+		t.Fatalf("生成pdf报告 rewritten=%#v ok=%v", rewritten, ok)
+	}
+	partial := residue
+	partial.Remaining = map[string]int{
+		"information.search.web":                     4,
+		"document.generate.file":                     0,
+		"artifact.deliver.current_channel":           0,
+		string(tool.CapabilityArtifactAcquireRemote): 0,
+		string(tool.CapabilityFSWriteLocal):          0,
+	}
+	remaining := semanticResidueRemainingForOpenTurn(partial, rewritten)
+	if _, spent := remaining["document.generate.file"]; spent {
+		t.Fatalf("partial search ceiling clamped the open PDF: %v", remaining)
+	}
+	if remaining["information.search.web"] != 4 {
+		t.Fatalf("search allowance changed: %v", remaining)
+	}
+	if remaining[string(tool.CapabilityArtifactAcquireRemote)] != 0 || remaining[string(tool.CapabilityFSWriteLocal)] != 0 {
+		t.Fatalf("render reopened an unrelated ceiling: %v", remaining)
+	}
+	if got := decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}, "generate the pdf report", residue); got != semanticResidueContinue {
+		t.Fatalf("document render relation=%s", got)
+	}
+}
+
+func TestContinueNamedLookupKeepsOpenDeliverable(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:search", Capability: "information.search.web", Required: true},
+			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+			{ID: "need:deliver", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+		},
+		Summary:     "成都天气生成pdf",
+		LookupFacts: true,
+		Remaining:   map[string]int{"information.search.web": 0, "document.generate.file": 0, "artifact.deliver.current_channel": 0},
+	}
+	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.90}
+	relation := decideSemanticResidueRelation(current, "继续完成 兰州天气", residue)
+	if relation != semanticResidueContinue {
+		t.Fatalf("继续完成 兰州天气 relation=%s", relation)
+	}
+	if got := decideSemanticResidueRelation(current, "Lanzhou weather", residue); got != semanticResidueContinue {
+		t.Fatalf("Lanzhou weather relation=%s", got)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(current, residue.Needs, relation)
+	if !ok || rewritten.Primary != intent.LabelLiveData || !rewritten.HasLabel(intent.LabelDocumentGenerate) {
+		t.Fatalf("rewritten=%#v ok=%v", rewritten, ok)
+	}
+	if semanticReuseStoredLookupFacts("继续完成 兰州天气", current) {
+		t.Fatal("the open deliverable reused the previous city's facts")
+	}
+	if semanticReuseStoredLookupFacts("继续完成 兰州天气", rewritten) {
+		t.Fatal("the continued lookup reused facts after the residue rewrite")
+	}
+	residue.Needs = append(residue.Needs, tool.CapabilityNeed{
+		ID:          "need:zz-baseline:fs.write.local:extra",
+		Capability:  tool.CapabilityFSWriteLocal,
+		EvidenceIDs: []string{"intent:baseline_workspace"},
+	})
+	residue.Remaining[string(tool.CapabilityArtifactAcquireRemote)] = 0
+	residue.Remaining[string(tool.CapabilityFSWriteLocal)] = 0
+	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if _, ok := remaining["information.search.web"]; ok {
+		t.Fatalf("spent search ceiling still closes the new subject: %v", remaining)
+	}
+	if _, ok := remaining["document.generate.file"]; ok {
+		t.Fatalf("spent generate ceiling still closes the open deliverable: %v", remaining)
+	}
+	if _, ok := remaining["artifact.deliver.current_channel"]; ok {
+		t.Fatalf("spent deliver ceiling still closes the open deliverable: %v", remaining)
+	}
+	if remaining[string(tool.CapabilityArtifactAcquireRemote)] != 0 {
+		t.Fatalf("unrelated download ceiling was reopened: %v", remaining)
+	}
+	if remaining[string(tool.CapabilityFSWriteLocal)] != 0 {
+		t.Fatalf("stale file-write ceiling was reopened: %v", remaining)
+	}
+	kept := decideSemanticResidueRelation(current, "继续查一下天气", residue)
+	if kept != semanticResidueContinue {
+		t.Fatalf("继续查一下天气 relation=%s", kept)
 	}
 }
 
@@ -419,8 +612,8 @@ func TestStandaloneRequestDoesNotSpendOpenGrant(t *testing.T) {
 		t.Fatal("a new managed request spent the open PDF grant")
 	}
 	edit := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: 0.80}
-	if decideSemanticResidueRelation(edit, "改短一点", residue) != semanticResidueUnclear {
-		t.Fatal("a short edit of the open delivery opened a new grant")
+	if decideSemanticResidueRelation(edit, "make it shorter", residue) != semanticResidueNone {
+		t.Fatal("a file-write label stayed on the open PDF")
 	}
 }
 
@@ -434,14 +627,11 @@ func TestSemanticSessionResidueReadOnlySideQuestionDoesNotInherit(t *testing.T) 
 
 func TestOpenTaskGreetingAnswersWithoutLegacyTools(t *testing.T) {
 	residue := openOfficeResidue()
-	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}, "你好", residue) != semanticResidueNone {
-		t.Fatal("a greeting must not inherit or replace the open task")
+	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}, "你好", residue) != semanticResidueContinue {
+		t.Fatal("an unknown label continues the open task")
 	}
-	if isTaskAnchorGreetingText("现在几点") || isTaskAnchorGreetingText("你好，帮我改周报") || !isTaskAnchorGreetingText("你好") || !isTaskAnchorGreetingText("Hello!") || !isTaskAnchorGreetingText("你好啊") || !isTaskAnchorGreetingText("hi there") || !isTaskAnchorGreetingText("早上好") {
-		t.Fatal("greeting detection drifted")
-	}
-	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}, "你好啊", residue) != semanticResidueNone {
-		t.Fatal("你好啊 must not inherit the open task")
+	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}, "你好啊", residue) != semanticResidueContinue {
+		t.Fatal("the same unknown label continues, whatever the greeting")
 	}
 	ctx := &LoopContext{
 		semanticTurnAnswerOnly: true,
@@ -510,38 +700,26 @@ func TestPrepareIMLoopContextDropsTurnLocalResidue(t *testing.T) {
 	if len(used) != 0 || lookupUsed {
 		t.Fatalf("used=%v lookup=%v", used, lookupUsed)
 	}
-	if !markOpenTaskAnswerOnly(got, true, "你好啊") || !got.semanticTurnAnswerOnly {
-		t.Fatal("an open-task greeting must close only this turn")
-	}
-	if markOpenTaskAnswerOnly(got, false, "你好") || markOpenTaskAnswerOnly(got, true, "现在几点") {
-		t.Fatal("a greeting without an open task, or a clock question, must stay open")
-	}
 }
 
 func TestSocialAckDoesNotReopenOpenTaskTools(t *testing.T) {
 	residue := openOfficeResidue()
-	for _, text := range []string{"谢谢", "谢谢啊", "thanks", "再见"} {
-		if !semanticSocialNoToolText(text) {
-			t.Fatalf("%s should be a no-tool social turn", text)
-		}
-		if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}, text, residue) != semanticResidueNone {
-			t.Fatalf("%s inherited the open task", text)
+	unknown := intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}
+	for _, text := range []string{"谢谢", "thanks", "再见", "你好，帮我改周报"} {
+		if decideSemanticResidueRelation(unknown, text, residue) != semanticResidueContinue {
+			t.Fatalf("%s with an unknown label left the open task", text)
 		}
 	}
-	if semanticSocialNoToolText("谢谢，帮我改周报") || semanticSocialNoToolText("好的") || semanticSocialNoToolText("继续") {
-		t.Fatal("a task, a go-ahead, or a continuation was treated as thanks")
-	}
-	ctx := &LoopContext{}
-	if !markOpenTaskAnswerOnly(ctx, true, "谢谢") || !ctx.semanticTurnAnswerOnly {
-		t.Fatal("thanks while a task is open must answer without tools")
+	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.92}, "谢谢", residue) != semanticResidueUnclear {
+		t.Fatal("an office label left the open document")
 	}
 }
 
 func TestFollowUpCueReadOnlySideQuestionLeavesOfficeToolsOff(t *testing.T) {
 	residue := openOfficeResidue()
 	clock := intent.ClassificationResult{Primary: intent.LabelCurrentTime, Confidence: 0.95}
-	if decideSemanticResidueRelation(clock, "然后现在几点", residue) != semanticResidueNone {
-		t.Fatal("然后现在几点 pulled the open office tools")
+	if decideSemanticResidueRelation(clock, "hello", residue) != semanticResidueNone {
+		t.Fatal("a clock label inherited the open office tools")
 	}
 	if semanticFollowUpAllowsTaskMerge(&clock, "然后现在几点") {
 		t.Fatal("a confident clock question was rewritten with the office summary")
@@ -550,8 +728,8 @@ func TestFollowUpCueReadOnlySideQuestionLeavesOfficeToolsOff(t *testing.T) {
 	if semanticFollowUpAllowsTaskMerge(&edit, "再改一版") {
 		t.Fatal("a confident search label must not be rewritten by the office summary")
 	}
-	if decideSemanticResidueRelation(edit, "再改一版", residue) != semanticResidueUnclear {
-		t.Fatal("再改一版 must keep the office task without adding search")
+	if decideSemanticResidueRelation(edit, "再改一版", residue) != semanticResidueNone {
+		t.Fatal("a search label stayed on the office task")
 	}
 	shell := intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.93}
 	if semanticFollowUpAllowsTaskMerge(&shell, "然后连上服务器跑一遍检查") {
@@ -620,6 +798,50 @@ func TestSemanticSessionResidueSettleCompletesReadOnlyAndKeepsOffice(t *testing.
 	}
 }
 
+func TestGrantedArchetypeCompanionStaysACompanion(t *testing.T) {
+	plan := tool.ToolPlan{Selections: []tool.PlannedSelection{
+		{ID: "selection:need:office", NeedID: "need:document.write.office:aaa", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{ID: "selection:need:acquire", NeedID: "need:artifact.acquire.remote:ccc", EvidenceIDs: []string{"intent:archetype_bundle"}, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityArtifactAcquireRemote}},
+		{ID: "selection:need:search", NeedID: "need:information.search.web:ddd", EvidenceIDs: []string{"intent:archetype_bundle"}, FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+	}}
+	needs := semanticResidueWithoutAmbient(withoutLookupCarryNeeds(grantedNeedsFromPlan(plan)))
+	obligation := semanticResidueObligationNeeds(needs)
+	if len(obligation) != 1 || obligation[0].Capability != tool.CapabilityDocumentWriteOffice {
+		t.Fatalf("archetype companions became the obligation: %#v", obligation)
+	}
+	if semanticResidueIsLookupVisual(needs) {
+		t.Fatal("archetype search made the office plan a lookup")
+	}
+	reloaded := semanticResidueFromPersisted(semanticResidueToPersisted(semanticSessionResidue{Status: semanticResidueOpen, Needs: needs}))
+	if semanticResidueIsLookupVisual(reloaded.Needs) || len(semanticResidueObligationNeeds(reloaded.Needs)) != 1 {
+		t.Fatalf("restart lost the companion marker: %#v", reloaded.Needs)
+	}
+}
+
+func TestBaselineCompanionDoesNotReplaceOpenTask(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.storeSemanticSessionResidue("desktop-user", openOfficeResidue())
+	side := &LoopContext{semanticResidueCandidateNeeds: []tool.CapabilityNeed{
+		{ID: "need:search", Capability: "information.search.web", Required: true},
+		{ID: "need:zz-baseline:fs.write.local:bbb", Capability: tool.CapabilityFSWriteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+		{ID: "need:zz-baseline:shell.execute.local:ccc", Capability: tool.CapabilityShellExecuteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+	}, semanticResidueCandidateText: "现在几点"}
+	h.settleSemanticSessionResidue(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "现在几点"}, side, &IMAgentResponse{})
+	loaded, ok := h.loadOpenSemanticSessionResidue("desktop-user")
+	if !ok || loaded.Summary != "做一份项目周报" || loaded.Needs[0].Capability != tool.CapabilityDocumentWriteOffice {
+		t.Fatalf("baseline companion replaced the open task: %#v ok=%v", loaded, ok)
+	}
+	fresh := &IMMessageHandler{}
+	fresh.settleSemanticSessionResidue(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "现在几点"}, side, &IMAgentResponse{})
+	if _, open := fresh.loadOpenSemanticSessionResidue("desktop-user"); open {
+		t.Fatal("a baseline companion stayed open")
+	}
+	settled, ok := fresh.loadSemanticSessionResidue("desktop-user")
+	if !ok || settled.Status != semanticResidueCompleted {
+		t.Fatalf("settled=%#v ok=%v", settled, ok)
+	}
+}
+
 func TestSemanticSessionResidueErrorDoesNotReplaceOpenTask(t *testing.T) {
 	h := &IMMessageHandler{}
 	h.storeSemanticSessionResidue("desktop-user", openOfficeResidue())
@@ -645,6 +867,9 @@ func TestStoredLookupFactsServeGenerateButNotNewLookup(t *testing.T) {
 	if semanticReuseStoredLookupFacts("上海天气", fresh) {
 		t.Fatal("a new high-confidence lookup must search again")
 	}
+	if semanticReuseStoredLookupFacts("继续完成 兰州天气", fresh) {
+		t.Fatal("a follow-up lookup reused the previous subject's facts")
+	}
 	chongqing := intent.ClassificationResult{
 		Primary:    intent.LabelLiveData,
 		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
@@ -653,8 +878,11 @@ func TestStoredLookupFactsServeGenerateButNotNewLookup(t *testing.T) {
 	if semanticReuseStoredLookupFacts("重庆天气，生成格式化pdf", chongqing) {
 		t.Fatal("a new city PDF reused the previous city's lookup facts")
 	}
-	if semanticReuseStoredLookupFacts("再查一下最新天气", generate) {
-		t.Fatal("explicit refresh must search again")
+	if semanticReuseStoredLookupFacts("再查一下最新天气", generate) != true {
+		t.Fatal("a generate label reused or dropped facts based on refresh wording")
+	}
+	if semanticReuseStoredLookupFacts("latest weather", fresh) {
+		t.Fatal("a lookup label reused stored facts")
 	}
 	deck := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90}
 	if semanticReuseStoredLookupFacts("生成纪念小布生日PPT，网上搜索一张布偶照片", deck) {
@@ -712,8 +940,232 @@ func TestCompletedLookupFactsFollowWithoutReopeningTools(t *testing.T) {
 	if !refreshFacts || !refresh.LookupFacts {
 		t.Fatal("refresh wording still has the stored fact; the caller must decline to reuse it")
 	}
-	if lexicalFreshLookupRequest("再查一下最新天气") != true {
-		t.Fatal("再查 must stay a fresh-lookup request")
+	if semanticReuseStoredLookupFacts("再查一下最新天气", intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.93}) {
+		t.Fatal("a lookup label reused stored facts because the wording asked to refresh")
+	}
+}
+
+func TestReadCompanionDoesNotCloseSpentRemoteShell(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status:  semanticResidueOpen,
+		Summary: "更新api2服务器上的omniroute，保存原始配置",
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true},
+			{ID: "need:~ambient:memory.recall.agent", Capability: tool.CapabilityMemoryRecallAgent, Required: true},
+		},
+		Remaining: map[string]int{
+			"knowledge.read.local":                        1,
+			string(tool.CapabilityShellExecuteRemoteHost): 0,
+			string(tool.CapabilityMemoryRecallAgent):      1,
+		},
+	}
+	if !semanticResidueWaveSpent(residue) {
+		t.Fatal("unspent knowledge and memory kept a spent remote shell wave open")
+	}
+	merged := intent.ClassificationResult{
+		Primary:    intent.LabelSSH,
+		Confidence: 0.97,
+		Reason:     "tree-after-embedding: ssh (0.970); task-context merge",
+	}
+	if decideSemanticResidueRelation(merged, "已经解封", residue) != semanticResidueUnclear {
+		t.Fatal("a remote-shell continuation left the open server task")
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(merged, residue.Needs, semanticResidueUnclear)
+	if !ok || rewritten.Primary != intent.LabelSSH || !rewritten.HasLabel(intent.LabelKnowledgeRead) {
+		t.Fatalf("rewrite lost the shell obligation: %#v ok=%v", rewritten, ok)
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if _, closed := remaining[string(tool.CapabilityShellExecuteRemoteHost)]; closed {
+		t.Fatalf("spent shell stayed closed beside the unused knowledge read: %v", remaining)
+	}
+	if remaining["knowledge.read.local"] != 1 {
+		t.Fatalf("knowledge grant changed: %v", remaining)
+	}
+	reloaded := semanticResidueFromPersisted(agent.SemanticSessionResidue{
+		Status:  string(semanticResidueOpen),
+		Summary: residue.Summary,
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(tool.CapabilityShellExecuteRemoteHost), Required: true},
+			{ID: "need:~ambient:memory.recall.agent", Capability: string(tool.CapabilityMemoryRecallAgent), Required: true},
+		},
+		Remaining: residue.Remaining,
+	})
+	if len(reloaded.Needs) != 2 {
+		t.Fatalf("reloaded needs=%#v", reloaded.Needs)
+	}
+	for _, need := range reloaded.Needs {
+		if semanticResidueAmbientNeed(need) {
+			t.Fatalf("reloaded needs kept ambient retrieval: %#v", reloaded.Needs)
+		}
+	}
+	if _, kept := reloaded.Remaining[string(tool.CapabilityMemoryRecallAgent)]; kept {
+		t.Fatalf("ambient counter survived reload: %v", reloaded.Remaining)
+	}
+	video := "使用agnes ai的视频生成模型，生成一段猫和老鼠游戏的视频。"
+	bare := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.80}
+	if !semanticSpentWaveRelease(bare, residue, video) {
+		t.Fatal("a new video request stayed on the spent shell because knowledge was unused")
+	}
+	if semanticSpentWaveRelease(merged, residue, "已经解封") {
+		t.Fatal("the shell continuation itself was released")
+	}
+}
+
+func TestOpenShellObligationRestoresAfterProcessRestart(t *testing.T) {
+	const userID = `desktop-user:C:\Users\ma139\.maclaw\data\tasks\保存原始配置`
+	store := filepath.Join(t.TempDir(), "conversation.json")
+	mem := agent.NewPersistentConversationMemory(store)
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Generation: 3,
+		Status:     string(semanticResidueOpen),
+		Summary:    "更新api2服务器上的omniroute 到官方 3.8.51版本，保存原始配置",
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(tool.CapabilityShellExecuteRemoteHost), Required: true},
+			{ID: "need:~ambient:memory.recall.agent", Capability: string(tool.CapabilityMemoryRecallAgent), Required: true},
+		},
+		Remaining: map[string]int{
+			"knowledge.read.local":                        1,
+			string(tool.CapabilityShellExecuteRemoteHost): 0,
+			string(tool.CapabilityMemoryRecallAgent):      1,
+		},
+	})
+	mem.Stop()
+
+	reloaded := agent.NewPersistentConversationMemory(store)
+	defer reloaded.Stop()
+	h := &IMMessageHandler{memory: reloaded}
+	residue, open, factsOnly := h.loadDesktopTurnResidue(IMUserMessage{
+		UserID: userID, Platform: "desktop", Text: "已经解封",
+	}, false, nil)
+	if !open || factsOnly {
+		t.Fatalf("restart residue open=%v factsOnly=%v residue=%#v", open, factsOnly, residue)
+	}
+	if residue.Summary == "" || len(residue.Needs) != 2 {
+		t.Fatalf("restart dropped the obligation: %#v", residue)
+	}
+	for _, need := range residue.Needs {
+		if semanticResidueAmbientNeed(need) {
+			t.Fatalf("restart kept ambient retrieval: %#v", residue.Needs)
+		}
+	}
+	merged := intent.ClassificationResult{
+		Primary:    intent.LabelSSH,
+		Confidence: 0.97,
+		Reason:     "tree-after-embedding: ssh (0.970); task-context merge",
+	}
+	relation := decideSemanticResidueRelation(merged, "已经解封", residue)
+	if relation != semanticResidueUnclear {
+		t.Fatalf("restart relation=%s", relation)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(merged, residue.Needs, relation)
+	if !ok || rewritten.Primary != intent.LabelSSH || !rewritten.HasLabel(intent.LabelKnowledgeRead) {
+		t.Fatalf("restart rewrite=%#v ok=%v", rewritten, ok)
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if _, closed := remaining[string(tool.CapabilityShellExecuteRemoteHost)]; closed {
+		t.Fatalf("restart left the shell ceiling closed: %v", remaining)
+	}
+	if remaining["knowledge.read.local"] != 1 {
+		t.Fatalf("restart knowledge grant=%v", remaining)
+	}
+	if _, kept := remaining[string(tool.CapabilityMemoryRecallAgent)]; kept {
+		t.Fatalf("restart kept the ambient ceiling: %v", remaining)
+	}
+}
+
+func TestBaselineWriteDoesNotHoldAnotherFileTaskOnTheShell(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:zz-baseline:fs.write.local:bbb", Capability: tool.CapabilityFSWriteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true},
+		},
+		Remaining: map[string]int{
+			"knowledge.read.local":                        1,
+			string(tool.CapabilityFSWriteLocal):           0,
+			string(tool.CapabilityShellExecuteRemoteHost): 1,
+		},
+	}
+	file := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: 0.92}
+	if semanticSpentWaveRelease(file, residue, "把笔记存成本地文件") {
+		t.Fatal("an in-progress shell released for a different file task")
+	}
+	if got := decideSemanticResidueRelation(file, "把笔记存成本地文件", residue); got != semanticResidueSwitch {
+		t.Fatalf("baseline write held the file task on the shell, relation=%s", got)
+	}
+	residue.Remaining[string(tool.CapabilityShellExecuteRemoteHost)] = 0
+	if !semanticSpentWaveRelease(file, residue, "把笔记存成本地文件") {
+		t.Fatal("a spent shell kept a different file task")
+	}
+	if got := decideSemanticResidueRelation(file, "把笔记存成本地文件", residue); got != semanticResidueNone {
+		t.Fatalf("spent shell relation=%s", got)
+	}
+	own := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:fs.write.local:real", Capability: tool.CapabilityFSWriteLocal, Required: true},
+		},
+		Remaining: map[string]int{string(tool.CapabilityFSWriteLocal): 0},
+	}
+	if got := decideSemanticResidueRelation(file, "把笔记存成本地文件", own); got != semanticResidueUnclear {
+		t.Fatalf("a real file write left its own task, relation=%s", got)
+	}
+}
+
+func TestCompanionDoesNotLeadOrReopenSpentShell(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status:  semanticResidueOpen,
+		Summary: "更新api2服务器上的omniroute，保存原始配置",
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:zz-baseline:fs.write.local:bbb", Capability: tool.CapabilityFSWriteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true},
+			{ID: "need:artifact.acquire.remote:ccc", Capability: tool.CapabilityArtifactAcquireRemote, EvidenceIDs: []string{"intent:archetype_bundle"}},
+		},
+		Remaining: map[string]int{
+			"knowledge.read.local":                        1,
+			string(tool.CapabilityFSWriteLocal):           0,
+			string(tool.CapabilityShellExecuteRemoteHost): 0,
+			string(tool.CapabilityArtifactAcquireRemote):  0,
+		},
+	}
+	if !semanticResidueWaveSpent(residue) {
+		t.Fatal("a baseline write and an archetype download kept the spent shell closed")
+	}
+	merged := intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: 0.97, Reason: "task-context merge"}
+	rewritten, ok := semanticClassificationWithOpenResidue(merged, residue.Needs, semanticResidueUnclear)
+	if !ok || rewritten.Primary != intent.LabelSSH {
+		t.Fatalf("companion led the restored task: %#v ok=%v", rewritten, ok)
+	}
+	if !rewritten.HasLabel(intent.LabelKnowledgeRead) {
+		t.Fatalf("knowledge companion dropped: %#v", rewritten)
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if _, closed := remaining[string(tool.CapabilityShellExecuteRemoteHost)]; closed {
+		t.Fatalf("shell stayed closed: %v", remaining)
+	}
+	if left, ok := remaining[string(tool.CapabilityFSWriteLocal)]; !ok || left != 0 {
+		t.Fatalf("baseline write ceiling = %v", remaining)
+	}
+	if left, ok := remaining[string(tool.CapabilityArtifactAcquireRemote)]; !ok || left != 0 {
+		t.Fatalf("archetype download ceiling = %v", remaining)
+	}
+	if remaining["knowledge.read.local"] != 1 {
+		t.Fatalf("knowledge grant=%v", remaining)
+	}
+	reloaded := semanticResidueFromPersisted(semanticResidueToPersisted(residue))
+	sawCompanion := false
+	for _, need := range reloaded.Needs {
+		if need.Capability == tool.CapabilityArtifactAcquireRemote && semanticPlanCompanionNeed(need) {
+			sawCompanion = true
+		}
+	}
+	if !sawCompanion {
+		t.Fatal("restart dropped the archetype companion marker")
 	}
 }
 
@@ -763,8 +1215,8 @@ func TestSpentWaveVideoRequestPlansShellNotCoding(t *testing.T) {
 		t.Fatal("a video request on a finished wave stayed on coding")
 	}
 	edit := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.80}
-	if semanticReleasedRequestPlansShell(edit, "改一下这个函数", history) {
-		t.Fatal("a source edit was planned as shell")
+	if !semanticReleasedRequestPlansShell(edit, "改一下这个函数", history) {
+		t.Fatal("wording kept a weak coding label off shell when history already has an endpoint")
 	}
 	sure := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.90}
 	if semanticReleasedRequestPlansShell(sure, video, history) {
@@ -778,8 +1230,11 @@ func TestSpentWaveVideoRequestPlansShellNotCoding(t *testing.T) {
 		t.Fatal("a knowledge label kept a video request that needs a remote call")
 	}
 	save := "把agnes视频生成模型信息保存到知识库"
-	if semanticReleasedRequestPlansShell(knowledge, save, history) {
-		t.Fatal("a knowledge save was planned as shell")
+	if !semanticReleasedRequestPlansShell(knowledge, save, history) {
+		t.Fatal("wording kept a knowledge label off shell when history already has an endpoint")
+	}
+	if semanticReleasedRequestPlansShell(knowledge, save, nil) {
+		t.Fatal("a knowledge label with no endpoint was planned as shell")
 	}
 	onlyBash := []agent.ConversationEntry{{Role: "assistant", Content: "下次可以用 bash 看一下日志。"}}
 	if semanticReleasedRequestPlansShell(coding, video, onlyBash) {
@@ -796,37 +1251,42 @@ func TestShortConsentOnSpentWavePlansShellNotKnowledge(t *testing.T) {
 		Role:    "assistant",
 		Content: "当前对话的工具调用额度已耗尽，我无法再执行 bash/curl。请输入 `/new` 开启新对话。",
 	}}
-	if !semanticConsentLeavesSpentWave("要", blocked) || !semanticConsentLeavesSpentWave("允许 使用", blocked) {
-		t.Fatal("a yes after a blocked shell stayed on the spent wave")
+	yes := intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}
+	if semanticConsentLeavesSpentWave(yes, blocked, false) {
+		t.Fatal("assistant wording was treated as a closed plan")
 	}
-	shell := semanticConsentShellClassification("要", blocked)
+	shell := semanticConsentShellClassification(yes, blocked, true)
 	if shell == nil || shell.Primary != intent.LabelShellCommand {
 		t.Fatalf("consent plan=%v", shell)
 	}
-	if semanticConsentLeavesSpentWave("可爱风", blocked) {
-		t.Fatal("a short answer was treated as shell consent")
+	answer := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.8}
+	if semanticConsentLeavesSpentWave(answer, blocked, true) {
+		t.Fatal("a content label was treated as shell consent")
 	}
 	revision := []agent.ConversationEntry{{Role: "assistant", Content: "要不要再改一版周报？"}}
-	if semanticConsentLeavesSpentWave("要", revision) || semanticConsentShellClassification("要", revision) != nil {
-		t.Fatal("要 after a revision question left the document")
+	if semanticConsentLeavesSpentWave(yes, revision, false) || semanticConsentShellClassification(yes, revision, false) != nil {
+		t.Fatal("a continuation without a closed plan left the document")
 	}
 	if assistantBlockedOnShell("不要把密码写进 bash，不允许在命令里带密钥。") {
 		t.Fatal("a bash warning was treated as a blocked shell")
 	}
-	if !assistantBlockedOnShell("请允许我使用 bash 工具，我就可以直接调用。") {
-		t.Fatal("an explicit allow-bash ask was ignored")
+	if assistantBlockedOnShell("请允许我使用 bash 工具，我就可以直接调用。") {
+		t.Fatal("a permission sentence was treated as a blocked shell")
 	}
 }
 
 func TestAssistantQuotaClaimIsNotShownAgain(t *testing.T) {
-	replaced, ok := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+	if _, claimed := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:    "assistant",
+		Content: "当前对话的工具调用额度已耗尽，无法再执行 bash。请输入 `/new` 开启新对话。",
+	}); claimed {
+		t.Fatal("assistant wording was rewritten without the host ceiling sentence")
+	}
+	closed := rewriteClosedPlanAssistant(agent.ConversationEntry{
 		Role:    "assistant",
 		Content: "当前对话的工具调用额度已耗尽，无法再执行 bash。请输入 `/new` 开启新对话。",
 	})
-	if !ok {
-		t.Fatal("quota claim was left in the next prompt")
-	}
-	text := replaced.Content.(string)
+	text := closed.Content.(string)
 	if strings.Contains(text, "已耗尽") || strings.Contains(text, "/new") || !strings.Contains(text, "Do not repeat") {
 		t.Fatalf("rewritten=%q", text)
 	}
@@ -839,8 +1299,8 @@ func TestAssistantQuotaClaimIsNotShownAgain(t *testing.T) {
 	if _, claimed := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
 		Role:    "assistant",
 		Content: "当前工具调用配额已用完，无法再请求视频接口。",
-	}); !claimed {
-		t.Fatal("a tool-call quota claim without /new was left in the next prompt")
+	}); claimed {
+		t.Fatal("a tool-call sentence was rewritten without the host ceiling sentence")
 	}
 	quoted, ok := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
 		Role:    "assistant",
@@ -893,10 +1353,7 @@ func TestShortYesOnSpentWaveDoesNotCloseTools(t *testing.T) {
 		if decideSemanticResidueRelation(merged, text, residue) != semanticResidueUnclear {
 			t.Fatalf("%q left the open task", text)
 		}
-		remaining := semanticResidueRemainingForFollowUp(residue.Remaining, text)
-		if semanticResidueWaveSpent(residue) && !semanticFollowUpRenewsDownloads(text) {
-			remaining = semanticResidueDropSpentCounts(remaining)
-		}
+		remaining := semanticResidueRemainingForOpenTurn(residue, merged)
 		if len(remaining) != 0 {
 			t.Fatalf("%q kept a zero ceiling: %v", text, remaining)
 		}
@@ -908,24 +1365,41 @@ func TestShortYesOnSpentWaveDoesNotCloseTools(t *testing.T) {
 	if !ok || strings.Contains(replaced.Content.(string), "Planned invocations for this session are complete") || strings.Contains(replaced.Content.(string), "/new") || !strings.Contains(replaced.Content.(string), "does not apply to this turn") {
 		t.Fatalf("historical ceiling=%q ok=%v", replaced.Content, ok)
 	}
-	note := shortConsentContinuesHere("要", []agent.ConversationEntry{{
+	blocked := []agent.ConversationEntry{{
 		Role:    "assistant",
 		Content: "当前对话的工具调用额度已耗尽。请输入 `/new` 开启新对话。",
-	}})
+	}}
+	if shortConsentContinuesHere(&intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, blocked, false) != "" {
+		t.Fatal("quota wording injected a consent note")
+	}
+	note := shortConsentContinuesHere(&intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, blocked, true)
 	if !strings.Contains(note, "不是同意开启新对话") || !strings.Contains(note, "不要让用户另开对话") || strings.Contains(note, "/new") {
 		t.Fatalf("consent note=%q", note)
+	}
+	if shortConsentContinuesHere(&intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.9}, blocked, true) != "" {
+		t.Fatal("an office label was treated as consent to stay in this chat")
 	}
 }
 
 func TestSpentOfficeRevisionRenewsInsteadOfClosing(t *testing.T) {
 	residue := openOfficeResidue()
 	residue.Remaining = map[string]int{string(tool.CapabilityDocumentWriteOffice): 0}
-	current := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.92}
-	if semanticSpentWaveRelease(current, residue, "再改一版") {
-		t.Fatal("再改一版 released a spent office wave")
+	current := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.92}
+	if semanticSpentWaveRelease(current, residue, "revise the deck") {
+		t.Fatal("an office label released a spent office wave")
 	}
-	if decideSemanticResidueRelation(current, "再改一版", residue) != semanticResidueUnclear {
-		t.Fatal("再改一版 left the open document")
+	if decideSemanticResidueRelation(current, "revise the deck", residue) != semanticResidueUnclear {
+		t.Fatal("an office label left the open document")
+	}
+	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.92}, "再改一版", residue) != semanticResidueNone {
+		t.Fatal("a search label stayed on the spent office document")
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(current, residue.Needs, semanticResidueUnclear)
+	if !ok || semanticClassificationRequestsLookupEvidence(rewritten) || !semanticReuseStoredLookupFacts("再改一版", rewritten) {
+		t.Fatalf("revision rewrite=%#v ok=%v", rewritten, ok)
+	}
+	if renewed := semanticResidueRemainingForOpenTurn(residue, rewritten); len(renewed) != 0 {
+		t.Fatalf("spent office revision stayed closed: %v", renewed)
 	}
 	if renewed := semanticResidueDropSpentCounts(residue.Remaining); len(renewed) != 0 {
 		t.Fatalf("renewed ceiling=%v", renewed)
@@ -933,7 +1407,7 @@ func TestSpentOfficeRevisionRenewsInsteadOfClosing(t *testing.T) {
 	kept := semanticResidueRemainingForFollowUp(map[string]int{
 		string(tool.CapabilityArtifactAcquireRemote): 0,
 		"document.generate.file":                     0,
-	}, "继续补图")
+	}, intent.ClassificationResult{Primary: intent.LabelFileDownload, Confidence: 0.9})
 	if _, ok := kept[string(tool.CapabilityArtifactAcquireRemote)]; ok || kept["document.generate.file"] != 0 {
 		t.Fatalf("继续补图 remaining=%v", kept)
 	}
@@ -1034,7 +1508,22 @@ func TestClampNeedsToResidueRemainingDropsSpentFamily(t *testing.T) {
 }
 
 func TestSemanticSessionResidueFollowUpKeepsOriginalSummary(t *testing.T) {
-	if got := semanticResidueSummary("继续", "做一份项目周报"); got != "做一份项目周报" {
+	if got := semanticResidueSummary("继续", "做一份项目周报"); got != "继续" {
 		t.Fatalf("summary=%q", got)
+	}
+	if got := semanticResidueSummary("", "做一份项目周报"); got != "做一份项目周报" {
+		t.Fatalf("empty summary=%q", got)
+	}
+	kept := &LoopContext{Runtime: RuntimeContext{SemanticIntent: &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Reason: "session residue continuation",
+	}}}
+	if !semanticClassificationKeepsPriorTask(kept) {
+		t.Fatal("a residue rewrite must keep the prior task")
+	}
+	fresh := &LoopContext{Runtime: RuntimeContext{SemanticIntent: &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Confidence: 0.9, Reason: "tree",
+	}}}
+	if semanticClassificationKeepsPriorTask(fresh) {
+		t.Fatal("a fresh office label kept the prior task")
 	}
 }

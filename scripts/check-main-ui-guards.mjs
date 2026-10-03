@@ -207,6 +207,13 @@ const collectPatchConfigFieldFailures = (files, readFile) => {
     const text = readFile(rel);
     let index = -1;
     while ((index = text.indexOf('PatchConfigFields', index + 1)) !== -1) {
+      // Skip occurrences inside import statements: the imported binding name is
+      // not a call site, and naively scanning forward from it can misparse an
+      // unrelated object literal as a patch payload (2026-09-30 false positive).
+      const lineStart = text.lastIndexOf('\n', index) + 1;
+      const lineEnd = text.indexOf('\n', index);
+      const occurrenceLine = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      if (/^\s*import\b/.test(occurrenceLine) || /^\s*}\s*from\s/.test(occurrenceLine)) continue;
       const keys = extractPatchConfigFieldKeys(text, index);
       for (const key of keys) {
         if (!supported.has(key)) {
@@ -725,7 +732,7 @@ requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from 
 requireIncludes('guiapp/frontend/src/components/ai/useProjectSearch.ts', 'headerLibrarySearchJobs', 'header search includes files and knowledge');
 requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openFileLibrary', 'header search opens mobile documents');
 requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openKnowledgeSearch', 'header search opens knowledge');
-requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openExpertConversation', 'header search opens AI experts');
+requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openNewTaskWizard({', 'header search opens AI experts (via new task wizard)');
 requireIncludes('guiapp/frontend/src/components/ai/useProjectSearch.ts', 'ListExperts', 'header search lists AI experts');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'function VoiceLevelVisualizer', 'inline AI voice level visualizer; use components/ai/aiAssistantControls.tsx');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'const miniActionButtonStyle', 'inline AI mini action button style; use components/ai/aiAssistantControls.tsx');
@@ -940,6 +947,9 @@ for (const rel of [
   'guiapp/frontend/src/components/modals/ConfirmDialog.tsx',
   'guiapp/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx',
   'guiapp/frontend/src/components/remote/HubServiceRedeemPanel.tsx',
+  'guiapp/frontend/src/components/TokenBankPanel.tsx',
+  'guiapp/frontend/src/components/TokenBankShareableProviders.tsx',
+  'guiapp/frontend/src/utils/hubcenterTokenBank.ts',
 ]) {
   requireNoMojibake(rel);
   requireNoPlaceholderGlyphs(rel);
@@ -976,12 +986,71 @@ requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'run
   const systemBlock = sliceBlock('const systemMenuItems', 'const selectSystemMenuItem');
   const extensionsBlock = sliceBlock('const extensionsMenuItems', 'const libraryMenuItems');
   if (!systemBlock) failures.push(`${rel} is missing systemMenuItems block`);
-  else if (menuId(systemBlock, 'skills') || menuId(systemBlock, 'mcp')) {
-    failures.push(`${rel} system menu still lists skills/mcp; those belong on the extensions menu`);
+  else if (menuId(systemBlock, 'skills') || menuId(systemBlock, 'mcp') || menuId(systemBlock, 'tokenbank')) {
+    failures.push(`${rel} system menu still lists skills/mcp/tokenbank; those belong on the extensions menu`);
   }
   if (!extensionsBlock) failures.push(`${rel} is missing extensionsMenuItems block`);
-  else if (!menuId(extensionsBlock, 'skills') || !menuId(extensionsBlock, 'mcp')) {
-    failures.push(`${rel} extensions menu is missing skills/mcp`);
+  else if (!menuId(extensionsBlock, 'skills') || !menuId(extensionsBlock, 'mcp') || !menuId(extensionsBlock, 'tokenbank')) {
+    failures.push(`${rel} extensions menu is missing skills/mcp/tokenbank`);
+  }
+}
+requireIncludes('guiapp/frontend/src/components/layout/SystemPopupMenu.tsx', 'data-testid={`${testIdPrefix}-${item.id}`}', 'sidebar popup menu item testid wiring');
+requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'TokenBankIcon', 'Token Bank nav rail icon wiring');
+requireIncludes('guiapp/frontend/src/components/layout/SidebarNavIcons.tsx', 'export const TokenBankIcon', 'Token Bank nav rail icon export');
+requireIncludes('guiapp/frontend/src/appLazyComponents.ts', 'TokenBankPanel', 'Token Bank panel lazy registration');
+requireIncludes('guiapp/frontend/src/App.tsx', "navTab !== 'tokenbank'", 'Token Bank panel redirect branch');
+requireIncludes('guiapp/frontend/src/App.tsx', "setSettingsTab('tokenBank')", 'Token Bank settings tab wiring');
+requireIncludes('guiapp/frontend/src/components/settings/SettingsActiveContent.tsx', '<TokenBankPanel', 'Token Bank panel render wiring');
+requireIncludes('guiapp/frontend/src/components/TokenBankPanel.tsx', 'TokenBankShareableProviders', 'Token Bank shareable provider list on the panel');
+requireIncludes('guiapp/frontend/src/components/TokenBankShareableProviders.tsx', 'GetMaclawLLMProviders', 'shareable provider list reads saved providers');
+requireIncludes('guiapp/frontend/src/components/TokenBankShareableProviders.tsx', 'connection_test_passed', 'shareable provider list keeps tested providers');
+requireIncludes('guiapp/frontend/src/components/remote/TokenBankShareChipButton.tsx', "appearance === 'deposit'", 'Token Bank deposit action opens the share dialog');
+requireIncludes('guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 'TokenBankShareChipButton', 'Token Bank share entry on the provider chip');
+requireIncludes('guiapp/frontend/src/components/remote/TokenBankShareChipButton.tsx', 'export function TokenBankShareChipButton', 'Token Bank share chip component export');
+requireIncludes('guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 'connection_test_passed === true && !isHubProvider', 'only a verified non-hub provider is shareable');
+requireIncludes('guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 'LLMConfigProviderShareHeading', 'Token Bank deposit badge on a tested provider config title');
+requireIncludes('guiapp/frontend/src/components/remote/TokenBankShareChipButton.tsx', 'data-icon="token-bank-deposit"', 'Token Bank deposit icon');
+requireIncludes('guiapp/frontend/src/styles/partials/62-token-bank-share.css', '.llm-config-tokenbank-badge', 'Token Bank deposit badge style');
+requireIncludes('guiapp/frontend/src/components/TokenBankShareDialog.tsx', 'export function TokenBankShareDialog', 'Token Bank share dialog export');
+requireIncludes('guiapp/frontend/src/components/TokenBankShareDialog.tsx', 'TokenBankCreateShare', 'share dialog submits through the Wails binding');
+{
+  // The Token Bank panel styles live in a manifest partial (the house pattern),
+  // never in a component-level CSS import. Guard both halves so the panel can
+  // not drift into an unassembled stylesheet, and so every --theme-* token it
+  // references is actually defined somewhere in the assembled App.css.
+  const manifestRel = 'guiapp/frontend/src/styles/app-css.manifest.json';
+  const partials = [
+    'guiapp/frontend/src/styles/partials/61-token-bank.css',
+    'guiapp/frontend/src/styles/partials/62-token-bank-share.css',
+  ];
+  const manifest = JSON.parse(read(manifestRel));
+  for (const partial of partials) {
+    const manifestEntry = partial.replace('guiapp/frontend/src/styles/', '');
+    if (!manifest.includes(manifestEntry)) {
+      failures.push(`${manifestRel} does not assemble ${manifestEntry}; the Token Bank UI would render unstyled`);
+    }
+  }
+  for (const component of [
+    'guiapp/frontend/src/components/TokenBankPanel.tsx',
+    'guiapp/frontend/src/components/TokenBankShareableProviders.tsx',
+    'guiapp/frontend/src/components/TokenBankShareDialog.tsx',
+    'guiapp/frontend/src/components/remote/TokenBankShareChipButton.tsx',
+  ]) {
+    if (/\.css['"]/.test(read(component))) {
+      failures.push(`${component} imports a component-level CSS file; use the manifest partial instead`);
+    }
+  }
+  const declared = new Set(
+    [...read('guiapp/frontend/src/styles/partials/00-tokens.css').matchAll(/(--[a-z0-9-]+)\s*:/g)].map(m => m[1]),
+  );
+  for (const match of [...read('guiapp/frontend/src/App.css').matchAll(/(--[a-z0-9-]+)\s*:/g)]) declared.add(match[1]);
+  const used = new Set();
+  for (const partial of partials) {
+    for (const match of read(partial).matchAll(/var\((--[a-z0-9-]+)/g)) used.add(match[1]);
+  }
+  const undefinedVars = [...used].filter(name => !declared.has(name));
+  if (undefinedVars.length) {
+    failures.push(`Token Bank partials use undefined theme variables: ${undefinedVars.join(', ')}`);
   }
 }
 requireIncludes('guiapp/frontend/src/components/layout/SidebarAiPane.tsx', 'export const SidebarAiPane', 'sidebar AI pane export');

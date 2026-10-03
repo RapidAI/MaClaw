@@ -1,7 +1,9 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -197,6 +199,139 @@ func TestSaveProjectTabConversationEmptyDoesNotCreateUnknownSession(t *testing.T
 	} else if session != nil {
 		t.Fatalf("empty save created an unknown session: %+v", session)
 	}
+}
+
+func TestSaveProjectTabConversationRecordsPathFromSessionKey(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	saved := app.CreateRecentTask("Archive paper transcript")
+	if saved.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned an empty project path")
+	}
+	app.SaveProjectTabConversation("proj-archive", []interface{}{
+		map[string]interface{}{
+			"role":       "user",
+			"content":    "old paper",
+			"sessionKey": projectSessionOwnerID(saved.ProjectPath),
+		},
+	})
+	persist := app.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession("proj-archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(saved.ProjectPath) {
+		t.Fatalf("saved project path = %#v, want %s", session, saved.ProjectPath)
+	}
+	latest, err := persist.LoadLatestSessionForProject(saved.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.TabID != "proj-archive" {
+		t.Fatalf("latest session for paper = %+v, want proj-archive", latest)
+	}
+}
+
+func TestMergeConversationSnapshotsKeepsRepeatedText(t *testing.T) {
+	merged := mergeConversationSnapshots(
+		[]interface{}{
+			map[string]interface{}{"id": "a", "role": "user", "content": "继续"},
+			map[string]interface{}{"id": "b", "role": "user", "content": "继续"},
+			map[string]interface{}{"role": "assistant", "content": "already shown"},
+		},
+		[]interface{}{
+			map[string]interface{}{"id": "b", "role": "user", "content": "继续", "sessionKey": "desktop-user:D:/paper"},
+			map[string]interface{}{"id": "c", "role": "assistant", "content": "already shown", "sessionKey": "desktop-user:D:/paper"},
+			map[string]interface{}{"id": "d", "role": "user", "content": "tail"},
+		},
+	)
+	got := strings.Join(conversationContentList(merged), "|")
+	if got != "继续|继续|already shown|tail" {
+		t.Fatalf("merged = %q, want both identical turns plus the tail", got)
+	}
+}
+
+func TestSaveProjectTabConversationMergesUnflushedArchiveTurns(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	saved := app.CreateRecentTask("Paper with an unflushed tail")
+	if saved.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned an empty project path")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       latexPaperArchiveTabID(saved.ProjectPath),
+		ProjectPath: saved.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"id": "m1", "role": "user", "content": "already on disk"},
+			map[string]interface{}{"id": "m2", "role": "assistant", "content": "already on disk too"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(saved.ProjectPath)
+	app.SaveProjectTabConversation("proj-archive", []interface{}{
+		map[string]interface{}{"id": "m2", "role": "assistant", "content": "already on disk too", "sessionKey": owner},
+		map[string]interface{}{"id": "m3", "role": "user", "content": "unflushed tail", "sessionKey": owner},
+	})
+	latest, err := persist.LoadLatestSessionForProject(saved.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.TabID != "proj-archive" {
+		t.Fatalf("latest session = %+v, want the UI copy", latest)
+	}
+	got := conversationContentList(latest.Conversation)
+	want := []string{"already on disk", "already on disk too", "unflushed tail"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("merged transcript = %#v, want %#v", got, want)
+	}
+
+	app.SaveProjectTabConversation(expertTabSessionID(builtinLatexExpertID), []interface{}{
+		map[string]interface{}{"id": "e1", "role": "user", "content": "new paper", "sessionKey": expertSessionUserID(builtinLatexExpertID)},
+	})
+	expert, err := persist.LoadSession(expertTabSessionID(builtinLatexExpertID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expert == nil || strings.TrimSpace(expert.ProjectPath) != "" || len(expert.Conversation) != 1 {
+		t.Fatalf("expert session absorbed the paper archive: %+v", expert)
+	}
+
+	app.SaveProjectTabConversation("proj-archive", []interface{}{})
+	cleared, err := persist.LoadSession("proj-archive")
+	if err != nil || cleared == nil || cleared.ConversationClearedAt == 0 {
+		t.Fatalf("clear did not fence the paper tab: %+v err=%v", cleared, err)
+	}
+	app.SaveProjectTabConversation("proj-archive", []interface{}{
+		map[string]interface{}{
+			"id": "n1", "role": "user", "content": "after clear",
+			"timestamp": cleared.ConversationClearedAt + 1, "sessionKey": owner,
+		},
+	})
+	latest, err = persist.LoadLatestSessionForProject(saved.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := conversationContentList(latest.Conversation); strings.Join(got, "|") != "after clear" {
+		t.Fatalf("clear resurrected the archive: %#v", got)
+	}
+}
+
+func conversationContentList(conversation []interface{}) []string {
+	out := make([]string, 0, len(conversation))
+	for _, raw := range conversation {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Content string `json:"content"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		out = append(out, entry.Content)
+	}
+	return out
 }
 
 func TestClearProjectHistoryPreventsStaleTabSnapshotSave(t *testing.T) {

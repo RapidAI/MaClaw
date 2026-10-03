@@ -427,3 +427,32 @@ func TestTokenPricingSnapshotWireRoundTripPreservesExplicitZeroCachePrices(t *te
 		t.Fatalf("settled microcredits = %d, want %d (cache read must be free)", amount, want)
 	}
 }
+
+func TestCreditsToMicrocreditsRoundTripsWithInverse(t *testing.T) {
+	// The Token Bank ledger is integer microcredits while the proxy still
+	// carries float Credits. A settlement that converts the credit figure must
+	// land on the same integer the inverse would produce, or the owner is paid
+	// a rounding step that the consumer's bill does not show.
+	for _, credits := range []float64{0, 0.000001, 0.1, 0.2, 3.7, 12.345678, 1_000} {
+		micro := CreditsToMicrocredits(credits)
+		back := MicrocreditsToCredits(micro)
+		if diff := back - credits; diff > 1e-6 || diff < -1e-6 {
+			t.Fatalf("round trip %v -> %d -> %v drifted by %v", credits, micro, back, diff)
+		}
+	}
+
+	// Non-positive and non-finite inputs are rejections, not refunds.
+	if got := CreditsToMicrocredits(0); got != 0 {
+		t.Fatalf("CreditsToMicrocredits(0) = %d, want 0", got)
+	}
+	if got := CreditsToMicrocredits(-5); got != 0 {
+		t.Fatalf("CreditsToMicrocredits(-5) = %d, want 0", got)
+	}
+	if got := CreditsToMicrocredits(math.NaN()); got != 0 {
+		t.Fatalf("CreditsToMicrocredits(NaN) = %d, want 0", got)
+	}
+	// Saturation rather than wrap: a wrapped payout is a wrong payout.
+	if got := CreditsToMicrocredits(math.MaxFloat64); got != math.MaxInt64 {
+		t.Fatalf("CreditsToMicrocredits(MaxFloat64) = %d, want MaxInt64", got)
+	}
+}

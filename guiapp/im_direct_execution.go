@@ -67,38 +67,11 @@ func (h *IMMessageHandler) tryDirectExecutionProfile(msg IMUserMessage, loopCtx 
 	return resp, true
 }
 
-func (h *IMMessageHandler) tryImmediateCurrentTimeDirect(msg IMUserMessage, providedLoopCtx *LoopContext) (*IMAgentResponse, bool) {
-	if h == nil || providedLoopCtx != nil {
-		return nil, false
-	}
-	// The deterministic-clock shortcut predates capability materialization.
-	// Once a semantic classifier is available, keep this family on the same
-	// governed path as every other managed intent instead of matching wording
-	// and calling current_datetime by name.
-	if h.getUnifiedClassifier() != nil {
-		return nil, false
-	}
-	if !isLocalCurrentTimeQuery(msg.Text) {
-		return nil, false
-	}
-	if _, forced := hardStructuralFullExecutionProfile(msg, false, false); forced {
-		return nil, false
-	}
-	profile, ok := localCurrentTimeExecutionProfile(msg.Text, h.executionContractForRegisteredToolName)
-	if !ok || !profile.IsDirect() {
-		return nil, false
-	}
-	loopCtx := NewLoopContext("chat", 1, nil)
-	loopCtx.Runtime = runtimeContextFromIMMessage(msg)
-	loopCtx.Runtime.Execution = profile
-	loopCtx.Platform = msg.Platform
-	loopCtx.UserID = msg.UserID
-	loopCtx.Lang = msg.Lang
-	var history []agent.ConversationEntry
-	if h.memory != nil && strings.TrimSpace(msg.UserID) != "" {
-		history = h.memory.Load(msg.UserID)
-	}
-	return h.tryDirectExecutionProfile(msg, loopCtx, history)
+// tryImmediateCurrentTimeDirect no longer matches clock wording. The clock
+// is LabelCurrentTime on the capability path. Calling current_datetime by
+// a phrase list is not a classification.
+func (h *IMMessageHandler) tryImmediateCurrentTimeDirect(IMUserMessage, *LoopContext) (*IMAgentResponse, bool) {
+	return nil, false
 }
 
 // tryImmediateScheduleListDirect avoids asking the LLM to route an unambiguous

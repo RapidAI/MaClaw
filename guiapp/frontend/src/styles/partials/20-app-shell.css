@@ -1780,7 +1780,7 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .global-action-bar[data-ai-theme='dark'] .form-input,
 .global-action-bar[data-ai-theme='dark'] select,
 .global-action-bar[data-ai-theme='dark'] input[type='text'] {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }

@@ -306,7 +306,8 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 	result := agent.RunLoop(cb, text, history, nil)
 
 	// Save conversation history with trim to prevent unbounded growth.
-	// WeChat sessions can run 24/7, so we apply the same trim as TrimHistory.
+	// WeChat sessions can run 24/7. TrimHistory keeps a deterministic handoff
+	// of the dropped prefix so the next turn still sees user requests and file paths.
 	history = append(history, agent.ConversationEntry{Role: "user", Content: text})
 	if result.Text != "" {
 		history = append(history, agent.ConversationEntry{Role: "assistant", Content: result.Text})

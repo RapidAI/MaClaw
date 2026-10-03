@@ -38,12 +38,14 @@ type agentLoopPhase struct {
 	NativePDFFallbackInjected  bool
 
 	// MissFloorToolsUnlock asks the next round prep to union the invariant-11
-	// floor tools (bash/write_file) back into the request surface. Set when the
-	// current surface proved to be mis-scoped for this turn: either the model
-	// promised a file deliverable on an ambient-only surface (deliverable
-	// recover), or a floor tool call was policy_rejected because the surface
-	// lacked it. The unlock is evidence-driven (runtime model behavior), never
-	// a lexical routing decision.
+	// floor tools (bash, read_file, write_file, edit_file) back into the
+	// request surface. Set when the current surface proved to be mis-scoped
+	// for this turn: either the model promised a file deliverable on an
+	// ambient-only surface, or a floor tool call was policy_rejected because
+	// the surface lacked it. The unlock is evidence-driven, never a lexical
+	// routing decision. The union then goes through the floor seal, so a
+	// named expert allow-list, group policy, skill search, truncation block,
+	// direct mode, and Hub name-level rejection still win.
 	MissFloorToolsUnlock bool
 }
 

@@ -84,7 +84,7 @@ const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "7px 9px",
     border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     background: colors.surface,
     color: colors.text,
     fontSize: "0.78rem",

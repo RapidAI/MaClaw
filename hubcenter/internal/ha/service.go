@@ -47,7 +47,18 @@ const (
 	EntityLLMCardOrder          = "llm_card_order"
 	EntityLLMNodeBinding        = "llm_node_binding"
 	EntityLLMUsageBatch         = "llm_usage_batch"
-	EntityNotification          = "notification"
+	EntityTokenBankLedgerBatch  = "token_bank_ledger_batch"
+	// EntityTokenBankPriceBook replicates the price rules an admin edits.
+	//
+	// Unlike the ledger, this table is read on the hot path: every proxied
+	// request resolves its unit prices through it. A node holding a stale copy
+	// charges — and credits — a different amount for the same model, which is
+	// not a rounding difference but a per-node price list. It is small and
+	// written only by an admin, so replicating it costs nothing and removes a
+	// class of "why did this call earn less than that one" that no log can
+	// explain.
+	EntityTokenBankPriceBook = "token_bank_price_book"
+	EntityNotification       = "notification"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
@@ -124,6 +135,8 @@ type Service struct {
 	llmAuthorizations            llmservice.TenantAuthorizationRepository
 	llmBindings                  store.LLMNodeBindingRepository
 	llmUsage                     llmservice.UsageBatchRepository
+	tokenBankLedger              TokenBankLedgerRepository
+	tokenBankPriceBook           TokenBankPriceBookRepository
 	notifications                notification.Store
 	heartbeatSync                store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval     time.Duration
@@ -962,6 +975,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "latex_templates", Label: "LaTeX Templates", EntityTypes: map[string]struct{}{EntityLatexTemplateSnapshot: {}}},
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}, EntityPetStoreSnapshot: {}, EntityPetStoreMetrics: {}}},
 		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}, EntityLLMNodeBinding: {}}},
+		{Key: "token_bank", Label: "Token Bank Ledger", EntityTypes: map[string]struct{}{EntityTokenBankLedgerBatch: {}, EntityTokenBankPriceBook: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
 		{Key: "notifications", Label: "Notifications", EntityTypes: map[string]struct{}{EntityNotification: {}}},
 	}
@@ -2016,7 +2030,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityTokenBankLedgerBatch, EntityTokenBankPriceBook, EntityNotification:
 		return true
 	default:
 		return false
@@ -2191,7 +2205,7 @@ func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityNotification:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityNotification, EntityTokenBankPriceBook:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -2277,6 +2291,10 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyLLMNodeBindingOp(ctx, op)
 	case EntityLLMUsageBatch:
 		return s.applyLLMUsageBatchOp(ctx, op)
+	case EntityTokenBankLedgerBatch:
+		return s.applyTokenBankLedgerBatchOp(ctx, op)
+	case EntityTokenBankPriceBook:
+		return s.applyTokenBankPriceBookOp(ctx, op)
 	case EntityNotification:
 		return s.applyNotificationOp(ctx, op)
 	default:
@@ -2537,6 +2555,24 @@ func (s *Service) applySystemSettingOp(ctx context.Context, op *store.HASyncOp) 
 			// sample, so a burst of replicas can arrive out of order and
 			// overwrite a peer's fresher store with an older one. Keep the
 			// local copy when the incoming store is not newer.
+			return nil
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(payload.Key), llmservice.MemberHealthSettingPrefix) {
+		if localRaw, err := s.settings.Get(ctx, payload.Key); err == nil && !llmservice.MemberHealthIncomingNewer(localRaw, payload.ValueJSON) {
+			// Each node appends its own health snapshot. A delayed replica of
+			// an older revision must not wipe a newer day of counts.
+			return nil
+		}
+	}
+	if strings.TrimSpace(payload.Key) == llmservice.RegistrySettingKey {
+		if localRaw, err := s.settings.Get(ctx, payload.Key); err == nil && llmRegistryFence(localRaw, payload.ValueJSON) {
+			// The registry is one blob rewritten whole by every mutation
+			// (admin CRUD, token-bank publish, autopause). A lagging replica
+			// of an older snapshot must not roll a fresher local registry
+			// backwards and silently drop its changes (R2-d). Skipping keeps
+			// the pull cursor moving; no cache invalidation is needed since
+			// nothing changed locally.
 			return nil
 		}
 	}

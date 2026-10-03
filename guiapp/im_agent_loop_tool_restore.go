@@ -20,41 +20,11 @@ func filterDirectModeAllowedTools(tools []map[string]interface{}) []map[string]i
 
 func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *LoopContext, baseTools []map[string]interface{}, phase agentLoopPhase) ([]map[string]interface{}, int, bool) {
 	tools := baseTools
-	directModeToolsFiltered := false
-
-	if h.taskOrchestratorRegistry != nil {
-		orchInst := h.taskOrchestratorRegistry.Get(userID)
-		if orchInst != nil {
-			handles := orchInst.ReadyTaskHandles(1)
-			mode := TaskExecModeExternal
-			ok := false
-			if len(handles) > 0 {
-				mode, ok = orchInst.ResolveExecutionModeForTaskRun(handles[0].Task, handles[0].RunID)
-			}
-			if ok && mode == TaskExecModeDirect {
-				tools = filterDirectModeAllowedTools(tools)
-				directModeToolsFiltered = true
-			}
-		}
-	}
-
-	if len(phase.TruncationBlockedTools) > 0 {
-		var truncFiltered []map[string]interface{}
-		for _, t := range tools {
-			name := tool.ExtractToolName(t)
-			if !phase.TruncationBlockedTools[name] {
-				truncFiltered = append(truncFiltered, t)
-			}
-		}
-		if len(truncFiltered) < len(tools) {
-			log.Printf("[agent-loop] re-applied truncation block after baseTools reset: removed %d tools", len(tools)-len(truncFiltered))
-			tools = truncFiltered
-		}
-	}
+	directModeToolsFiltered := h.mainLoopInDirectMode(userID, ctx)
 
 	catalog := h.unmanagedLegacyHostCatalog()
-	if _, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, nil); applyFilter {
-		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, catalog)
+	if ownerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
+		tools = h.applyWorkflowToolFilterWithCatalog(ownerID, tools, catalog)
 	}
 	// Recover rebuilds from BaseTools, which intentionally predates the normal
 	// group filter. Re-apply the group boundary here so a failed skill cannot
@@ -69,7 +39,27 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), h.routingMissFloorDefinitions(), ctx)
-	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, h.filterPolicyRejectedSurfaceTools(catalog))
+	lookupCatalog := h.filterPolicyRejectedSurfaceTools(catalog)
+	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
+	tools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, tools, lookupCatalog)
+	// Workflow ensure and the timeout floor pin both run above and can put
+	// bash back. Re-apply the filters that must stick. The timeout path
+	// seals with the host catalog because render follows. An ordinary
+	// recover must not run that ensure a second time.
+	if loopContextHasClassifierTimeoutLookup(ctx) && executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
+		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directModeToolsFiltered, nil)
+	} else {
+		tools = h.filterToolsForExpertUser(userID, tools)
+		if directModeToolsFiltered {
+			tools = filterDirectModeAllowedTools(tools)
+		}
+		beforeTruncation := len(tools)
+		tools = dropTruncationBlockedTools(tools, phase.TruncationBlockedTools)
+		if len(tools) < beforeTruncation {
+			log.Printf("[agent-loop] re-applied truncation block after baseTools reset: removed %d tools", beforeTruncation-len(tools))
+		}
+		tools = h.filterPolicyRejectedSurfaceTools(tools)
+	}
 
 	tools = stripExecutionContractMetadataForLLM(tools)
 	// Recovery is a fresh model request, not permission to restore the raw

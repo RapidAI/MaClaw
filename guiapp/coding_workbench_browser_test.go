@@ -1233,6 +1233,88 @@ func TestCloudWorkspaceCacheRootFromPath(t *testing.T) {
 	}
 }
 
+func TestExplicitCloudWorkspaceListingDirKeepsReadOnlyRoot(t *testing.T) {
+	readonly := filepath.Join("data", "cloud-workspaces-readonly", "tenant_acme", "cws_demo", "cwi_abc")
+	if cloudWorkspaceIDFromPathString(readonly) != "" {
+		t.Fatal("writer parser matched a read-only cache")
+	}
+	if cloudWorkspaceIDFromReadOnlyCachePath(readonly) != "cws_demo" {
+		t.Fatalf("read-only id = %q", cloudWorkspaceIDFromReadOnlyCachePath(readonly))
+	}
+	dir, ok := explicitCloudWorkspaceListingDir(readonly)
+	if !ok || dir != normalizeProjectSessionPath(readonly) {
+		t.Fatalf("listing dir = %q ok=%v", dir, ok)
+	}
+	if _, ok := explicitCloudWorkspaceListingDir(filepath.Join(readonly, "docs")); ok {
+		t.Fatal("nested read-only folder must not become the listing root")
+	}
+	writer := filepath.Join("data", "cloud-workspaces", "tenant_acme", "cws_demo")
+	if _, ok := explicitCloudWorkspaceListingDir(writer); !ok {
+		t.Fatal("writer cache root should list itself")
+	}
+	if _, ok := explicitCloudWorkspaceListingDir(filepath.Join(writer, "docs")); ok {
+		t.Fatal("nested writer folder must stay on canonical resolution")
+	}
+}
+
+func TestGetCodingWorkbenchDirectoryListsExplicitReadOnlyCache(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_browse_ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_browse_ro", prepared.LocalPath, "notes.md", "hello")
+	writerList, err := app.GetCodingWorkbenchDirectory(prepared.LocalPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !codingWorkbenchEntriesContain(writerList.Entries, "notes.md") {
+		t.Fatalf("writer cache listing = %+v", writerList.Entries)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_browse_ro", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.PrepareCloudWorkspaceReadOnly("cws_browse_ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readonly.LocalPath == "" || readonly.LocalPath == prepared.LocalPath {
+		t.Fatalf("read-only cache = %q writer = %q", readonly.LocalPath, prepared.LocalPath)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "writer-only.md"), []byte("writer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(readonly.LocalPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !codingWorkbenchEntriesContain(listed.Entries, "notes.md") {
+		t.Fatalf("read-only listing = %+v, want notes.md", listed.Entries)
+	}
+	if codingWorkbenchEntriesContain(listed.Entries, "writer-only.md") {
+		t.Fatalf("read-only listing used the writer cache: %+v", listed.Entries)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "notes.md"); err != nil {
+		t.Fatalf("delete read-only cache: %v", err)
+	}
+	assertCloudWorkspaceFileDeleted(t, hub, readonly.LocalPath, "notes.md")
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "writer-only.md")); err != nil {
+		t.Fatalf("writer decoy must stay: %v", err)
+	}
+}
+
+func codingWorkbenchEntriesContain(entries []CodingWorkbenchDirectoryEntry, name string) bool {
+	for _, entry := range entries {
+		if entry.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCloudWorkspaceDeleteCacheRootUsesListingSubdir(t *testing.T) {
 	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
 	cache := normalizeProjectSessionPath(app.cloudWorkspaceCachePath("tenant_acme", "cws_subdir"))

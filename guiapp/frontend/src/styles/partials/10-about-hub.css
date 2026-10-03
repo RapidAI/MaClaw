@@ -44,7 +44,7 @@
 .hub-invitation-dialog__link-section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-5); align-items: center; }
 .hub-invitation-dialog__link-copy > label { display: block; margin-bottom: 7px; color: var(--theme-text-secondary); font-size: .76rem; font-weight: 700; }
 .hub-invitation-dialog__link-actions { display: flex; gap: var(--space-2); }
-.hub-invitation-dialog__link-actions input { min-width: 0; flex: 1; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-control-well); color: var(--theme-text-primary); padding: 9px 10px; font: inherit; font-size: .8rem; }
+.hub-invitation-dialog__link-actions input { min-width: 0; flex: 1; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-primary); padding: 9px 10px; font: inherit; font-size: .8rem; }
 .hub-invitation-dialog__button { min-height: 34px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-surface); color: var(--theme-text-primary); padding: 0 11px; font: inherit; font-size: .78rem; font-weight: 700; cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }
 .hub-invitation-dialog__button:hover:not(:disabled) { border-color: var(--theme-primary); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
 .hub-invitation-dialog__button--primary { border-color: var(--theme-primary); background: var(--theme-primary); color: var(--theme-on-primary); }

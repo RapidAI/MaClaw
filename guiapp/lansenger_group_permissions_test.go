@@ -518,7 +518,7 @@ func TestLansengerGroupPermissionPolicyBlocksInjectedAndDiscoveredTools(t *testi
 		agent.ToolDef("call_mcp_tool", "", nil, nil),
 	}
 	h := &IMMessageHandler{}
-	filtered, _ := h.finalizeInjectionAugmentedTools(ctx, "group-user", defs)
+	filtered, _ := h.finalizeInjectionAugmentedTools(ctx, "group-user", defs, agentLoopPhase{})
 	if containsLansengerPermissionTestTool(filtered, "git_status") || containsLansengerPermissionTestTool(filtered, "call_mcp_tool") {
 		t.Fatalf("injected tools bypassed group policy: %#v", filtered)
 	}
@@ -873,7 +873,7 @@ func TestLansengerGroupKnowledgeSearchSurvivesInjectionToolRefresh(t *testing.T)
 	ctx := NewLoopContext("lansenger-group", 1, nil)
 	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
 
-	tools, _ := h.finalizeInjectionAugmentedTools(ctx, "lansenger:group:refresh", nil)
+	tools, _ := h.finalizeInjectionAugmentedTools(ctx, "lansenger:group:refresh", nil, agentLoopPhase{})
 	if !containsLansengerPermissionTestTool(tools, "knowledge_search") {
 		t.Fatalf("injection refresh removed knowledge_search: %#v", tools)
 	}

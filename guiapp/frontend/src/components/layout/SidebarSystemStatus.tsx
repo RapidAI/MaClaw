@@ -18,6 +18,7 @@ import {
 } from './sidebarProviderDropdownPos';
 import { formatWorkbenchTaskCountLine, type WorkbenchTaskCounts } from './backgroundTaskCount';
 import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName } from '../../utils/contactedModelRoute';
+import { capabilityBandName, capabilityModelMenuLabel, capabilityMultiplierFor, orderCapabilityModels } from '../../utils/capabilityModelLabel';
 
 export type LLMProfileStatusSummary = {
     profile: 'assistant' | 'coding';
@@ -67,6 +68,7 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     currentModel?: string;
     /** Model options for the active provider (fetched catalog + configured fallback). */
     modelOptions?: string[];
+    modelMultipliers?: Record<string, number>;
     modelsLoading?: boolean;
     /** Called when user selects a model under the current provider. */
     onSwitchModel?: (modelId: string) => void;
@@ -206,6 +208,7 @@ export const SidebarSystemStatus = ({
     onSwitchProvider,
     currentModel = '',
     modelOptions = [],
+    modelMultipliers,
     modelsLoading = false,
     onSwitchModel,
     onOpenModelMenu,
@@ -218,6 +221,8 @@ export const SidebarSystemStatus = ({
     providerSelectionPending = false,
     profileSavePending = false,
 }: SidebarSystemStatusProps) => {
+    const menuShowsCapabilityFee = availableProviders[0]?.isHubService === true;
+    const modelFeeLabel = (modelId: string, showDefault = menuShowsCapabilityFee) => capabilityModelMenuLabel(modelId, capabilityMultiplierFor(modelId, modelMultipliers), showDefault);
     const baseProviderLabel = String(sidebarCurrentProviderTokenUsage.provider || '').trim()
         || textForLang(lang, 'Not configured', '\u672a\u914d\u7f6e', '\u672a\u8a2d\u5b9a');
     const moaBadge = moaSticky?.active
@@ -234,10 +239,16 @@ export const SidebarSystemStatus = ({
     const providerDisplayTitle = visionCapabilityText
         ? `${providerLabel}${CREDIT_SEPARATOR}${visionCapabilityText}`
         : providerLabel;
+    const profileShowsCapabilityFee = (providerName: string) => {
+        const name = providerName.trim();
+        if (!name) return false;
+        return availableProviders.some((provider) => provider.isHubService === true && String(provider.name || '').trim() === name);
+    };
     const profileStatusLabel = (summary: LLMProfileStatusSummary | undefined, fallback: string) => {
         const provider = String(summary?.provider_name || '').trim();
         const model = String(summary?.model || '').trim();
-        return provider && model ? `${provider}${CREDIT_SEPARATOR}${model}` : fallback;
+        const modelLabel = model ? modelFeeLabel(model, profileShowsCapabilityFee(provider)) : '';
+        return provider && modelLabel ? `${provider}${CREDIT_SEPARATOR}${modelLabel}` : fallback;
     };
     const assistantSummary = profileSummaries?.assistant;
     const codingSummary = profileSummaries?.coding;
@@ -674,8 +685,11 @@ export const SidebarSystemStatus = ({
     const routedProviderName = contactedProfileProviderName(routedSummary);
     const configuredModel = String(currentModel || contactedProfileModel(routedSummary) || '').trim();
     const workbenchProviderLabel = routedProviderName || baseProviderLabel;
-    const workbenchModelLabel = configuredModel
-        ? `${workbenchProviderLabel}：${configuredModel}`
+    const configuredModelLabel = configuredModel
+        ? modelFeeLabel(configuredModel, menuShowsCapabilityFee || isOfficialProvider)
+        : '';
+    const workbenchModelLabel = configuredModelLabel
+        ? `${workbenchProviderLabel}：${configuredModelLabel}`
         : textForLang(lang, 'Not configured', '未配置', '未設定');
     const openModelSettingsLabel = textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定');
     const workbenchTokenLabel = formatSidebarTokens(Number(sidebarCurrentProviderTokenUsage.total || 0));
@@ -719,7 +733,7 @@ export const SidebarSystemStatus = ({
                             {configuredModel ? (
                                 <>
                                     <span className="mc-workbench-status-card__model-provider">{workbenchProviderLabel}<span className="mc-workbench-status-card__model-sep">：</span></span>
-                                    <span className="mc-workbench-status-card__model-id">{configuredModel}</span>
+                                    <span className="mc-workbench-status-card__model-id">{configuredModelLabel}</span>
                                 </>
                             ) : (
                                 <span className="mc-workbench-status-card__model-provider">{workbenchModelLabel}</span>
@@ -940,8 +954,10 @@ export const SidebarSystemStatus = ({
                                                 ? textForLang(lang, 'Models (loading…)', '\u6a21\u578b\uff08\u52a0\u8f7d\u4e2d\u2026\uff09', '\u6a21\u578b\uff08\u8f09\u5165\u4e2d\u2026\uff09')
                                                 : textForLang(lang, 'Models', '\u6a21\u578b', '\u6a21\u578b')}
                                         </div>
-                                        {(modelOptions.length > 0 ? modelOptions : (currentModel ? [currentModel] : [])).map((modelId) => {
-                                            const active = modelId === currentModel;
+                                        {(menuShowsCapabilityFee ? orderCapabilityModels(modelOptions.length > 0 ? modelOptions : (currentModel ? [currentModel] : [])) : (modelOptions.length > 0 ? modelOptions : (currentModel ? [currentModel] : []))).map((modelId) => {
+                                            const active = modelId === currentModel
+                                                || (capabilityBandName(modelId) !== '' && capabilityBandName(modelId) === capabilityBandName(currentModel));
+                                            const modelLabel = modelFeeLabel(modelId);
                                             return (
                                                 <button
                                                     key={modelId}
@@ -949,13 +965,13 @@ export const SidebarSystemStatus = ({
                                                     className="sidebar-system-status__provider-dropdown-item"
                                                     role="option"
                                                     aria-selected={active}
-                                                    title={modelId}
+                                                    title={modelLabel}
                                                     onClick={() => handleSelectModel(modelId)}
                                                 >
                                                     <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">
                                                         {active ? DROPDOWN_CHECK : ''}
                                                     </span>
-                                                    <span className="sidebar-system-status__provider-dropdown-label">{modelId}</span>
+                                                    <span className="sidebar-system-status__provider-dropdown-label">{modelLabel}</span>
                                                 </button>
                                             );
                                         })}

@@ -1,9 +1,11 @@
 package guiapp
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -146,6 +148,166 @@ func TestCreateTaskUnifiedExpertBranch(t *testing.T) {
 	}
 	if !projectRecordHasTagLike(rec.Tags, taskSourceExpertPrefix+"expert-paper") {
 		t.Fatalf("expert task tags = %#v, want source tag", rec.Tags)
+	}
+}
+
+func TestCreateTaskUnifiedExpertBranchStoresWorkingDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	dir := t.TempDir()
+
+	path, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write the paper",
+		ExpertID:   "expert-paper",
+		ExpertName: "Paper reviewer",
+		WorkingDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskUnified: %v", err)
+	}
+	if got := app.recentTaskWorkingDir(path.ProjectPath); got != normalizeRecentTaskWorkingDir(dir) {
+		t.Fatalf("working dir = %q, want %q", got, normalizeRecentTaskWorkingDir(dir))
+	}
+
+	other := t.TempDir()
+	again, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write the paper again",
+		ExpertID:   "expert-paper",
+		ExpertName: "Paper reviewer",
+		WorkingDir: other,
+	})
+	if err != nil {
+		t.Fatalf("second CreateTaskUnified: %v", err)
+	}
+	if again.ProjectPath != path.ProjectPath {
+		t.Fatalf("expert task path = %q, want the existing record %q", again.ProjectPath, path.ProjectPath)
+	}
+	if got := app.recentTaskWorkingDir(path.ProjectPath); got != normalizeRecentTaskWorkingDir(other) {
+		t.Fatalf("updated working dir = %q, want %q", got, normalizeRecentTaskWorkingDir(other))
+	}
+}
+
+func TestCreateTaskUnifiedLatexExpertStartsAFreshPaper(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	first, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write the first paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("first CreateTaskUnified: %v", err)
+	}
+	if strings.TrimSpace(first.ProjectPath) == "" {
+		t.Fatal("first latex task path is empty")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID(builtinLatexExpertID),
+		ProjectPath:  first.ProjectPath,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "old paper"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed expert transcript: %v", err)
+	}
+
+	second, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write another paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("second CreateTaskUnified: %v", err)
+	}
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("second latex task = %q, want a new directory (first %q)", second.ProjectPath, first.ProjectPath)
+	}
+	session, err := persist.LoadSession(expertTabSessionID(builtinLatexExpertID))
+	if err != nil {
+		t.Fatalf("load expert transcript: %v", err)
+	}
+	if session == nil || len(session.Conversation) != 0 || session.ConversationClearedAt == 0 {
+		t.Fatalf("expert transcript was not cleared: %+v", session)
+	}
+	if strings.TrimSpace(session.ProjectPath) != "" {
+		t.Fatalf("cleared expert session still claims project %q", session.ProjectPath)
+	}
+	archived, err := persist.LoadLatestSessionForProject(first.ProjectPath)
+	if err != nil {
+		t.Fatalf("load archived paper transcript: %v", err)
+	}
+	if archived == nil || !latexSessionHasUserTurn(archived.Conversation) {
+		t.Fatalf("previous paper lost its transcript: %+v", archived)
+	}
+	resumed := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
+	if resumed.ProjectPath != second.ProjectPath {
+		t.Fatalf("resume path = %q, want newest paper %q", resumed.ProjectPath, second.ProjectPath)
+	}
+	pi := app.memoryStore.ProjectIndex()
+	indexed := pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskSourceExpertPrefix+builtinLatexExpertID)
+	})
+	if len(indexed) != 2 {
+		t.Fatalf("index has %d latex expert tasks, want 2", len(indexed))
+	}
+	listed := 0
+	var listedDump []string
+	for _, item := range app.ListTasks(50) {
+		listedDump = append(listedDump, item.ProjectPath+" ["+strings.Join(item.Tags, ",")+"]")
+		if projectRecordHasTagLike(item.Tags, taskSourceExpertPrefix+builtinLatexExpertID) {
+			listed++
+		}
+	}
+	if listed != 2 {
+		t.Fatalf("latex expert tasks listed %d times, want both papers; rows=%s", listed, strings.Join(listedDump, " || "))
+	}
+}
+
+func TestAbandonUnopenedFreshLatexTaskRestoresThePreviousPaper(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write the first paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("first CreateTaskUnified: %v", err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID(builtinLatexExpertID),
+		ProjectPath:  first.ProjectPath,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "old paper"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write another paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("second CreateTaskUnified: %v", err)
+	}
+	if err := app.AbandonUnopenedFreshLatexTask(second.ProjectPath); err != nil {
+		t.Fatalf("abandon: %v", err)
+	}
+	if err := app.AbandonUnopenedFreshLatexTask(first.ProjectPath); err == nil {
+		t.Fatal("abandon accepted the paper that is no longer the unopened row")
+	}
+	session, err := persist.LoadSession(expertTabSessionID(builtinLatexExpertID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || !latexSessionHasUserTurn(session.Conversation) || strings.TrimSpace(session.ProjectPath) != "" {
+		t.Fatalf("expert transcript was not restored: %+v", session)
+	}
+	resumed := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
+	if resumed.ProjectPath != first.ProjectPath {
+		t.Fatalf("resume path = %q, want the original paper %q", resumed.ProjectPath, first.ProjectPath)
+	}
+	if _, err := os.Stat(second.ProjectPath); !os.IsNotExist(err) {
+		t.Fatalf("abandoned paper directory still present: %v", err)
 	}
 }
 
@@ -351,5 +513,24 @@ func TestListWorkflowTemplateSummaries(t *testing.T) {
 	}
 	if byID["coding"].SemanticOnly {
 		t.Fatal("coding template should not be SemanticOnly")
+	}
+}
+
+func TestConversationEntriesFromTabSnapshotKeepsModelTurns(t *testing.T) {
+	entries := conversationEntriesFromTabSnapshot([]interface{}{
+		map[string]interface{}{"role": "User", "content": "  old paper  "},
+		map[string]interface{}{"role": "assistant", "content": "compiled"},
+		map[string]interface{}{"role": "tool", "content": "", "tool_name": "pdflatex", "tool_calls": []interface{}{map[string]interface{}{"name": "pdflatex"}}},
+		map[string]interface{}{"role": "note", "content": "skip"},
+		map[string]interface{}{"role": "user", "content": "   "},
+	})
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want user, assistant, and the tool turn", len(entries))
+	}
+	if entries[0].Role != "user" || entries[0].Content != "  old paper  " {
+		t.Fatalf("user entry = %#v", entries[0])
+	}
+	if entries[2].Role != "tool" || entries[2].ToolName != "pdflatex" || entries[2].ToolCalls == nil {
+		t.Fatalf("tool entry = %#v", entries[2])
 	}
 }

@@ -1451,7 +1451,7 @@
     justify-content: center;
     border: 1px solid var(--theme-border);
     border-left: 0;
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     cursor: pointer;
@@ -1550,8 +1550,8 @@
 }
 
 .provider-config-modal input[data-readonly='true'] {
-    cursor: not-allowed;
-    background: var(--theme-surface-muted);
+    cursor: default;
+    background: var(--theme-surface);
     color: var(--theme-text-muted);
 }
 

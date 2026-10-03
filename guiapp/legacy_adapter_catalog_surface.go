@@ -103,22 +103,37 @@ func filterLegacyDefinitionsToLiveProvisions(definitions []map[string]interface{
 // definition. Those callers retain snapshot admission until they gain a real
 // provider binding; they must not be papered over with a made-up provision.
 //
-// legacyRoutingMissFloorToolNames is the parent-invariant-11 basic capability
-// floor: the desktop agent must always be able to run a command or write a
-// file, even on a degraded leftover turn. Keeping them host_policy_required
-// stops the closed plan's count guard from pruning them as optional retrieval
-// candidates when flat retrieval scores rank them last (mirrors the documented
-// floor in semantic_routing_miss.go).
-var legacyRoutingMissFloorToolNames = map[string]bool{
-	"bash":       true,
-	"write_file": true,
+// legacyRoutingMissFloorToolOrder is the parent-invariant-11 basic capability
+// floor: the desktop assistant must be able to run a command, read a file,
+// and change it, even on a degraded leftover turn. Order is stable for
+// pinning. Keeping these host_policy_required stops the closed plan's count
+// guard from pruning them as optional retrieval candidates when flat
+// retrieval scores rank them last (mirrors semantic_routing_miss.go).
+var legacyRoutingMissFloorToolOrder = []string{"bash", "read_file", "write_file", "edit_file"}
+
+var legacyRoutingMissFloorToolNames = func() map[string]bool {
+	out := make(map[string]bool, len(legacyRoutingMissFloorToolOrder))
+	for _, name := range legacyRoutingMissFloorToolOrder {
+		out[name] = true
+	}
+	return out
+}()
+
+// boundFloorCatalog is the non-nil surface a floor unlock may ensure
+// workflow tools from. Nil would fall through to the unmanaged host
+// catalog and revive definitions this turn never held.
+func boundFloorCatalog(baseTools []map[string]interface{}) []map[string]interface{} {
+	if baseTools == nil {
+		return []map[string]interface{}{}
+	}
+	return baseTools
 }
 
 // unionMissFloorToolsForSurface appends the invariant-11 floor tool
-// definitions (bash/write_file) found in baseTools to the current surface when
-// absent. baseTools is the loop's plan-rendered base surface, so the union
-// keeps every definition digest-bound; it never invents or revives a raw
-// registry definition.
+// definitions (bash/read_file/write_file/edit_file) found in baseTools to the current
+// surface when absent. baseTools is the loop's plan-rendered base surface, so
+// the union keeps every definition digest-bound; it never invents or revives
+// a raw registry definition.
 func unionMissFloorToolsForSurface(tools, baseTools []map[string]interface{}) []map[string]interface{} {
 	seen := make(map[string]bool, len(tools))
 	for _, def := range tools {
@@ -207,6 +222,11 @@ func (h *IMMessageHandler) renderClosedLegacyReplacementSurface(policyText strin
 		log.Printf("[legacy-adapter] catalog_incomplete dropped unprovisioned host definitions %q; rendering %d provisioned host tools", missing, len(hostDefinitions))
 	}
 	if len(hostDefinitions) == 0 {
+		// An allow-list that removed every host tool is an empty surface.
+		// That is not a missing provision. Catalog gaps still name what dropped.
+		if len(missing) == 0 {
+			return nil, nil, false, nil
+		}
 		return nil, nil, false, fmt.Errorf("catalog_incomplete: legacy replacement has no provisioned host definitions (dropped %q)", missing)
 	}
 	rendered, planBacked, err := renderReviewedLegacySurface(policyText, hostDefinitions, rankedCandidates)

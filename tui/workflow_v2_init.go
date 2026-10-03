@@ -334,12 +334,10 @@ func tuiWorkflowRequestedWork(state *v2.WorkflowState, phase *v2.Phase, userText
 }
 
 // tuiWorkflowV2ConfirmClassifier uses LLM to classify user intent during
-// workflow confirmation. Falls back to keyword matching when LLM is unavailable.
-// Uses a goroutine + channel to avoid blocking the Bubble Tea main goroutine
-// for the full LLM response time (up to 5s timeout, keyword fallback on timeout).
+// workflow confirmation. An unavailable classifier does not guess from wording.
 func (app *TUIApp) tuiWorkflowV2ConfirmClassifier(phaseContext, userText string) string {
 	if app.llmConfig.URL == "" || app.llmConfig.Model == "" {
-		return v2.ClassifyConfirmIntentKeyword(userText)
+		return ""
 	}
 
 	messages := []interface{}{
@@ -373,18 +371,15 @@ func (app *TUIApp) tuiWorkflowV2ConfirmClassifier(phaseContext, userText string)
 	select {
 	case result := <-ch:
 		if result.err != nil {
-			log.Printf("[TUI-workflow-v2] confirm classifier LLM failed: %v, falling back to keywords", result.err)
-			return v2.ClassifyConfirmIntentKeyword(userText)
+			log.Printf("[TUI-workflow-v2] confirm classifier LLM failed: %v", result.err)
+			return ""
 		}
 		intent := v2.ParseConfirmClassifierResponse(result.content)
-		if intent == "" {
-			return v2.ClassifyConfirmIntentKeyword(userText)
-		}
 		log.Printf("[TUI-workflow-v2] confirm classifier: text=%q → %q", userText, intent)
 		return intent
 	case <-time.After(5 * time.Second):
-		log.Printf("[TUI-workflow-v2] confirm classifier LLM timeout (5s), falling back to keywords")
-		return v2.ClassifyConfirmIntentKeyword(userText)
+		log.Printf("[TUI-workflow-v2] confirm classifier LLM timeout (5s)")
+		return ""
 	}
 }
 
@@ -484,17 +479,18 @@ func (app *TUIApp) routeWithV2Router(userID, text string) string {
 
 	// Use the V2 Router to get a routing decision.
 	result := wf.router.Route(userID, text, nil)
-	if result == nil || result.Target == v2.RouteToAgentLoop {
-		return "" // pass through — V2 Router says this isn't for the workflow
+	reply := ""
+	if result != nil && result.Target != v2.RouteToAgentLoop && result.HandleResult != nil {
+		reply = app.handleV2HandleResult(userID, result.HandleResult, state)
 	}
-
-	// Handle the result from V2 StateMachine.
-	if result.HandleResult != nil {
-		return app.handleV2HandleResult(userID, result.HandleResult, state)
+	if reply == "" {
+		if fresh := wf.machine.GetActive(userID); fresh != nil && fresh.IsWaitingConfirm() {
+			if barrier := app.workflowReviewBarrierText(userID); barrier != "" {
+				return barrier
+			}
+		}
 	}
-
-	// New workflow route (shouldn't happen if we already have active state, but handle gracefully)
-	return ""
+	return reply
 }
 
 // trySubmitTUIFormFromText maps a numbered chat reply onto the active phase form.
@@ -509,7 +505,7 @@ func (app *TUIApp) trySubmitTUIFormFromText(userID, text string) bool {
 		return false
 	}
 	phase := state.ActivePhase()
-	if phase == nil || phase.InputSchema == nil || phase.FormData != nil {
+	if phase == nil || phase.Status == v2.PhaseWaitingConfirm || phase.InputSchema == nil || phase.FormData != nil {
 		return false
 	}
 	formData := parseTUINumberedFormReply(text, phase.InputSchema)
@@ -606,6 +602,9 @@ func (app *TUIApp) handleV2HandleResult(userID string, hr *v2.HandleResult, stat
 		app.workflowMu.Unlock()
 		log.Printf("[TUI-workflow-v2] ActionCancelled")
 		return "工作流已取消"
+
+	case v2.ActionReviewPending:
+		return app.workflowReviewBarrierText(userID)
 
 	case v2.ActionPassThrough:
 		return "" // not workflow-related, pass to agent loop

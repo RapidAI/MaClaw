@@ -96,7 +96,7 @@ func TestTaskIdentityAnchorIsAddedToConversationAfterHistoricalAttachmentsAreStr
 		Content: "原始材料\n[用户选择的本地文件路径]\n" + source +
 			"\n--- auto_extract: begin path=\"" + source + "\" format=\"pdf\" ---\n马勇的完整正文\n--- auto_extract: end path=\"" + source + "\" ---",
 	}}
-	started := h.buildAgentLoopConversationStart("chat", owner, "浓缩为300字", "system", "desktop", nil, corelib.MaclawLLMConfig{}, history, 0, nil, nil, nil, true)
+	started := h.buildAgentLoopConversationStart("chat", owner, "浓缩为300字", "system", "desktop", nil, corelib.MaclawLLMConfig{}, history, 0, nil, nil, nil, true, nil, false)
 
 	if len(started.Conversation) < 2 {
 		t.Fatalf("conversation unexpectedly short: %d", len(started.Conversation))
@@ -314,7 +314,7 @@ func TestTaskIdentityAnchorPPTCharterIsInjectedWithoutPersonSubject(t *testing.T
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
 	const owner = "desktop-user:maclaw-ppt-prompt"
 	original := "码卡龙平台仓库： github.com/rapidia/maclaw 编写一个介绍AI Native组织的驱动系统的介绍PPT"
-	started := h.buildAgentLoopConversationStart("chat", owner, original, "system", "desktop", nil, corelib.MaclawLLMConfig{}, nil, 0, nil, nil, nil, true)
+	started := h.buildAgentLoopConversationStart("chat", owner, original, "system", "desktop", nil, corelib.MaclawLLMConfig{}, nil, 0, nil, nil, nil, true, nil, false)
 	anchorSeen := false
 	for _, raw := range started.Conversation {
 		message, ok := raw.(map[string]string)
@@ -440,11 +440,11 @@ func TestTaskIdentityAnchorChineseTopicBlocksEnglishMathFilename(t *testing.T) {
 }
 
 func TestTaskIdentityAnchorTopicSignalIsNotContinuation(t *testing.T) {
-	if isTaskAnchorContinuationText("ppt需要做成码卡龙介绍，专业风格") {
-		t.Fatal("a named-topic PPT request must not be treated as a continuation")
+	if isTaskAnchorContinuationText("ppt需要做成码卡龙介绍，专业风格") || isTaskAnchorContinuationText("继续") || isTaskAnchorContinuationText("continue") {
+		t.Fatal("only an empty utterance is a continuation for the anchor")
 	}
-	if !isTaskAnchorContinuationText("忘掉前面的错误提示。ppt需要专业风格，现在太朴素了。") {
-		t.Fatal("style-only follow-up should stay a continuation")
+	if isTaskAnchorContinuationText("忘掉前面的错误提示。ppt需要专业风格，现在太朴素了。") {
+		t.Fatal("a product phrase was treated as a continuation")
 	}
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
 	const owner = "desktop-user:maclaw-named"

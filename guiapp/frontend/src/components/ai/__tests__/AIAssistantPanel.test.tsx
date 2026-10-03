@@ -72,9 +72,10 @@ function activateLocalTab() {
 }
 
 describe('codePreviewEventsEnabled', () => {
-    it('keeps file updates flowing for the LaTeX paper expert', () => {
+    it('keeps file updates flowing for a work task result', () => {
         expect(codePreviewEventsEnabled(false, 'builtin-latex-paper')).toBe(true);
         expect(codePreviewEventsEnabled(false, 'builtin-paper-polish')).toBe(false);
+        expect(codePreviewEventsEnabled(false, 'builtin-paper-polish', true)).toBe(true);
         expect(codePreviewEventsEnabled(true, 'builtin-paper-polish')).toBe(true);
     });
 });
@@ -225,6 +226,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetTabWorkingDir: setTabWorkingDirMock,
     SelectWorkingDir: selectWorkingDirMock,
     StartWorkflowTemplateInTab: startWorkflowTemplateInTabMock,
+    AbandonUnopenedFreshLatexTask: vi.fn().mockResolvedValue(undefined),
     OpenProjectDirectory: openProjectDirectoryMock,
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
@@ -4116,9 +4118,13 @@ describe('AIAssistantPanel property tests', () => {
             state: { messages: [], sending: false, streaming: false, ready: true },
         });
 
-        await waitFor(() => expect(getByTestId('task-execution-meta').textContent || '').toContain('www.driverdevelopment.com:/home/ubuntu/app'));
+        await waitFor(() => expect(getByTestId('task-execution-meta').textContent || '').toContain('www.driverdevelopment.com'));
+        expect(getByTestId('task-execution-meta').textContent || '').not.toContain('/home/ubuntu/app');
+        expect(getByTestId('task-execution-meta').getAttribute('title') || '').toContain('www.driverdevelopment.com:/home/ubuntu/app');
         expect(getByTestId('task-execution-meta').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
-        await waitFor(() => expect(getByTestId('working-dir-chip').textContent || '').toContain('www.driverdevelopment.com:/home/ubuntu/app'));
+        await waitFor(() => expect(getByTestId('working-dir-chip').textContent || '').toContain('远程'));
+        expect(getByTestId('working-dir-chip').textContent || '').not.toContain('www.driverdevelopment.com');
+        expect(getByTestId('working-dir-chip').getAttribute('title') || '').toContain('www.driverdevelopment.com:/home/ubuntu/app');
         expect(getByTestId('working-dir-chip').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
         expect(getByTestId('working-dir-chip').textContent || '').not.toContain('默认');
     });

@@ -457,16 +457,22 @@
   }
 }
 
-/* Compact rail system menu: anchor the popup to the actual rail width after the
-   task pane collapses, so the menu does not float 28-48px away at tablet sizes. */
+/* Compact rail popups: anchor to the actual rail width after it shrinks to
+   84px / 64px. A fixed 112px left offset floats the menu 28–48px away. */
 @media (max-width: 1200px) {
-  .mc-nav-rail [data-testid='system-popup-menu'] {
+  .mc-nav-rail [data-testid='system-popup-menu'],
+  .mc-nav-rail [data-testid='extensions-popup-menu'],
+  .mc-nav-rail [data-testid='library-popup-menu'],
+  .mc-nav-rail [data-testid='pro-features-popup-menu'] {
     left: calc(100% + 8px) !important;
     max-width: calc(100vw - 96px) !important;
   }
 }
 @media (max-width: 560px) {
-  .mc-nav-rail [data-testid='system-popup-menu'] {
+  .mc-nav-rail [data-testid='system-popup-menu'],
+  .mc-nav-rail [data-testid='extensions-popup-menu'],
+  .mc-nav-rail [data-testid='library-popup-menu'],
+  .mc-nav-rail [data-testid='pro-features-popup-menu'] {
     left: calc(100% + 6px) !important;
     max-width: calc(100vw - 76px) !important;
   }
@@ -568,9 +574,10 @@
 .settings-panel textarea,
 .settings-panel .form-input,
 .settings-panel .form-select {
-  background: var(--office-canvas, var(--theme-surface-muted));
-  color: var(--office-ink, var(--theme-text-primary));
-  border-color: var(--office-line, var(--theme-border));
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  border-color: var(--theme-border);
+  border-radius: var(--radius-md);
 }
 .settings-panel input:focus,
 .settings-panel select:focus,
@@ -643,8 +650,8 @@
 }
 .secondary-page-shell :where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), select, textarea) {
   border-color: var(--theme-border);
-  border-radius: var(--radius-sm);
-  background: var(--theme-control-well);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
   color: var(--theme-text-primary);
 }
 .secondary-page-shell :where(input, select, textarea):focus-visible {
@@ -872,8 +879,8 @@
   border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border)) !important;
   color: var(--theme-primary-strong) !important;
 }
-#App[data-nav-tab='settings'] :where(.settings-panel input, .settings-panel select, .settings-panel textarea, .settings-panel .form-input, .settings-panel .form-select, .prog-tools__select) {
-  background: var(--theme-control-well) !important;
+#App[data-nav-tab='settings'] :where(.settings-panel input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), .settings-panel select, .settings-panel textarea, .settings-panel .form-input, .settings-panel .form-select, .prog-tools__select) {
+  background: var(--theme-surface) !important;
   border-color: var(--theme-border) !important;
   color: var(--theme-text-primary) !important;
 }
@@ -1615,6 +1622,39 @@
   border-color: var(--mc-accent) !important;
   color: var(--mc-accent-strong) !important;
 }
+/* Model/provider chip sits in the composer toolbar. The 34px utility-button
+   lock would square it off and push it out of the gap before send. */
+.mc-input-stack button.mc-composer-model-chip,
+#App .mc-input-stack button.mc-composer-model-chip {
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: 220px !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 0 8px !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 5px;
+  box-sizing: border-box;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  line-height: 1.2 !important;
+}
+.mc-input-stack button.mc-composer-model-chip:hover,
+#App .mc-input-stack button.mc-composer-model-chip:hover {
+  background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important;
+  border-color: var(--mc-accent) !important;
+  color: var(--mc-accent-strong) !important;
+}
+/* The working-directory chip is one menu button. Composer button locks repaint
+   every non-primary button, so its inline open colors never show. Match hover. */
+.mc-input-stack button.mc-working-dir-chip[aria-expanded="true"],
+#App .mc-input-stack button.mc-working-dir-chip[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important;
+  border-color: var(--mc-accent) !important;
+  color: var(--mc-accent-strong) !important;
+}
 /* Queue actions share the composer card with the 34px toolbar lock.
    Keep them as one compact 24px set; this block must follow the lock. */
 .mc-input-stack button.ai-queue-action,
@@ -1861,7 +1901,7 @@
   box-shadow: var(--shadow-sm) !important;
 }
 #App .secondary-page-shell :where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), select, textarea) {
-  background: var(--theme-control-well) !important;
+  background: var(--theme-surface) !important;
   border-color: var(--mc-line) !important;
   color: var(--mc-ink) !important;
 }

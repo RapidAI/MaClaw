@@ -66,8 +66,48 @@ func newLLMHTTPError(statusCode int, message string) error {
 	return &llmHTTPError{statusCode: statusCode, message: message}
 }
 
-func shouldRetrySimpleLLMError(err error) bool {
+// hubDenialForbidsRetry reports a Hub answer that will not change on a
+// short retry. A period quota is exhausted until the next period, and a
+// canceled rate-limit wait means the caller already left the queue.
+func hubDenialForbidsRetry(err error) bool {
 	if err == nil {
+		return false
+	}
+	var statusErr *llm.HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil && hubDenialTextForbidsRetry(string(statusErr.Body)) {
+		return true
+	}
+	var httpErr *llmHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil && hubDenialTextForbidsRetry(httpErr.message) {
+		return true
+	}
+	return hubDenialTextForbidsRetry(err.Error())
+}
+
+// Markers match Hub's JSON body and the desktop classifier in agentruntime.
+// This package cannot import agentruntime, because that package imports agent.
+func hubDenialTextForbidsRetry(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "llm_service_period_limited") ||
+		strings.Contains(text, "llm_endpoint_user_rate_limit_wait_canceled") ||
+		strings.Contains(text, "current period credit limit") ||
+		strings.Contains(text, "canceled while waiting in hub user rate-limit queue") ||
+		strings.Contains(text, "周期限流") ||
+		strings.Contains(text, "周期额度") ||
+		strings.Contains(text, "限流排队等待时被取消")
+}
+
+// incompleteHTTPBody reports a read that ended before the response was a
+// complete document. An empty body and a 200 prefix must keep that error:
+// parsing the prefix turns a route deadline into a non-retryable JSON error.
+// A non-OK status still becomes an HTTP status error, so a short 502 page
+// keeps the status that the outer retry already understands.
+func incompleteHTTPBody(statusCode int, body []byte, readErr error) bool {
+	return readErr != nil && (len(body) == 0 || statusCode == http.StatusOK)
+}
+
+func shouldRetrySimpleLLMError(err error) bool {
+	if err == nil || hubDenialForbidsRetry(err) {
 		return false
 	}
 	if llm.IsTransientTokenValidationError(err) {
@@ -82,6 +122,12 @@ func shouldRetrySimpleLLMError(err error) bool {
 		return statusErr.StatusCode == http.StatusRequestTimeout || statusErr.StatusCode == http.StatusTooManyRequests || statusErr.StatusCode >= http.StatusInternalServerError
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Headers arrived and then the stream went silent. That is the idle
+	// reader's stall, not a body-parse failure, so it waits for the outer
+	// backoff instead of an immediate second request.
+	if llm.IsSSEIdleTimeoutError(err) {
 		return true
 	}
 	var netErr net.Error
@@ -202,9 +248,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if readErr != nil && len(body) == 0 {
-		// Context timeout or network error during body read with no data received.
-		// Return the read error directly instead of trying to parse empty/partial body.
+	if incompleteHTTPBody(resp.StatusCode, body, readErr) {
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -259,7 +303,7 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if readErr != nil && len(body) == 0 {
+	if incompleteHTTPBody(resp.StatusCode, body, readErr) {
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {

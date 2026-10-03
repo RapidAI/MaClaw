@@ -1,15 +1,16 @@
 (function () {
   function installProblemReportsTab() {
-    const contentGroup = document.querySelector('[data-nav-group="content"]');
+    const contentGroup = document.querySelector('[data-nav-group="ops"]');
     const main = document.querySelector('main.main');
     if (document.getElementById('tab-problemreports')) return true;
     if (!contentGroup || !main) return false;
     const button = document.createElement('button');
     button.dataset.tab = 'problemreports';
     const problemIcon = (typeof TAB_ICONS === 'object' && TAB_ICONS.problemreports) ? TAB_ICONS.problemreports : '<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>';
-    button.innerHTML = '<span class="nav-icon" aria-hidden="true">' + problemIcon + '</span><span>故障报告</span><small>查看诊断包、截图和处理状态</small>';
+    button.innerHTML = '<span class="nav-icon" aria-hidden="true">' + problemIcon + '</span><span data-i18n="navProblemReports"></span><small data-i18n="navProblemReportsDesc"></small>';
     button.onclick = function () { window.openTab('problemreports'); };
     contentGroup.insertBefore(button, contentGroup.querySelector('[data-tab="failurelogs"]'));
+    if (typeof applyI18n === 'function') applyI18n();
     const panel = document.createElement('section');
     panel.id = 'tab-problemreports'; panel.className = 'panel card';
     panel.innerHTML = '<div class="head"><div><h3>故障报告</h3><div class="desc">查看用户诊断包、联系信息及处理状态。</div></div><div class="actions"><select id="problemReportsStatus" onchange="loadProblemReports()"><option value="">全部状态</option><option value="pending">待处理</option><option value="fixed">已修复</option><option value="deferred">延期</option><option value="rejected">不予处理</option><option value="archived">已归档</option></select><button class="btn-ghost" onclick="loadProblemReports()">刷新</button></div></div><div id="problemReportsList" class="list"><div class="hint">暂无故障报告。</div></div>';
@@ -17,11 +18,15 @@
     const previousOpenTab = window.openTab;
     window.openTab = function (name) {
       if (name !== 'problemreports') return previousOpenTab(name);
+      // Keep admin-core's active-tab key in sync (like the usermgmt wrap does),
+      // otherwise a refresh can't restore this tab: admin-core's restoreTab()
+      // runs before this module loads and never sees the panel.
+      localStorage.setItem('maclawHubCenterActiveTab', name);
       localStorage.setItem('maclaw.admin.activeTab', name);
       document.querySelectorAll('.nav button[data-tab]').forEach(function (node) { node.classList.toggle('active', node.dataset.tab === name); });
       document.querySelectorAll('.panel').forEach(function (node) { node.classList.toggle('active', node.id === 'tab-' + name); });
-      document.getElementById('pageTitle').textContent = '故障报告';
-      document.getElementById('pageSubtitle').textContent = '查看用户诊断包、截图及处理状态';
+      document.getElementById('pageTitle').textContent = tr('problemReportsTabTitle');
+      document.getElementById('pageSubtitle').textContent = tr('problemReportsTabSubtitle');
       const pageIcon = document.getElementById('pageTabIcon');
       if (pageIcon) pageIcon.innerHTML = problemIcon;
       window.loadProblemReports();
@@ -142,7 +147,17 @@
     catch (error) { alert(problemReportErrorMessage(error)); }
   };
   function installWhenAdminShellReady(attempt) {
-    if (installProblemReportsTab() || attempt >= 20) return;
+    if (installProblemReportsTab()) {
+      // Restore the tab after the panel exists. admin-core's restoreTab() runs
+      // before this module executes, so it could not have restored it itself.
+      // Guard on token() to avoid firing an unauthenticated data load.
+      var savedTab = null;
+      try { savedTab = localStorage.getItem('maclawHubCenterActiveTab'); } catch (_) {}
+      var signedIn = typeof window.token === 'function' && !!window.token();
+      if (savedTab === 'problemreports' && signedIn && typeof window.openTab === 'function') window.openTab('problemreports');
+      return;
+    }
+    if (attempt >= 20) return;
     // The admin shell may be replaced by another deferred module during startup.
     // Retry briefly instead of leaving this navigation entry silently absent.
     window.setTimeout(function () { installWhenAdminShellReady(attempt + 1); }, 50);

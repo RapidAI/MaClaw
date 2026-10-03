@@ -125,14 +125,30 @@ func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	// title follows the existing expert launcher convention (expert name, not
 	// the user's prompt text), so Name is intentionally not used here.
 	//
+	// The built-in LaTeX paper expert is a paper, not a lifelong chat. Each
+	// wizard launch allocates a new task directory and clears the shared
+	// expert transcript so the new template does not continue the previous
+	// paper. Reopening an existing row still uses createExpertTask, which
+	// returns the newest LaTeX task without creating another one.
+	//
 	// Contract with the wizard frontend: after this call returns, open the
 	// expert tab for ExpertID and send Name as the first user message through
 	// the existing expert chat channel (same as ensureExpertTask +
 	// setPendingExpertOpen in App.tsx). The backend routes expert messages by
-	// expert session id (expert_session_policy.go), so no project-path link is
-	// needed; this record is only the sidebar entry.
+	// expert session id (expert_session_policy.go). WorkingDir, when set, is
+	// stored on the record and becomes the execution directory.
 	if opts.ExpertID != "" {
-		result := a.CreateExpertTask(opts.ExpertID, opts.ExpertName)
+		if opts.ExpertID == builtinLatexExpertID {
+			result, err := a.createFreshLatexExpertTask(opts.ExpertName, opts.WorkingDir)
+			if err != nil {
+				return zero, err
+			}
+			return UnifiedTaskCreateResult{ProjectPath: result.ProjectPath}, nil
+		}
+		result, err := a.createExpertTask(opts.ExpertID, opts.ExpertName, opts.WorkingDir)
+		if err != nil {
+			return zero, err
+		}
 		if strings.TrimSpace(result.ProjectPath) == "" {
 			return zero, fmt.Errorf("expert task creation failed")
 		}

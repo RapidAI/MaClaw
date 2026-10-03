@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func sampleComputerObserveDump(label string) string {
@@ -38,6 +40,55 @@ func sampleComputerObserveConversation(dumps ...string) []interface{} {
 		)
 	}
 	return msgs
+}
+
+func TestFoldComputerUseObservesReadsTypedToolCalls(t *testing.T) {
+	first := sampleComputerObserveDump("FIRST")
+	second := sampleComputerObserveDump("SECOND")
+	huge := strings.Repeat("x", 100000)
+	msgs := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				ID:       "obs-0",
+				Type:     "function",
+				Function: llm.ToolCallFunction{Name: "computer_observe", Arguments: huge},
+			}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "obs-0", "content": first},
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				ID:       "obs-1",
+				Type:     "function",
+				Function: llm.ToolCallFunction{Name: "computer_observe", Arguments: huge},
+			}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "obs-1", "content": second},
+	}
+	got := FoldComputerUseObserves(msgs)
+	_, older := ExtractRoleContent(got[1])
+	_, newer := ExtractRoleContent(got[3])
+	if !strings.HasPrefix(strings.TrimSpace(older), ComputerObserveFingerprintPrefix) {
+		t.Fatalf("typed tool call did not identify the older observe: %q", older)
+	}
+	if !strings.Contains(newer, "SECOND UNIQUE_PAYLOAD") {
+		t.Fatalf("latest observe was folded: %q", newer)
+	}
+}
+
+func TestCheckpointDeclaredToolCallIDsSkipArgumentEncoding(t *testing.T) {
+	ids, ok := checkpointDeclaredToolCallIDs(map[string]interface{}{
+		"role": "assistant",
+		"tool_calls": []llm.ToolCall{{
+			ID:       "call-1",
+			Type:     "function",
+			Function: llm.ToolCallFunction{Name: "bash", Arguments: strings.Repeat("x", 10000)},
+		}},
+	})
+	if !ok || ids["call-1"] != 1 {
+		t.Fatalf("typed tool call ids = %#v ok=%v", ids, ok)
+	}
 }
 
 func TestFoldComputerUseObservesKeepsLatestFullDump(t *testing.T) {

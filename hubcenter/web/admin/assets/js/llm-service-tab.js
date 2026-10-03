@@ -26,19 +26,62 @@ if (typeof I18N_ZH !== 'undefined') {
       deleteProviderInUse: 'Delete blocked: the provider is still bound to service groups:',
       providerDialogTitleNew: 'New Provider', providerDialogTitleEdit: 'Edit Provider',
       fieldID: 'Provider ID', fieldName: 'Name', fieldURL: 'API URL', fieldKey: 'API Key',
+      fieldAuth: 'Authentication', authAPIKey: 'API Key',
+      authWorkBuddyChina: 'WorkBuddy China', authWorkBuddyGlobal: 'WorkBuddy International',
+      workBuddyLogin: 'Sign in and list models', workBuddyWaiting: 'Waiting for the browser sign-in to finish...',
+      workBuddyReady: 'Select the models to connect.', workBuddyNeedLogin: 'Sign in to WorkBuddy before saving.',
+      workBuddyNeedModel: 'Select at least one model.', workBuddyFailed: 'WorkBuddy sign-in failed',
+      workBuddyHint: 'After sign-in, choose models and save. This account becomes a provider. Expose the models from a service group.',
+      workBuddyOpen: 'If the login page did not open, use this link.',
+      workBuddyCatalogWarn: 'The live catalog was unavailable. Showing the built-in model list.',
       fieldProtocol: 'Protocol', fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
       fieldPriority: 'Priority', fieldConcurrency: 'Max Concurrency', fieldTimeout: 'Timeout (sec)',
       fieldSequence: 'Sequence', sequenceHint: 'Lower numbers are tried first. 0 means unset.',
       accessScope: 'Access scope', accessScopeAll: 'All nodes', accessScopeSelected: 'Selected nodes',
       accessScopeHint: 'Default: every HubCenter node may call this provider. Restricting the list makes upstream calls leave only from allowed nodes, to avoid regional model limits.',
+      accessScopeAvailable: 'Available nodes: ', accessScopeAvailableEmpty: 'No cluster nodes are listed. You can still type node names.',
+      accessScopeNodesInput: 'Nodes', accessScopeNodesPlaceholder: 'hc-1, hc-2, hc-3',
       accessScopeNeedNode: 'Select at least one HubCenter node.', accessScopeOffline: 'offline', accessScopeSelf: 'this node', accessScopeUnreachable: 'unreachable',
       lbGroup: 'LB group', pauseProvider: 'Pause', resumeProvider: 'Resume',
       providerArray: 'Provider array', providerArrayOwn: 'Independent array', providerArrayJoin: 'Array',
       providerArrayName: 'Array name', providerArrayHint: 'One array is one logical provider. Members share the multiplier and token price, rotate on each request, and a 429 or 5xx tries the next member.',
       providerArrayUseShared: 'This provider will use the array multiplier and token price.',
       providerArrayAdd: 'Add provider', providerArrayDelete: 'Delete array', providerArrayShared: 'Shared rate',
+      providerArrayRename: 'Rename', providerArrayRenameTitle: 'Rename array',
+      providerArrayEdit: 'Edit', providerArrayEditTitle: 'Edit array', providerArrayCreateTitle: 'New array',
+      providerArrayID: 'Array ID', providerArrayNeedID: 'Enter an array ID.',
+      providerArrayEmpty: 'No providers in this array yet.',
+      providerArrayDragHint: 'Drag onto another array',
+      providerArrayMoved: 'Moved into that array. It now uses the array rate.',
+      providerArrayBusy: 'That array is still updating. Try the drag again in a moment.',
+      providerArrayTrafficSum: 'Total', providerArraysTrafficSum: 'All arrays',
+      providerArrayBillingOnEdit: 'Token pricing and the vendor multiplier are set on the array.',
+      providerArrayRenameNeedName: 'Enter an array name.',
+      providerArrayRenameTooLong: 'Array name must be 80 characters or fewer.',
       providerArrayRemove: 'Remove this provider from the array? The array stays on its service groups.',
+      providerArrayRemoveProtected: 'Remove this provider? The platform array stays. A model that no remaining provider in the array serves is taken off service groups.',
+      providerArrayExpand: 'Expand', providerArrayCollapse: 'Collapse',
       providerArrayDeleteConfirm: 'Delete this provider array and every provider in it?',
+      providerArrayDeleteInUse: 'This provider array is used by the following service groups and cannot be deleted:',
+      providerArrayProtected: 'This array is maintained by the platform and cannot be deleted.',
+      providerArrayRenameProtected: 'This array is maintained by the platform and cannot be renamed.',
+      providerCanaryUntil: 'Canary until {time}',
+      sgRouteModelUnmatched: 'These routes name an upstream model that no member of the array offers:',
+      sgRouteModelUnmatchedAsk: 'Save anyway?',
+      sgMemberModelReferenced: 'These routes still name this member\'s model:',
+      adminAPIKeyTitle: 'Automation API key',
+      adminAPIKeyDesc: 'Programs use this key to list arrays, batch-add or dry-run, disable or delete members, read health, test a saved member and read its current status, and list node names. Upstream keys are returned only as configured-or-not or the last 4 characters. Saved keys stay in this list, hidden until shown. Copy one, or delete it to revoke access.',
+      adminAPIKeyName: 'Key name', adminAPIKeyCreate: 'Create key', adminAPIKeyDelete: 'Delete',
+      adminAPIKeyEmpty: 'No automation keys yet.', adminAPIKeyNeedName: 'Enter a key name.',
+      adminAPIKeyCreated: 'Saved. It stays hidden until you show it. Copy and delete work from the list.',
+      adminAPIKeyCopy: 'Copy', adminAPIKeyCopied: 'Copied',
+      adminAPIKeyShow: 'Show', adminAPIKeyHide: 'Hide',
+      adminAPIKeyLegacy: 'The full secret was not saved. Delete this key to revoke it.',
+      adminAPIKeyAllScopes: 'All permissions', adminAPIKeyExpired: 'Expired',
+      adminAPIKeyLastUsed: 'Last used',
+      adminAPIKeyDeleteConfirm: 'Delete this automation key? Programs using it can no longer manage provider arrays.',
+      adminAPIKeyDoc: 'API doc for AI tools', adminAPIKeyOpenAPI: 'OpenAPI JSON',
+      adminAPIKeyCreatedAt: 'Created',
       trafficDay: 'Day', trafficWeek: 'Week', trafficMonth: 'Month', trafficLoading: 'Loading',
       trafficIn: 'In', trafficOut: 'Out', trafficTotal: 'Total',
       providerProbeModels: 'Probe', providerProbing: 'Probing models...', providerProbeEmpty: 'No models returned.',
@@ -62,7 +105,7 @@ if (typeof I18N_ZH !== 'undefined') {
       sgProviderConfigTitle: 'Provider Config', sgCapabilityTags: 'Capability Tags',
       sgCapabilityHint: 'Capabilities of this upstream model. Tags steer routing when the request asks for tools, vision, or similar.',
       sgExtraTags: 'Extra Tags (custom)', sgPriority: 'Priority',
-      sgResolutionTier: 'Resolution Tier', sgCreditMultiplier: 'Credit Multiplier',
+      sgResolutionTier: 'Resolution Tier', sgCreditMultiplier: 'Credit Multiplier', sgFeeMultiplier: 'Fee multiplier',
       sgBillingMode: 'Billing Mode', sgBillingModeHint: 'paid = charge Credits, free = no user charge, empty = legacy',
       sgBillingModePaid: 'Paid', sgBillingModeFree: 'Free', sgBillingModeLegacy: 'Legacy (empty)',
       tokenPricingTitle: 'Token Pricing (per 10k tokens)', tokenPricingHint: 'Credits fields are billed; RMB fields are display-only and never affect Credits.',
@@ -99,7 +142,7 @@ if (typeof I18N_ZH !== 'undefined') {
       sgTierHigh: 'Official high (official-high)', sgTierMid: 'Official mid (official-mid)', sgTierLow: 'Official low (official-low)',
       sgPlanDesignNoLow: 'Plan and design cannot use the low band.',
       sgProtectedModel: 'auto and official quality bands cannot be renamed or removed while they are in use.',
-      sgCatalogTitle: 'Catalog & floor', sgCatalogHint: 'Empty catalog lists only auto. Clients that pin official-high, official-mid, or official-low skip L1 and go straight to that band.',
+      sgCatalogTitle: 'Catalog & floor', sgCatalogHint: 'Empty catalog lists auto, low, mid, and high. Clients that pin a band skip L1. Fee multipliers default to auto 1, low 0.5, mid 1, high 2.',
       sgWorkloadTitle: 'Workload routes', sgWorkloadHint: 'Each class picks an official band. Plan and design stay on high.',
       sgQualityFloor: 'Quality floor', sgQualityFloorNone: 'None',
       sgDefaultBadge: 'Default', sgSetDefault: 'Set default',
@@ -183,19 +226,62 @@ if (typeof I18N_ZH !== 'undefined') {
       deleteProviderInUse: '\u5220\u9664\u88ab\u963b\u6b62\uff1a\u670d\u52a1\u5546\u4ecd\u7ed1\u5b9a\u4ee5\u4e0b\u670d\u52a1\u7ec4\uff1a',
       providerDialogTitleNew: '\u65b0\u5efa\u670d\u52a1\u5546', providerDialogTitleEdit: '\u7f16\u8f91\u670d\u52a1\u5546',
       fieldID: '\u670d\u52a1\u5546 ID', fieldName: '\u540d\u79f0', fieldURL: 'API \u5730\u5740', fieldKey: 'API \u5bc6\u94a5',
+      fieldAuth: '\u8ba4\u8bc1\u65b9\u5f0f', authAPIKey: 'API \u5bc6\u94a5',
+      authWorkBuddyChina: 'WorkBuddy \u56fd\u5185\u7248', authWorkBuddyGlobal: 'WorkBuddy \u56fd\u9645\u7248',
+      workBuddyLogin: '\u767b\u5f55\u5e76\u5217\u51fa\u6a21\u578b', workBuddyWaiting: '\u6b63\u5728\u7b49\u5f85\u6d4f\u89c8\u5668\u5b8c\u6210\u767b\u5f55...',
+      workBuddyReady: '\u8bf7\u52fe\u9009\u8981\u63a5\u5165\u7684\u6a21\u578b\u3002', workBuddyNeedLogin: '\u4fdd\u5b58\u524d\u8bf7\u5148\u5b8c\u6210 WorkBuddy \u767b\u5f55\u3002',
+      workBuddyNeedModel: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u6a21\u578b\u3002', workBuddyFailed: 'WorkBuddy \u767b\u5f55\u5931\u8d25',
+      workBuddyHint: '\u767b\u5f55\u540e\u52fe\u9009\u6a21\u578b\u5e76\u4fdd\u5b58\uff0c\u5373\u4ee5\u6b64\u8d26\u53f7\u63a5\u5165\u670d\u52a1\u5546\u3002\u4e4b\u540e\u5728\u6a21\u578b\u670d\u52a1\u7ec4\u4e2d\u66b4\u9732\u8fd9\u4e9b\u6a21\u578b\u3002',
+      workBuddyOpen: '\u5982\u679c\u767b\u5f55\u9875\u6ca1\u6709\u6253\u5f00\uff0c\u8bf7\u4f7f\u7528\u6b64\u94fe\u63a5\u3002',
+      workBuddyCatalogWarn: '\u5b9e\u65f6\u6a21\u578b\u76ee\u5f55\u6682\u4e0d\u53ef\u7528\uff0c\u5df2\u663e\u793a\u5185\u7f6e\u6a21\u578b\u5217\u8868\u3002',
       fieldProtocol: '\u534f\u8bae', fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
       fieldPriority: '\u4f18\u5148\u7ea7', fieldConcurrency: '\u6700\u5927\u5e76\u53d1', fieldTimeout: '\u8d85\u65f6\uff08\u79d2\uff09',
       fieldSequence: '\u5e8f\u5217', sequenceHint: '\u6570\u5b57\u8d8a\u5c0f\u8d8a\u5148\u8bd5\u30020 \u8868\u793a\u672a\u8bbe\u3002',
       accessScope: '\u63a5\u5165\u8303\u56f4', accessScopeAll: '\u5168\u90e8\u8282\u70b9', accessScopeSelected: '\u6307\u5b9a\u8282\u70b9',
       accessScopeHint: '\u9ed8\u8ba4\u5168\u90e8 HubCenter \u8282\u70b9\u53ef\u8c03\u7528\u8be5\u670d\u52a1\u5546\u3002\u6307\u5b9a\u8282\u70b9\u540e\uff0c\u4e0a\u6e38\u8bf7\u6c42\u4ece\u5141\u8bb8\u7684\u8282\u70b9\u53d1\u51fa\uff0c\u4ee5\u907f\u5f00\u6a21\u578b\u533a\u57df\u9650\u5236\u3002',
+      accessScopeAvailable: '\u53ef\u7528\u8282\u70b9\uff1a', accessScopeAvailableEmpty: '\u5f53\u524d\u6ca1\u6709\u5217\u51fa\u96c6\u7fa4\u8282\u70b9\uff0c\u4ecd\u53ef\u624b\u5199\u8282\u70b9\u540d\u3002',
+      accessScopeNodesInput: '\u6307\u5b9a\u8282\u70b9', accessScopeNodesPlaceholder: 'hc-1, hc-2, hc-3',
       accessScopeNeedNode: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u8282\u70b9\u3002', accessScopeOffline: '\u5df2\u4e0b\u7ebf', accessScopeSelf: '\u672c\u8282\u70b9', accessScopeUnreachable: '\u4e0d\u53ef\u8fbe',
       lbGroup: 'LB \u7ec4', pauseProvider: '\u6682\u505c', resumeProvider: '\u6062\u590d',
       providerArray: '\u670d\u52a1\u5546\u9635\u5217', providerArrayOwn: '\u72ec\u7acb\u9635\u5217', providerArrayJoin: '\u6240\u5c5e\u9635\u5217',
       providerArrayName: '\u9635\u5217\u540d\u79f0', providerArrayHint: '\u4e00\u4e2a\u9635\u5217\u5c31\u662f\u4e00\u4e2a\u903b\u8f91\u670d\u52a1\u5546\u3002\u6210\u5458\u5171\u4eab\u500d\u7387\u4e0e\u8d39\u7528\uff0c\u8bf7\u6c42\u8f6e\u8be2\u8bbf\u95ee\uff1b\u67d0\u4e2a\u6210\u5458\u8fd4\u56de 429 \u6216 5xx \u65f6\u81ea\u52a8\u8bbf\u95ee\u4e0b\u4e00\u4e2a\u3002',
       providerArrayUseShared: '\u5c06\u4f7f\u7528\u8be5\u9635\u5217\u5df2\u6709\u7684\u500d\u7387\u4e0e\u8d39\u7528\u3002',
       providerArrayAdd: '\u6dfb\u52a0\u670d\u52a1\u5546', providerArrayDelete: '\u5220\u9664\u9635\u5217', providerArrayShared: '\u5171\u4eab\u500d\u7387\u4e0e\u8d39\u7528',
+      providerArrayRename: '\u91cd\u547d\u540d', providerArrayRenameTitle: '\u91cd\u547d\u540d\u9635\u5217',
+      providerArrayEdit: '\u7f16\u8f91', providerArrayEditTitle: '\u7f16\u8f91\u9635\u5217', providerArrayCreateTitle: '\u65b0\u5efa\u9635\u5217',
+      providerArrayID: '\u9635\u5217 ID', providerArrayNeedID: '\u8bf7\u586b\u5199\u9635\u5217 ID\u3002',
+      providerArrayEmpty: '\u9635\u5217\u91cc\u8fd8\u6ca1\u6709\u670d\u52a1\u5546\u3002',
+      providerArrayDragHint: '\u62d6\u5230\u5176\u5b83\u9635\u5217',
+      providerArrayMoved: '\u5df2\u79fb\u5165\u8be5\u9635\u5217\uff0c\u5e76\u6539\u7528\u8be5\u9635\u5217\u7684\u8ba1\u8d39\u3002',
+      providerArrayBusy: '\u8be5\u9635\u5217\u6b63\u5728\u66f4\u65b0\uff0c\u8bf7\u7a0d\u540e\u518d\u62d6\u3002',
+      providerArrayTrafficSum: '\u5408\u8ba1', providerArraysTrafficSum: '\u5168\u90e8\u9635\u5217',
+      providerArrayBillingOnEdit: 'Token \u8ba1\u8d39\u4e0e\u5382\u5546\u500d\u7387\u5728\u9635\u5217\u4e0a\u8bbe\u7f6e\u3002',
+      providerArrayRenameNeedName: '\u8bf7\u586b\u5199\u9635\u5217\u540d\u79f0\u3002',
+      providerArrayRenameTooLong: '\u9635\u5217\u540d\u79f0\u4e0d\u80fd\u8d85\u8fc7 80 \u4e2a\u5b57\u3002',
       providerArrayRemove: '\u4ece\u9635\u5217\u4e2d\u79fb\u9664\u8be5\u670d\u52a1\u5546\uff1f\u670d\u52a1\u7ec4\u4ecd\u4f1a\u4f7f\u7528\u8fd9\u4e2a\u9635\u5217\u3002',
+      providerArrayRemoveProtected: '\u79fb\u9664\u8be5\u670d\u52a1\u5546\uff1f\u5e73\u53f0\u9635\u5217\u4f1a\u4fdd\u7559\u3002\u8be5\u9635\u5217\u91cc\u6ca1\u6709\u5269\u4f59\u670d\u52a1\u5546\u80fd\u63a5\u7684\u6a21\u578b\u4f1a\u4ece\u670d\u52a1\u7ec4\u8def\u7531\u91cc\u62ff\u6389\u3002',
+      providerArrayExpand: '\u5c55\u5f00', providerArrayCollapse: '\u6298\u53e0',
       providerArrayDeleteConfirm: '\u5220\u9664\u8be5\u670d\u52a1\u5546\u9635\u5217\u53ca\u5176\u4e2d\u7684\u5168\u90e8\u670d\u52a1\u5546\uff1f',
+      providerArrayDeleteInUse: '\u8be5\u670d\u52a1\u5546\u9635\u5217\u5df2\u88ab\u4ee5\u4e0b\u670d\u52a1\u7ec4\u4f7f\u7528\uff0c\u4e0d\u80fd\u5220\u9664\uff1a',
+      providerArrayProtected: '\u8be5\u9635\u5217\u7531\u5e73\u53f0\u7ef4\u62a4\uff0c\u4e0d\u80fd\u5220\u9664\u3002',
+      providerArrayRenameProtected: '\u8be5\u9635\u5217\u7531\u5e73\u53f0\u7ef4\u62a4\uff0c\u4e0d\u80fd\u6539\u540d\u3002',
+      providerCanaryUntil: '\u91d1\u4e1d\u96c0\u65f6\u95f4\u81f3 {time}',
+      sgRouteModelUnmatched: '\u4ee5\u4e0b\u8def\u7531\u5199\u6b7b\u7684\u4e0a\u6e38\u6a21\u578b\uff0c\u9635\u5217\u91cc\u6ca1\u6709\u6210\u5458\u63d0\u4f9b\uff1a',
+      sgRouteModelUnmatchedAsk: '\u4ecd\u8981\u4fdd\u5b58\uff1f',
+      sgMemberModelReferenced: '\u4ee5\u4e0b\u8def\u7531\u4ecd\u5728\u5f15\u7528\u8be5\u6210\u5458\u7684\u6a21\u578b\u540d\uff1a',
+      adminAPIKeyTitle: '\u81ea\u52a8\u5316 API \u5bc6\u94a5',
+      adminAPIKeyDesc: '\u7a0b\u5e8f\u7528\u8fd9\u628a\u5bc6\u94a5\u7ba1\u7406\u670d\u52a1\u5546\u9635\u5217\uff1a\u5217\u51fa\u6210\u5458\u3001\u6279\u91cf\u6dfb\u52a0\u6216\u8bd5\u8dd1\u3001\u505c\u7528\u6216\u5220\u9664\u3001\u67e5\u770b\u5065\u5eb7\u7528\u91cf\u3001\u6309\u5df2\u4fdd\u5b58\u914d\u7f6e\u6d4b\u8bd5\u5355\u4e2a\u6210\u5458\u5e76\u8fd4\u56de\u5f53\u524d\u72b6\u6001\uff0c\u4ee5\u53ca\u5217\u51fa\u53ef\u7528\u8282\u70b9\u540d\u3002\u4e0a\u6e38\u5bc6\u94a5\u53ea\u8fd4\u56de\u662f\u5426\u5df2\u914d\u7f6e\u6216\u672b 4 \u4f4d\u3002\u5df2\u4fdd\u5b58\u7684\u5bc6\u94a5\u4f1a\u5217\u5728\u8fd9\u91cc\uff0c\u9ed8\u8ba4\u9690\u85cf\uff0c\u53ef\u4ee5\u663e\u793a\u3001\u590d\u5236\uff0c\u5220\u9664\u5373\u64a4\u9500\u6388\u6743\u3002',
+      adminAPIKeyName: '\u5bc6\u94a5\u540d\u79f0', adminAPIKeyCreate: '\u521b\u5efa\u5bc6\u94a5', adminAPIKeyDelete: '\u5220\u9664',
+      adminAPIKeyEmpty: '\u8fd8\u6ca1\u6709\u81ea\u52a8\u5316\u5bc6\u94a5\u3002', adminAPIKeyNeedName: '\u8bf7\u586b\u5199\u5bc6\u94a5\u540d\u79f0\u3002',
+      adminAPIKeyCreated: '\u5df2\u4fdd\u5b58\u3002\u9ed8\u8ba4\u9690\u85cf\uff0c\u53ef\u5728\u5217\u8868\u4e2d\u590d\u5236\u6216\u5220\u9664\uff0c\u9700\u8981\u65f6\u518d\u663e\u793a\u3002',
+      adminAPIKeyCopy: '\u590d\u5236', adminAPIKeyCopied: '\u5df2\u590d\u5236',
+      adminAPIKeyShow: '\u663e\u793a', adminAPIKeyHide: '\u9690\u85cf',
+      adminAPIKeyLegacy: '\u5168\u6587\u672a\u4fdd\u5b58\u3002\u5220\u9664\u5373\u53ef\u64a4\u9500\u6388\u6743\u3002',
+      adminAPIKeyAllScopes: '\u5168\u90e8\u6743\u9650', adminAPIKeyExpired: '\u5df2\u8fc7\u671f',
+      adminAPIKeyLastUsed: '\u4e0a\u6b21\u4f7f\u7528',
+      adminAPIKeyDeleteConfirm: '\u5220\u9664\u8fd9\u628a\u81ea\u52a8\u5316\u5bc6\u94a5\uff1f\u6b63\u5728\u4f7f\u7528\u5b83\u7684\u7a0b\u5e8f\u5c06\u4e0d\u80fd\u518d\u7ba1\u7406\u670d\u52a1\u5546\u9635\u5217\u3002',
+      adminAPIKeyDoc: '\u7ed9 AI \u5de5\u5177\u7684\u63a5\u53e3\u8bf4\u660e', adminAPIKeyOpenAPI: 'OpenAPI JSON',
+      adminAPIKeyCreatedAt: '\u521b\u5efa\u4e8e',
       trafficDay: '\u4eca\u65e5', trafficWeek: '\u672c\u5468', trafficMonth: '\u672c\u6708', trafficLoading: '\u52a0\u8f7d\u4e2d',
       trafficIn: '\u5165', trafficOut: '\u51fa', trafficTotal: '\u603b',
       providerProbeModels: '\u63a2\u6d4b', providerProbing: '\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...', providerProbeEmpty: '\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',
@@ -219,7 +305,7 @@ if (typeof I18N_ZH !== 'undefined') {
       sgProviderConfigTitle: '\u670d\u52a1\u5546\u914d\u7f6e', sgCapabilityTags: '\u80fd\u529b\u6807\u7b7e',
       sgCapabilityHint: '\u8fd9\u6761\u4e0a\u6e38\u6a21\u578b\u7684\u80fd\u529b\u3002\u8bf7\u6c42\u8981 tools / vision \u7b49\u65f6\u4f1a\u6309\u6807\u7b7e\u8def\u7531\u3002',
       sgExtraTags: '\u989d\u5916\u6807\u7b7e\uff08\u81ea\u5b9a\u4e49\uff09', sgPriority: '\u4f18\u5148\u7ea7',
-      sgResolutionTier: '\u89e3\u6790\u5c42\u7ea7', sgCreditMultiplier: '\u989d\u5ea6\u500d\u7387',
+      sgResolutionTier: '\u89e3\u6790\u5c42\u7ea7', sgCreditMultiplier: '\u989d\u5ea6\u500d\u7387', sgFeeMultiplier: '\u8d39\u7528\u500d\u7387',
       sgBillingMode: '\u8ba1\u8d39\u6a21\u5f0f', sgBillingModeHint: 'paid \u6263\u8d39\uff0cfree \u514d\u8d39\uff0c\u7a7a\u4e3a\u517c\u5bb9',
       sgBillingModePaid: '\u6536\u8d39', sgBillingModeFree: '\u514d\u8d39', sgBillingModeLegacy: '\u517c\u5bb9\uff08\u7a7a\uff09',
       tokenPricingTitle: 'Token \u8ba1\u8d39\uff08\u6bcf\u4e07 Token\uff09', tokenPricingHint: 'Credits \u5b57\u6bb5\u53c2\u4e0e\u6263\u8d39\uff1bRMB \u4ec5\u5c55\u793a\u3002',
@@ -256,7 +342,7 @@ if (typeof I18N_ZH !== 'undefined') {
       sgTierHigh: '\u5b98\u65b9\u9ad8\u6863\uff08official-high\uff09', sgTierMid: '\u5b98\u65b9\u4e2d\u6863\uff08official-mid\uff09', sgTierLow: '\u5b98\u65b9\u4f4e\u6863\uff08official-low\uff09',
       sgPlanDesignNoLow: '\u89c4\u5212\u548c\u8bbe\u8ba1\u4e0d\u80fd\u8d70\u4f4e\u6863\u3002',
       sgProtectedModel: '\u52a8\u6001\u7ec4\u91cc\uff0cauto \u548c\u6b63\u5728\u4f7f\u7528\u7684\u5b98\u65b9\u6863\u4e0d\u80fd\u6539\u540d\u6216\u5220\u6389\u3002',
-      sgCatalogTitle: '\u76ee\u5f55\u4e0e\u8d28\u91cf\u4e0b\u9650', sgCatalogHint: '\u76ee\u5f55\u4e3a\u7a7a\u65f6\u53ea\u5217\u51fa auto\u3002\u5ba2\u6237\u7aef\u76f4\u63a5\u6307 official-high / mid / low \u4f1a\u8df3\u8fc7 L1\u3002',
+      sgCatalogTitle: '\u76ee\u5f55\u4e0e\u8d28\u91cf\u4e0b\u9650', sgCatalogHint: '\u76ee\u5f55\u4e3a\u7a7a\u65f6\u5217\u51fa auto\u3001low\u3001mid\u3001high\u3002\u5ba2\u6237\u7aef\u76f4\u63a5\u6307\u5b9a\u67d0\u4e00\u6863\u4f1a\u8df3\u8fc7 L1\u3002\u8d39\u7528\u500d\u7387\u9ed8\u8ba4 auto 1\u3001low 0.5\u3001mid 1\u3001high 2\u3002',
       sgWorkloadTitle: '\u5de5\u4f5c\u8d1f\u8377\u8def\u7531', sgWorkloadHint: '\u6bcf\u4e2a\u5206\u7c7b\u9009\u4e00\u4e2a\u5b98\u65b9\u6863\u3002\u89c4\u5212\u548c\u8bbe\u8ba1\u8d70\u9ad8\u6863\u3002',
       sgQualityFloor: '\u8d28\u91cf\u4e0b\u9650', sgQualityFloorNone: '\u65e0',
       sgDefaultBadge: '\u9ed8\u8ba4\u7ec4', sgSetDefault: '\u8bbe\u4e3a\u9ed8\u8ba4',
@@ -354,11 +440,19 @@ if (typeof I18N_ZH !== 'undefined') {
     return resp.json();
   }
 
-  var providers = [], providerArrays = [], providerArraysByID = null, agents = [], serviceGroups = [];
+  var providers = [], providerArrays = [], providerArraysByID = null, providerArrayByMember = null, agents = [], serviceGroups = [];
   var defaultServiceGroupId = '';
   var providerTestStates = {};
   var providerDialogID = '';
   var providerDialogSeq = 0;
+  var workBuddySessionID = '';
+  var workBuddyModels = [];
+  var workBuddyPollTimer = 0;
+  var workBuddyPollGen = 0;
+  var workBuddyEditions = {
+    china: { id: 'workbuddy-cn', name: 'WorkBuddy \u56fd\u5185\u7248', url: 'https://copilot.tencent.com/v2' },
+    global: { id: 'workbuddy-global', name: 'WorkBuddy \u56fd\u9645\u7248', url: 'https://www.workbuddy.ai/v2' }
+  };
   var providerAccessMode = 'all';
   var providerAccessSelected = {};
   var providerAccessNodes = [];
@@ -375,6 +469,10 @@ if (typeof I18N_ZH !== 'undefined') {
   var providerTrafficLoadSeq = 0;
   var providerTrafficInFlight = 0;
   var providerTrafficById = {};
+  var providerHealthById = {};
+  var providerHealthHistoryState = '';
+  var providerHealthEpoch = 0;
+  var providerHealthHistoryToastSeq = 0;
   var providerTrafficPeriod = 'day';
   var serviceGroupsLoadSeq = 0;
   var serviceGroupTrafficReady = false;
@@ -396,10 +494,175 @@ if (typeof I18N_ZH !== 'undefined') {
   var _sgTrafficDataWin = 'day';
   var _testingGroupId = '';
 
+  var llmAdminAPIKeysCache = null;
+  var llmAdminAPIKeyVisible = {};
+  var llmAdminAPIKeyRevoking = false;
+  var llmAdminAPIKeyLoadSeq = 0;
+  function llmAdminAPIURL(path) {
+    var origin = window.location && window.location.origin && window.location.origin !== 'null' ? window.location.origin : '';
+    return origin + path;
+  }
+  function paintLLMAdminAPIKeyChrome() {
+    var title = document.getElementById('llmAdminAPIKeyTitle');
+    var desc = document.getElementById('llmAdminAPIKeyDesc');
+    var nameLabel = document.getElementById('llmAdminAPIKeyNameLabel');
+    var nameInput = document.getElementById('llmAdminAPIKeyName');
+    var createBtn = document.getElementById('llmAdminAPIKeyCreate');
+    var docLabel = document.getElementById('llmAdminAPIDocLabel');
+    var doc = document.getElementById('llmAdminAPIDocLink');
+    var spec = document.getElementById('llmAdminAPIOpenAPILink');
+    if (title) title.textContent = t('adminAPIKeyTitle');
+    if (desc) desc.textContent = t('adminAPIKeyDesc');
+    if (nameLabel) nameLabel.textContent = t('adminAPIKeyName');
+    if (nameInput) nameInput.placeholder = t('adminAPIKeyName');
+    if (createBtn) createBtn.textContent = t('adminAPIKeyCreate');
+    if (docLabel) docLabel.textContent = t('adminAPIKeyDoc') + ' · ' + t('adminAPIKeyOpenAPI');
+    if (doc) { var docURL = llmAdminAPIURL('/api/llm/admin-api.md'); doc.href = docURL; doc.textContent = docURL; }
+    if (spec) { var specURL = llmAdminAPIURL('/api/llm/admin-api.json'); spec.href = specURL; spec.textContent = specURL; }
+    if (llmAdminAPIKeysCache) renderLLMAdminAPIKeys(llmAdminAPIKeysCache);
+  }
+  function renderLLMAdminAPIKeys(keys) {
+    var root = document.getElementById('llmAdminAPIKeyList');
+    if (!root) return;
+    keys = keys || [];
+    if (!keys.length) {
+      root.innerHTML = '<div class="hint">' + esc(t('adminAPIKeyEmpty')) + '</div>';
+      return;
+    }
+    root.innerHTML = keys.map(function(key) {
+      var when = key.created_at ? String(key.created_at).replace('T', ' ').slice(0, 16) : '';
+      var secret = key.api_key || '';
+      var shown = !!(secret && llmAdminAPIKeyVisible[key.id]);
+      var meta = esc(key.prefix || '');
+      if (when) meta += ' · ' + esc(t('adminAPIKeyCreatedAt')) + ' ' + esc(when);
+      meta += ' · ' + esc(key.scopes && key.scopes.length ? key.scopes.join(', ') : t('adminAPIKeyAllScopes'));
+      if (key.expires_at && String(key.expires_at).slice(0, 4) !== '0001') {
+        meta += ' · ' + esc(String(key.expires_at).slice(0, 10));
+        var expiryAt = new Date(key.expires_at);
+        if (!isNaN(expiryAt.getTime()) && expiryAt.getTime() <= Date.now()) meta += ' · ' + esc(t('adminAPIKeyExpired'));
+      }
+      if (key.last_used_at && String(key.last_used_at).slice(0, 4) !== '0001') meta += ' · ' + esc(t('adminAPIKeyLastUsed')) + ' ' + esc(String(key.last_used_at).replace('T', ' ').slice(0, 16));
+      var field = secret
+        ? (shown
+          ? '<input class="mono llm-admin-key-secret" type="text" readonly autocomplete="off" spellcheck="false" value="' + esc(secret) + '">'
+          : '<div class="mono llm-admin-key-secret llm-admin-key-mask">' + esc((key.prefix || 'hck_') + '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022') + '</div>')
+        : '<span class="data-row-meta">' + esc(t('adminAPIKeyLegacy')) + '</span>';
+      var toggle = secret
+        ? '<button type="button" class="btn-ghost" onclick="toggleLLMAdminAPIKey(' + jsArg(key.id) + ')">' + esc(shown ? t('adminAPIKeyHide') : t('adminAPIKeyShow')) + '</button><button type="button" class="btn-ghost" onclick="copyLLMAdminAPIKey(' + jsArg(key.id) + ')">' + esc(t('adminAPIKeyCopy')) + '</button>'
+        : '';
+      return '<div class="data-row llm-admin-key-row"><div class="data-row-main"><strong>' + esc(key.name || key.id) + '</strong><span class="data-row-meta mono">' + meta + '</span>' + field + '</div><div class="data-row-actions">' + toggle + '<button type="button" class="btn-danger-ghost" onclick="revokeLLMAdminAPIKey(' + jsArg(key.id) + ')">' + esc(t('adminAPIKeyDelete')) + '</button></div></div>';
+    }).join('');
+  }
+  function rememberLLMAdminAPIKey(row) {
+    if (!row || !row.id) return;
+    llmAdminAPIKeyLoadSeq++;
+    var keys = (llmAdminAPIKeysCache || []).filter(function(item) { return item && item.id !== row.id; });
+    keys.unshift(row);
+    llmAdminAPIKeysCache = keys;
+    renderLLMAdminAPIKeys(keys);
+  }
+  function forgetLLMAdminAPIKey(id) {
+    llmAdminAPIKeyLoadSeq++;
+    delete llmAdminAPIKeyVisible[id];
+    llmAdminAPIKeysCache = (llmAdminAPIKeysCache || []).filter(function(item) { return item && item.id !== id; });
+    renderLLMAdminAPIKeys(llmAdminAPIKeysCache);
+  }
+  async function loadLLMAdminAPIKeys() {
+    var seq = ++llmAdminAPIKeyLoadSeq;
+    paintLLMAdminAPIKeyChrome();
+    try {
+      var data = await api('/api/admin/llm/admin-keys');
+      if (seq !== llmAdminAPIKeyLoadSeq) return;
+      llmAdminAPIKeysCache = (data && data.keys) || [];
+      var alive = {};
+      llmAdminAPIKeysCache.forEach(function(key) { if (key && key.id) alive[key.id] = true; });
+      Object.keys(llmAdminAPIKeyVisible).forEach(function(id) { if (!alive[id]) delete llmAdminAPIKeyVisible[id]; });
+      renderLLMAdminAPIKeys(llmAdminAPIKeysCache);
+    } catch (e) {
+      if (seq !== llmAdminAPIKeyLoadSeq) return;
+      if (llmAdminAPIKeysCache) {
+        renderLLMAdminAPIKeys(llmAdminAPIKeysCache);
+        toast(e.message || String(e), 'error');
+        return;
+      }
+      var root = document.getElementById('llmAdminAPIKeyList');
+      if (root) root.innerHTML = '<div class="hint">' + esc(e.message || String(e)) + '</div>';
+    }
+  }
+  window.createLLMAdminAPIKey = async function() {
+    var nameEl = document.getElementById('llmAdminAPIKeyName');
+    var name = nameEl ? nameEl.value.trim() : '';
+    if (!name) { toast(t('adminAPIKeyNeedName'), 'error'); return; }
+    var createBtn = document.getElementById('llmAdminAPIKeyCreate');
+    if (createBtn) createBtn.disabled = true;
+    try {
+      var created = await api('/api/admin/llm/admin-keys', { method: 'POST', body: JSON.stringify({ name: name }) });
+      if (nameEl) nameEl.value = '';
+      rememberLLMAdminAPIKey({
+        id: created && created.id,
+        name: (created && created.name) || name,
+        prefix: created && created.prefix,
+        api_key: created && created.api_key,
+        scopes: created && created.scopes,
+        expires_at: created && created.expires_at,
+        created_at: (created && created.created_at) || new Date().toISOString()
+      });
+      toast(t('adminAPIKeyCreated'), 'success');
+      await loadLLMAdminAPIKeys();
+    } catch (e) { toast(e.message || String(e), 'error'); }
+    finally { if (createBtn) createBtn.disabled = false; }
+  };
+  window.toggleLLMAdminAPIKey = function(id) {
+    if (!id) return;
+    if (llmAdminAPIKeyVisible[id]) delete llmAdminAPIKeyVisible[id];
+    else llmAdminAPIKeyVisible[id] = true;
+    renderLLMAdminAPIKeys(llmAdminAPIKeysCache || []);
+  };
+  window.copyLLMAdminAPIKey = async function(id) {
+    var key = (llmAdminAPIKeysCache || []).find(function(item) { return item && item.id === id; });
+    var value = key && key.api_key ? key.api_key : '';
+    if (!value) { toast(t('adminAPIKeyLegacy'), 'error'); return; }
+    try {
+      await writeLLMAdminAPIKeyText(value);
+      toast(t('adminAPIKeyCopied'), 'success');
+    } catch (e) { toast(e.message || String(e), 'error'); }
+  };
+  async function writeLLMAdminAPIKeyText(value) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch (e) { /* use the selection fallback when clipboard is blocked */ }
+    }
+    var field = document.createElement('textarea');
+    field.value = value;
+    field.setAttribute('readonly', '');
+    field.style.position = 'fixed';
+    field.style.left = '-9999px';
+    document.body.appendChild(field);
+    try {
+      field.select();
+      if (!document.execCommand('copy')) throw new Error('copy failed');
+    } finally {
+      field.remove();
+    }
+  }
+  window.revokeLLMAdminAPIKey = async function(id) {
+    if (!id || llmAdminAPIKeyRevoking || !sgConfirm(t('adminAPIKeyDeleteConfirm'))) return;
+    llmAdminAPIKeyRevoking = true;
+    try {
+      await api('/api/admin/llm/admin-keys/' + encodeURIComponent(id), { method: 'DELETE' });
+      forgetLLMAdminAPIKey(id);
+      await loadLLMAdminAPIKeys();
+    } catch (e) { toast(e.message || String(e), 'error'); }
+    finally { llmAdminAPIKeyRevoking = false; }
+  };
+  window.paintLLMAdminAPIKeyChrome = paintLLMAdminAPIKeyChrome;
+
   window.initLLMServiceTab = async function() {
     if (llmInitInFlight) return llmInitInFlight;
     llmInitInFlight = (async function() {
-      await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadLLMProviderMonitorConfig()]);
+      await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadLLMProviderMonitorConfig(), loadLLMAdminAPIKeys()]);
       if (llmClassHeadViewVisible() && typeof window.sgReloadClassHeadPage === 'function') window.sgReloadClassHeadPage();
     })();
     try { return await llmInitInFlight; }
@@ -430,6 +693,7 @@ if (typeof I18N_ZH !== 'undefined') {
       providers = data.providers || [];
       providerArrays = data.provider_arrays || [];
       providerArraysByID = null;
+      providerArrayByMember = null;
       applyProviderSequenceTargets();
     } catch (e) {
       if (seq !== providersLoadSeq) return;
@@ -445,15 +709,20 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!isFinite(n) || n <= 0) return '0';
     if (n < 1000) return String(Math.round(n));
     if (n < 1000000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k';
-    return (n / 1000000).toFixed(n < 10000000 ? 1 : 0) + 'M';
+    // One decimal through 100M. A single array usually stays under 10M and
+    // already shows one decimal; the all-array total crosses 10M and has to
+    // stay on that same scale.
+    return (n / 1000000).toFixed(n < 100000000 ? 1 : 0) + 'M';
   }
   function formatTrafficExact(value) { return String(Math.round(Number(value || 0))); }
   function patchProviderTraffic() {
     var root = document.getElementById('llmProvidersList');
-    if (!root) return;
-    root.querySelectorAll('#llmProvidersList .provider-traffic[data-provider-id]').forEach(function(node) {
-      applyProviderTrafficNode(node, node.getAttribute('data-provider-id'));
-    });
+    if (root) {
+      root.querySelectorAll('#llmProvidersList .provider-traffic[data-provider-id], #llmProvidersList .provider-traffic[data-traffic-array]').forEach(function(node) {
+        applyProviderTrafficNode(node, node.getAttribute('data-provider-id'));
+      });
+    }
+    renderAllArrayTraffic();
   }
   function renderProviderTraffic(id) {
     var root = document.getElementById('llmProvidersList');
@@ -470,14 +739,65 @@ if (typeof I18N_ZH !== 'undefined') {
     return null;
   }
   function providerTrafficRow(id) {
+    return providerPeriodRow(providerTrafficById, id);
+  }
+  function providerHealthRow(id) {
+    return providerPeriodRow(providerHealthById, id);
+  }
+  function providerPeriodRow(rows, id) {
     var want = String(id || '');
-    if (providerTrafficById[want]) return providerTrafficById[want];
-    var keys = Object.keys(providerTrafficById || {});
+    if (!rows) return null;
+    if (rows[want]) return rows[want];
     var lower = want.toLowerCase();
+    if (rows[lower]) return rows[lower];
+    var keys = Object.keys(rows);
     for (var i = 0; i < keys.length; i++) {
-      if (String(keys[i]).toLowerCase() === lower) return providerTrafficById[keys[i]];
+      if (String(keys[i]).toLowerCase() === lower) return rows[keys[i]];
     }
     return null;
+  }
+  function emptyTrafficPeriods() {
+    return {
+      day: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      week: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      month: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+    };
+  }
+  function richerTrafficPeriods(left, right) {
+    var out = emptyTrafficPeriods();
+    ['day', 'week', 'month'].forEach(function(period) {
+      var a = providerTrafficNumbers(left && left[period]);
+      var b = providerTrafficNumbers(right && right[period]);
+      out[period] = a.total_tokens >= b.total_tokens ? a : b;
+    });
+    return out;
+  }
+  function providerArrayForMember(id) {
+    if (!providerArrayByMember) providerArrayRecords();
+    var want = String(id || '').trim().toLowerCase();
+    if (!want || !providerArrayByMember) return null;
+    return providerArrayByMember[want] || null;
+  }
+  function sumTrafficPeriods(left, right) {
+    var out = emptyTrafficPeriods();
+    accumulateProviderTraffic(out, left);
+    accumulateProviderTraffic(out, right);
+    return out;
+  }
+  function memberTrafficRow(id) {
+    var usage = providerTrafficRow(id);
+    var health = providerHealthRow(id);
+    var array = providerArrayForMember(id);
+    // Usage booked on the logical array id is the whole array. A member that
+    // shares that id must not display it again, or the header adds the other
+    // members on top. A one-member array has nowhere else to show it.
+    if (array && array.members.length > 1 && sameProviderArrayID(id, array.id)) return health;
+    if (array && array.members.length === 1 && !sameProviderArrayID(id, array.id)) {
+      var logical = providerTrafficRow(array.id);
+      if (usage || logical) usage = sumTrafficPeriods(usage, logical);
+    }
+    if (usage && health) return richerTrafficPeriods(usage, health);
+    return usage || health;
   }
   function providerTrafficWindow(row) {
     if (!row) return null;
@@ -485,32 +805,144 @@ if (typeof I18N_ZH !== 'undefined') {
     if (providerTrafficPeriod === 'month') return row.month;
     return row.day;
   }
+  function providerTrafficNumbers(win) {
+    var input = Number(win && win.input_tokens || 0);
+    var output = Number(win && win.output_tokens || 0);
+    var total = Number(win && win.total_tokens || 0);
+    if (!(total > 0)) total = input + output;
+    return { input_tokens: input, output_tokens: output, total_tokens: total };
+  }
+  function accumulateProviderTraffic(out, row) {
+    if (!row) return false;
+    ['day', 'week', 'month'].forEach(function(period) {
+      var nums = providerTrafficNumbers(row[period]);
+      out[period].input_tokens += nums.input_tokens;
+      out[period].output_tokens += nums.output_tokens;
+      out[period].total_tokens += nums.total_tokens;
+    });
+    return true;
+  }
+  function foldTrafficMap(raw) {
+    var source = {};
+    if (Array.isArray(raw)) {
+      raw.forEach(function(item) { if (item && item.provider_id) source[item.provider_id] = item; });
+    } else if (raw && typeof raw === 'object') source = raw;
+    var rows = {};
+    Object.keys(source).forEach(function(key) {
+      var id = String(key || '').trim().toLowerCase();
+      var item = source[key];
+      if (!id || !item || typeof item !== 'object') return;
+      var row = rows[id] || emptyTrafficPeriods();
+      accumulateProviderTraffic(row, item);
+      rows[id] = row;
+    });
+    return rows;
+  }
+  function arrayTrafficRow(arrayID) {
+    var array = providerArrayByID(arrayID);
+    var members = array && array.members || [];
+    var usage = emptyTrafficPeriods();
+    var shown = emptyTrafficPeriods();
+    var any = false;
+    var seen = {};
+    var shownSeen = {};
+    function takeUsage(id) {
+      var key = String(id || '').trim().toLowerCase();
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      if (accumulateProviderTraffic(usage, providerTrafficRow(id))) any = true;
+    }
+    members.forEach(function(member) {
+      var id = member && member.id;
+      var key = String(id || '').trim().toLowerCase();
+      takeUsage(id);
+      if (!key || shownSeen[key]) return;
+      shownSeen[key] = true;
+      if (accumulateProviderTraffic(shown, memberTrafficRow(id))) any = true;
+    });
+    // Usage for older requests sits on the logical array id. Member rows
+    // already show the split, so the header keeps whichever picture is larger
+    // instead of adding the ledger and the rows together.
+    takeUsage((array && array.id) || arrayID);
+    if (!any) return null;
+    return richerTrafficPeriods(shown, usage);
+  }
+  // One figure per array. arrayTrafficRow is the multi-member 合计, and for a
+  // single member it is the same picture that row shows: the larger of the
+  // member rows and the array ledger. The page total adds those figures and
+  // does not add the member cells again.
+  function displayedArrayTraffic(array) {
+    if (!array || !array.id) return null;
+    return arrayTrafficRow(array.id);
+  }
+  function allArrayTrafficRow(arrays) {
+    var total = emptyTrafficPeriods();
+    var any = false;
+    (arrays || providerArrayRecords()).forEach(function(array) {
+      if (accumulateProviderTraffic(total, displayedArrayTraffic(array))) any = true;
+    });
+    return any ? total : null;
+  }
+  function providerTrafficCells(win, pending, caption) {
+    function line(label, value, totalCls) {
+      var tip = (caption ? caption + ' \u00b7 ' : '') + providerTrafficPeriodLabel(providerTrafficPeriod) + ' \u00b7 ' + label + ' \u00b7 ' + formatTrafficExact(value);
+      return '<div class="provider-traffic-line"><span class="k">' + esc(label) + '</span><span class="v' + (totalCls ? ' total' : '') + '" title="' + esc(tip) + '">' + esc(pending ? t('trafficLoading') : formatTrafficTokens(value)) + '</span></div>';
+    }
+    return (caption ? '<span class="provider-traffic-sum">' + esc(caption) + '</span>' : '')
+      + '<div class="provider-traffic-col">'
+      + line(t('trafficIn'), win.input_tokens)
+      + line(t('trafficOut'), win.output_tokens)
+      + line(t('trafficTotal'), win.total_tokens, true)
+      + '</div>';
+  }
+  function renderAllArrayTraffic() {
+    var node = document.getElementById('llmProviderTrafficTotal');
+    if (!node) return;
+    var arrays = providerArrayRecords();
+    if (!arrays.length) {
+      if (node.hidden && !node._trafficHTML) return;
+      node.hidden = true;
+      node._trafficHTML = '';
+      node.innerHTML = '';
+      return;
+    }
+    node.hidden = false;
+    var row = allArrayTrafficRow(arrays);
+    var hasData = !!(row && (row.day || row.week || row.month));
+    var pending = !hasData && (!providerTrafficReady || providerTrafficInFlight);
+    var win = providerTrafficNumbers(providerTrafficWindow(row));
+    var caption = t('providerArraysTrafficSum');
+    var html = '<div class="provider-traffic' + (pending ? ' is-pending' : '') + '" role="group" aria-label="' + esc(caption) + '">'
+      + providerTrafficCells(win, pending, caption)
+      + '</div>';
+    if (node._trafficHTML === html) return;
+    node._trafficHTML = html;
+    node.innerHTML = html;
+  }
   function applyProviderTrafficNode(node, id) {
     if (!node) return;
-    var row = providerTrafficRow(id);
+    var arrayID = node.getAttribute('data-traffic-array') || '';
+    var row = arrayID ? arrayTrafficRow(arrayID) : memberTrafficRow(id);
     var hasData = !!(row && (row.day || row.week || row.month));
     var pending = !hasData && (!providerTrafficReady || providerTrafficInFlight);
     node.className = 'provider-traffic' + (pending ? ' is-pending' : '');
-    var win = providerTrafficWindow(row) || {};
-    var input = Number(win.input_tokens || 0);
-    var output = Number(win.output_tokens || 0);
-    var total = Number(win.total_tokens || 0) || (input + output);
-    function line(label, value, totalCls) {
-      var tip = providerTrafficPeriodLabel(providerTrafficPeriod) + ' \u00b7 ' + label + ' \u00b7 ' + formatTrafficExact(value);
-      return '<div class="provider-traffic-line"><span class="k">' + esc(label) + '</span><span class="v' + (totalCls ? ' total' : '') + '" title="' + esc(tip) + '">' + esc(pending ? t('trafficLoading') : formatTrafficTokens(value)) + '</span></div>';
-    }
-    node.innerHTML = '<div class="provider-traffic-col">'
-      + line(t('trafficIn'), input)
-      + line(t('trafficOut'), output)
-      + line(t('trafficTotal'), total, true)
-      + '</div>';
+    var win = providerTrafficNumbers(providerTrafficWindow(row));
+    var html = providerTrafficCells(win, pending, arrayID ? t('providerArrayTrafficSum') : '');
+    if (node._trafficHTML === html) return;
+    node._trafficHTML = html;
+    node.innerHTML = html;
   }
   function setProviderTrafficPeriod(period) {
     var next = period === 'week' || period === 'month' ? period : 'day';
     var changed = next !== providerTrafficPeriod;
     providerTrafficPeriod = next;
     syncProviderTrafficSwitch();
-    if (changed) patchProviderTraffic();
+    if (!changed) return;
+    // A traffic reload may still be deciding whether member_health arrived in
+    // one response. Starting the per-day fallback now would add those days on
+    // top of that total, or throw the requests away.
+    if (next !== 'day' && !(providerTrafficInFlight > 0)) ensureProviderHealthHistory();
+    patchProviderTraffic();
   }
   function providerTrafficPeriodLabel(period) {
     if (period === 'week') return t('trafficWeek');
@@ -691,34 +1123,195 @@ if (typeof I18N_ZH !== 'undefined') {
     var next = document.querySelector('#llmProviderTrafficSwitch button[data-period="' + order[i] + '"]');
     if (next) next.focus();
   }
+  function normalizeTrafficMap(raw) {
+    return foldTrafficMap(raw);
+  }
+  function shanghaiDateText(date) {
+    var parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    var year = '', month = '', day = '';
+    parts.forEach(function(part) {
+      if (part.type === 'year') year = part.value;
+      else if (part.type === 'month') month = part.value;
+      else if (part.type === 'day') day = part.value;
+    });
+    return year + '-' + month + '-' + day;
+  }
+  function shanghaiDayOffset(daysAgo) {
+    // Noon keeps the Shanghai calendar date on the same UTC day. Midnight +08
+    // is the previous UTC evening, so its weekday is one day behind.
+    var noon = new Date(shanghaiDateText(new Date()) + 'T12:00:00+08:00');
+    noon.setUTCDate(noon.getUTCDate() - daysAgo);
+    return shanghaiDateText(noon);
+  }
+  function shanghaiTrafficBounds() {
+    var day = shanghaiDayOffset(0);
+    var wd = new Date(day + 'T12:00:00+08:00').getUTCDay();
+    var delta = wd === 0 ? 6 : wd - 1;
+    return { day: day, week: shanghaiDayOffset(delta), month: day.slice(0, 8) + '01' };
+  }
+  function addHealthPeriod(rows, id, day, bounds, input, output) {
+    if (day > bounds.day) return;
+    var row = rows[id];
+    if (!row) row = rows[id] = emptyTrafficPeriods();
+    function add(bucket) {
+      bucket.input_tokens += input;
+      bucket.output_tokens += output;
+      bucket.total_tokens += input + output;
+    }
+    if (day >= bounds.month) add(row.month);
+    if (day >= bounds.week) add(row.week);
+    if (day === bounds.day) add(row.day);
+  }
+  function mergeHealthReport(rows, day, data, bounds) {
+    var nodes = data && data.nodes || [];
+    nodes.forEach(function(node) {
+      (node.members || []).forEach(function(member) {
+        var id = String(member && member.id || '').trim().toLowerCase();
+        var input = Number(member && member.input_tokens || 0);
+        var output = Number(member && member.output_tokens || 0);
+        if (!id || (!(input > 0) && !(output > 0))) return;
+        addHealthPeriod(rows, id, day, bounds, input, output);
+      });
+    });
+  }
+  function fetchMemberHealthDay(day) {
+    return api('/api/admin/llm/member-health?day=' + encodeURIComponent(day)).then(function(data) {
+      return data || null;
+    }, function() { return null; });
+  }
+  function providerHealthHistoryDays(bounds) {
+    var rest = [];
+    var floor = bounds.week < bounds.month ? bounds.week : bounds.month;
+    for (var i = 1; i < 14; i++) {
+      var day = shanghaiDayOffset(i);
+      if (day >= floor && day < bounds.day) rest.push(day);
+    }
+    return rest;
+  }
+  function ensureProviderHealthHistory() {
+    if (providerHealthHistoryState === 'api' || providerHealthHistoryState === 'ready' || providerHealthHistoryState === 'loading') return;
+    var bounds = shanghaiTrafficBounds();
+    var rest = providerHealthHistoryDays(bounds);
+    if (!rest.length) { providerHealthHistoryState = 'ready'; return; }
+    var seq = providerTrafficLoadSeq;
+    var epoch = providerHealthEpoch;
+    providerHealthHistoryState = 'loading';
+    function pull(days, attempt) {
+      Promise.all(days.map(function(day) {
+        return fetchMemberHealthDay(day).then(function(data) { return { day: day, data: data }; });
+      })).then(function(reports) {
+        if (seq !== providerTrafficLoadSeq || epoch !== providerHealthEpoch || providerHealthHistoryState === 'api') return;
+        var rows = providerHealthById || {};
+        var failed = [];
+        reports.forEach(function(item) {
+          if (!item.data) { failed.push(item.day); return; }
+          mergeHealthReport(rows, item.day, item.data, bounds);
+        });
+        providerHealthById = rows;
+        if (failed.length && attempt < 1) {
+          patchProviderTraffic();
+          pull(failed, attempt + 1);
+          return;
+        }
+        providerHealthHistoryState = failed.length ? '' : 'ready';
+        if (failed.length && providerTrafficPeriod !== 'day' && providerHealthHistoryToastSeq !== seq) {
+          providerHealthHistoryToastSeq = seq;
+          toast(t('sgFailed'), 'error');
+        }
+        patchProviderTraffic();
+      }).catch(function() {
+        if (seq === providerTrafficLoadSeq && epoch === providerHealthEpoch && providerHealthHistoryState === 'loading') providerHealthHistoryState = '';
+      });
+    }
+    pull(rest, 0);
+  }
+  async function loadProviderHealthFallback(seq, reportFailure) {
+    var bounds = shanghaiTrafficBounds();
+    var merged = {};
+    var today = await fetchMemberHealthDay(bounds.day);
+    if (!today && seq === providerTrafficLoadSeq) today = await fetchMemberHealthDay(bounds.day);
+    if (seq !== providerTrafficLoadSeq) return;
+    if (!today) {
+      if (reportFailure && !Object.keys(providerHealthById || {}).length) toast(t('sgFailed'), 'error');
+      if (providerTrafficPeriod !== 'day') ensureProviderHealthHistory();
+      return;
+    }
+    mergeHealthReport(merged, bounds.day, today, bounds);
+    providerHealthEpoch++;
+    providerHealthById = merged;
+    if (providerHealthHistoryState !== 'api') providerHealthHistoryState = '';
+    if (providerTrafficPeriod !== 'day') ensureProviderHealthHistory();
+  }
   async function loadProviderTraffic() {
     var seq = ++providerTrafficLoadSeq;
+    providerHealthHistoryState = '';
     providerTrafficInFlight += 1;
     if (!providerTrafficReady) patchProviderTraffic();
     try {
       var data = await api('/api/admin/llm/providers/traffic');
       if (seq !== providerTrafficLoadSeq) return;
-      var rows = {};
+      var traffic = data && data.traffic;
+      // Tolerate both shapes: a dense array of rows, and an id-keyed object.
+      // Array.isArray(data.traffic) stays the primary read.
       if (Array.isArray(data.traffic)) {
-        data.traffic.forEach(function(item) { if (item && item.provider_id) rows[item.provider_id] = item; });
+        providerTrafficById = foldTrafficMap(data.traffic);
       } else {
-        rows = data.traffic || {};
+        providerTrafficById = foldTrafficMap(traffic);
       }
-      providerTrafficById = rows;
+      if (data && Object.prototype.hasOwnProperty.call(data, 'member_health')) {
+        providerHealthEpoch++;
+        providerHealthById = normalizeTrafficMap(data.member_health);
+        providerHealthHistoryState = 'api';
+      } else if (seq === providerTrafficLoadSeq) {
+        await loadProviderHealthFallback(seq, true);
+      }
       providerTrafficReady = true;
     } catch (e) {
       if (seq !== providerTrafficLoadSeq) return;
       providerTrafficReady = true;
-      if (!Object.keys(providerTrafficById || {}).length) toast(e.message || t('sgFailed'), 'error');
+      await loadProviderHealthFallback(seq, false);
+      if (!Object.keys(providerTrafficById || {}).length && !Object.keys(providerHealthById || {}).length) {
+        providerHealthHistoryToastSeq = seq;
+        toast(e.message || t('sgFailed'), 'error');
+      }
     } finally {
       providerTrafficInFlight = Math.max(0, providerTrafficInFlight - 1);
       if (seq === providerTrafficLoadSeq) patchProviderTraffic();
     }
   }
   function providerArrayByID(id) {
-    id = String(id || '');
+    id = String(id || '').trim();
     if (!providerArraysByID) providerArrayRecords();
-    return (providerArraysByID && providerArraysByID[id]) || null;
+    if (!id || !providerArraysByID) return null;
+    if (providerArraysByID[id]) return providerArraysByID[id];
+    var key = providerArrayLockKey(id);
+    var ids = Object.keys(providerArraysByID);
+    for (var i = 0; i < ids.length; i++) {
+      if (providerArrayLockKey(ids[i]) === key) return providerArraysByID[ids[i]];
+    }
+    return null;
+  }
+  function providerArrayProtected(array) {
+    if (!array) return false;
+    if (array.system) return true;
+    var id = String(array.id || '').trim().toLowerCase();
+    return id === 'token_bank_low' || id === 'token_bank_mid' || id === 'token_bank_high';
+  }
+  function providerArrayBillingFields(record, member) {
+    var src = record || {};
+    var fallback = member || {};
+    var schedule = (src.credit_multiplier_schedule && src.credit_multiplier_schedule.length) ? src.credit_multiplier_schedule : (fallback.credit_multiplier_schedule || []);
+    var pricing = src.token_pricing;
+    if (!pricing || !Object.keys(pricing).length) pricing = fallback.token_pricing || {};
+    var multiplier = Number(src.credit_multiplier);
+    if (!(multiplier > 0)) multiplier = Number(fallback.credit_multiplier);
+    if (!(multiplier > 0)) multiplier = 1;
+    return {
+      timezone: src.timezone || fallback.timezone || 'Asia/Shanghai',
+      credit_multiplier: multiplier,
+      credit_multiplier_schedule: schedule,
+      token_pricing: pricing
+    };
   }
   function providerArrayRecords() {
     var meta = {};
@@ -746,33 +1339,145 @@ if (typeof I18N_ZH !== 'undefined') {
         members.push(item);
       });
       if (!members.length) members = [provider];
-      groups.push({ id: id, name: record.name || (members[0] && (members[0].name || members[0].id)) || id, members: members });
+      var billing = providerArrayBillingFields(record, members[0]);
+      groups.push({
+        id: id,
+        name: record.name || (members[0] && (members[0].name || members[0].id)) || id,
+        members: members,
+        system: !!record.system,
+        timezone: billing.timezone,
+        credit_multiplier: billing.credit_multiplier,
+        credit_multiplier_schedule: billing.credit_multiplier_schedule,
+        token_pricing: billing.token_pricing
+      });
+    });
+    (providerArrays || []).forEach(function(array) {
+      if (!array || !array.id || seen[array.id]) return;
+      seen[array.id] = true;
+      var billing = providerArrayBillingFields(array, null);
+      groups.push({
+        id: array.id,
+        name: array.name || array.id,
+        members: [],
+        system: !!array.system,
+        timezone: billing.timezone,
+        credit_multiplier: billing.credit_multiplier,
+        credit_multiplier_schedule: billing.credit_multiplier_schedule,
+        token_pricing: billing.token_pricing
+      });
     });
     providerArraysByID = {};
-    groups.forEach(function(array) { providerArraysByID[array.id] = array; });
+    providerArrayByMember = {};
+    groups.forEach(function(array) {
+      providerArraysByID[array.id] = array;
+      (array.members || []).forEach(function(member) {
+        var id = String(member && member.id || '').trim().toLowerCase();
+        if (id) providerArrayByMember[id] = array;
+      });
+    });
     return groups;
   }
-  function renderProviderRow(p, opts) {
+  function providerCanaryActive(provider, now) {
+    var raw = String(provider && provider.token_bank_canary_until || '').trim();
+    if (!raw) return null;
+    var until = new Date(raw);
+    if (isNaN(until.getTime())) return null;
+    if ((now || new Date()).getTime() >= until.getTime()) return null;
+    return until;
+  }
+  function formatProviderCanaryUntil(until) {
+    // Shanghai is UTC+8 all year. Shift then read UTC fields so midnight
+    // stays on the right day. Intl hourCycle h23 can report 24:00 on the previous day.
+    var shifted = new Date(until.getTime() + 8 * 60 * 60 * 1000);
+    if (isNaN(shifted.getTime())) return '';
+    var pad2 = function(value) { value = String(value); return value.length >= 2 ? value : ('0' + value).slice(-2); };
+    return shifted.getUTCFullYear() + '-' + pad2(shifted.getUTCMonth() + 1) + '-' + pad2(shifted.getUTCDate()) + ' ' + pad2(shifted.getUTCHours()) + ':' + pad2(shifted.getUTCMinutes());
+  }
+  function providerCanaryBird(label) {
+    return '<svg class="provider-canary-bird" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">'
+      + '<title>' + esc(label || '') + '</title>'
+      + '<path fill="#E0A31A" d="M.9 8.8c1.4-.9 2.6-.5 3.4.4-.6.6-1.6 1-2.7.6-.8-.3-1.2-.7-.7-1z"/>'
+      + '<ellipse cx="7.2" cy="9.7" rx="3.3" ry="2.45" fill="#F5C542"/>'
+      + '<path fill="#E2A31A" d="M5.3 8.7c1.2-.5 2.5.1 2.9 1.2.3.8 0 1.6-.8 1.9-1.1.4-2.3-.1-2.7-1.1-.3-.7-.1-1.5.6-2z"/>'
+      + '<circle cx="10.8" cy="6.5" r="2.25" fill="#F7D15A"/>'
+      + '<path fill="#D48412" d="M12.5 6.2 15.3 7.1 12.4 8z"/>'
+      + '<circle cx="11.35" cy="6" r=".9" fill="#3d2b12"/>'
+      + '<circle cx="11.6" cy="5.75" r=".28" fill="#fff8e6"/>'
+      + '</svg>';
+  }
+  function providerCanaryMark(provider) {
+    var until = providerCanaryActive(provider);
+    if (!until) return '';
+    var formatted = formatProviderCanaryUntil(until);
+    if (!formatted) return '';
+    var label = t('providerCanaryUntil').replace('{time}', formatted);
+    return '<span class="provider-canary-mark" data-provider-id="' + esc(provider && provider.id || '') + '" role="img" title="' + esc(label) + '" aria-label="' + esc(label) + '">' + providerCanaryBird(label) + '</span>';
+  }
+  var providerCanaryTimer = 0;
+  function scheduleProviderCanaryRefresh() {
+    if (providerCanaryTimer) {
+      clearTimeout(providerCanaryTimer);
+      providerCanaryTimer = 0;
+    }
+    var now = Date.now();
+    var nowDate = new Date(now);
+    var next = 0;
+    (providers || []).forEach(function(provider) {
+      var until = providerCanaryActive(provider, nowDate);
+      if (!until) return;
+      var at = until.getTime();
+      if (!next || at < next) next = at;
+    });
+    if (!next) return;
+    var delay = next - now + 250;
+    if (delay < 250) delay = 250;
+    if (delay > 2147483647) delay = 2147483647;
+    providerCanaryTimer = setTimeout(refreshProviderCanaryMarks, delay);
+  }
+  function refreshProviderCanaryMarks() {
+    if (providerCanaryTimer) clearTimeout(providerCanaryTimer);
+    providerCanaryTimer = 0;
+    var root = document.getElementById('llmProvidersList');
+    if (root) {
+      var now = new Date();
+      root.querySelectorAll('.provider-canary-mark').forEach(function(mark) {
+        var id = mark.getAttribute('data-provider-id') || '';
+        var provider = null;
+        for (var i = 0; i < providers.length; i++) {
+          if (id && providers[i] && providers[i].id === id) { provider = providers[i]; break; }
+        }
+        if (!providerCanaryActive(provider, now)) mark.remove();
+      });
+    }
+    scheduleProviderCanaryRefresh();
+  }
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden' || !providerCanaryTimer) return;
+    refreshProviderCanaryMarks();
+  });
+  function renderProviderRow(p) {
     var testState = providerTestStates[p.id];
     var testHTML = renderProviderTestState(testState);
     var testDisabled = testState && testState.status === 'testing' ? ' disabled' : '';
     var providerArg = jsArg(p.id);
     var seq = Number(p.sequence || 0);
     var paused = !!p.paused;
-    return '<div class="data-row' + (paused ? ' is-paused' : '') + '">'
-      + '<div class="provider-seq' + (seq > 0 ? '' : ' is-unset') + '">' + esc(seq > 0 ? String(seq) : '-') + '</div>'
-      + '<div class="data-row-main"><div class="data-row-title"><strong>' + esc(p.name||p.id) + '</strong>'
+    var dragHint = esc(t('providerArrayDragHint'));
+    return '<div class="data-row' + (paused ? ' is-paused' : '') + '" data-provider-id="' + esc(p.id) + '">'
+      + '<div class="provider-seq' + (seq > 0 ? '' : ' is-unset') + '" draggable="true" title="' + dragHint + '">' + esc(seq > 0 ? String(seq) : '-') + '</div>'
+      + '<div class="data-row-main" draggable="true"><div class="data-row-title"><strong><span class="data-row-name" title="' + dragHint + '">' + esc(p.name||p.id) + '</span>' + providerCanaryMark(p) + '</strong>'
       + (paused ? '<span class="badge warn">' + esc(t('pauseProvider')) + '</span>' : '')
       + (p.lb_group && Number(p.lb_group_size||0) >= 2 ? '<span class="badge info">' + esc(t('lbGroup')) + ' ' + esc(p.lb_group) + '</span>' : '')
       + providerBillingBadge(p)
+      + providerWorkBuddyBadge(p)
       + providerAccessBadge(p)
       + '</div>'
-      + '<span class="data-row-meta">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
+      + '<span class="data-row-meta" title="' + dragHint + '">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
       + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
       + (providerPriceSummary(p) ? ' \u00b7 ' + esc(providerPriceSummary(p)) : '')
       + (providerPriceScheduleCount(p) ? ' \u00b7 ' + esc(t('pricingSchedule')) + ': ' + providerPriceScheduleCount(p) : '') + '</span>'
       + testHTML + '</div>'
-      + ((opts && opts.hideTraffic) ? '' : '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(p.id) + '"></div>')
+      + '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(p.id) + '"></div>'
       + '<div class="data-row-actions">'
       + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',-1)">\u2191</button>'
       + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',1)">\u2193</button>'
@@ -783,27 +1488,175 @@ if (typeof I18N_ZH !== 'undefined') {
       + '</div></div>';
   }
   function renderProviderArray(array) {
-    var shared = array.members[0];
     var multi = array.members.length > 1;
-    var headTraffic = multi ? '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(array.id) + '"></div>' : '';
-    var head = '<div class="provider-array-head"><div><strong>' + esc(array.name || array.id) + '</strong>'
-      + ' <span class="badge">' + esc(t('providerArray')) + (multi ? ' \u00b7 ' + array.members.length : '') + '</span>'
+    var open = !!providerArrayExpanded[array.id];
+    var headTraffic = '';
+    if (multi) headTraffic = '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-traffic-array="' + esc(array.id) + '"></div>';
+    else if (!open && array.members[0]) headTraffic = '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(array.members[0].id) + '"></div>';
+    var head = '<div class="provider-array-head"><div class="provider-array-title"><strong>' + esc(array.name || array.id) + '</strong>'
+      + '<span class="badge">' + esc(t('providerArray')) + ' \u00b7 ' + array.members.length + '</span>'
       + (multi ? '<span class="badge info">' + esc(t('providerArrayShared')) + '</span>' : '')
-      + (shared && providerPriceSummary(shared) ? '<span class="data-row-meta"> ' + esc(providerPriceSummary(shared)) + '</span>' : '')
+      + (providerPriceSummary(array) ? '<span class="data-row-meta"> ' + esc(providerPriceSummary(array)) + '</span>' : '')
       + '</div>' + headTraffic + '<div class="data-row-actions">'
-      + '<button class="btn-ghost" onclick="showProviderDialog(\'create\', \'\', {arrayID:' + jsArg(array.id) + '})">' + esc(t('providerArrayAdd')) + '</button>'
-      + (multi ? '<button class="btn-danger-ghost" onclick="deleteProviderArray(' + jsArg(array.id) + ')">' + esc(t('providerArrayDelete')) + '</button>' : '')
+      + '<button class="btn-ghost" type="button" aria-expanded="' + (open ? 'true' : 'false') + '" onclick="toggleProviderArray(' + jsArg(array.id) + ')">' + esc(open ? t('providerArrayCollapse') : t('providerArrayExpand')) + '</button>'
+      + '<button class="btn-ghost" type="button" onclick="showProviderDialog(\'create\', \'\', {arrayID:' + jsArg(array.id) + '})">' + esc(t('providerArrayAdd')) + '</button>'
+      + '<button class="btn-ghost" type="button" onclick="editProviderArray(' + jsArg(array.id) + ')">' + esc(t('providerArrayEdit')) + '</button>'
+      + (providerArrayProtected(array) ? '' : '<button class="btn-ghost" type="button" onclick="renameProviderArray(' + jsArg(array.id) + ')">' + esc(t('providerArrayRename')) + '</button>')
+      + (providerArrayProtected(array) ? '' : '<button class="btn-danger-ghost" type="button" onclick="deleteProviderArray(' + jsArg(array.id) + ')">' + esc(t('providerArrayDelete')) + '</button>')
       + '</div></div>';
-    return '<div class="provider-array' + (multi ? ' is-multi' : '') + '">' + head + array.members.map(function(member) { return renderProviderRow(member, { hideTraffic: multi }); }).join('') + '</div>';
+    var body = '';
+    if (open) {
+      body = array.members.length
+        ? array.members.map(function(member) { return renderProviderRow(member); }).join('')
+        : '<div class="hint">' + esc(t('providerArrayEmpty')) + '</div>';
+    }
+    return '<div class="provider-array' + (multi ? ' is-multi' : '') + (open ? '' : ' is-collapsed') + '" data-array-id="' + esc(array.id) + '">' + head + body + '</div>';
   }
   function renderProviders() {
     var el = document.getElementById('llmProvidersList');
     if (!el) return;
     syncProviderTrafficSwitch();
-    if (!providers.length) { el.innerHTML = '<div class="hint">' + esc(t('noProviders')) + '</div>'; return; }
-    el.innerHTML = providerArrayRecords().map(renderProviderArray).join('');
+    var arrays = providerArrayRecords();
+    var alive = {};
+    arrays.forEach(function(array) { if (array && array.id) alive[array.id] = true; });
+    Object.keys(providerArrayExpanded).forEach(function(id) { if (!alive[id]) delete providerArrayExpanded[id]; });
+    if (!arrays.length) { el.innerHTML = '<div class="hint">' + esc(t('noProviders')) + '</div>'; renderAllArrayTraffic(); scheduleProviderCanaryRefresh(); return; }
+    el.innerHTML = arrays.map(renderProviderArray).join('');
+    bindProviderArrayDrag(el);
     patchProviderTraffic();
+    scheduleProviderCanaryRefresh();
   }
+  window.toggleProviderArray = function(id) {
+    if (!id) return;
+    if (providerArrayExpanded[id]) delete providerArrayExpanded[id];
+    else providerArrayExpanded[id] = true;
+    renderProviders();
+  };
+  var providerArrayExpanded = {};
+  var providerDragID = '';
+  var providerDragHome = '';
+  function dragEventNode(event) {
+    var node = event && event.target;
+    if (!node) return null;
+    if (node.nodeType !== 1) node = node.parentElement;
+    return node || null;
+  }
+  function clearProviderDragMarks(root) {
+    if (!root) return;
+    root.querySelectorAll('.is-dragging, .is-drop-target').forEach(function(node) {
+      node.classList.remove('is-dragging');
+      node.classList.remove('is-drop-target');
+    });
+  }
+  function setProviderDragOver(root, card) {
+    var current = root.querySelector('.provider-array.is-drop-target');
+    if (current === card) return;
+    if (current) current.classList.remove('is-drop-target');
+    if (card) card.classList.add('is-drop-target');
+  }
+  function bindProviderArrayDrag(root) {
+    if (!root || root.getAttribute('data-array-drag') === '1') return;
+    root.setAttribute('data-array-drag', '1');
+    root.addEventListener('dragstart', function(event) {
+      var node = dragEventNode(event);
+      var row = node && node.closest('.data-row');
+      if (!row || !root.contains(row)) return;
+      if (node.closest('button, a, input, select, textarea, label')) {
+        event.preventDefault();
+        return;
+      }
+      var id = row.getAttribute('data-provider-id') || '';
+      if (!id) { event.preventDefault(); return; }
+      var provider = providers.find(function(item) { return item.id === id; });
+      if (!provider) { event.preventDefault(); return; }
+      providerDragID = id;
+      providerDragHome = providerArrayLockKey(provider.array_id || provider.id);
+      row.classList.add('is-dragging');
+      if (!event.dataTransfer) return;
+      event.dataTransfer.effectAllowed = 'move';
+      try { event.dataTransfer.setData('text/plain', id); } catch (e) {}
+    });
+    function allowProviderArrayDrop(event) {
+      if (!providerDragID) return;
+      var node = dragEventNode(event);
+      var card = node && node.closest('.provider-array');
+      var target = (card && card.getAttribute('data-array-id')) || '';
+      if (!card || !target || providerDragHome === providerArrayLockKey(target)) {
+        setProviderDragOver(root, null);
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      setProviderDragOver(root, card);
+    }
+    root.addEventListener('dragenter', allowProviderArrayDrop);
+    root.addEventListener('dragover', allowProviderArrayDrop);
+    root.addEventListener('drop', function(event) {
+      var node = dragEventNode(event);
+      var card = node && node.closest('.provider-array');
+      var id = providerDragID;
+      if (!id && event.dataTransfer) {
+        try { id = event.dataTransfer.getData('text/plain') || ''; } catch (e) {}
+      }
+      var target = (card && card.getAttribute('data-array-id')) || '';
+      if (!card || !id || !target || providerDragHome === providerArrayLockKey(target)) return;
+      event.preventDefault();
+      providerDragID = '';
+      providerDragHome = '';
+      clearProviderDragMarks(root);
+      window.moveProviderToArray(id, target);
+    });
+    root.addEventListener('dragend', function() {
+      providerDragID = '';
+      providerDragHome = '';
+      clearProviderDragMarks(root);
+    });
+  }
+  function providerMovePayload(provider, arrayID) {
+    var payload = copyProviderExtraFields(provider);
+    payload.id = provider.id;
+    payload.name = provider.name || provider.id;
+    payload.api_url = provider.api_url || '';
+    payload.protocol = provider.protocol || 'openai';
+    payload.models = provider.models || [];
+    payload.capability_tags = provider.capability_tags || [];
+    payload.priority = provider.priority || 0;
+    payload.sequence = provider.sequence || 0;
+    payload.max_concurrency = provider.max_concurrency || 0;
+    payload.upstream_timeout_sec = provider.upstream_timeout_sec || 0;
+    payload.timezone = provider.timezone || 'Asia/Shanghai';
+    payload.credit_multiplier = provider.credit_multiplier > 0 ? provider.credit_multiplier : 1;
+    payload.credit_multiplier_schedule = provider.credit_multiplier_schedule || [];
+    var pricing = provider.token_pricing || {};
+    if (pricing.price_schedule && pricing.price_schedule.length && !String(pricing.timezone || '').trim()) {
+      pricing = Object.assign({}, pricing, { timezone: provider.timezone || 'Asia/Shanghai' });
+    }
+    payload.token_pricing = pricing;
+    if (provider.allowed_node_ids) payload.allowed_node_ids = provider.allowed_node_ids;
+    payload.array_id = arrayID;
+    return payload;
+  }
+  window.moveProviderToArray = async function(providerID, arrayID) {
+    var provider = providers.find(function(item) { return item.id === providerID; });
+    arrayID = String(arrayID || '').trim();
+    if (!provider || !arrayID) return;
+    var home = provider.array_id || provider.id;
+    if (providerArrayLockKey(home) === providerArrayLockKey(arrayID)) return;
+    if (!providerArrayByID(arrayID)) return;
+    if (!beginProviderArrayAction(home)) { toast(t('providerArrayBusy'), 'error'); return; }
+    if (!beginProviderArrayAction(arrayID)) { endProviderArrayAction(home); toast(t('providerArrayBusy'), 'error'); return; }
+    try {
+      await api('/api/admin/llm/providers/' + encodeURIComponent(provider.id), { method: 'PUT', body: JSON.stringify(providerMovePayload(provider, arrayID)) });
+      providerArrayExpanded[arrayID] = true;
+      toast(t('providerArrayMoved'), 'success');
+      await loadProviders({ traffic: false });
+      await loadServiceGroups();
+    } catch (e) { toast(e.message, 'error'); }
+    finally {
+      endProviderArrayAction(home);
+      endProviderArrayAction(arrayID);
+    }
+  };
   function renderProviderTestState(state) {
     if (!state) return '';
     if (state.status === 'testing') return '<span class="provider-test-status is-testing">' + esc(t('providerTesting')) + '</span>';
@@ -1221,7 +2074,10 @@ if (typeof I18N_ZH !== 'undefined') {
       return window && !providerTokenPriceWindowInvalid(window);
     });
     if (validSchedule.length !== providerTokenPricingSchedule.length) return null;
-    if (validSchedule.length) tp.price_schedule = validSchedule;
+    if (validSchedule.length) {
+      tp.price_schedule = validSchedule;
+      if (!tp.timezone) tp.timezone = val('llmPrvTimezone') || 'Asia/Shanghai';
+    }
     return tp;
   }
   function providerTokenPricingSection(p) {
@@ -1385,11 +2241,32 @@ if (typeof I18N_ZH !== 'undefined') {
       + (meta ? '<span class="provider-access-node-meta">' + esc(meta) + '</span>' : '')
       + '</button>';
   }
+  function parseProviderNodeList(raw) {
+    var seen = {};
+    return String(raw || '').split(/[,，;；\s]+/).map(function(part) { return part.trim(); }).filter(function(id) {
+      if (!id) return false;
+      var key = id.toLowerCase();
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    });
+  }
+  function providerAccessNodeLabels() {
+    return (providerAccessNodes || []).map(function(node) {
+      var id = String(node.node_id || '').trim();
+      if (!id) return '';
+      var name = String(node.name || '').trim();
+      if (name && name.toLowerCase() !== id.toLowerCase()) return id + ' (' + name + ')';
+      return id;
+    }).filter(Boolean);
+  }
   function providerAccessScopeSection() {
     var modes = '<div class="provider-access-switch" role="radiogroup" aria-label="' + esc(t('accessScope')) + '">'
       + '<button type="button" class="provider-access-switch-btn' + (providerAccessMode !== 'nodes' ? ' is-active' : '') + '" onclick="setProviderAccessMode(\'all\')">' + esc(t('accessScopeAll')) + '</button>'
       + '<button type="button" class="provider-access-switch-btn' + (providerAccessMode === 'nodes' ? ' is-active' : '') + '" onclick="setProviderAccessMode(\'nodes\')">' + esc(t('accessScopeSelected')) + '</button>'
       + '</div>';
+    var labels = providerAccessNodeLabels();
+    var available = '<div class="provider-billing-hint">' + esc(t('accessScopeAvailable')) + (labels.length ? esc(labels.join('、')) : esc(t('accessScopeAvailableEmpty'))) + '</div>';
     var nodes = '';
     if (providerAccessMode === 'nodes') {
       var known = {};
@@ -1398,15 +2275,25 @@ if (typeof I18N_ZH !== 'undefined') {
         if (!id) return '';
         known[id.toLowerCase()] = true;
         var meta = node.self ? t('accessScopeSelf') : (!node.reachable ? t('accessScopeUnreachable') : '');
-        return providerAccessNodeCard(id, node.name || id, node.host || '', meta, node.reachable || node.self ? '' : 'is-offline');
+        var label = node.name && String(node.name).toLowerCase() !== id.toLowerCase() ? id + ' · ' + node.name : id;
+        return providerAccessNodeCard(id, label, node.host || '', meta, node.reachable || node.self ? '' : 'is-offline');
       }).join('') + providerAccessSelectedIDs().filter(function(id){ return !known[String(id).toLowerCase()]; }).map(function(id) {
         return providerAccessNodeCard(id, id, '', t('accessScopeOffline'), 'is-offline provider-access-stale');
-      }).join('') + '</div>';
+      }).join('') + '</div>'
+        + '<label for="llmPrvNodes">' + esc(t('accessScopeNodesInput')) + '</label>'
+        + '<input id="llmPrvNodes" type="text" value="' + esc(providerAccessSelectedIDs().join(', ')) + '" placeholder="' + esc(t('accessScopeNodesPlaceholder')) + '" onchange="setProviderAccessNodesText(this.value)">';
     }
     return '<div class="provider-access-scope"><div class="provider-billing-title"><strong>' + esc(t('accessScope')) + '</strong></div>'
       + '<div class="provider-billing-hint">' + esc(t('accessScopeHint')) + '</div>'
-      + modes + nodes + '</div>';
+      + available + modes + nodes + '</div>';
   }
+  window.setProviderAccessNodesText = function(raw) {
+    providerAccessMode = 'nodes';
+    providerAccessSelected = {};
+    parseProviderNodeList(raw).forEach(function(id) { providerAccessSelected[id] = true; });
+    var root = document.querySelector('.provider-access-scope');
+    if (root) root.outerHTML = providerAccessScopeSection();
+  };
   window.setProviderAccessMode = function(mode) {
     providerAccessMode = mode === 'nodes' ? 'nodes' : 'all';
     if (providerAccessMode === 'nodes' && !providerAccessSelectedIDs().length) {
@@ -1439,6 +2326,9 @@ if (typeof I18N_ZH !== 'undefined') {
     var seq = ++providerDialogSeq;
     var p = mode === 'edit' ? providers.find(function(x){return x.id===id;}) : null;
     providerDialogID = mode === 'edit' ? (id || '') : '';
+    stopWorkBuddyLoginPoll();
+    workBuddySessionID = '';
+    workBuddyModels = [];
     sgOpenKind = 'provider';
     if (!(opts && opts.keepBilling)) {
       providerBillingSchedule = cloneProviderBillingSchedule(p && p.credit_multiplier_schedule);
@@ -1451,16 +2341,21 @@ if (typeof I18N_ZH !== 'undefined') {
     await loadProviderAccessNodes();
     if (seq !== providerDialogSeq) return false;
     var title = mode === 'edit' ? t('providerDialogTitleEdit') : t('providerDialogTitleNew');
-    providerDialogHomeArray = p ? (p.array_id || p.id) : '';
-    var selectedArrayID = (opts && opts.arrayID) || '';
-    if (!selectedArrayID && p) {
-      var home = providerArrayByID(p.array_id || p.id);
-      if (home && home.members.length > 1) selectedArrayID = home.id;
+    var homeArray = p ? providerArrayByID(p.array_id || p.id) : null;
+    providerDialogHomeArray = homeArray ? homeArray.id : (p ? (p.array_id || p.id) : '');
+    var arrayChoiceSet = !!(opts && Object.prototype.hasOwnProperty.call(opts, 'arrayID'));
+    var selectedArrayID = '';
+    if (arrayChoiceSet) {
+      var chosen = providerArrayByID(opts.arrayID);
+      selectedArrayID = chosen ? chosen.id : String(opts.arrayID || '').trim();
+    } else if (homeArray && homeArray.members.length > 1) {
+      selectedArrayID = homeArray.id;
     }
     var html = sgDialogChrome(title,
       '<div class="sg-form-grid">'
       + field('llmPrvID', t('fieldID'), p ? p.id : '', mode==='edit')
       + field('llmPrvName', t('fieldName'), p ? p.name : '')
+      + providerAuthField(p)
       + field('llmPrvURL', t('fieldURL'), p ? p.api_url : '')
       + field('llmPrvKey', t('fieldKey'), '', false, 'password')
       + '<div><label>' + esc(t('fieldProtocol')) + '</label><select id="llmPrvProtocol"><option value="openai"' + ((!p||p.protocol==='openai')?' selected':'') + '>OpenAI</option><option value="anthropic"' + (p&&p.protocol==='anthropic'?' selected':'') + '>Anthropic</option></select></div>'
@@ -1473,50 +2368,180 @@ if (typeof I18N_ZH !== 'undefined') {
       + '</div><div class="hint">' + esc(t('sequenceHint')) + '</div>'
       + providerArraySection(p, selectedArrayID)
       + providerAccessScopeSection()
-      + '<div id="llmPrvSharedBilling">'
-      + providerTokenPricingSection(p)
-      + providerBillingSection(p, opts)
-      + '</div>',
+      + '<div id="llmPrvBillingNote" class="hint">' + esc(t('providerArrayBillingOnEdit')) + '</div>',
       '<button class="btn-primary" onclick="saveProvider(' + jsArg(mode==='edit'?id:'') + ')">' + esc(t('save')) + '</button>'
       + '<button class="btn-ghost" onclick="sgCloseCurrentDialog()">' + esc(t('cancel')) + '</button>');
     openDialog(html, 'sg-form-dialog');
     window.renderProviderCapabilityChips();
-    startProviderBillingNowClock();
     window.setProviderDialogArray(selectedArrayID);
+    window.onProviderAuthChange(true);
     return true;
   };
+  function providerWorkBuddyBadge(p) {
+    if (!p || p.auth_kind !== 'workbuddy') return '';
+    var label = p.workbuddy_edition === 'china' ? t('authWorkBuddyChina') : (p.workbuddy_edition === 'global' ? t('authWorkBuddyGlobal') : 'WorkBuddy');
+    return '<span class="badge">' + esc(label) + '</span>';
+  }
+  function providerAuthValue(p) {
+    if (p && p.auth_kind === 'workbuddy' && (p.workbuddy_edition === 'china' || p.workbuddy_edition === 'global')) return p.workbuddy_edition;
+    return '';
+  }
+  function providerAuthField(p) {
+    var selected = providerAuthValue(p);
+    return '<div><label for="llmPrvAuth">' + esc(t('fieldAuth')) + '</label><select id="llmPrvAuth" onchange="onProviderAuthChange()">'
+      + '<option value=""' + (selected === '' ? ' selected' : '') + '>' + esc(t('authAPIKey')) + '</option>'
+      + '<option value="china"' + (selected === 'china' ? ' selected' : '') + '>' + esc(t('authWorkBuddyChina')) + '</option>'
+      + '<option value="global"' + (selected === 'global' ? ' selected' : '') + '>' + esc(t('authWorkBuddyGlobal')) + '</option>'
+      + '</select></div>'
+      + '<div id="llmPrvWorkBuddy" class="grid-span-all" hidden>'
+      + '<div class="hint">' + esc(t('workBuddyHint')) + '</div>'
+      + '<div class="provider-model-tools"><button class="btn-ghost provider-probe-btn" type="button" id="llmPrvWorkBuddyLogin" onclick="startWorkBuddyLogin()">' + esc(t('workBuddyLogin')) + '</button></div>'
+      + '<div id="llmPrvWorkBuddyStatus" class="provider-probe-status"></div>'
+      + '<div id="llmPrvWorkBuddyChoices" class="provider-model-results"></div></div>';
+  }
+  function stopWorkBuddyLoginPoll() {
+    workBuddyPollGen += 1;
+    if (workBuddyPollTimer) {
+      clearTimeout(workBuddyPollTimer);
+      workBuddyPollTimer = 0;
+    }
+  }
+  window.onProviderAuthChange = function(keepIdentity) {
+    var edition = val('llmPrvAuth');
+    var panel = document.getElementById('llmPrvWorkBuddy');
+    var key = document.getElementById('llmPrvKey');
+    var url = document.getElementById('llmPrvURL');
+    var probe = document.querySelector('#llmPrvModels') && document.querySelector('#llmPrvModels').parentNode.querySelector('.provider-probe-btn');
+    var workbuddy = edition === 'china' || edition === 'global';
+    if (panel) panel.hidden = !workbuddy;
+    if (key && key.parentNode) key.parentNode.hidden = workbuddy;
+    if (probe) probe.hidden = workbuddy;
+    if (url) url.readOnly = workbuddy;
+    if (!workbuddy) {
+      stopWorkBuddyLoginPoll();
+      return;
+    }
+    var preset = workBuddyEditions[edition];
+    if (!preset) return;
+    var idEl = document.getElementById('llmPrvID');
+    var nameEl = document.getElementById('llmPrvName');
+    if (!keepIdentity) {
+      var other = edition === 'china' ? workBuddyEditions.global : workBuddyEditions.china;
+      if (idEl && (!idEl.value || idEl.value === other.id)) idEl.value = preset.id;
+      if (nameEl && (!nameEl.value || nameEl.value === other.name)) nameEl.value = preset.name;
+    } else {
+      if (idEl && !idEl.value) idEl.value = preset.id;
+      if (nameEl && !nameEl.value) nameEl.value = preset.name;
+    }
+    if (url) url.value = preset.url;
+    var protocol = document.getElementById('llmPrvProtocol');
+    if (protocol) protocol.value = 'openai';
+  };
+  function renderWorkBuddyModelChoices() {
+    var choices = document.getElementById('llmPrvWorkBuddyChoices');
+    if (!choices) return;
+    var selected = csvValues('llmPrvModels');
+    choices.innerHTML = (workBuddyModels || []).map(function(model) {
+      var id = model && model.id;
+      if (!id) return '';
+      var on = selected.indexOf(id) >= 0;
+      var label = model.name && model.name !== id ? model.name + ' (' + id + ')' : id;
+      return '<button type="button" class="provider-cap-chip' + (on ? ' is-active' : '') + '" onclick="toggleWorkBuddyModel(' + jsArg(id) + ')">' + esc(label) + '</button>';
+    }).join('');
+  }
+  window.toggleWorkBuddyModel = function(id) {
+    var values = csvValues('llmPrvModels');
+    var idx = values.indexOf(id);
+    if (idx >= 0) values.splice(idx, 1); else values.push(id);
+    setCSVValues('llmPrvModels', values);
+    renderWorkBuddyModelChoices();
+  };
+  window.startWorkBuddyLogin = async function() {
+    var edition = val('llmPrvAuth');
+    if (edition !== 'china' && edition !== 'global') return;
+    var status = document.getElementById('llmPrvWorkBuddyStatus');
+    var button = document.getElementById('llmPrvWorkBuddyLogin');
+    stopWorkBuddyLoginPoll();
+    var gen = workBuddyPollGen;
+    if (workBuddySessionID) {
+      api('/api/admin/llm/providers/workbuddy/login/' + encodeURIComponent(workBuddySessionID), { method: 'DELETE' }).catch(function(){});
+      workBuddySessionID = '';
+    }
+    workBuddyModels = [];
+    renderWorkBuddyModelChoices();
+    if (status) status.textContent = t('workBuddyWaiting');
+    if (button) button.disabled = true;
+    try {
+      var started = await api('/api/admin/llm/providers/workbuddy/login', { method: 'POST', body: JSON.stringify({ edition: edition }) });
+      if (gen !== workBuddyPollGen) return;
+      workBuddySessionID = started.session_id || '';
+      if (started.auth_url) {
+        var popup = window.open(started.auth_url, '_blank', 'noopener');
+        if (!popup && status) status.innerHTML = esc(t('workBuddyWaiting')) + ' <a href="' + esc(started.auth_url) + '" target="_blank" rel="noopener">' + esc(t('workBuddyOpen')) + '</a>';
+      }
+      pollWorkBuddyLogin(gen);
+    } catch (e) {
+      if (status) status.textContent = t('workBuddyFailed') + ': ' + e.message;
+      if (button) button.disabled = false;
+    }
+  };
+  function pollWorkBuddyLogin(gen) {
+    if (gen !== workBuddyPollGen || !workBuddySessionID) return;
+    workBuddyPollTimer = setTimeout(async function() {
+      if (gen !== workBuddyPollGen) return;
+      var status = document.getElementById('llmPrvWorkBuddyStatus');
+      var button = document.getElementById('llmPrvWorkBuddyLogin');
+      try {
+        var data = await api('/api/admin/llm/providers/workbuddy/login/' + encodeURIComponent(workBuddySessionID));
+        if (gen !== workBuddyPollGen) return;
+        if (data.status === 'ready') {
+          workBuddyModels = data.models || [];
+          renderWorkBuddyModelChoices();
+          var note = t('workBuddyReady');
+          if (data.catalog_warning) note += ' ' + t('workBuddyCatalogWarn');
+          if (status) status.textContent = note;
+          if (button) button.disabled = false;
+          return;
+        }
+        if (data.status === 'error') {
+          if (status) status.textContent = t('workBuddyFailed') + (data.error ? ': ' + data.error : '');
+          if (button) button.disabled = false;
+          workBuddySessionID = '';
+          return;
+        }
+        pollWorkBuddyLogin(gen);
+      } catch (e) {
+        if (gen !== workBuddyPollGen) return;
+        if (status) status.textContent = t('workBuddyFailed') + ': ' + e.message;
+        if (button) button.disabled = false;
+      }
+    }, 1500);
+  }
   var providerDialogHomeArray = '';
+  function sameProviderArrayID(a, b) {
+    var left = providerArrayLockKey(a);
+    var right = providerArrayLockKey(b);
+    return !!left && left === right;
+  }
   function providerArraySection(provider, selectedID) {
-    var current = providerArrayByID(selectedID);
     var own = provider ? providerArrayByID(provider.array_id || provider.id) : null;
-    var name = current ? (current.name || current.id) : (own && own.members.length < 2 ? (own.name || own.id) : (provider ? (provider.name || '') : ''));
     var options = '<option value="">' + esc(t('providerArrayOwn')) + '</option>';
     providerArrayRecords().forEach(function(array) {
-      if (own && array.members.length < 2 && array.id === own.id) return;
+      if (own && array.members.length < 2 && sameProviderArrayID(array.id, own.id)) return;
       var label = array.name || array.id;
       if (array.members.length > 1) label += ' (' + array.members.length + ')';
-      options += '<option value="' + esc(array.id) + '"' + (selectedID === array.id ? ' selected' : '') + '>' + esc(label) + '</option>';
+      options += '<option value="' + esc(array.id) + '"' + (sameProviderArrayID(selectedID, array.id) ? ' selected' : '') + '>' + esc(label) + '</option>';
     });
     return '<div class="provider-array-field"><label for="llmPrvArray">' + esc(t('providerArrayJoin')) + '</label><select id="llmPrvArray" onchange="setProviderDialogArray(this.value)">' + options + '</select>'
-      + field('llmPrvArrayName', t('providerArrayName'), name)
       + '<div class="hint">' + esc(t('providerArrayHint')) + '</div>'
       + '<div id="llmPrvArraySharedNote" class="hint" hidden>' + esc(t('providerArrayUseShared')) + '</div></div>';
   }
   window.setProviderDialogArray = function(id) {
-    var joining = !!id && id !== providerDialogHomeArray;
+    var joining = !!providerArrayLockKey(id) && !sameProviderArrayID(id, providerDialogHomeArray);
     var note = document.getElementById('llmPrvArraySharedNote');
-    var billing = document.getElementById('llmPrvSharedBilling');
+    var billingNote = document.getElementById('llmPrvBillingNote');
     if (note) note.hidden = !joining;
-    if (billing) billing.hidden = joining;
-    var current = providerArrayByID(id);
-    var nameEl = document.getElementById('llmPrvArrayName');
-    if (!nameEl || document.activeElement === nameEl) return;
-    if (current) {
-      nameEl.value = current.name || current.id;
-      return;
-    }
-    var own = providerDialogHomeArray ? providerArrayByID(providerDialogHomeArray) : null;
-    nameEl.value = (own && own.members.length < 2) ? (own.name || own.id) : val('llmPrvName');
+    if (billingNote) billingNote.hidden = joining;
   };
   window.editLLMProvider = function(id) { window.showProviderDialog('edit', id); };
   function providerModelsField(value) {
@@ -1581,12 +2606,10 @@ if (typeof I18N_ZH !== 'undefined') {
   window.saveProvider = async function(editID) {
     var existing = editID ? providers.find(function(x){ return x.id === editID; }) : null;
     var arrayID = val('llmPrvArray');
-    var joiningShared = !!(arrayID && arrayID !== providerDialogHomeArray);
+    // The billing editor writes the array's multiplier schedule, so a member
+    // save must carry it through unchanged or the member row would silently
+    // drop it on the next write.
     var billing = readProviderBilling();
-    if (!joiningShared && (providerBillingSchedule || []).length !== billing.credit_multiplier_schedule.length) {
-      toast(t('billingDroppedWindows'), 'error');
-      return;
-    }
     var payload = copyProviderExtraFields(existing);
     payload.id = val('llmPrvID');
     payload.name = val('llmPrvName');
@@ -1598,82 +2621,305 @@ if (typeof I18N_ZH !== 'undefined') {
     payload.sequence = num('llmPrvSequence');
     payload.max_concurrency = num('llmPrvConc');
     payload.upstream_timeout_sec = num('llmPrvTimeout');
+    if (existing) {
+      payload.timezone = existing.timezone || 'Asia/Shanghai';
+      payload.credit_multiplier = existing.credit_multiplier > 0 ? existing.credit_multiplier : 1;
+      payload.credit_multiplier_schedule = existing.credit_multiplier_schedule || [];
+      payload.token_pricing = existing.token_pricing || {};
+    }
+    // The billing editor is authoritative for the multiplier and its windows.
+    // An empty or half-filled window would silently widen the multiplier to
+    // "always on", so the save is refused rather than repaired.
+    if ((providerBillingSchedule || []).length !== billing.credit_multiplier_schedule.length) {
+      toast(t('billingDroppedWindows'), 'error');
+      return;
+    }
     payload.timezone = billing.timezone;
     payload.credit_multiplier = billing.credit_multiplier;
     payload.credit_multiplier_schedule = billing.credit_multiplier_schedule;
-    var tokenPricing = readProviderTokenPricing();
-    if (!joiningShared && tokenPricing === null) { toast(t('billingInvalid'), 'error'); return; }
-    if (!joiningShared) payload.token_pricing = tokenPricing;
     if (providerAccessMode === 'nodes') {
+      var nodeInput = document.getElementById('llmPrvNodes');
+      if (nodeInput) {
+        providerAccessSelected = {};
+        parseProviderNodeList(nodeInput.value).forEach(function(id) { providerAccessSelected[id] = true; });
+      }
       var nodeIDs = providerAccessSelectedIDs();
       if (!nodeIDs.length) { toast(t('accessScopeNeedNode'), 'error'); return; }
       payload.allowed_node_ids = nodeIDs;
     } else {
       payload.allowed_node_ids = [];
     }
+    var edition = val('llmPrvAuth');
+    if (edition === 'china' || edition === 'global') {
+      payload.auth_kind = 'workbuddy';
+      payload.workbuddy_edition = edition;
+      if (workBuddySessionID) payload.workbuddy_session_id = workBuddySessionID;
+      else if (!editID) { toast(t('workBuddyNeedLogin'), 'error'); return; }
+      if (!payload.models.length) { toast(t('workBuddyNeedModel'), 'error'); return; }
+    } else {
+      payload.auth_kind = 'api_key';
+    }
     var key = val('llmPrvKey');
-    if (key) payload.api_key = key;
-    if (arrayID) payload.array_id = arrayID;
-    else payload.array_independent = true;
-    var arrayName = val('llmPrvArrayName');
-    if (arrayName) payload.array_name = arrayName;
+    if (key && payload.auth_kind !== 'workbuddy') payload.api_key = key;
+    if (arrayID) {
+      var chosenArray = providerArrayByID(arrayID);
+      payload.array_id = chosenArray ? chosenArray.id : arrayID;
+    } else payload.array_independent = true;
     try {
       if (editID) await api('/api/admin/llm/providers/' + encodeURIComponent(editID), { method: 'PUT', body: JSON.stringify(payload) });
       else await api('/api/admin/llm/providers', { method: 'POST', body: JSON.stringify(payload) });
+      var openID = payload.array_id || payload.id;
+      if (openID) providerArrayExpanded[openID] = true;
       sgCloseCurrentDialog(); toast(t('saved'), 'success'); loadProviders({ traffic: false });
     } catch(e) { toast(e.message, 'error'); }
   };
   window.deleteLLMProvider = async function(id) {
     var provider = providers.find(function(item) { return item.id === id; });
-    var array = providerArrayByID(provider && (provider.array_id || provider.id));
-    if (array && array.members.length > 1) {
-      if (!sgConfirm(t('providerArrayRemove'))) return;
-      try {
-        await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
-        toast(t('deleted'), 'success');
-        loadProviders({ traffic: false });
-        loadServiceGroups();
-      } catch (e) { toast(e.message, 'error'); }
+    if (!provider) return;
+    var array = providerArrayByID(provider.array_id || provider.id);
+    var arrayID = (array && array.id) || provider.array_id || provider.id;
+    if (!array || (array.members.length <= 1 && !providerArrayProtected(array))) {
+      return window.deleteProviderArray(arrayID);
+    }
+    var lockID = array.id;
+    if (!beginProviderArrayAction(lockID)) return;
+    try {
+      var removeMsg = providerArrayProtected(array) ? t('providerArrayRemoveProtected') : t('providerArrayRemove');
+      var referenced = sgRoutesReferencingMemberModel(provider);
+      if (referenced.length) removeMsg += '\n\n' + t('sgMemberModelReferenced') + '\n' + referenced.join('\n');
+      if (!sgConfirm(removeMsg)) return;
+      await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
+      toast(t('deleted'), 'success');
+      await loadProviders({ traffic: false });
+      await loadServiceGroups();
+    } catch (e) { toast(e.message, 'error'); }
+    finally { endProviderArrayAction(lockID); }
+  };
+  function providerArrayGroupLines(groups) {
+    return (groups || []).map(function(g) {
+      if (g && typeof g === 'object') return '- ' + (g.name || g.id || '');
+      var text = String(g || '').trim();
+      return text ? '- ' + text : '';
+    }).filter(Boolean).join('\n');
+  }
+  function alertProviderArrayInUse(groups) {
+    var lines = providerArrayGroupLines(groups);
+    window.alert(t('providerArrayDeleteInUse') + (lines ? '\n' + lines : ''));
+  }
+  var providerArrayRenameID = '';
+  var providerArrayEditID = '';
+  var providerArrayDialogMode = 'edit';
+  var providerArrayBusy = {};
+  function providerArrayLockKey(id) { return String(id || '').trim().toLowerCase(); }
+  function beginProviderArrayAction(id) {
+    id = providerArrayLockKey(id);
+    if (!id || providerArrayBusy[id]) return false;
+    providerArrayBusy[id] = true;
+    return true;
+  }
+  function endProviderArrayAction(id) { delete providerArrayBusy[providerArrayLockKey(id)]; }
+  function providerArrayNameInvalid(name) {
+    return !name || /[\u0000-\u001f\u007f]/.test(name);
+  }
+  function providerArrayIDInvalid(id) {
+    return !id || /[\u0000-\u0020\u007f\/\\?#]/.test(id);
+  }
+  function renderProviderArrayRenameDialog() {
+    var array = providerArrayByID(providerArrayRenameID);
+    if (!array) return;
+    var current = document.getElementById('llmArrayName');
+    var typed = current ? current.value : '';
+    var html = sgDialogChrome(t('providerArrayRenameTitle'),
+      '<form onsubmit="saveProviderArrayName();return false;">' + field('llmArrayName', t('providerArrayName'), typed || array.name || array.id) + '</form>',
+      '<button class="btn-primary" type="button" onclick="saveProviderArrayName()">' + esc(t('save')) + '</button><button class="btn-ghost" type="button" onclick="sgCloseCurrentDialog()">' + esc(t('cancel')) + '</button>');
+    html = html.replace('id="llmArrayName"', 'id="llmArrayName" maxlength="80"');
+    openDialog(html, 'sg-form-dialog');
+    sgOpenKind = 'array-rename';
+    var input = document.getElementById('llmArrayName');
+    if (input) { input.focus(); if (!typed && typeof input.select === 'function') input.select(); }
+  }
+  window.renameProviderArray = function(id) {
+    if (providerArrayProtected(providerArrayByID(id) || { id: id })) {
+      toast(t('providerArrayRenameProtected'), 'error');
       return;
     }
+    providerArrayRenameID = String(id || '');
+    if (!providerArrayByID(providerArrayRenameID)) return;
+    renderProviderArrayRenameDialog();
+  };
+  window.saveProviderArrayName = async function() {
+    var id = providerArrayRenameID;
+    var name = val('llmArrayName');
+    if (providerArrayProtected(providerArrayByID(id) || { id: id })) {
+      toast(t('providerArrayRenameProtected'), 'error');
+      return;
+    }
+    if (!id || providerArrayNameInvalid(name)) { toast(t('providerArrayRenameNeedName'), 'error'); return; }
+    if (Array.from(name).length > 80) { toast(t('providerArrayRenameTooLong'), 'error'); return; }
+    var current = providerArrayByID(id);
+    if (current && name === String(current.name || '').trim()) { sgCloseCurrentDialog(); return; }
+    if (!beginProviderArrayAction(id)) return;
     try {
-      var refData = await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '/references');
-      var groups = (refData && refData.groups) || [];
-      var msg = t('deleteProvider') + ': ' + id + '?';
-      if (groups.length) {
-        var names = groups.map(function(g){ return '- ' + (g.name || g.id); }).join('\n');
-        msg = t('deleteProviderBound') + '\n' + names + '\n\n' + t('deleteProviderPruneHint') + '\n\n' + msg;
+      await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ name: name }) });
+      sgCloseCurrentDialog();
+      toast(t('saved'), 'success');
+      await loadProviders({ traffic: false });
+    } catch (e) { toast(e.message, 'error'); }
+    finally { endProviderArrayAction(id); }
+  };
+  function blankProviderArrayShape() {
+    return { id: '', name: '', timezone: 'Asia/Shanghai', credit_multiplier: 1, credit_multiplier_schedule: [], token_pricing: { timezone: 'Asia/Shanghai' } };
+  }
+  function renderProviderArrayEditDialog(opts) {
+    var creating = providerArrayDialogMode === 'create';
+    var array = creating ? blankProviderArrayShape() : providerArrayByID(providerArrayEditID);
+    if (!array) return;
+    if (!(opts && opts.keepBilling)) {
+      providerBillingSchedule = cloneProviderBillingSchedule(array.credit_multiplier_schedule);
+      providerTokenPricingSchedule = cloneProviderTokenPricingSchedule(array.token_pricing && array.token_pricing.price_schedule);
+    }
+    var name = (opts && opts.name != null) ? opts.name : (array.name || '');
+    var idValue = (opts && opts.arrayID != null) ? opts.arrayID : (array.id || '');
+    var html = sgDialogChrome(creating ? t('providerArrayCreateTitle') : t('providerArrayEditTitle'),
+      '<form onsubmit="saveProviderArraySettings();return false;">'
+      + field('llmArrayEditID', t('providerArrayID'), idValue, !creating)
+      + field('llmArrayEditName', t('providerArrayName'), name, !creating && providerArrayProtected(array))
+      + '<div class="hint">' + esc(t('providerArrayHint')) + '</div>'
+      + providerTokenPricingSection(array)
+      + providerBillingSection(array, opts)
+      + '</form>',
+      '<button class="btn-primary" type="button" onclick="saveProviderArraySettings()">' + esc(t('save')) + '</button><button class="btn-ghost" type="button" onclick="sgCloseCurrentDialog()">' + esc(t('cancel')) + '</button>');
+    html = html.replace('id="llmArrayEditID"', 'id="llmArrayEditID" maxlength="80"');
+    html = html.replace('id="llmArrayEditName"', 'id="llmArrayEditName" maxlength="80"');
+    openDialog(html, 'sg-form-dialog');
+    sgOpenKind = 'array-edit';
+    startProviderBillingNowClock();
+    if (!(opts && opts.keepBilling)) {
+      var input = document.getElementById(creating ? 'llmArrayEditID' : 'llmArrayEditName');
+      if (input) { input.focus(); if (typeof input.select === 'function') input.select(); }
+    }
+  }
+  window.showProviderArrayDialog = function() {
+    providerArrayDialogMode = 'create';
+    providerArrayEditID = '';
+    renderProviderArrayEditDialog();
+  };
+  window.editProviderArray = function(id) {
+    providerArrayDialogMode = 'edit';
+    providerArrayEditID = String(id || '');
+    if (!providerArrayByID(providerArrayEditID)) return;
+    renderProviderArrayEditDialog();
+  };
+  window.saveProviderArraySettings = async function() {
+    var creating = providerArrayDialogMode === 'create';
+    var id = creating ? val('llmArrayEditID') : providerArrayEditID;
+    var name = val('llmArrayEditName');
+    if (creating && (!id || providerArrayIDInvalid(id) || Array.from(id).length > 80)) { toast(t('providerArrayNeedID'), 'error'); return; }
+    if (!creating && !id) { toast(t('providerArrayNeedID'), 'error'); return; }
+    if (providerArrayNameInvalid(name)) { toast(t('providerArrayRenameNeedName'), 'error'); return; }
+    if (Array.from(name).length > 80) { toast(t('providerArrayRenameTooLong'), 'error'); return; }
+    if (!creating && providerArrayProtected(providerArrayByID(id) || { id: id })) {
+      var kept = providerArrayByID(id);
+      if (!kept || name !== String(kept.name || '').trim()) {
+        toast(t('providerArrayRenameProtected'), 'error');
+        return;
       }
-      if (!sgConfirm(msg)) return;
-      await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
-      toast(t('deleted'), 'success'); loadProviders({ traffic: false }); loadServiceGroups();
-    } catch(e) {
-      if (e && e.message === 'provider_in_use') {
-        var stuckGroups = null;
-        try { stuckGroups = (JSON.parse(e.responseBody || '{}').groups) || null; } catch (ignore) {}
-        if (!stuckGroups) {
+    }
+    var billing = readProviderBilling();
+    if ((providerBillingSchedule || []).length !== billing.credit_multiplier_schedule.length) {
+      toast(t('billingDroppedWindows'), 'error');
+      return;
+    }
+    var tokenPricing = readProviderTokenPricing();
+    if (tokenPricing === null) {
+      var dropped = (providerTokenPricingSchedule || []).map(normalizeProviderTokenPriceWindow).filter(function(window) {
+        return window && !providerTokenPriceWindowInvalid(window);
+      }).length !== (providerTokenPricingSchedule || []).length;
+      toast(t(dropped ? 'pricingDroppedWindows' : 'billingInvalid'), 'error');
+      return;
+    }
+    if (!beginProviderArrayAction(id)) return;
+    var body = {
+      name: name,
+      billing: {
+        timezone: billing.timezone,
+        credit_multiplier: billing.credit_multiplier,
+        credit_multiplier_schedule: billing.credit_multiplier_schedule,
+        token_pricing: tokenPricing
+      }
+    };
+    try {
+      if (creating) {
+        body.id = id;
+        await api('/api/admin/llm/provider-arrays', { method: 'POST', body: JSON.stringify(body) });
+      } else {
+        await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) });
+      }
+      sgCloseCurrentDialog();
+      toast(t('saved'), 'success');
+      await loadProviders({ traffic: false });
+    } catch (e) { toast(e.message, 'error'); }
+    finally { endProviderArrayAction(id); }
+  };
+  function sgRelabelArrayEditDialog() {
+    var focus = sgSnapFocus(document.getElementById('llmDialogContent'));
+    var snap = {
+      arrayID: val('llmArrayEditID'),
+      name: val('llmArrayEditName'),
+      timezone: val('llmPrvTimezone'),
+      multiplier: val('llmPrvMultiplier'),
+      tpIn: val('llmPrvTpIn'), tpOut: val('llmPrvTpOut'),
+      tpCacheRead: val('llmPrvTpCacheRead'), tpCacheWrite: val('llmPrvTpCacheWrite'),
+      tpRmbIn: val('llmPrvTpRmbIn'), tpRmbOut: val('llmPrvTpRmbOut'),
+      tpRmbCacheRead: val('llmPrvTpRmbCacheRead'), tpRmbCacheWrite: val('llmPrvTpRmbCacheWrite'),
+      tpMin: val('llmPrvTpMin'), tpTimezone: val('llmPrvTpTimezone'), tpVersion: val('llmPrvTpVersion')
+    };
+    renderProviderArrayEditDialog({ keepBilling: true, name: snap.name, arrayID: snap.arrayID, timezone: snap.timezone, multiplier: snap.multiplier });
+    function set(id, value) { var node = document.getElementById(id); if (node && value != null) node.value = value; }
+    set('llmArrayEditID', snap.arrayID);
+    set('llmArrayEditName', snap.name);
+    set('llmPrvTimezone', snap.timezone);
+    set('llmPrvMultiplier', snap.multiplier);
+    set('llmPrvTpIn', snap.tpIn); set('llmPrvTpOut', snap.tpOut);
+    set('llmPrvTpCacheRead', snap.tpCacheRead); set('llmPrvTpCacheWrite', snap.tpCacheWrite);
+    set('llmPrvTpRmbIn', snap.tpRmbIn); set('llmPrvTpRmbOut', snap.tpRmbOut);
+    set('llmPrvTpRmbCacheRead', snap.tpRmbCacheRead); set('llmPrvTpRmbCacheWrite', snap.tpRmbCacheWrite);
+    set('llmPrvTpMin', snap.tpMin); set('llmPrvTpTimezone', snap.tpTimezone); set('llmPrvTpVersion', snap.tpVersion);
+    if (typeof refreshProviderBillingNow === 'function') refreshProviderBillingNow();
+    sgRestoreFocus(focus);
+  }
+  window.deleteProviderArray = async function(id) {
+    if (providerArrayProtected(providerArrayByID(id) || { id: id })) {
+      toast(t('providerArrayProtected'), 'error');
+      return;
+    }
+    if (!beginProviderArrayAction(id)) return;
+    var array = providerArrayByID(id);
+    var label = (array && (array.name || array.id)) || id;
+    try {
+      var refData = await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id) + '/references');
+      var groups = (refData && refData.groups) || [];
+      if (groups.length) { alertProviderArrayInUse(groups); return; }
+      if (!sgConfirm(t('providerArrayDeleteConfirm') + '\n' + label)) return;
+      await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id), { method: 'DELETE' });
+      toast(t('deleted'), 'success');
+      await loadProviders({ traffic: false });
+      await loadServiceGroups();
+    } catch (e) {
+      if (e && (e.message === 'provider_in_use' || e.status === 409)) {
+        var stuck = null;
+        try { stuck = (JSON.parse(e.responseBody || '{}').groups) || null; } catch (ignore) {}
+        if (!stuck || !stuck.length) {
           try {
-            var again = await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '/references');
-            stuckGroups = (again && again.groups) || null;
+            var again = await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id) + '/references');
+            stuck = (again && again.groups) || stuck;
           } catch (ignore) {}
         }
-        var stuck = ((stuckGroups) || []).map(function(g){ return '- ' + (g.name || g.id); }).join('\n');
-        window.alert(t('deleteProviderInUse') + (stuck ? '\n' + stuck : ''));
+        alertProviderArrayInUse(stuck);
         return;
       }
       toast(e.message, 'error');
-    }
-  };
-  window.deleteProviderArray = async function(id) {
-    var array = providerArrayByID(id);
-    var label = (array && (array.name || array.id)) || id;
-    if (!sgConfirm(t('providerArrayDeleteConfirm') + '\n' + label)) return;
-    try {
-      await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
-      toast(t('deleted'), 'success');
-      loadProviders({ traffic: false });
-      loadServiceGroups();
-    } catch (e) { toast(e.message, 'error'); }
+    } finally { endProviderArrayAction(id); }
   };
   window.moveLLMProvider = async function(id, delta) {
     providersLoadSeq += 1;
@@ -1768,31 +3014,76 @@ if (typeof I18N_ZH !== 'undefined') {
     catch(e) { toast(e.message, 'error'); }
   };
 
+  function sgModelHasProvider(model) {
+    if (!model) return false;
+    var configs = model.provider_configs || [];
+    var providerID = (configs[0] && configs[0].provider_id) || ((model.provider_ids || [])[0]) || '';
+    return !!String(providerID || '').trim();
+  }
+  function sgFindGroupModel(group, name) {
+    var want = sgCanonicalModelName(name);
+    var models = (group && group.models) || [];
+    for (var i = 0; i < models.length; i++) {
+      if (models[i] && sgCanonicalModelName(models[i].name) === want) return models[i];
+    }
+    return null;
+  }
+  // A dynamic group's auto row is not a dial target. An unclassified client
+  // request uses the balanced route, then the same-group availability chain.
+  function sgDynamicStatusModel(group) {
+    var selected = 'official-mid';
+    var routes = (group && group.routes) || [];
+    for (var i = 0; i < routes.length; i++) {
+      if (String(routes[i] && routes[i].class || '').trim() !== 'balanced') continue;
+      var name = sgCanonicalModelName(routes[i].model || '');
+      if (name && name !== 'auto') selected = name;
+      break;
+    }
+    var quality = sgOfficialBandQuality(selected);
+    var fallback = quality === 'high'
+      ? ['official-high', 'official-mid', 'official-low']
+      : quality === 'low'
+        ? ['official-low', 'official-mid', 'official-high']
+        : ['official-mid', 'official-low', 'official-high'];
+    var chain = [selected];
+    fallback.forEach(function(name) { if (chain.indexOf(name) < 0) chain.push(name); });
+    for (var j = 0; j < chain.length; j++) {
+      var model = sgFindGroupModel(group, chain[j]);
+      if (sgModelHasProvider(model)) return model;
+    }
+    return null;
+  }
   window.testLLMServiceGroup = async function(groupId) {
     if (_testingGroupId) { toast(isZh() ? '\u6d4b\u8bd5\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7a0d\u5019...' : 'Test in progress, please wait...', 'info'); return; }
     var group = serviceGroups.find(function(g) { return g.id === groupId; });
     if (!group) { toast(t('sgFailed'), 'error'); return; }
-    var firstModel = (group.models || [])[0];
-    var providerID = '';
-    var routeModel = '';
-    if (firstModel) {
-      var pids = firstModel.provider_ids || [];
-      var pconfigs = firstModel.provider_configs || [];
-      if (pconfigs.length) {
-        providerID = pconfigs[0].provider_id || '';
-        routeModel = pconfigs[0].model || '';
-      }
-      if (!providerID && pids.length) providerID = pids[0];
+    // Routes store a provider array id. auto / official-* are billing bands,
+    // not upstream model ids. The server picks a live member and that member's model.
+    var picked = null;
+    function pickRoute(model, logicalName) {
+      var configs = model.provider_configs || [];
+      var providerID = (configs[0] && configs[0].provider_id) || ((model.provider_ids || [])[0]) || '';
+      if (!String(providerID || '').trim()) return false;
+      var logicalModel = logicalName || model.name || '';
+      picked = { providerID: providerID, routeModel: (configs[0] && configs[0].model) || '', logicalModel: logicalModel };
+      return true;
     }
-    if (!providerID) { toast(t('sgRouteNeedsProvider'), 'error'); return; }
-    var provider = providers.find(function(p) { return p.id === providerID; });
-    if (!provider) { toast(t('sgFailed'), 'error'); return; }
+    var models = group.models || [];
+    if (group.kind === 'dynamic') {
+      var routed = sgDynamicStatusModel(group);
+      if (routed) pickRoute(routed, sgCanonicalModelName(routed.name));
+    }
+    if (!picked) models.some(function(model) { return pickRoute(model); });
+    if (!picked) { toast(t('sgRouteNeedsProvider'), 'error'); return; }
     _testingGroupId = groupId;
     try {
       var data = await api('/api/admin/llm/providers/test-chat', { method: 'POST', body: JSON.stringify({
-        provider_id: provider.id, api_url: provider.api_url, model: routeModel || ((provider.models && provider.models.length === 1) ? provider.models[0] : firstModel.name) || '', protocol: provider.protocol || 'openai', wire_api: provider.wire_api || 'chat'
+        provider_id: picked.providerID,
+        model: picked.routeModel || picked.logicalModel,
+        route_model: picked.routeModel,
+        logical_model: picked.logicalModel
       }) });
-      if (data.success) toast(t('providerTestOK') + ' ' + (data.latency_ms || 0) + 'ms', 'success');
+      if (data.success) toast(t('providerTestOK') + (data.model ? ' ' + data.model : '') + ' ' + (data.latency_ms || 0) + 'ms', 'success');
       else toast(t('providerTestFailed') + ': ' + (data.error || 'unknown'), 'error');
     } catch(e) { toast(e.message, 'error'); }
     finally { _testingGroupId = ''; }
@@ -1891,6 +3182,55 @@ if (typeof I18N_ZH !== 'undefined') {
     });
     return out;
   }
+  function sgIsBillingBand(name) {
+    switch (String(name || '').trim().toLowerCase()) {
+      case 'auto': case 'default': case 'low': case 'mid': case 'high':
+      case 'official-low': case 'official-mid': case 'official-high':
+        return true;
+      default:
+        return false;
+    }
+  }
+  function sgRoutesWithUnmatchedUpstream(group) {
+    var lines = [];
+    (group && group.models || []).forEach(function(model) {
+      (model.provider_configs || []).forEach(function(pc) {
+        var upstream = String(pc && pc.model || '').trim();
+        if (!upstream || sgIsBillingBand(upstream)) return;
+        var offered = sgProviderModels(pc.provider_id);
+        if (!offered.length) return;
+        var lower = upstream.toLowerCase();
+        var ok = offered.some(function(name) { return String(name || '').trim().toLowerCase() === lower; });
+        if (ok) return;
+        lines.push((group.name || group.id || '') + ' / ' + (model.name || '') + ' / ' + (sgProviderName(pc.provider_id) || pc.provider_id) + ' / ' + upstream);
+      });
+    });
+    return lines;
+  }
+  function sgRoutesReferencingMemberModel(provider) {
+    if (!provider) return [];
+    var names = {};
+    (provider.models || []).forEach(function(model) {
+      model = String(model || '').trim().toLowerCase();
+      if (model) names[model] = true;
+    });
+    if (!Object.keys(names).length) return [];
+    var memberID = String(provider.id || '').trim().toLowerCase();
+    var arrayID = String(provider.array_id || provider.id || '').trim().toLowerCase();
+    var lines = [];
+    (serviceGroups || []).forEach(function(group) {
+      (group.models || []).forEach(function(model) {
+        (model.provider_configs || []).forEach(function(pc) {
+          var upstream = String(pc && pc.model || '').trim();
+          if (!upstream || !names[upstream.toLowerCase()]) return;
+          var pid = String(pc.provider_id || '').trim().toLowerCase();
+          if (pid !== arrayID && pid !== memberID) return;
+          lines.push((group.name || group.id || '') + ' / ' + (model.name || '') + ' / ' + upstream);
+        });
+      });
+    });
+    return lines;
+  }
   function sgEffectiveRouteModel(c){var m=(c&&c.model||'').trim();if(m)return m;var models=sgProviderModels(c&&c.provider_id||'');return models.length===1?models[0]:'';}
   function sgRouteKey(c){return (c&&c.provider_id||'').trim()+'\u0000'+sgEffectiveRouteModel(c);}
   function sgNormalizeTokenPricing(src){
@@ -1938,9 +3278,9 @@ if (typeof I18N_ZH !== 'undefined') {
       quality_floor:String(g&&g.quality_floor||'').trim(),
       exposed_models:(g&&g.exposed_models||[]).map(function(n){return String(n||'').trim();}).filter(Boolean),
       routes:(g&&g.routes||[]).map(function(r){return{class:String(r&&r.class||'').trim(),model:String(r&&r.model||'').trim(),quality:String(r&&r.quality||'').trim()};}),
-      models:(g&&g.models||[]).map(function(m){return{name:m.name||'auto',provider_ids:sgProviderIDsFromModel(m),provider_configs:sgProviderConfigsFromModel(m),capability_tags:(m.capability_tags||[]).slice(),priority:m.priority||50,resolution_tier:m.resolution_tier||0,credit_multiplier:m.credit_multiplier||1};})};
+      models:(g&&g.models||[]).map(function(m){return{name:m.name||'auto',provider_ids:sgProviderIDsFromModel(m),provider_configs:sgProviderConfigsFromModel(m),capability_tags:(m.capability_tags||[]).slice(),priority:m.priority||50,resolution_tier:m.resolution_tier||0,credit_multiplier:m.credit_multiplier||1,billing_multiplier:sgEffectiveBillingMultiplier(m)};})};
   }
-  function sgEmptyGroup(){return{id:'',name:'',description:'',agent_id:'maclaw_official',agent_name:agentNameByID('maclaw_official')||'MaClaw official',access_policy:'free',kind:'dynamic',quality_floor:'',exposed_models:[],routes:sgDefaultDynamicRoutes(),models:[{name:'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1}]};}
+  function sgEmptyGroup(){return{id:'',name:'',description:'',agent_id:'maclaw_official',agent_name:agentNameByID('maclaw_official')||'MaClaw official',access_policy:'free',kind:'dynamic',quality_floor:'',exposed_models:[],routes:sgDefaultDynamicRoutes(),models:[sgEmptyModel('auto')]};}
   function sgProviderName(id){
     var array = providerArrayByID(id);
     if (array) {
@@ -1973,7 +3313,18 @@ if (typeof I18N_ZH !== 'undefined') {
       {class:'classify',model:'official-low',quality:'low'}
     ];
   }
-  function sgEmptyModel(name){return{name:name||'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1};}
+  function sgDefaultBillingMultiplier(name){
+    name=sgCanonicalModelName(name);
+    if(name==='official-low'||name==='low') return 0.5;
+    if(name==='official-high'||name==='high') return 2;
+    return 1;
+  }
+  function sgEffectiveBillingMultiplier(model){
+    var n=Number(model&&model.billing_multiplier);
+    if(n>0&&isFinite(n)) return n;
+    return sgDefaultBillingMultiplier(model&&model.name);
+  }
+  function sgEmptyModel(name){name=name||'auto';return{name:name,provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1,billing_multiplier:sgDefaultBillingMultiplier(name)};}
   function sgEnsureModel(d,name){
     name=sgCanonicalModelName(name);
     if(!d)return null;
@@ -2066,16 +3417,19 @@ if (typeof I18N_ZH !== 'undefined') {
     model.provider_configs=sgProviderConfigsFromModel(model);
     var locked=sgDraft&&sgDraft.kind==='dynamic'&&sgIsLockedModelName(model.name);
     var cards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,(model.provider_configs||[]).length);}).join('');
-    var providerOptions=!providerArrayRecords().length?'<option value="">('+esc(t('noProviders'))+')</option>'
-      :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+providerArrayRecords().map(function(array){
+    var routeArrays=providerArrayRecords().filter(function(array){ return array.members && array.members.length; });
+    var providerOptions=!routeArrays.length?'<option value="">('+esc(t('noProviders'))+')</option>'
+      :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+routeArrays.map(function(array){
         var label = array.name || array.id;
         if (array.members.length > 1) label += ' (' + array.members.length + ')';
         return '<option value="'+esc(array.id)+'">'+esc(label)+'</option>';
       }).join('');
+    var fee=sgEffectiveBillingMultiplier(model);
     return '<div class="sg-route-card"><div class="sg-row-head"><div><strong>'+esc(sgModelLabel(model.name||'auto'))+'</strong><span class="sg-route-hint">'+esc(t('sgRouteHint'))+'</span></div>'
       +(locked?'':'<button class="btn-danger-ghost sg-remove-route" onclick="sgRemoveRoute('+rowIndex+')">'+esc(t('sgRemoveRoute'))+'</button>')
       +'</div><div class="sg-route-grid"><div><label class="sg-label-sm">'+esc(t('sgExposedModel'))+'</label>'
       +'<input class="sg-field-full" value="'+esc(model.name||'auto')+'"'+(locked?' disabled':'')+' oninput="sgSetRouteField('+rowIndex+',\'name\',this.value)"></div>'
+      +'<div><label class="sg-label-sm">'+esc(t('sgFeeMultiplier'))+'</label><input class="sg-field-full" type="number" min="0.01" step="0.01" value="'+esc(String(fee))+'" oninput="sgSetRouteField('+rowIndex+',\'billing_multiplier\',this.value)"></div>'
       +'<div class="sg-provider-add"><select id="sgProviderAdd'+rowIndex+'">'+providerOptions+'</select><button class="btn-ghost" onclick="sgAddProviderToRoute('+rowIndex+')">+</button></div></div>'
       +(cards||'<div class="sg-empty-provider">'+esc(t('sgNoProviders'))+'</div>')+'</div>';
   }
@@ -2136,11 +3490,12 @@ if (typeof I18N_ZH !== 'undefined') {
   window.sgSetRouteField=function(i,k,v){
     if(!sgDraft||!sgDraft.models||!sgDraft.models[i])return;
     if(k==='name'&&sgIsLockedModelName(sgDraft.models[i].name)){ toast(t('sgProtectedModel'),'info'); return; }
-    sgDraft.models[i][k]=v.trim();
+    if(k==='billing_multiplier'){ var n=Number(v); sgDraft.models[i].billing_multiplier=(isFinite(n)&&n>0)?n:0; return; }
+    sgDraft.models[i][k]=String(v||'').trim();
   };
   window.sgAddRoute=function(){if(!sgDraft)sgDraft=sgEmptyGroup();sgDraft.models.push(sgEmptyModel('auto'));sgRenderGroupDialog();};
   window.sgRemoveRoute=function(i){var m=sgDraft&&sgDraft.models&&sgDraft.models[i]; if(m&&sgIsLockedModelName(m.name)){toast(t('sgProtectedModel'),'info');return;} if(sgDraft&&sgDraft.models){sgDraft.models.splice(i,1);sgRenderGroupDialog();}};
-  window.sgAddProviderToRoute=function(i){var sel=document.getElementById('sgProviderAdd'+i);var id=sel&&sel.value;if(!id){toast(t('chooseProvider'),'info');return;}var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);var models=sgProviderModels(id);var chosen='';if(models.length){for(var mi=0;mi<models.length;mi++){if(sgRouteDuplicateIndex(m,{provider_id:id,model:models[mi]},-1)<0){chosen=models[mi];break;}}if(!chosen){toast(sgDuplicateRouteMessage({provider_id:id,model:models[0]}),'error');return;}}else if(sgRouteDuplicateIndex(m,{provider_id:id,model:''},-1)>=0){toast(sgDuplicateRouteMessage({provider_id:id,model:''}),'error');return;}m.provider_configs.push({provider_id:id,model:chosen,billing_mode:'',capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1,token_pricing:{}});m.provider_ids=sgProviderIDsFromModel(m);if(sgDraft.kind==='dynamic')sgFillEmptyOfficialBandsFromAuto(sgDraft);sgRenderGroupDialog();};
+  window.sgAddProviderToRoute=function(i){var sel=document.getElementById('sgProviderAdd'+i);var id=sel&&sel.value;if(!id){toast(t('chooseProvider'),'info');return;}var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);if(sgRouteDuplicateIndex(m,{provider_id:id,model:''},-1)>=0){toast(sgDuplicateRouteMessage({provider_id:id,model:''}),'error');return;}m.provider_configs.push({provider_id:id,model:'',billing_mode:'',capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1,token_pricing:{}});m.provider_ids=sgProviderIDsFromModel(m);if(sgDraft.kind==='dynamic')sgFillEmptyOfficialBandsFromAuto(sgDraft);sgRenderGroupDialog();};
   window.sgMoveProvider=function(i,routeIndex,delta){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);var to=routeIndex+delta;if(routeIndex<0||to<0||routeIndex>=m.provider_configs.length||to>=m.provider_configs.length)return;var item=m.provider_configs.splice(routeIndex,1)[0];m.provider_configs.splice(to,0,item);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
   window.sgRemoveProvider=function(i,routeIndex){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);m.provider_configs.splice(routeIndex,1);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
   function sgClonePricingForDraft(tp){
@@ -2237,6 +3592,8 @@ if (typeof I18N_ZH !== 'undefined') {
       }
       model.provider_ids=sgProviderIDsFromModel(model);
     }
+    var unmatched=sgRoutesWithUnmatchedUpstream(payload);
+    if(unmatched.length && !sgConfirm(t('sgRouteModelUnmatched')+'\n'+unmatched.join('\n')+'\n\n'+t('sgRouteModelUnmatchedAsk'))) return;
     sgSaveBusy=true;
     try{
       if(sgMode==='edit'){await api('/api/admin/llm/service-groups/'+encodeURIComponent(payload.id),{method:'PUT',body:JSON.stringify(payload)});}
@@ -2921,14 +4278,17 @@ if (typeof I18N_ZH !== 'undefined') {
       choices: (document.getElementById('llmPrvModelChoices') || {}).innerHTML || '',
       options: (document.getElementById('llmPrvModelOptions') || {}).innerHTML || '',
       accessMode: providerAccessMode,
-      accessSelected: Object.assign({}, providerAccessSelected)
+      accessSelected: Object.assign({}, providerAccessSelected),
+      arrayID: val('llmPrvArray')
     };
-    var opened = window.showProviderDialog(providerDialogID ? 'edit' : 'create', providerDialogID, {keepBilling:true, timezone:snap.timezone, multiplier:snap.multiplier});
+    var opened = window.showProviderDialog(providerDialogID ? 'edit' : 'create', providerDialogID, {keepBilling:true, arrayID:snap.arrayID, timezone:snap.timezone, multiplier:snap.multiplier});
     function restore() {
       function set(id, value) { var node = document.getElementById(id); if (node && value != null) node.value = value; }
       set('llmPrvID', snap.id); set('llmPrvName', snap.name); set('llmPrvURL', snap.url); set('llmPrvKey', snap.key);
       set('llmPrvProtocol', snap.protocol); set('llmPrvModels', snap.models); set('llmPrvCaps', snap.caps);
       set('llmPrvPriority', snap.priority); set('llmPrvSequence', snap.sequence); set('llmPrvConc', snap.conc); set('llmPrvTimeout', snap.timeout);
+      set('llmPrvArray', snap.arrayID);
+      if (typeof window.setProviderDialogArray === 'function') window.setProviderDialogArray(snap.arrayID || '');
       set('llmPrvTimezone', snap.timezone); set('llmPrvMultiplier', snap.multiplier);
       set('llmPrvTpIn', snap.tpIn); set('llmPrvTpOut', snap.tpOut); set('llmPrvTpRmbIn', snap.tpRmbIn); set('llmPrvTpRmbOut', snap.tpRmbOut);
       set('llmPrvTpMin', snap.tpMin); set('llmPrvTpTimezone', snap.tpTimezone); set('llmPrvTpVersion', snap.tpVersion);
@@ -2981,6 +4341,8 @@ if (typeof I18N_ZH !== 'undefined') {
     if (typeof renderServiceGroups === 'function') renderServiceGroups();
     if (typeof renderLLMEmbeddingModelRuntime === 'function') renderLLMEmbeddingModelRuntime();
     if (llmClassHeadViewVisible() && typeof window.sgLoadClassHead === 'function') window.sgLoadClassHead({quiet:true, relabel:true});
+    if (sgOpenKind === 'array-rename') { renderProviderArrayRenameDialog(); return; }
+    if (sgOpenKind === 'array-edit') { sgRelabelArrayEditDialog(); return; }
     if (sgOpenKind === 'provider') sgRelabelProviderDialog();
     if (sgOpenKind === 'agent') sgRelabelAgentDialog();
   }
@@ -3033,6 +4395,7 @@ if (typeof I18N_ZH !== 'undefined') {
   }
   function closeDialog() {
     stopProviderBillingNowClock();
+    stopWorkBuddyLoginPoll();
     var o = document.getElementById('llmDialogOverlay');
     if (o) o.classList.remove('show');
     sgOpenKind = '';
@@ -3084,7 +4447,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (nextButton) nextButton.focus();
   };
   window.openLLMClassHeadTab = function(){ switchLLMSubTab('classHead'); };
-  window.showLLMProviderEditor = function() { window.showProviderDialog('create'); };
+  window.showLLMProviderEditor = function() { window.showProviderArrayDialog(); };
   window.hideLLMProviderEditor = function() { sgCloseCurrentDialog(); };
   window.hideLLMGroupEditor = function() { sgCloseCurrentDialog(); };
   window.setProviderTrafficPeriod = setProviderTrafficPeriod;
@@ -3099,6 +4462,16 @@ if (typeof I18N_ZH !== 'undefined') {
     setTimeout(window.initLLMServiceTab, 0);
   }
   maybeAutoSyncEmbeddingModel();
+  if (typeof applyI18n === 'function' && !applyI18n._llmAdminAPIKey) {
+    var llmApplyI18n = applyI18n;
+    applyI18n = function() {
+      llmApplyI18n();
+      paintLLMAdminAPIKeyChrome();
+      syncProviderTrafficSwitch();
+      renderAllArrayTraffic();
+    };
+    applyI18n._llmAdminAPIKey = true;
+  }
 })();
 
 // Credits redemption-card administration is kept in the Platform tab bundle

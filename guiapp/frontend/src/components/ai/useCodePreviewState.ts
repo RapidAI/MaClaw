@@ -24,6 +24,8 @@ export interface CodeFile {
     latexReadError?: string;
     /** Tab identity that produced this file (not the remote SSH display path). */
     projectPath?: string;
+    /** Create or rewrite that is this task's result, not a coding-source edit. */
+    taskResult?: boolean;
 }
 
 /**
@@ -223,6 +225,61 @@ export function shouldAcceptCodeEventForProject(eventProjectPath?: string, activ
     return false;
 }
 
+/** A task result is a file the task created or rewrote. A read is exploration. */
+export function isTaskResultWrite(opType?: string | null): boolean {
+    return opType === "create" || opType === "modify";
+}
+
+/** Mark a create or rewrite so it survives leaving a programming workflow. */
+export function withTaskResultMark<T extends { opType?: string | null; taskResult?: boolean }>(file: T, mark: boolean): T {
+    if (!mark || !isTaskResultWrite(file.opType) || file.taskResult) return file;
+    return { ...file, taskResult: true };
+}
+
+/**
+ * Tool previews are stamped local-tools:desktop-user:expert:<expertId>.
+ * The id must be the whole segment, so builtin-paper does not match
+ * builtin-paper-polish.
+ */
+export function isExpertResultSession(sessionID: string | undefined, expertId: string | undefined): boolean {
+    const expert = String(expertId || "").trim();
+    if (!expert) return false;
+    const session = String(sessionID || "");
+    const marker = `:expert:${expert}`;
+    const at = session.lastIndexOf(marker);
+    if (at < 0) return false;
+    const rest = session.slice(at + marker.length);
+    return rest === "" || rest.startsWith(":") || rest.startsWith("/");
+}
+
+/**
+ * Show a create or rewrite in the result pane.
+ * An expert tab is often named by the task directory while the file lives in
+ * the working directory, so those two paths do not nest. The write still
+ * belongs here when the session names this expert. Another task's force-open
+ * file does not, including while this tab has no project path yet.
+ */
+export function acceptTaskResultFileEvent(input: {
+    opType: CodeFile["opType"];
+    forceOpen: boolean;
+    eventProjectPath?: string;
+    tabProjectPath?: string;
+    sessionID?: string;
+    expertId?: string;
+    latexFile?: boolean;
+    latexTab?: boolean;
+    expertTab?: boolean;
+}): boolean {
+    const owned = isExpertResultSession(input.sessionID, input.expertId);
+    const pathOk = shouldAcceptCodeEventForProject(input.eventProjectPath, input.tabProjectPath, input.forceOpen);
+    const unboundExpert = input.expertTab === true && !String(input.tabProjectPath || "").trim();
+    if (unboundExpert && input.forceOpen && !owned) return false;
+    if (input.latexTab && input.latexFile && (pathOk || owned)) return true;
+    const expertWrite = input.expertTab === true && input.forceOpen && isTaskResultWrite(input.opType) && owned;
+    if (!pathOk) return expertWrite;
+    return true;
+}
+
 /**
  * Whether a hierarchical absolute path fits a cloud workspace tab:
  * under the task/cache roots, or inside the same cloud workspace id.
@@ -290,16 +347,49 @@ function remainingPreviewSession(state: CodePreviewUIState, files: Map<string, C
     return { sessionID: '', sessionActive: false };
 }
 
+/**
+ * Prepare a file for the active task's preview.
+ * An unscoped file is stamped with the active task. A file already stamped
+ * for a different task is refused, so a late open cannot paint it here.
+ * Returns null when the file must not be inserted.
+ */
+export function acceptWorkspacePreviewFile(
+    file: CodeFile,
+    activeTabProjectPath?: string,
+    belongingPath?: string,
+    cloudWorkspaceTab = false,
+): CodeFile | null {
+    if (!file.filePath || file.content === undefined || file.content === null) return null;
+    const stamped = activeTabProjectPath && !file.projectPath
+        ? { ...file, projectPath: activeTabProjectPath }
+        : file;
+    if (!codeFileBelongsToPreviewProject(stamped, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {
+        return null;
+    }
+    return stamped;
+}
+
 /** Drop files that belong to another task. Identity-preserving when nothing changes. */
 export function filterCodePreviewStateForProject(
     state: CodePreviewUIState,
     projectPath?: string,
     belongingPath?: string,
     cloudWorkspaceTab = false,
+    keepLatexWorkbench = false,
+    keepTaskResults = false,
+    taskResultExpertId?: string,
 ): CodePreviewUIState {
     if (!state.files.size) return state;
     const nextFiles = new Map<string, CodeFile>();
     for (const [path, file] of state.files) {
+        if (keepLatexWorkbench && file.latexWorkbench && isLatexSourceFilePath(path)) {
+            nextFiles.set(path, file);
+            continue;
+        }
+        if (keepTaskResults && isTaskResultWrite(file.opType) && isExpertResultSession(file.sessionID, taskResultExpertId)) {
+            nextFiles.set(path, file);
+            continue;
+        }
         if (codeFileBelongsToPreviewProject(file, projectPath, belongingPath, cloudWorkspaceTab)) {
             nextFiles.set(path, file);
         }
@@ -346,6 +436,56 @@ export function initialState(): CodePreviewUIState {
  * those as different files leaves the editor on the old buffer and opens a
  * second, non-editable tab for the same source.
  */
+const latexSourceFilePattern = /\.(tex|latex|ltx)$/i;
+
+export function isLatexSourceFilePath(path: string): boolean {
+    const name = String(path || "").replace(/\\/g, "/").split("/").pop() || "";
+    return latexSourceFilePattern.test(name);
+}
+
+/**
+ * A template export is already a file, so the agent's save is a modification
+ * and the event omits the workbench flag. That rewrite is still the paper:
+ * adopt it as the editable preview instead of treating it as no result.
+ * Returns null when the file is not LaTeX or the workbench flag is already set.
+ */
+export function latexWorkbenchFromAgentFile(file: CodeFile, fallbackProjectPath = ""): CodeFile | null {
+    const path = String(file.filePath || file.fileName || "");
+    if (!isLatexSourceFilePath(path) || file.latexWorkbench) return null;
+    return prepareLatexResultFile(file, fallbackProjectPath);
+}
+
+/**
+ * Directory the workbench should read and compile from. The event's project
+ * path is the tab identity (the task directory). The .tex itself lives in the
+ * working directory, which absPath still points at.
+ */
+export function latexResultProjectPath(file: Pick<CodeFile, "absPath" | "filePath" | "projectPath">, tabProjectPath?: string): string {
+    const abs = String(file.absPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const rel = String(file.filePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (abs && rel && abs.toLowerCase().endsWith("/" + rel.toLowerCase())) {
+        const root = abs.slice(0, abs.length - rel.length).replace(/\/+$/, "");
+        if (root) return root;
+    }
+    return String(tabProjectPath || file.projectPath || "").trim();
+}
+
+/**
+ * A LaTeX save is the result, whether the file was just created or was an
+ * exported template being rewritten. The pane opens either way, and compile
+ * uses the directory that actually contains the source.
+ */
+export function prepareLatexResultFile(file: CodeFile, tabProjectPath?: string): CodeFile {
+    const projectPath = latexResultProjectPath(file, tabProjectPath);
+    return {
+        ...file,
+        language: "latex",
+        latexWorkbench: true,
+        forceOpen: file.forceOpen === true || isTaskResultWrite(file.opType),
+        projectPath: projectPath || file.projectPath,
+    };
+}
+
 export function retargetLatexWorkbenchUpdate(state: CodePreviewUIState, file: CodeFile): CodeFile {
     if (!file.filePath || state.files.has(file.filePath)) return file;
     const incoming = file.filePath.replace(/\\/g, '/');
@@ -363,13 +503,16 @@ export function retargetLatexWorkbenchUpdate(state: CodePreviewUIState, file: Co
  * Adopting that path used to remount the editor, and the unmount save wrote the
  * user's draft over the file the agent had just saved. */
 function keepOpenLatexWorkbench(existing: CodeFile | undefined, file: CodeFile): CodeFile {
-    if (!existing?.latexWorkbench || file.latexWorkbench !== undefined) return file;
-    return {
-        ...file,
-        latexWorkbench: true,
-        projectPath: existing.projectPath || file.projectPath,
-        absPath: existing.absPath,
-    };
+    const kept = !existing?.latexWorkbench || file.latexWorkbench !== undefined
+        ? file
+        : {
+            ...file,
+            latexWorkbench: true,
+            projectPath: existing.projectPath || file.projectPath,
+            absPath: existing.absPath,
+        };
+    if (existing?.taskResult && !kept.taskResult) return { ...kept, taskResult: true };
+    return kept;
 }
 
 export function applyFileUpdate(
@@ -1013,17 +1156,21 @@ export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIS
 export function useCodePreviewState(
     activeTabProjectPath?: string,
     previewEnabled = true,
-    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string },
+    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string; latexResultTab?: boolean; taskResultTab?: boolean; expertId?: string; markTaskResult?: boolean },
 ) {
     const [state, setState] = useState<CodePreviewUIState>(initialState);
     const belongingPath = scope?.belongingPath || activeTabProjectPath;
     const cloudWorkspaceTab = scope?.cloudWorkspaceTab === true;
+    const latexResultTab = scope?.latexResultTab === true;
+    const taskResultTab = scope?.taskResultTab === true;
+    const expertId = scope?.expertId || "";
+    const markTaskResult = scope?.markTaskResult === true;
     const previewWorkspacePath = scope && "previewWorkspacePath" in scope
         ? (scope.previewWorkspacePath || undefined)
         : activeTabProjectPath;
     const retainForActiveTab = useCallback((next: CodePreviewUIState) => (
-        filterCodePreviewStateForProject(next, activeTabProjectPath, belongingPath, cloudWorkspaceTab)
-    ), [activeTabProjectPath, belongingPath, cloudWorkspaceTab]);
+        filterCodePreviewStateForProject(next, activeTabProjectPath, belongingPath, cloudWorkspaceTab, latexResultTab, taskResultTab, expertId)
+    ), [activeTabProjectPath, belongingPath, cloudWorkspaceTab, expertId, latexResultTab, taskResultTab]);
 
     useEffect(() => {
         setState(prev => retainForActiveTab(prev));
@@ -1036,14 +1183,25 @@ export function useCodePreviewState(
             if (!data?.file_path || data?.content === undefined || data?.content === null) return;
 
             const eventProjectPath: string | undefined = data.project_path;
-            const forceOpen = data.force_open === true;
-            if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath, forceOpen)) {
+            const opType: CodeFile['opType'] = data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create";
+            const latexFile = isLatexSourceFilePath(String(data.file_path || ""));
+            const forceOpen = data.force_open === true || (latexResultTab && latexFile && isTaskResultWrite(opType));
+            if (!acceptTaskResultFileEvent({
+                opType,
+                forceOpen: data.force_open === true,
+                eventProjectPath,
+                tabProjectPath: activeTabProjectPath,
+                sessionID: data.session_id,
+                expertId,
+                latexFile,
+                latexTab: latexResultTab,
+                expertTab: taskResultTab,
+            })) {
                 return;
             }
 
-            const opType: CodeFile['opType'] = data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create";
             const original = opType === "modify" && data.original_missing !== true && typeof data.original === "string" ? data.original : undefined;
-            const file: CodeFile = {
+            let file: CodeFile = {
                 sessionID: data.session_id || "",
                 filePath: data.file_path,
                 fileName: data.file_name || data.file_path.split(/[/\\]/).pop() || data.file_path,
@@ -1058,9 +1216,13 @@ export function useCodePreviewState(
                 previewTruncated: data.preview_truncated === true,
                 projectPath: eventProjectPath || undefined,
             };
+            const latexResult = latexResultTab && latexFile;
+            if (latexResult) file = prepareLatexResultFile(file, activeTabProjectPath);
+            file = withTaskResultMark(file, markTaskResult);
+            const expertWrite = taskResultTab && data.force_open === true && isTaskResultWrite(opType) && isExpertResultSession(data.session_id, expertId);
 
             setState(prev => {
-                if (!codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {
+                if (!file.latexWorkbench && !expertWrite && !codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {
                     return prev;
                 }
                 return applyFileUpdate(prev, file);
@@ -1070,7 +1232,7 @@ export function useCodePreviewState(
             if (typeof unsub === "function") unsub();
             else EventsOff("code:file_update");
         };
-    }, [activeTabProjectPath, belongingPath, cloudWorkspaceTab, previewEnabled]);
+    }, [activeTabProjectPath, belongingPath, cloudWorkspaceTab, expertId, latexResultTab, markTaskResult, previewEnabled, taskResultTab]);
 
     // Listen for code:session_start
     useEffect(() => {
@@ -1138,12 +1300,20 @@ export function useCodePreviewState(
         setState(prev => applyFocusPreviewFile(prev, filePath));
     }, []);
 
-    const openWorkspaceFile = useCallback((file: CodeFile) => {
-        const stamped = activeTabProjectPath && !file.projectPath
-            ? { ...file, projectPath: activeTabProjectPath }
-            : file;
-        setState(prev => applyOpenWorkspaceFile(prev, stamped));
-    }, [activeTabProjectPath]);
+    const openWorkspaceFile = useCallback((file: CodeFile): boolean => {
+        const accepted = acceptWorkspacePreviewFile(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);
+        if (!accepted) return false;
+        setState(prev => applyOpenWorkspaceFile(prev, accepted));
+        return true;
+    }, [activeTabProjectPath, belongingPath, cloudWorkspaceTab]);
+
+    // A paper already in this tab can live in the working directory while the
+    // tab is named by the task directory. The workspace-open check rejects that
+    // pair, which dropped the editable preview for a rewritten template.
+    const adoptPreviewFile = useCallback((file: CodeFile) => {
+        if (!file.filePath || file.content === undefined || file.content === null) return;
+        setState(prev => applyOpenWorkspaceFile(prev, file));
+    }, []);
 
     const replaceWorkspaceFileContent = useCallback((filePath: string, content: string) => {
         setState(prev => applyReplaceOpenFileContent(prev, filePath, content));
@@ -1206,6 +1376,7 @@ export function useCodePreviewState(
         selectFile,
         focusFile,
         openWorkspaceFile,
+        adoptPreviewFile,
         replaceWorkspaceFileContent,
         closeFile,
         closeOtherFiles,

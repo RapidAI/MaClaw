@@ -111,14 +111,14 @@ func (s *Store) SupersedeDerivedMemory(id string, projectPath string, ownerID st
 }
 
 func derivedAuditBoundaryAllowed(entry Entry, projectLower, ownerID string) bool {
-	if entry.OwnerID != "" && ownerID != entry.OwnerID {
+	if strings.TrimSpace(entry.OwnerID) != "" && !memoryOwnersEqual(entry.OwnerID, ownerID) {
 		return false
 	}
 	boundary := entry.Boundary
 	if boundary == nil {
 		return true
 	}
-	if boundary.OwnerID != "" && ownerID != boundary.OwnerID {
+	if strings.TrimSpace(boundary.OwnerID) != "" && !memoryOwnersEqual(boundary.OwnerID, ownerID) {
 		return false
 	}
 	if boundary.ProjectPath != "" {

@@ -2089,9 +2089,6 @@ func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
 	if strings.TrimSpace(content) == "" {
 		return "缺少 content 参数（Markdown 格式的文档内容）"
 	}
-	if strings.TrimSpace(title) == "" {
-		title = "文档"
-	}
 
 	// Lazily initialize and cache the doc generator on the App instance
 	// to avoid repeated font detection on every call.

@@ -52,7 +52,7 @@ func (r *haSyncOpRepo) appendLocalWithVersion(ctx context.Context, op *store.HAS
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			rollbackRawTx(conn)
 		}
 	}()
 

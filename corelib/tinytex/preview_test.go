@@ -2,6 +2,7 @@ package tinytex
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -343,6 +344,192 @@ func TestPreviewRepairsSource(t *testing.T) {
 	bak, err := os.ReadFile(main + ".maclaw-bak")
 	if err != nil || !strings.Contains(string(bak), `\badcommand`) {
 		t.Fatalf("backup = %s err=%v", bak, err)
+	}
+}
+
+func TestPreviewRetriesRepairWithoutAnotherCompile(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	original := "\\documentclass{article}\n\\begin{document}\n\\badcommand\n\\end{document}\n"
+	if err := os.WriteFile(main, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	repairs := 0
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(_ context.Context, _, work string, _ ...string) (string, int, error) {
+			runs++
+			if runs == 1 {
+				return "./main.tex:3: Undefined control sequence.\n", 1, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written", 0, nil
+		},
+		Repair: func(_ context.Context, _, source, _ string) (string, bool, error) {
+			repairs++
+			if repairs == 1 {
+				return "not a source file", false, nil
+			}
+			fixed := strings.Replace(source, `\badcommand`, `fixed`, 1)
+			body, ok := AcceptRepairedSource(source, "```latex\n"+fixed+"\n```")
+			return body, ok, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("engine runs = %d, want 2", runs)
+	}
+	if repairs != 2 || !res.Repaired {
+		t.Fatalf("repairs = %d result = %+v", repairs, res)
+	}
+}
+
+func TestApplyRepairReplyReplacesTheCompilerLine(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("\\documentclass{article}\n\\begin{document}\n")
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&b, "line %d stays.\n", i)
+	}
+	b.WriteString("Vaswani et al.\\~\\cite{vaswani2017}\n")
+	for i := 20; i < 40; i++ {
+		fmt.Fprintf(&b, "line %d stays.\n", i)
+	}
+	b.WriteString("\\end{document}\n")
+	source := b.String()
+	bad := 0
+	for i, line := range strings.Split(source, "\n") {
+		if strings.Contains(line, `\~\cite`) {
+			bad = i + 1
+			break
+		}
+	}
+	if bad == 0 {
+		t.Fatal("bad line not found")
+	}
+	excerpt := fmt.Sprintf("./main.tex:%d: Missing \\endcsname inserted.\n", bad)
+	reply := fmt.Sprintf("@@@ %d %d\nVaswani et al.~\\cite{vaswani2017}\n@@@", bad, bad)
+	got, ok := ApplyRepairReply(source, excerpt, "```latex\n"+reply+"\n```")
+	if !ok {
+		t.Fatal("block rejected")
+	}
+	tight := fmt.Sprintf("@@@%d %d\nVaswani et al.~\\cite{vaswani2017}\n@@@", bad, bad)
+	if tightGot, tightOK := ApplyRepairReply(source, excerpt, tight); !tightOK || strings.Contains(tightGot, `\~\cite`) {
+		t.Fatal("marker without a following space was rejected")
+	}
+	if strings.Contains(got, `\~\cite`) || !strings.Contains(got, `~\cite{vaswani2017}`) {
+		t.Fatalf("error line not replaced: %s", got)
+	}
+	if !strings.Contains(got, "line 0 stays.") || !strings.Contains(got, "line 19 stays.") || !strings.Contains(got, "line 20 stays.") || !strings.Contains(got, `\end{document}`) {
+		t.Fatal("replacement changed lines outside the block")
+	}
+	multi := fmt.Sprintf("@@@ %d %d\nVaswani et al.~\\cite{vaswani2017}\nsecond inserted line.\n@@@", bad, bad)
+	got, ok = ApplyRepairReply(source, excerpt, multi)
+	if !ok || !strings.Contains(got, "second inserted line.") || !strings.Contains(got, "line 19 stays.") || !strings.Contains(got, "line 20 stays.") {
+		t.Fatalf("inserted lines disturbed neighbors: ok=%v %s", ok, got)
+	}
+	indented := fmt.Sprintf("@@@ %d %d\n    Vaswani et al.~\\cite{vaswani2017}\n@@@", bad, bad)
+	got, ok = ApplyRepairReply(source, excerpt, indented)
+	if !ok || !strings.Contains(got, "\n    Vaswani et al.~\\cite{vaswani2017}\n") {
+		t.Fatalf("indentation dropped: ok=%v %s", ok, got)
+	}
+	if _, ok := ApplyRepairReply(source, excerpt, fmt.Sprintf("@@@ %d %d\nnope\n@@@", bad-1, bad-1)); ok {
+		t.Fatal("range that skips the compiler line was applied")
+	}
+	if _, ok := ApplyRepairReply(source, excerpt, "@@@ 1 1\n\\documentclass{article}\n@@@"); ok {
+		t.Fatal("range outside the shown window was applied")
+	}
+	if _, ok := ApplyRepairReply(source, excerpt, "请把重音改成不断行空格"); ok {
+		t.Fatal("prose was applied")
+	}
+}
+
+func TestPreviewAppliesTheCompilerLineBlock(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	original := "\\documentclass{article}\n\\begin{document}\nVaswani et al.\\~\\cite{vaswani2017}\n\\end{document}\n"
+	if err := os.WriteFile(main, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(_ context.Context, _, work string, _ ...string) (string, int, error) {
+			body, readErr := os.ReadFile(filepath.Join(work, "main.tex"))
+			if readErr != nil {
+				return "", -1, readErr
+			}
+			if strings.Contains(string(body), `\~\cite`) {
+				return "./main.tex:3: Missing \\endcsname inserted.\n", 1, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf", 0, nil
+		},
+		Repair: func(_ context.Context, _, source, excerpt string) (string, bool, error) {
+			line, ok := ErrorLine(excerpt)
+			if !ok {
+				t.Fatalf("excerpt = %s", excerpt)
+			}
+			lines, _ := splitSourceLines(source)
+			fixed := strings.Replace(lines[line-1], `\~\cite`, `~\cite`, 1)
+			reply := fmt.Sprintf("@@@ %d %d\n%s\n@@@", line, line, fixed)
+			body, ok := ApplyRepairReply(source, excerpt, reply)
+			return body, ok, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Repaired || !strings.HasSuffix(res.PDFPath, "main.pdf") {
+		t.Fatalf("result = %+v", res)
+	}
+	body, err := os.ReadFile(main)
+	if err != nil || strings.Contains(string(body), `\~\cite`) || !strings.Contains(string(body), `~\cite{vaswani2017}`) {
+		t.Fatalf("source = %s err=%v", body, err)
+	}
+}
+
+func TestErrorExcerptKeepsTheCompilerContext(t *testing.T) {
+	log := "Package natbib Warning: Citation `vaswani2017' on page 1 undefined on input line 111.\n" +
+		"./elsarticle-template-num.tex:187: Missing \\endcsname inserted.\n" +
+		"<to be read again> \n" +
+		"                   \\global \n" +
+		"l.187 Vaswani et al.\\~\\cite\n" +
+		"                           {vaswani2017} apply normalization\n" +
+		"Here is how much of TeX's memory you used:\n" +
+		"Output written on elsarticle-template-num.pdf (4 pages).\n"
+	got := ErrorExcerpt(log)
+	if !strings.Contains(got, "l.187") || !strings.Contains(got, `\~\cite`) || !strings.Contains(got, "Missing \\endcsname inserted.") {
+		t.Fatalf("compiler context dropped: %q", got)
+	}
+	if strings.Contains(got, "natbib Warning") || strings.Contains(got, "memory you used") || strings.Contains(got, "Output written") {
+		t.Fatalf("excerpt ran outside the error record: %q", got)
+	}
+	line, ok := ErrorLine(got)
+	if !ok || line != 187 {
+		t.Fatalf("line = %d ok=%v excerpt=%q", line, ok, got)
+	}
+}
+
+func TestErrorExcerptForUsesTheFileBeingEdited(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := "./other.tex:4: Undefined control sequence.\n./main.tex:9: Missing \\endcsname inserted.\nl.9 bad\nHere is how much of TeX's memory you used:\n"
+	got := ErrorExcerptFor(log, dir, main)
+	line, ok := ErrorLine(got)
+	if !ok || line != 9 || strings.Contains(got, "other.tex") || !strings.Contains(got, "l.9") {
+		t.Fatalf("excerpt = %q line=%d ok=%v", got, line, ok)
+	}
+	if ErrorExcerptFor(log, dir, filepath.Join(dir, "missing.tex")) != "" {
+		t.Fatal("a file the log does not name produced an excerpt")
 	}
 }
 

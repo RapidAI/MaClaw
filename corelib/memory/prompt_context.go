@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -87,36 +88,54 @@ func (s *Store) UserFactSummaryForPrompt(opts UserFactSummaryPromptOptions) stri
 
 func (s *Store) userFactSummaryForPrompt(maxRunes int, ownerID string, strictOwner bool) string {
 	ownerID = strings.TrimSpace(ownerID)
-	if ownerID == "" {
-		return s.UserFactSummary(maxRunes)
+	if maxRunes <= 0 {
+		maxRunes = 400
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	parts := make([]string, 0)
+	type factText struct {
+		text string
+		at   time.Time
+	}
+	facts := make([]factText, 0)
 	now := time.Now()
 	for _, entry := range s.entries {
-		if entry.Category != CategoryUserFact {
+		if MapToCanonical(entry.Category) != CategoryUserFact || !entry.IsActive() {
 			continue
 		}
-		if !entry.IsActive() {
+		if entryExpiredAt(entry.InvalidAt, now) {
 			continue
 		}
-		if entry.InvalidAt != nil && !entry.InvalidAt.After(now) {
+		if ownerID != "" {
+			if strictOwner && !memoryOwnersEqual(entry.OwnerID, ownerID) {
+				continue
+			}
+			if !strictOwner && !namedOwnerVisible(entry.OwnerID, ownerID) {
+				continue
+			}
+			if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !memoryOwnersEqual(entry.Boundary.OwnerID, ownerID) {
+				continue
+			}
+		}
+		text := strings.TrimSpace(firstNonEmptyString(entry.CompactForm, entry.Content))
+		if text == "" {
 			continue
 		}
-		if strictOwner && entry.OwnerID != ownerID {
-			continue
+		at := entry.UpdatedAt
+		if at.IsZero() {
+			at = entry.CreatedAt
 		}
-		if !strictOwner && entry.OwnerID != "" && entry.OwnerID != ownerID {
-			continue
-		}
-		if entry.Boundary != nil && entry.Boundary.OwnerID != "" && entry.Boundary.OwnerID != ownerID {
-			continue
-		}
-		parts = append(parts, firstNonEmptyString(entry.CompactForm, entry.Content))
+		facts = append(facts, factText{text: text, at: at})
+	}
+	s.mu.RUnlock()
+	sort.SliceStable(facts, func(i, j int) bool {
+		return facts[i].at.After(facts[j].at)
+	})
+	parts := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		parts = append(parts, fact.text)
 	}
 	summary := strings.Join(parts, " | ")
-	if runes := []rune(summary); maxRunes > 0 && len(runes) > maxRunes {
+	if runes := []rune(summary); len(runes) > maxRunes {
 		return string(runes[:maxRunes]) + "..."
 	}
 	return summary

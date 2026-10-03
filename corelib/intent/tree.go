@@ -134,7 +134,7 @@ Rules:
 - workflow_type: copy from the tree annotation if the intent has one; use "" if none
 - Score guide: very confident 0.85-0.95, fairly confident 0.65-0.84, uncertain 0.40-0.64
 - Focus on the ACTION (what the user wants to do) and the OBJECT (what they want to do it to)
-- workflow_task only when the OBJECT is one of that label's workflow types (PRD, business plan, research report, paper, bid, patent, event plan, and the other listed types). A video, animation, image, audio clip, or story the user wants produced in this conversation is non_coding, even if it asks for style, plot, or several scenes. Leave workflow_type empty. Design latitude alone is not a workflow.
+- workflow_task only when the user is asking to START one of that label's panel projects (PRD, business plan, research report, paper, bid, patent, event plan, and the other listed types). The object merely resembling a paper, report, or plan is not enough. Continuing a document this conversation already has is file_write, not workflow_task. A video, animation, image, audio clip, or story the user wants produced in this conversation is non_coding, even if it asks for style, plot, or several scenes. Leave workflow_type empty. Design latitude alone is not a workflow.
 - "生成一段动画/视频" / "make a cartoon" → non_coding, not workflow_task
 - "基于文档" does NOT mean "content processing" — "基于文档做PPT" still needs audience targeting + content architecture + visual design → office (workflow_type="presentation_design")
 - Short action phrases (≤5 chars) like "继续"/"开工"/"go ahead" → continuation

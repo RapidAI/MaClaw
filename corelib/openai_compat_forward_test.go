@@ -239,6 +239,40 @@ func TestForwardOpenAICompatRequestDropsOrphanedToolChoice(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAICompatRequestDropsToolChoiceWhenToolsDoNotSurvive(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if _, ok := body["tools"]; ok {
+			t.Fatalf("nameless tools leaked upstream: %#v", body["tools"])
+		}
+		if _, ok := body["tool_choice"]; ok {
+			t.Fatalf("tool_choice leaked after tools were dropped: %#v", body["tool_choice"])
+		}
+		resp := `{"id":"chatcmpl-test","object":"chat.completion","model":"hy3","choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(resp)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: "https://www.workbuddy.ai/v2", Model: "hy3"}, map[string]any{
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools":       []any{map[string]any{"type": "function", "function": map[string]any{"parameters": map[string]any{"type": "object"}}}},
+		"tool_choice": map[string]any{"type": "none"},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
 func TestForwardOpenAICompatRequestDropsToolChoiceWithLegacyFunctions(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body map[string]any

@@ -56,7 +56,7 @@ func assertContainsNone(t *testing.T, text string, parts []string) {
 	}
 }
 
-func TestSystemPrompt_FirstTurn_DoesNotDumpWarehouseFacts(t *testing.T) {
+func TestSystemPrompt_FirstTurn_InjectsCurrentOwnerFactsOnly(t *testing.T) {
 	h := newTestIMHandlerWithMemoryStore(t)
 	if err := h.memoryStore.Save(corememory.Entry{
 		Content:  "User's production SSH host is old-warehouse.example",
@@ -64,9 +64,19 @@ func TestSystemPrompt_FirstTurn_DoesNotDumpWarehouseFacts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := h.memoryStore.Save(corememory.Entry{
+		Content:  "other-owner.example private host",
+		Category: corememory.CategoryUserFact,
+		OwnerID:  "someone-else",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	prompt := h.buildSystemPromptWithMemory("hello", true)
-	if strings.Contains(prompt, "old-warehouse.example") {
-		t.Fatalf("first-turn prompt dumped warehouse text:\n%s", prompt)
+	if !strings.Contains(prompt, "old-warehouse.example") {
+		t.Fatalf("first-turn prompt omitted the desktop user's fact:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "other-owner.example") {
+		t.Fatalf("first-turn prompt included another owner's fact:\n%s", prompt)
 	}
 	assertContainsAll(t, prompt, []string{
 		corememory.PromptSectionUserMemory,

@@ -54,6 +54,10 @@ var globalLLMUsageAccumulator = &llmUsageAccumulator{
 	interval: 20 * time.Second,
 }
 
+// llmCreditChargeMu serializes credit reservation, release, and flush.
+// Those paths take llmservice.LockServiceRegistryMutation only after this
+// mutex. A token-bank pull already holds the registry lock and must not
+// then wait on this one.
 var llmCreditChargeMu sync.Mutex
 
 func enqueueLLMUsage(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) {
@@ -548,7 +552,9 @@ func flushCreditChargesDetailed(ctx context.Context, system store.SystemSettings
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
-	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	llmservice.LockServiceRegistryMutation()
+	defer llmservice.UnlockServiceRegistryMutation()
+	reg, err := loadCachedLLMServiceRegistryLocked(ctx, system)
 	if err != nil {
 		return settled, err
 	}

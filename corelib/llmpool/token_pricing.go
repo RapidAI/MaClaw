@@ -655,6 +655,27 @@ func MicrocreditsToCredits(value int64) float64 {
 	return float64(value) / float64(MicrocreditsPerCredit)
 }
 
+// CreditsToMicrocredits converts a decimal credit amount back to the integer
+// ledger unit, rounding half-up to a whole microcredit.
+//
+// It exists so a caller that has only the legacy float credit figure — a
+// deduction result, a quote, a cached response's recorded cost — can express it
+// in the same unit the Token Bank ledger uses, without re-deriving the scale
+// factor and getting it wrong. The conversion is deliberately conservative
+// about overflow: a value that cannot be represented saturates rather than
+// wrapping, because a wrapped settlement amount is a wrong payout rather than a
+// rejected one.
+func CreditsToMicrocredits(value float64) int64 {
+	if math.IsNaN(value) || value <= 0 {
+		return 0
+	}
+	scaled := value * float64(MicrocreditsPerCredit)
+	if math.IsInf(scaled, 0) || scaled >= math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(math.Round(scaled))
+}
+
 func decimalCreditsToMicrocredits(value float64) (int64, bool) {
 	rat, ok := decimalToRat(value)
 	if !ok || rat.Sign() < 0 {

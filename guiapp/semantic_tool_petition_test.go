@@ -242,7 +242,7 @@ func TestSemanticPetitionLabelResolutionIsDeterministic(t *testing.T) {
 		{"information.current_time", intent.LabelCurrentTime},                  //
 		{tool.CapabilityFSReadLocal, intent.LabelFileRead},                     // sole required beats the coding rule
 		{tool.CapabilityFSWriteLocal, intent.LabelFileWrite},                   //
-		{tool.CapabilityFSDeleteLocal, intent.LabelFileDelete},                // sole required template
+		{tool.CapabilityFSDeleteLocal, intent.LabelFileDelete},                 // sole required template
 		{tool.CapabilityRepoInspectVCS, intent.LabelGitInspect},                //
 		{tool.CapabilityRepoMutateVCS, intent.LabelGitMutate},                  //
 		{tool.CapabilityShellExecuteLocal, intent.LabelShellCommand},           //

@@ -2594,9 +2594,9 @@ input.stsm-input {
   box-sizing: border-box;
   font-size: 0.74rem;
   color: var(--theme-text-primary);
-  background: var(--theme-surface-muted);
+  background: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 5px 8px;
   outline: none;
 }
@@ -2605,9 +2605,9 @@ input.stsm-remote-input {
   box-sizing: border-box;
   font-size: 0.78rem;
   color: var(--theme-text-primary);
-  background: var(--theme-surface-muted);
+  background: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 8px;
   outline: none;
 }
@@ -2675,10 +2675,17 @@ input.stsm-remote-input {
   z-index: 9998;
 }
 .stsm-menu-icon {
-  width: 28px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  opacity: 0.75;
-  font-size: 0.68rem;
+  color: inherit;
+  opacity: 0.72;
+}
+.stsm-menu-icon[data-danger="true"] {
+  opacity: 1;
 }
 .stsm-dialog-subtext {
   font-size: 0.72rem;
@@ -3014,9 +3021,9 @@ input.cwshare-url {
   min-width: 0;
   font-size: 0.72rem;
   color: var(--theme-text-primary);
-  background: var(--theme-surface-muted);
+  background: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 8px;
 }
 .cwshare-update-btn {

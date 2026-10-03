@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -45,6 +46,332 @@ func TestPrepareAgentLoopToolsWorkflowAgentLoopStillAppliesWorkflowFilter(t *tes
 	}
 	if workflowLoop.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterDocOnly) {
 		t.Fatalf("workflow decision = %q, want %q", workflowLoop.WorkflowDecision, workflow.ToolFilterDocOnly)
+	}
+}
+
+func TestPrepareAgentLoopToolsDocOnlyTimeoutDoesNotRestoreFileMutations(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-timeout-floor-user"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_search", "search the web", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	})
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime: RuntimeContext{
+			ClassifierTimeoutLookup: true,
+			Execution:               fullExecutionProfile("workflow agent loop"),
+		},
+	}
+	got := handler.prepareAgentLoopTools(userID, "build a project", ctx, agentLoopPhase{})
+	names := toolNameSetForWorkflowFilterTest(got.Tools)
+	if names["write_file"] || names["edit_file"] {
+		t.Fatalf("doc-only timeout must not regain file mutation tools, got %#v", names)
+	}
+	if !names["bash"] || !names["read_file"] || !names["list_directory"] {
+		t.Fatalf("doc-only timeout must keep the phase's context tools, got %#v", names)
+	}
+}
+
+func TestAgentGuidedDoesNotRestoreDocOnlyFileMutations(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-agent-guided-doc-only"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	})
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime:              RuntimeContext{Execution: fullExecutionProfile("workflow agent loop")},
+	}
+	phase := agentLoopPhase{SkillMode: skillPreferenceAgentGuided}
+	prepared := handler.prepareAgentLoopTools(userID, "build a project", ctx, phase)
+	preparedNames := toolNameSetForWorkflowFilterTest(prepared.Tools)
+	if preparedNames["write_file"] || preparedNames["edit_file"] {
+		t.Fatalf("agent-guided prepare must not restore doc-only file edits, got %#v", preparedNames)
+	}
+	if !preparedNames["bash"] || !preparedNames["read_file"] {
+		t.Fatalf("agent-guided prepare keeps doc-only context tools, got %#v", preparedNames)
+	}
+
+	base := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+	}
+	result := handler.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:      ctx,
+		UserID:       userID,
+		UserText:     "build a project",
+		Iteration:    0,
+		EffectiveMax: 8,
+		Config:       corelib.MaclawLLMConfig{ContextLength: 100_000},
+		Conversation: []interface{}{map[string]string{"role": "user", "content": "build a project"}},
+		Tools:        []map[string]interface{}{toolDef("read_file", "read file", nil, nil)},
+		BaseTools:    base,
+		Phase:        &phase,
+	})
+	names := toolNameSetForWorkflowFilterTest(result.Tools)
+	if names["write_file"] || names["edit_file"] {
+		t.Fatalf("agent-guided round must not restore doc-only file edits, got %#v", names)
+	}
+	if !names["bash"] || !names["read_file"] {
+		t.Fatalf("agent-guided round keeps doc-only context tools, got %#v", names)
+	}
+}
+
+func TestPrepareAgentLoopToolsDocOnlySkillSearchDropsBash(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-skill-search-user"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	})
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime:              RuntimeContext{Execution: fullExecutionProfile("workflow agent loop")},
+	}
+	got := handler.prepareAgentLoopTools(userID, "build a project", ctx, agentLoopPhase{ForceSkillPreference: true})
+	names := toolNameSetForWorkflowFilterTest(got.Tools)
+	if names["bash"] || names["write_file"] || names["edit_file"] {
+		t.Fatalf("skill search must keep bash and file edits off a doc-only surface, got %#v", names)
+	}
+	if !names["read_file"] || !names["list_directory"] {
+		t.Fatalf("doc-only skill search keeps the unblocked context tools, got %#v", names)
+	}
+}
+
+func TestPrepareAgentLoopToolsDocOnlyTimeoutKeepsTruncationBlock(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-timeout-truncation-user"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	})
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime: RuntimeContext{
+			ClassifierTimeoutLookup: true,
+			Execution:               fullExecutionProfile("workflow agent loop"),
+		},
+	}
+	phase := agentLoopPhase{TruncationBlockedTools: map[string]bool{"bash": true}}
+	got := handler.prepareAgentLoopTools(userID, "build a project", ctx, phase)
+	names := toolNameSetForWorkflowFilterTest(got.Tools)
+	if names["bash"] {
+		t.Fatalf("doc-only ensure must not restore a truncation-blocked bash, got %#v", names)
+	}
+	if names["write_file"] || names["edit_file"] {
+		t.Fatalf("doc-only timeout must not regain file mutation tools, got %#v", names)
+	}
+	if !names["read_file"] || !names["list_directory"] {
+		t.Fatalf("doc-only timeout must keep the unblocked context tools, got %#v", names)
+	}
+}
+
+func TestInjectionTimeoutDocOnlyIgnoresStaleDirectOrchestrator(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-timeout-direct-inject"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	registry := NewTaskOrchestratorRegistry()
+	registry.GetOrCreate(userID).Activate([]*TaskItem{{Index: 0, Title: "Ready"}}, "", "", "/proj", "claude")
+	handler.taskOrchestratorRegistry = registry
+	defs := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, defs)
+	handler.toolRouter = nil
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime: RuntimeContext{
+			ClassifierTimeoutLookup: true,
+			Execution:               fullExecutionProfile("workflow agent loop"),
+		},
+	}
+	got, _ := handler.augmentToolsFromInjection(ctx, userID, "[用户补充] 改一下标题", defs, nil, false, agentLoopPhase{})
+	names := toolNameSetForWorkflowFilterTest(got)
+	for _, name := range []string{"write_file", "edit_file"} {
+		if names[name] {
+			t.Fatalf("doc-only injection must keep %s off, got %#v", name, names)
+		}
+	}
+	if !names["bash"] || !names["read_file"] {
+		t.Fatalf("a doc-only phase keeps bash; its stale orchestrator is not direct mode, got %#v", names)
+	}
+}
+
+func TestSkillRecoverDocOnlyIgnoresStaleDirectOrchestrator(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-recover-direct"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	registry := NewTaskOrchestratorRegistry()
+	registry.GetOrCreate(userID).Activate([]*TaskItem{{Index: 0, Title: "Ready"}}, "", "", "/proj", "claude")
+	handler.taskOrchestratorRegistry = registry
+	defs := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, defs)
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime:              RuntimeContext{Execution: fullExecutionProfile("workflow agent loop")},
+	}
+	restored, _, direct := handler.restoreToolsAfterSkillRecover(userID, ctx, defs, agentLoopPhase{})
+	if direct {
+		t.Fatal("doc-only recover must not latch direct mode for an orchestrator the phase will refuse")
+	}
+	names := toolNameSetForWorkflowFilterTest(restored)
+	for _, name := range []string{"write_file", "edit_file"} {
+		if names[name] {
+			t.Fatalf("doc-only skill recover must keep %s off, got %#v", name, names)
+		}
+	}
+	if !names["bash"] || !names["read_file"] {
+		t.Fatalf("doc-only skill recover keeps bash and read_file, got %#v", names)
+	}
+}
+
+func TestMissFloorUnlockDoesNotPullUnboundWorkflowTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-unlock-bound"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	})
+	base := []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("web_fetch", "fetch a page", nil, nil),
+	}
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime:              RuntimeContext{Execution: fullExecutionProfile("workflow agent loop")},
+	}
+	phase := &agentLoopPhase{MissFloorToolsUnlock: true}
+	result := handler.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:      ctx,
+		UserID:       userID,
+		UserText:     "把标题写进正文",
+		Iteration:    0,
+		EffectiveMax: 8,
+		Config:       corelib.MaclawLLMConfig{ContextLength: 100_000},
+		Conversation: []interface{}{map[string]string{"role": "user", "content": "把标题写进正文"}},
+		Tools:        []map[string]interface{}{toolDef("web_fetch", "fetch a page", nil, nil)},
+		BaseTools:    base,
+		Phase:        phase,
+	})
+	names := toolNameSetForWorkflowFilterTest(result.Tools)
+	for _, name := range []string{"bash", "send_file", "list_directory", "write_file", "edit_file"} {
+		if names[name] {
+			t.Fatalf("floor unlock must not pull %s from the host catalog, got %#v", name, names)
+		}
+	}
+	if !names["read_file"] {
+		t.Fatalf("floor unlock keeps read_file from the bound surface, got %#v", names)
 	}
 }
 
@@ -600,7 +927,7 @@ func TestInjectionReplacementReappliesCodingImplementationWorkflowFilter(t *test
 		toolDef("write_file", "write file", nil, nil),
 	}
 
-	got, _ := handler.augmentToolsFromInjection(&LoopContext{WorkflowAgentLoop: true}, userID, "[user supplement] use bash and write_file to create src/main.go", currentTools, baseTools, false)
+	got, _ := handler.augmentToolsFromInjection(&LoopContext{WorkflowAgentLoop: true}, userID, "[user supplement] use bash and write_file to create src/main.go", currentTools, baseTools, false, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(got)
 	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
 		if !names[name] {
@@ -627,7 +954,7 @@ func TestInjectionReplacementDropsToolsFromPreviousTask(t *testing.T) {
 		toolDef("browser", "browse the web", nil, nil),
 		toolDef("read_file", "read a local file", nil, nil),
 	}
-	got, _ := handler.augmentToolsFromInjection(nil, "user-1", "[用户补充] 使用 ssh 连接服务器", current, handler.getTools(), false)
+	got, _ := handler.augmentToolsFromInjection(nil, "user-1", "[用户补充] 使用 ssh 连接服务器", current, handler.getTools(), false, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(got)
 	if names["browser"] {
 		t.Fatalf("replacement retained previous-task tools: %#v", names)
@@ -662,7 +989,7 @@ func TestInjectionAugmentWithoutRouterStillReappliesWorkflowFilter(t *testing.T)
 		toolDef("bash", "bash", nil, nil),
 		toolDef("read_file", "read file", nil, nil),
 		toolDef("write_file", "write file", nil, nil),
-	}, nil, false)
+	}, nil, false, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(got)
 	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
 		if !names[name] {

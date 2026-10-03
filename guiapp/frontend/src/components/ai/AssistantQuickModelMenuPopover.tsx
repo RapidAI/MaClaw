@@ -23,6 +23,7 @@ import {
 import { modelIdsEqual } from "./assistantQuickModelMenu";
 import type { Theme } from "./aiAssistantPanelTheme";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
+import { capabilityBandName, capabilityModelMenuLabel, capabilityMultiplierFor, orderCapabilityModels } from "../../utils/capabilityModelLabel";
 
 const MENU_MIN_WIDTH = 200;
 const MENU_MAX_WIDTH = 300;
@@ -46,6 +47,9 @@ export type AssistantQuickModelMenuPopoverProps = {
     showProviders: boolean;
     showModels: boolean;
     modelList: string[];
+    modelMultipliers?: Record<string, number>;
+    /** Invent auto/low/mid/high fee defaults. Hub catalogs only. */
+    showCapabilityDefaults?: boolean;
     currentModel?: string;
     modelsLoading?: boolean;
     /** Stable provider id (legacy callers may supply a display name as fallback). */
@@ -98,6 +102,8 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
     showProviders,
     showModels,
     modelList,
+    modelMultipliers,
+    showCapabilityDefaults = false,
     currentModel,
     modelsLoading,
     onSelectProvider,
@@ -114,9 +120,13 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
     const wasOpenRef = useRef(false);
     const skipScrollRef = useRef(true);
 
+    const orderedModelList = useMemo(
+        () => (showCapabilityDefaults ? orderCapabilityModels(modelList) : modelList),
+        [modelList, showCapabilityDefaults],
+    );
     const actions = useMemo(
-        () => buildActions(showProviders, switchableProviders, showModels, modelList),
-        [showProviders, switchableProviders, showModels, modelList],
+        () => buildActions(showProviders, switchableProviders, showModels, orderedModelList),
+        [showProviders, switchableProviders, showModels, orderedModelList],
     );
     const actionsRef = useRef(actions);
     actionsRef.current = actions;
@@ -394,10 +404,12 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                     <div aria-hidden="true" style={sectionLabelStyle}>
                         {modelsLoading ? loadingModelsLabel : modelsLabel}
                     </div>
-                    {modelList.map((modelId, modelIdx) => {
+                    {orderedModelList.map((modelId, modelIdx) => {
                         const index = (showProviders ? switchableProviders.length : 0) + modelIdx;
-                        const active = modelIdsEqual(modelId, currentModel);
+                        const active = modelIdsEqual(modelId, currentModel)
+                            || (capabilityBandName(modelId) !== '' && capabilityBandName(modelId) === capabilityBandName(String(currentModel || '')));
                         const focused = index === activeIndex;
+                        const modelLabel = capabilityModelMenuLabel(modelId, capabilityMultiplierFor(modelId, modelMultipliers), showCapabilityDefaults);
                         return (
                             <button
                                 key={modelId}
@@ -407,7 +419,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                                 aria-selected={active}
                                 data-qs-option-index={index}
                                 style={itemStyle({ active, focused, interactive: true })}
-                                title={modelId}
+                                title={modelLabel}
                                 onMouseEnter={() => {
                                     skipScrollRef.current = true;
                                     setActive(index);
@@ -415,7 +427,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                                 onClick={() => onSelectModel(modelId)}
                             >
                                 <span aria-hidden="true" style={checkColStyle}>{active ? "✓" : ""}</span>
-                                <span style={labelStyleBase}>{modelId}</span>
+                                <span style={labelStyleBase}>{modelLabel}</span>
                             </button>
                         );
                     })}

@@ -9,9 +9,10 @@
  * - workspace.kind = 'local' 且 localPath 为空 = 默认工作目录
  * - 专家 × 工作流互斥（§7）：工作流选择 ≠ 无（含「自动判断」）即锁定专家；
  *   指定专家则工作流回到「无」
- * - 专家 × 工作空间（§7）：专家任务不携带工作空间（CreateExpertTask 签名冻结），
- *   指定专家时云端/远程不可用并归约为本地默认
+ * - 专家 × 工作空间：云端/远程不可用并归约为本地；本地目录会写入任务并作为执行目录
  */
+
+import { isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../../utils/latexTemplates";
 
 /** 「自动判断」哨兵值：发送后由系统语义拦截匹配工作流。 */
 export const WORKFLOW_AUTO = 'auto';
@@ -47,6 +48,18 @@ export interface TaskDraft {
     workflowTemplateId: string | null;
     workspace: WorkspaceTarget;
     workflowParams: Record<string, string>;
+    /** LaTeX 论文模板。仅在专家为内置 LaTeX 专家时有效；blank / 空 = 空白模板。 */
+    latexTemplateId: string | null;
+    latexTemplateName: string | null;
+}
+
+/** 从模板库、工作流页或专家卡片带入新建任务页的预填。 */
+export interface NewTaskWizardSeed {
+    expertId?: string | null;
+    expertName?: string | null;
+    workflowTemplateId?: string | null;
+    latexTemplateId?: string | null;
+    latexTemplateName?: string | null;
 }
 
 export function defaultTaskDraft(): TaskDraft {
@@ -58,6 +71,8 @@ export function defaultTaskDraft(): TaskDraft {
         workflowTemplateId: null,
         workspace: { kind: 'local' },
         workflowParams: {},
+        latexTemplateId: null,
+        latexTemplateName: null,
     };
 }
 
@@ -83,6 +98,11 @@ export function canSpecifyWorkflow(draft: TaskDraft): boolean {
     return !isExpertSpecified(draft);
 }
 
+/** 专家还要再选一项参数（目前只有 LaTeX 模板）。此时工作流条让位给该参数。 */
+export function expertNeedsSetup(draft: TaskDraft): boolean {
+    return isLatexExpertId(draft.expertId);
+}
+
 /**
  * 全默认（零配置）= 旧行为：会话 / 通用专家 / 无工作流 / 本地默认目录。
  * 「自动判断」是显式选择，不算全默认——发送时经 CreateTaskUnified 建任务，
@@ -99,17 +119,49 @@ export function isDraftDefault(draft: TaskDraft): boolean {
 /** 指定专家（id = null 表示回到通用专家）；指定专家把工作流回到「无」，
  * 且云端/远程工作空间归约为本地默认（专家任务不携带工作空间，§7）。 */
 export function withExpert(draft: TaskDraft, id: string | null, name: string | null): TaskDraft {
+    const latex = !!(id && isLatexExpertId(id));
+    const keepTemplate = latex && isLatexExpertId(draft.expertId);
     const next: TaskDraft = {
         ...draft,
         expertId: id,
         expertName: name,
         workflowTemplateId: null,
         workflowParams: id ? {} : draft.workflowParams,
+        latexTemplateId: latex
+            ? (keepTemplate ? (draft.latexTemplateId || LATEX_BLANK_TEMPLATE_ID) : LATEX_BLANK_TEMPLATE_ID)
+            : null,
+        latexTemplateName: keepTemplate ? (draft.latexTemplateName || null) : null,
     };
     if (id && next.workspace.kind !== 'local') {
         next.workspace = { kind: 'local' };
     }
     return next;
+}
+
+/** 选择 LaTeX 模板。空 id 归约为空白模板。 */
+export function withLatexTemplate(draft: TaskDraft, id: string | null, name: string | null): TaskDraft {
+    const templateId = String(id || "").trim() || LATEX_BLANK_TEMPLATE_ID;
+    const blank = templateId === LATEX_BLANK_TEMPLATE_ID;
+    return {
+        ...draft,
+        latexTemplateId: templateId,
+        latexTemplateName: blank ? null : (String(name || "").trim() || null),
+    };
+}
+
+/** 模板库 / 工作流 / 专家卡片点进来时的草稿。专家与工作流仍互斥，专家优先。 */
+export function draftFromWizardSeed(seed: NewTaskWizardSeed | null | undefined): TaskDraft {
+    const expertId = String(seed?.expertId || "").trim();
+    const workflowId = String(seed?.workflowTemplateId || "").trim();
+    if (expertId) {
+        let draft = withExpert(defaultTaskDraft(), expertId, String(seed?.expertName || "").trim() || expertId);
+        if (isLatexExpertId(expertId)) {
+            draft = withLatexTemplate(draft, seed?.latexTemplateId || LATEX_BLANK_TEMPLATE_ID, seed?.latexTemplateName || null);
+        }
+        return draft;
+    }
+    if (workflowId) return withWorkflow(defaultTaskDraft(), workflowId);
+    return defaultTaskDraft();
 }
 
 /**
@@ -139,6 +191,8 @@ export function withWorkflow(draft: TaskDraft, id: string | null): TaskDraft {
         workflowParams: {},
         expertId: null,
         expertName: null,
+        latexTemplateId: null,
+        latexTemplateName: null,
     };
 }
 

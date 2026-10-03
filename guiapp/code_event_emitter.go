@@ -39,6 +39,9 @@ func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
 	if e == nil || e.app == nil {
 		return
 	}
+	if e.app.codePreviewEventObserver != nil {
+		e.app.codePreviewEventObserver(evt)
+	}
 	log.Printf("[code-event] emit file_update session=%q op=%s force_open=%v project=%q file=%q content_len=%d original_len=%d", evt.SessionID, evt.OpType, evt.ForceOpen, evt.ProjectPath, evt.FilePath, len(evt.Content), len(evt.Original))
 	e.emitCodeFileEventQuiet(evt)
 }

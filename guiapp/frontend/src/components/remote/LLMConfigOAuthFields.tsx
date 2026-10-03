@@ -64,7 +64,7 @@ export function LLMConfigOAuthFields({
                         border: `1px solid ${colors.primary}`, borderRadius: 4,
                         opacity: oauthBusy ? 0.5 : 1,
                     }}>
-                        {oauthBusy ? t('Logging in...', '\u767b\u5f55\u4e2d...') : t('Re-login', '\u91cd\u65b0\u767b\u5f55')}
+                        {oauthBusy ? (provider.name === 'xAI-Grok' ? t('Waiting for browser authorization...', '\u7b49\u5f85\u6d4f\u89c8\u5668\u6388\u6743...') : t('Logging in...', '\u767b\u5f55\u4e2d...')) : t('Re-login', '\u91cd\u65b0\u767b\u5f55')}
                     </button>
                 </div>
             ) : (

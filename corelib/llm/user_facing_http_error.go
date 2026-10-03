@@ -18,6 +18,11 @@ const userFacingDetailMaxRunes = 300
 // on a tenant-bound HubCenter node that Hub cannot reach.
 var ErrOfficialOwnerUnreachable = errors.New("official hubcenter owner unreachable")
 
+// ErrOfficialGatewayTimeout is returned when the bound HubCenter node answered
+// through its reverse proxy with a non-JSON 502/503/504. The process may still
+// be up; the proxy gave up waiting for response headers.
+var ErrOfficialGatewayTimeout = errors.New("official hubcenter gateway timeout")
+
 // Redact common secret-like key=value pairs from user-visible error detail.
 var secretLikeFieldRe = regexp.MustCompile(`(?i)(api[_-]?key|authorization|bearer|token|secret|password)\s*[:=]\s*\S+`)
 
@@ -34,6 +39,9 @@ func UserFacingError(err error) string {
 func UserFacingErrorWithProvider(err error, providerName string) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, ErrOfficialGatewayTimeout) {
+		return officialGatewayTimeoutMessage(err.Error())
 	}
 	if errors.Is(err, ErrOfficialOwnerUnreachable) {
 		return officialOwnerUnreachableMessage
@@ -58,10 +66,16 @@ func UserFacingErrorWithProvider(err error, providerName string) string {
 		if msg := UserFacingHTTPStatusWithProvider(httpErr.StatusCode, httpErr.Body, providerName); msg != "" {
 			return msg
 		}
+		if msg := classifyOfficialGatewayTimeout(httpErr.Error()); msg != "" {
+			return msg
+		}
 		if msg := classifyOfficialOwnerUnreachable(httpErr.Error()); msg != "" {
 			return msg
 		}
 		return httpErr.Error()
+	}
+	if msg := classifyOfficialGatewayTimeout(err.Error()); msg != "" {
+		return msg
 	}
 	if msg := classifyOfficialOwnerUnreachable(err.Error()); msg != "" {
 		return msg
@@ -70,6 +84,71 @@ func UserFacingErrorWithProvider(err error, providerName string) string {
 }
 
 const officialOwnerUnreachableMessage = "官方模型当前绑定的节点不可达，请稍后重试"
+
+func officialGatewayTimeoutMessage(msg string) string {
+	nodeID := gatewayTimeoutNodeID(msg)
+	status := gatewayTimeoutStatus(msg)
+	if nodeID == "" {
+		if status == http.StatusGatewayTimeout {
+			return "官方模型响应超时，请稍后重试"
+		}
+		return "官方模型暂时没有返回响应，请稍后重试"
+	}
+	if status == http.StatusGatewayTimeout || status == 0 {
+		return fmt.Sprintf("官方模型节点 %s 响应超时，请稍后重试", nodeID)
+	}
+	return fmt.Sprintf("官方模型节点 %s 暂时没有返回响应，请稍后重试", nodeID)
+}
+
+func gatewayTimeoutNodeID(msg string) string {
+	const marker = "tenant bound to node "
+	lower := strings.ToLower(msg)
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(msg[idx+len(marker):])
+	end := len(rest)
+	for i, r := range rest {
+		if r == ' ' || r == ',' || r == ';' {
+			end = i
+			break
+		}
+	}
+	nodeID := strings.TrimSpace(rest[:end])
+	if nodeID == "" || nodeID == "unknown" {
+		return ""
+	}
+	if strings.Contains(nodeID, "://") || strings.Contains(nodeID, ".") {
+		return ""
+	}
+	return nodeID
+}
+
+func gatewayTimeoutStatus(msg string) int {
+	const marker = "gateway status "
+	idx := strings.Index(strings.ToLower(msg), marker)
+	if idx < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(msg[idx+len(marker):])
+	n := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func classifyOfficialGatewayTimeout(msg string) string {
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "gateway timeout") || strings.Contains(lower, "gateway status") {
+		return officialGatewayTimeoutMessage(msg)
+	}
+	return ""
+}
 
 func classifyOfficialOwnerUnreachable(msg string) string {
 	lower := strings.ToLower(msg)

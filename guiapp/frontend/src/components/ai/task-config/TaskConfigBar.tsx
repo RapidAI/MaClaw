@@ -6,6 +6,7 @@ import { popoverItemKeyDown, TaskConfigPopoverShell } from "./TaskConfigPopoverS
 import {
     canSpecifyExpert,
     canSpecifyWorkflow,
+    expertNeedsSetup,
     isDraftDefault,
     isExpertSpecified,
     isWorkflowChosen,
@@ -15,6 +16,7 @@ import {
     withLocalWorkspace,
     withCloudWorkspace,
     withRemoteWorkspace,
+    withLatexTemplate,
     withWorkflow,
     workspaceKindsForExpert,
     workspaceSummaryLabel,
@@ -23,6 +25,8 @@ import {
     type TaskDraft,
     type TaskType,
 } from "./taskDraft";
+import { LATEX_BLANK_TEMPLATE_ID, latexBlankTemplateName, type LatexTemplate } from "../../../utils/latexTemplates";
+import { LatexTemplatePickerPopover } from "./LatexTemplatePickerPopover";
 import type { ExpertOption } from "./ExpertPickerPopover";
 import { ExpertPickerPopover } from "./ExpertPickerPopover";
 import type { WorkflowOption } from "./WorkflowPickerPopover";
@@ -35,7 +39,7 @@ export type { ExpertOption } from "./ExpertPickerPopover";
 export type { WorkflowOption } from "./WorkflowPickerPopover";
 export type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 
-type ConfigMenu = 'type' | 'expert' | 'workflow' | 'workspace';
+type ConfigMenu = 'type' | 'expert' | 'workflow' | 'workspace' | 'latex';
 
 export interface TaskConfigBarProps {
     draft: TaskDraft;
@@ -63,6 +67,10 @@ export interface TaskConfigBarProps {
     /** 「全部工作流…」入口（仅当还有更多模板时展示）。 */
     hasMoreWorkflows?: boolean;
     onShowAllWorkflows?: () => void;
+    /** Installed LaTeX templates. Blank is always offered even when this list is empty. */
+    latexTemplates?: LatexTemplate[];
+    /** Reload the catalogue when the template menu opens. */
+    onPrepareLatexTemplates?: () => void;
     /**
      * 展示形态：chip（默认，圆角描边按钮）| bare（无边框轻量文字，用于
      * 输入卡片下方的配置条，视觉退居次位）。
@@ -96,6 +104,8 @@ export function TaskConfigBar({
     onPickTemplateParams,
     hasMoreWorkflows,
     onShowAllWorkflows,
+    latexTemplates,
+    onPrepareLatexTemplates,
     variant = "chip",
 }: TaskConfigBarProps) {
     const bare = variant === "bare";
@@ -116,6 +126,7 @@ export function TaskConfigBar({
         expert: useRef<HTMLButtonElement | null>(null),
         workflow: useRef<HTMLButtonElement | null>(null),
         workspace: useRef<HTMLButtonElement | null>(null),
+        latex: useRef<HTMLButtonElement | null>(null),
     } satisfies Record<ConfigMenu, RefObject<HTMLButtonElement | null>>;
 
     const expanded = userExpanded || !isDraftDefault(draft);
@@ -125,10 +136,25 @@ export function TaskConfigBar({
     const localPathMissing = needsLocalPath(draft);
     // 专家任务不携带工作空间（§7）：指定专家时云端/远程位置锁定。
     const expertWorkspaceLocked = !workspaceKindsForExpert(draft).includes('cloud');
+    const showLatexTemplate = expertNeedsSetup(draft);
+    const latexTemplateId = draft.latexTemplateId || LATEX_BLANK_TEMPLATE_ID;
+    const latexTemplateLabel = (() => {
+        if (!showLatexTemplate || latexTemplateId === LATEX_BLANK_TEMPLATE_ID) return latexBlankTemplateName(lang || "zh-Hans");
+        return draft.latexTemplateName
+            || latexTemplates?.find((template) => template.id === latexTemplateId)?.name
+            || latexTemplateId;
+    })();
 
     const openMenu = useCallback((next: ConfigMenu) => {
         setMenu((prev) => (prev === next ? null : next));
     }, []);
+    // Reload once each time the menu opens. The loader's identity changes
+    // when the catalogue arrives; depending on it would fetch again forever.
+    const prepareLatexRef = useRef(onPrepareLatexTemplates);
+    prepareLatexRef.current = onPrepareLatexTemplates;
+    useEffect(() => {
+        if (menu === 'latex') prepareLatexRef.current?.();
+    }, [menu]);
 
     const closeMenu = useCallback((focus?: ConfigMenu) => {
         setMenu(null);
@@ -290,7 +316,10 @@ export function TaskConfigBar({
                         locked: expertLocked,
                         title: expertLocked ? (isZh ? "已选择工作流，专家保持通用" : "Workflow chosen") : undefined,
                     })}
-                    {renderChip('workflow', "task-config-chip-workflow", isZh ? "工作流" : "Workflow", workflowLocked ? (isZh ? "由专家决定" : "By expert") : (draft.workflowTemplateId === null ? (isZh ? "无" : "None") : draft.workflowTemplateId === WORKFLOW_AUTO ? (isZh ? "自动判断" : "Auto") : (workflows.find((w) => w.id === draft.workflowTemplateId)?.title || draft.workflowTemplateId)), {
+                    {showLatexTemplate ? renderChip('latex', "task-config-chip-latex-template", isZh ? "模板" : "Template", latexTemplateLabel, {
+                        active: latexTemplateId !== LATEX_BLANK_TEMPLATE_ID,
+                        title: isZh ? "默认空白模板，可改选已安装的 LaTeX 模板" : "Blank template by default. Pick an installed LaTeX template.",
+                    }) : renderChip('workflow', "task-config-chip-workflow", isZh ? "工作流" : "Workflow", workflowLocked ? (isZh ? "由专家决定" : "By expert") : (draft.workflowTemplateId === null ? (isZh ? "无" : "None") : draft.workflowTemplateId === WORKFLOW_AUTO ? (isZh ? "自动判断" : "Auto") : (workflows.find((w) => w.id === draft.workflowTemplateId)?.title || draft.workflowTemplateId)), {
                         active: isWorkflowChosen(draft),
                         locked: workflowLocked,
                         title: workflowLocked ? (isZh ? "已指定专家，工作流由专家决定" : "Expert specified") : undefined,
@@ -313,7 +342,7 @@ export function TaskConfigBar({
                         title: localPathMissing
                             ? (isZh ? "编程任务需要选择本地目录" : "Coding tasks need a local directory")
                             : expertSpecified
-                                ? (isZh ? "专家任务不携带工作空间" : "Expert tasks do not carry a workspace")
+                                ? (isZh ? "可选择本地工作目录" : "Choose a local working directory")
                                 : undefined,
                     })}
                 </>
@@ -342,7 +371,18 @@ export function TaskConfigBar({
                     onClose={() => closeMenu('expert')}
                 />
             )}
-            {menu === 'workflow' && (
+            {menu === 'latex' && showLatexTemplate && (
+                <LatexTemplatePickerPopover
+                    anchor={chipRefs.latex.current}
+                    theme={t}
+                    lang={lang}
+                    templates={latexTemplates || []}
+                    selectedTemplateId={latexTemplateId}
+                    onSelect={(id, name) => { onChange(withLatexTemplate(draft, id, name)); closeMenu('latex'); }}
+                    onClose={() => closeMenu('latex')}
+                />
+            )}
+            {menu === 'workflow' && !showLatexTemplate && (
                 <WorkflowPickerPopover
                     anchor={chipRefs.workflow.current}
                     theme={t}

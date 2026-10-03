@@ -67,6 +67,14 @@ function takeCache(projectPath: string) {
     return found;
 }
 
+function dropCollapsedListings(pages: Map<string, DirectoryResponse>, refreshed: Map<string, number>, visible: Set<string>) {
+    for (const path of [...pages.keys()]) {
+        if (!path || visible.has(path)) continue;
+        pages.delete(path);
+        refreshed.delete(path);
+    }
+}
+
 function label(lang: string, en: string, zhHans: string, zhHant?: string) { return localizeText(lang, en, zhHans, zhHant); }
 
 const workbenchNoticeExact: Record<string, [string, string, string]> = {
@@ -259,7 +267,7 @@ function FileIcon({ entry, theme, open }: { entry: DirectoryEntry; theme: CodePr
     return <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" className="cpws-icon"><path d={entry.is_dir ? "M2.5 5.5c0-1.1.9-2 2-2h3l1.4 1.7h6.6c1.1 0 2 .9 2 2v6.3c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.5Z" : "M4.25 2.5h7l4.5 4.5v9.25c0 .69-.56 1.25-1.25 1.25H5.5c-.69 0-1.25-.56-1.25-1.25V3.75c0-.69.56-1.25 1.25-1.25Z"} fill={color} opacity=".22" stroke={color} strokeWidth="1.2" /><text x="10" y="14" textAnchor="middle" fill={color} fontSize="5.5" fontWeight="700">{icon.badge}</text></svg>;
 }
 
-export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRefresh = false, cloudMode = false, paperWorkspace = false, hideHeader = false, hideTitle = false, onRefreshReady, lang, theme, onOpenFile, onFileDeleted }: { projectPath?: string; refreshToken?: number; resetOnRefresh?: boolean; cloudMode?: boolean; paperWorkspace?: boolean; hideHeader?: boolean; hideTitle?: boolean; onRefreshReady?: (refresh: () => void, refreshing: boolean) => void; lang: string; theme: CodePreviewTheme; onOpenFile: (file: CodeFile) => void; onFileDeleted?: (path: string) => void }) {
+export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRefresh = false, cloudMode = false, paperWorkspace = false, hideHeader = false, hideTitle = false, manageFiles = false, onRefreshReady, lang, theme, onOpenFile, onFileDeleted }: { projectPath?: string; refreshToken?: number; resetOnRefresh?: boolean; cloudMode?: boolean; paperWorkspace?: boolean; hideHeader?: boolean; hideTitle?: boolean; manageFiles?: boolean; onRefreshReady?: (refresh: () => void, refreshing: boolean) => void; lang: string; theme: CodePreviewTheme; onOpenFile: (file: CodeFile) => void; onFileDeleted?: (path: string) => void }) {
     const { showConfirm } = useDialog();
     const [, setDirectories] = useState<Map<string, DirectoryResponse>>(new Map());
     const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
@@ -270,6 +278,7 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
     const [notice, setNotice] = useState("");
     const [noticeIsError, setNoticeIsError] = useState(false);
     const [menu, setMenu] = useState<ContextMenu | null>(null);
+    const [selectedPath, setSelectedPath] = useState("");
     const [propertiesEntry, setPropertiesEntry] = useState<DirectoryEntry | null>(null);
     const [properties, setProperties] = useState<EntryProperties | null>(null);
     const [propertiesError, setPropertiesError] = useState("");
@@ -363,11 +372,30 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         setNotice("");
         setNoticeIsError(false);
         setMenu(null);
+        setSelectedPath("");
         setPropertiesEntry(null);
         setProperties(null);
         setPropertiesLoading(false);
         if (projectPath) void load("", true);
     }, [projectPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Root first, then open folders. A newer generation aborts the rest so a
+    // second refresh is not stuck behind the previous folder batch.
+    const reloadVisibleTree = useCallback((refreshVersion: number, visiblePaths: string[]) => {
+        const previousRoot = rootRef.current;
+        void (async () => {
+            await load("", true);
+            if (versionRef.current !== refreshVersion) return;
+            // load() already replaced the tree when the live root changed.
+            // Do not refresh child paths that belonged to the previous directory.
+            if (previousRoot && !sameWorkspaceRoot(previousRoot, rootRef.current)) return;
+            const batchSize = 3;
+            for (let index = 0; index < visiblePaths.length; index += batchSize) {
+                if (versionRef.current !== refreshVersion) return;
+                await Promise.all(visiblePaths.slice(index, index + batchSize).map(path => load(path, true)));
+            }
+        })();
+    }, [load]);
 
     useEffect(() => {
         if (!projectPath || refreshToken === lastRefreshTokenRef.current) return;
@@ -389,39 +417,31 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
             setErrors(new Map());
             setMenu(null);
             setPropertiesEntry(null);
+        } else {
+            dropCollapsedListings(pagesRef.current, refreshedRef.current, expanded);
         }
         setLoading(new Set());
         const refreshVersion = versionRef.current;
         // The root is the user-visible confirmation of a successful reconnect,
         // so wait for it before issuing any background child refreshes. A fully
         // expanded tree must not compete with the first useful SSH response.
-        const previousRoot = rootRef.current;
         const visiblePaths = resetOnRefresh ? [] : Array.from(expanded).filter(path => path && pagesRef.current.has(path));
-        void (async () => {
-            await load("", true);
-            if (versionRef.current !== refreshVersion) return;
-            // load() already replaced the tree when the live root changed.
-            // Do not refresh child paths that belonged to the previous directory.
-            if (resetOnRefresh || (previousRoot && !sameWorkspaceRoot(previousRoot, rootRef.current))) {
-                return;
-            }
-            const batchSize = 3;
-            for (let index = 0; index < visiblePaths.length; index += batchSize) {
-                if (versionRef.current !== refreshVersion) return;
-                await Promise.all(visiblePaths.slice(index, index + batchSize).map(path => load(path, true)));
-            }
-        })();
-    }, [projectPath, refreshToken, resetOnRefresh, load]);
+        reloadVisibleTree(refreshVersion, visiblePaths);
+    }, [projectPath, refreshToken, resetOnRefresh, load, reloadVisibleTree]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // A manual refresh is an explicit request for newer data. Give it a new
     // generation so it can supersede a slow or stuck remote directory request
     // instead of being silently ignored by the in-flight de-duplication guard.
+    // Collapsed folders are dropped: their 15s cache would hide the pull the
+    // user just asked for until they waited out the TTL.
     const refreshRoot = useCallback(() => {
         versionRef.current++;
         inFlightRef.current.clear();
         setLoading(new Set());
-        void load("", true);
-    }, [load]);
+        dropCollapsedListings(pagesRef.current, refreshedRef.current, expanded);
+        const visiblePaths = Array.from(expanded).filter(path => path && pagesRef.current.has(path));
+        reloadVisibleTree(versionRef.current, visiblePaths);
+    }, [expanded, reloadVisibleTree]);
 
     // Compile writes the PDF next to the sources. Reload the listing when that
     // finishes so the new file shows up without a manual refresh.
@@ -462,16 +482,30 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
     }, [notice, noticeIsError]);
 
     const closeMenu = useCallback((restoreFocus = false) => { setMenu(null); if (restoreFocus) window.requestAnimationFrame(() => menuTriggerRef.current?.focus()); }, []);
-    const openMenu = useCallback((entry: DirectoryEntry, x: number, y: number, trigger: HTMLButtonElement) => { menuTriggerRef.current = trigger; setMenu({ entry, ...clampMenuPosition(x, y) }); }, []);
+    const openMenu = useCallback((entry: DirectoryEntry, x: number, y: number, trigger: HTMLButtonElement) => { menuTriggerRef.current = trigger; if (manageFiles) setSelectedPath(entry.path); setMenu({ entry, ...clampMenuPosition(x, y) }); }, [manageFiles]);
     useEffect(() => {
         if (!menu) return;
         const focus = window.setTimeout(() => menuActionRef.current?.focus(), 0);
         const close = (event: MouseEvent) => { if (!(event.target instanceof Element) || !event.target.closest('[data-testid="code-preview-workspace-context-menu"]')) closeMenu(); };
         const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); closeMenu(true); } };
-        window.addEventListener("mousedown", close);
+        // Capture so a dialog that stops bubbling mousedown still dismisses the menu.
+        window.addEventListener("mousedown", close, true);
         window.addEventListener("keydown", onKeyDown);
-        return () => { window.clearTimeout(focus); window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKeyDown); };
+        return () => { window.clearTimeout(focus); window.removeEventListener("mousedown", close, true); window.removeEventListener("keydown", onKeyDown); };
     }, [closeMenu, menu]);
+    useEffect(() => {
+        if (!manageFiles || !propertiesEntry) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+            if (document.querySelector(".custom-dialog")) return;
+            event.preventDefault();
+            propertyRef.current++;
+            setPropertiesEntry(null);
+            setPropertiesLoading(false);
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [manageFiles, propertiesEntry]);
 
     const toggle = useCallback((entry: DirectoryEntry) => { const willOpen = !expanded.has(entry.path); setExpanded(prev => { const next = new Set(prev); willOpen ? next.add(entry.path) : next.delete(entry.path); return next; }); if (willOpen) void load(entry.path); }, [expanded, load]);
     const openLocally = useCallback(async (entry: DirectoryEntry) => {
@@ -639,6 +673,7 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
             await DeleteCodingWorkbenchEntry(taskPath, entry.path);
             if (version !== versionRef.current) return;
             forgetDeletedEntry(entry, taskPath);
+            setSelectedPath(prev => (prev && entryPathContainedBy(prev, entry.path) ? "" : prev));
             onFileDeleted?.(entry.path);
         } catch (error) {
             if (version !== versionRef.current) return;
@@ -677,17 +712,18 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         void openLocally(entry);
     }, [cloudMode, openLocally]);
 
-    const renderEntries = (path: string, depth: number, ancestors = new Set<string>([path])): React.ReactNode => pagesRef.current.get(path)?.entries?.map(entry => <React.Fragment key={entry.path}><button type="button" data-testid={entry.is_dir ? "code-preview-workspace-directory" : "code-preview-workspace-file"} onClick={() => entry.is_dir ? toggle(entry) : void openFile(entry)} onDoubleClick={event => { event.preventDefault(); handleEntryDoubleClick(entry); }} onContextMenu={event => { event.preventDefault(); if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability(); openMenu(entry, event.clientX, event.clientY, event.currentTarget); }} onKeyDown={event => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability(); const bounds = event.currentTarget.getBoundingClientRect(); openMenu(entry, bounds.left + Math.min(bounds.width / 2, 40), bounds.top + Math.min(bounds.height, 36), event.currentTarget); }} aria-expanded={entry.is_dir ? expanded.has(entry.path) : undefined} aria-haspopup="menu" title={cloudMode && !entry.is_dir ? `${entry.path}\n${isLikelyBinaryName(entry.name) ? label(lang, "Click to open locally", "单击在本地打开", "按一下在本機開啟") : label(lang, "Double-click to open locally", "双击在本地打开", "按兩下在本機開啟")}` : entry.path} style={{ display: "flex", width: "100%", border: 0, padding: `4px 10px 4px ${12 + depth * 16}px`, gap: 6, background: "transparent", color: theme.text, textAlign: "left", cursor: "pointer", font: "inherit", fontSize: 12 }}><span className="cpws-tw">{entry.is_dir ? (expanded.has(entry.path) ? "v" : ">") : ""}</span><FileIcon entry={entry} theme={theme} open={expanded.has(entry.path)} /><span className="cpws-entry-name">{entry.name}</span></button>{entry.is_dir && !ancestors.has(entry.path) && expanded.has(entry.path) ? <>{errors.get(entry.path) ? <DirectoryLoadError message={errors.get(entry.path) || ""} depth={depth} lang={lang} theme={theme} onRetry={() => void load(entry.path, true)} /> : null}{loading.has(entry.path) && !pagesRef.current.has(entry.path) ? <DirectoryLoading depth={depth} lang={lang} theme={theme} /> : renderEntries(entry.path, depth + 1, new Set([...ancestors, entry.path]))}{pagesRef.current.get(entry.path)?.truncated ? <div style={{ paddingLeft: 32 + depth * 16, color: theme.textMuted, fontSize: 11 }}>{label(lang, "Showing the first 500 items.", "仅显示前 500 个项目。", "僅顯示前 500 個項目。")}</div> : null}</> : null}</React.Fragment>);
+    const renderEntries = (path: string, depth: number, ancestors = new Set<string>([path])): React.ReactNode => pagesRef.current.get(path)?.entries?.map(entry => <React.Fragment key={entry.path}><button type="button" data-testid={entry.is_dir ? "code-preview-workspace-directory" : "code-preview-workspace-file"} onClick={event => { if (manageFiles && entry.is_dir && event.detail > 1) return; if (manageFiles) setSelectedPath(entry.path); if (entry.is_dir) { toggle(entry); return; } if (manageFiles) return; void openFile(entry); }} data-selected={manageFiles && selectedPath === entry.path ? "true" : undefined} onDoubleClick={event => { event.preventDefault(); handleEntryDoubleClick(entry); }} onContextMenu={event => { event.preventDefault(); if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability(); openMenu(entry, event.clientX, event.clientY, event.currentTarget); }} onKeyDown={event => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability(); const bounds = event.currentTarget.getBoundingClientRect(); openMenu(entry, bounds.left + Math.min(bounds.width / 2, 40), bounds.top + Math.min(bounds.height, 36), event.currentTarget); }} aria-expanded={entry.is_dir ? expanded.has(entry.path) : undefined} aria-haspopup="menu" title={cloudMode && !entry.is_dir ? `${entry.path}\n${isLikelyBinaryName(entry.name) && !manageFiles ? label(lang, "Click to open locally", "单击在本地打开", "按一下在本機開啟") : label(lang, "Double-click to open locally", "双击在本地打开", "按兩下在本機開啟")}` : entry.path} style={{ display: "flex", width: "100%", border: 0, padding: `4px 10px 4px ${12 + depth * 16}px`, gap: 6, background: manageFiles ? undefined : "transparent", color: theme.text, textAlign: "left", cursor: "pointer", font: "inherit", fontSize: 12 }}><span className="cpws-tw">{entry.is_dir ? (expanded.has(entry.path) ? "v" : ">") : ""}</span><FileIcon entry={entry} theme={theme} open={expanded.has(entry.path)} /><span className="cpws-entry-name">{entry.name}</span></button>{entry.is_dir && !ancestors.has(entry.path) && expanded.has(entry.path) ? <>{errors.get(entry.path) ? <DirectoryLoadError message={errors.get(entry.path) || ""} depth={depth} lang={lang} theme={theme} onRetry={() => void load(entry.path, true)} /> : null}{loading.has(entry.path) && !pagesRef.current.has(entry.path) ? <DirectoryLoading depth={depth} lang={lang} theme={theme} /> : renderEntries(entry.path, depth + 1, new Set([...ancestors, entry.path]))}{pagesRef.current.get(entry.path)?.truncated ? <div style={{ paddingLeft: 32 + depth * 16, color: theme.textMuted, fontSize: 11 }}>{label(lang, "Showing the first 500 items.", "仅显示前 500 个项目。", "僅顯示前 500 個項目。")}</div> : null}</> : null}</React.Fragment>);
 
     if (!projectPath) return <div data-testid="code-preview-workspace-status">{cloudMode ? label(lang, "Cloud workspace unavailable", "云端工作区不可用", "雲端工作區無法使用") : label(lang, "Working directory unavailable", "工作目录不可用", "工作目錄無法使用")}</div>;
     const rootError = errors.get("");
     const rootLabel = cloudMode
         ? (rootResolved ? label(lang, "Cloud files", "云端文件", "雲端檔案") : label(lang, "Loading cloud files...", "正在加载云端文件...", "正在載入雲端檔案..."))
         : (root || (rootResolved ? label(lang, "Working directory", "工作目录", "工作目錄") : label(lang, "Resolving directory...", "正在定位目录...", "正在定位目錄...")));
-    return <div data-testid="code-preview-workspace" data-cloud-mode={cloudMode ? "true" : undefined} style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.bg }}>{!hideHeader ? <div data-testid="code-preview-workspace-header" style={{ display: "flex", alignItems: "center", gap: 8, boxSizing: "border-box", height: 42, padding: "0 14px", borderBottom: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12 }}>{hideTitle ? null : <strong style={{ color: theme.tabActiveText, fontWeight: 600, flexShrink: 0, lineHeight: 1.2 }}>{cloudMode ? label(lang, "Cloud workspace", "云端工作区", "雲端工作區") : label(lang, "WORKING DIRECTORY", "工作目录", "工作目錄")}</strong>}<span data-testid="code-preview-workspace-root-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: rootResolved ? theme.textMuted : theme.lineNumText, fontSize: rootResolved ? 11 : 10.5, fontWeight: 400, lineHeight: 1.2 }}>{rootLabel}</span>{exportButton}<button type="button" aria-label={cloudMode ? label(lang, "Refresh cloud files", "刷新云端文件", "重新整理雲端檔案") : label(lang, "Refresh working directory", "刷新工作目录", "重新整理工作目錄")} title={label(lang, "Refresh", "刷新", "重新整理")} aria-busy={loading.has("")} onClick={refreshRoot} style={{ marginLeft: paperWorkspace ? 0 : "auto", border: 0, borderRadius: 4, padding: "2px 5px", background: "transparent", color: theme.tabActiveText, cursor: "pointer", font: "inherit", lineHeight: 1.2, flexShrink: 0 }}>{label(lang, "Refresh", "刷新", "重新整理")}</button></div> : null}{hideHeader && exportButton ? <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: `1px solid ${theme.border}` }}>{exportButton}</div> : null}<div className="cpws-entries">{rootError ? <WorkspaceNotice message={rootError} isError lang={lang} theme={theme} onClose={() => setErrors(prev => { const next = new Map(prev); next.delete(""); return next; })} /> : null}{notice ? <WorkspaceNotice message={notice} isError={noticeIsError} lang={lang} theme={theme} onClose={() => { setNotice(""); setNoticeIsError(false); }} /> : null}{propertiesEntry ? <Properties entry={propertiesEntry} properties={properties} loading={propertiesLoading} error={propertiesError} lang={lang} theme={theme} hideAbsPath={cloudMode} onClose={() => { propertyRef.current++; setPropertiesEntry(null); setPropertiesLoading(false); }} /> : null}{loading.has("") && !pagesRef.current.has("") ? <DirectoryLoading root lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{rootResolved && pagesRef.current.has("") && !pagesRef.current.get("")?.entries?.length ? <EmptyDirectory lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{renderEntries("", 0)}</div>{menu ? <Menu menu={menu} theme={theme} lang={lang} showPreview={menu.entry.is_dir || !cloudMode || !isLikelyBinaryName(menu.entry.name)} showDownload={cloudMode} showOpenLocal={cloudMode && !menu.entry.is_dir} showVSCode={!cloudMode && vscodeAvailable && isVSCodeSourceFile(menu.entry)} actionRef={menuActionRef} onPreview={() => { closeMenu(); menu.entry.is_dir ? void load(menu.entry.path, true) : void openFile(menu.entry); }} onOpenLocal={() => { closeMenu(); void openLocally(menu.entry); }} onDownload={() => { closeMenu(); void downloadEntry(menu.entry); }} onVSCode={() => { closeMenu(); void openVSCode(menu.entry); }} onProperties={() => { closeMenu(); void openProperties(menu.entry); }} latexEdit={(cloudMode || paperWorkspace) && !menu.entry.is_dir && isLatexSourceName(menu.entry.name)} showDelete={cloudMode} onDelete={() => { closeMenu(); void deleteEntry(menu.entry); }} /> : null}</div>;
+    const propertiesPanel = propertiesEntry ? <Properties entry={propertiesEntry} properties={properties} loading={propertiesLoading} error={propertiesError} lang={lang} theme={theme} hideAbsPath={cloudMode} onClose={() => { propertyRef.current++; setPropertiesEntry(null); setPropertiesLoading(false); }} /> : null;
+    return <div data-testid="code-preview-workspace" data-cloud-mode={cloudMode ? "true" : undefined} data-manage-files={manageFiles ? "true" : undefined} style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.bg, ["--cpws-row-hover" as string]: theme.tabHoverBg, ["--cpws-row-accent" as string]: theme.syntaxKeyword }}>{!hideHeader ? <div data-testid="code-preview-workspace-header" style={{ display: "flex", alignItems: "center", gap: 8, boxSizing: "border-box", height: 42, padding: "0 14px", borderBottom: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12 }}>{hideTitle ? null : <strong style={{ color: theme.tabActiveText, fontWeight: 600, flexShrink: 0, lineHeight: 1.2 }}>{cloudMode ? label(lang, "Cloud workspace", "云端工作区", "雲端工作區") : label(lang, "WORKING DIRECTORY", "工作目录", "工作目錄")}</strong>}<span data-testid="code-preview-workspace-root-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: rootResolved ? theme.textMuted : theme.lineNumText, fontSize: rootResolved ? 11 : 10.5, fontWeight: 400, lineHeight: 1.2 }}>{rootLabel}</span>{exportButton}<button type="button" aria-label={cloudMode ? label(lang, "Refresh cloud files", "刷新云端文件", "重新整理雲端檔案") : label(lang, "Refresh working directory", "刷新工作目录", "重新整理工作目錄")} title={label(lang, "Refresh", "刷新", "重新整理")} aria-busy={loading.has("")} onClick={refreshRoot} style={{ marginLeft: paperWorkspace ? 0 : "auto", border: 0, borderRadius: 4, padding: "2px 5px", background: "transparent", color: theme.tabActiveText, cursor: "pointer", font: "inherit", lineHeight: 1.2, flexShrink: 0 }}>{label(lang, "Refresh", "刷新", "重新整理")}</button></div> : null}{hideHeader && exportButton ? <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: `1px solid ${theme.border}` }}>{exportButton}</div> : null}{manageFiles && propertiesPanel ? <div className="cpws-properties">{propertiesPanel}</div> : null}<div className="cpws-entries">{rootError ? <WorkspaceNotice message={rootError} isError lang={lang} theme={theme} onClose={() => setErrors(prev => { const next = new Map(prev); next.delete(""); return next; })} /> : null}{notice ? <WorkspaceNotice message={notice} isError={noticeIsError} lang={lang} theme={theme} onClose={() => { setNotice(""); setNoticeIsError(false); }} /> : null}{manageFiles ? null : propertiesPanel}{loading.has("") && !pagesRef.current.has("") ? <DirectoryLoading root lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{rootResolved && pagesRef.current.has("") && !pagesRef.current.get("")?.entries?.length ? <EmptyDirectory lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{renderEntries("", 0)}</div>{menu ? <Menu menu={menu} theme={theme} lang={lang} showPreview={!manageFiles && (menu.entry.is_dir || !cloudMode || !isLikelyBinaryName(menu.entry.name))} showDownload={cloudMode} showOpenLocal={cloudMode && !menu.entry.is_dir} showVSCode={!cloudMode && vscodeAvailable && isVSCodeSourceFile(menu.entry)} actionRef={menuActionRef} onPreview={() => { closeMenu(); menu.entry.is_dir ? void load(menu.entry.path, true) : void openFile(menu.entry); }} onOpenLocal={() => { closeMenu(); void openLocally(menu.entry); }} onDownload={() => { closeMenu(); void downloadEntry(menu.entry); }} onVSCode={() => { closeMenu(); void openVSCode(menu.entry); }} onProperties={() => { closeMenu(); void openProperties(menu.entry); }} latexEdit={(cloudMode || paperWorkspace) && !menu.entry.is_dir && isLatexSourceName(menu.entry.name)} showDelete={cloudMode} menuZIndex={manageFiles ? 110000 : 20} onDelete={() => { closeMenu(); void deleteEntry(menu.entry); }} /> : null}</div>;
 }
 
-function Menu({ menu, theme, lang, showPreview = true, showDownload = false, showOpenLocal = false, showVSCode, showDelete = false, latexEdit = false, actionRef, onPreview, onOpenLocal, onDownload, onVSCode, onProperties, onDelete }: { menu: ContextMenu; theme: CodePreviewTheme; lang: string; showPreview?: boolean; showDownload?: boolean; showOpenLocal?: boolean; showVSCode: boolean; showDelete?: boolean; latexEdit?: boolean; actionRef: React.RefObject<HTMLButtonElement>; onPreview: () => void; onOpenLocal: () => void; onDownload: () => void; onVSCode: () => void; onProperties: () => void; onDelete: () => void }) { const style: React.CSSProperties = { display: "block", width: "100%", border: 0, background: "transparent", color: theme.text, padding: "7px 12px", textAlign: "left", cursor: "pointer" }; const openLocalRef = !showPreview && showOpenLocal ? actionRef : undefined; return <div role="menu" aria-label={menu.entry.name} data-testid="code-preview-workspace-context-menu" style={{ position: "fixed", zIndex: 20, left: menu.x, top: menu.y, width: "min(196px, calc(100vw - 16px))", padding: 4, border: `1px solid ${theme.border}`, borderRadius: 6, background: theme.tabBg }}>{showPreview ? <button ref={actionRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-preview" style={style} onClick={onPreview}>{menu.entry.is_dir ? label(lang, "Preview folder", "预览文件夹", "預覽資料夾") : latexEdit ? label(lang, "Edit LaTeX", "编辑 LaTeX", "編輯 LaTeX") : label(lang, "Preview", "预览", "預覽")}</button> : null}{showOpenLocal ? <button ref={openLocalRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-open-local" style={style} onClick={onOpenLocal}>{label(lang, "Open locally", "在本地打开", "在本機開啟")}</button> : null}{showDownload ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-download" style={style} onClick={onDownload}>{label(lang, "Download", "下载", "下載")}</button> : null}{showVSCode ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-open-vscode" style={style} onClick={onVSCode}>{label(lang, "Open with VS Code", "使用 VS Code 打开", "使用 VS Code 開啟")}</button> : null}<button type="button" role="menuitem" data-testid="code-preview-workspace-context-properties" style={style} onClick={onProperties}>{label(lang, "Properties", "属性", "屬性")}</button>{showDelete ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-delete" style={{ ...style, color: theme.diffDeleteText, borderTop: `1px solid ${theme.border}`, marginTop: 2 }} onClick={onDelete}>{menu.entry.is_dir ? label(lang, "Delete folder", "删除文件夹", "刪除資料夾") : label(lang, "Delete", "删除", "刪除")}</button> : null}</div>; }
+function Menu({ menu, theme, lang, showPreview = true, showDownload = false, showOpenLocal = false, showVSCode, showDelete = false, latexEdit = false, menuZIndex = 20, actionRef, onPreview, onOpenLocal, onDownload, onVSCode, onProperties, onDelete }: { menu: ContextMenu; theme: CodePreviewTheme; lang: string; showPreview?: boolean; showDownload?: boolean; showOpenLocal?: boolean; showVSCode: boolean; showDelete?: boolean; latexEdit?: boolean; menuZIndex?: number; actionRef: React.RefObject<HTMLButtonElement>; onPreview: () => void; onOpenLocal: () => void; onDownload: () => void; onVSCode: () => void; onProperties: () => void; onDelete: () => void }) { const style: React.CSSProperties = { display: "block", width: "100%", border: 0, background: "transparent", color: theme.text, padding: "7px 12px", textAlign: "left", cursor: "pointer" }; const openLocalRef = !showPreview && showOpenLocal ? actionRef : undefined; const downloadRef = !showPreview && !showOpenLocal && showDownload ? actionRef : undefined; const propertiesRef = !showPreview && !showOpenLocal && !showDownload ? actionRef : undefined; return <div role="menu" aria-label={menu.entry.name} data-testid="code-preview-workspace-context-menu" style={{ position: "fixed", zIndex: menuZIndex, left: menu.x, top: menu.y, width: "min(196px, calc(100vw - 16px))", padding: 4, border: `1px solid ${theme.border}`, borderRadius: 6, background: theme.tabBg }}>{showPreview ? <button ref={actionRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-preview" style={style} onClick={onPreview}>{menu.entry.is_dir ? label(lang, "Preview folder", "预览文件夹", "預覽資料夾") : latexEdit ? label(lang, "Edit LaTeX", "编辑 LaTeX", "編輯 LaTeX") : label(lang, "Preview", "预览", "預覽")}</button> : null}{showOpenLocal ? <button ref={openLocalRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-open-local" style={style} onClick={onOpenLocal}>{label(lang, "Open locally", "在本地打开", "在本機開啟")}</button> : null}{showDownload ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-download" ref={downloadRef} style={style} onClick={onDownload}>{label(lang, "Download", "下载", "下載")}</button> : null}{showVSCode ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-open-vscode" style={style} onClick={onVSCode}>{label(lang, "Open with VS Code", "使用 VS Code 打开", "使用 VS Code 開啟")}</button> : null}<button type="button" role="menuitem" data-testid="code-preview-workspace-context-properties" ref={propertiesRef} style={style} onClick={onProperties}>{label(lang, "Properties", "属性", "屬性")}</button>{showDelete ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-delete" style={{ ...style, color: theme.diffDeleteText, borderTop: `1px solid ${theme.border}`, marginTop: 2 }} onClick={onDelete}>{menu.entry.is_dir ? label(lang, "Delete folder", "删除文件夹", "刪除資料夾") : label(lang, "Delete", "删除", "刪除")}</button> : null}</div>; }
 
 function WorkspaceNotice({ message, isError, lang, theme, onClose }: { message: string; isError: boolean; lang: string; theme: CodePreviewTheme; onClose: () => void }) {
     const foreground = isError ? theme.diffDeleteText : theme.tabActiveText;

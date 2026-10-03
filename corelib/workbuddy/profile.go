@@ -64,6 +64,24 @@ func GlobalProfile() Profile {
 	}
 }
 
+const (
+	EditionChina  = "china"
+	EditionGlobal = "global"
+)
+
+// ProfileByEdition returns the domestic or international edition.
+// Accepted values are china/cn/codebuddy and global/intl/workbuddy.
+func ProfileByEdition(edition string) (Profile, bool) {
+	switch strings.ToLower(strings.TrimSpace(edition)) {
+	case EditionChina, "cn", "codebuddy", StoreChina:
+		return ChinaProfile(), true
+	case EditionGlobal, "intl", "international", "workbuddy", StoreGlobal:
+		return GlobalProfile(), true
+	default:
+		return Profile{}, false
+	}
+}
+
 // ProfileByName returns the edition for a MaClaw provider display name.
 func ProfileByName(name string) (Profile, bool) {
 	switch strings.TrimSpace(name) {

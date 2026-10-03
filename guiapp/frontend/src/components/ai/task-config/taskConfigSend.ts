@@ -10,6 +10,7 @@
  *   带 no_workflow_interception 跳过语义拦截，「自动判断」保持现状语义拦截。
  */
 import { describeTaskTitle } from "../describeTaskTitle";
+import { isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../../utils/latexTemplates";
 import { isDraftDefault, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
 
 /** 与 wailsjs main.TaskCreateOptions 字段对齐（普通对象，直接可序列化）。 */
@@ -114,6 +115,15 @@ export interface ExpertNavigation {
     name: string;
     description?: string;
     initialMessage: string;
+    /** Set when a LaTeX document was already written, so the tab reopens that file. */
+    latexDocument?: { relativePath: string };
+    /** LaTeX task directory. Used to roll the paper back if the tab never opens. */
+    projectPath?: string;
+}
+
+export interface LatexDocumentPrep {
+    relativePath: string;
+    initialMessage: string;
 }
 
 export interface TaskConfigSendBindings {
@@ -126,6 +136,21 @@ export interface TaskConfigSendBindings {
     ensureCodingArmed?: (projectPath: string) => Promise<unknown>;
     openTaskLaunch: (nav: TaskLaunchNavigation) => void;
     openExpert: (nav: ExpertNavigation) => void;
+    /**
+     * LaTeX expert: write the chosen template into the task workspace before
+     * the expert tab opens. Absent in tests that do not exercise LaTeX.
+     */
+    materializeLatexDocument?: (args: {
+        projectPath: string;
+        templateId: string;
+        templateName: string;
+        userText: string;
+    }) => Promise<LatexDocumentPrep | null>;
+    /**
+     * Drop a LaTeX paper that was recorded but never opened, and put the
+     * shared expert transcript back on the previous paper.
+     */
+    abandonFreshLatexTask?: (projectPath: string) => Promise<unknown>;
 }
 
 export type TaskConfigSendResult =
@@ -135,6 +160,15 @@ export type TaskConfigSendResult =
 function errorMessage(err: unknown): string {
     if (err instanceof Error) return err.message || String(err);
     return String(err || "");
+}
+
+async function abandonFreshLatexPaper(bindings: TaskConfigSendBindings, projectPath: string): Promise<void> {
+    if (!bindings.abandonFreshLatexTask) return;
+    try {
+        await bindings.abandonFreshLatexTask(projectPath);
+    } catch (err) {
+        console.warn("[task-config] abandon unopened latex paper failed", err);
+    }
 }
 
 /**
@@ -182,10 +216,34 @@ export async function runTaskConfigSend(args: {
         }
     }
     if (opts.expertId) {
+        let expertMessage = initialMessage;
+        let latexDocument: ExpertNavigation["latexDocument"];
+        if (isLatexExpertId(opts.expertId) && bindings.materializeLatexDocument) {
+            let prepared: LatexDocumentPrep | null = null;
+            try {
+                prepared = await bindings.materializeLatexDocument({
+                    projectPath,
+                    templateId: (draft.latexTemplateId || "").trim() || LATEX_BLANK_TEMPLATE_ID,
+                    templateName: (draft.latexTemplateName || "").trim(),
+                    userText: initialMessage,
+                });
+            } catch (err) {
+                await abandonFreshLatexPaper(bindings, projectPath);
+                return { ok: false, error: errorMessage(err) || (isZh ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created") };
+            }
+            if (!prepared?.relativePath) {
+                await abandonFreshLatexPaper(bindings, projectPath);
+                return { ok: false, error: isZh ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created" };
+            }
+            expertMessage = prepared.initialMessage || initialMessage;
+            latexDocument = { relativePath: prepared.relativePath };
+        }
         bindings.openExpert({
             id: opts.expertId,
             name: opts.expertName || opts.expertId,
-            initialMessage,
+            initialMessage: expertMessage,
+            ...(isLatexExpertId(opts.expertId) ? { projectPath } : {}),
+            ...(latexDocument ? { latexDocument } : {}),
         });
     } else {
         bindings.openTaskLaunch({

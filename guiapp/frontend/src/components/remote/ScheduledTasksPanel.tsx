@@ -176,7 +176,7 @@ const WEEKDAYS = {
 
 const inputStyle: React.CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: `1px solid ${colors.border}`, borderRadius: 4,
+    border: `1px solid ${colors.border}`, borderRadius: radius.md,
     background: colors.surface, color: colors.text, boxSizing: "border-box",
 };
 const labelStyle: React.CSSProperties = {

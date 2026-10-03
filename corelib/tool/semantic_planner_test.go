@@ -775,6 +775,37 @@ func TestIsLookupCapabilityIncludesSearchFetchAndClock(t *testing.T) {
 	}
 }
 
+func TestPlanKeepsArchetypeEvidenceOnTheGrantedNeed(t *testing.T) {
+	registry := semanticRegistry(t)
+	snapshot := semanticSnapshot(t, registry, []ProviderSpec{
+		semanticProvider("capture_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly),
+	})
+	planner := NewToolPlanner(registry)
+	plan, err := planner.Plan(RouteRequest{
+		RootTaskID:   "task-1",
+		TurnID:       "turn-1",
+		ChannelScope: "desktop",
+		Snapshot:     snapshot,
+		Needs: []CapabilityNeed{{
+			ID:          "need:visual.capture.desktop:arch",
+			Capability:  "visual.capture.desktop",
+			Qualifiers:  map[string]string{"display": "primary"},
+			Polarity:    NeedRequire,
+			EvidenceIDs: []string{"intent:archetype_bundle"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.Selections) != 1 || len(plan.Selections[0].EvidenceIDs) != 1 || plan.Selections[0].EvidenceIDs[0] != "intent:archetype_bundle" {
+		t.Fatalf("selection evidence=%#v", plan.Selections)
+	}
+	got := GrantedNeedsFromPlan(plan)
+	if len(got) != 1 || len(got[0].EvidenceIDs) != 1 || got[0].EvidenceIDs[0] != "intent:archetype_bundle" {
+		t.Fatalf("granted evidence=%#v", got)
+	}
+}
+
 func TestGrantedNeedsFromPlanUsesNeedIDThenSelectionID(t *testing.T) {
 	plan := ToolPlan{Selections: []PlannedSelection{
 		{ID: "sel-search", NeedID: "need:search", FitProof: FitProof{MatchedCapability: "information.search.web", QualifierBindings: map[string]string{"freshness": "current"}}},

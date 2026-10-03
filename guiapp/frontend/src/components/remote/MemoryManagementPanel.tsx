@@ -27,6 +27,9 @@ interface MemoryEntry {
     content: string;
     category: string;
     tags: string[];
+    status?: string;
+    owner_id?: string;
+    invalid_at?: string;
     created_at: string;
     updated_at: string;
     access_count: number;
@@ -99,7 +102,7 @@ type WailsNoDragStyle = React.CSSProperties & {
 
 const inputStyle: React.CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: `1px solid ${colors.border}`, borderRadius: 4,
+    border: `1px solid ${colors.border}`, borderRadius: radius.md,
     background: colors.surface, color: colors.text, boxSizing: "border-box",
 };
 const labelStyle: React.CSSProperties = {
@@ -252,6 +255,10 @@ interface MemoryStatusData {
     total_entries: number;
     max_capacity: number;
     capacity_percent: number;
+    recallable_entries?: number;
+    dormant_entries?: number;
+    superseded_entries?: number;
+    invalid_entries?: number;
     archived_entries: number;
     stale_entries: number;
     pinned_entries: number;
@@ -329,6 +336,7 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
         label: String(item.label || "").trim() || catLabel(item.category, lang) || item.category || t("Uncategorized", "未分类"),
     }));
     const totalEntries = Math.max(0, data.total_entries || 0);
+    const recallableEntries = Math.max(0, data.recallable_entries || 0);
     const maxCap = data.max_capacity || 2000;
     const capPct = Math.max(0, data.capacity_percent || 0);
     const boundedEntries = Math.max(0, Math.min(totalEntries, maxCap));
@@ -358,11 +366,13 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
                     />
                 </div>
                 <p className="memory-status-hint">
+                    {t(
+                        `Hot-set occupancy. ${recallableEntries} entries are still recallable.`,
+                        `热集占用。仍可召回 ${recallableEntries} 条。`,
+                    )}
                     {capPct >= 90
-                        ? t("Capacity is nearly full. Older memories may be evicted.", "容量接近上限，旧记忆可能会被淘汰。")
-                        : capPct >= 70
-                        ? t("Capacity usage is moderate.", "容量使用适中。")
-                        : t("Capacity usage is healthy.", "容量充足。")}
+                        ? " " + t("Older memories may be evicted.", "旧记忆可能会被淘汰。")
+                        : ""}
                 </p>
             </section>
 
@@ -397,8 +407,12 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
             </section>
 
             <div className="memory-status-stat-grid">
+                <MemoryStatusStatCard label={t("Recallable", "可召回")} value={recallableEntries} />
+                <MemoryStatusStatCard label={t("Dormant", "休眠")} value={data.dormant_entries || 0} />
+                <MemoryStatusStatCard label={t("Superseded", "已取代")} value={data.superseded_entries || 0} />
+                <MemoryStatusStatCard label={t("Expired", "已失效")} value={data.invalid_entries || 0} />
                 <MemoryStatusStatCard label={t("Archived", "已归档")} value={data.archived_entries} />
-                <MemoryStatusStatCard label={t("Stale", "过期")} value={data.stale_entries} />
+                <MemoryStatusStatCard label={t("Possibly stale", "可能过时")} value={data.stale_entries} />
                 <MemoryStatusStatCard label={t("Pinned", "固定")} value={data.pinned_entries} />
                 <MemoryStatusStatCard label={t("Embedder", "向量化")} value={data.embedder_active ? t("Active", "已启用") : t("Off", "未启用")} />
             </div>
@@ -504,6 +518,37 @@ type EditTabProps = {
     onCountChange: (count: number) => void;
     createRef: React.MutableRefObject<(() => void) | null>;
 };
+
+function memoryOwnerLabel(owner?: string): string {
+    const trimmed = (owner || "").trim();
+    if (!trimmed || trimmed === "desktop-user") return "";
+    const prefix = "desktop-user:";
+    const rest = trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+    if (rest.length <= 28) return rest;
+    return `…${rest.slice(-28)}`;
+}
+
+function memoryEntryStatusLabel(entry: MemoryEntry, t: (en: string, zhHans: string, zhHant?: string) => string): string {
+    const invalidAt = Date.parse(entry.invalid_at || "");
+    if (Number.isFinite(invalidAt) && invalidAt <= Date.now()) {
+        return t("Expired", "已失效");
+    }
+    return memoryStatusLabel(entry.status, t);
+}
+
+function memoryStatusLabel(status: string | undefined, t: (en: string, zhHans: string, zhHant?: string) => string): string {
+    switch ((status || "").trim()) {
+        case "":
+        case "active":
+            return t("Active", "有效");
+        case "dormant":
+            return t("Dormant", "休眠");
+        case "superseded":
+            return t("Superseded", "已取代");
+        default:
+            return status || t("Active", "有效");
+    }
+}
 
 function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabProps) {
     const [entries, setEntries] = useState<MemoryEntry[]>([]);
@@ -709,6 +754,10 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                             <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap", justifyContent: "flex-start" }}>
                                     <span style={{ fontSize: "0.66rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, color: colors.onPrimary, background: CATEGORY_COLORS[entry.category] || colors.textMuted }}>{catLabel(entry.category, lang)}</span>
+                                    <span style={{ fontSize: "0.64rem", padding: "1px 5px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` }}>{memoryEntryStatusLabel(entry, t)}</span>
+                                    {memoryOwnerLabel(entry.owner_id) && (
+                                        <span style={{ fontSize: "0.64rem", padding: "1px 5px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` }}>{memoryOwnerLabel(entry.owner_id)}</span>
+                                    )}
                                     {(entry.tags || []).map(tag => (
                                         <span key={tag} style={{ fontSize: "0.64rem", padding: "1px 5px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` }}>{tag}</span>
                                     ))}
@@ -970,7 +1019,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                         onBlur={async () => { const clamped = Math.max(8, maxBackups); setMaxBackupsLocal(clamped); setSavingMax(true); try { await SetMemoryMaxBackups(clamped); loadBackups(); } catch (e) { setError(String(e)); } setSavingMax(false); }}
                         onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                         disabled={savingMax}
-                        style={{ width: 48, padding: "2px 4px", fontSize: "0.7rem", border: `1px solid ${colors.border}`, borderRadius: radius.sm, textAlign: "center", background: colors.surface, color: colors.text }}
+                        style={{ width: 48, padding: "2px 4px", fontSize: "0.7rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, textAlign: "center", background: colors.surface, color: colors.text }}
                         aria-label={t("Max backups", "最大备份数")}
                     />
                     {t("backups", "份")}

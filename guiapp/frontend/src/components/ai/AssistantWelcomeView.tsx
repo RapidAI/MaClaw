@@ -18,6 +18,7 @@ import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
 import { TaskConfigBar, type CloudWorkspaceOption, type ExpertOption, type WorkflowOption } from "./task-config/TaskConfigBar";
 import type { TaskDraft } from "./task-config/taskDraft";
+import type { LatexTemplate } from "../../utils/latexTemplates";
 import {
     getWelcomeOpsPrompt,
     getWelcomeOpsPrompts,
@@ -461,6 +462,8 @@ export interface WelcomeTaskConfig {
     onDraftChange: (draft: TaskDraft) => void;
     experts: ExpertOption[];
     workflows: WorkflowOption[];
+    latexTemplates?: LatexTemplate[];
+    onPrepareLatexTemplates?: () => void;
     cloudWorkspaces?: CloudWorkspaceOption[];
     recentLocalPaths?: string[];
     onBrowseLocal?: () => void | Promise<string | null | undefined>;
@@ -1664,6 +1667,8 @@ export function AssistantWelcomeView({
                             onChange={taskConfig.onDraftChange}
                             experts={taskConfig.experts}
                             workflows={taskConfig.workflows}
+                            latexTemplates={taskConfig.latexTemplates}
+                            onPrepareLatexTemplates={taskConfig.onPrepareLatexTemplates}
                             cloudWorkspaces={taskConfig.cloudWorkspaces}
                             theme={t}
                             lang={lang}

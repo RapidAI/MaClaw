@@ -213,21 +213,21 @@ func EffectiveRouteMultiplier(meta ProviderDispatchMeta, route DispatchProviderR
 	return CombineCreditMultipliers(vendor, NormalizeCreditMultiplier(route.CreditMultiplier))
 }
 
-// BalanceProviderRoutes groups candidates by effective multiplier (cheap first),
-// then by score band, then rotates the first provider in each band with WRR.
-// Members of a multiplier band are equal-weight: concurrency is only used to
-// skip a full member, not to claim a larger share. Remaining members of a
-// band follow sequence order, not ring order.
+// BalanceProviderRoutes groups candidates that can serve the same request
+// into one equal-weight pool, then rotates the first provider with WRR.
+// A higher capability score, or a lower resolution tier, is its own pool and
+// is tried first. Price does not get a pool of its own: a cheaper provider
+// must not take every request while a sibling on the same model stays idle.
+// Concurrency only skips a full member. The rest of a pool follows sequence.
 func BalanceProviderRoutes(sched *WRRScheduler, pool string, candidates []BalanceCandidate) []BalancedRoute {
 	if len(candidates) == 0 {
 		return nil
 	}
 	type band struct {
-		key        string
-		multiplier float64
-		score      int
-		tier       int
-		items      []BalanceCandidate
+		key   string
+		score int
+		tier  int
+		items []BalanceCandidate
 	}
 	bands := make([]*band, 0, len(candidates))
 	index := map[string]*band{}
@@ -242,10 +242,9 @@ func BalanceProviderRoutes(sched *WRRScheduler, pool string, candidates []Balanc
 		item, ok := index[key]
 		if !ok {
 			item = &band{
-				key:        key,
-				multiplier: candidate.EffectiveMultiplier,
-				score:      candidate.Score,
-				tier:       candidate.ResolutionTier,
+				key:   key,
+				score: candidate.Score,
+				tier:  candidate.ResolutionTier,
 			}
 			index[key] = item
 			bands = append(bands, item)
@@ -253,9 +252,6 @@ func BalanceProviderRoutes(sched *WRRScheduler, pool string, candidates []Balanc
 		item.items = append(item.items, candidate)
 	}
 	sort.SliceStable(bands, func(i, j int) bool {
-		if bands[i].multiplier != bands[j].multiplier {
-			return bands[i].multiplier < bands[j].multiplier
-		}
 		if bands[i].score != bands[j].score {
 			return bands[i].score > bands[j].score
 		}
@@ -462,7 +458,10 @@ func bandSequence(items []BalanceCandidate) int {
 }
 
 func bandKey(candidate BalanceCandidate) string {
-	return fmt.Sprintf("%s|s%d|t%d", LBGroupKey(candidate.EffectiveMultiplier), candidate.Score, candidate.ResolutionTier)
+	// Multiplier stays on the route for billing. It is not part of the pool
+	// key, so x2 and x2.1 siblings rotate instead of the cheaper one winning
+	// every request.
+	return fmt.Sprintf("s%d|t%d", candidate.Score, candidate.ResolutionTier)
 }
 
 func wrrGroupKey(pool, bandKey string) string {

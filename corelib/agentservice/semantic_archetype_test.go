@@ -40,6 +40,39 @@ func TestExpandBaselineWorkspaceNeedsAddsIterativeFallbacksOnSearch(t *testing.T
 	}
 }
 
+func TestExpandBaselineWorkspaceNeedsRaisesOneShotFileAuthoring(t *testing.T) {
+	registry, err := NewReviewedDynamicCapabilityRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: .98}
+	rules := IMSemanticIntentCapabilityNeedRules()
+	resolved, err := resolveIntentLabelCapabilityNeeds(registry, rules, ReviewedIntentMinimumConfidence, result)
+	if err != nil || !resolved.Managed {
+		t.Fatalf("file write needs managed=%v err=%v", resolved.Managed, err)
+	}
+	bundled := ExpandArchetypeBundleNeeds(registry, rules, result, true, resolved.Needs, intent.LabelFileWrite)
+	got := ExpandBaselineWorkspaceNeeds(registry, rules, result, true, bundled)
+	write, writeRequired, read := 0, 0, 0
+	for _, need := range got {
+		switch need.Capability {
+		case coretool.CapabilityFSWriteLocal:
+			write++
+			if need.Required {
+				writeRequired++
+			}
+		case coretool.CapabilityFSReadLocal:
+			read++
+		}
+	}
+	if write < 8 || writeRequired != 1 {
+		t.Fatalf("file write floor=%d required=%d, want at least 8 with one required", write, writeRequired)
+	}
+	if read < 12 {
+		t.Fatalf("file read floor=%d, want at least 12", read)
+	}
+}
+
 func TestExpandBaselineWorkspaceNeedsDoesNotDuplicateShellPrimary(t *testing.T) {
 	registry, err := NewReviewedDynamicCapabilityRegistry()
 	if err != nil {

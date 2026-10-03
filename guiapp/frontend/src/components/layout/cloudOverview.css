@@ -573,7 +573,174 @@
     background: var(--theme-danger-bg);
 }
 
+.mc-cloud-files.modal-content,
+.mc-cloud-files.modal-content * {
+    box-sizing: border-box;
+}
+
+.mc-cloud-files.modal-content {
+    width: min(720px, 94vw);
+    height: min(72vh, 640px);
+    min-height: min(420px, 72vh);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 16px 14px;
+    overflow: hidden;
+    text-align: left;
+    outline: none;
+    /* The file menu is position:fixed. A leftover slideUp transform would
+       trap and clip it inside this panel. */
+    animation: none;
+}
+
+.mc-cloud-files .btn-close {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-size: 0.95rem;
+}
+
+.mc-cloud-files .btn-close:hover {
+    background: var(--theme-surface-muted);
+}
+
+.mc-cloud-files .modal-header {
+    flex: 0 0 auto;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+}
+
+.mc-cloud-files__header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+}
+
+.mc-cloud-files__refresh {
+    appearance: none;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 650;
+    line-height: 1;
+    padding: 6px 8px;
+}
+
+.mc-cloud-files__refresh:hover {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+}
+
+.mc-cloud-files__refresh[aria-busy='true'] {
+    opacity: 0.6;
+}
+
+.mc-cloud-files .modal-header h3 {
+    min-width: 0;
+    font-size: 0.98rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+}
+
+.mc-cloud-files__hint {
+    flex: 0 0 auto;
+    margin: 0 0 10px;
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.mc-cloud-files__refresh-error {
+    flex: 0 0 auto;
+    margin: -4px 0 10px;
+    color: var(--theme-danger);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.mc-cloud-files__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--theme-border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--theme-surface);
+}
+
+.mc-cloud-files__body > [data-testid="code-preview-workspace"] {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.mc-cloud-files__body .cpws-entries {
+    min-height: 0;
+}
+
+.mc-cloud-files .cpws-entries > [data-testid="code-preview-workspace-notice"] {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.mc-cloud-files .cpws-properties {
+    flex: 0 1 auto;
+    max-height: 180px;
+    overflow: auto;
+}
+
+/* Rows are <button>s. Without an author background, WebView2 paints the native button face. */
+[data-manage-files="true"] button[data-testid="code-preview-workspace-file"],
+[data-manage-files="true"] button[data-testid="code-preview-workspace-directory"] {
+    appearance: none;
+    background: transparent;
+}
+
+[data-manage-files="true"] button[data-testid="code-preview-workspace-file"]:hover,
+[data-manage-files="true"] button[data-testid="code-preview-workspace-directory"]:hover,
+[data-manage-files="true"] button[data-selected="true"] {
+    background: var(--cpws-row-hover);
+}
+
+[data-manage-files="true"] button[data-selected="true"] {
+    box-shadow: inset 3px 0 0 var(--cpws-row-accent);
+}
+
+/* The modal rule draws a 3px outline. A negative offset equal to that width
+   keeps the ring inside the row; overflow:auto on .cpws-entries would clip it. */
+[data-manage-files="true"] button[data-testid="code-preview-workspace-file"]:focus-visible,
+[data-manage-files="true"] button[data-testid="code-preview-workspace-directory"]:focus-visible {
+    outline-offset: -3px;
+}
+
+.mc-cloud-files__status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 16px;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
 @media (max-width: 720px) {
+    .mc-cloud-files.modal-content {
+        height: min(86vh, 640px);
+        min-height: 0;
+    }
+
     .mc-cloud-overview.modal-content {
         min-height: 0;
         overflow: auto;

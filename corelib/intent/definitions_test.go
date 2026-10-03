@@ -32,6 +32,9 @@ func TestDefaultDefinitions_MarkdownFileWriteStaysOffDocumentGenerate(t *testing
 	if !strings.Contains(fileWrite.TreeText, "markdown") {
 		t.Fatal("file_write TreeText must cover markdown files")
 	}
+	if !strings.Contains(fileWrite.TreeText, "已经在手上的文稿") {
+		t.Fatal("file_write TreeText must cover continuing a document this conversation already has")
+	}
 	if !strings.Contains(docGen.TreeText, "file_write") || !strings.Contains(docGen.TreeText, "markdown") {
 		t.Fatal("document_generate must exclude markdown file writes toward file_write")
 	}
@@ -211,6 +214,9 @@ func TestWorkflowDefinitionCoversCNIPAPatentApplicationTypes(t *testing.T) {
 		}
 		if !containsSubstring(def.TreeText, "视频、动画、图片、音频或故事不是本标签") {
 			t.Fatal("workflow_task definition must exclude in-chat media production")
+		}
+		if !containsSubstring(def.TreeText, "已经在手上的文稿") || !containsSubstring(def.TreeText, "file_write") {
+			t.Fatal("workflow_task definition must keep an in-conversation document edit off this label")
 		}
 		return
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -104,6 +105,55 @@ func TestPlannedSuccessorDenialRequiresAnOutstandingPredecessor(t *testing.T) {
 	}
 	if msg := afterSearch.plannedSuccessorDenial("send_file", deliver); !strings.Contains(msg, `"generate_pdf" appears on the next request`) || strings.Contains(msg, `"send_file" appears`) || strings.Contains(msg, "Call a tool that is listed now") {
 		t.Fatalf("delivery behind a held generate must not promise send_file on the next request: %q", msg)
+	}
+}
+
+// A coordinator publish leaves rendered empty even though the definitions
+// were handed to the model. Adopting that list is what makes the predecessor
+// callable; until then the denial must not invent a listed step.
+func TestAdoptedDefinitionsNameTheListedPredecessor(t *testing.T) {
+	pdf := tool.CapabilityID("document.generate.file")
+	search := tool.CapabilityID("information.search.web")
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		rendered:  map[string]bool{},
+		completed: map[string]bool{},
+		grants:    map[string]tool.InvocationGrant{"web_search": {SelectionID: "search", Token: "live"}},
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+			{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+		}},
+	}}
+	if msg := cb.plannedSuccessorDenial("generate_pdf", pdf); strings.Contains(msg, `"web_search"`) {
+		t.Fatalf("unrecorded grant must not be described as listed: %q", msg)
+	}
+	cb.setVisibleToolDefinitions([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+	})
+	msg := cb.plannedSuccessorDenial("generate_pdf", pdf)
+	if !successorNotYetListedDenial(msg, "generate_pdf") || !strings.Contains(msg, `"web_search"`) || strings.Contains(msg, "a tool that is listed now") {
+		t.Fatalf("adopted lookup must be the named next step: %q", msg)
+	}
+	cb.setVisibleToolDefinitions([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	})
+	if cb.semanticSurface.rendered["web_search"] || !cb.semanticSurface.rendered["tools_search"] {
+		t.Fatalf("adopted names must replace the rendered set, got %#v", cb.semanticSurface.rendered)
+	}
+	if dropped := cb.plannedSuccessorDenial("generate_pdf", pdf); strings.Contains(dropped, `"web_search"`) {
+		t.Fatalf("a name that left the adopted list must stop counting as listed: %q", dropped)
+	}
+	untracked := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		grants: map[string]tool.InvocationGrant{"web_search": {SelectionID: "search", Token: "live"}},
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+			{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+		}},
+	}}
+	untracked.setVisibleToolDefinitions([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+	})
+	if untracked.semanticSurface.rendered != nil {
+		t.Fatal("a nil rendered map means the caller is not tracking emission")
 	}
 }
 
@@ -505,6 +555,187 @@ func TestSemanticNeedsFromClassificationContextNormalizesOnlyLocalPureComposite(
 	}
 }
 
+func TestLiveDataPDFPetitionSurvivesLookupSelectionCap(t *testing.T) {
+	cb, _ := liveDataDesktopBeforePDFPetition(t)
+	if cb.loopCtx == nil {
+		t.Fatal("loop context missing")
+	}
+	cb.loopCtx.Runtime.Execution.ToolBudget = 1
+	granted, message := cb.PetitionToolCall("generate_pdf")
+	if granted || strings.Contains(message, "已由主机授权") {
+		t.Fatalf("lookup cap must not turn the petition into a grant: granted=%v message=%q", granted, message)
+	}
+	if !successorNotYetListedDenial(message, "generate_pdf") || !strings.Contains(message, `"web_search"`) {
+		t.Fatalf("lookup cap must still name the predecessor: %q", message)
+	}
+	if !planHasCapabilities(cb.semanticSurface.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
+		t.Fatalf("petitioned chain missing under selection cap: %#v unmet=%#v", cb.semanticSurface.plan.Selections, cb.semanticSurface.plan.Unmet)
+	}
+	for _, selection := range cb.semanticSurface.plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityInformationFetchWeb {
+			t.Fatalf("selection cap must not resurrect an omitted fetch leg: %#v", cb.semanticSurface.plan.Selections)
+		}
+	}
+}
+
+// A non-expert live_data turn is a light prompt. Admitting generate_pdf used
+// to leave that prompt in place, so the next request's authorizer stripped
+// the grant setVisible had just recorded and the model was told the tool did
+// not exist. The signed selection is not light-safe, so the turn has to leave
+// the light contract before that request.
+func TestLiveDataPDFPetitionLeavesLightPrompt(t *testing.T) {
+	cb, searchName := liveDataDesktopBeforePDFPetition(t)
+	if cb.loopCtx == nil {
+		t.Fatal("loop context missing")
+	}
+	cb.loopCtx.Runtime.Execution.Layer = string(executionLayerLight)
+	cb.loopCtx.Runtime.Execution.PromptProfile = "light"
+	cb.loopCtx.Runtime.Execution.TaskType = string(intent.LabelLiveData)
+	cb.loopCtx.Runtime.Execution.ToolBudget = 1
+	cb.loopCtx.Runtime.Execution.IterationBudget = 3
+	cb.loopCtx.Runtime.Execution.Reason = "semantic capability-managed lookup"
+	cb.maxIter = 3
+	cb.systemPrompt = "light fence: 不要生成文档"
+
+	granted, message := cb.PetitionToolCall("generate_pdf")
+	if granted || strings.Contains(message, "已由主机授权") {
+		t.Fatalf("withheld generate must not be described as granted: granted=%v message=%q", granted, message)
+	}
+	if !successorNotYetListedDenial(message, "generate_pdf") || !strings.Contains(message, `"web_search"`) {
+		t.Fatalf("petition must still name the lookup: %q", message)
+	}
+	profile := cb.loopCtx.Runtime.Execution
+	if profile.PromptIsLight() || profile.IsLight() {
+		t.Fatalf("petitioned generate must leave the light prompt: %+v", profile)
+	}
+	if profile.Reason != executionReasonPetitionLeftLight {
+		t.Fatalf("reason=%q", profile.Reason)
+	}
+	if !cb.surfaceRefreshPending {
+		t.Fatal("the next executed lookup must refresh the system prompt")
+	}
+	if strings.Contains(cb.systemPrompt, "不要生成文档") || !strings.Contains(cb.systemPrompt, "when a render or delivery tool is listed") {
+		t.Fatalf("system prompt still forbids the signed generate step: %s", cb.systemPrompt)
+	}
+	if prompt := cb.PetitionSystemPrompt(); !strings.Contains(prompt, "when a render or delivery tool is listed") {
+		t.Fatal("petition must publish the rewritten prompt for the next request")
+	}
+	if again := cb.PetitionSystemPrompt(); again != "" {
+		t.Fatalf("petition prompt copy must be one-shot, got %q", again)
+	}
+
+	delta := []agent.ConversationEntry{{
+		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-search", "name": searchName}},
+	}}
+	_ = cb.OnToolBatchStarting(delta, agent.ToolBatchMetadata{Sequence: 1, LastToolName: searchName})
+	if search := cb.ExecuteToolCall(searchName, `{"query":"兰州天气"}`, "call-search").Result; strings.Contains(search, "[system rejected]") {
+		t.Fatalf("search result=%q", search)
+	}
+	committed := append(append([]agent.ConversationEntry(nil), delta...), agent.ConversationEntry{
+		Role: "tool", Content: "兰州：多云，24°C / 11°C", ToolCallID: "call-search", ToolName: searchName,
+	})
+	if err := cb.OnToolBatchCommitted(committed, agent.ToolBatchMetadata{Sequence: 1, LastToolName: searchName}); err != nil {
+		t.Fatal(err)
+	}
+	if !cb.RefreshAfterToolExecution(searchName) {
+		t.Fatal("lookup commit must refresh the successor request")
+	}
+	if cb.loopCtx.Runtime.Execution.PromptIsLight() {
+		t.Fatalf("prompt refresh wrote the light profile back: %+v", cb.loopCtx.Runtime.Execution)
+	}
+	name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf")
+	if name == "" || grant.Token == "" {
+		t.Fatalf("generate grant missing after lookup: %#v", cb.semanticSurface.grants)
+	}
+	if tool.GrantSelectionIsLightPromptSafe(cb.semanticSurface.plan, cb.semanticSurface.grants, name) {
+		t.Fatal("generate selection must not be light-prompt-safe")
+	}
+	if !cb.IsToolAllowed(name) {
+		t.Fatal("full profile must allow the petitioned generate grant")
+	}
+	filtered := agent.FilterToolDefinitionsByAuthorizer(cb, cb.BuildToolsForModelRequest(cb.userText, 1))
+	if !toolNamesContain(filtered, name) {
+		t.Fatalf("authorizer stripped the petitioned generate grant: %v", toolNamesOf(filtered))
+	}
+}
+
+func TestReadOnlyPlanStaysOnLightPrompt(t *testing.T) {
+	ctx := NewLoopContext("light-readonly-petition", 3, nil)
+	ctx.Runtime.Execution = ExecutionProfile{
+		Layer: string(executionLayerLight), PromptProfile: "light",
+		ToolBudget: 1, IterationBudget: 3, Reason: "semantic capability-managed lookup",
+	}
+	parent := tool.ToolPlan{Selections: []tool.PlannedSelection{
+		{ID: "search", NeedID: "need:search", Effects: []tool.EffectClass{tool.EffectReadOnly}, FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "render", NeedID: "need:render", Effects: []tool.EffectClass{tool.EffectLocalMutation}, FitProof: tool.FitProof{MatchedCapability: "visual.render.live_data"}},
+	}}
+	cb := &sharedAgentLoopCallbacks{
+		loopCtx: ctx,
+		semanticSurface: &semanticCallSurface{
+			plan: tool.ToolPlan{Selections: append(append([]tool.PlannedSelection{}, parent.Selections...), tool.PlannedSelection{
+				ID: "fetch", NeedID: "need:fetch", Effects: []tool.EffectClass{tool.EffectReadOnly}, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityInformationFetchWeb},
+			})},
+		},
+		systemPrompt: "light fence",
+	}
+	cb.leaveLightProfileForUnsafePetition(parent)
+	if !cb.loopCtx.Runtime.Execution.PromptIsLight() || cb.surfaceRefreshPending || cb.petitionPromptReady {
+		t.Fatalf("read-only addition must stay light: %+v pending=%v ready=%v", cb.loopCtx.Runtime.Execution, cb.surfaceRefreshPending, cb.petitionPromptReady)
+	}
+	if cb.systemPrompt != "light fence" {
+		t.Fatalf("read-only addition rewrote the prompt: %q", cb.systemPrompt)
+	}
+}
+
+func TestAlreadyPlannedSendFileOnLightVisualStaysLight(t *testing.T) {
+	ctx := NewLoopContext("light-visual-send", 3, nil)
+	ctx.Runtime.Execution = ExecutionProfile{
+		Layer: string(executionLayerLight), PromptProfile: "light",
+		ToolBudget: 0, IterationBudget: 4, Reason: "semantic capability-managed live visual",
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: &IMMessageHandler{},
+		loopCtx: ctx,
+		semanticSurface: &semanticCallSurface{
+			replan:    &semanticReplanInput{},
+			completed: map[string]bool{},
+			grants: map[string]tool.InvocationGrant{
+				"web_search": {SelectionID: "search", Token: "live"},
+			},
+			plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+				{ID: "search", NeedID: "need:search", Effects: []tool.EffectClass{tool.EffectReadOnly}, FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+				{ID: "render", NeedID: "need:render", Effects: []tool.EffectClass{tool.EffectLocalMutation}, FitProof: tool.FitProof{MatchedCapability: "visual.render.live_data"}},
+				{ID: "deliver", NeedID: "need:deliver", Effects: []tool.EffectClass{tool.EffectExternalEffect}, FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}},
+			}},
+		},
+		systemPrompt: "light fence",
+	}
+	granted, message := cb.PetitionToolCall("send_file")
+	if !ctx.Runtime.Execution.PromptIsLight() || ctx.Runtime.Execution.IterationBudget != 4 {
+		t.Fatalf("premature send_file left the weather card: granted=%v message=%q profile=%+v", granted, message, ctx.Runtime.Execution)
+	}
+	if cb.systemPrompt != "light fence" || cb.petitionPromptReady || cb.surfaceRefreshPending {
+		t.Fatalf("weather card prompt changed: prompt=%q ready=%v pending=%v", cb.systemPrompt, cb.petitionPromptReady, cb.surfaceRefreshPending)
+	}
+}
+
+func toolNamesContain(defs []map[string]interface{}, name string) bool {
+	for _, def := range defs {
+		if extractToolName(def) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNamesOf(defs []map[string]interface{}) []string {
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, extractToolName(def))
+	}
+	return names
+}
+
 func TestIMSemanticDefaultPlanningBudgetKeepsGenerateChain(t *testing.T) {
 	h := registerDocumentGenerateAndSearch(t)
 	prepared, handled, err := h.semanticPlanForTurnWithClassification("user", "查询南京天气，并生成pdf报告", "desktop", "root-budget-default", "turn", liveDataGenerateClassification())
@@ -701,8 +932,8 @@ func TestIMSemanticWeatherPDFHostGeneratesWhenModelStopsAfterSearch(t *testing.T
 	if resp.FileMimeType != "application/pdf" || resp.LocalFilePath == "" {
 		t.Fatalf("host must render and attach the PDF after the model stopped: %+v", resp)
 	}
-	if strings.Contains(resp.Text, "请稍候") {
-		t.Fatalf("host generate must strip the deferred-PDF promise: %q", resp.Text)
+	if !strings.Contains(resp.Text, "26℃") || !strings.Contains(resp.Text, "25℃") || !strings.Contains(resp.Text, "请稍候") {
+		t.Fatalf("host generate must keep the weather answer: %q", resp.Text)
 	}
 	if _, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); grant.Token != "" {
 		t.Fatal("host generate must consume the one-shot generate_pdf grant")
@@ -736,6 +967,34 @@ func TestHostAutoGeneratePDFUsesSearchEvidenceWhenAssistantIsEmpty(t *testing.T)
 	if resp.FileMimeType != "application/pdf" || resp.LocalFilePath == "" {
 		t.Fatalf("host must generate from search evidence: %+v", resp)
 	}
+	if !cb.turnPublishedPDF || resp.Text != "已生成「南京天气」PDF。" {
+		t.Fatalf("a PDF published this turn with an empty answer uses the publication receipt: published=%v text=%q", cb.turnPublishedPDF, resp.Text)
+	}
+}
+
+func TestHostGenerateDoesNotPublishAfterDocumentDelivery(t *testing.T) {
+	cb := weatherPDFDesktopReadyAfterSearch(t)
+	name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf")
+	if name == "" || grant.Token == "" {
+		t.Fatal("generate grant missing after search")
+	}
+	cb.userText = "发到微信"
+	cb.filesForwarded = 1
+	cb.semanticDeliveryFileData = base64.StdEncoding.EncodeToString([]byte("%PDF-1.4\nalready-delivered"))
+	cb.semanticDeliveryFileName = "崇州天气与风土人情.pdf"
+	cb.semanticDeliveryFileMIME = "application/pdf"
+	resp := &IMAgentResponse{}
+	attachSharedLoopArtifacts(resp, cb)
+	if _, ok := cb.semanticSurface.grants[name]; !ok {
+		t.Fatal("a delivered document must not consume the live generate grant")
+	}
+	if cb.turnPublishedPDF || strings.Contains(resp.Text, "已生成") || strings.Contains(resp.Text, "发到微信") {
+		t.Fatalf("host published a second report after delivery: published=%v text=%q", cb.turnPublishedPDF, resp.Text)
+	}
+	want := localizeIMProactiveCaption(cb.handler.imUILangOrZh(), "崇州天气与风土人情.pdf", "application/pdf")
+	if resp.FileName != "崇州天气与风土人情.pdf" || resp.Text != want || !strings.Contains(resp.Text, "崇州天气与风土人情.pdf") {
+		t.Fatalf("delivered file was replaced: name=%q text=%q want=%q path=%q", resp.FileName, resp.Text, want, resp.LocalFilePath)
+	}
 }
 
 func TestHostAutoGeneratePDFRunsAfterLLMErrorWhenSearchSucceeded(t *testing.T) {
@@ -760,11 +1019,8 @@ func TestHostAutoGeneratePDFReplacesPromiseOnlyTextAfterTimeout(t *testing.T) {
 	if resp.Error != "" {
 		t.Fatalf("stale LLM timeout must not hide the PDF: %q", resp.Error)
 	}
-	if strings.Contains(resp.Text, "请稍候") || strings.Contains(resp.Text, "接下来我将") {
-		t.Fatalf("promise-only text must be replaced after the PDF attaches: %q", resp.Text)
-	}
-	if !strings.Contains(resp.Text, "PDF") {
-		t.Fatalf("replacement text=%q", resp.Text)
+	if !strings.Contains(resp.Text, "请稍候") || !strings.Contains(resp.Text, "接下来我将") {
+		t.Fatalf("attaching a PDF must not rewrite the answer: %q", resp.Text)
 	}
 }
 
@@ -778,8 +1034,28 @@ func TestHostAutoGeneratePDFReplacesWaitOnlyTextAfterTimeout(t *testing.T) {
 	if resp.Error != "" {
 		t.Fatalf("stale LLM timeout must not hide the PDF: %q", resp.Error)
 	}
-	if strings.Contains(resp.Text, "请稍候") {
-		t.Fatalf("wait-only text must be replaced after the PDF attaches: %q", resp.Text)
+	if !strings.Contains(resp.Text, "请稍候") {
+		t.Fatalf("attaching a PDF must not rewrite the answer: %q", resp.Text)
+	}
+}
+
+func TestHostOwnedFileAttachKeepsWeatherAnswer(t *testing.T) {
+	summary := "崇州天气 PDF 已生成并发送给你了。\n\n今日（10/03 周六）：多云转小雨，25/16°C，微风，湿度约79%，外出带伞。\n未来趋势：4日小雨 23/16°C，5日阴转多云 21/14°C。"
+	resp := &IMAgentResponse{
+		Text:          summary,
+		FileName:      "崇州天气预报.pdf",
+		FileMimeType:  "application/pdf",
+		LocalFilePath: `C:\tmp\崇州天气预报.pdf`,
+	}
+	finalizeHostOwnedFileResponse(resp, &sharedAgentLoopCallbacks{
+		userText:               "崇州天气",
+		semanticLookupEvidence: "Public web results for 崇州天气\n25/16℃",
+	})
+	if !strings.Contains(resp.Text, "25/16") || !strings.Contains(resp.Text, "21/14") {
+		t.Fatalf("weather answer was replaced by a file receipt: %q", resp.Text)
+	}
+	if strings.Contains(resp.Text, "已生成「") {
+		t.Fatalf("receipt hid the weather: %q", resp.Text)
 	}
 }
 
@@ -861,8 +1137,8 @@ func TestSemanticGeneratePDFInvocationArgsWashesWithoutTitle(t *testing.T) {
 	if strings.Contains(got, `"date"`) || strings.Contains(got, `"query"`) || strings.Contains(got, `"path"`) {
 		t.Fatalf("decorative extras survived: %s", got)
 	}
-	if !strings.Contains(got, "日期：2026-08-20") {
-		t.Fatalf("date should fold into content: %s", got)
+	if !strings.Contains(got, "2026-08-20") || strings.Contains(got, "日期：") {
+		t.Fatalf("date should fold into content without a language label: %s", got)
 	}
 	if strings.Contains(got, `"title"`) {
 		t.Fatalf("absent title must stay omitted: %s", got)
@@ -878,7 +1154,7 @@ func TestSemanticGeneratePDFInvocationArgsWashesWithoutTitle(t *testing.T) {
 		t.Fatalf("title-only content plus output_path must stay rejected: %s", titleOnly)
 	}
 	noDateFold := semanticGeneratePDFInvocationArgs(`{"content":"南京天气报告","date":"2026-08-20"}`)
-	if strings.Contains(noDateFold, "日期：") || !strings.Contains(noDateFold, `"date"`) {
+	if noDateFold != `{"content":"南京天气报告","date":"2026-08-20"}` {
 		t.Fatalf("title-only plus date must not be folded into a fake body: %s", noDateFold)
 	}
 	weather := semanticGeneratePDFInvocationArgs(`{"content":"南京今日天气：小雨转多云，气温25-32℃，东风4-5级","output":"C:\\\\tmp\\\\n.pdf","title":"南京天气报告"}`)
@@ -887,6 +1163,12 @@ func TestSemanticGeneratePDFInvocationArgsWashesWithoutTitle(t *testing.T) {
 	}
 	if semanticGeneratePDFLooksLikeTitleOnly("南京今日小雨转多云，外出请带伞。") {
 		t.Fatal("punctuated weather must not look like a title")
+	}
+	if semanticGeneratePDFLooksLikeTitleOnly("Bring an umbrella.") {
+		t.Fatal("an English sentence must not look like a title")
+	}
+	if !semanticGeneratePDFLooksLikeTitleOnly("report.pdf") {
+		t.Fatal("a dotted token must stay title-only")
 	}
 	if !semanticGeneratePDFLooksLikeTitleOnly("南京天气报告") {
 		t.Fatal("report title must stay title-only")
@@ -900,6 +1182,12 @@ func TestSemanticGeneratePDFInvocationArgsWashesWithoutTitle(t *testing.T) {
 	if semanticGeneratePDFLooksLikeTitleOnly("# 南京天气\n\n小雨31℃") {
 		t.Fatal("heading plus weather body was treated as a title")
 	}
+	if !semanticGeneratePDFLooksLikeTitleOnly("Weekly weather notes") {
+		t.Fatal("a short line without a body must look title-only")
+	}
+	if semanticGeneratePDFLooksLikeTitleOnly(strings.Repeat("天气", 13)) {
+		t.Fatal("a long line must not look title-only")
+	}
 	if !semanticGeneratePDFArgsTooThin(`{"content":"# Weekly Status\n","title":"Weekly Status"}`) {
 		t.Fatal("heading identical to title must stay thin")
 	}
@@ -910,7 +1198,7 @@ func TestSemanticGeneratePDFInvocationArgsWashesWithoutTitle(t *testing.T) {
 		t.Fatalf("non-string content must not be coerced into a report: %s", keep)
 	}
 	noFold := semanticGeneratePDFInvocationArgs(`{"content":"# 南京\n18C","date":"南京天气"}`)
-	if strings.Contains(noFold, `"date"`) || strings.Contains(noFold, "日期：南京天气") {
+	if strings.Contains(noFold, `"date"`) || strings.Contains(noFold, "南京天气") {
 		t.Fatalf("query-shaped date must be dropped, not folded: %s", noFold)
 	}
 }
@@ -965,11 +1253,11 @@ func TestHostAutoGeneratePDFSurvivesModelSchemaRejectAfterSearch(t *testing.T) {
 	if resp.FileMimeType != "application/pdf" || resp.LocalFilePath == "" {
 		t.Fatalf("host must still attach the PDF after a model schema reject: %+v", resp)
 	}
-	if strings.Contains(resp.Text, "未授权") || strings.Contains(resp.Text, "PDF生成失败") {
-		t.Fatalf("authorization excuse survived host attach: %q", resp.Text)
+	if strings.Contains(resp.Text, "未授权") || strings.Contains(resp.Text, "generate_pdf") {
+		t.Fatalf("tool-status sentence survived host attach: %q", resp.Text)
 	}
-	if !strings.Contains(resp.Text, "南京小雨31℃") && !strings.Contains(resp.Text, "PDF") {
-		t.Fatalf("host attach lost the weather summary: %q", resp.Text)
+	if !strings.Contains(resp.Text, "南京小雨31℃") || !strings.Contains(resp.Text, "PDF生成失败") {
+		t.Fatalf("sentences that do not cite the tool id must stay: %q", resp.Text)
 	}
 	if msg := cb.ToolDenialMessage("generate_pdf"); strings.Contains(msg, "not listed yet") || !strings.Contains(msg, "already used") {
 		t.Fatalf("consumed generate denial=%q", msg)
@@ -1085,6 +1373,53 @@ func TestSearchPDFEarlySendFileNamesLookupThenGenerate(t *testing.T) {
 	granted, message := cb.PetitionToolCall("send_file")
 	if granted || !strings.Contains(message, `Call "web_search" now`) || !strings.Contains(message, `"generate_pdf" appears on the next request`) || !strings.Contains(message, `Call "send_file" only after "send_file" is listed`) || strings.Contains(message, `"send_file" appears`) {
 		t.Fatalf("real-plan send_file denial granted=%v message=%q", granted, message)
+	}
+}
+
+// Production 2026-10-02: 「继续完成 兰州天气」 planned only live_data. Petitioning
+// generate_pdf added the PDF leg, which still waits on this turn's required
+// web_search. The host used to answer with the grant acknowledgement anyway,
+// so the model re-called a name the next request did not list.
+func TestLiveDataPDFPetitionWaitsForLookupWithoutClaimingGrant(t *testing.T) {
+	cb, searchName := liveDataDesktopBeforePDFPetition(t)
+	if _, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); grant.Token != "" {
+		t.Fatal("live_data surface must not list generate_pdf before the petition")
+	}
+	granted, message := cb.PetitionToolCall("generate_pdf")
+	if granted || strings.Contains(message, "已由主机授权") {
+		t.Fatalf("withheld generate must not be described as granted: granted=%v message=%q", granted, message)
+	}
+	if !successorNotYetListedDenial(message, "generate_pdf") || !strings.Contains(message, `"web_search"`) {
+		t.Fatalf("petition must name the lookup that unlocks generate: %q", message)
+	}
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("the expansion still happened and must spend the effectful budget")
+	}
+	if !planHasCapabilities(cb.semanticSurface.plan, "information.search.web", "document.generate.file") {
+		t.Fatalf("expansion must keep search and add generate: %#v", cb.semanticSurface.plan.Selections)
+	}
+	if name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); name != "" || grant.Token != "" {
+		t.Fatalf("generate must stay unissued until lookup commits: name=%q grant=%#v", name, grant)
+	}
+
+	delta := []agent.ConversationEntry{{
+		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-search", "name": searchName}},
+	}}
+	_ = cb.OnToolBatchStarting(delta, agent.ToolBatchMetadata{Sequence: 1, LastToolName: searchName})
+	if search := cb.ExecuteToolCall(searchName, `{"query":"兰州天气"}`, "call-search").Result; strings.Contains(search, "[system rejected]") {
+		t.Fatalf("search result=%q", search)
+	}
+	if name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); name != "" || grant.Token != "" {
+		t.Fatalf("generate must not unlock mid-batch: name=%q grant=%#v", name, grant)
+	}
+	committed := append(append([]agent.ConversationEntry(nil), delta...), agent.ConversationEntry{
+		Role: "tool", Content: "兰州：多云，24°C / 11°C", ToolCallID: "call-search", ToolName: searchName,
+	})
+	if err := cb.OnToolBatchCommitted(committed, agent.ToolBatchMetadata{Sequence: 1, LastToolName: searchName}); err != nil {
+		t.Fatal(err)
+	}
+	if name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); name == "" || grant.Token == "" {
+		t.Fatalf("one committed search must issue the petitioned generate grant: grants=%#v", cb.semanticSurface.grants)
 	}
 }
 
@@ -1329,8 +1664,8 @@ func TestHostOwnedPDFReportHelpers(t *testing.T) {
 	if got := hostOwnedPDFReportTitle("杭州天气，生成pdf报告"); got != "杭州天气" {
 		t.Fatalf("title=%q", got)
 	}
-	if got := hostOwnedPDFReportTitle("生成pdf报告"); got != "报告" {
-		t.Fatalf("empty title=%q", got)
+	if got := hostOwnedPDFReportTitle("生成pdf报告"); got != "生成pdf报告" {
+		t.Fatalf("bare instruction title=%q", got)
 	}
 	if got := hostOwnedPDFReportTitle("Hangzhou weather, generate a PDF report"); got != "Hangzhou weather" {
 		t.Fatalf("english title=%q", got)
@@ -1345,42 +1680,26 @@ func TestHostOwnedPDFReportHelpers(t *testing.T) {
 	if got := hostOwnedPDFReportTitle(picker); got != "杭州天气" {
 		t.Fatalf("picker/host notes leaked into title: %q", got)
 	}
-	if wait := stripDeferredPDFPromise("请稍候～\n今天多云。"); wait != "今天多云。" {
-		t.Fatalf("wait-only line survived: %q", wait)
+	kept := agentruntime.ProjectHostPublishedPDFChat("请稍候～\n今天多云。")
+	if !strings.Contains(kept, "今天多云") || !strings.Contains(kept, "请稍候") {
+		t.Fatalf("the answer was rewritten: %q", kept)
 	}
-	excuse := stripDeferredPDFPromise("PDF生成失败（参数无效）\n当前轮次未授权 `generate_pdf` 工具，无法生成PDF。天气数据已获取：南京小雨31℃。\n如需PDF报告，请在下一轮授权该工具后重新请求")
-	if strings.Contains(excuse, "PDF生成失败") || strings.Contains(excuse, "未授权") || strings.Contains(excuse, "如需PDF报告") {
-		t.Fatalf("authorization excuse survived: %q", excuse)
+	excuse := agentruntime.OmitHostPDFToolStatus("PDF生成失败（参数无效）\n当前轮次未授权 `generate_pdf` 工具，无法生成PDF。天气数据已获取：南京小雨31℃。")
+	if strings.Contains(excuse, "generate_pdf") || strings.Contains(excuse, "未授权") {
+		t.Fatalf("tool-status sentence survived: %q", excuse)
 	}
-	if !strings.Contains(excuse, "南京小雨31℃") {
-		t.Fatalf("weather after an excuse sentence was dropped: %q", excuse)
+	if !strings.Contains(excuse, "南京小雨31℃") || !strings.Contains(excuse, "PDF生成失败") {
+		t.Fatalf("sentences that do not cite the tool id must stay: %q", excuse)
 	}
-	if kept := stripDeferredPDFPromise("今天多云。\n如需PDF报告请查看附件。"); !strings.Contains(kept, "如需PDF报告请查看附件") {
-		t.Fatalf("benign need-PDF line was stripped: %q", kept)
+	if kept := agentruntime.OmitHostPDFToolStatus("午后大风无法直接生成有效对流。"); !strings.Contains(kept, "无法直接生成") {
+		t.Fatalf("report sentence without the tool id was dropped: %q", kept)
 	}
-	if wait := stripDeferredPDFPromise("无法生成PDF。请稍候～"); strings.Contains(wait, "请稍候") || strings.Contains(wait, "无法生成PDF") {
-		t.Fatalf("excuse remainder wait-line survived: %q", wait)
+	xmlFail := agentruntime.OmitHostPDFToolStatus("模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。")
+	if xmlFail != "" {
+		t.Fatalf("host malformed-tool notice survived: %q", xmlFail)
 	}
-	liveFail := stripDeferredPDFPromise("关于PDF报告生成：generate_pdf 工具调用失败，暂无法直接生成。如需PDF报告，我可以将上述内容整理为文本格式供你保存，或通过其他方式协助。")
-	if strings.Contains(liveFail, "工具调用失败") || strings.Contains(liveFail, "如需PDF报告") {
-		t.Fatalf("live generate_pdf failure narrative survived: %q", liveFail)
-	}
-	repeatMiss := stripDeferredPDFPromise("不过，当前回合工具列表中没有 PDF 生成工具 (generate_pdf) 授权，我暂时无法直接生成 PDF 文件。请重新发起生成 PDF 的请求，授权工具出现后我会立即调用并输出报告文件。")
-	if strings.Contains(repeatMiss, "generate_pdf") || strings.Contains(repeatMiss, "工具列表中没有") || strings.Contains(repeatMiss, "请重新发起") {
-		t.Fatalf("repeat-turn missing-tool excuse survived: %q", repeatMiss)
-	}
-	if kept := stripDeferredPDFPromise("如需PDF报告，附件已保存到桌面。"); !strings.Contains(kept, "如需PDF报告") {
-		t.Fatalf("attached-PDF save line was stripped: %q", kept)
-	}
-	if kept := stripDeferredPDFPromise("午后大风无法直接生成有效对流。"); !strings.Contains(kept, "无法直接生成") {
-		t.Fatalf("weather without PDF was stripped: %q", kept)
-	}
-	xmlFail := stripDeferredPDFPromise("模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。")
-	if strings.Contains(xmlFail, "无法解析") || strings.Contains(xmlFail, "XML") {
-		t.Fatalf("malformed tool XML intercept survived: %q", xmlFail)
-	}
-	if !strings.Contains(stripDeferredPDFPromise("午后请稍候再出门。"), "午后请稍候再出门") {
-		t.Fatal("weather advice wait phrase was stripped")
+	if !strings.Contains(agentruntime.OmitHostPDFToolStatus("午后请稍候再出门。"), "午后请稍候再出门") {
+		t.Fatal("report sentence was dropped because of its wording")
 	}
 	if !shouldClearStaleErrorAfterHostFileAttach("LLM call failed: timeout") || shouldClearStaleErrorAfterHostFileAttach("cancelled") {
 		t.Fatal("stale-error helper")
@@ -1388,27 +1707,21 @@ func TestHostOwnedPDFReportHelpers(t *testing.T) {
 	if shouldClearStaleErrorAfterHostFileAttach("semantic_capability_unmet") || shouldClearStaleErrorAfterHostFileAttach("[system rejected] x") {
 		t.Fatal("policy errors must not be cleared")
 	}
-	cleaned := stripDeferredPDFPromise("今天多云，26℃。\n接下来我将为这份南京天气生成 PDF 报告，请稍候～\n午后请稍候再出门。")
-	if strings.Contains(cleaned, "请稍候～") || strings.Contains(cleaned, "接下来我将为这份南京天气生成") {
-		t.Fatalf("promise survived: %q", cleaned)
+	promise := "今天多云，26℃。\n接下来我将为这份南京天气生成 PDF 报告，请稍候～\n午后请稍候再出门。"
+	if got := agentruntime.ProjectHostPublishedPDFChat(promise); !strings.Contains(got, "26℃") || !strings.Contains(got, "午后请稍候再出门") || !strings.Contains(got, "接下来我将") {
+		t.Fatalf("the answer was rewritten: %q", got)
 	}
-	if !strings.Contains(cleaned, "午后请稍候再出门") {
-		t.Fatalf("weather advice was stripped: %q", cleaned)
+	keptPromise := agentruntime.OmitHostPDFToolStatus(promise)
+	if !strings.Contains(keptPromise, "请稍候～") || !strings.Contains(keptPromise, "午后请稍候再出门") {
+		t.Fatalf("wording alone must not drop a report or a promise: %q", keptPromise)
 	}
-	forecast := stripDeferredPDFPromise("接下来我将为您生成未来三天天气报告。\n今天多云。")
+	forecast := agentruntime.OmitHostPDFToolStatus("接下来我将为您生成未来三天天气报告。\n今天多云。")
 	if !strings.Contains(forecast, "接下来我将为您生成未来三天天气报告") {
-		t.Fatalf("weather 生成报告 line was treated as a PDF promise: %q", forecast)
+		t.Fatalf("report sentence was treated as tool status: %q", forecast)
 	}
-	mixed := stripDeferredPDFPromise("今天多云，26℃。接下来我将为这份杭州天气生成 PDF 报告，请稍候～")
-	if !strings.Contains(mixed, "今天多云，26℃") {
-		t.Fatalf("mixed weather+promise lost the weather: %q", mixed)
-	}
-	if strings.Contains(mixed, "接下来我将") || strings.Contains(mixed, "请稍候") {
-		t.Fatalf("mixed weather+promise kept the wait clause: %q", mixed)
-	}
-	english := stripDeferredPDFPromise("Sunny, 26C. I will generate a PDF report, please wait.")
-	if !strings.Contains(english, "Sunny, 26C") || strings.Contains(strings.ToLower(english), "please wait") || strings.Contains(strings.ToLower(english), "i will") {
-		t.Fatalf("english mixed weather+promise: %q", english)
+	english := agentruntime.OmitHostPDFToolStatus("Sunny, 26C. I will generate a PDF report, please wait.")
+	if !strings.Contains(english, "Sunny, 26C") || !strings.Contains(strings.ToLower(english), "please wait") {
+		t.Fatalf("english promise without the tool id was dropped: %q", english)
 	}
 	cb := &sharedAgentLoopCallbacks{semanticLookupEvidence: "Nanjing weather: cloudy, 26C"}
 	cb.recordSemanticLookupEvidence(tool.PlannedSelection{FitProof: tool.FitProof{MatchedCapability: "information.search.web"}}, "[file_base64|x|application/pdf]AAAA")
@@ -1537,6 +1850,47 @@ func searchPDFDesktopBeforeSearch(t *testing.T) (*sharedAgentLoopCallbacks, stri
 func weatherPDFDesktopBeforeSearch(t *testing.T) (*sharedAgentLoopCallbacks, string) {
 	t.Helper()
 	return documentGenerateDesktopBeforeSearch(t, "南京天气，生成pdf报告", liveDataGenerateClassification())
+}
+
+func liveDataDesktopBeforePDFPetition(t *testing.T) (*sharedAgentLoopCallbacks, string) {
+	t.Helper()
+	id := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ' ' {
+			return '_'
+		}
+		return r
+	}, t.Name())
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(app.closeSemanticInvocationStore)
+	h := registerDocumentGenerateAndSearch(t)
+	h.app = app
+	h.semanticTrustedWebSearch = func(userID, query string) (string, error) {
+		return "兰州：多云，24°C / 11°C", nil
+	}
+	const userText = "继续完成 兰州天气"
+	classification := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: .85, Layer: 3}
+	loopCtx := h.prepareIMLoopContext(nil, IMUserMessage{
+		UserID: "user-1", Platform: "desktop", Text: userText,
+	}, nil, false, false)
+	requestCtx, cancel := semanticRoutingContext(loopCtx)
+	t.Cleanup(cancel)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		requestCtx, "user-1", userText, "desktop", "root-"+id, "turn-"+id, classification, nil,
+	)
+	if err != nil || !handled || surface == nil || len(defs) == 0 {
+		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
+	}
+	if !planHasCapabilities(surface.plan, "information.search.web") || planHasCapabilities(surface.plan, "document.generate.file") {
+		t.Fatalf("live_data continuation must plan search without generate: %#v", surface.plan.Selections)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, semanticSurface: surface, platform: "desktop", loopCtx: loopCtx, userText: userText,
+	}
+	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	if searchName == "" {
+		t.Fatalf("initial surface lost the search grant: %#v", surface.grants)
+	}
+	return cb, searchName
 }
 
 func documentGenerateDesktopBeforeSearch(t *testing.T, userText string, classification *intent.ClassificationResult) (*sharedAgentLoopCallbacks, string) {

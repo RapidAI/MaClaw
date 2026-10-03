@@ -86,6 +86,53 @@ export function isLatexExpertId(expertId: string | null | undefined): boolean {
     return String(expertId || '').trim() === LATEX_EXPERT_ID;
 }
 
+function expertIdFromTaskTags(tags?: string[] | null): string {
+    const prefix = 'source:expert:';
+    for (const raw of tags || []) {
+        const tag = String(raw || '').trim();
+        if (!tag.startsWith(prefix)) continue;
+        const id = tag.slice(prefix.length).trim();
+        if (id) return id;
+    }
+    return '';
+}
+
+function latexTaskRecencyKey(task: { project_path?: string; created_at?: string }): string {
+    const path = String(task.project_path || '').replace(/\\/g, '/');
+    const match = path.match(/-(\d+)$/);
+    const seq = (match ? match[1] : '').padStart(20, '0');
+    // Compare instants, not the raw RFC3339 text. `06:40Z` and `14:33+08:00`
+    // are seven minutes apart, but the strings sort the other way.
+    const created = Date.parse(String(task.created_at || '').trim());
+    if (Number.isFinite(created)) return `1:${String(created).padStart(16, '0')}:${seq}`;
+    return `0:${seq}`;
+}
+
+function normalizedTaskPath(projectPath?: string): string {
+    return String(projectPath || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * The live LaTeX paper is the newest wizard launch. Older rows keep their own
+ * transcript and must not reopen the shared expert conversation.
+ * Non-LaTeX tasks are always "live" so callers can use this as a gate.
+ */
+export function latexExpertTaskIsLive(
+    task: { project_path?: string; tags?: string[] | null; created_at?: string } | null | undefined,
+    tasks: Array<{ project_path?: string; tags?: string[] | null; created_at?: string }>,
+): boolean {
+    if (!isLatexExpertId(expertIdFromTaskTags(task?.tags))) return true;
+    const path = normalizedTaskPath(task?.project_path);
+    if (!path) return true;
+    const peers = (tasks || []).filter(item => isLatexExpertId(expertIdFromTaskTags(item?.tags)) && String(item?.project_path || '').trim());
+    if (peers.length <= 1) return true;
+    let newest = peers[0];
+    for (const item of peers.slice(1)) {
+        if (latexTaskRecencyKey(item) > latexTaskRecencyKey(newest)) newest = item;
+    }
+    return normalizedTaskPath(newest.project_path) === path;
+}
+
 /** The built-in LaTeX paper expert card, used whenever the definition is not
  * loaded yet (library click, task dialog) but the expert id is known. The
  * built-in persona is compiled into the binary, so an empty system prompt here
@@ -353,6 +400,59 @@ function latexCompanionClause(lang: string, file: string, sources: string[] | un
         `相关文件还有：${listed}。`,
         `相關檔案還有：${listed}。`,
     );
+}
+
+/** Opening line for a wizard send. The user already wrote the task, so the
+ * message names the file and then quotes that task. It does not also ask for
+ * an outline. */
+export function latexPaperTaskMessage(
+    lang: string,
+    template: Pick<LatexTemplate, 'id' | 'name'>,
+    document: Pick<LatexDocumentResult, 'relative_path' | 'source_files' | 'created'>,
+    userRequest: string,
+): string {
+    const request = String(userRequest || '').trim();
+    if (!request) return latexPaperOpeningMessage(lang, template, document);
+    const file = String(document.relative_path || 'main.tex');
+    const companions = latexCompanionClause(lang, file, document.source_files);
+    // The file was already on disk. Say so, then give the user's task. The
+    // no-request opening line asks for suggestions, which would fight this task.
+    if (document.created === false) {
+        if (isBlankLatexTemplate(template)) {
+            const lead = latexTemplateText(
+                lang,
+                `The LaTeX document is ${file}, already in the current working directory. Read it, then do the task below.`,
+                `LaTeX 文档是 ${file}，已经在当前工作目录里。请先读现有内容，再完成下面的任务。`,
+                `LaTeX 文件是 ${file}，已經在目前工作目錄裡。請先讀現有內容，再完成下面的任務。`,
+            );
+            return `${lead}\n\n${request}`;
+        }
+        const name = String(template.name || '').trim() || String(template.id || '').trim();
+        const lead = latexTemplateText(
+            lang,
+            `The entry file is ${file} and it carries the "${name}" preamble.${companions} Read it, then do the task below.`,
+            `入口文件是 ${file}，导言区保留了「${name}」模板的设置。${companions}请先读现有内容，再完成下面的任务。`,
+            `入口檔是 ${file}，前言區保留了「${name}」模板的設定。${companions}請先讀現有內容，再完成下面的任務。`,
+        );
+        return `${lead}\n\n${request}`;
+    }
+    if (isBlankLatexTemplate(template)) {
+        const lead = latexTemplateText(
+            lang,
+            `The LaTeX document is ${file}, already in the current working directory.${companions}`,
+            `LaTeX 文档是 ${file}，已经在当前工作目录里。${companions}`,
+            `LaTeX 文件是 ${file}，已經在目前工作目錄裡。${companions}`,
+        );
+        return `${lead}\n\n${request}`;
+    }
+    const name = String(template.name || '').trim() || String(template.id || '').trim();
+    const lead = latexTemplateText(
+        lang,
+        `The entry file is ${file} and it carries the "${name}" preamble.${companions}`,
+        `入口文件是 ${file}，导言区保留了「${name}」模板的设置。${companions}`,
+        `入口檔是 ${file}，前言區保留了「${name}」模板的設定。${companions}`,
+    );
+    return `${lead}\n\n${request}`;
 }
 
 export function latexPaperOpeningMessage(

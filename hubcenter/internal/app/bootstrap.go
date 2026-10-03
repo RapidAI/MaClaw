@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -269,6 +270,77 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	llmModule, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc, dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("initialize LLM module: %w", err)
+	}
+	// The Token Bank client API lives on the SkillMarket handler set (it shares
+	// its session), but the repository is created by the LLM module. Wire the
+	// two together here rather than reordering construction: smHandlers is built
+	// before the LLM module because SkillMarket must exist even when LLM
+	// persistence fails to initialise.
+	if llmModule != nil && llmModule.TokenBank != nil {
+		smHandlers.SetTokenBankRepo(llmModule.TokenBank, nodeID)
+		if haSvc != nil {
+			smHandlers.SetTokenBankOrigin(haSvc)
+		}
+		bank := llmModule.TokenBank
+		app.goBackground(func(ctx context.Context) {
+			httpapi.RunTokenBankGiftExpiry(ctx, bank, time.Minute)
+		})
+	}
+	// The registry half of Token Bank (§3.2). A share row alone is not
+	// reachable: publishing turns each shared model into a registry member that
+	// dispatch can select. Wired separately from the repository because it is
+	// the LLM service, not the SQLite provider.
+	if llmModule != nil && llmModule.Service != nil {
+		smHandlers.SetTokenBankPublisher(llmModule.Service)
+	}
+	// The settlement half of Token Bank (§5, P0-3). The proxy knows a provider
+	// id, not a share, so this adapter is what lets a completed call credit the
+	// owner. It is installed on the proxy config here because app is the only
+	// package that knows both the SQLite repository and the LLM service; a nil
+	// adapter (no Token Bank repo) leaves settlement a no-op.
+	if llmModule != nil && llmModule.ProxyCfg != nil {
+		settler := newTokenBankProxySettler(llmModule.TokenBank, systemSettings)
+		if concrete, ok := settler.(*tokenBankProxySettler); ok {
+			concrete.llm = llmModule.Service
+		}
+		llmModule.ProxyCfg.SetTokenBankSettler(settler)
+	}
+	if llmModule != nil && llmModule.TokenBank != nil {
+		bank := llmModule.TokenBank
+		svc := llmModule.Service
+		llmservice.ConfigureTokenBankAutoPause(func() int {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			raw, err := systemSettings.Get(ctx, sqlite.TokenBankSettingsKey)
+			if err != nil {
+				return sqlite.DefaultTokenBankSettings().AutoPauseConsecutiveFailures
+			}
+			return sqlite.ParseTokenBankSettings(raw).AutoPauseConsecutiveFailures
+		}, func(shareID, model, reason string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			now := time.Now().UTC()
+			// Both writes share the route lock with resume and republish. A
+			// resume that lands between them would leave the row active and
+			// the member paused, and a later republish keeps that pause.
+			// A failure here must stay visible: the counter only resets on
+			// success, so the retry path is the next failure past the
+			// threshold (see noteTokenBankAutoPause). Losing the log loses
+			// the only trace of why a failing share was never paused.
+			if err := llmservice.WithTokenBankRouteLock(func() error {
+				if err := bank.SetSharePaused(ctx, shareID, "", reason, true, now); err != nil {
+					return err
+				}
+				_ = bank.NoteShareModelError(ctx, shareID, model, reason)
+				if svc == nil {
+					return nil
+				}
+				_, err := svc.SetTokenBankSharePaused(ctx, shareID, true)
+				return err
+			}); err != nil {
+				log.Printf("[token-bank] auto-pause share %s model %s failed: %v (retries on the next failure)", shareID, model, err)
+			}
+		})
 	}
 	httpapi.SetLLMProviderMonitorMailer(mailer)
 	// Every node starts the monitor loop; in HA the nodes self-elect a single

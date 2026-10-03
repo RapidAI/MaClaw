@@ -282,6 +282,18 @@ func shouldRestrictToSkillSearch(phase agentLoopPhase) bool {
 	return phase.ForceSkillPreference && phase.SkillMode == skillPreferenceRemoteRequired && !phase.RemoteSearchExhausted
 }
 
+// applySkillPreferenceSurface drops host tools a skill-search round must
+// not regain. Agent-guided mode keeps those tools and is resealed later.
+func applySkillPreferenceSurface(tools []map[string]interface{}, phase agentLoopPhase) []map[string]interface{} {
+	if !phase.ForceSkillPreference || phase.SkillMode == skillPreferenceAgentGuided {
+		return tools
+	}
+	if shouldRestrictToSkillSearch(phase) {
+		return filterToolsForRemoteSkillSearch(tools)
+	}
+	return filterToolsForSkillPreference(tools)
+}
+
 func filterToolsForSkillPreference(toolDefs []map[string]interface{}) []map[string]interface{} {
 	if len(toolDefs) == 0 {
 		return toolDefs

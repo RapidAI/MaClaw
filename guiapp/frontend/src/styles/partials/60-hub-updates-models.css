@@ -999,17 +999,27 @@
 }
 
 .llm-config-form-card__title {
-    margin-bottom: 16px !important;
+    margin-bottom: 0 !important;
     color: var(--theme-text-primary) !important;
     font-size: 0.88rem !important;
     font-weight: 600 !important;
 }
 
-.llm-config-form-card input,
-.llm-config-form-card select {
+/* Radios and checkboxes stay native. The share dialog mounts inside this
+   card, and a 40px text-field box drops the radio glyph off the label line. */
+.llm-config-form-card input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+.llm-config-form-card select,
+.llm-config-form-card textarea {
     min-height: 40px;
-    border-radius: 10px !important;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
     font-size: 0.84rem !important;
+}
+.llm-config-form-card input[role='combobox'] {
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
 }
 
 .model-config-loading {

@@ -4,11 +4,13 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -85,16 +87,8 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessa
 // work part of the enclosing turn's cancellation tree.
 func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx context.Context, msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, recentHistory []string) (ExecutionProfile, *intent.ClassificationResult) {
 	structuralProfile, structurallyForced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse)
-	// Keep the pre-semantic deterministic clock shortcut only for deployments
-	// without UIC. Once UIC exists, LabelCurrentTime is capability-managed and
-	// must go through the same catalog/grant path as the other managed families.
-	if h.getUnifiedClassifier() == nil {
-		if profile, ok := localCurrentTimeExecutionProfile(msg.Text, h.executionContractForRegisteredToolName); ok {
-			return profile, nil
-		}
-		if structurallyForced {
-			return structuralProfile, nil
-		}
+	if h.getUnifiedClassifier() == nil && structurallyForced {
+		return structuralProfile, nil
 	}
 	// Classification must still happen for a structurally-full turn.  The
 	// execution profile controls budgets, while the semantic result controls
@@ -159,9 +153,6 @@ func classifyIMExecutionProfileWithSemanticAndContracts(msg IMUserMessage, workf
 	// label belongs to a capability-managed family.
 	if semantic != nil && imSemanticIntentIsManaged(*semantic) {
 		return executionProfileFromSemanticIntent(semantic, contractForTool)
-	}
-	if profile, ok := localCurrentTimeExecutionProfile(msg.Text, contractForTool); ok {
-		return profile
 	}
 	if profile, forced := lengthFullExecutionProfile(msg); forced {
 		return profile
@@ -243,25 +234,83 @@ const shortContinuationReason = "short continuation keeps parent execution tools
 
 // continuationKeepsParentExecution stops a short reply from being reclassified
 // as a light lookup. What stays available is the previous full turn's tool
-// list, not a guess from the wording of this message. A confident new lookup
-// (weather, web, clock) still starts clean.
+// list, not a guess from the wording of this message. A confident live-data
+// or clock lookup still starts clean. A project-task follow-up that is only
+// a search or a page fetch keeps the parent surface: that is how "does this
+// repo have SSO?" retains web_fetch after the GUI process restarts.
 func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionProfile, userID, text string, semantic *intent.ClassificationResult) ExecutionProfile {
-	if h == nil || (!profile.IsLight() && !isLightPromptProfile(profile.PromptProfile)) {
+	if h == nil {
 		return profile
 	}
-	if !h.parentExecutionIsFull(userID) || !shortContinuationText(text) || confidentNewReadOnlyTask(semantic) {
+	// A page fetch is a managed full profile, not the light search profile.
+	// Narrow it so the prompt stays short and the loop is not auto-extended.
+	lightish := profile.IsLight() || isLightPromptProfile(profile.PromptProfile)
+	if !lightish && !lookupContinuationMayNarrow(profile) {
 		return profile
+	}
+	// "用这个" has to be short. A project-task search or page fetch is a
+	// lookup even when the question is longer than that: the 40-rune gate
+	// was dropping web_fetch and clearing bash on the next sentence.
+	parentFull := h.parentExecutionIsFull(userID)
+	lookup := parentFull && projectTaskLookupContinuation(userID, semantic)
+	if !parentFull || (!shortContinuationText(text) && !lookup) {
+		return profile
+	}
+	if !lookup && !lightish {
+		return profile
+	}
+	if confidentNewReadOnlyTask(semantic) && !lookup {
+		return profile
+	}
+	if lookup {
+		// Stay on the light lookup. A full layer would load the coding prompt
+		// and, near the iteration cap, auto-extend by another 30 rounds.
+		// ToolBudget 0 is what keeps the optional web_fetch companion; the
+		// light search budget of 1 publishes only web_search.
+		kept := profile
+		kept.Layer = string(executionLayerLight)
+		kept.PromptProfile = "light"
+		kept.Reason = lookupContinuationReason
+		kept.ToolBudget = 0
+		kept.IterationBudget = lookupContinuationIterationBudget
+		return kept
 	}
 	return fullExecutionProfile(shortContinuationReason)
+}
+
+// lookupContinuationReason is a project-task search or page fetch that keeps
+// the parent carry without becoming a coding turn.
+const lookupContinuationReason = "project task lookup keeps parent execution tools"
+
+// lookupContinuationIterationBudget caps that lookup. ToolBudget stays
+// unlimited so the optional web_fetch companion is not dropped.
+const lookupContinuationIterationBudget = 8
+
+// projectTaskSession is a desktop project tab (desktop-user:<path>).
+// Expert and ACP owners share the prefix but are not project paths.
+func projectTaskSession(userID string) bool {
+	return projectPathFromSessionOwnerID(userID) != ""
+}
+
+// projectTaskLookupContinuation is a short search or page-fetch inside a
+// project task that already has a full tool surface. Live data and clock
+// stay out: those are new lookups and must not inherit bash.
+func projectTaskLookupContinuation(userID string, semantic *intent.ClassificationResult) bool {
+	if semantic == nil || !projectTaskSession(userID) {
+		return false
+	}
+	switch semantic.Primary {
+	case intent.LabelSearch, intent.LabelWebFetch:
+		return true
+	default:
+		return false
+	}
 }
 
 func shortContinuationText(text string) bool {
 	text = strings.TrimSpace(text)
 	n := utf8.RuneCountInString(text)
-	if n == 0 || n > 40 {
-		return false
-	}
-	return !semanticSocialNoToolText(text)
+	return n > 0 && n <= 40
 }
 
 func confidentNewReadOnlyTask(semantic *intent.ClassificationResult) bool {
@@ -280,7 +329,98 @@ func confidentNewReadOnlyTask(semantic *intent.ClassificationResult) bool {
 }
 
 func operationalExecutionProfile(profile ExecutionProfile) bool {
-	return strings.TrimSpace(profile.Reason) == shortContinuationReason
+	switch strings.TrimSpace(profile.Reason) {
+	case shortContinuationReason, lookupContinuationReason:
+		return true
+	default:
+		return false
+	}
+}
+
+func lookupContinuationProfile(profile ExecutionProfile) bool {
+	return strings.TrimSpace(profile.Reason) == lookupContinuationReason
+}
+
+// lookupContinuationCarriedGrant is a non-light tool the parent turn already
+// rendered. A lookup may run it without adopting the full coding prompt.
+func lookupContinuationCarriedGrant(profile ExecutionProfile, carried []string, name string) bool {
+	if !lookupContinuationProfile(profile) {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, item := range carried {
+		if strings.TrimSpace(item) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// lookupContinuationToolPrompt tells a project-task lookup to open the page
+// it just found, and names only tools this carry actually restored. Naming
+// bash when it is not listed makes the model call it, get a denial, and then
+// skip web_fetch.
+func lookupContinuationToolPrompt(carried []string, primary intent.IntentLabel) string {
+	var names []string
+	for _, name := range carried {
+		name = strings.TrimSpace(name)
+		if name == "" || agent.IsLightTurnToolAllowed(name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	// The shared light prompt says to answer after one lookup and not to run
+	// shell. Those lines are what made a project-task follow-up stop at the
+	// search snippet and treat a listed bash as unavailable.
+	var b strings.Builder
+	b.WriteString("\nThis reply continues an open project task. Ignore the instructions above that say to answer after one lookup, not to run shell, or to claim that files and shell are absent from this turn.\n")
+	if primary == intent.LabelWebFetch {
+		b.WriteString("Call web_fetch on the requested page. Do not stop after one snippet, and do not fetch a search-engine results page.\n")
+	} else {
+		b.WriteString("After web_search, call web_fetch on a result page that can answer. Do not stop at the search snippet, and do not fetch the search-engine results page.\n")
+	}
+	if len(names) > 0 {
+		b.WriteString("Tools already listed from the open task (" + strings.Join(names, ", ") + ") are authorized for this reply.\n")
+	}
+	return b.String()
+}
+
+// lookupContinuationRepeatAllowed is the next invocation of a tool this
+// lookup already published. A light turn normally refuses that sibling, which
+// stops the second web_search or bash after the first call succeeds.
+func lookupContinuationRepeatAllowed(profile ExecutionProfile, carried []string, name string) bool {
+	if !lookupContinuationProfile(profile) {
+		return false
+	}
+	if lookupContinuationCarriedGrant(profile, carried, name) {
+		return true
+	}
+	// Only the lookup pair. The static light allowlist also contains
+	// download_file; opening that sibling and then rejecting it spends a
+	// grant the rest of the turn still needs.
+	switch strings.TrimSpace(name) {
+	case "web_search", "web_fetch":
+		return true
+	default:
+		return false
+	}
+}
+
+// lookupContinuationMayNarrow is a full profile that a project-task search
+// or page fetch may still pull back onto the light lookup. A path or URL
+// forces "structural execution signal" before the managed search budget, so
+// leaving it full published only web_search and invited bash the closed
+// plan does not grant. Expert, attachment, and workflow reasons stay full.
+func lookupContinuationMayNarrow(profile ExecutionProfile) bool {
+	switch strings.TrimSpace(profile.Reason) {
+	case "semantic capability-managed intent", "structural execution signal":
+		return true
+	default:
+		return false
+	}
 }
 
 func executionSurfaceIsFull(profile ExecutionProfile) bool {
@@ -291,6 +431,13 @@ func executionSurfaceIsFull(profile ExecutionProfile) bool {
 // never enters prepareAgentLoopTools. An empty full surface is left alone so
 // a planner failure does not erase a still-valid previous list.
 func (h *IMMessageHandler) recordSemanticExecutionSurface(userID string, profile ExecutionProfile, tools []map[string]interface{}) {
+	h.recordSemanticExecutionSurfacePlan(userID, profile, tools, nil)
+}
+
+// recordSemanticExecutionSurfacePlan is recordSemanticExecutionSurface with
+// the plan this turn will settle. Baseline companions on that plan are not
+// the route, and a different obligation replaces the previous one.
+func (h *IMMessageHandler) recordSemanticExecutionSurfacePlan(userID string, profile ExecutionProfile, tools []map[string]interface{}, candidate []tool.CapabilityNeed) {
 	if executionSurfaceIsFull(profile) && len(tools) > 0 {
 		// A short continuation that the planner rendered as a lookup still
 		// belongs to the parent task. Dropping the carry here is how the
@@ -298,10 +445,23 @@ func (h *IMMessageHandler) recordSemanticExecutionSurface(userID string, profile
 		if operationalExecutionProfile(profile) && len(nonLightToolNames(tools)) == 0 {
 			return
 		}
-		h.noteParentExecution(userID, true, tools)
+		if operationalExecutionProfile(profile) {
+			h.noteParentExecutionUnion(userID, tools)
+			return
+		}
+		h.noteParentExecutionForPlan(userID, true, tools, candidate)
 		return
 	}
 	if !executionSurfaceIsFull(profile) {
+		// A project-task lookup stays light so the prompt and the iteration
+		// cap stay small. That must not wipe bash the parent task still
+		// needs on the next non-lookup reply.
+		if operationalExecutionProfile(profile) {
+			if len(nonLightToolNames(tools)) > 0 {
+				h.noteParentExecutionUnion(userID, tools)
+			}
+			return
+		}
 		h.noteParentExecution(userID, false, nil)
 	}
 }
@@ -311,7 +471,7 @@ func nonLightToolNames(tools []map[string]interface{}) []string {
 	var names []string
 	for _, def := range tools {
 		name := extractToolName(def)
-		if name == "" || agent.IsLightTurnToolAllowed(name) {
+		if !parentExecutionSurfaceName(name) {
 			continue
 		}
 		if _, ok := seen[name]; ok {
@@ -323,11 +483,74 @@ func nonLightToolNames(tools []map[string]interface{}) []string {
 	return names
 }
 
+// parentExecutionSurfaceName is a tool the next continuation still has to
+// run. Light lookups are not that surface. Ambient retrieval is not either:
+// its managed spelling (memory_recall) is absent from the light allowlist, so
+// a companion render used to replace ssh, and the next process restored the
+// companion instead of the open obligation.
+func parentExecutionSurfaceName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || agent.IsLightTurnToolAllowed(name) || ambientRetrievalSurfaceName(name) {
+		return false
+	}
+	return true
+}
+
+func ambientRetrievalSurfaceName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, adapter := range []string{semanticTrustedMemoryRecallAdapter, semanticTrustedKnowledgeReadAdapter} {
+		if tool.SemanticModelFunctionName(adapter) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func parentExecutionSurfaceNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if !parentExecutionSurfaceName(name) {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sameExecutionNames(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if strings.TrimSpace(left[i]) != strings.TrimSpace(right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *IMMessageHandler) parentExecutionIsFull(userID string) bool {
 	if h == nil {
 		return false
 	}
-	_, ok := h.parentExecution.Load(strings.TrimSpace(userID))
+	userID = strings.TrimSpace(userID)
+	h.hydrateParentExecution(userID)
+	_, ok := h.parentExecution.Load(userID)
 	return ok
 }
 
@@ -335,7 +558,9 @@ func (h *IMMessageHandler) parentExecutionTools(userID string) []string {
 	if h == nil {
 		return nil
 	}
-	v, ok := h.parentExecution.Load(strings.TrimSpace(userID))
+	userID = strings.TrimSpace(userID)
+	h.hydrateParentExecution(userID)
+	v, ok := h.parentExecution.Load(userID)
 	if !ok {
 		return nil
 	}
@@ -343,7 +568,333 @@ func (h *IMMessageHandler) parentExecutionTools(userID string) []string {
 	return append([]string(nil), names...)
 }
 
+func (h *IMMessageHandler) markParentExecutionResolved(userID string) {
+	if h == nil || userID == "" {
+		return
+	}
+	h.parentExecutionResolved.Store(userID, struct{}{})
+}
+
+// lockParentExecution returns the unlock function for this session.
+// Callers must not re-enter it on the same goroutine.
+func (h *IMMessageHandler) lockParentExecution(userID string) func() {
+	if h == nil || userID == "" {
+		return func() {}
+	}
+	v, _ := h.parentExecutionGate.LoadOrStore(userID, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// parentHydrateFlight is one in-progress history read for a session.
+type parentHydrateFlight struct {
+	done chan struct{}
+}
+
+// hydrateParentExecution rebuilds the carry after the process-local map is
+// gone. A recorded execution surface wins when it is the open obligation,
+// or when nothing is open. A missing surface is the same situation whether
+// the parent list was never recorded, recorded as ambient retrieval only,
+// cleared while the residue stayed open, or filled with companions that do
+// not petition that obligation: history supplies the tools the obligation
+// already ran. Baseline bash and write_file are not that route, and a later
+// local shell is not a remote one. With no open obligation, history is only
+// the fallback for a session that never recorded a decision, because
+// compression can drop tool names. An answer-only tail does not count as a
+// light turn. The newest turn that actually called tools does: only-light
+// or ambient tools stay cleared.
+func (h *IMMessageHandler) hydrateParentExecution(userID string) {
+	if h == nil || h.memory == nil || userID == "" {
+		return
+	}
+	if _, done := h.parentExecutionResolved.Load(userID); done {
+		return
+	}
+	flight := &parentHydrateFlight{done: make(chan struct{})}
+	actual, loaded := h.parentHydrateFlights.LoadOrStore(userID, flight)
+	if loaded {
+		existing, _ := actual.(*parentHydrateFlight)
+		if existing != nil {
+			<-existing.done
+		}
+		return
+	}
+	defer func() {
+		close(flight.done)
+		h.parentHydrateFlights.Delete(userID)
+	}()
+	if _, done := h.parentExecutionResolved.Load(userID); done {
+		return
+	}
+	// History can be the whole task. Do not hold this session's lock while
+	// reading it, and do not start a second copy for a concurrent caller.
+	// A clear that lands during the read marks the session resolved, and
+	// the commit below leaves that decision alone.
+	raw, known := h.memory.ParentExecutionTools(userID)
+	surface := parentExecutionSurfaceNames(raw)
+	companionOnly := known && len(raw) > 0 && len(surface) == 0
+	// A light side question persists an empty list while the residue is
+	// still open. That empty list is not a decision to forget the obligation.
+	// Never recording the parent list is the same missing surface: an old
+	// conversation, or a turn that rendered nothing, left known false.
+	// Companions recorded in place of the obligation are that miss too.
+	explicitClear := known && len(raw) == 0
+	obligation := h.openExecutionObligation(userID)
+	matchedSurface := parentExecutionNamesForObligation(surface, obligation)
+	disjoint := known && len(surface) > 0 && len(obligation) > 0 && len(matchedSurface) == 0
+	missing := !known || companionOnly || explicitClear || disjoint
+	var fromHistory []string
+	if !known && len(obligation) == 0 {
+		fromHistory = parentExecutionNamesFromHistory(h.memory.Load(userID), nil)
+	} else if len(obligation) > 0 && missing {
+		fromHistory = parentExecutionNamesFromHistory(h.memory.Load(userID), obligation)
+	}
+	unlock := h.lockParentExecution(userID)
+	defer unlock()
+	if _, done := h.parentExecutionResolved.Load(userID); done {
+		return
+	}
+	if _, ok := h.parentExecution.Load(userID); ok {
+		h.markParentExecutionResolved(userID)
+		return
+	}
+	h.markParentExecutionResolved(userID)
+	if known && len(obligation) == 0 {
+		if len(surface) > 0 {
+			h.parentExecution.Store(userID, surface)
+			if !sameExecutionNames(raw, surface) {
+				h.persistParentExecution(userID, surface)
+			}
+		}
+		return
+	}
+	if len(matchedSurface) > 0 {
+		h.parentExecution.Store(userID, matchedSurface)
+		if !sameExecutionNames(raw, matchedSurface) {
+			h.persistParentExecution(userID, matchedSurface)
+		}
+		return
+	}
+	if len(fromHistory) == 0 {
+		// The recorded names are not this obligation, and history has no
+		// matching tool. Drop them so closing the task does not inherit bash.
+		if known && len(obligation) > 0 {
+			h.persistParentExecution(userID, nil)
+		}
+		return
+	}
+	h.parentExecution.Store(userID, fromHistory)
+	h.persistParentExecution(userID, fromHistory)
+}
+
+// openExecutionObligation is the side-effecting capabilities the residue
+// still has to finish. Ambient retrieval recorded as the parent list must
+// not hide them, and a later local shell must not stand in for a remote one.
+func (h *IMMessageHandler) openExecutionObligation(userID string) map[tool.CapabilityID]bool {
+	if h == nil || h.memory == nil {
+		return nil
+	}
+	persisted, ok := h.memory.SemanticSessionResidue(userID)
+	if !ok {
+		return nil
+	}
+	residue := semanticResidueFromPersisted(persisted)
+	if residue.Status != semanticResidueOpen {
+		return nil
+	}
+	needs := semanticResidueObligationNeeds(residue.Needs)
+	if len(needs) == 0 {
+		return nil
+	}
+	out := make(map[tool.CapabilityID]bool, len(needs))
+	for _, need := range needs {
+		if need.Capability != "" {
+			out[need.Capability] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func parentExecutionNamesFromHistory(entries []agent.ConversationEntry, obligation map[tool.CapabilityID]bool) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	// Walk newest turn first and stop at the first turn that called anything.
+	// A light-only or ambient-only turn clears the carry; do not revive an
+	// older bash behind it. An open obligation keeps walking: companion turns
+	// and a different execution tool are not that route.
+	end := len(entries)
+	for end > 0 {
+		start := end - 1
+		for start > 0 && strings.TrimSpace(entries[start].Role) != "user" {
+			start--
+		}
+		var names []string
+		for _, entry := range entries[start:end] {
+			names = append(names, toolNamesFromHistoryEntry(entry)...)
+		}
+		if len(names) > 0 {
+			if len(obligation) == 0 {
+				return nonLightHistoryNames(names)
+			}
+			if matched := parentExecutionNamesForObligation(names, obligation); len(matched) > 0 {
+				return matched
+			}
+		}
+		if start == 0 {
+			break
+		}
+		end = start
+	}
+	return nil
+}
+
+func parentExecutionNamesForObligation(names []string, obligation map[tool.CapabilityID]bool) []string {
+	seen := make(map[string]struct{}, len(names))
+	var out []string
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if !parentExecutionSurfaceName(name) {
+			continue
+		}
+		capability, ok := semanticPetitionableCapabilities[name]
+		if !ok || !obligation[capability] {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func nonLightHistoryNames(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	var out []string
+	for _, name := range names {
+		if !parentExecutionSurfaceName(name) {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func toolNamesFromHistoryEntry(entry agent.ConversationEntry) []string {
+	var names []string
+	if name := strings.TrimSpace(entry.ToolName); name != "" {
+		names = append(names, name)
+	}
+	names = append(names, toolNamesFromCalls(entry.ToolCalls)...)
+	return names
+}
+
+func toolNamesFromCalls(calls interface{}) []string {
+	switch arr := calls.(type) {
+	case nil:
+		return nil
+	case []llm.ToolCall:
+		names := make([]string, 0, len(arr))
+		for _, call := range arr {
+			if name := strings.TrimSpace(call.Function.Name); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	case []interface{}:
+		names := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if name := toolNameFromHistoryCall(item); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	case []map[string]interface{}:
+		names := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if name := toolNameFromCallMap(item); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	case []map[string]string:
+		names := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if name := strings.TrimSpace(item["name"]); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	default:
+		// Do not json.Marshal. Tool arguments can be the whole file or command,
+		// and this walk only needs the name.
+		return nil
+	}
+}
+
+func toolNameFromHistoryCall(item interface{}) string {
+	switch v := item.(type) {
+	case map[string]interface{}:
+		return toolNameFromCallMap(v)
+	case llm.ToolCall:
+		return strings.TrimSpace(v.Function.Name)
+	default:
+		return ""
+	}
+}
+
+func semanticResidueCandidateNeeds(ctx *LoopContext) []tool.CapabilityNeed {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.semanticResidueCandidateNeeds
+}
+
+func obligationCapabilitySet(needs []tool.CapabilityNeed) map[tool.CapabilityID]bool {
+	if len(needs) == 0 {
+		return nil
+	}
+	out := make(map[tool.CapabilityID]bool, len(needs))
+	for _, need := range needs {
+		if need.Capability != "" {
+			out[need.Capability] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func obligationOverlaps(left, right map[tool.CapabilityID]bool) bool {
+	for capability := range left {
+		if right[capability] {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *IMMessageHandler) noteParentExecution(userID string, full bool, tools []map[string]interface{}) {
+	h.noteParentExecutionForPlan(userID, full, tools, nil)
+}
+
+// noteParentExecutionForPlan records the rendered execution surface.
+// candidate is the plan this turn will settle. When that plan, or the
+// residue already open, has an obligation, only tools that petition it are
+// the route. Baseline bash and write_file are not, and they must not replace
+// ssh. A plan whose obligation is a different task replaces the old route.
+func (h *IMMessageHandler) noteParentExecutionForPlan(userID string, full bool, tools []map[string]interface{}, candidate []tool.CapabilityNeed) {
 	if h == nil {
 		return
 	}
@@ -351,20 +902,138 @@ func (h *IMMessageHandler) noteParentExecution(userID string, full bool, tools [
 	if userID == "" {
 		return
 	}
+	// Read the residue before taking this session's lock. A light side
+	// question used to persist an empty carry, and the next process treated
+	// that empty list as the decision to forget ssh.
+	previous := h.openExecutionObligation(userID)
+	if !full && len(previous) > 0 {
+		return
+	}
+	obligation := previous
+	sameTask := len(previous) > 0
+	if semanticResidueTaskMutates(candidate) {
+		obligation = obligationCapabilitySet(semanticResidueObligationNeeds(candidate))
+		sameTask = len(previous) == 0 || obligationOverlaps(obligation, previous)
+	}
+	unlock := h.lockParentExecution(userID)
+	defer unlock()
 	if !full {
+		h.markParentExecutionResolved(userID)
 		h.parentExecution.Delete(userID)
+		h.persistParentExecution(userID, nil)
 		return
 	}
 	names := nonLightToolNames(tools)
 	if len(names) == 0 {
-		// A rendered lookup surface must not stick. An empty render is a
-		// plan failure and must not erase the list the previous turn stored.
-		if len(tools) > 0 {
-			h.parentExecution.Delete(userID)
-		}
+		// web_search / web_fetch / knowledge_search / memory_recall must not
+		// become the carry, and must not erase bash or ssh the parent task
+		// still needs. An empty render is a plan failure and likewise leaves
+		// the stored list alone. Only an actual light turn (full == false)
+		// ends it. Do not mark the session resolved: a restart hydrate still
+		// has to run if this process never stored a carry.
 		return
 	}
+	if len(obligation) > 0 {
+		matched := parentExecutionNamesForObligation(names, obligation)
+		if len(matched) == 0 {
+			if sameTask {
+				return
+			}
+			// The settled plan is a different task and did not render its
+			// tool. Keeping ssh would put the old route on the new one.
+			h.markParentExecutionResolved(userID)
+			h.parentExecution.Delete(userID)
+			h.persistParentExecution(userID, nil)
+			return
+		}
+		names = matched
+	}
+	h.markParentExecutionResolved(userID)
 	h.parentExecution.Store(userID, names)
+	h.persistParentExecution(userID, names)
+}
+
+// noteParentExecutionUnion keeps tools the continuation did not render.
+// Replacing the list with this turn's bash would drop an ssh the parent
+// task still needs on the next reply.
+func (h *IMMessageHandler) noteParentExecutionUnion(userID string, tools []map[string]interface{}) {
+	added := nonLightToolNames(tools)
+	if len(added) == 0 {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	if obligation := h.openExecutionObligation(userID); len(obligation) > 0 {
+		// A continuation may render baseline bash beside the open route.
+		// Unioning that companion is how the next lookup grows a local shell.
+		added = parentExecutionNamesForObligation(added, obligation)
+		if len(added) == 0 {
+			return
+		}
+	}
+	// Hydrate before taking the lock: hydrate locks this session too.
+	h.hydrateParentExecution(userID)
+	unlock := h.lockParentExecution(userID)
+	defer unlock()
+	var existing []string
+	if v, ok := h.parentExecution.Load(userID); ok {
+		existing, _ = v.([]string)
+	}
+	merged := mergeParentExecutionNames(existing, added)
+	if len(merged) == 0 {
+		return
+	}
+	h.markParentExecutionResolved(userID)
+	h.parentExecution.Store(userID, merged)
+	h.persistParentExecution(userID, merged)
+}
+
+func mergeParentExecutionNames(existing, added []string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(added))
+	out := make([]string, 0, len(existing)+len(added))
+	for _, name := range append(append([]string{}, existing...), added...) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+// clearParentExecutionCarry drops the process-local list and persists the
+// clear. Hydrate treats a resolved session as already decided, so the
+// in-process map has to be marked before the durable list is emptied.
+func (h *IMMessageHandler) clearParentExecutionCarry(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	unlock := h.lockParentExecution(userID)
+	h.markParentExecutionResolved(userID)
+	h.parentExecution.Delete(userID)
+	unlock()
+	h.persistParentExecution(userID, nil)
+}
+
+func (h *IMMessageHandler) persistParentExecution(userID string, names []string) {
+	if h == nil || h.memory == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	if len(names) == 0 {
+		h.memory.ClearParentExecutionTools(userID)
+		return
+	}
+	h.memory.SetParentExecutionTools(userID, names)
 }
 
 func executionProfileFromSemanticIntent(result *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
@@ -499,10 +1168,17 @@ func semanticLiveVisualFamily(result intent.ClassificationResult) bool {
 
 func semanticIntentRequiresFullProfile(result intent.ClassificationResult) bool {
 	for _, label := range result.Labels() {
-		for _, tmpl := range imSemanticIntentRuleSet[label] {
-			if semanticCapabilityRequiresFullProfile(string(tmpl.Capability)) {
-				return true
-			}
+		if semanticLabelRequiresFullProfile(label) {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticLabelRequiresFullProfile(label intent.IntentLabel) bool {
+	for _, tmpl := range imSemanticIntentRuleSet[label] {
+		if semanticCapabilityRequiresFullProfile(string(tmpl.Capability)) {
+			return true
 		}
 	}
 	return false
@@ -544,61 +1220,6 @@ func directToolFromSemanticResult(result intent.ClassificationResult, contractFo
 		return toolName, contract
 	}
 	return "", ToolExecutionContract{}
-}
-
-func localCurrentTimeExecutionProfile(text string, contractForTool func(string) ToolExecutionContract) (ExecutionProfile, bool) {
-	if !isLocalCurrentTimeQuery(text) {
-		return ExecutionProfile{}, false
-	}
-	toolName := "current_datetime"
-	contract := executionContractForToolName(toolName, contractForTool)
-	if !contract.Explicit || !contract.SupportsDirect || !contract.Deterministic {
-		return ExecutionProfile{}, false
-	}
-	return ExecutionProfile{
-		Layer:                string(executionLayerDirect),
-		TaskType:             "direct_tool",
-		PromptProfile:        "none",
-		Confidence:           1,
-		Reason:               "local deterministic current time intent",
-		RequiredCapabilities: contract.Capabilities,
-		DirectToolName:       toolName,
-		ToolBudget:           1,
-		IterationBudget:      0,
-	}, true
-}
-
-func isLocalCurrentTimeQuery(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
-	}
-	compact := strings.NewReplacer(" ", "", "?", "", "？", "", "。", "", "！", "", "!", "").Replace(lower)
-	if strings.Contains(compact, "时间复杂度") || strings.Contains(lower, "time complexity") {
-		return false
-	}
-	if strings.Contains(compact, "几点") && (strings.Contains(compact, "会议") || strings.Contains(compact, "开始")) {
-		return false
-	}
-	cnSignals := []string{
-		"现在几点", "现在时间", "当前时间", "当前日期", "今天几号", "今天周几", "今天星期几",
-		"几点了", "几点啦", "现在几点钟", "啥时候了",
-	}
-	for _, signal := range cnSignals {
-		if strings.Contains(compact, signal) {
-			return true
-		}
-	}
-	enSignals := []string{
-		"what time is it", "current time", "local time", "date today", "today's date",
-		"what day is it", "current date", "date and time",
-	}
-	for _, signal := range enSignals {
-		if strings.Contains(lower, signal) {
-			return true
-		}
-	}
-	return false
 }
 
 type ToolExecutionContract struct {

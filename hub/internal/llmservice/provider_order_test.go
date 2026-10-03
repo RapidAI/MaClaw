@@ -157,7 +157,7 @@ func TestOrderProvidersForRequestWithMetaSkipsCircuitOpenFromWRR(t *testing.T) {
 	}
 }
 
-func TestOrderProvidersForRequestWithMetaKeepsDifferentRouteMarkupsApart(t *testing.T) {
+func TestOrderProvidersForRequestWithMetaSharesDifferentRouteMarkups(t *testing.T) {
 	requestProviderWRR.Reset()
 	model := &AuthorizedModel{
 		Name:        "auto",
@@ -171,15 +171,16 @@ func TestOrderProvidersForRequestWithMetaKeepsDifferentRouteMarkupsApart(t *test
 		"plain":     {ID: "plain", Sequence: 1, MaxConcurrency: 10, Billing: llmpool.ProviderBillingPolicy{CreditMultiplier: 1}},
 		"marked-up": {ID: "marked-up", Sequence: 2, MaxConcurrency: 10, Billing: llmpool.ProviderBillingPolicy{CreditMultiplier: 1}},
 	}
-	got := OrderProvidersForRequestWithMeta(nil, model, metas, time.Time{})
-	if len(got) != 2 {
-		t.Fatalf("len = %d", len(got))
+	first := OrderProvidersForRequestWithMeta(nil, model, metas, time.Time{})
+	second := OrderProvidersForRequestWithMeta(nil, model, metas, time.Time{})
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("len = %d/%d", len(first), len(second))
 	}
-	if got[0].Route.ProviderID != "plain" || got[1].Route.ProviderID != "marked-up" {
-		t.Fatalf("order = %s,%s want cheap route first", got[0].Route.ProviderID, got[1].Route.ProviderID)
+	if first[0].BandKey != first[1].BandKey {
+		t.Fatalf("band keys = %s,%s want one pool across route markups", first[0].BandKey, first[1].BandKey)
 	}
-	if got[0].BandKey == got[1].BandKey {
-		t.Fatalf("band keys = %s,%s want vendor x route groups kept apart", got[0].BandKey, got[1].BandKey)
+	if first[0].Route.ProviderID != "plain" || second[0].Route.ProviderID != "marked-up" {
+		t.Fatalf("picks = %s then %s, want the two providers to alternate", first[0].Route.ProviderID, second[0].Route.ProviderID)
 	}
 }
 

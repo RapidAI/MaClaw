@@ -93,10 +93,10 @@ func MakeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client)
 		if err != nil {
 			return "", err
 		}
-		if resp == nil || strings.TrimSpace(resp.Content) == "" {
-			return "", fmt.Errorf("empty summarization response")
+		if resp == nil || !summaryAccepted(resp.Content) {
+			return "", fmt.Errorf("incomplete summarization response")
 		}
-		return resp.Content, nil
+		return strings.TrimSpace(resp.Content), nil
 	}
 }
 

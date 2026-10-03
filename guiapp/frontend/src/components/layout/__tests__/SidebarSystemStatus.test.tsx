@@ -170,6 +170,30 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(codingProfile.getAttribute('title')).toContain('Follows assistant · Assistant Provider · assistant-model');
     });
 
+    it('shows a capability fee on the hub profile only', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en" maclawLLMOnline={true} remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Hub', isHubService: true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited" noHubAuthorizationText="None" showHubCreditAction={false} openHubCreditsPage={vi.fn()}
+                availableProviders={[
+                    { id: 'hub', name: 'Hub', url: 'https://hub.example', isHubService: true, model: 'official-high' },
+                    { id: 'local', name: 'Local', url: 'https://local.example', isHubService: false, model: 'auto' },
+                ]}
+                modelMultipliers={{ 'official-high': 3 }}
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Hub', model: 'official-high', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'Local', model: 'auto', health: 'configured' },
+                }}
+            />,
+        );
+        const block = screen.getByTestId('sidebar-llm-profile-statuses');
+        expect(block.textContent).toContain('Hub · high ×3');
+        expect(block.textContent).toContain('Local · auto');
+        expect(block.textContent).not.toContain('auto ×');
+    });
+
     it('shows the assistant route on a profile-less task instead of a leftover provider name', () => {
         render(
             <SidebarSystemStatus

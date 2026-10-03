@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
@@ -114,6 +115,23 @@ func (gc *GossipCache) runAsyncRefresh(ctx context.Context) {
 		gc.asyncRunning = false
 		gc.asyncMu.Unlock()
 		return
+	}
+}
+
+// waitAsyncIdle blocks until no async refresh is running or pending. It exists
+// for tests: a test that ends while an async refresh is still writing the
+// snapshot file races t.TempDir's RemoveAll cleanup, and on Windows that race
+// surfaces as "The directory is not empty" instead of a real assertion
+// failure. Production code never needs it — the goroutine is self-retiring.
+func (gc *GossipCache) waitAsyncIdle() {
+	for {
+		gc.asyncMu.Lock()
+		idle := !gc.asyncRunning && !gc.asyncPending
+		gc.asyncMu.Unlock()
+		if idle {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

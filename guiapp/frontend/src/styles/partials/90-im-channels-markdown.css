@@ -943,16 +943,25 @@
  * so dark schemes inherit the layout without a second component tree.
  * ------------------------------------------------------------------------- */
 #App[data-nav-tab='settings'] .main-content[data-nav-tab='settings'] {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     padding: 16px 18px 20px;
     background: var(--theme-page-bg);
 }
 
 #App[data-nav-tab='settings'] .settings-shell {
+    flex: 1 1 auto;
     grid-template-columns: minmax(210px, 236px) minmax(0, 1fr);
+    /* 1fr's default minimum is min-content, so an auto/1fr row grows with the
+       rail and the shell's overflow:hidden clips it. minmax(0, 1fr) is what
+       lets the row stay inside the shell so the rail can scroll. */
+    grid-template-rows: minmax(0, 1fr);
     gap: 16px;
     align-content: stretch;
     align-items: stretch;
-    height: 100%;
+    height: auto;
     min-height: 0;
     overflow: hidden;
     padding: 0;
@@ -962,17 +971,35 @@
 }
 
 #App[data-nav-tab='settings'] .settings-top-tabs {
-    position: sticky;
-    top: 0;
+    /* Sticky sizes this item to its content, so it never becomes the scrollport. */
+    position: static;
+    align-self: stretch;
+    height: auto;
     max-height: none;
     min-height: 0;
+    overflow-x: hidden;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    /* A solid muted-text thumb is a dark bar on the white card. Mix the
+       border in so the rail stays in the same blue-gray family as the card
+       edge, and stays visible without turning black. */
+    scrollbar-color: color-mix(in srgb, var(--theme-text-muted) 36%, var(--theme-border)) transparent;
     padding: 12px 10px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-lg);
     background: var(--theme-surface);
     box-shadow: var(--shadow-sm);
     scrollbar-gutter: stable;
+}
+
+#App[data-nav-tab='settings'] .settings-top-tabs::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--theme-text-muted) 36%, var(--theme-border));
+    border-radius: 999px;
+}
+
+#App[data-nav-tab='settings'] .settings-top-tabs::-webkit-scrollbar-thumb:hover,
+#App[data-nav-tab='settings'] .settings-top-tabs::-webkit-scrollbar-thumb:active {
+    background: color-mix(in srgb, var(--theme-text-muted) 58%, var(--theme-border));
 }
 
 #App[data-nav-tab='settings'] .settings-top-tabs__group + .settings-top-tabs__group {
@@ -1070,9 +1097,9 @@
 #App[data-nav-tab='settings'] .settings-panel input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
 #App[data-nav-tab='settings'] .settings-panel select,
 #App[data-nav-tab='settings'] .settings-panel textarea {
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     border-color: var(--theme-border);
-    background: var(--theme-control-well);
+    background: var(--theme-surface);
 }
 
 #App[data-nav-tab='settings'] .settings-panel input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']):focus,
@@ -1084,19 +1111,31 @@
 }
 
 @media (max-width: 860px) {
+    /* The stacked page scrolls here. A definite shell height makes the auto
+       content row collapse to 0 because the body min-height is 0 on desktop. */
     #App[data-nav-tab='settings'] .main-content[data-nav-tab='settings'] {
+        overflow: auto;
         padding: 12px;
     }
 
     #App[data-nav-tab='settings'] .settings-shell {
+        flex: none;
         grid-template-columns: 1fr;
+        grid-template-rows: auto auto;
         grid-template-areas: 'nav' 'content';
         gap: 12px;
-        overflow: auto;
+        height: auto;
+        min-height: auto;
+        overflow: visible;
     }
 
     #App[data-nav-tab='settings'] .settings-top-tabs {
         position: static;
+        align-self: start;
+        height: auto;
+        max-height: none;
+        min-height: auto;
+        overflow: visible;
         padding: 10px;
         border-radius: var(--radius-md);
     }
@@ -1107,6 +1146,7 @@
     }
 
     #App[data-nav-tab='settings'] .settings-shell__body {
+        min-height: auto;
         overflow: visible;
     }
 }
@@ -1276,6 +1316,60 @@
 .llm-cache-settings-dir-reset {
     flex: 0 0 auto;
     white-space: nowrap;
+}
+
+.llm-cache-settings-check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.llm-cache-settings-check input {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.llm-cache-settings-check span {
+    min-width: 0;
+}
+
+.llm-cache-settings-key-options {
+    container-type: inline-size;
+    container-name: llm-cache-key-options;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+.llm-cache-settings-key-options__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, max-content));
+    justify-content: start;
+    align-items: center;
+    column-gap: 28px;
+    row-gap: 6px;
+}
+
+.llm-cache-settings-key-options__grid .llm-cache-settings-check {
+    gap: 8px;
+}
+
+@container llm-cache-key-options (max-width: 520px) {
+    .llm-cache-settings-key-options__grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+/* English labels need about 971px on one line. Stay at two columns below that. */
+@container llm-cache-key-options (min-width: 1040px) {
+    .llm-cache-settings-key-options__grid {
+        grid-template-columns: repeat(4, minmax(0, max-content));
+    }
 }
 
 .proxy-settings-hint {
@@ -1866,7 +1960,7 @@
 #App[data-ai-theme='dark'] .modal-content input:not([type="checkbox"]):not([type="radio"]),
 #App[data-ai-theme='dark'] .modal-content textarea,
 #App[data-ai-theme='dark'] .modal-content select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -2024,7 +2118,7 @@
 .main-container[data-ai-theme='dark'] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
 .main-container[data-ai-theme='dark'] textarea,
 .main-container[data-ai-theme='dark'] select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border: 1px solid var(--theme-border);
 }
@@ -2058,7 +2152,7 @@
 }
 
 .main-container[data-ai-theme='dark'] .form-input {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -2073,7 +2167,7 @@
 }
 
 .main-container[data-ai-theme='dark'] .form-select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -2318,7 +2412,7 @@
 }
 
 .main-container[data-ai-theme='dark'] .launch-project-select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -2360,7 +2454,7 @@
 
 /* Dark mode: textarea */
 .main-container[data-ai-theme='dark'] textarea.form-input {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -2735,8 +2829,8 @@
 }
 
 .custom-dialog__mark--danger {
-    background: var(--theme-danger-bg);
-    color: var(--theme-danger);
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
 }
 
 .custom-dialog__mark--info {
@@ -2832,11 +2926,6 @@
     background: var(--theme-surface-muted);
 }
 
-.custom-dialog--danger .custom-dialog__subject {
-    border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger-bg) 70%, var(--theme-surface));
-}
-
 .custom-dialog__subject-kicker {
     display: block;
     margin-bottom: 4px;
@@ -2851,9 +2940,14 @@
     margin: 0;
     color: var(--theme-text-primary);
     font-size: 0.9rem;
-    font-weight: 650;
+    font-weight: 400;
     line-height: 1.55;
-    word-break: break-word;
+    text-align: justify;
+    text-align-last: left;
+    /* auto expands between Han characters and at spaces. inter-character
+       would also letter-space URLs inside the name. */
+    text-justify: auto;
+    overflow-wrap: break-word;
 }
 
 .custom-dialog__detail {
@@ -2873,12 +2967,11 @@
     align-items: flex-start;
     gap: 8px;
     margin: 12px 0 0;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: var(--theme-danger-bg);
-    color: var(--theme-danger);
+    padding: 0;
+    background: transparent;
+    color: var(--theme-text-secondary);
     font-size: 0.8125rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.45;
 }
 
@@ -2889,7 +2982,7 @@
     flex-shrink: 0;
     margin-top: 0.45em;
     border-radius: 50%;
-    background: currentColor;
+    background: var(--theme-primary);
 }
 
 .custom-dialog__input {
@@ -2947,19 +3040,6 @@
     box-shadow: none;
 }
 
-.custom-dialog__footer .btn-secondary.btn-danger {
-    background: #c43d34;
-    color: #fff;
-    border-color: transparent;
-}
-
-.custom-dialog__footer .btn-secondary.btn-danger:hover {
-    background: #a8332b;
-    color: #fff;
-    border-color: transparent;
-    filter: none;
-}
-
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary {
     background: transparent;
     color: var(--theme-text-secondary);
@@ -2970,6 +3050,22 @@
     background: var(--theme-surface-muted);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
+}
+
+/* .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary
+   is (0,4,0) and used to tie this rule, so the later one cleared the fill.
+   The extra .custom-dialog-backdrop class makes this (0,5,0). */
+.modal-backdrop.custom-dialog-backdrop .custom-dialog__footer .btn-secondary.btn-danger,
+.modal-backdrop.custom-dialog-backdrop .custom-dialog__footer .btn-secondary.btn-danger:hover {
+    background: var(--theme-primary);
+    color: var(--theme-on-primary);
+    border-color: transparent;
+    box-shadow: none;
+    filter: none;
+}
+
+.modal-backdrop.custom-dialog-backdrop .custom-dialog__footer .btn-secondary.btn-danger:hover {
+    background: var(--theme-primary-strong);
 }
 
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-primary,
@@ -2985,21 +3081,6 @@
 
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-primary:hover {
     background: #235a9e;
-}
-
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger,
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger:hover {
-    color: #fff;
-    border-color: transparent;
-    filter: none;
-}
-
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger {
-    background: #c43d34;
-}
-
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger:hover {
-    background: #a8332b;
 }
 
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__mark--info {
@@ -3325,11 +3406,11 @@
 /* SessionWorkingDirChip.tsx */
 .swdc-placeholder { display: inline-flex; align-items: center; min-height: 24px; box-sizing: border-box; flex-shrink: 0; }
 .swdc-placeholder-icon { opacity: 0.35; display: inline-flex; color: var(--theme-text-muted); }
-.swdc-bar { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; box-sizing: border-box; flex-shrink: 1; overflow: visible; }
+/* Kind label only. Keep it intact; the toolbar row wraps instead of ellipsizing 本地 / 远程 / 云端工作区. */
+.swdc-bar { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; box-sizing: border-box; flex-shrink: 0; overflow: visible; }
 .swdc-root { min-width: 0; max-width: 100%; }
 .swdc-chip-icon { display: inline-flex; flex-shrink: 0; opacity: 0.8; }
 .swdc-chip-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.swdc-chip-caret { font-size: 9px; opacity: 0.6; flex-shrink: 0; }
 
 /* aiAssistantControls.tsx */
 .aac-bars { display: inline-flex; align-items: center; justify-content: center; gap: 1px; width: 22px; height: 18px; overflow: hidden; }

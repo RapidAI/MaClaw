@@ -30,6 +30,7 @@ type ToolOptions struct {
 // ToolRecallResult is the shared recall outcome used by GUI, TUI, and server agents.
 type ToolRecallResult struct {
 	Entries        []Entry             `json:"entries"`
+	Trace          RecallTrace         `json:"trace,omitempty"`
 	AdaptivePlan   *AdaptiveRecallPlan `json:"adaptive_plan,omitempty"`
 	LightMemPlan   *LightMemRecallPlan `json:"lightmem_plan,omitempty"`
 	NormalizedMode string              `json:"mode"`
@@ -142,7 +143,7 @@ func (s *Store) RecallByMode(query string, category Category, mode string, proje
 	start := time.Now()
 	switch mode {
 	case "dynamic":
-		result.Entries = s.RecallDynamicForTool(query, category, projectPath, ownerID...)
+		result.Entries, result.Trace = s.recallDynamicTool(query, category, projectPath, ownerID...)
 	case "hybrid", "recall":
 		result.Entries = s.SearchByMode(query, SearchHybrid, category, projectPath, limit, ownerID...)
 	case "lightmem", "light_mem", "planned":
@@ -156,7 +157,7 @@ func (s *Store) RecallByMode(query string, category Category, mode string, proje
 			result.Entries = entries
 			result.AdaptivePlan = &plan
 		} else {
-			result.Entries = s.RecallDynamicForTool(query, category, projectPath, ownerID...)
+			result.Entries, result.Trace = s.recallDynamicTool(query, category, projectPath, ownerID...)
 		}
 	case "adaptive", "hier", "adaptive_hier":
 		s.EnsureThemesUpToDate()
@@ -237,7 +238,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if opts.StrictOwner {
 			return "memory recall trace is unavailable in this isolated conversation"
 		}
-		formatted := FormatRecallTraceForTool(store.LastRecallTrace())
+		formatted := FormatRecallTraceForTool(store.LastRecallTraceForOwner(opts.OwnerID))
 		if formatted == "" {
 			return "No recall trace available."
 		}
@@ -425,6 +426,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 
 	case MemoryToolActionList:
 		entries := store.List(Category(toolStringArg(args, "category")), toolStringArg(args, "keyword"))
+		entries = filterActiveEntries(entries)
 		entries = filterEntriesForToolOwner(entries, opts)
 		if len(entries) == 0 {
 			return "No matching memories found."
@@ -448,11 +450,16 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		// Archived experience is deliberately shared as read-only distilled
 		// knowledge. A session that did not create it must never be able to
 		// mutate or erase another session's final experience.
-		if opts.StrictOwner && store.entryIsArchivedExperience(id) {
-			return "archived experience is read-only in this isolated conversation"
-		}
-		if opts.StrictOwner && !store.entryVisibleToToolOwner(id, opts) {
-			return "memory not found in this isolated conversation"
+		if strings.TrimSpace(opts.OwnerID) != "" {
+			if opts.StrictOwner && store.entryIsArchivedExperience(id) {
+				return "archived experience is read-only in this isolated conversation"
+			}
+			if !store.entryVisibleToToolOwner(id, opts) {
+				if opts.StrictOwner {
+					return "memory not found in this isolated conversation"
+				}
+				return "memory not found"
+			}
 		}
 		if err := store.Delete(id); err != nil {
 			return fmt.Sprintf("delete memory failed: %s", err.Error())
@@ -481,16 +488,48 @@ func invalidateToolRecallCaches(store *Store, opts ToolOptions) {
 	}
 }
 
-func filterEntriesForToolOwner(entries []Entry, opts ToolOptions) []Entry {
-	if !opts.StrictOwner || len(entries) == 0 {
+func filterActiveEntries(entries []Entry) []Entry {
+	if len(entries) == 0 {
 		return entries
+	}
+	filtered := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsActive() {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func filterEntriesForToolOwner(entries []Entry, opts ToolOptions) []Entry {
+	ownerID := strings.TrimSpace(opts.OwnerID)
+	if ownerID == "" || len(entries) == 0 {
+		return entries
+	}
+	if opts.StrictOwner {
+		filtered := entries[:0]
+		for _, entry := range entries {
+			if len(filterEntriesForOwner([]Entry{entry}, ownerID, true)) == 1 ||
+				(opts.AllowArchivedExperience && isArchivedExperienceEntry(entry)) {
+				filtered = append(filtered, entry)
+			}
+		}
+		return filtered
 	}
 	filtered := entries[:0]
 	for _, entry := range entries {
-		if len(filterEntriesForOwner([]Entry{entry}, opts.OwnerID, true)) == 1 ||
-			(opts.AllowArchivedExperience && isArchivedExperienceEntry(entry)) {
+		if opts.AllowArchivedExperience && isArchivedExperienceEntry(entry) {
 			filtered = append(filtered, entry)
+			continue
 		}
+		entryOwner := strings.TrimSpace(entry.OwnerID)
+		if entryOwner != "" && entryOwner != ownerID {
+			continue
+		}
+		if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && entry.Boundary.OwnerID != ownerID {
+			continue
+		}
+		filtered = append(filtered, entry)
 	}
 	return filtered
 }
@@ -561,15 +600,16 @@ func appendUniqueToolEntries(entries []Entry, extra ...Entry) []Entry {
 }
 
 func FormatRecallResultForTool(store *Store, query string, recall ToolRecallResult, debug bool, touch bool) string {
+	if recall.Trace.LockTimedOut {
+		return "Memory recall timed out because the store was busy.\n" + FormatRecallTraceForTool(recall.Trace)
+	}
 	if len(recall.Entries) == 0 {
 		return "No relevant memories found."
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Recalled %d relevant memories\n", len(recall.Entries))
-	if debug && store != nil {
-		if trace := store.LastRecallTrace(); trace.Query == query {
-			b.WriteString(FormatRecallTraceForTool(trace))
-		}
+	if debug && recall.Trace.Query == query {
+		b.WriteString(FormatRecallTraceForTool(recall.Trace))
 	}
 	if debug && recall.AdaptivePlan != nil {
 		b.WriteString(FormatAdaptiveRecallPlanForTool(*recall.AdaptivePlan))

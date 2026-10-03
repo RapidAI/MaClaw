@@ -215,6 +215,19 @@ func (s *Store) UpsertEntryByTags(opts UpsertByTagsOptions) (UpsertResult, error
 	return UpsertResult{Created: true, EntryID: entry.ID}, nil
 }
 
+// distinctProjectRecords reports whether both entries are already bound to
+// different projects. The project path is the record identity. Identical or
+// nested prose must not retarget one project's entry onto another. An entry
+// with no project path stays eligible for content-duplicate repair.
+func distinctProjectRecords(existing, incoming Entry) bool {
+	existingPath := inferProjectPath(&existing)
+	incomingPath := inferProjectPath(&incoming)
+	if existingPath == "" || incomingPath == "" {
+		return false
+	}
+	return existingPath != incomingPath
+}
+
 func (s *Store) insertEntryFromUpsert(entry Entry) error {
 	content := strings.TrimSpace(entry.Content)
 	if content == "" {
@@ -246,6 +259,9 @@ func (s *Store) insertEntryFromUpsert(entry Entry) error {
 	defer s.mu.Unlock()
 
 	for _, existing := range s.entries {
+		if !existing.IsActive() {
+			continue
+		}
 		if existing.ContentHash != hash && strings.TrimSpace(existing.Content) != entry.Content {
 			continue
 		}
@@ -253,6 +269,9 @@ func (s *Store) insertEntryFromUpsert(entry Entry) error {
 			continue
 		}
 		if !upsertContentDuplicateOwnerMatches(existing.OwnerID, entry.OwnerID) {
+			continue
+		}
+		if distinctProjectRecords(existing, entry) {
 			continue
 		}
 		return fmt.Errorf("memory_store: duplicate content (matches entry %q)", existing.ID)
@@ -276,28 +295,33 @@ func (s *Store) updateEntryFromUpsert(id string, desired Entry) error {
 	s.mu.RLock()
 	var updated Entry
 	found := false
-	duplicateID := ""
 	for _, e := range s.entries {
-		if e.ID == id || strings.TrimSpace(e.Content) != desired.Content {
-			continue
-		}
-		if desired.Category != "" && MapToCanonical(e.Category) != desiredCategory {
-			continue
-		}
-		if !upsertContentDuplicateOwnerMatches(e.OwnerID, desiredOwner) {
-			continue
-		}
-		duplicateID = e.ID
-		break
-	}
-
-	if duplicateID == "" {
-		for _, e := range s.entries {
-			if e.ID != id {
-				continue
-			}
+		if e.ID == id {
 			updated = e
 			found = true
+			break
+		}
+	}
+	ownerForDup := desiredOwner
+	if ownerForDup == "" && found {
+		ownerForDup = updated.OwnerID
+	}
+	duplicateID := ""
+	if found {
+		for _, e := range s.entries {
+			if !e.IsActive() || e.ID == id || strings.TrimSpace(e.Content) != desired.Content {
+				continue
+			}
+			if desired.Category != "" && MapToCanonical(e.Category) != desiredCategory {
+				continue
+			}
+			if !memoryOwnersEqual(e.OwnerID, ownerForDup) {
+				continue
+			}
+			if distinctProjectRecords(e, desired) {
+				continue
+			}
+			duplicateID = e.ID
 			break
 		}
 	}
@@ -309,6 +333,11 @@ func (s *Store) updateEntryFromUpsert(id string, desired Entry) error {
 		return fmt.Errorf("memory_store: entry %q not found", id)
 	}
 
+	contentChanged := strings.TrimSpace(updated.Content) != desired.Content
+	if contentChanged {
+		updated.InvalidAt = nil
+		updated.Embedding = nil
+	}
 	updated.Content = desired.Content
 	updated.Category = desired.Category
 	updated.Tags = append([]string(nil), desired.Tags...)
@@ -357,6 +386,9 @@ func (s *Store) updateEntryFromUpsert(id string, desired Entry) error {
 	if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 		return fmt.Errorf("memory_store: persist updated entry: %w", err)
 	}
+	if contentChanged {
+		s.scheduleStoredEntryEmbedding(id)
+	}
 	return nil
 }
 
@@ -380,7 +412,7 @@ func (s *Store) findUpsertDuplicateByContent(desired Entry) *Entry {
 	defer s.mu.RUnlock()
 	for i := range s.entries {
 		entry := s.entries[i]
-		if strings.TrimSpace(entry.ID) == strings.TrimSpace(desired.ID) {
+		if !entry.IsActive() || strings.TrimSpace(entry.ID) == strings.TrimSpace(desired.ID) {
 			continue
 		}
 		if desired.Category != "" && MapToCanonical(entry.Category) != desiredCategory {
@@ -390,6 +422,9 @@ func (s *Store) findUpsertDuplicateByContent(desired Entry) *Entry {
 			continue
 		}
 		if entry.ContentHash == desiredHash || strings.TrimSpace(entry.Content) == content || isDuplicateContentCandidate(strings.ToLower(content), desired.Entities, entry) {
+			if distinctProjectRecords(entry, desired) {
+				continue
+			}
 			cp := entry
 			return &cp
 		}

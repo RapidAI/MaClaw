@@ -22,8 +22,13 @@ func setupTestMachine() *StateMachine {
 	RegisterBuiltinTemplates(templates)
 	m := NewStateMachine(store, templates)
 	// Use keyword-based classifier for tests (simulates LLM always available)
-	m.SetConfirmClassifier(func(phaseContext, userText string) string {
-		return ClassifyConfirmIntentKeyword(userText)
+	m.SetConfirmClassifier(func(_, userText string) string {
+		switch strings.TrimSpace(userText) {
+		case "confirm", "modify", "cancel", "unrelated", "cancel_execute":
+			return strings.TrimSpace(userText)
+		default:
+			return ""
+		}
 	})
 	return m
 }
@@ -419,7 +424,7 @@ func TestHandleInput_ConfirmAdvances(t *testing.T) {
 	m.Create("user1", "coding", "d:\\project", "build app")
 	m.RecordOutput("user1", "# Requirements doc")
 
-	result, err := m.HandleInput("user1", "确认")
+	result, err := m.HandleInput("user1", "confirm")
 	if err != nil {
 		t.Fatalf("HandleInput failed: %v", err)
 	}
@@ -436,6 +441,7 @@ func TestHandleInput_ModifyResetsPhase(t *testing.T) {
 	m.Create("user1", "coding", "d:\\project", "build app")
 	m.RecordOutput("user1", "# Requirements doc")
 
+	m.SetConfirmClassifier(func(_, _ string) string { return "modify" })
 	result, err := m.HandleInput("user1", "加一个登录功能")
 	if err != nil {
 		t.Fatalf("HandleInput failed: %v", err)
@@ -457,7 +463,7 @@ func TestHandleInput_CancelTerminates(t *testing.T) {
 	m.Create("user1", "coding", "d:\\project", "build app")
 	m.RecordOutput("user1", "# doc")
 
-	result, err := m.HandleInput("user1", "取消")
+	result, err := m.HandleInput("user1", "cancel")
 	if err != nil {
 		t.Fatalf("HandleInput failed: %v", err)
 	}
@@ -469,7 +475,7 @@ func TestHandleInput_CancelTerminates(t *testing.T) {
 	}
 }
 
-func TestHandleInput_UnrelatedMessagePassesThrough(t *testing.T) {
+func TestHandleInput_UnrelatedMessageStaysInReview(t *testing.T) {
 	m := setupTestMachine()
 	m.Create("user1", "coding", "d:\\project", "build app")
 	m.RecordOutput("user1", "# doc")
@@ -478,8 +484,11 @@ func TestHandleInput_UnrelatedMessagePassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleInput failed: %v", err)
 	}
-	if result.Action != ActionPassThrough {
-		t.Fatalf("action = %q, want pass_through", result.Action)
+	if result.Action != ActionReviewPending {
+		t.Fatalf("action = %q, want review_pending", result.Action)
+	}
+	if state := m.GetActive("user1"); state == nil || state.ActivePhase() == nil || state.ActivePhase().Output != "# doc" {
+		t.Fatalf("unrelated review reply must keep the phase output, got %#v", state)
 	}
 }
 
@@ -489,21 +498,21 @@ func TestFullCodingWorkflowLifecycle(t *testing.T) {
 
 	// Phase 1: requirements
 	m.RecordOutput("user1", "# 需求文档\n贪吃蛇功能...")
-	result, _ := m.HandleInput("user1", "确认")
+	result, _ := m.HandleInput("user1", "confirm")
 	if result.Phase.ID != "design" {
 		t.Fatalf("expected design, got %s", result.Phase.ID)
 	}
 
 	// Phase 2: design
 	m.RecordOutput("user1", "# 技术设计\nC++ Windows API...")
-	result, _ = m.HandleInput("user1", "OK")
+	result, _ = m.HandleInput("user1", "confirm")
 	if result.Phase.ID != "tasks" {
 		t.Fatalf("expected tasks, got %s", result.Phase.ID)
 	}
 
 	// Phase 3: tasks
 	m.RecordOutput("user1", "### T1: 基础框架\n- 描述...\n")
-	result, _ = m.HandleInput("user1", "没问题")
+	result, _ = m.HandleInput("user1", "confirm")
 	if result.Phase.ID != "implementation" {
 		t.Fatalf("expected implementation, got %s", result.Phase.ID)
 	}
@@ -536,33 +545,6 @@ func TestNoActiveWorkflow_PassesThrough(t *testing.T) {
 	}
 	if result.Action != ActionPassThrough {
 		t.Fatalf("action = %q", result.Action)
-	}
-}
-
-func TestClassifyConfirmIntentKeyword_ShortConfirm(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"确认", "confirm"},
-		{"OK", "confirm"},
-		{"好的", "confirm"},
-		{"继续", "confirm"},
-		{"好", "confirm"},
-		{"取消", "cancel"},
-		{"不做了", "cancel"},
-		{"嗯", "unrelated"},
-		{".", "unrelated"},
-		{"加一个登录功能", "modify"},
-		{"继续完善，加一个登录功能", "modify"}, // >8 runes, not short enough for confirm
-		{"把技术栈换成React", "modify"},
-		{"帮我查天气", "modify"}, // >4 runes but unrelated, keyword fallback is conservative
-	}
-	for _, tc := range tests {
-		got := ClassifyConfirmIntentKeyword(tc.input)
-		if got != tc.want {
-			t.Errorf("ClassifyConfirmIntentKeyword(%q) = %q, want %q", tc.input, got, tc.want)
-		}
 	}
 }
 
@@ -607,8 +589,8 @@ func TestHandleInput_ClassifierUnavailable_PassesThrough(t *testing.T) {
 		t.Fatalf("HandleInput failed: %v", err)
 	}
 	// Should pass through (not advance) - workflow stays in waiting_confirm
-	if result.Action != ActionPassThrough {
-		t.Fatalf("action = %q, want pass_through when classifier unavailable", result.Action)
+	if result.Action != ActionReviewPending {
+		t.Fatalf("action = %q, want review_pending when classifier unavailable", result.Action)
 	}
 	// Workflow should still be active at requirements phase
 	state := m.GetActive("user1")
@@ -870,7 +852,7 @@ func TestBidReviewWorkflow_EndToEndProgression(t *testing.T) {
 			t.Fatalf("output not saved for %s", phaseID)
 		}
 
-		hr, err = m.HandleInput(userID, "确认")
+		hr, err = m.HandleInput(userID, "confirm")
 		if err != nil {
 			t.Fatalf("confirm %s: %v", phaseID, err)
 		}
@@ -1009,8 +991,33 @@ func TestHandleInput_NoClassifierSet_PassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleInput failed: %v", err)
 	}
-	// Without any classifier, intent is empty -> pass through
-	if result.Action != ActionPassThrough {
-		t.Fatalf("action = %q, want pass_through without classifier", result.Action)
+	// Without any classifier, intent is empty. The review gate stays closed.
+	if result.Action != ActionReviewPending {
+		t.Fatalf("action = %q, want review_pending without classifier", result.Action)
+	}
+}
+
+func TestApplyReviewIntentOtherKeepsPhaseOutput(t *testing.T) {
+	m := setupTestMachine()
+	m.Create("user1", "coding", "d:\\project", "build app")
+	if err := m.RecordOutput("user1", "# Requirements doc"); err != nil {
+		t.Fatal(err)
+	}
+	hr, err := m.ApplyReviewIntent("user1", "other", "check the weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hr == nil || hr.Action != ActionReviewPending {
+		t.Fatalf("other = %#v, want review_pending", hr)
+	}
+	state := m.GetActive("user1")
+	if state == nil || state.ActivePhase() == nil {
+		t.Fatal("workflow dropped")
+	}
+	if state.ActivePhase().Output != "# Requirements doc" {
+		t.Fatalf("output = %q, want the saved phase output", state.ActivePhase().Output)
+	}
+	if state.ActivePhase().Status != PhaseWaitingConfirm {
+		t.Fatalf("status = %q, want waiting_confirm", state.ActivePhase().Status)
 	}
 }

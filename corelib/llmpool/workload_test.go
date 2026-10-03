@@ -218,6 +218,23 @@ func TestClassifyAndRoutePinLowStaysOnLowForPlan(t *testing.T) {
 	}
 }
 
+func TestClassifyAndRoutePinFindsPublishedLowAlias(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, WorkloadClassPlan)
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: "low", ProviderIDs: []string{"p-low"}},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	dec := ClassifyAndRouteModel(header, map[string]any{"model": OfficialTierLow}, group, OfficialTierLow)
+	if !dec.Passthrough || dec.ResolvedModel != OfficialTierLow || dec.AvailabilityFallback {
+		t.Fatalf("published low row must satisfy an official-low pin, got %#v", dec)
+	}
+}
+
 func TestValidateDynamicServiceGroupRequiredRoutes(t *testing.T) {
 	group := &ServiceGroup{
 		Kind: ServiceGroupKindDynamic,
@@ -272,8 +289,14 @@ func TestPublicCatalogModelsDynamicDefaultsToAuto(t *testing.T) {
 		Kind:   ServiceGroupKindDynamic,
 		Models: []ModelConfig{{Name: OfficialTierHigh}, {Name: OfficialTierMid}},
 	})
-	if len(got) != 1 || got[0] != "auto" {
-		t.Fatalf("default catalog = %#v, want [auto]", got)
+	want := DefaultCapabilityCatalog()
+	if len(got) != len(want) {
+		t.Fatalf("default catalog = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("default catalog = %#v, want %#v", got, want)
+		}
 	}
 	got = PublicCatalogModels(&ServiceGroup{
 		Kind:          ServiceGroupKindDynamic,

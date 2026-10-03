@@ -1121,6 +1121,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 		status, filtered := filterAuthorizedModelsByProviderRegistry(status, status.AuthorizedModels, providerReg)
 		if status != nil {
 			status.InactiveReasons = explainFilteredServiceStatusIssues(status, filtered, providerReg)
+			llmservice.PublishStatusCapabilityBands(status, serviceReg)
 		}
 		writeJSON(w, http.StatusOK, status)
 	}
@@ -1153,6 +1154,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 		status, filtered := filterAuthorizedModelsByProviderRegistry(status, status.AuthorizedModels, providerReg)
 		if status != nil {
 			status.InactiveReasons = explainFilteredServiceStatusIssues(status, filtered, providerReg)
+			llmservice.PublishStatusCapabilityBands(status, serviceReg)
 		}
 		usage, err := llmUsageTotalsForUser(ctx, system, principal.Email)
 		if err != nil {
@@ -1265,6 +1267,9 @@ func RedeemLLMServiceCardHandler(identity *auth.IdentityService, system store.Sy
 		status, filtered := filterAuthorizedModelsByProviderRegistry(status, status.AuthorizedModels, providerReg)
 		if status != nil {
 			status.InactiveReasons = explainFilteredServiceStatusIssues(status, filtered, providerReg)
+			if serviceReg, regErr := llmservice.LoadRegistry(ctx, system); regErr == nil {
+				llmservice.PublishStatusCapabilityBands(status, serviceReg)
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "service_status": status})
 	}
@@ -1288,6 +1293,7 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 		for _, m := range llmservice.PublicAuthorizedModels(models, serviceReg) {
 			items = append(items, llmV1ModelObject(m))
 		}
+		llmservice.PublishStatusCapabilityBands(status, serviceReg)
 		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": items, "service_status": status})
 	}
 }
@@ -1301,17 +1307,15 @@ func LLMV1ModelHandler(identity *auth.IdentityService, system store.SystemSettin
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := withLLMEndpointPrincipalContext(security.WithTenant(r.Context(), principal.TenantID), principal)
-		_, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
+		_, models, _, serviceReg, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
 		requested := strings.TrimSpace(r.PathValue("model"))
-		for _, m := range models {
-			if strings.EqualFold(strings.TrimSpace(m.Name), requested) {
-				writeJSON(w, http.StatusOK, llmV1ModelObject(m))
-				return
-			}
+		if m, ok := llmservice.FindPublicAuthorizedModel(models, serviceReg, requested); ok {
+			writeJSON(w, http.StatusOK, llmV1ModelObject(m))
+			return
 		}
 		writeError(w, http.StatusNotFound, "LLM_MODEL_NOT_FOUND", fmt.Sprintf("model %q is not authorized for this account", requested))
 	}
@@ -1319,16 +1323,17 @@ func LLMV1ModelHandler(identity *auth.IdentityService, system store.SystemSettin
 
 func llmV1ModelObject(m llmservice.AuthorizedModel) map[string]any {
 	return map[string]any{
-		"id":                m.Name,
-		"object":            "model",
-		"created":           int64(0),
-		"owned_by":          "hub",
-		"service_mode":      "hub",
-		"provider_ids":      m.ProviderIDs,
-		"capability_tags":   m.CapabilityTags,
-		"priority":          m.Priority,
-		"resolution_tier":   m.ResolutionTier,
-		"credit_multiplier": m.CreditMultiplier,
+		"id":                 m.Name,
+		"object":             "model",
+		"created":            int64(0),
+		"owned_by":           "hub",
+		"service_mode":       "hub",
+		"provider_ids":       m.ProviderIDs,
+		"capability_tags":    m.CapabilityTags,
+		"priority":           m.Priority,
+		"resolution_tier":    m.ResolutionTier,
+		"credit_multiplier":  m.CreditMultiplier,
+		"billing_multiplier": m.BillingMultiplier,
 	}
 }
 
@@ -1497,7 +1502,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			logAuthorizedModel = strings.TrimSpace(authorizedModel.Name)
 		}
 		if err != nil {
-			if denial, ok := deniedByModel[strings.ToLower(strings.TrimSpace(requestedModel))]; ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
+			if denial, ok := billingDenialForRequestedModel(deniedByModel, requestedModel); ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
 				writeLoggedBillingDenied(llmBillingDenialHTTPStatus(denial), denial)
 				return
 			}
@@ -1508,7 +1513,8 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, body); err != nil {
+		applySelectedModelOutputCeiling(ctx, body, authorizedModel)
+		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, body, principal.UserID, principal.Email); err != nil {
 			writeLoggedError(http.StatusServiceUnavailable, "LLM_PRICING_QUOTE_INVALID", err.Error())
 			return
 		}
@@ -1841,7 +1847,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			logAuthorizedModel = strings.TrimSpace(authorizedModel.Name)
 		}
 		if err != nil {
-			if denial, ok := deniedByModel[strings.ToLower(strings.TrimSpace(requestedModel))]; ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
+			if denial, ok := billingDenialForRequestedModel(deniedByModel, requestedModel); ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
 				logStatusCode = llmBillingDenialHTTPStatus(denial)
 				logErrorCode = denial.Code
 				writeLLMBillingDenied(w, denial)
@@ -1856,7 +1862,8 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, chatBody); err != nil {
+		applySelectedModelOutputCeiling(ctx, chatBody, authorizedModel)
+		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, chatBody, principal.UserID, principal.Email); err != nil {
 			writeLoggedError(http.StatusServiceUnavailable, "LLM_PRICING_QUOTE_INVALID", err.Error())
 			return
 		}
@@ -2040,6 +2047,11 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 	if reg == nil {
 		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, false, fmt.Errorf("provider registry is required")
 	}
+	// Fallback retries this function with the next tier. Cap that tier to the
+	// ceiling admission fitted for it before copying the ceiling onto the
+	// responses payload. The selected request is already at its own ceiling.
+	applySelectedModelOutputCeiling(r.Context(), chatBody, model)
+	capResponsesPayloadToAdmittedCeiling(responsesBody, chatBody)
 	var lastErr error
 	var lastBody []byte
 	var lastStatus int
@@ -2151,10 +2163,15 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 	if reg == nil {
 		return 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("provider registry is required")
 	}
+	applySelectedModelOutputCeiling(r.Context(), chatBody, model)
+	capResponsesPayloadToAdmittedCeiling(responsesBody, chatBody)
 	request := r.Clone(r.Context())
 	var lastErr error
 	var lastProviderID string
 	var lastStatus int
+	// Same rule as chat streaming: the never-sent proof is recorded once, after
+	// every provider and availability fallback has failed locally.
+	allProviderDispatchesProvenAbsent := true
 	orderedProviders := orderAuthorizedResponsesStreamProviders(chatBody, model, reg)
 	for i, item := range orderedProviders {
 		providerID := item.Route.ProviderID
@@ -2166,12 +2183,18 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 		if IsMaClawProviderRequest(providerID) {
 			serviceGroupIDs := officialForwardServiceGroupIDs(model, providerID)
 			chargedIDs := llmservice.ChargedServiceGroupIDs(model, providerID)
-			resp, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(chatBody, model, providerID), serviceGroupIDs)
+			resp, provenAbsent, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(chatBody, model, providerID), serviceGroupIDs)
 			if err != nil {
+				if !provenAbsent {
+					noteOfficialDispatchObserved(r.Context())
+					allProviderDispatchesProvenAbsent = false
+				}
 				lastErr = err
 				lastProviderID = providerID
 				continue
 			}
+			noteOfficialDispatchObserved(r.Context())
+			allProviderDispatchesProvenAbsent = false
 			statusCode := resp.StatusCode
 			lastStatus = statusCode
 			lastProviderID = providerID
@@ -2225,6 +2248,8 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 		}
 		if err != nil {
 			globalProviderResilience.recordFailure(provider)
+			noteOfficialDispatchObserved(r.Context())
+			allProviderDispatchesProvenAbsent = false
 			lastErr = err
 			lastProviderID = provider.ID
 			continue
@@ -2232,6 +2257,8 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 		statusCode := resp.StatusCode
 		lastStatus = statusCode
 		lastProviderID = provider.ID
+		noteOfficialDispatchObserved(r.Context())
+		allProviderDispatchesProvenAbsent = false
 		if shouldCountProviderFailure(statusCode, nil) {
 			globalProviderResilience.recordFailure(provider)
 		} else {
@@ -2273,6 +2300,9 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
+	}
+	if allProviderDispatchesProvenAbsent {
+		noteOfficialNoUpstreamDispatch(r.Context(), true)
 	}
 	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
 }
@@ -2362,6 +2392,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 	if reg == nil {
 		return 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("provider registry is required")
 	}
+	applySelectedModelOutputCeiling(r.Context(), body, model)
 	request := r.Clone(r.Context())
 	var lastErr error
 	var lastProviderID string
@@ -2380,9 +2411,10 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 		if IsMaClawProviderRequest(providerID) {
 			serviceGroupIDs := officialForwardServiceGroupIDs(model, providerID)
 			chargedIDs := llmservice.ChargedServiceGroupIDs(model, providerID)
-			resp, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(body, model, providerID), serviceGroupIDs)
+			resp, provenAbsent, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(body, model, providerID), serviceGroupIDs)
 			if err != nil {
-				if !snapshotOfficialNoUpstreamDispatch(r.Context()) {
+				if !provenAbsent {
+					noteOfficialDispatchObserved(r.Context())
 					allProviderDispatchesProvenAbsent = false
 				}
 				lastErr = err
@@ -2390,6 +2422,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 				continue
 			}
 			// Receiving any HTTP response means the request reached HubCenter.
+			noteOfficialDispatchObserved(r.Context())
 			allProviderDispatchesProvenAbsent = false
 			statusCode := resp.StatusCode
 			lastStatus = statusCode
@@ -2429,6 +2462,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 			lastProviderID = provider.ID
 			continue
 		}
+		noteOfficialDispatchObserved(r.Context())
 		allProviderDispatchesProvenAbsent = false
 		resp, release, err := openLLMStreamRequest(request, provider, body)
 		if err != nil {
@@ -2476,10 +2510,15 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
 }
 
-func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, serviceGroupIDs []string) (*http.Response, error) {
+// openMaClawOfficialStreamRequest forwards one official stream attempt.
+// The bool is true only when this attempt failed before any HubCenter
+// dispatch. The caller records that for the whole fallback chain. This
+// function must not store the proof on the request: a later tier, or an
+// earlier attempt, can still have left Hub.
+func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, serviceGroupIDs []string) (*http.Response, bool, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("marshal maclaw official stream request: %w", err)
+		return nil, true, fmt.Errorf("marshal maclaw official stream request: %w", err)
 	}
 	forwardStream := func(candidate []byte, useAdmissionQuote bool) (*http.Response, error) {
 		if quote, ok := snapshotOfficialForwardQuote(r.Context()); ok && useAdmissionQuote && officialAdmissionQuoteApplies(r.Context()) {
@@ -2490,22 +2529,42 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 		}
 		return ForwardStreamViaMaClawWithQuote(r.Context(), candidate, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
 	}
-	resp, err := forwardStream(payload, true)
+	var resp *http.Response
+	if _, quotedAtAdmission := snapshotOfficialForwardQuote(r.Context()); quotedAtAdmission && !officialAdmissionQuoteApplies(r.Context()) {
+		quote, fitErr := refitOfficialFallbackBodyToHold(r.Context(), body, store.TenantIDFromContext(r.Context()), serviceGroupIDs)
+		if fitErr != nil {
+			if strings.Contains(fitErr.Error(), "quote HTTP 404") {
+				resp, err = ForwardStreamViaMaClaw(r.Context(), payload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+			} else {
+				return nil, true, fitErr
+			}
+		} else {
+			payload, err = json.Marshal(body)
+			if err != nil {
+				return nil, true, fmt.Errorf("marshal maclaw official stream request: %w", err)
+			}
+			rememberOfficialForwardQuoteForResolved(r.Context(), quote)
+			resp, err = ForwardStreamViaMaClawWithExistingQuote(r.Context(), quote, payload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+		}
+	} else {
+		resp, err = forwardStream(payload, true)
+	}
 	if err != nil {
+		provenAbsent := false
 		if _, ok := snapshotOfficialForwardQuote(r.Context()); ok {
 			// ForwardStreamWithQuote only fails before dispatch for local quote or
 			// credentials validation. Its transport errors remain ambiguous.
 			if strings.Contains(err.Error(), "invalid or expired pricing quote") || strings.Contains(err.Error(), "hub not registered") {
-				noteOfficialNoUpstreamDispatch(r.Context(), true)
+				provenAbsent = true
 			}
 		}
-		return nil, err
+		return nil, provenAbsent, err
 	}
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
 	if resp.StatusCode != http.StatusBadRequest {
-		return resp, nil
+		return resp, false, nil
 	}
 	if retryBody, ok := maclawOfficialSanitizedRetryBody(body); ok {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -2513,18 +2572,18 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 		retryPayload, marshalErr := json.Marshal(retryBody)
 		if marshalErr != nil {
 			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			return resp, nil
+			return resp, false, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying with sanitized OpenAI-compatible body")
 		retryResp, retryErr := forwardStream(retryPayload, false)
 		if retryErr != nil {
-			return nil, retryErr
+			return nil, false, retryErr
 		}
 		if retryResp.Body == nil {
 			retryResp.Body = http.NoBody
 		}
 		if retryResp.StatusCode != http.StatusBadRequest {
-			return retryResp, nil
+			return retryResp, false, nil
 		}
 		resp = retryResp
 	}
@@ -2534,22 +2593,22 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 		retryPayload, marshalErr := json.Marshal(retryBody)
 		if marshalErr != nil {
 			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			return resp, nil
+			return resp, false, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying without tool schemas")
 		retryResp, retryErr := forwardStream(retryPayload, false)
 		if retryErr != nil {
-			return nil, retryErr
+			return nil, false, retryErr
 		}
 		if retryResp.Body == nil {
 			retryResp.Body = http.NoBody
 		}
 		if retryResp.StatusCode != http.StatusBadRequest {
-			return retryResp, nil
+			return retryResp, false, nil
 		}
 		resp = retryResp
 	}
-	return resp, nil
+	return resp, false, nil
 }
 
 func maclawOfficialStreamProvider() *im.LLMProvider {
@@ -3818,6 +3877,7 @@ func forwardAuthorizedModelRequestWithCache(r *http.Request, reg *im.LLMProvider
 }
 
 func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, promptCache llmPromptCacheStore, cacheCfg HubLLMPromptCacheConfig) (authorizedModelForwardResult, error) {
+	applySelectedModelOutputCeiling(ctx, body, model)
 	if respBody, statusCode, providerID, serviceGroupIDs, usageStat, ok, err := getCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, cacheCfg); err != nil {
 		return authorizedModelForwardResult{}, err
 	} else if ok {
@@ -3846,6 +3906,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 			fwdBody := rewriteOfficialForwardBody(body, model, providerID)
 			respBody, statusCode, noUpstreamDispatch, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, fwdBody, store.TenantIDFromContext(ctx), serviceGroupIDs)
 			if !noUpstreamDispatch {
+				noteOfficialDispatchObserved(ctx)
 				allProviderDispatchesProvenAbsent = false
 			}
 			if fwdErr != nil {
@@ -3896,6 +3957,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		}
 		// The generic provider path has no local no-dispatch acknowledgement;
 		// once it reaches forwardLLMRequest its network result is ambiguous.
+		noteOfficialDispatchObserved(ctx)
 		allProviderDispatchesProvenAbsent = false
 		respBody, statusCode, err := forwardLLMRequest(request, provider, body, externalModel)
 		if shouldCountProviderFailure(statusCode, err) {
@@ -3940,6 +4002,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		// An HTTP response (including a 4xx validation error) proves that the
 		// request crossed Hub's dispatch boundary. Do not later classify it as a
 		// local no-dispatch failure merely because no provider was successful.
+		noteOfficialDispatchObserved(ctx)
 		if allProviderDispatchesProvenAbsent {
 			allProviderDispatchesProvenAbsent = false
 		}
@@ -3971,6 +4034,27 @@ func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[s
 		if _, quotedAtAdmission := snapshotOfficialForwardQuote(ctx); !quotedAtAdmission {
 			respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
 			return respBody, statusCode, false, err
+		}
+		// The admission quote belongs to the selected tier. A fallback tier has
+		// to be quoted again, and its output ceiling has to fit inside the hold
+		// already taken for this request. A same-tier sanitized retry still
+		// takes the requote below: its model and ceiling did not change.
+		if !officialAdmissionQuoteApplies(ctx) {
+			quote, fitErr := refitOfficialFallbackBodyToHold(ctx, candidate, tenantID, serviceGroupIDs)
+			if fitErr != nil {
+				if strings.Contains(fitErr.Error(), "quote HTTP 404") {
+					respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
+					return respBody, statusCode, false, err
+				}
+				return nil, 0, true, fitErr
+			}
+			payload, err = json.Marshal(candidate)
+			if err != nil {
+				return nil, 0, true, fmt.Errorf("marshal maclaw official request: %w", err)
+			}
+			rememberOfficialForwardQuoteForResolved(ctx, quote)
+			result, err := ForwardViaMaClawDetailedWithQuote(ctx, quote, payload, tenantID, serviceGroupIDs...)
+			return result.Body, result.StatusCode, result.NoUpstreamDispatch, err
 		}
 		quote, err := QuoteViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
 		if err != nil {
@@ -4950,14 +5034,38 @@ func llmBillingDenialFields(denial llmBillingDenial) map[string]any {
 	return fields
 }
 
+func billingDenialForRequestedModel(denied map[string]llmBillingDenial, requested string) (llmBillingDenial, bool) {
+	if len(denied) == 0 {
+		return llmBillingDenial{}, false
+	}
+	key := strings.ToLower(strings.TrimSpace(requested))
+	if denial, ok := denied[key]; ok {
+		return denial, true
+	}
+	canon := strings.ToLower(strings.TrimSpace(llmpool.CanonicalClientModel(requested)))
+	if canon != "" && canon != key {
+		if denial, ok := denied[canon]; ok {
+			return denial, true
+		}
+	}
+	return llmBillingDenial{}, false
+}
+
 func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
 	if _, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
 		return append([]llmservice.AuthorizedModel(nil), models...), map[string]llmBillingDenial{}, llmBillingDenial{}
 	}
+	// Each model is fitted from the caller's output fields. Leaving one model's
+	// ceiling on the shared body would pin every later model, and apply cannot
+	// raise a ceiling it already wrote. The selected model is written back
+	// after resolution.
+	saved := snapshotOutputLimitFields(body)
+	defer restoreOutputLimitFields(body, saved)
 	filtered := make([]llmservice.AuthorizedModel, 0, len(models))
 	denied := map[string]llmBillingDenial{}
 	firstDenial := llmBillingDenial{}
 	for i := range models {
+		restoreOutputLimitFields(body, saved)
 		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(ctx, reg, providerReg, userID, email, body, &models[i])
 		if err != nil {
 			if denial.Message == "" {
@@ -5002,6 +5110,7 @@ func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmserv
 		}
 		return nil, firstDenial, errors.New(firstDenial.Message)
 	}
+	alignLLMPricingQuotesToForwardedCeiling(ctx, body, model.Name)
 	clone := llmservice.CloneAuthorizedModel(model)
 	if clone == nil {
 		return nil, llmBillingDenial{}, errors.New("authorized model is required")
@@ -5167,11 +5276,18 @@ func attachResolvedProvider(debug *llmservice.ModelSelectionDebug, providerID st
 }
 
 func applyHubWorkloadSelection(w http.ResponseWriter, r *http.Request, body map[string]any, model *llmservice.AuthorizedModel, serviceReg *llmservice.Registry, decision *llmpool.WorkloadDecision) *http.Request {
+	clientModel := ""
+	if body != nil {
+		if raw, ok := body["model"].(string); ok {
+			clientModel = strings.TrimSpace(raw)
+		}
+	}
 	if model != nil && body != nil && !llmservice.ShouldPassthroughOfficialAuto(model, serviceReg) && !llmpool.IsAutoModel(model.Name) {
 		body["model"] = model.Name
 	}
 	if r != nil {
 		meta := llmservice.OfficialForwardMeta{
+			ClientModel:     clientModel,
 			Preview:         llmpool.RequestTextPreview(body, 200),
 			WorkflowType:    r.Header.Get(llmpool.WorkflowTypeHeader),
 			PhaseKind:       r.Header.Get(llmpool.PhaseKindHeader),

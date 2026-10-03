@@ -396,7 +396,7 @@ func TestResolveDynamicAuthorizedModelPinDoesNotUseOtherGroupHigh(t *testing.T) 
 	models, _ := buildAuthorizedModels(reg, []string{"other-group", "coding-auto"})
 	header := http.Header{}
 	header.Set(llmpool.WorkloadClassHeader, "plan")
-	selected, _, dec, err := ResolveDynamicAuthorizedModel(header, map[string]any{"model": llmpool.OfficialTierHigh}, models, reg, "coding-auto")
+	selected, _, dec, err := ResolveDynamicAuthorizedModel(header, map[string]any{"model": "high"}, models, reg, "coding-auto")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
@@ -454,6 +454,16 @@ func TestOfficialUpstreamModelForLogicalModelKeepsSiblingRoutesDistinct(t *testi
 	if got := OfficialUpstreamModelForLogicalModel(model, MaClawOfficialProviderID, llmpool.OfficialTierMid); got != llmpool.OfficialTierMid {
 		t.Fatalf("mid upstream = %q", got)
 	}
+	alias := &AuthorizedModel{Name: "low"}
+	if got := OfficialUpstreamModel(alias, MaClawOfficialProviderID); got != llmpool.OfficialTierLow {
+		t.Fatalf("low alias upstream = %q", got)
+	}
+	routed := &AuthorizedModel{ProviderUpstreamRouteModels: map[string]map[string]string{
+		"maclaw_official": {"low": "cheap-low"},
+	}}
+	if got := OfficialUpstreamModelForLogicalModel(routed, MaClawOfficialProviderID, llmpool.OfficialTierLow); got != "cheap-low" {
+		t.Fatalf("alias route upstream = %q", got)
+	}
 }
 
 func TestOfficialUpstreamModelUsesChargedServiceGroup(t *testing.T) {
@@ -497,11 +507,288 @@ func TestCloneAuthorizedModelDoesNotShareRouteBillingMaps(t *testing.T) {
 }
 
 func TestPublicAuthorizedModelsHidesInternalDynamicNames(t *testing.T) {
-	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{dynamicFixture()}}
+	group := dynamicFixture()
+	group.ExposedModels = []string{"auto"}
+	group.Models = append(group.Models, ModelServiceModel{Name: "secret-internal"})
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{group}}
 	models, _ := buildAuthorizedModels(reg, []string{"coding-auto"})
 	public := PublicAuthorizedModels(models, reg)
 	if len(public) != 1 || public[0].Name != "auto" {
 		t.Fatalf("public = %#v", public)
+	}
+}
+
+func TestPublicAuthorizedModelsExposesCapabilityCatalog(t *testing.T) {
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{dynamicFixture()}}
+	models, _ := buildAuthorizedModels(reg, []string{"coding-auto"})
+	public := PublicAuthorizedModels(models, reg)
+	got := make([]string, 0, len(public))
+	for _, model := range public {
+		got = append(got, model.Name)
+	}
+	want := []string{"auto", llmpool.OfficialTierHigh, llmpool.OfficialTierMid, llmpool.OfficialTierLow}
+	if len(got) != len(want) {
+		t.Fatalf("public = %#v", got)
+	}
+	seen := map[string]bool{}
+	for _, name := range got {
+		seen[name] = true
+	}
+	for _, name := range want {
+		if !seen[name] {
+			t.Fatalf("public = %#v, missing %s", got, name)
+		}
+	}
+}
+
+func TestPublicAuthorizedModelsOffersCapabilityBandsFromAuto(t *testing.T) {
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:     MaClawOfficialServiceGroupID,
+		Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{MaClawOfficialProviderID}}},
+	}}}
+	models := []AuthorizedModel{{
+		Name:                   "auto",
+		ProviderIDs:            []string{MaClawOfficialProviderID},
+		ServiceGroupIDs:        []string{MaClawOfficialServiceGroupID},
+		ProviderUpstreamModels: map[string]string{MaClawOfficialProviderID: "gpt-4o"},
+	}}
+	public := PublicAuthorizedModels(models, reg)
+	byName := map[string]AuthorizedModel{}
+	for _, model := range public {
+		byName[model.Name] = model
+	}
+	for _, name := range []string{"auto", llmpool.OfficialTierLow, llmpool.OfficialTierMid, llmpool.OfficialTierHigh} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("public missing %s: %#v", name, public)
+		}
+	}
+	if byName[llmpool.OfficialTierLow].BillingMultiplier != 0.5 || byName[llmpool.OfficialTierMid].BillingMultiplier != 1 || byName[llmpool.OfficialTierHigh].BillingMultiplier != 2 {
+		t.Fatalf("fees = low %v mid %v high %v", byName[llmpool.OfficialTierLow].BillingMultiplier, byName[llmpool.OfficialTierMid].BillingMultiplier, byName[llmpool.OfficialTierHigh].BillingMultiplier)
+	}
+	low := byName[llmpool.OfficialTierLow]
+	if got := OfficialUpstreamModel(&low, MaClawOfficialProviderID); got != llmpool.OfficialTierLow {
+		t.Fatalf("pinned upstream = %q", got)
+	}
+	if got := OfficialUpstreamModel(&models[0], MaClawOfficialProviderID); got != "gpt-4o" {
+		t.Fatalf("auto upstream changed to %q", got)
+	}
+	selected, name, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": "low"}, models, reg, "", nil)
+	if err != nil || selected == nil || selected.Name != llmpool.OfficialTierLow || name != "low" || selected.BillingMultiplier != 0.5 {
+		t.Fatalf("resolve low = name %q model %#v err %v", name, selected, err)
+	}
+
+	staticReg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:     "coding-pro",
+		Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+	}}}
+	staticModels := []AuthorizedModel{{Name: "auto", ProviderIDs: []string{"provider-a"}, ServiceGroupIDs: []string{"coding-pro"}}}
+	if got := PublicAuthorizedModels(staticModels, staticReg); len(got) != 1 || got[0].Name != "auto" {
+		t.Fatalf("static public = %#v", got)
+	}
+}
+
+func TestResolveMidAliasWhenCatalogOnlyPublishesAuto(t *testing.T) {
+	group := ModelServiceGroup{
+		ID:            "redeem",
+		Kind:          llmpool.ServiceGroupKindDynamic,
+		ExposedModels: []string{"auto"},
+		Models:        []ModelServiceModel{{Name: "auto", ProviderIDs: []string{MaClawOfficialProviderID}}},
+	}
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{group}}
+	models := []AuthorizedModel{{
+		Name:            "auto",
+		ProviderIDs:     []string{MaClawOfficialProviderID},
+		ServiceGroupIDs: []string{group.ID},
+	}}
+	for _, asked := range []string{"mid", "low", "high", llmpool.OfficialTierMid} {
+		selected, name, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": asked}, models, reg, "", nil)
+		want := llmpool.CanonicalClientModel(asked)
+		if err != nil || selected == nil || selected.Name != want || name != asked {
+			t.Fatalf("resolve %q = name %q model %#v err %v", asked, name, selected, err)
+		}
+	}
+	if selected, _, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": "mid"}, models, reg, "", nil); err != nil || selected == nil || selected.BillingMultiplier != 1 {
+		t.Fatalf("mid fee = %#v err %v", selected, err)
+	}
+
+	staticReg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:     "coding-pro",
+		Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+	}}}
+	staticModels := []AuthorizedModel{{Name: "auto", ProviderIDs: []string{"provider-a"}, ServiceGroupIDs: []string{"coding-pro"}}}
+	if _, _, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": "mid"}, staticModels, staticReg, "", nil); err == nil {
+		t.Fatal("static group accepted mid")
+	}
+
+	other := ModelServiceGroup{
+		ID:            "coding-auto",
+		Kind:          llmpool.ServiceGroupKindDynamic,
+		ExposedModels: []string{"auto"},
+		Models:        []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+	}
+	otherReg := &Registry{ModelServiceGroups: []ModelServiceGroup{other}}
+	otherModels := []AuthorizedModel{{Name: "auto", ProviderIDs: []string{"provider-a"}, ServiceGroupIDs: []string{other.ID}}}
+	if _, _, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": "mid"}, otherModels, otherReg, "", nil); err == nil {
+		t.Fatal("non-official dynamic group accepted mid")
+	}
+}
+
+func TestSystemFreeOfficialAutoAuthorizesCapabilityBands(t *testing.T) {
+	group := SystemFreeTemplate()
+	group.ExposedModels = []string{"auto"}
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{group}}
+	models := []AuthorizedModel{{
+		Name:            "auto",
+		ProviderIDs:     []string{MaClawOfficialProviderID},
+		ServiceGroupIDs: []string{group.ID},
+	}}
+	public := PublicAuthorizedModels(models, reg)
+	byName := map[string]AuthorizedModel{}
+	for _, model := range public {
+		byName[model.Name] = model
+	}
+	for _, name := range []string{"auto", llmpool.OfficialTierLow, llmpool.OfficialTierMid, llmpool.OfficialTierHigh} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("public missing %s: %#v", name, public)
+		}
+	}
+	for _, asked := range []string{"mid", "low", "high", llmpool.OfficialTierHigh} {
+		selected, name, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": asked}, models, reg, group.ID, nil)
+		want := llmpool.CanonicalClientModel(asked)
+		if err != nil || selected == nil || selected.Name != want || name != asked {
+			t.Fatalf("resolve %q = name %q model %#v err %v", asked, name, selected, err)
+		}
+	}
+
+	foreign := SystemFreeTemplate()
+	foreign.Models = []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}
+	foreignReg := &Registry{ModelServiceGroups: []ModelServiceGroup{foreign}}
+	foreignModels := []AuthorizedModel{{Name: "auto", ProviderIDs: []string{"provider-a"}, ServiceGroupIDs: []string{foreign.ID}}}
+	if got := PublicAuthorizedModels(foreignModels, foreignReg); len(got) != 1 || got[0].Name != "auto" {
+		t.Fatalf("non-official system-free public = %#v", got)
+	}
+	if _, _, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": "high"}, foreignModels, foreignReg, foreign.ID, nil); err == nil {
+		t.Fatal("non-official system-free accepted high")
+	}
+
+	configured := SystemFreeTemplate()
+	configured.Models = []ModelServiceModel{{
+		Name:            "auto",
+		ProviderConfigs: []ModelServiceProviderConfig{{ProviderID: MaClawOfficialProviderID}},
+	}}
+	configuredReg := &Registry{ModelServiceGroups: []ModelServiceGroup{configured}}
+	configuredModels, _ := buildAuthorizedModels(configuredReg, []string{configured.ID})
+	if len(configuredModels) != 1 || len(configuredModels[0].ProviderIDs) != 1 || configuredModels[0].ProviderIDs[0] != MaClawOfficialProviderID {
+		t.Fatalf("built from provider config = %#v", configuredModels)
+	}
+	if got := PublicAuthorizedModels(configuredModels, configuredReg); len(got) != 4 {
+		t.Fatalf("provider config official auto public = %#v", got)
+	}
+	if _, _, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": "high"}, configuredModels, configuredReg, configured.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := SystemFreeTemplate()
+	stale.Models = []ModelServiceModel{{
+		Name:        "auto",
+		ProviderIDs: []string{"provider-a"},
+		ProviderConfigs: []ModelServiceProviderConfig{
+			{ProviderID: "provider-a"},
+			{ProviderID: MaClawOfficialProviderID},
+		},
+	}}
+	staleReg := &Registry{ModelServiceGroups: []ModelServiceGroup{stale}}
+	staleModels, _ := buildAuthorizedModels(staleReg, []string{stale.ID})
+	if len(staleModels) != 1 || len(staleModels[0].ProviderIDs) != 1 || staleModels[0].ProviderIDs[0] != "provider-a" {
+		t.Fatalf("stale official config revived providers: %#v", staleModels)
+	}
+	if got := PublicAuthorizedModels(staleModels, staleReg); len(got) != 1 || got[0].Name != "auto" {
+		t.Fatalf("stale official config public = %#v", got)
+	}
+
+	status := &ServiceStatus{
+		DefaultModel:      "auto",
+		AuthorizedModels:  models,
+		AvailableModels:   []string{"auto"},
+	}
+	PublishStatusCapabilityBands(status, reg)
+	if status.DefaultModel != "auto" {
+		t.Fatalf("default model changed to %q", status.DefaultModel)
+	}
+	if len(status.AvailableModels) != 4 || len(status.AuthorizedModels) != 4 {
+		t.Fatalf("status models = available %#v authorized %#v", status.AvailableModels, status.AuthorizedModels)
+	}
+}
+
+func TestResolveKeepsPublishedCapabilityAlias(t *testing.T) {
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:     "coding-pro",
+		Models: []ModelServiceModel{{Name: "low", ProviderIDs: []string{"provider-a"}, BillingMultiplier: 0.25}},
+	}}}
+	models := []AuthorizedModel{{
+		Name:              "low",
+		ProviderIDs:       []string{"provider-a"},
+		ServiceGroupIDs:   []string{"coding-pro"},
+		BillingMultiplier: 0.25,
+	}}
+	for _, asked := range []string{"low", llmpool.OfficialTierLow} {
+		selected, name, _, err := ResolveDynamicAuthorizedModelWithHead(nil, map[string]any{"model": asked}, models, reg, "", nil)
+		if err != nil || selected == nil || selected.Name != "low" || name != asked || selected.BillingMultiplier != 0.25 {
+			t.Fatalf("asked %q resolved name %q model %#v err %v", asked, name, selected, err)
+		}
+	}
+}
+
+func TestFindPublicAuthorizedModelMatchesListedCapabilityAlias(t *testing.T) {
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:     MaClawOfficialServiceGroupID,
+		Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{MaClawOfficialProviderID}}},
+	}}}
+	models := []AuthorizedModel{{
+		Name:            "auto",
+		ProviderIDs:     []string{MaClawOfficialProviderID},
+		ServiceGroupIDs: []string{MaClawOfficialServiceGroupID},
+	}}
+	got, ok := FindPublicAuthorizedModel(models, reg, "low")
+	if !ok || got.Name != llmpool.OfficialTierLow || got.BillingMultiplier != 0.5 {
+		t.Fatalf("low lookup = %#v ok=%v", got, ok)
+	}
+	got, ok = FindPublicAuthorizedModel(models, reg, llmpool.OfficialTierHigh)
+	if !ok || got.Name != llmpool.OfficialTierHigh || got.BillingMultiplier != 2 {
+		t.Fatalf("official-high lookup = %#v ok=%v", got, ok)
+	}
+
+	dyn := dynamicFixture()
+	dyn.ExposedModels = []string{"auto"}
+	reg.ModelServiceGroups = append(reg.ModelServiceGroups, dyn)
+	mixed, _ := buildAuthorizedModels(reg, []string{dyn.ID, MaClawOfficialServiceGroupID})
+	if _, ok := FindPublicAuthorizedModel(mixed, reg, llmpool.OfficialTierHigh); ok {
+		t.Fatal("hidden official-high was returned from the public catalog")
+	}
+}
+
+func TestHiddenDynamicTierKeepsOfficialCapabilityName(t *testing.T) {
+	dyn := dynamicFixture()
+	dyn.ExposedModels = []string{"auto"}
+	official := ModelServiceGroup{
+		ID:     MaClawOfficialServiceGroupID,
+		Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{MaClawOfficialProviderID}}},
+	}
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{dyn, official}}
+	models, _ := buildAuthorizedModels(reg, []string{dyn.ID, MaClawOfficialServiceGroupID})
+	public := PublicAuthorizedModels(models, reg)
+	seenAuto := false
+	for _, model := range public {
+		if model.Name == "auto" {
+			seenAuto = true
+			continue
+		}
+		if llmpool.IsOfficialTierName(llmpool.CanonicalClientModel(model.Name)) {
+			t.Fatalf("hidden tier leaked into the public catalog: %#v", public)
+		}
+	}
+	if !seenAuto {
+		t.Fatalf("public = %#v, missing auto", public)
 	}
 }
 

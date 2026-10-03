@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
-import { isCloudWorkspacePath, remoteWorkspaceLocationLabel } from "./codingTaskMode";
+import { localizeText } from "./aiAssistantI18n";
+import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, lookupCloudWorkspaceDisplayName, remoteWorkspaceLocationLabel, subscribeCloudWorkspaceDisplayNames } from "./codingTaskMode";
 import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 
 export interface SessionWorkingDirChipProps {
@@ -18,7 +19,7 @@ export interface SessionWorkingDirChipProps {
     onWorkingDirResolved?: (path: string, tabId: string) => void;
     /** Cloud workspace: reopen the in-app file browser instead of Explorer. */
     onOpenCloudFiles?: () => void;
-    /** Remote coding: show SSH host + remote directory instead of the local sandbox path. */
+    /** Remote coding: tooltip and copy use SSH host + remote directory. The chip text stays 远程. */
     remoteHost?: string;
     remoteWorkDir?: string;
 }
@@ -42,37 +43,80 @@ export function truncatePathMiddle(path: string, maxLen: number): string {
     if (path.length <= maxLen) return path;
     const sep = path.includes("\\") ? "\\" : "/";
     const parts = path.split(sep);
-    if (parts.length <= 3) return path.slice(0, maxLen - 3) + "...";
+    if (parts.length <= 3) return keepPathTail(path, maxLen);
     // Keep first part (drive) and last 2 parts, ellipsis in middle.
     const head = parts.slice(0, 1).join(sep);
     const tail = parts.slice(-2).join(sep);
     const result = `${head}${sep}...${sep}${tail}`;
-    if (result.length > maxLen) return path.slice(0, maxLen - 3) + "...";
+    if (result.length > maxLen) return keepPathTail(path, maxLen);
     return result;
 }
 
-/** Display label for a working directory: cloud / remote / truncated local path. */
+/** The header is the only visible path, so a too-long label keeps the folder, not the drive prefix. */
+function keepPathTail(path: string, maxLen: number): string {
+    const ellipsis = "...";
+    if (path.length <= maxLen) return path;
+    const keep = Math.max(1, maxLen - ellipsis.length);
+    return ellipsis + path.slice(-keep);
+}
+
+/** Header location: local path, remote server, or cloud workspace name. */
 export function workingDirDisplayLabel(
+    path: string,
+    lang?: string,
+    remote?: { host?: string; workDir?: string } | null,
+    cloudName?: string,
+): string {
+    if (isCloudWorkspacePath(path)) {
+        const name = String(cloudName || "").trim()
+            || lookupCloudWorkspaceDisplayName(cloudWorkspaceIdFromPath(path));
+        if (name) return name;
+        return localizeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
+    }
+    const host = String(remote?.host || "").trim();
+    if (host) return host;
+    const remoteDir = String(remote?.workDir || "").trim();
+    if (remoteDir) return truncatePathMiddle(remoteDir, 42);
+    return truncatePathMiddle(path, 42);
+}
+
+/** Composer chip: local / remote, or the cloud-workspace label. No path. */
+export function composerWorkspaceKindLabel(
     path: string,
     lang?: string,
     remote?: { host?: string; workDir?: string } | null,
 ): string {
     if (isCloudWorkspacePath(path)) {
-        return lang === "en" ? "Cloud workspace" : "云端工作区";
+        return localizeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
     }
-    const remoteLabel = remoteWorkspaceLocationLabel(remote?.host, remote?.workDir);
-    if (remoteLabel) return truncatePathMiddle(remoteLabel, 42);
-    return truncatePathMiddle(path, 42);
+    if (String(remote?.host || "").trim() || String(remote?.workDir || "").trim()) {
+        return localizeText(lang, "Remote", "远程", "遠端");
+    }
+    return localizeText(lang, "Local", "本地", "本地");
+}
+
+/** Live workspace name. An empty id stays empty and still follows later cache writes. */
+export function useCloudWorkspaceDisplayName(workspaceId: string): string {
+    const id = String(workspaceId || "").trim();
+    return useSyncExternalStore(
+        subscribeCloudWorkspaceDisplayNames,
+        () => lookupCloudWorkspaceDisplayName(id),
+        () => lookupCloudWorkspaceDisplayName(id),
+    );
 }
 
 /**
  * Session-level working directory chip, rendered inside the input composer
  * toolbar after the permission-mode button.
- * Click the chip to open a menu: open the directory, switch it, or copy the path.
- * Cloud workspaces show a "云端" badge and hide directory switching.
+ * The chip itself only names the kind (本地 / 远程 / 云端工作区). Tooltip and
+ * copy share the full path, the server location, or the cloud workspace name.
+ * Click the chip to open a menu: open the directory, switch it, or copy that location.
+ * Cloud and remote workspaces hide directory switching.
  */
 export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir }: SessionWorkingDirChipProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
+    const cloudWorkspaceId = isCloudWorkspacePath(dirState?.path) ? cloudWorkspaceIdFromPath(dirState?.path) : "";
+    const cloudName = useCloudWorkspaceDisplayName(cloudWorkspaceId);
     const [menuOpen, setMenuOpenState] = useState(false);
     const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
     const [selectingDirectory, setSelectingDirectory] = useState(false);
@@ -229,14 +273,29 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
         }
     }, [tabId, onWorkingDirChange, onWorkingDirResolved]);
 
+    // Tooltip, aria, and copy share one location. Cloud must stay the workspace
+    // name: the cache directory is not a location the user is shown.
+    const isCloud = isCloudWorkspacePath(dirState?.path);
+    const remote = { host: remoteHost, workDir: remoteWorkDir };
+    const isRemote = !isCloud && !!(String(remoteHost || "").trim() || String(remoteWorkDir || "").trim());
+    const kindLabel = dirState
+        ? composerWorkspaceKindLabel(dirState.path, lang, isRemote ? remote : null)
+        : "";
+    const detailLabel = !dirState
+        ? ""
+        : isCloud
+            ? (cloudName || kindLabel)
+            : isRemote
+                ? (remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir) || kindLabel)
+                : dirState.path;
+
     const handleCopyPath = useCallback(() => {
         setMenuOpen(false);
-        const remoteLabel = remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir);
-        const path = remoteLabel || dirState?.path;
-        if (path && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-            navigator.clipboard.writeText(path).catch(() => {});
+        const text = detailLabel.trim();
+        if (text && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(text).catch(() => {});
         }
-    }, [dirState?.path, remoteHost, remoteWorkDir]);
+    }, [detailLabel]);
 
     if (!dirState) {
         // Show a fixed-height placeholder to prevent layout shift during tab switch.
@@ -248,16 +307,6 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
     }
 
     const isDefault = dirState.isDefault;
-    const isCloud = isCloudWorkspacePath(dirState.path);
-    const isRemote = !isCloud && !!(String(remoteHost || "").trim() || String(remoteWorkDir || "").trim());
-    const displayPath = workingDirDisplayLabel(dirState.path, lang, isRemote ? { host: remoteHost, workDir: remoteWorkDir } : null);
-    const badgeText = isCloud
-        ? (lang === "en" ? "remote" : "云端")
-        : isRemote
-            ? ""
-            : isDefault
-                ? (lang === "en" ? "default" : "默认")
-                : "";
 
     const menuItemStyle: CSSProperties = {
         display: "flex", alignItems: "center", gap: 6, width: "100%",
@@ -268,6 +317,12 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
     const openDirLabel = isCloud
         ? (lang === "en" ? "Open cloud workspace files" : "打开云端工作区文件")
         : (lang === "en" ? "Open containing folder" : "打开所在目录");
+    const copyLabel = isCloud
+        ? localizeText(lang, "Copy workspace name", "复制工作区名称", "複製工作區名稱")
+        : (lang === "en" ? "Copy path" : "复制路径");
+    const copyAriaLabel = isCloud
+        ? copyLabel
+        : (lang === "en" ? "Copy working directory path" : "复制工作目录路径");
 
     return (
         <div
@@ -282,8 +337,8 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     className="mc-working-dir-chip"
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
-                    aria-label={(lang === "en" ? "Session working directory: " : "会话工作目录：") + displayPath}
-                    title={isCloud ? displayPath : (isRemote ? remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir) : dirState.path)}
+                    aria-label={(lang === "en" ? "Session working directory: " : "会话工作目录：") + (detailLabel && detailLabel !== kindLabel ? `${kindLabel} · ${detailLabel}` : kindLabel)}
+                    title={detailLabel}
                     onClick={() => setMenuOpen(!menuOpen)}
                     onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }}
                     style={{
@@ -301,14 +356,8 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                         {isDefault ? <IconFolder size={12} /> : <IconFolderOpen size={12} />}
                     </span>
                     <span className="swdc-chip-path">
-                        {displayPath}
+                        {kindLabel}
                     </span>
-                    {badgeText && (
-                        <span style={{ fontSize: 10, color: t.textMuted, opacity: 0.75, fontStyle: isCloud ? "normal" : "italic", fontWeight: isCloud ? 700 : undefined, flexShrink: 0 }}>
-                            {badgeText}
-                        </span>
-                    )}
-                    <span aria-hidden="true" className="swdc-chip-caret">▾</span>
                 </button>
                 {menuOpen && menuPosition && typeof document !== "undefined" && createPortal(
                     <div
@@ -354,10 +403,10 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                             role="menuitem"
                             className="mc-dir-chip-menu-item"
                             onClick={handleCopyPath}
-                            aria-label={lang === "en" ? "Copy working directory path" : "复制工作目录路径"}
+                            aria-label={copyAriaLabel}
                             style={menuItemStyle}
                         >
-                            {lang === "en" ? "Copy path" : "复制路径"}
+                            {copyLabel}
                         </button>
                     </div>,
                     document.body,

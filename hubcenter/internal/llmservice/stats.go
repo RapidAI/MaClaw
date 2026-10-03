@@ -92,9 +92,12 @@ type ProviderPeriodTraffic struct {
 }
 
 // ProviderTrafficReport is the admin card payload for provider traffic.
+// Traffic is the usage ledger. MemberHealth is the per-upstream split recorded
+// while an array still books the ledger on its logical id.
 type ProviderTrafficReport struct {
-	Timezone string                           `json:"timezone"`
-	Traffic  map[string]ProviderPeriodTraffic `json:"traffic"`
+	Timezone     string                           `json:"timezone"`
+	Traffic      map[string]ProviderPeriodTraffic `json:"traffic"`
+	MemberHealth map[string]ProviderPeriodTraffic `json:"member_health"`
 }
 
 // UsageRepository persists usage records and provides aggregation queries.

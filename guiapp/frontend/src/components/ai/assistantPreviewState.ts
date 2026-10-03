@@ -29,13 +29,27 @@ export function shouldShowSourcePreviewForAgentMode(agentMode?: string | null): 
     return agentMode === "coding_dev" || agentMode === "remote_coding_dev";
 }
 
+export function codePreviewHasTaskResult(state: { files?: { values(): Iterable<{ taskResult?: boolean }> } } | null | undefined): boolean {
+    const files = state?.files;
+    if (!files) return false;
+    for (const file of files.values()) {
+        if (file?.taskResult) return true;
+    }
+    return false;
+}
+
+/** The preview toggle should bring back the task's files, not an empty workflow card. */
+export function shouldReopenTaskResultPreview(state: { active?: boolean; files?: { values(): Iterable<{ taskResult?: boolean }> } } | null | undefined): boolean {
+    return state?.active !== true && codePreviewHasTaskResult(state);
+}
+
 /**
- * The LaTeX paper expert is not a programming workflow, so sourcePreviewAllowed
- * stays false. File-write events still have to reach the open paper; otherwise
- * the editor keeps the blank skeleton after the expert saves the .tex.
+ * Programming workflows already subscribe. Every other work task (an expert,
+ * or a project task such as an office document) also has to receive the
+ * create/modify event, or the result pane never opens.
  */
-export function codePreviewEventsEnabled(sourcePreviewAllowed: boolean, expertId?: string | null): boolean {
-    return sourcePreviewAllowed || isLatexExpertId(expertId);
+export function codePreviewEventsEnabled(sourcePreviewAllowed: boolean, expertId?: string | null, taskResultTab = false): boolean {
+    return sourcePreviewAllowed || taskResultTab || isLatexExpertId(expertId);
 }
 
 /**

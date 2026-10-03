@@ -25,9 +25,11 @@ var blockedTemplates = []struct{ from, to string }{
 	},
 }
 
-// ApplyHeaders adds the account and product headers the upstream requires.
+// ApplyHeaders adds the product and account headers a WorkBuddy login sends.
+// A static API key on the same host keeps the caller's own identity. The
+// absence markers below mean this login has no user, enterprise, or department.
 func ApplyHeaders(h http.Header, cfg corelib.MaclawLLMConfig) {
-	if h == nil || !Matches(cfg) {
+	if h == nil || !Matches(cfg) || !accountSession(cfg) {
 		return
 	}
 	profile, ok := ProfileByName(cfg.ProviderName)
@@ -57,6 +59,18 @@ func ApplyHeaders(h http.Header, cfg corelib.MaclawLLMConfig) {
 	}
 }
 
+// accountSession reports a WorkBuddy login. URL and provider name only select
+// the chat-body translator. They do not make an API key into an account.
+func accountSession(cfg corelib.MaclawLLMConfig) bool {
+	if strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
+		return true
+	}
+	return strings.TrimSpace(cfg.WorkBuddyUserID) != "" ||
+		strings.TrimSpace(cfg.WorkBuddyEnterpriseID) != "" ||
+		strings.TrimSpace(cfg.WorkBuddyDomain) != "" ||
+		strings.TrimSpace(cfg.WorkBuddyRefreshToken) != ""
+}
+
 func setOrAbsent(h http.Header, name, absentName, value string) {
 	value = strings.TrimSpace(value)
 	if value != "" {
@@ -68,8 +82,11 @@ func setOrAbsent(h http.Header, name, absentName, value string) {
 }
 
 // PrepareBody forces streaming, a leading system message, template rewrites,
-// and the highest thinking level for hy3 models. originalStream is the value
-// the caller asked for.
+// and the highest thinking level for hy3 models. hy3 answers HTTP 400 when
+// tool_choice is an object, so that model flattens it to a string. Other
+// WorkBuddy models keep the object: DeepSeek on the same host already
+// accepts it, and replacing a named function with "required" would drop the
+// function the client pinned. originalStream is the value the caller asked for.
 func PrepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool) {
 	var obj map[string]any
 	if err := json.Unmarshal(payload, &obj); err != nil {
@@ -83,6 +100,7 @@ func PrepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool)
 	ensureSystemPrompt(obj)
 	rewriteMessages(obj)
 	forceMaxThinking(obj)
+	flattenToolChoice(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return payload, originalStream, false
@@ -91,6 +109,9 @@ func PrepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool)
 }
 
 func needsRewrite(payload []byte, obj map[string]any) bool {
+	if toolChoiceNeedsFlatten(obj) {
+		return true
+	}
 	if stream, _ := obj["stream"].(bool); !stream {
 		return true
 	}
@@ -105,6 +126,83 @@ func needsRewrite(payload []byte, obj map[string]any) bool {
 	}
 	return bytes.Contains(payload, []byte("Anthropic's official CLI for Claude.")) ||
 		bytes.Contains(payload, []byte("Main branch (you will usually use this for PRs)"))
+}
+
+func toolChoiceNeedsFlatten(obj map[string]any) bool {
+	if !strings.HasPrefix(modelName(obj), "hy3") {
+		return false
+	}
+	raw, ok := obj["tool_choice"]
+	if !ok || raw == nil {
+		return false
+	}
+	_, isString := raw.(string)
+	return !isString
+}
+
+// flattenToolChoice turns an hy3 object tool_choice into a string. The
+// upstream accepts only none, auto, and required. A function object becomes
+// "required" — the name cannot be kept. type auto and type none keep that
+// word, so an explicit none does not turn into auto. Anything else becomes
+// "auto".
+func flattenToolChoice(obj map[string]any) {
+	if !strings.HasPrefix(modelName(obj), "hy3") {
+		return
+	}
+	raw, ok := obj["tool_choice"]
+	if !ok {
+		return
+	}
+	if _, isString := raw.(string); isString {
+		return
+	}
+	choice, _ := raw.(map[string]any)
+	switch kind := toolChoiceKind(choice); kind {
+	case "function":
+		obj["tool_choice"] = "required"
+	case "auto", "none", "required":
+		obj["tool_choice"] = kind
+	default:
+		obj["tool_choice"] = "auto"
+	}
+}
+
+func toolChoiceKind(choice map[string]any) string {
+	if choice == nil {
+		return ""
+	}
+	typ, _ := choice["type"].(string)
+	switch strings.TrimSpace(typ) {
+	case "function", "auto", "none", "required":
+		return strings.TrimSpace(typ)
+	}
+	if toolChoiceName(choice) != "" {
+		return "function"
+	}
+	return ""
+}
+
+func modelName(obj map[string]any) string {
+	if obj == nil {
+		return ""
+	}
+	model, _ := obj["model"].(string)
+	return model
+}
+
+func toolChoiceName(choice map[string]any) string {
+	if choice == nil {
+		return ""
+	}
+	if name, _ := choice["name"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	fn, _ := choice["function"].(map[string]any)
+	if fn == nil {
+		return ""
+	}
+	name, _ := fn["name"].(string)
+	return strings.TrimSpace(name)
 }
 
 func hasLeadingSystem(obj map[string]any) bool {
@@ -170,8 +268,7 @@ func sanitizeText(s string) string {
 }
 
 func forceMaxThinking(obj map[string]any) {
-	model, _ := obj["model"].(string)
-	if !strings.HasPrefix(model, "hy3") {
+	if !strings.HasPrefix(modelName(obj), "hy3") {
 		return
 	}
 	if effort, _ := obj["reasoning_effort"].(string); effort == "high" {

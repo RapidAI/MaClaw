@@ -55,6 +55,29 @@ type SkillMarketHandlers struct {
 	petStoreMailer  mail.Mailer
 	hubVerifier     hubViewerMachineVerifier
 	suitePurchaseMu sync.Mutex
+
+	// tokenBank is the Token Bank ledger/withdrawal/gift repository (§6.1).
+	// It is held as the narrow view interface the handlers actually use, so a
+	// deployment without the LLM module can leave it nil and get a clean 503
+	// instead of a panic.
+	tokenBank tokenBankRepoView
+	// nodeID pins gift links and replication to this HubCenter node. A claim is
+	// a conditional UPDATE against the origin node's database, so a link minted
+	// here has to record which node decides it.
+	nodeID string
+	// tokenBankLLM is the registry half of Token Bank: publishing a share's
+	// models, pausing them, rotating their key and withdrawing them (§3.2).
+	// Held as the narrow publish view so a node without the LLM module leaves
+	// it nil and gets a clear 503 instead of a panic.
+	tokenBankLLM tokenBankPublishView
+	// tokenBankGroups validates that a pull targets a service group which
+	// actually routes Token Bank traffic. It is filled from the publisher when
+	// that publisher can answer, and may be set on its own in tests.
+	tokenBankGroups tokenBankGroupChecker
+	// tokenBankOrigin routes a gift claim to the node that created the link.
+	// Nil on a single node: links created here carry this node's id and are
+	// claimed locally. A foreign origin with no directory is refused.
+	tokenBankOrigin tokenBankOriginDirectory
 }
 
 type hubViewerMachineVerifier interface {
@@ -96,6 +119,11 @@ type SkillMarketConfig struct {
 	PetStoreSync   petStoreSyncRecorder
 	PetStoreMailer mail.Mailer
 	HubVerifier    hubViewerMachineVerifier
+	// TokenBank and NodeID wire the Token Bank client API (§6.1). TokenBank is
+	// the concrete SQLite repository presented through the narrow view the
+	// handlers need; leave it nil when the LLM module is not initialised.
+	TokenBank tokenBankRepoView
+	NodeID    string
 }
 
 // NewSkillMarketHandlers 创建 SkillMarket HTTP handlers。
@@ -121,6 +149,8 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 		petStoreSync:   cfg.PetStoreSync,
 		petStoreMailer: cfg.PetStoreMailer,
 		hubVerifier:    cfg.HubVerifier,
+		tokenBank:      cfg.TokenBank,
+		nodeID:         strings.TrimSpace(cfg.NodeID),
 	}
 }
 

@@ -104,6 +104,132 @@ func TestRunLoop_ToolCallPetitionGrantsAndRendersNextIteration(t *testing.T) {
 	}
 }
 
+// A petition that rewrites the system prompt does not execute a tool, so the
+// post-batch refresher never runs. The next request must still observe the
+// rewritten prompt.
+func TestRunLoop_PetitionPromptReplacesSystemMessage(t *testing.T) {
+	callCount := 0
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = toolCallResponse("generate_pdf", `{"content":"# 兰州","title":"兰州天气"}`)
+		} else {
+			resp = textResponse("done")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &promptPublishingPetitioner{
+		petitioningCallbacks: petitioningCallbacks{
+			mockCallbacks: mockCallbacks{
+				config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+				maxIter:     4,
+				sysPrompt:   "LIGHT-FENCE",
+				tools:       []map[string]interface{}{tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"})},
+				toolResult:  "ok",
+				toolOutcome: ToolExecutionOutcomeOK,
+			},
+			grantMsg: "call web_search now",
+		},
+	}
+	result := RunLoop(cb, "继续完成 兰州天气", nil, nil)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if cb.published != 1 {
+		t.Fatalf("published=%d, want one prompt copy", cb.published)
+	}
+	if len(bodies) < 2 {
+		t.Fatalf("requests=%d", len(bodies))
+	}
+	if !strings.Contains(string(bodies[0]), "LIGHT-FENCE") {
+		t.Fatalf("first request lost its system prompt: %s", bodies[0])
+	}
+	if !strings.Contains(string(bodies[1]), "PETITION-FULL-PROMPT") || strings.Contains(string(bodies[1]), "LIGHT-FENCE") {
+		t.Fatalf("second request kept the pre-petition prompt: %s", bodies[1])
+	}
+}
+
+type promptPublishingPetitioner struct {
+	petitioningCallbacks
+	nextPrompt string
+	published  int
+}
+
+func (m *promptPublishingPetitioner) PetitionToolCall(name string) (bool, string) {
+	granted, message := m.petitioningCallbacks.PetitionToolCall(name)
+	if strings.TrimSpace(message) != "" {
+		m.nextPrompt = "PETITION-FULL-PROMPT"
+	}
+	return granted, message
+}
+
+func (m *promptPublishingPetitioner) PetitionSystemPrompt() string {
+	if m.nextPrompt == "" {
+		return ""
+	}
+	text := m.nextPrompt
+	m.nextPrompt = ""
+	m.published++
+	return text
+}
+
+// An empty model turn after a host petition message must not be told that the
+// tool failed. The recovery keeps the host's next step, which is already in
+// the tool result.
+func TestRunLoop_EmptyAfterPetitionDirectiveDoesNotAbandonIt(t *testing.T) {
+	callCount := 0
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		var resp map[string]interface{}
+		switch callCount {
+		case 1:
+			resp = toolCallResponse("generate_pdf", `{"content":"# 兰州","title":"兰州天气"}`)
+		case 2:
+			resp = textResponse("")
+		default:
+			resp = textResponse("done")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	const grant = "工具 generate_pdf 已由主机授权并加入当前工具面，请立即重新发起对 generate_pdf 的调用（参数不变）。"
+	cb := &petitioningCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:     6,
+			sysPrompt:   "sys",
+			tools:       []map[string]interface{}{tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"})},
+			toolResult:  "ok",
+			toolOutcome: ToolExecutionOutcomeOK,
+		},
+		grantMsg: grant,
+	}
+	result := RunLoop(cb, "继续完成 兰州天气", nil, nil)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if len(bodies) < 3 {
+		t.Fatalf("requests=%d, want a recovery round after the empty reply", len(bodies))
+	}
+	recovery := string(bodies[2])
+	if strings.Contains(recovery, "返回了错误") || strings.Contains(recovery, "尝试其他方法") {
+		t.Fatalf("empty recovery abandoned the petition directive: %q", recovery)
+	}
+	if !strings.Contains(recovery, "不要改用其他方法") || !strings.Contains(recovery, grant) {
+		t.Fatalf("recovery lost the host next step: %q", recovery)
+	}
+}
+
 // A planned successor that the host cannot issue yet must not be described as
 // a missing tool. The host's explanation replaces the generic absence denial,
 // and the call is not executed.

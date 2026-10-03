@@ -58,7 +58,7 @@ func TestAdminLLMProviderTrafficHandler(t *testing.T) {
 	repo := &stubProviderTrafficRepo{}
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers/traffic?timezone=Asia/Shanghai", nil)
 	rec := httptest.NewRecorder()
-	adminLLMProviderTrafficHandler(llmservice.NewStatsService(repo))(rec, req)
+	adminLLMProviderTrafficHandler(llmservice.NewStatsService(repo), nil)(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -81,7 +81,7 @@ func TestAdminLLMProviderTrafficHandler(t *testing.T) {
 func TestAdminLLMProviderTrafficHandlerNilService(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers/traffic", nil)
 	rec := httptest.NewRecorder()
-	adminLLMProviderTrafficHandler(nil)(rec, req)
+	adminLLMProviderTrafficHandler(nil, nil)(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -118,7 +118,7 @@ func TestAdminLLMProviderTrafficHandlerIgnoresOversizedTimezone(t *testing.T) {
 	repo := &stubProviderTrafficRepo{}
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers/traffic?timezone="+strings.Repeat("X", 80), nil)
 	rec := httptest.NewRecorder()
-	adminLLMProviderTrafficHandler(llmservice.NewStatsService(repo))(rec, req)
+	adminLLMProviderTrafficHandler(llmservice.NewStatsService(repo), nil)(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}

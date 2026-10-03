@@ -149,6 +149,66 @@ func TestUpsertEntryByTagsUpdatePersistsRelatedEdgesAndRefreshesGraph(t *testing
 	t.Fatalf("updated entry %s not loaded", created.EntryID)
 }
 
+func TestUpsertTaskArtifactKeepsDistinctProjectIdentities(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	const body = "# LaTeX\n\nAI expert task. Reopen this task to continue working with expert: builtin-latex-paper."
+	write := func(dir, content string) UpsertResult {
+		t.Helper()
+		result, err := store.UpsertTaskArtifact(TaskArtifactUpsertOptions{
+			Title:            "LaTeX",
+			Content:          content,
+			Tags:             []string{"manual_task", "recent_task", dir, "task_management", "source:expert:builtin-latex-paper"},
+			IdentityTagCount: 3,
+			SourceType:       "manual",
+			SourceURL:        dir + "/task.md",
+		})
+		if err != nil {
+			t.Fatalf("upsert %s: %v", dir, err)
+		}
+		return result
+	}
+
+	first := write("C:/tasks/latex-1", body)
+	second := write("C:/tasks/latex-2", body)
+	nested := write("C:/tasks/latex-3", body+"\n\nNotes.")
+	for _, result := range []UpsertResult{first, second, nested} {
+		if !result.Created {
+			t.Fatalf("distinct project must create a record, got %+v", result)
+		}
+	}
+	if first.EntryID == second.EntryID || first.EntryID == nested.EntryID || second.EntryID == nested.EntryID {
+		t.Fatalf("distinct projects collapsed to one entry: %s %s %s", first.EntryID, second.EntryID, nested.EntryID)
+	}
+	entries := store.List(CategoryTaskArtifact, "AI expert task")
+	if len(entries) != 3 {
+		t.Fatalf("task artifacts = %d, want 3 distinct papers: %+v", len(entries), entries)
+	}
+
+	again := write("C:/tasks/latex-1", body)
+	if !again.Touched && !again.Updated || again.EntryID != first.EntryID {
+		t.Fatalf("same project must reuse its record, got %+v want %s", again, first.EntryID)
+	}
+	revised, err := store.UpsertTaskArtifact(TaskArtifactUpsertOptions{
+		Title:            "LaTeX revised",
+		Content:          body,
+		Tags:             []string{"manual_task", "recent_task", "C:/tasks/latex-1", "task_management", "source:expert:builtin-latex-paper"},
+		IdentityTagCount: 3,
+		SourceType:       "manual",
+		SourceURL:        "C:/tasks/latex-1/task.md",
+	})
+	if err != nil || !revised.Updated || revised.EntryID != first.EntryID {
+		t.Fatalf("updating one paper must not collide with another paper's identical body, got %+v err=%v", revised, err)
+	}
+	if entries = store.List(CategoryTaskArtifact, "AI expert task"); len(entries) != 3 {
+		t.Fatalf("rewriting the same project created a fourth record: %d", len(entries))
+	}
+}
+
 func TestUpsertEntryByTagsRepairsExistingDuplicateContent(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {

@@ -86,6 +86,41 @@ type loginSession struct {
 	profile Profile
 }
 
+// LoginSession is one in-flight browser login. The same session must poll
+// until the account finishes, because the upstream ties the state to cookies.
+type LoginSession = loginSession
+
+// BeginLogin starts a browser login and returns the authorization URL.
+// It does not open a browser; the caller shows AuthURL to the operator.
+func BeginLogin(ctx context.Context, profile Profile, proxy ProxyFunc) (*LoginSession, error) {
+	return startLogin(ctx, profile, proxy)
+}
+
+// AuthURL is the page the operator must open to approve the login.
+func (s *LoginSession) AuthURL() string {
+	if s == nil {
+		return ""
+	}
+	return s.authURL
+}
+
+// Poll waits once for the upstream to finish the login.
+func (s *LoginSession) Poll(ctx context.Context) (*AccountCredential, bool, error) {
+	if s == nil {
+		return nil, false, errors.New("login session is nil")
+	}
+	return s.poll(ctx)
+}
+
+// Close releases the login HTTP client.
+func (s *LoginSession) Close() {
+	if s == nil || s.close == nil {
+		return
+	}
+	s.close()
+	s.close = nil
+}
+
 // RunLogin opens the official authorization page and waits until the account
 // finishes signing in or ctx ends.
 func RunLogin(ctx context.Context, profile Profile, proxy ProxyFunc) (*AccountCredential, error) {

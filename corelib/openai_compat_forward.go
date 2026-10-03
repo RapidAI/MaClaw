@@ -454,16 +454,12 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	// to Agnes, which only honors reasoning_effort). Retarget it here so a
 	// thinking request survives the forward instead of being silently ignored.
 	RetargetReasoningControlsForUpstream(cfg, body, ReasoningAPIChat)
-	if IsAutoThinkingMode(cfg.ThinkingMode) && IsDeepSeekThinkingModeModel(cfg) {
-		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
-		// returns reasoning_content. Required for deepseek-v4-flash and similar.
-		if _, hasThinking := body["thinking"]; !hasThinking {
-			body["thinking"] = map[string]interface{}{"type": "enabled"}
-		}
-	}
+	// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
+	// returns reasoning_content. AMD's public gateway rejects this object.
+	AddAutoDeepSeekThinkingObject(cfg, body)
 	// WorkBuddy returns empty reasoning_content unless reasoning_effort is set.
-	// Also drops Anthropic budget_tokens from the DeepSeek thinking object.
-	StampDeepSeekReasoningEffort(cfg, body)
+	// AMD skips that stamp: it would keep thinking and fold medium into high.
+	FinishOpenAIChatReasoningControls(cfg, body)
 	if isDeepSeekFlash {
 		normalizeDeepSeekFlashForwardBody(body)
 	}
@@ -492,7 +488,13 @@ func sanitizeOpenAICompatForwardStructuredFields(body map[string]interface{}, dr
 	} else {
 		delete(body, "tools")
 	}
-	if toolChoice, ok := body["tool_choice"]; ok {
+	// The earlier orphan check runs on the caller's tools. Sanitization can
+	// drop every tool after that, and a choice with nothing to call is not a
+	// request the upstream can run. none/auto/required objects are strings by
+	// then, so they would otherwise survive without tools.
+	if _, ok := body["tools"]; !ok {
+		delete(body, "tool_choice")
+	} else if toolChoice, ok := body["tool_choice"]; ok {
 		if sanitized := sanitizeOpenAICompatForwardToolChoiceForSDK(toolChoice); sanitized != nil {
 			body["tool_choice"] = sanitized
 		} else {
@@ -902,7 +904,17 @@ func sanitizeOpenAICompatForwardToolChoiceForSDK(raw interface{}) interface{} {
 		return nil
 	}
 	typ := strings.TrimSpace(fmt.Sprint(m["type"]))
-	if typ == "" || typ == "<nil>" {
+	if typ == "<nil>" {
+		typ = ""
+	}
+	// These three are already the legal string values. Keeping the object
+	// makes hy3 return HTTP 400, and dropping it turns an explicit none into
+	// the default auto.
+	switch typ {
+	case "none", "auto", "required":
+		return typ
+	}
+	if typ == "" {
 		typ = "function"
 	}
 	if typ != "function" {

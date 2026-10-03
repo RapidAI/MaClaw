@@ -1,7 +1,10 @@
 package llmservice
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -734,6 +737,129 @@ func officialQualityWRRRegistry(modelName, firstID, secondID string, tags []stri
 				},
 			}},
 		}},
+	}
+}
+
+func TestProxyQuoteKeepsAutoCoefficientAfterWorkloadResolution(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	paid := func(model string, fee float64) llmpool.ModelConfig {
+		return llmpool.ModelConfig{
+			Name:              model,
+			BillingMultiplier: fee,
+			ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID:           "p1",
+				Model:                model,
+				BillingMode:          llmpool.BillingModePaid,
+				TokenPricingOverride: true,
+				TokenPricing:         llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2},
+			}},
+		}
+	}
+	group := officialDynamicFixtureGroup()
+	group.Models = []llmpool.ModelConfig{
+		paid("auto", 1.5),
+		paid(llmpool.OfficialTierHigh, 3),
+		paid(llmpool.OfficialTierMid, 1),
+		paid(llmpool.OfficialTierLow, 0.5),
+	}
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers:     []llmpool.ProviderConfig{{ID: "p1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{group},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: http.DefaultClient, Quotes: NewProxyQuoteStore()}
+	quoteSrv := httptest.NewServer(ProxyQuoteHandler(cfg))
+	defer quoteSrv.Close()
+
+	quote := func(headerModel string) ProxyQuote {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, quoteSrv.URL, strings.NewReader(`{"model":"auto"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Hub-ID", "hub")
+		req.Header.Set("X-Tenant-ID", "tenant")
+		req.Header.Set("X-MaClaw-Request-ID", "request-"+headerModel)
+		req.Header.Set(llmpool.WorkloadClassHeader, llmpool.WorkloadClassPlan)
+		if headerModel != "" {
+			req.Header.Set(llmpool.ClientModelHeader, headerModel)
+		}
+		resp, err := quoteSrv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var payload struct {
+			Quote ProxyQuote `json:"quote"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d quote=%#v", resp.StatusCode, payload.Quote)
+		}
+		return payload.Quote
+	}
+	autoQuote := quote("")
+	if autoQuote.LogicalModel != llmpool.OfficialTierHigh || autoQuote.CapabilityMultiplier != 1.5 {
+		t.Fatalf("auto quote = model %q coefficient %v, want official-high at 1.5", autoQuote.LogicalModel, autoQuote.CapabilityMultiplier)
+	}
+	lowQuote := quote("low")
+	if lowQuote.CapabilityMultiplier != 0.5 {
+		t.Fatalf("header low coefficient = %v, want 0.5", lowQuote.CapabilityMultiplier)
+	}
+}
+
+func TestPinnedOfficialTierKeepsAutoRoutesWhenBandMissing(t *testing.T) {
+	group := &llmpool.ServiceGroup{
+		ID:   "g",
+		Kind: llmpool.ServiceGroupKindDynamic,
+		Models: []llmpool.ModelConfig{{
+			Name:            "auto",
+			ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1", Model: "gpt-4o", CreditMultiplier: 1}},
+		}},
+	}
+	dispatch := buildDispatchModel(&Registry{}, &group.Models[0])
+	req := &ProxyRequest{Body: map[string]any{"model": llmpool.OfficialTierLow}}
+	model, _, got := applyProxyWorkloadRouting(req, nil, &Registry{}, group, dispatch, llmpool.OfficialTierLow)
+	if model != llmpool.OfficialTierLow || got == nil || len(got.ProviderRoutes) != 1 || got.ProviderRoutes[0].Model != "gpt-4o" {
+		t.Fatalf("model=%q routes=%#v", model, got)
+	}
+
+	alias := &llmpool.ServiceGroup{
+		ID:   "g",
+		Kind: llmpool.ServiceGroupKindDynamic,
+		Models: []llmpool.ModelConfig{{
+			Name:            "low",
+			ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1", Model: "cheap", CreditMultiplier: 1}},
+		}},
+	}
+	if matched := matchProxyGroupModel(&Registry{}, alias, llmpool.OfficialTierLow); matched == nil || matched.Name != "low" || len(matched.ProviderRoutes) != 1 || matched.ProviderRoutes[0].Model != "cheap" {
+		t.Fatalf("alias dispatch = %#v", matched)
+	}
+
+	autoGroup := &llmpool.ServiceGroup{
+		ID:     "g",
+		Kind:   llmpool.ServiceGroupKindDynamic,
+		Routes: llmpool.DefaultOfficialAutoRoutes(),
+		Models: []llmpool.ModelConfig{{
+			Name:            "auto",
+			ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1", Model: "gpt-4o", CreditMultiplier: 1}},
+		}},
+	}
+	header := http.Header{}
+	header.Set(llmpool.WorkloadClassHeader, llmpool.WorkloadClassPlan)
+	autoReq := &ProxyRequest{Header: header, Body: map[string]any{"model": "auto"}}
+	autoModel, _, autoDispatch := applyProxyWorkloadRouting(autoReq, nil, &Registry{}, autoGroup, buildDispatchModel(&Registry{}, &autoGroup.Models[0]), "auto")
+	if autoDispatch != nil {
+		t.Fatalf("auto without a tier row dispatched %#v as %q", autoDispatch, autoModel)
 	}
 }
 

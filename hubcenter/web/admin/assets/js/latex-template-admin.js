@@ -685,8 +685,8 @@ function ensureLatexTemplateAdminPanel() {
 function ensureLatexTemplateAdminNav() {
   if (document.querySelector('.nav button[data-tab="latextemplates"]')) return;
   // The product groups the LaTeX library under 能力, which is the admin
-  // console's "Platform" nav group (能力目录 / 能力市场 live there too).
-  const group = document.querySelector('.nav .nav-group[data-nav-group="platform"]')
+  // console's "market" nav group (能力目录 / 能力市场 live there too).
+  const group = document.querySelector('.nav .nav-group[data-nav-group="market"]')
     || document.querySelector('.nav .nav-group')
     || document.querySelector('.nav');
   if (!group) return;

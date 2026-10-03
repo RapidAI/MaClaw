@@ -41,6 +41,12 @@ type SystemPromptDeps struct {
 	MemoryStore      *memory.Store
 	SkipMemoryRecall bool
 
+	// MemoryOwnerID scopes the self-identity summary. Empty keeps the
+	// historical all-owner summary for stores that are already one user per
+	// directory. MemoryStrictOwner also hides legacy empty-owner identity rows.
+	MemoryOwnerID     string
+	MemoryStrictOwner bool
+
 	// EffectiveProjectDir returns the project directory that tools actually
 	// use as their default cwd / relative-path base. This is the SINGLE SOURCE
 	// OF TRUTH for "where am I working" — system prompt, tool definitions, and

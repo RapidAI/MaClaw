@@ -339,3 +339,6 @@ guiapp/_*
 /tmp_pprof/
 
 deploy/run_deploy_run*.ps1
+
+/deploy/run[0-9][0-9]_*
+/deploy/sed*

@@ -70,6 +70,60 @@ function renderComposer(inputValue = "draft", handleSend = vi.fn()) {
     return { handleSend, rememberHistoryEdit, resizeInput, updateInputValue };
 }
 
+describe("AssistantInputComposer toolbar end slot", () => {
+    it("pins toolbar end content in the gap before send", () => {
+        const updateInputValue = vi.fn();
+        const props: AssistantInputComposerProps = {
+            browseFile: vi.fn(),
+            canSend: true,
+            cancelPending: false,
+            exitHistoryBrowsing: vi.fn(() => false),
+            finishVoicePointer: vi.fn(),
+            handleCancel: vi.fn(),
+            handleClearInput: vi.fn(),
+            handleDragOver: vi.fn(),
+            handleDrop: vi.fn(),
+            handlePaste: vi.fn(),
+            handleSend: vi.fn(),
+            handleVoiceClick: vi.fn(),
+            handleVoicePointerDown: vi.fn(),
+            handleVoicePointerLeave: vi.fn(),
+            inputAreaHeight: null,
+            inputLocked: false,
+            inputRef: { current: null },
+            inputValue: "",
+            inline: false,
+            isBusy: false,
+            isSelectionCollapsedAtBoundary: vi.fn(() => false),
+            lang: "zh-Hans",
+            pendingAttachments: [],
+            placeholderText: "Ask AI",
+            ready: true,
+            recallHistory: vi.fn(() => false),
+            rememberHistoryEdit: vi.fn(),
+            resizeInput: vi.fn(),
+            selectedFilePaths: [],
+            setPendingAttachments: vi.fn(),
+            showBusySpinner: false,
+            showMemoryUsage: false,
+            showVoiceInput: false,
+            theme: overlayTheme,
+            themeMode: "dark",
+            toolbarEndContent: <button type="button" data-testid="composer-model-chip">助手 · auto</button>,
+            updateInputValue,
+            voiceInput: {} as AssistantInputComposerProps["voiceInput"],
+        };
+        render(<AssistantInputComposer {...props} />);
+        const end = screen.getByTestId("ai-input-toolbar-end");
+        expect(end.style.marginLeft).toBe("auto");
+        expect(screen.getByTestId("composer-model-chip").textContent).toContain("auto");
+        const toolbar = screen.getByTestId("ai-input-toolbar");
+        const right = toolbar.lastElementChild;
+        expect(right?.contains(end)).toBe(false);
+        expect(end.compareDocumentPosition(right!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+});
+
 describe("AssistantInputComposer keyboard shortcuts", () => {
     it("sends on plain Enter and never sends on modified Enter combinations", () => {
         const { handleSend } = renderComposer();

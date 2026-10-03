@@ -50,8 +50,31 @@ func dumpLLMContext(statusCode int, respMsg string, requestBody []byte, tempDir 
 }
 
 // llmSimpleResponse is a minimal response from a simple (non-tool-calling) LLM request.
+// Content is the display text. RawContent and ReasoningContent keep the provider
+// fields before that display filter, so a caller whose contract is a block inside
+// the message can still see it when the filter removes the only copy.
 type llmSimpleResponse struct {
-	Content string
+	Content          string
+	RawContent       string
+	ReasoningContent string
+	FinishReason     string
+}
+
+func newSimpleLLMResponse(text, finishReason string) *llmSimpleResponse {
+	return &llmSimpleResponse{Content: stripThinkingTags(text), FinishReason: finishReason}
+}
+
+// finishSimpleLLMText keeps the provider's content and reasoning fields apart.
+// Content stays the stripped display text other callers already use.
+func finishSimpleLLMText(content, reasoning, finishReason string) *llmSimpleResponse {
+	text := content
+	if text == "" {
+		text = reasoning
+	}
+	resp := newSimpleLLMResponse(text, finishReason)
+	resp.RawContent = content
+	resp.ReasoningContent = reasoning
+	return resp
 }
 
 // simpleLLMRequestOptions describes a control-plane request whose output must
@@ -71,6 +94,12 @@ type simpleLLMRequestOptions struct {
 	// adopted — so it may run more than once per logical request and receivers
 	// must be idempotent (the endpoint-gate success signal is).
 	OnDetachedComplete func(err error)
+	// AwaitResponse means this caller is the consumer of the body. The
+	// scheduling budget may release the foreground slot, but it must not
+	// return a budget error: that error makes the caller cancel its context
+	// and abort the read that was supposed to continue. Detach-and-return is
+	// for callers that will retry and adopt the same read.
+	AwaitResponse bool
 }
 
 const (
@@ -174,9 +203,11 @@ func doSimpleLLMRequestWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 	ctx = llm.WithRequestTraceIfMissing(ctx, "simple_llm")
 	if cfg.IsResponsesWebSocket() {
 		// WS is a long-lived message stream: there is no "finish reading the
-		// body" point, so detached continuation does not apply. Keep the
-		// legacy to-point-of-budget behaviour; the late-verdict re-send is
-		// the fallback for slow WS endpoints (P0-3 exception).
+		// body" point, so detached continuation does not apply. The legacy
+		// path still tears a normal call down at the scheduling budget.
+		// AwaitResponse is the exception: that caller is waiting on the body,
+		// so the budget only releases the slot. The late-verdict re-send
+		// remains the fallback for slow WS endpoints (P0-3 exception).
 		return doSimpleLLMRequestWithOptionsLegacy(ctx, cfg, messages, client, timeout, opts)
 	}
 	return doSimpleLLMRequestDetachable(ctx, cfg, messages, client, timeout, opts)
@@ -190,8 +221,10 @@ func doSimpleLLMRequestWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 // the caller's ctx was still live, which observe call sites could not
 // distinguish from a transport timeout — and the endpoint gate recorded it as
 // a network failure and banned the endpoint (2026-08-25 incident pattern). A
-// budget fire now always returns llmBudgetFiredError (budgetFired semantics,
-// never endpoint evidence), without detached continuation.
+// budget fire returns llmBudgetFiredError (budgetFired semantics, never
+// endpoint evidence), without detached continuation. AwaitResponse does not
+// detach either: it releases the slot and waits on the same read until the
+// body arrives or the caller context ends.
 func doSimpleLLMRequestWithOptionsLegacy(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration, opts simpleLLMRequestOptions) (*llmSimpleResponse, error) {
 	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
 	if acquireErr != nil {
@@ -230,8 +263,20 @@ func doSimpleLLMRequestWithOptionsLegacy(ctx context.Context, cfg corelib.Maclaw
 		globalLLMScheduler.ObserveResult(trace, r.err)
 		return r.resp, r.err
 	case <-ctx.Done():
+		if opts.AwaitResponse {
+			// This caller is the consumer. Cancel the read and return the
+			// caller's error. A budget error would make it cancel again.
+			return finishAwaitedSimpleLLMRead(ctx, ch, lease, trace, scheduledCancel, scheduledCancel, ctx.Err())
+		}
 		return finishLegacyBudgetFired(lease, scheduledCancel, timeout, ctx.Err())
 	case <-budgetC:
+		if opts.AwaitResponse {
+			// Drop the foreground slot without invoking its cancel hook, so
+			// the read stays up. scheduledCancel is idempotent and is the
+			// only context this variant owns.
+			lease.Release()
+			return finishAwaitedSimpleLLMRead(ctx, ch, nil, trace, scheduledCancel, scheduledCancel, nil)
+		}
 		return finishLegacyBudgetFired(lease, scheduledCancel, timeout, context.DeadlineExceeded)
 	}
 }
@@ -340,9 +385,42 @@ func doSimpleLLMRequestForeground(ctx context.Context, cfg corelib.MaclawLLMConf
 		globalLLMScheduler.ObserveResult(trace, r.err)
 		return r.resp, r.err
 	case <-ctx.Done():
+		if opts.AwaitResponse {
+			return finishAwaitedSimpleLLMRead(ctx, ch, lease, trace, scheduledCancel, detachCancel, ctx.Err())
+		}
 		return beginDetachedSimpleLLMRead(ctx, cfg, messages, client, key, ch, lease, trace, scheduledCancel, detachCancel, timeout, ctx.Err(), opts)
 	case <-budgetC:
+		if opts.AwaitResponse {
+			lease.Release()
+			return finishAwaitedSimpleLLMRead(ctx, ch, nil, trace, scheduledCancel, detachCancel, nil)
+		}
 		return beginDetachedSimpleLLMRead(ctx, cfg, messages, client, key, ch, lease, trace, scheduledCancel, detachCancel, timeout, context.DeadlineExceeded, opts)
+	}
+}
+
+// finishAwaitedSimpleLLMRead waits for the in-flight body. A nil cause means
+// the scheduling budget already released the slot and the read must continue.
+// A non-nil cause is the caller's context ending: cancel the read and return
+// that error instead of detaching it.
+func finishAwaitedSimpleLLMRead(ctx context.Context, ch <-chan simpleLLMVariantResult, lease *llmSchedulerLease, trace llm.RequestTrace, scheduledCancel, detachCancel context.CancelFunc, cause error) (*llmSimpleResponse, error) {
+	if cause != nil {
+		scheduledCancel()
+		detachCancel()
+		if lease != nil {
+			lease.Release()
+		}
+		return nil, cause
+	}
+	select {
+	case r := <-ch:
+		scheduledCancel()
+		detachCancel()
+		globalLLMScheduler.ObserveResult(trace, r.err)
+		return r.resp, r.err
+	case <-ctx.Done():
+		scheduledCancel()
+		detachCancel()
+		return nil, ctx.Err()
 	}
 }
 
@@ -473,11 +551,8 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 		if len(parsed.Choices) == 0 {
 			return nil, fmt.Errorf("no response from model")
 		}
-		text := parsed.Choices[0].Message.Content
-		if text == "" {
-			text = parsed.Choices[0].Message.ReasoningContent
-		}
-		return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
+		msg := parsed.Choices[0].Message
+		return finishSimpleLLMText(msg.Content, msg.ReasoningContent, parsed.Choices[0].FinishReason), nil
 	}
 
 	req, data, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
@@ -519,11 +594,8 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}
-	text := parsed.Choices[0].Message.Content
-	if text == "" {
-		text = parsed.Choices[0].Message.ReasoningContent
-	}
-	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
+	msg := parsed.Choices[0].Message
+	return finishSimpleLLMText(msg.Content, msg.ReasoningContent, parsed.Choices[0].FinishReason), nil
 }
 
 func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration, requestOpts ...simpleLLMRequestOptions) (*llmSimpleResponse, error) {
@@ -584,14 +656,11 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	if parsed == nil || len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}
-	text := parsed.Choices[0].Message.Content
-	if text == "" {
-		text = parsed.Choices[0].Message.ReasoningContent
-	}
-	if text == "" {
+	msg := parsed.Choices[0].Message
+	if msg.Content == "" && msg.ReasoningContent == "" {
 		return nil, fmt.Errorf("no text response from model")
 	}
-	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
+	return finishSimpleLLMText(msg.Content, msg.ReasoningContent, parsed.Choices[0].FinishReason), nil
 }
 
 func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration, requestOpts ...simpleLLMRequestOptions) (*llmSimpleResponse, error) {
@@ -621,12 +690,9 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	if resp == nil || len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}
-	text := resp.Choices[0].Message.Content
-	if text == "" {
-		text = resp.Choices[0].Message.ReasoningContent
-	}
-	if text == "" {
+	msg := resp.Choices[0].Message
+	if msg.Content == "" && msg.ReasoningContent == "" {
 		return nil, fmt.Errorf("no text response from model")
 	}
-	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
+	return finishSimpleLLMText(msg.Content, msg.ReasoningContent, resp.Choices[0].FinishReason), nil
 }

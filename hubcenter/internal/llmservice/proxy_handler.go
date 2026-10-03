@@ -110,6 +110,22 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 	}
 }
 
+// proxyQuoteClientModel is the capability the user selected. The client-model
+// header wins because Hub may already have rewritten the body to a resolved band.
+func proxyQuoteClientModel(header http.Header, body map[string]any) string {
+	if header != nil {
+		if clientModel := strings.TrimSpace(header.Get(llmpool.ClientModelHeader)); clientModel != "" {
+			return clientModel
+		}
+	}
+	if body != nil {
+		if raw, ok := body["model"].(string); ok {
+			return strings.TrimSpace(raw)
+		}
+	}
+	return ""
+}
+
 // ProxyQuoteHandler selects exactly one currently usable official route and
 // freezes its resolved directional price. Hub must present the returned opaque
 // token to /chat/completions; a quote never authorizes a different request.
@@ -150,6 +166,9 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 			RawBody:        bodyBytes,
 			StartedAt:      time.Now(),
 		}
+		// Capture the user's band before dispatch rewrites body["model"] to the
+		// resolved official tier. Otherwise an auto request is quoted as high/mid/low.
+		clientModel := proxyQuoteClientModel(r.Header, body)
 		// A quote commits Hub to one concrete route. For a streaming request it
 		// must therefore be selected from the stream-capable routes now, rather
 		// than discovering after Hub has reserved Credits that the quoted route
@@ -166,23 +185,35 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 		logicalID := proxyDispatchLogicalID(dispatch)
 		upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
 		pricing := proxyTokenPricingSnapshot(dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel, 0, 0, proxyRequestStartedAt(req))
+		if pricing == nil && proxyRouteBillingMode(dispatch.matchedGroup, logicalID, upstreamModel) != llmpool.BillingModeFree {
+			// A multiplier-only official route is still a paid route. Quote the
+			// same legacy per-token price completion will bill, instead of
+			// rejecting admission and leaving Hub with nothing to settle.
+			pricing = proxyLegacyOfficialPricingSnapshot(dispatch.provider, logicalID, upstreamModel, 0, 0, 0, 0, proxyRequestStartedAt(req))
+		}
 		if pricing == nil {
 			writeJSONError(w, http.StatusUnprocessableEntity, "quoted provider route has no directional Credits price")
 			return
 		}
+		memberID := ""
+		if dispatch.provider != nil && IsTokenBankMemberID(dispatch.provider.ID) {
+			memberID = dispatch.provider.ID
+		}
 		quote, err := cfg.Quotes.Put(ProxyQuote{
-			RequestDigest:      proxyRequestDigest(bodyBytes),
-			HubID:              hubID,
-			TenantID:           tenantID,
-			RequestID:          requestID,
-			ServiceGroupID:     dispatch.matchedGroup.ID,
-			LogicalModel:       dispatch.model,
-			ProviderID:         logicalID,
-			UpstreamModel:      upstreamModel,
-			Pricing:            pricing.Pricing,
-			PricingSource:      pricing.PricingSource,
-			ProviderMultiplier: pricing.ProviderMultiplier,
-			ExpiresAt:          time.Now().Add(proxyQuoteTTL),
+			RequestDigest:        proxyRequestDigest(bodyBytes),
+			HubID:                hubID,
+			TenantID:             tenantID,
+			RequestID:            requestID,
+			ServiceGroupID:       dispatch.matchedGroup.ID,
+			LogicalModel:         dispatch.model,
+			ProviderID:           logicalID,
+			MemberID:             memberID,
+			UpstreamModel:        upstreamModel,
+			Pricing:              pricing.Pricing,
+			PricingSource:        pricing.PricingSource,
+			ProviderMultiplier:   pricing.ProviderMultiplier,
+			CapabilityMultiplier: llmpool.GroupCapabilityBillingMultiplier(dispatch.matchedGroup, clientModel),
+			ExpiresAt:            time.Now().Add(proxyQuoteTTL),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -337,6 +368,14 @@ func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig
 	}
 
 	streamWriter := &proxyHTTPStreamWriter{w: w, flusher: flusher}
+	// The first body byte has to leave before the 15s heartbeat. A reverse
+	// proxy that times out on an empty body would otherwise cut a thinking
+	// model that has not emitted a token yet. Auth failures return above,
+	// before this 200, so they keep their real status.
+	if _, err := io.WriteString(streamWriter, ": ping\n\n"); err != nil {
+		return
+	}
+	streamWriter.Flush()
 	resultCh := make(chan proxyStreamResult, 1)
 	go func() {
 		defer func() {
@@ -436,11 +475,28 @@ func proxyQuoteFromRequest(cfg *ProxyConfig, token string, req *ProxyRequest) (P
 }
 
 func writeProxyRequestError(w http.ResponseWriter, err error) {
+	var capErr *TokenBankRequestCapError
+	if errors.As(err, &capErr) {
+		writeJSONError(w, http.StatusBadRequest, capErr.Error())
+		return
+	}
 	if bound := asTenantBoundError(err); bound != nil {
 		writeBindingRedirectError(w, bound)
 		return
 	}
+	// Checked before any substring sniffing: the all-providers-failed error
+	// wraps the last member failure, whose text embeds an upstream body
+	// snippet (proxyMemberErrorSnippet). An upstream saying "service not
+	// available" or "authorization denied" must not reclassify a retryable
+	// pool exhaustion (503) into a permanent client error (400/403). HubCenter
+	// generates those phrases itself only on pre-dispatch paths, which never
+	// pass through the failover loop, so this order cannot misroute them.
 	errMsg := err.Error()
+	if strings.Contains(errMsg, "all providers failed") {
+		w.Header().Set("Retry-After", proxyRetryAfterSeconds(err))
+		writeJSONError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
 	if strings.Contains(errMsg, "authorization denied") {
 		writeJSONError(w, http.StatusForbidden, errMsg)
 		return
@@ -451,11 +507,6 @@ func writeProxyRequestError(w http.ResponseWriter, err error) {
 	}
 	if strings.Contains(errMsg, "not available") || strings.Contains(errMsg, "not specified") || strings.Contains(errMsg, "no stream-capable providers") {
 		writeJSONError(w, http.StatusBadRequest, errMsg)
-		return
-	}
-	if strings.Contains(errMsg, "all providers failed") {
-		w.Header().Set("Retry-After", proxyRetryAfterSeconds(err))
-		writeJSONError(w, http.StatusServiceUnavailable, errMsg)
 		return
 	}
 	writeJSONError(w, http.StatusInternalServerError, errMsg)

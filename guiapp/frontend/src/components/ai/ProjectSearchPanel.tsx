@@ -4,7 +4,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { openFileLibrary } from "../../utils/fileLibraryNavigation";
 import { openKnowledgeSearch } from "../../utils/knowledgeSearchNavigation";
-import { openExpertConversation } from "../../utils/expertConversationNavigation";
+import { openNewTaskWizard } from "./task-config/openNewTaskWizard";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { isSearchDismissExemptTarget, searchSurfaceRootStyle } from "./projectSearchSurface";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
@@ -156,7 +156,10 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     }, [search]);
     const onSelectExpert = useCallback((item: HeaderExpertSearchHit) => {
         search.close();
-        openExpertConversation(item.expert);
+        openNewTaskWizard({
+            expertId: item.expert.id,
+            expertName: item.expert.name,
+        });
     }, [search]);
     const onSelect = useCallback(async (item: ProjectSearchItem) => {
         if (renamingPath) return;

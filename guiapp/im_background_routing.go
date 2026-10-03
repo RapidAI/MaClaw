@@ -74,6 +74,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}, true
 	}
 	cancelClassification()
+	semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, semanticIntent)
 	loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 	loopCtx.Runtime.ClassificationMessage = classificationMessage(msg.UserID, msg.Text, history)
 	bindLoopSemanticIntent(loopCtx, semanticIntent)

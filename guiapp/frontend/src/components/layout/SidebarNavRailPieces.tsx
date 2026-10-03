@@ -1,5 +1,87 @@
-import { AppsRailIcon, ExpertRailIcon, GossipIcon, SettingsIcon, ToolsRailIcon } from './SidebarNavIcons';
-import type { ReactNode } from 'react';
+import { AppsRailIcon, ExpertRailIcon, GossipIcon, ProFeaturesIcon, SettingsIcon, ToolsRailIcon } from './SidebarNavIcons';
+import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'react';
+
+/**
+ * Sibling-menu arbitration for the nav rail's four popups.
+ *
+ * Only one popup may be open at a time, and each remembers its trigger element
+ * (so focus can be returned on close) plus its anchor offset. That is four
+ * pieces of state times four menus — a shape worth one shared implementation
+ * rather than four near-identical closures in the rail component, which is
+ * under a hard line-count budget.
+ */
+export type NavMenuKey = 'system' | 'extensions' | 'library' | 'pro';
+
+export type NavMenuToggleState = {
+    systemMenuOpen: boolean;
+    extensionsMenuOpen: boolean;
+    libraryMenuOpen: boolean;
+    proMenuOpen: boolean;
+    systemMenuOpenerRef: MutableRefObject<HTMLElement | null>;
+    extensionsMenuOpenerRef: MutableRefObject<HTMLElement | null>;
+    libraryMenuOpenerRef: MutableRefObject<HTMLElement | null>;
+    proMenuOpenerRef: MutableRefObject<HTMLElement | null>;
+    setSystemMenuOpen: Dispatch<SetStateAction<boolean>>;
+    setExtensionsMenuOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryMenuOpen: Dispatch<SetStateAction<boolean>>;
+    setProMenuOpen: Dispatch<SetStateAction<boolean>>;
+    setExtensionsMenuTop: Dispatch<SetStateAction<number>>;
+    setLibraryMenuTop: Dispatch<SetStateAction<number>>;
+    setProMenuTop: Dispatch<SetStateAction<number>>;
+};
+
+export function useNavMenuToggles(state: NavMenuToggleState) {
+    const {
+        systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen,
+        systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef,
+        setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen,
+        setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop,
+    } = state;
+
+    const closeSiblingMenus = (keep: NavMenuKey) => {
+        if (keep !== 'system') setSystemMenuOpen(false);
+        if (keep !== 'extensions') setExtensionsMenuOpen(false);
+        if (keep !== 'library') setLibraryMenuOpen(false);
+        if (keep !== 'pro') setProMenuOpen(false);
+    };
+
+    // Each toggle only re-anchors when the menu is opening; toggling closed must
+    // not move the popup to the trigger's current offset, which would make it
+    // jump on the way out.
+    const toggleSystemMenu = (target: HTMLElement) => {
+        if (!systemMenuOpen) {
+            systemMenuOpenerRef.current = target;
+            closeSiblingMenus('system');
+        }
+        setSystemMenuOpen(prev => !prev);
+    };
+    const toggleExtensionsMenu = (target: HTMLElement) => {
+        if (!extensionsMenuOpen) {
+            extensionsMenuOpenerRef.current = target;
+            setExtensionsMenuTop(target.offsetTop + target.offsetHeight / 2);
+            closeSiblingMenus('extensions');
+        }
+        setExtensionsMenuOpen(prev => !prev);
+    };
+    const toggleLibraryMenu = (target: HTMLElement) => {
+        if (!libraryMenuOpen) {
+            libraryMenuOpenerRef.current = target;
+            setLibraryMenuTop(target.offsetTop + target.offsetHeight / 2);
+            closeSiblingMenus('library');
+        }
+        setLibraryMenuOpen(prev => !prev);
+    };
+    const toggleProMenu = (target: HTMLElement) => {
+        if (!proMenuOpen) {
+            proMenuOpenerRef.current = target;
+            setProMenuTop(target.offsetTop + target.offsetHeight / 2);
+            closeSiblingMenus('pro');
+        }
+        setProMenuOpen(prev => !prev);
+    };
+
+    return { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu };
+}
 
 type SidebarBrandHeaderProps = {
     brandId?: string;
@@ -34,6 +116,13 @@ type SidebarPrimaryNavProps = {
     runningTaskCount?: number;
     /** Prefers the background-task view when the Tasks entry is activated. */
     onOpenBackgroundTasks?: () => void;
+    /** Popup state for the 专业功能 rail entry (AI experts + workflows). */
+    proMenuOpen?: boolean;
+    onToggleProMenu?: (target: HTMLElement) => void;
+    /** Rail label for the professional-features entry. Falls back to language inference. */
+    proFeaturesLabel?: string;
+    /** Workflow catalog stays reachable from the professional-features menu. */
+    showWorkflowEntry?: boolean;
 };
 
 const railItemLabelStyle = { fontSize: '0.72rem', lineHeight: 1.15, fontWeight: 700, textAlign: 'center', width: '100%' } as const;
@@ -136,7 +225,7 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClic
     );
 };
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle, runningTaskCount = 0, onOpenBackgroundTasks }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle, runningTaskCount = 0, onOpenBackgroundTasks, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true }: SidebarPrimaryNavProps) => {
     // The rail is also used by the English and Traditional-Chinese builds. The
     // existing localized labels are the only language signal available here,
     // so infer the display language without changing the parent component API.
@@ -153,10 +242,21 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
         : { workbench: '工作台', tasks: '任务', apps: '小程序', experts: 'AI 专家', tools: '工具', employees: '数字员工', files: '资料库', settings: '设置' };
 
     // Keep the old combined entry available to isolated embedders/tests that
-    // do not opt into the split navigation, while the packaged app uses the
-    // dedicated AI 专家 + 工具 entries.
-    const expertLabel = showToolsEntry ? labels.experts : (utilitiesLabel || labels.experts);
-    const expertTitle = showToolsEntry ? (utilitiesTitle || labels.experts) : (utilitiesTitle || utilitiesLabel || labels.experts);
+    // do not opt into the split navigation. The packaged app replaces the
+    // direct AI 专家 rail item with a 专业功能 menu (AI experts + workflows).
+    // A single remaining destination opens directly, so disabling one entry
+    // does not leave a one-item popup.
+    const proFeaturesLabel = proFeaturesLabelProp || (isEnglish ? 'Features' : isTraditional ? '專業功能' : '专业功能');
+    const useProMenu = showToolsEntry && !!onToggleProMenu;
+    const proTargets = [
+        showUtilitiesEntry ? 'utilities' : '',
+        showWorkflowEntry ? 'workflows' : '',
+    ].filter(Boolean);
+    const proMenuAvailable = useProMenu && proTargets.length > 1;
+    const proDirectTarget = useProMenu && proTargets.length === 1 ? proTargets[0] : '';
+    const expertLabel = useProMenu ? proFeaturesLabel : (showToolsEntry ? labels.experts : (utilitiesLabel || labels.experts));
+    const expertTitle = useProMenu ? proFeaturesLabel : (showToolsEntry ? (utilitiesTitle || labels.experts) : (utilitiesTitle || utilitiesLabel || labels.experts));
+    const proPageActive = (showUtilitiesEntry && navTab === 'utilities') || (showWorkflowEntry && navTab === 'workflows');
     const toolLabel = toolsLabel || labels.tools || (isEnglish ? 'Tools' : '工具');
 
     const emitRailIntent = (name: string) => {
@@ -178,7 +278,22 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
             <div aria-hidden="true" className="snrp-divider" />
             <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => { if (onOpenBackgroundTasks) onOpenBackgroundTasks(); else switchTool('remote'); }} title={isEnglish ? 'Task monitor' : isTraditional ? '任務監控' : '任务监控'} testId="sidebar-task-monitor-nav" badgeCount={runningTaskCount} badgeLabel={isEnglish ? `: ${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} running` : isTraditional ? `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 個執行中` : `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 个执行中`} />
             {showAppEntry && <SemanticNavItem id="apps" label={labels.apps} legacyLabel={appsLabel} icon={<AppsRailIcon />} active={navTab === 'apps'} onClick={() => switchTool('apps')} title={appsLabel} testId="sidebar-apps-nav" />}
-            <SemanticNavItem id="experts" label={expertLabel} legacyLabel={showToolsEntry ? undefined : utilitiesLabel} icon={<ExpertRailIcon />} active={navTab === 'utilities'} onClick={() => switchTool('utilities')} title={expertTitle} testId="sidebar-utilities-nav" visible={showUtilitiesEntry} />
+            <SemanticNavItem
+                id="experts"
+                label={expertLabel}
+                legacyLabel={useProMenu || showToolsEntry ? undefined : utilitiesLabel}
+                icon={useProMenu ? <ProFeaturesIcon /> : <ExpertRailIcon />}
+                active={useProMenu ? ((proMenuAvailable && proMenuOpen) || proPageActive) : navTab === 'utilities'}
+                current={useProMenu ? proPageActive : undefined}
+                onClick={event => {
+                    if (proMenuAvailable && onToggleProMenu) onToggleProMenu(event.currentTarget);
+                    else switchTool(proDirectTarget || 'utilities');
+                }}
+                title={expertTitle}
+                testId="sidebar-utilities-nav"
+                visible={useProMenu ? proTargets.length > 0 : showUtilitiesEntry}
+                menuTrigger={proMenuAvailable ? { expanded: proMenuOpen, controls: 'pro-features-popup-menu' } : undefined}
+            />
             <SemanticNavItem id="tools" label={toolLabel} icon={<ToolsRailIcon />} active={navTab === 'tools'} onClick={() => switchTool('tools')} title={toolsTitle || toolLabel} testId="sidebar-tools-nav" visible={showToolsEntry} />
             <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={false} onClick={() => { switchTool('ai'); emitRailIntent('maclaw:focus-digital-employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
             <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />

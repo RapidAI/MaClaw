@@ -116,6 +116,22 @@ func TestOfficialForwardServiceGroupIDsUsesOfficialPool(t *testing.T) {
 	}
 }
 
+func TestOfficialForwardAliasUsesOfficialPool(t *testing.T) {
+	model := &llmservice.AuthorizedModel{
+		Name:                  "low",
+		ServiceGroupIDs:       []string{llmservice.MaClawOfficialServiceGroupID},
+		ProviderServiceGroups: map[string][]string{"maclaw_official": {llmservice.MaClawOfficialServiceGroupID}},
+	}
+	got := rewriteOfficialForwardBody(map[string]any{"model": "low"}, model, llmservice.MaClawOfficialProviderID)
+	if got["model"] != llmpool.OfficialTierLow {
+		t.Fatalf("model = %#v, want official-low", got["model"])
+	}
+	groups := officialForwardServiceGroupIDs(model, llmservice.MaClawOfficialProviderID)
+	if len(groups) != 1 || groups[0] != llmpool.OfficialGroupID {
+		t.Fatalf("forward groups = %#v, want official pool", groups)
+	}
+}
+
 func TestOfficialForwardServiceGroupIDsKeepsHubOfficialEntry(t *testing.T) {
 	model := &llmservice.AuthorizedModel{
 		Name:                  "auto",

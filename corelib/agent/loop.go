@@ -522,6 +522,15 @@ type ToolCallPetitioner interface {
 	PetitionToolCall(name string) (granted bool, message string)
 }
 
+// petitionSystemPromptSource is optional. A host that rewrote its system
+// prompt while admitting an unrendered petition returns that text so the
+// next request observes it. The petition does not execute a tool, so the
+// post-batch surface refresher does not run for a petition-only batch.
+// An empty string leaves the conversation system message unchanged.
+type petitionSystemPromptSource interface {
+	PetitionSystemPrompt() string
+}
+
 // LLMRequestContextProvider lets hosts wrap each LLM round with their own
 // scheduling, tracing, and cancellation boundary without making corelib/agent
 // depend on GUI/runtime packages.
@@ -553,10 +562,17 @@ type LLMFinalizationGuard interface {
 }
 
 const (
-	maxFreeReplansPerLoop  = 64
-	maxLLMRetries          = 5
+	maxFreeReplansPerLoop = 64
+	maxLLMRetries         = 5
+)
+
+// Tests shorten these. Production delays are 2s, 4s, 8s, 16s, and 32s.
+var (
 	initialLLMRetryBackoff = 2 * time.Second
 	maxLLMRetryBackoff     = 32 * time.Second
+	// llmRouteTimeoutOverride replaces the configured agent timeout. Tests use
+	// it because that timeout is at least 240s. Zero keeps the configured value.
+	llmRouteTimeoutOverride time.Duration
 )
 
 // llmRetryBackoff returns the delay before a retry after a transient LLM
@@ -1714,6 +1730,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 			continue
 		}
+		// Desktop finishes the replannable operation by cancelling its context.
+		// That happens below, before an empty reply is recovered, so a later
+		// Err() is not by itself a user stop. Remember a cancel that was already
+		// present.
+		hostCanceledBeforeFinish := false
 		if err != nil {
 			disposeSurface(ToolSurfaceTransportFailure)
 			// Retry with exponential backoff for transient errors (503, timeout,
@@ -1721,9 +1742,22 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// resilient to brief API outages and short-lived auth glitches.
 			// A partial streamed response has already been rendered. Retrying it
 			// would duplicate that visible output in the same assistant message.
-			canRetry := requestChannel == nil && !containAmbiguousDelivery && resp == nil && requestBaseCtx.Err() == nil && requestCtx.Err() == nil
+			// A dead requestCtx is the route deadline, not host cancellation.
+			// The loop below installs a fresh deadline for that attempt. Host
+			// cancellation stays on requestBaseCtx and must not start another send.
+			canRetry := requestChannel == nil && !containAmbiguousDelivery && resp == nil && requestBaseCtx.Err() == nil
 			didAuthRefresh := false
 			for retryAttempt := 1; retryAttempt <= maxLLMRetries && canRetry && shouldRetrySimpleLLMError(err); retryAttempt++ {
+				// A stop or steer during the previous send must not flash another
+				// countdown. The context can already be done while canRetry, which
+				// was captured before this loop, is still true.
+				if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+					break
+				}
+				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
+					finishRequest(err)
+					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
+				}
 				rotated := false
 				if !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
 					didAuthRefresh = true
@@ -1754,13 +1788,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if backoff > 0 {
 					// A live steer can arrive while the loop is backing off from a
 					// transient provider error. Poll the replan revision so the user does
-					// not wait 2-6 seconds and then watch stale context retry first.
+					// not wait out the backoff and then watch stale context retry first.
+					// Host cancellation is a context signal, so it wakes this wait
+					// directly instead of waiting for the next ShouldStop poll.
 					deadline := time.NewTimer(backoff)
 					ticker := time.NewTicker(50 * time.Millisecond)
 				waitBackoff:
 					for {
 						select {
 						case <-deadline.C:
+							break waitBackoff
+						case <-requestBaseCtx.Done():
 							break waitBackoff
 						case <-ticker.C:
 							if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
@@ -1780,14 +1818,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					}
 					ticker.Stop()
 				}
+				// Steering cancels this operation context and raises the replan
+				// flag together. The context wake is not always a stop: accept
+				// the steer before that wake ends the turn.
+				if !interruptedForReplan {
+					if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+						interruptedForReplan = true
+					}
+				}
 				if interruptedForReplan {
 					break
 				}
-				if cb.ShouldStop() {
-					// The predecessor request was already retired before entering this
-					// retry loop. Do not call disposeSurface here: it would either try
-					// to settle that predecessor twice or obscure which request was
-					// cancelled. No successor manifest or transport handoff exists.
+				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
+					// The previous request was already retired. Disposing here would
+					// settle that request twice. No successor manifest or transport
+					// handoff exists yet.
 					finishRequest(err)
 					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
 				}
@@ -1796,10 +1841,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// request context after a genuine route timeout.
 				cancelRequestTimeout()
 				requestCtx, cancelRequestTimeout = llmRequestContextWithTimeout(requestBaseCtx, aggCFG)
-				// The predecessor was already retired before this retry loop. Clear
-				// its projection before preparing the successor so a pre-send failure
-				// cannot accidentally emit a second terminal event for the old
-				// manifest.
+				// The previous wire attempt was already retired: the stream predecessor
+				// before this loop, and each failed retry at the end of its own
+				// iteration. Clear that projection before preparing the successor so
+				// a pre-send failure cannot emit a second terminal for the old manifest.
 				staticAttemptManifest = nil
 				// Like the stream fallback, an outer retry owns a successor
 				// request. Issue its epoch before the renderer replaces callback
@@ -1848,12 +1893,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					staticAttemptManifest = &lifecycle.manifest
 					tools = lifecycle.definitions
 					startAttempt()
-				}
-				if err == nil {
+					// Replace the predecessor error here. Gating this call on
+					// err == nil skips the request, and every later attempt only sleeps.
 					resp, err = doLLMRequestWithTools(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient)
 				}
 				if err != nil {
 					finishAttempt(ToolSurfaceAmbiguousDelivery)
+					// This send owns a manifest. Retire it before the next attempt
+					// clears the projection. The post-loop dispose only runs when
+					// the whole retry sequence fails, so a later success would
+					// otherwise leave the failed send without a terminal. A pre-send
+					// failure already marked this slot terminal, and this call is then
+					// a no-op.
+					disposeSurface(ToolSurfaceTransportFailure)
 				}
 			}
 			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
@@ -1865,6 +1917,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				continue
 			}
+			// The in-flight retry can end as a parse or transport error after the
+			// operation context is already canceled. That is a stop, not a failed
+			// model call, and it must not start another countdown.
+			if err != nil && (requestBaseCtx.Err() != nil || cb.ShouldStop()) {
+				hostCanceledBeforeFinish = requestBaseCtx.Err() != nil
+				finishRequest(err)
+				return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
+			}
+			hostCanceledBeforeFinish = requestBaseCtx.Err() != nil
 			finishRequest(err)
 			if err != nil {
 				disposeSurface(ToolSurfaceTransportFailure)
@@ -1881,6 +1942,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				finishRequest(responseErr)
 				return finish(LoopResult{Error: responseErr.Error(), Iterations: iteration, ToolCalls: totalToolCalls})
 			}
+			hostCanceledBeforeFinish = requestBaseCtx.Err() != nil
 			finishRequest(nil)
 		}
 		// Cover steering that landed after the HTTP request completed but before
@@ -2179,14 +2241,27 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// backoff would stall a turn that already has tool evidence.
 			// Genuine empty generations still wait, so a user correction is
 			// not stuck behind that sleep.
+			if hostCanceledBeforeFinish || cb.ShouldStop() {
+				disposeSurface(ToolSurfaceRuntimeTerminal)
+				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+			}
 			if !blankBecauseNameless {
 				emptyBackoff := time.NewTimer(time.Duration(consecutiveEmpty) * time.Second)
 				emptyTicker := time.NewTicker(50 * time.Millisecond)
 				emptyReplan := false
+				// A nil channel is never selected. After finishRequest, desktop
+				// hosts have already closed this operation, and that close is not
+				// a stop. A context that is still open can still interrupt.
+				var operationDone <-chan struct{}
+				if requestBaseCtx.Err() == nil {
+					operationDone = requestBaseCtx.Done()
+				}
 			emptyWait:
 				for {
 					select {
 					case <-emptyBackoff.C:
+						break emptyWait
+					case <-operationDone:
 						break emptyWait
 					case <-emptyTicker.C:
 						if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
@@ -2205,6 +2280,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					}
 				}
 				emptyTicker.Stop()
+				// Steering during the wait can cancel a context that was still
+				// open. Prefer that steer over ending the turn.
+				if !emptyReplan {
+					if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+						emptyReplan = true
+					}
+				}
 				if emptyReplan {
 					disposeSurface(ToolSurfaceSteered)
 					freeReplans++
@@ -2213,13 +2295,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					}
 					continue
 				}
-				if cb.ShouldStop() {
+				if cb.ShouldStop() || (operationDone != nil && requestBaseCtx.Err() != nil) {
 					disposeSurface(ToolSurfaceRuntimeTerminal)
 					return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 				}
-			} else if cb.ShouldStop() {
-				disposeSurface(ToolSurfaceRuntimeTerminal)
-				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 			} else if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
 				disposeSurface(ToolSurfaceSteered)
 				freeReplans++
@@ -2235,7 +2314,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if !blankBecauseNameless {
 				recoverPrompt = buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
 				workingState, _ = applyWorkingStateEmpty(workingState, userText, lastToolName, consecutiveEmpty, executedTools, loopProjectedGoal(cb))
-				recoverPrompt = AppendNextHint(recoverPrompt, workingState)
+				// A host directive already names the next call. A stale
+				// working-state hint ("list candidates", "ask the user") must
+				// not override it.
+				if !lastToolOutcome.directive {
+					recoverPrompt = AppendNextHint(recoverPrompt, workingState)
+				}
 			}
 			if iteration+1 >= maxIter {
 				continue
@@ -2459,6 +2543,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if !toolCallNameWasRendered(tools, tc.Function.Name) {
 				tool.RecordUnrenderedToolCallDenial()
 				denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
+				hostDirective := false
 				if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
 					// A budgeted repeat family can publish one more invocation
 					// when the model asks again. One-shot tools stay on the
@@ -2467,6 +2552,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(tc.Function.Name) {
 						denial = repeatWaveContinuedMessage(tc.Function.Name)
 						repeatWaveName = strings.TrimSpace(tc.Function.Name)
+						hostDirective = true
 					} else {
 						tool.RecordConsumedGrantDenial()
 						denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
@@ -2474,17 +2560,27 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
 					// A governed host may rescue a call that names a real cataloged
 					// tool the planner failed to render, or explain why a planned
-					// name stays off this request. The outcome stays an error.
-					// granted widens the surface for the next iteration. A non-empty
-					// message replaces the generic absence denial either way, so a
-					// successor that is waiting on a predecessor is not described as
-					// a tool that does not exist.
+					// name stays off this request. The call still does not execute,
+					// so the outcome stays an error. granted widens the surface for
+					// the next iteration. A non-empty message replaces the generic
+					// absence denial either way, so a successor that is waiting on
+					// a predecessor is not described as a tool that does not exist.
 					granted, message := petitioner.PetitionToolCall(tc.Function.Name)
+					if source, ok := cb.(petitionSystemPromptSource); ok {
+						if prompt := strings.TrimSpace(source.PetitionSystemPrompt()); prompt != "" {
+							replaceConversationSystemPrompt(conversation, prompt)
+						}
+					}
 					if text := strings.TrimSpace(message); text != "" {
 						if granted {
 							tool.RecordPetitionGrant()
 						}
 						denial = text
+						// The call did not run. A non-empty host message is the
+						// next step (re-issue this name, or run the predecessor
+						// it names). Empty-response recovery must follow that
+						// text instead of treating it as a failed execution.
+						hostDirective = true
 					}
 				}
 				execResult := ToolExecutionResult{
@@ -2494,6 +2590,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				result := execResult.Result
 				lastToolName = tc.Function.Name
 				lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
+				lastToolOutcome.directive = hostDirective
 				record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
 				recentCalls = append(recentCalls, record)
 				if len(recentCalls) > driftWindow*2 {
@@ -3771,7 +3868,7 @@ func doResponsesRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfi
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if readErr != nil && len(body) == 0 {
+	if incompleteHTTPBody(resp.StatusCode, body, readErr) {
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -4150,35 +4247,48 @@ func namelessToolCallRecoveryPrompt(lastToolName string) string {
 func buildEmptyResponseRecovery(emptyCount int, lastToolName string, outcome toolOutcome, userGoal string) string {
 	var sb strings.Builder
 
-	// Escalating urgency based on consecutive empty count.
+	// Escalating urgency based on consecutive empty count. A directive's next
+	// step is already written in the tool result; offering a bare reply here
+	// lets the model abandon that step.
 	if emptyCount <= 2 {
 		sb.WriteString("[系统] 你的上一条回复为空。")
+	} else if outcome.directive {
+		sb.WriteString(fmt.Sprintf("[系统] 警告：你已经连续 %d 次返回空回复。请立刻执行上一条工具结果里的下一步，否则任务将被终止。", emptyCount))
 	} else {
 		sb.WriteString(fmt.Sprintf("[系统] 警告：你已经连续 %d 次返回空回复。你必须立即回复内容或调用工具，否则任务将被终止。", emptyCount))
 	}
 
 	// Include last tool context if available.
-	// The outcome kind is determined structurally by classifyToolResult,
-	// not by keyword matching on arbitrary output.
+	// The outcome kind is determined structurally by classifyToolResult or by
+	// the execution outcome, not by keyword matching on arbitrary output.
+	// A directive is a host next-step instruction for a call that did not run.
 	if lastToolName != "" {
-		switch outcome.kind {
-		case toolOutcomeTimeout:
+		switch {
+		case outcome.kind == toolOutcomeTimeout:
 			sb.WriteString(fmt.Sprintf("\n上一个工具 %s 执行超时。请不要放弃——你应该：", lastToolName))
 			sb.WriteString("\n1. 检查操作是否仍在后台运行（如适用）")
 			sb.WriteString("\n2. 尝试用更短的超时或不同的方式重试")
 			sb.WriteString("\n3. 如果无法继续，向用户说明当前进度和遇到的问题")
-		case toolOutcomeError:
+		case outcome.kind == toolOutcomeError && outcome.directive:
+			sb.WriteString(fmt.Sprintf("\n上一个调用 %s 尚未执行。请严格按照上一条工具结果里的下一步继续，不要改用其他方法，也不要把该结果说成工具失败。", lastToolName))
+		case outcome.kind == toolOutcomeError:
 			sb.WriteString(fmt.Sprintf("\n上一个工具 %s 返回了错误。请分析错误原因并尝试其他方法继续完成任务。", lastToolName))
 		default:
 			sb.WriteString(fmt.Sprintf("\n上一个工具调用是 %s。请根据其结果继续执行任务。", lastToolName))
 		}
 	}
 
-	// Remind the LLM of the original goal on later retries.
+	// Remind the LLM of the original goal on later retries. A directive already
+	// named the next step; offering to tell the user instead lets the model
+	// abandon that step and paraphrase the tool result as a failure.
 	if emptyCount >= 2 && userGoal != "" {
 		goalSnippet := truncateRunesPrefix(userGoal, 200)
 		sb.WriteString(fmt.Sprintf("\n\n用户的原始目标：%s", goalSnippet))
-		sb.WriteString("\n请继续完成这个任务，或者告诉用户当前的进展和遇到的问题。")
+		if outcome.directive {
+			sb.WriteString("\n请继续完成这个任务，并且只做上一条工具结果里写明的下一步。")
+		} else {
+			sb.WriteString("\n请继续完成这个任务，或者告诉用户当前的进展和遇到的问题。")
+		}
 	}
 
 	return sb.String()
@@ -4263,7 +4373,11 @@ func llmRequestContextWithTimeout(ctx context.Context, cfg corelib.MaclawLLMConf
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithTimeout(ctx, time.Duration(cfg.EffectiveTimeoutSec())*time.Second)
+	timeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
+	if llmRouteTimeoutOverride > 0 {
+		timeout = llmRouteTimeoutOverride
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // ---------------------------------------------------------------------------
@@ -4286,6 +4400,9 @@ const (
 type toolOutcome struct {
 	kind    toolOutcomeKind
 	snippet string // last ~300 runes of the result for logging
+	// directive marks a host next-step instruction for a call that did not
+	// run. Empty-response recovery follows that instruction.
+	directive bool
 }
 
 // classifyToolResult inspects the tool result string and returns a structured
@@ -4385,6 +4502,23 @@ func reasoningSentinelCallback(rawOnToken llm.TokenCallback) llm.TokenCallback {
 	}
 }
 
+// streamFailureBelongsToOuterRetry reports that a failed stream stays with
+// the outer loop instead of sending an immediate non-stream request. The
+// outer loop re-sends a retryable empty failure, including a route deadline,
+// after backoff. A partial render is not re-sent, and neither is host
+// cancellation. A terminal Hub denial also stays here so the loop does not
+// send a second request that will fail the same way. An immediate non-stream
+// request would repeat visible output or hit the same outage before that backoff.
+func streamFailureBelongsToOuterRetry(ctx context.Context, resp *llm.Response, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil || resp != nil || hubDenialForbidsRetry(err) {
+		return true
+	}
+	return shouldRetrySimpleLLMError(err)
+}
+
 // doLLMRequestWithToolsStream sends a streaming LLM request, calling onToken
 // for each text delta. Falls back to non-streaming if the streaming request fails.
 func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, httpClient *http.Client, onToken llm.TokenCallback) (*llm.Response, error) {
@@ -4440,28 +4574,7 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 		resp, err := llm.DoResponsesAPIRequestStreamWithOptions(ctx, cfg, conversation, tools, httpClient, onToken, reasoningSentinelCallback(rawOnToken), llm.ResponsesAPIRequestOptions{Stream: true, Tools: tools, ExplicitToolReplacement: true, ToolChoice: choice, ParallelToolCalls: parallel})
 		flushRolePrefixFilter()
 		if err != nil {
-			if ctx.Err() != nil {
-				return resp, err
-			}
-			// Keep transient failures in the outer retry loop. Besides applying
-			// one consistent retry budget, that loop can interrupt its backoff
-			// when live steering arrives. Falling back immediately to a
-			// non-streaming request here would send the stale conversation before
-			// the host has a chance to inject that steering.
-			if shouldRetrySimpleLLMError(err) {
-				return resp, err
-			}
-			// Once any delta reached the host, retrying the same request as a
-			// non-stream response would append a second copy to the visible turn
-			// and can repeat a provider-side tool decision. Return the terminal
-			// error instead; the caller's normal retry policy can start a clean
-			// round when appropriate.
-			if resp != nil {
-				// Deliver the small role-prefix buffer before returning a partial
-				// stream error; otherwise a short first token would remain hidden.
-				if rolePrefixFilter != nil {
-					rolePrefixFilter.Flush()
-				}
+			if streamFailureBelongsToOuterRetry(ctx, resp, err) {
 				return resp, err
 			}
 			log.Printf("[agent-loop] Responses streaming failed, falling back to non-stream: %v", err)
@@ -4495,19 +4608,9 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 		resp, err := llm.DoAnthropicRequestStreamWithReasoning(ctx, cfg, conversation, tools, httpClient, onToken, reasoningSentinelCallback(rawOnToken))
 		flushRolePrefixFilter()
 		if err != nil {
-			// A live-steer replan deliberately cancels this operation. Do not
-			// immediately issue a fallback request with the same cancelled context;
-			// the outer loop will inject the steering and start a fresh request.
-			if ctx.Err() != nil {
+			if streamFailureBelongsToOuterRetry(ctx, resp, err) {
 				return resp, err
 			}
-			// Once thinking or answer text reached the host, a non-stream retry
-			// would duplicate the visible turn. Keep the assembled prefix.
-			if resp != nil {
-				return resp, err
-			}
-			// Fallback to non-streaming only while this request remains live.
-			// A route deadline or host cancellation must reach the outer loop as-is.
 			log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
 			if beforeFallback != nil {
 				preparation, preparationErr := beforeFallback()
@@ -4540,10 +4643,7 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 	resp, err := llm.DoOpenAIRequestStreamWithOptions(ctx, cfg, conversation, tools, httpClient, onToken, reasoningSentinelCallback(rawOnToken), llm.OpenAIChatRequestOptions{Stream: true, Tools: tools, ExplicitToolReplacement: true, ToolChoice: choice, ParallelToolCalls: parallel})
 	flushRolePrefixFilter()
 	if err != nil {
-		if ctx.Err() != nil {
-			return resp, err
-		}
-		if resp != nil {
+		if streamFailureBelongsToOuterRetry(ctx, resp, err) {
 			return resp, err
 		}
 		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)

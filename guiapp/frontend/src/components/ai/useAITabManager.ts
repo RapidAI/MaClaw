@@ -8,7 +8,7 @@ import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIden
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
-import { expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields } from "./codingTaskMode";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 import { updateAssistantTabTaskSession } from "./aiAssistantPanelSessionUtils";
@@ -236,6 +236,10 @@ export interface UseAITabManagerResult {
     discardOrphanProjectTabs: (tasks: TaskManagementItem[]) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
     clearTabConversation: (tabId: string) => void;
+    /** Persist a project tab's conversation history aside before a hard reset. */
+    stashProjectTabHistory: (projectPath: string, history: unknown[]) => Promise<void>;
+    /** Record a lower bound (ms) for a tab's session start, used for history filtering. */
+    markSessionFloor: (tabId: string, floorMs: number) => void;
     /** Save state for the current active tab before switching */
     saveTabState: (tabId: string, state: Partial<AITabState>) => void;
     /** Get saved state for a tab */
@@ -381,6 +385,7 @@ function persistProjectTabs(tabs: AITab[]) {
                 executionProfile: t.executionProfile,
                 projectPath: t.projectPath || undefined,
                 latexRelativePath: t.latexRelativePath || undefined,
+                sessionFloorMs: t.sessionFloorMs || undefined,
             }
             : {
                 id: t.id,
@@ -412,7 +417,7 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; cloudWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; sessionFloorMs?: number; cloudWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
         if (!Array.isArray(parsed)) return [];
         const tabs = parsed
             .filter(t => t.id && !String(t.id).startsWith("acp-") && (t.projectPath || (t.type === "expert" && t.expertId)))
@@ -428,6 +433,7 @@ function loadPersistedProjectTabs(): AITab[] {
                         expertDescription: String(t.expertDescription || "").trim() || undefined,
                         projectPath: normalizeProjectSessionPath(t.projectPath) || undefined,
                         latexRelativePath: String(t.latexRelativePath || "").trim() || undefined,
+                        sessionFloorMs: Number(t.sessionFloorMs) > 0 ? Number(t.sessionFloorMs) : undefined,
                         executionProfile: t.executionProfile === "assistant" ? "assistant" as const : "none" as const,
                         closable: true,
                     };
@@ -1023,7 +1029,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // that were never registered via CreateProjectTabSession).
         const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && !isACPMirrorTab(t)) || t.type === "expert");
         for (const tab of projectTabs) {
+            const generationAtRequest = historyGenerationByTabIdRef.current.get(tab.id) || 0;
             LoadProjectTabConversation(tab.id).then(conversation => {
+                if ((historyGenerationByTabIdRef.current.get(tab.id) || 0) !== generationAtRequest) return;
                 if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
                 const existing = tabStatesRef.current.get(tab.id);
                 const existingLen = existing?.history?.length || 0;
@@ -1895,6 +1903,34 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         setTabLimitError(null);
     }, []);
 
+    /** Keep a cleared expert transcript on the paper's project tab so reopening that row still shows it. */
+    const stashProjectTabHistory = useCallback((projectPath: string, history: unknown[]): Promise<void> => {
+        const archived = archiveExpertTranscriptForProject(projectPath, history);
+        if (!archived) return Promise.resolve();
+        const tabId = `proj-${simpleHash(archived.projectPath)}`;
+        tabStatesRef.current.set(tabId, {
+            history: archived.history,
+            scrollTop: 0,
+            inputText: "",
+            projectPath: archived.projectPath,
+            lastActiveAt: Date.now(),
+        });
+        persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+        return SaveProjectTabConversation(tabId, archived.history).then(() => undefined).catch(() => undefined);
+    }, []);
+
+    const markSessionFloor = useCallback((tabId: string, floorMs: number) => {
+        const floor = Number(floorMs || 0);
+        if (!tabId || !Number.isFinite(floor) || floor <= 0) return;
+        updateTabState(prev => {
+            if (!prev.tabs.some(tab => tab.id === tabId)) return prev;
+            return {
+                ...prev,
+                tabs: prev.tabs.map(tab => tab.id === tabId ? { ...tab, sessionFloorMs: floor } : tab),
+            };
+        });
+    }, [updateTabState]);
+
     return {
         tabState,
         activeTab,
@@ -1909,6 +1945,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         discardDeletedExpertTabs,
         discardOrphanProjectTabs,
         clearTabConversation,
+        stashProjectTabHistory,
+        markSessionFloor,
         saveTabState,
         getTabState,
         getTabs,

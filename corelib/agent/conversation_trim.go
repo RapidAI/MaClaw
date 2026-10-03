@@ -25,7 +25,9 @@ import (
 func EstimateConversationEntryTokens(entries []ConversationEntry) int {
 	total := 0
 	for _, e := range entries {
-		data, _ := json.Marshal(e)
+		// Match what the model sees. Checkpoint source and branch metadata
+		// stay on the entry but are not sent in the prompt.
+		data, _ := json.Marshal(e.ToMessage())
 		total += EstimateBytesToTokens(data)
 	}
 	return total
@@ -244,8 +246,9 @@ func GroupContaining(groups []EntryGroup, idx int) *EntryGroup {
 // toolsTokens is the estimated token count consumed by tool definitions,
 // which must be subtracted from the available budget for messages.
 // summarizer is an optional callback that summarizes dropped messages into a
-// short text so the LLM retains key context. When nil, dropped messages are
-// replaced with a generic placeholder.
+// short text so the LLM retains key context. When nil, or when the summary is
+// incomplete, dropped messages are replaced with a handoff of user requests
+// and file paths. A generic note is used only when that handoff cannot fit.
 func TrimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summarizer func(string) string) []interface{} {
 	msgs = FoldComputerUseObserves(msgs)
 	if conversationHasPendingAsk(msgs) {
@@ -326,75 +329,90 @@ func TrimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	}
 
 	if bestDropCount > 0 {
-		dropped := groups[:bestDropCount]
-		kept := groups[bestDropCount:]
-
-		// Try to summarize the dropped messages (one LLM call only).
-		placeholder := fallbackPlaceholder
-		if summarizer != nil && len(dropped) > 0 {
-			var sb strings.Builder
-			for _, g := range dropped {
-				for idx := g.start; idx < g.end; idx++ {
-					data, _ := json.Marshal(msgs[idx])
-					sb.Write(data)
-					sb.WriteByte('\n')
-				}
+		dropped := append([]msgGroup(nil), groups[:bestDropCount]...)
+		kept := append([]msgGroup(nil), groups[bestDropCount:]...)
+		collect := func(gs []msgGroup) []interface{} {
+			out := make([]interface{}, 0)
+			for _, g := range gs {
+				out = append(out, msgs[g.start:g.end]...)
 			}
-			raw := sb.String()
-			if len(raw) > 32000 {
-				raw = raw[:32000] + "\n...(truncated)"
-			}
-			if summary := summarizer(raw); summary != "" {
-				// Cap summary to ~2000 tokens (~5000 chars) to avoid blowing the budget.
-				if len(summary) > 5000 {
-					runes := []rune(summary)
-					if len(runes) > 5000 {
-						summary = string(runes[:5000]) + "…"
-					}
-				}
-				placeholder = []interface{}{
-					map[string]string{"role": "user", "content": "[对话历史摘要]\n" + summary},
-					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。", "reasoning_content": ""},
-				}
-			}
+			return out
 		}
-
-		var result []interface{}
-		result = append(result, systemMsg...)
-		result = append(result, placeholder...)
-		for _, g := range kept {
-			result = append(result, msgs[g.start:g.end]...)
-		}
-		// If summary made it larger than fallback, just use fallback.
-		if EstimateConversationTokens(result) > msgBudget {
-			result = result[:0]
+		assemble := func(placeholder []interface{}, keptGroups []msgGroup) []interface{} {
+			result := make([]interface{}, 0, 1+len(placeholder)+8)
 			result = append(result, systemMsg...)
-			result = append(result, fallbackPlaceholder...)
-			for _, g := range kept {
+			result = append(result, placeholder...)
+			for _, g := range keptGroups {
 				result = append(result, msgs[g.start:g.end]...)
 			}
+			return result
 		}
-		return result
+		// One summary of the first dropped prefix. Dropping more groups after
+		// that invalidates it; those extra groups stay in the handoff instead.
+		summary := ""
+		if summarizer != nil {
+			if input := droppedMessagesForSummary(collect(dropped)); input != "" {
+				summary = summarizer(input)
+			}
+		}
+		for {
+			handoff := droppedMessagesHandoff(collect(dropped))
+			if summaryAccepted(summary) {
+				result := assemble([]interface{}{
+					map[string]string{"role": "user", "content": conversationSummaryPrefix + "\n" + strings.TrimSpace(summary)},
+					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。", "reasoning_content": ""},
+				}, kept)
+				if EstimateConversationTokens(result) <= msgBudget {
+					return result
+				}
+			}
+			if handoff != "" {
+				result := assemble([]interface{}{
+					map[string]string{"role": "user", "content": handoff},
+				}, kept)
+				if EstimateConversationTokens(result) <= msgBudget {
+					return result
+				}
+			}
+			if len(kept) <= 1 {
+				return assemble(fallbackPlaceholder, kept)
+			}
+			summary = ""
+			dropped = append(dropped, kept[0])
+			kept = kept[1:]
+		}
 	}
 
 	// Even keeping only the last group doesn't fit — try secondary truncation
-	// of tool results within the last group to squeeze it in.
+	// of tool results within the last group to squeeze it in. Prefer a handoff
+	// of the dropped prefix when that still fits.
 	lastG := groups[len(groups)-1]
-	result := truncateLastGroup(msgs, lastG.start, lastG.end, systemMsg, fallbackPlaceholder)
-	if EstimateConversationTokens(result) <= msgBudget {
-		return result
+	placeholders := [][]interface{}{fallbackPlaceholder}
+	if lastG.start > 1 {
+		if handoff := droppedMessagesHandoff(msgs[1:lastG.start]); handoff != "" {
+			placeholders = append([][]interface{}{{map[string]string{"role": "user", "content": handoff}}}, placeholders...)
+		}
 	}
-
-	// Still over budget — aggressively truncate assistant content in the result
-	// while keeping tool-call pairs intact.
-	result = TruncateAssistantContent(result, msgBudget)
-	if EstimateConversationTokens(result) <= msgBudget {
-		return result
+	for _, placeholder := range placeholders {
+		result := truncateLastGroup(msgs, lastG.start, lastG.end, systemMsg, placeholder)
+		if EstimateConversationTokens(result) <= msgBudget {
+			return result
+		}
+		result = TruncateAssistantContent(result, msgBudget)
+		if EstimateConversationTokens(result) <= msgBudget {
+			return result
+		}
 	}
 
 	// Last resort: drop the entire tool-call group, keep only system +
-	// placeholder + a minimal user message so the LLM can still respond.
-	// This avoids orphaned tool messages that would cause API errors.
+	// placeholder so the LLM can still respond. This avoids orphaned tool
+	// messages that would cause API errors.
+	if handoff := droppedMessagesHandoff(msgs[1:]); handoff != "" {
+		only := append(append([]interface{}{}, systemMsg...), map[string]string{"role": "user", "content": handoff})
+		if EstimateConversationTokens(only) <= msgBudget {
+			return only
+		}
+	}
 	return append(systemMsg, fallbackPlaceholder...)
 }
 
@@ -508,10 +526,10 @@ func MakeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 			map[string]string{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + text},
 		}
 		result, err := DoSimpleLLMRequest(cfg, msgs, httpClient, 30*time.Second)
-		if err != nil || result.Content == "" {
+		if err != nil || result == nil || !summaryAccepted(result.Content) {
 			return ""
 		}
-		return result.Content
+		return strings.TrimSpace(result.Content)
 	}
 }
 
@@ -556,7 +574,342 @@ func TrimHistory(entries []ConversationEntry) []ConversationEntry {
 		keptGroups = keptGroups[1:]
 	}
 
-	return trimmed
+	cut := 0
+	if len(keptGroups) > 0 {
+		cut = keptGroups[0].Start
+	} else {
+		cut = len(entries)
+	}
+	if cut <= 0 {
+		return trimmed
+	}
+	if len(trimmed) > 0 && trimmed[0].Role == "tool" {
+		return trimmed
+	}
+	// The handoff is part of the saved history. Drop another group while it
+	// pushes the checkpoint over the budget, and always keep the newest group.
+	for {
+		withHandoff := prependHistoryHandoff(entries[:cut], trimmed)
+		if len(keptGroups) <= 1 || EstimateConversationEntryTokens(withHandoff) <= MaxMemoryTokenEstimate {
+			return withHandoff
+		}
+		groupSize := keptGroups[0].End - keptGroups[0].Start
+		if groupSize <= 0 || groupSize > len(trimmed) {
+			return withHandoff
+		}
+		trimmed = trimmed[groupSize:]
+		keptGroups = keptGroups[1:]
+		if len(keptGroups) > 0 {
+			cut = keptGroups[0].Start
+		} else {
+			cut = len(entries)
+		}
+		if len(trimmed) > 0 && trimmed[0].Role == "tool" {
+			return trimmed
+		}
+	}
+}
+
+// prependHistoryHandoff keeps a deterministic note of what TrimHistory dropped.
+// Callers such as the WeChat gateway have no summarizer; the note is the checkpoint.
+func prependHistoryHandoff(dropped, kept []ConversationEntry) []ConversationEntry {
+	handoff := historyHandoffEntry(dropped)
+	if handoff.Content == "" {
+		return kept
+	}
+	out := make([]ConversationEntry, 0, len(kept)+2)
+	out = append(out, handoff)
+	if len(kept) == 0 || kept[0].Role != "assistant" {
+		out = append(out, ConversationEntry{Role: "assistant", Content: "好的，我已了解之前被省略的工作。"})
+	}
+	return append(out, kept...)
+}
+
+func droppedMessagesHandoff(msgs []interface{}) string {
+	entries := make([]ConversationEntry, 0, len(msgs))
+	for _, msg := range msgs {
+		role, content := ExtractRoleContent(msg)
+		entry := ConversationEntry{Role: role, Content: content}
+		if typed, ok := msg.(map[string]interface{}); ok {
+			if calls, exists := typed["tool_calls"]; exists {
+				entry.ToolCalls = calls
+			}
+		}
+		entries = append(entries, entry)
+	}
+	text, _ := historyHandoffEntry(entries).Content.(string)
+	return text
+}
+
+func summaryAccepted(summary string) bool {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return false
+	}
+	if len([]rune(summary)) > 5000 {
+		return false
+	}
+	if strings.Contains(summary, `"tool_calls"`) || strings.Contains(summary, "<tool_call") {
+		return false
+	}
+	return true
+}
+
+func historyHandoffEntry(dropped []ConversationEntry) ConversationEntry {
+	var users []string
+	var paths []string
+	seenUser := map[string]bool{}
+	seenPath := map[string]bool{}
+	priorSummary := ""
+	addUser := func(text string) {
+		text = oneLine(text)
+		if text == "" || seenUser[text] {
+			return
+		}
+		seenUser[text] = true
+		users = append(users, TruncateRunes(text, 180))
+	}
+	addPath := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seenPath[path] {
+			return
+		}
+		seenPath[path] = true
+		paths = append(paths, path)
+	}
+	for _, entry := range dropped {
+		// The live checkpoint lists paths in tags. Those calls are already
+		// gone, so a later trim has to read the tags or the paths disappear.
+		if text, ok := entry.Content.(string); ok {
+			for _, path := range taggedHandoffPaths(text) {
+				addPath(path)
+			}
+		}
+		if entry.Role == "user" {
+			if text, ok := entry.Content.(string); ok {
+				text = strings.TrimSpace(text)
+				if strings.HasPrefix(text, contextHandoffPrefix) {
+					parsedUsers := parseHandoffSection(text, "用户要求:")
+					parsedPaths := parseHandoffSection(text, "涉及文件:")
+					parsedSummary := parseHandoffSection(text, "先前摘要:")
+					for _, item := range parsedUsers {
+						addUser(item)
+					}
+					for _, item := range parsedPaths {
+						addPath(item)
+					}
+					if len(parsedSummary) > 0 {
+						priorSummary = oneLine(parsedSummary[len(parsedSummary)-1])
+					} else if len(parsedUsers) == 0 && len(parsedPaths) == 0 {
+						body := oneLine(strings.TrimPrefix(text, contextHandoffPrefix))
+						if body != "" {
+							priorSummary = TruncateRunes(body, 500)
+						}
+					}
+					continue
+				}
+				if strings.HasPrefix(text, conversationSummaryPrefix) {
+					body := oneLine(strings.TrimPrefix(text, conversationSummaryPrefix))
+					if body != "" {
+						priorSummary = TruncateRunes(body, 500)
+					}
+					continue
+				}
+				if corelib.IsSyntheticUserContent(text) {
+					continue
+				}
+				addUser(text)
+			}
+		}
+		for _, path := range toolArgumentPaths(entry) {
+			addPath(path)
+		}
+	}
+	if len(users) > 6 {
+		users = users[len(users)-6:]
+	}
+	if len(paths) > 20 {
+		paths = paths[len(paths)-20:]
+	}
+	var b strings.Builder
+	b.WriteString("[上下文恢复] 更早的对话因长度限制被省略。请基于下面的要点和最近的原文继续，不要重复已完成的工作。")
+	if priorSummary != "" {
+		b.WriteString("\n\n先前摘要:\n- ")
+		b.WriteString(TruncateRunes(priorSummary, 500))
+		b.WriteByte('\n')
+	}
+	if len(users) > 0 {
+		b.WriteString("\n\n用户要求:\n")
+		for _, text := range users {
+			b.WriteString("- ")
+			b.WriteString(text)
+			b.WriteByte('\n')
+		}
+	}
+	if len(paths) > 0 {
+		b.WriteString("\n涉及文件:\n")
+		for _, path := range paths {
+			b.WriteString("- ")
+			b.WriteString(path)
+			b.WriteByte('\n')
+		}
+	}
+	return ConversationEntry{Role: "user", Content: strings.TrimSpace(b.String())}
+}
+
+const contextHandoffPrefix = "[上下文恢复]"
+const conversationSummaryPrefix = "[对话历史摘要]"
+
+func oneLine(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func taggedHandoffPaths(text string) []string {
+	var paths []string
+	for _, tags := range [][2]string{{"<read-files>", "</read-files>"}, {"<modified-files>", "</modified-files>"}} {
+		paths = append(paths, taggedSectionLines(text, tags[0], tags[1])...)
+	}
+	return paths
+}
+
+func taggedSectionLines(text, open, close string) []string {
+	i := strings.Index(text, open)
+	if i < 0 {
+		return nil
+	}
+	rest := text[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(rest[:j], "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func parseHandoffSection(text, header string) []string {
+	var out []string
+	in := false
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == header {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		if trim == "" {
+			continue
+		}
+		if !strings.HasPrefix(trim, "- ") {
+			break
+		}
+		item := strings.TrimSpace(strings.TrimPrefix(trim, "- "))
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func droppedMessagesForSummary(msgs []interface{}) string {
+	var b strings.Builder
+	for _, msg := range msgs {
+		role, content := ExtractRoleContent(msg)
+		content = strings.TrimSpace(content)
+		if typed, ok := msg.(map[string]interface{}); ok {
+			if calls, exists := typed["tool_calls"]; exists {
+				if paths := toolArgumentPaths(ConversationEntry{ToolCalls: calls}); len(paths) > 0 {
+					if content != "" {
+						content += " "
+					}
+					content += "files=" + strings.Join(paths, ",")
+				}
+			}
+		}
+		if role == "" && content == "" {
+			continue
+		}
+		b.WriteString(role)
+		b.WriteString(": ")
+		b.WriteString(TruncateRunes(content, 400))
+		b.WriteByte('\n')
+		if b.Len() > 48000 {
+			break
+		}
+	}
+	text := b.String()
+	runes := []rune(text)
+	if len(runes) > 16000 {
+		text = string(runes[:16000])
+	}
+	return strings.TrimSpace(text)
+}
+
+func toolArgumentPaths(entry ConversationEntry) []string {
+	if entry.ToolCalls == nil {
+		return nil
+	}
+	data, err := json.Marshal(entry.ToolCalls)
+	if err != nil {
+		return nil
+	}
+	var calls []map[string]interface{}
+	if json.Unmarshal(data, &calls) != nil {
+		return nil
+	}
+	var paths []string
+	for _, call := range calls {
+		args := argumentMap(call["arguments"])
+		if fn, ok := call["function"].(map[string]interface{}); ok {
+			if nested := argumentMap(fn["arguments"]); len(nested) > 0 {
+				args = nested
+			}
+		}
+		if len(args) == 0 {
+			continue
+		}
+		for _, key := range []string{"path", "file_path"} {
+			path, _ := args[key].(string)
+			path = strings.TrimSpace(path)
+			if path != "" {
+				paths = append(paths, path)
+			}
+		}
+	}
+	return paths
+}
+
+func argumentMap(raw interface{}) map[string]interface{} {
+	switch v := raw.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		var args map[string]interface{}
+		if json.Unmarshal([]byte(v), &args) != nil {
+			return nil
+		}
+		return args
+	case map[string]interface{}:
+		return v
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		var args map[string]interface{}
+		if json.Unmarshal(data, &args) != nil {
+			return nil
+		}
+		return args
+	}
 }
 
 // MaxToolResultLen caps individual tool results to ~4KB before they enter

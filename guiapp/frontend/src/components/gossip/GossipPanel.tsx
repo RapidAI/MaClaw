@@ -50,7 +50,7 @@ const toolbarInputStyle = {
     padding: '5px 10px',
     borderRadius: radius.md,
     border: `1px solid ${colors.border}`,
-    background: colors.surfaceMuted,
+    background: colors.surface,
     color: colors.text,
     fontSize: '0.8rem',
     outline: 'none',

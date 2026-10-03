@@ -37,3 +37,28 @@ func init() {
 func isDirectModeBlockedTool(name string) bool {
 	return directModeMainLoopBlocklist[name]
 }
+
+// mainLoopInDirectMode reports that the orchestrator step would strip coding
+// tools on this turn. The owner is workflowPolicyOwnerID, the same key that
+// step uses. A phase that cannot host a SubAgent makes the step deactivate
+// the orchestrator and leave the tool list alone, so a seal that runs first
+// must not treat that orchestrator as direct mode: doc-only still needs bash.
+func (h *IMMessageHandler) mainLoopInDirectMode(userID string, ctx *LoopContext) bool {
+	if h == nil || h.taskOrchestratorRegistry == nil {
+		return false
+	}
+	ownerID := h.workflowPolicyOwnerID(userID, ctx)
+	orch := h.taskOrchestratorRegistry.Get(ownerID)
+	if orch == nil || !orch.IsActive() {
+		return false
+	}
+	if allowed, _ := h.workflowAllowsSubAgentExecutionForOwner(ownerID); !allowed {
+		return false
+	}
+	handles := orch.ReadyTaskHandles(1)
+	if len(handles) == 0 {
+		return false
+	}
+	mode, ok := orch.ResolveExecutionModeForTaskRun(handles[0].Task, handles[0].RunID)
+	return ok && mode == TaskExecModeDirect
+}

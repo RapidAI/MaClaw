@@ -16,6 +16,7 @@ var SyntheticUserMessagePrefixes = []string{
 	"__SUBAGENT_CONTEXT__",
 	"[上下文恢复]",
 	"[对话摘要]",
+	"[对话历史摘要]",
 	"[系统通知]",
 	"[收尾要求]",
 	"[Recover 阶段]",

@@ -6,7 +6,25 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
+
+func TestQuickEstimateCountsTypedToolCallArguments(t *testing.T) {
+	msg := map[string]interface{}{
+		"role":    "assistant",
+		"content": "",
+		"tool_calls": []llm.ToolCall{{
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: strings.Repeat("x", 10000),
+			},
+		}},
+	}
+	got := quickSingleMsgTokenEstimate(msg)
+	if got < 1000 {
+		t.Fatalf("tool call arguments were not counted: %d", got)
+	}
+}
 
 // makeEntry creates a ConversationEntry with the given role and content.
 func makeEntry(role, content string) agent.ConversationEntry {

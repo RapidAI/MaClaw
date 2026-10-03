@@ -73,12 +73,6 @@ func GenerateToFileWithOptions(content, title, docTypeStr, outputPath string, op
 		return "", err
 	}
 	spec := specForDocType(docTypeFromString(docTypeStr), title, content, opts)
-	if strings.TrimSpace(spec.ProjectName) == "" {
-		spec.ProjectName = "文档"
-	}
-	if strings.TrimSpace(spec.Title) == "" {
-		spec.Title = spec.ProjectName
-	}
 	return docgen.GenerateToFile(spec, outputPath)
 }
 
@@ -156,32 +150,23 @@ func specForDocType(docType DocType, projectName, content string, opts GenerateP
 	}
 
 	title := strings.TrimSpace(projectName)
-	// If projectName looks like a file path, don't use it as the display title
+	// A filesystem path is not a document title.
 	if looksLikeFilePath(title) {
 		title = ""
 	}
 
 	switch docType {
 	case DocTypeRequirements:
-		if title == "" {
-			title = "需求文档"
-		}
 		spec.FileNamePrefix = "requirements"
 	case DocTypeDesign:
-		if title == "" {
-			title = "设计文档"
-		}
 		spec.FileNamePrefix = "design"
 	case DocTypeTaskPlan:
-		if title == "" {
-			title = "任务计划"
-		}
 		spec.FileNamePrefix = "task-plan"
 	default:
-		if title == "" {
-			title = "文档"
-		}
 		spec.FileNamePrefix = "document"
+	}
+	if title == "" {
+		title = spec.FileNamePrefix
 	}
 
 	spec.Title = title

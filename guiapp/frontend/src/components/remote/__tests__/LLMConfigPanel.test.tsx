@@ -64,6 +64,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveMaclawLLMProfiles: (...args: unknown[]) => SaveMaclawLLMProfilesMock(...args),
     GetMoASessionState: vi.fn().mockResolvedValue({ sticky: false }),
     SetMoASticky: vi.fn(),
+    TokenBankListShareAudiences: vi.fn().mockResolvedValue({ hubs: [], tenants: [] }),
+    TokenBankCreateShare: vi.fn(),
+    TokenBankListShares: vi.fn().mockResolvedValue({ shares: [] }),
+    TokenBankListShareModels: vi.fn().mockResolvedValue({ models: [] }),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -921,6 +925,57 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(screen.queryByText('Period limited')).toBeNull();
     });
 
+    it('saves a MaClaw Official capability band onto the profiles that use it', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { id: 'hub', name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai', is_hub_service: true },
+            ],
+            current: 'MaClaw\u5b98\u65b9',
+        });
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            available_models: ['auto'],
+            default_model: 'auto',
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+        });
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [{ id: 'hub', name: 'MaClaw\u5b98\u65b9', model: 'auto', is_hub_service: true }],
+            profiles: {
+                version: 1,
+                assistant: { provider_id: 'hub', model: 'auto' },
+                coding: { provider_id: 'hub', model: 'auto', inherit_assistant: true },
+                caption: { provider_id: 'other', model: 'gpt-4o' },
+            },
+            revision: 'rev-1',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+
+        expect(await screen.findByRole('radio', { name: 'auto ×1' })).toBeTruthy();
+        expect(screen.getByRole('radio', { name: 'low ×0.5' })).toBeTruthy();
+        expect(screen.getByRole('radio', { name: 'mid ×1' })).toBeTruthy();
+        expect(screen.getByRole('radio', { name: 'high ×2' })).toBeTruthy();
+        expect((screen.getByRole('button', { name: 'Currently Active' }) as HTMLButtonElement).disabled).toBe(true);
+
+        fireEvent.click(screen.getByRole('radio', { name: 'low ×0.5' }));
+        const save = screen.getByRole('button', { name: 'Save model' }) as HTMLButtonElement;
+        expect(save.disabled).toBe(false);
+        fireEvent.click(save);
+
+        await waitFor(() => {
+            expect(SaveMaclawLLMProfilesMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    assistant: { provider_id: 'hub', model: 'official-low' },
+                    coding: { provider_id: 'hub', model: 'auto', inherit_assistant: true },
+                    caption: { provider_id: 'other', model: 'gpt-4o' },
+                }),
+                'rev-1',
+            );
+        });
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
+    });
+
     it('prioritizes queued grant status over exhausted older grants', async () => {
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
@@ -1111,7 +1166,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         }));
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
-                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: 'stale-token', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
             ],
             current: 'xAI-Grok',
         });
@@ -1119,7 +1174,9 @@ describe('LLMConfigPanel test-and-save flow', () => {
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Re-login' }));
+        expect(await screen.findByRole('button', { name: 'Waiting for browser authorization...' })).toBeTruthy();
+        expect(await screen.findByText(/Approve the login there and MaClaw finishes by itself/i)).toBeTruthy();
         fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
         await act(async () => resolveOAuthCompletion?.('xAI-Grok OAuth login successful'));
 
@@ -1379,6 +1436,63 @@ describe('canQueryOpenAIOrganizationCosts', () => {
         expect(canQueryOpenAIOrganizationCosts({
             name: 'Custom OpenAI', url: 'api.openai.com/v1', key: 'sk-admin-real',
         })).toBe(true);
+    });
+});
+
+describe('Token Bank deposit badge', () => {
+    beforeEach(() => {
+        GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
+        GetMaclawLLMThinkingModeMock.mockResolvedValue('');
+        SetMaclawLLMThinkingModeMock.mockResolvedValue(undefined);
+        GetSubAgentConcurrencyMock.mockResolvedValue(2);
+        GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [],
+            profiles: { version: 1, assistant: { provider_id: '', model: '' }, coding: { inherit_assistant: true } },
+            revision: 'test-revision',
+        });
+    });
+
+    it('shows the deposit icon beside a tested provider title and hides it after the connection changes', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'Kimi Code',
+                    url: 'https://api.kimi.com/coding/v1',
+                    key: 'oauth-token',
+                    model: 'kimi-for-coding',
+                    protocol: 'openai',
+                    connection_test_passed: true,
+                },
+                {
+                    name: 'OpenAI',
+                    url: 'https://api.openai.com/v1',
+                    key: 'sk-test',
+                    model: 'gpt-5',
+                    protocol: 'openai',
+                    connection_test_passed: false,
+                },
+            ],
+            current: 'Kimi Code',
+        });
+
+        render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: '服务商管理' }));
+
+        const title = await screen.findByText('Kimi Code 配置');
+        const badge = screen.getByRole('button', { name: '将此服务商存入 Token 银行' });
+        expect(title.parentElement).toBe(badge.parentElement);
+        expect(badge.querySelector('[data-icon="token-bank-deposit"]')).toBeTruthy();
+        expect(badge.textContent).toContain('Token 银行');
+
+        fireEvent.click(screen.getByRole('button', { name: 'OpenAI' }));
+        expect(screen.queryByRole('button', { name: '将此服务商存入 Token 银行' })).toBeNull();
+        expect(screen.getByText('OpenAI 配置')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Kimi Code' }));
+        expect(screen.getByRole('button', { name: '将此服务商存入 Token 银行' })).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Cline' }));
+        expect(screen.queryByRole('button', { name: '将此服务商存入 Token 银行' })).toBeNull();
     });
 });
 

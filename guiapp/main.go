@@ -75,6 +75,9 @@ func Main(v string) {
 	if launch := cloudWorkspaceShareFromArgs(args); launch.Token != "" {
 		app.setPendingCloudWorkspaceShare(launch)
 	}
+	if gift := creditGiftFromArgs(args); gift.Code != "" {
+		app.setPendingCreditGift(gift)
+	}
 
 	// Check for command line arguments
 	if len(args) > 1 {
@@ -193,6 +196,9 @@ func Main(v string) {
 				}
 				if launch := cloudWorkspaceShareFromArgs(secondInstanceData.Args); launch.Token != "" {
 					app.setPendingCloudWorkspaceShare(launch)
+				}
+				if gift := creditGiftFromArgs(secondInstanceData.Args); gift.Code != "" {
+					app.setPendingCreditGift(gift)
 				}
 
 				if !shouldShowWindow {

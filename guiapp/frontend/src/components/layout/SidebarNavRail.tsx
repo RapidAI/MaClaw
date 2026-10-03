@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon } from './SidebarNavIcons';
-import { SidebarBrandHeader, SidebarPrimaryNav } from './SidebarNavRailPieces';
+import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, TokenBankIcon } from './SidebarNavIcons';
+import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
@@ -106,6 +106,9 @@ export const SidebarNavRail = ({
     const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
     const [libraryMenuTop, setLibraryMenuTop] = useState(0);
     const libraryMenuOpenerRef = useRef<HTMLElement | null>(null);
+    const [proMenuOpen, setProMenuOpen] = useState(false);
+    const [proMenuTop, setProMenuTop] = useState(0);
+    const proMenuOpenerRef = useRef<HTMLElement | null>(null);
     const [invitationEnabled, setInvitationEnabled] = useState(false);
     const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
     const rankingURL = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
@@ -156,7 +159,10 @@ export const SidebarNavRail = ({
     }, [remoteActivationStatus?.activated, config?.remote_hub_url, config?.remote_viewer_token, config?.remote_tenant_id]);
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = miniAppShortLabel(lang);
-    const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
+    const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflows';
+    const showWorkflowEntry = config?.show_workflow_entry !== false;
+    const proFeaturesLabel = lang === 'zh-Hans' ? '专业功能' : lang === 'zh-Hant' ? '專業功能' : 'Features';
+    const expertsMenuLabel = expertsNavLabel(lang);
     const resolvedUtilitiesLabel = utilitiesLabel || (showToolsEntry ? expertsNavLabel(lang) : utilitiesNavLabel(lang));
     const resolvedUtilitiesTitle = showToolsEntry ? expertsPageTitle(lang) : utilitiesPageTitle(lang);
     const resolvedToolsLabel = toolsNavLabel(lang);
@@ -172,6 +178,7 @@ export const SidebarNavRail = ({
     const mobileDocsLabel = lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents';
     const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
     const latexTemplatesLabel = lang === 'zh-Hans' ? 'Latex模板' : lang === 'zh-Hant' ? 'Latex 模板' : 'LaTeX templates';
+    const tokenBankLabel = lang === 'zh-Hans' ? 'Token 银行' : lang === 'zh-Hant' ? 'Token 銀行' : 'Token Bank';
     const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
     // The LaTeX template library is one of the library entries, so the rail item
     // stays highlighted while the page is open.
@@ -189,41 +196,37 @@ export const SidebarNavRail = ({
         }
         switchTool(id);
     };
+    const selectExtensionsMenuItem = (id: string) => {
+        if (id === 'tokenbank') {
+            openSettingsTab('tokenBank');
+            return;
+        }
+        switchTool(id);
+    };
     const extensionsMenuItems: SystemMenuItem[] = [
         { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
         { id: 'mcp', icon: <MCPIcon />, label: connectorsLabel, visible: true },
+        { id: 'tokenbank', icon: <TokenBankIcon />, label: tokenBankLabel, visible: true },
     ];
     const libraryMenuItems: SystemMenuItem[] = [
         { id: 'documents', icon: <MobileDocsIcon />, label: mobileDocsLabel, visible: true },
         { id: 'knowledge', icon: <KnowledgeIcon />, label: knowledgeLabel, visible: true },
         { id: LATEX_TEMPLATES_NAV_TAB, icon: <LatexTemplateIcon />, label: latexTemplatesLabel, visible: true },
     ];
-    const toggleSystemMenu = (target: HTMLElement) => {
-        if (!systemMenuOpen) {
-            systemMenuOpenerRef.current = target;
-            setExtensionsMenuOpen(false);
-            setLibraryMenuOpen(false);
-        }
-        setSystemMenuOpen(prev => !prev);
-    };
-    const toggleExtensionsMenu = (target: HTMLElement) => {
-        if (!extensionsMenuOpen) {
-            extensionsMenuOpenerRef.current = target;
-            setExtensionsMenuTop(target.offsetTop + target.offsetHeight / 2);
-            setSystemMenuOpen(false);
-            setLibraryMenuOpen(false);
-        }
-        setExtensionsMenuOpen(prev => !prev);
-    };
-    const toggleLibraryMenu = (target: HTMLElement) => {
-        if (!libraryMenuOpen) {
-            libraryMenuOpenerRef.current = target;
-            setLibraryMenuTop(target.offsetTop + target.offsetHeight / 2);
-            setSystemMenuOpen(false);
-            setExtensionsMenuOpen(false);
-        }
-        setLibraryMenuOpen(prev => !prev);
-    };
+    const proMenuItems: SystemMenuItem[] = [
+        { id: 'utilities', icon: <ExpertRailIcon marked={false} />, label: expertsMenuLabel, visible: showUtilitiesEntry },
+        { id: 'workflows', icon: <WorkflowIcon />, label: workflowLabel, visible: showWorkflowEntry },
+    ];
+    const { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu } = useNavMenuToggles({
+        systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen,
+        systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef,
+        setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen,
+        setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop,
+    });
+    const proMenuChoices = (showUtilitiesEntry ? 1 : 0) + (showWorkflowEntry ? 1 : 0);
+    useEffect(() => {
+        if ((!showToolsEntry || proMenuChoices < 2) && proMenuOpen) setProMenuOpen(false);
+    }, [showToolsEntry, proMenuChoices, proMenuOpen]);
     const selectLibraryMenuItem = (id: string) => {
         if (id === 'knowledge') {
             openSettingsTab('knowledge');
@@ -248,7 +251,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"
@@ -313,7 +316,7 @@ export const SidebarNavRail = ({
             {extensionsMenuOpen && (
                 <SystemPopupMenu
                     items={extensionsMenuItems}
-                    onSelect={(id) => switchTool(id)}
+                    onSelect={selectExtensionsMenuItem}
                     onClose={() => setExtensionsMenuOpen(false)}
                     returnFocus={() => extensionsMenuOpenerRef.current}
                     ariaLabel={extensionsLabel}
@@ -334,6 +337,20 @@ export const SidebarNavRail = ({
                     excludeTriggerSelector='[data-testid="sidebar-files-nav"]'
                     menuId="library-popup-menu"
                     testIdPrefix="library-menu"
+                />
+            )}
+            {proMenuOpen && (
+                <SystemPopupMenu
+                    items={proMenuItems}
+                    onSelect={(id) => switchTool(id)}
+                    onClose={() => setProMenuOpen(false)}
+                    returnFocus={() => proMenuOpenerRef.current}
+                    ariaLabel={proFeaturesLabel}
+                    activeId={navTab === 'utilities' || navTab === 'workflows' ? navTab : undefined}
+                    anchorTop={proMenuTop}
+                    excludeTriggerSelector='[data-testid="sidebar-utilities-nav"]'
+                    menuId="pro-features-popup-menu"
+                    testIdPrefix="pro-features-menu"
                 />
             )}
             <HubInvitationDialog open={invitationDialogOpen} onClose={() => setInvitationDialogOpen(false)} lang={lang} />

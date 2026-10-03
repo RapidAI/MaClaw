@@ -41,10 +41,10 @@ func (s *Store) FormatMemorySummaryForOwner(ownerID string, strictOwner bool) st
 		if !e.IsActive() {
 			continue
 		}
-		if strictOwner && (e.OwnerID != ownerID || (e.Boundary != nil && e.Boundary.OwnerID != "" && e.Boundary.OwnerID != ownerID)) {
+		if strictOwner && (!memoryOwnersEqual(e.OwnerID, ownerID) || (e.Boundary != nil && strings.TrimSpace(e.Boundary.OwnerID) != "" && !memoryOwnersEqual(e.Boundary.OwnerID, ownerID))) {
 			continue
 		}
-		if !strictOwner && ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+		if !strictOwner && !namedOwnerVisible(e.OwnerID, ownerID) {
 			continue
 		}
 		totalActive++
@@ -119,7 +119,7 @@ func (s *Store) FormatMemorySummaryForOwner(ownerID string, strictOwner bool) st
 			if e.Stale {
 				marks += " 过时"
 			}
-			if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+			if entryExpiredAt(e.InvalidAt, now) {
 				marks += " 已过期"
 			}
 			fmt.Fprintf(&b, "  • %s%s [%s]\n", content, marks, truncateID(e.ID, 8))

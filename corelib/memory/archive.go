@@ -291,7 +291,7 @@ func (a *ArchiveStore) FindRelevant(tags []string, categories []Category, limit 
 		}
 		// 多租户隔离：跳过不属于该用户的记忆
 		// 空 OwnerID 表示共享记忆，对所有用户可见
-		if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+		if !namedOwnerVisible(e.OwnerID, ownerID) {
 			continue
 		}
 		// Match by category.

@@ -2338,7 +2338,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			slotID := fmt.Sprintf("unfinished-%s", s.ID)
 			resumePrompt := ""
 			if m.app.sessionCheckpointer != nil {
-				resumePrompt = m.app.sessionCheckpointer.BuildResumePrompt(s.ProjectPath)
+				resumePrompt = m.app.sessionCheckpointer.BuildResumePromptForUser(s.ProjectPath, desktopUserID)
 			}
 			mem.UpsertUnfinishedSlot(desktopUserID, &agent.UnfinishedTaskSlot{
 				SlotID:           slotID,

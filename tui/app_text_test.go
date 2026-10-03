@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
@@ -391,6 +392,38 @@ func TestTuiBtwSystemPromptFollowsLanguage(t *testing.T) {
 	}
 }
 
+func TestTuiBtwMemoryStaysWithDesktopOwner(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	for _, entry := range []memory.Entry{
+		{Content: "desktop identity", Category: memory.CategorySelfIdentity, OwnerID: tuiDesktopMemoryOwner},
+		{Content: "shared identity", Category: memory.CategorySelfIdentity},
+		{Content: "other identity", Category: memory.CategorySelfIdentity, OwnerID: "other-user"},
+		{Content: "desktop fact", Category: memory.CategoryUserFact, OwnerID: tuiDesktopMemoryOwner},
+		{Content: "shared fact", Category: memory.CategoryUserFact},
+		{Content: "other fact", Category: memory.CategoryUserFact, OwnerID: "other-user"},
+	} {
+		if err := store.Save(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app := &TUIApp{appConfig: corelib.AppConfig{Language: "en"}, memoryStore: store}
+	prompt := buildTuiBtwSystemPrompt(app, "status")
+	for _, want := range []string{"desktop identity", "shared identity", "desktop fact", "shared fact"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("tui /btw missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"other identity", "other fact"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("tui /btw included %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 func TestTUIProviderDisplayNameLocalizesOfficialProvider(t *testing.T) {
 	if got := tuiProviderDisplayName("en", tuiHubServiceProviderName); got != "MaClaw Official" {
 		t.Fatalf("English provider display = %q", got)
@@ -601,6 +634,29 @@ func TestSimpleChatMessagesFiltersAndLimitsHistory(t *testing.T) {
 	last := messages[len(messages)-1].(map[string]interface{})
 	if last["role"] != "user" || last["content"] != "now" {
 		t.Fatalf("last message = %#v, want user now", last)
+	}
+}
+
+func TestSimpleChatMessagesKeepsContextHandoff(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "[上下文恢复] 更早的对话因长度限制被省略。\n\n用户要求:\n- 请改 login.go\n\n涉及文件:\n- login.go"},
+		{Role: "assistant", Content: "好的，我已了解之前被省略的工作。"},
+	}
+	for i := 0; i < 24; i++ {
+		history = append(history, agent.ConversationEntry{Role: "assistant", Content: fmt.Sprintf("reply-%02d", i)})
+	}
+	messages := simpleChatMessages(history, "now")
+	first := messages[0].(map[string]interface{})
+	if !strings.Contains(first["content"].(string), "请改 login.go") {
+		t.Fatalf("leading handoff was sliced off: %#v", first["content"])
+	}
+	second := messages[1].(map[string]interface{})
+	if !strings.Contains(second["content"].(string), "被省略的工作") {
+		t.Fatalf("handoff ack missing: %#v", second["content"])
+	}
+	last := messages[len(messages)-1].(map[string]interface{})
+	if last["content"] != "now" {
+		t.Fatalf("last message = %#v", last)
 	}
 }
 

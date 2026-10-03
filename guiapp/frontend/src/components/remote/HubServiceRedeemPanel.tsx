@@ -4,11 +4,13 @@ import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
 import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from "../../utils/hubCredits";
 import { localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError } from "../../utils/hubServiceI18n";
+import { capabilityModelMenuLabel } from "../../utils/capabilityModelLabel";
 
 interface HubLLMAuthorizedModel {
     name: string;
     provider_ids?: string[];
     service_group_ids?: string[];
+    billing_multiplier?: number;
 }
 
 interface HubLLMActiveGrant {
@@ -703,7 +705,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         return (status?.available_models || []).filter(Boolean);
     }, [status]);
 
-    const authorizedModelsForDisplay = useMemo(() => {
+    const authorizedModelsForDisplay = useMemo<HubLLMAuthorizedModel[]>(() => {
         const models = (status?.authorized_models || []).filter((model) => model?.name);
         if (models.length) return models;
         return availableModels.map((name) => ({
@@ -711,6 +713,14 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             service_group_ids: (status?.service_group_ids || activeGroupNames).filter(Boolean),
         }));
     }, [activeGroupNames, availableModels, status]);
+    const availableModelSummary = useMemo(() => {
+        const multiplierFor = new Map(authorizedModelsForDisplay.map((model) => [model.name, model.billing_multiplier]));
+        const names = availableModels.length
+            ? availableModels
+            : authorizedModelsForDisplay.map((model) => model.name).filter(Boolean);
+        const labels = names.map((name) => capabilityModelMenuLabel(name, multiplierFor.get(name)));
+        return labels.length ? labels.join(", ") : "auto";
+    }, [authorizedModelsForDisplay, availableModels]);
 
     const totals = useMemo(() => creditTotals(status), [status]);
     const periodBenefitGrants = useMemo(() => creditGrants(status).filter((grant) => (
@@ -1135,7 +1145,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     </div>
                     <div className="hub-service-redeem__model-summary">
                         <span className="hub-service-redeem__label">{t("Available Models", "可用模型")}</span>
-                        <span className="hub-service-redeem__value">{availableModels.length ? availableModels.join(", ") : "auto"}</span>
+                        <span className="hub-service-redeem__value">{availableModelSummary}</span>
                     </div>
                 </div>
 
@@ -1215,7 +1225,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                         return (
                                             <tr key={model.name}>
                                                 <td>
-                                                    <span className="hub-service-redeem__model-name">{model.name || "auto"}</span>
+                                                    <span className="hub-service-redeem__model-name">{capabilityModelMenuLabel(model.name || "auto", model.billing_multiplier)}</span>
                                                 </td>
                                                 <td>
                                                     <div className="hub-service-redeem__group-list">

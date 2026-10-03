@@ -3,12 +3,14 @@ import {
     defaultTaskDraft,
     withCloudWorkspace,
     withExpert,
+    withLatexTemplate,
     withLocalWorkspace,
     withRemoteWorkspace,
     withTaskType,
     withWorkflow,
     WORKFLOW_AUTO,
 } from '../taskDraft';
+import { LATEX_BLANK_TEMPLATE_ID, LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import {
     draftToTaskCreateOptions,
     runTaskConfigSend,
@@ -204,6 +206,61 @@ describe('runTaskConfigSend interception', () => {
             id: 'exp-1',
             name: '法务专家',
             initialMessage: '审一下这份合同',
+        }));
+    });
+
+    it('writes the chosen LaTeX template into the selected directory before opening the expert', async () => {
+        const materializeLatexDocument = vi.fn().mockResolvedValue({
+            relativePath: 'main.tex',
+            initialMessage: '模板已就绪\n\n写一篇论文',
+        });
+        const bindings = makeBindings({ materializeLatexDocument });
+        const draft = withLocalWorkspace(
+            withLatexTemplate(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), 'tpl-ieee', 'IEEE'),
+            'F:/latex-test',
+        );
+        const result = await runTaskConfigSend({ text: '写一篇论文', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(bindings.createTaskUnified).toHaveBeenCalledWith(expect.objectContaining({
+            expertId: LATEX_EXPERT_ID,
+            workingDir: 'F:/latex-test',
+        }));
+        expect(materializeLatexDocument).toHaveBeenCalledWith(expect.objectContaining({
+            projectPath: 'D:/tasks/unified-task',
+            templateId: 'tpl-ieee',
+            templateName: 'IEEE',
+            userText: '写一篇论文',
+        }));
+        expect(bindings.openExpert).toHaveBeenCalledWith(expect.objectContaining({
+            id: LATEX_EXPERT_ID,
+            initialMessage: '模板已就绪\n\n写一篇论文',
+            projectPath: 'D:/tasks/unified-task',
+            latexDocument: { relativePath: 'main.tex' },
+        }));
+        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
+    });
+
+    it('drops the new LaTeX paper when the template cannot be written', async () => {
+        const abandonFreshLatexTask = vi.fn().mockResolvedValue(undefined);
+        const materializeLatexDocument = vi.fn().mockRejectedValue(new Error('disk full'));
+        const bindings = makeBindings({ materializeLatexDocument, abandonFreshLatexTask });
+        const draft = withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        const result = await runTaskConfigSend({ text: '写一篇论文', draft, bindings });
+        expect(result.ok).toBe(false);
+        expect(abandonFreshLatexTask).toHaveBeenCalledWith('D:/tasks/unified-task');
+        expect(bindings.openExpert).not.toHaveBeenCalled();
+    });
+
+    it('keeps a blank LaTeX template when none was picked', async () => {
+        const materializeLatexDocument = vi.fn().mockResolvedValue({
+            relativePath: 'main.tex',
+            initialMessage: '空白论文',
+        });
+        const bindings = makeBindings({ materializeLatexDocument });
+        const draft = withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        await runTaskConfigSend({ text: '先给提纲', draft, bindings });
+        expect(materializeLatexDocument).toHaveBeenCalledWith(expect.objectContaining({
+            templateId: LATEX_BLANK_TEMPLATE_ID,
         }));
     });
 

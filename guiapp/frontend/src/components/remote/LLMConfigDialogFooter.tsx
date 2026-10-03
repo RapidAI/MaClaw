@@ -3,12 +3,15 @@ import { LLMConfigDialogSaveError } from "./LLMConfigDialogSaveError";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
+const footerBtnBase = { fontSize: "0.76rem", padding: "6px 18px", borderRadius: 4 } as const;
+
 export function LLMConfigDialogFooter({
     dirty,
     error,
     errorTitle,
     hubSelected,
     hubAlreadySynced,
+    hubModelDirty = false,
     needsOAuthLogin,
     oauthBusy,
     saving,
@@ -23,6 +26,7 @@ export function LLMConfigDialogFooter({
     errorTitle?: string;
     hubSelected: boolean;
     hubAlreadySynced: boolean;
+    hubModelDirty?: boolean;
     needsOAuthLogin: boolean;
     oauthBusy: boolean;
     saving: boolean;
@@ -33,6 +37,7 @@ export function LLMConfigDialogFooter({
     onSaveHub: () => void;
 }) {
     const canSave = dirty || tested || needsOAuthLogin;
+    const hubSaveLocked = hubAlreadySynced && !hubModelDirty;
     const reason = error?.trim() || "";
     return (
         <div style={{ marginTop: 20 }}>
@@ -43,31 +48,18 @@ export function LLMConfigDialogFooter({
                         {t("unsaved", "\u672a\u4fdd\u5b58")}
                     </span>
                 )}
-                <button onClick={onCancel} style={{
-                    fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                    background: colors.bg, color: colors.text,
-                    border: `1px solid ${colors.border}`, borderRadius: 4,
-                }}>
+                <button onClick={onCancel} style={{ ...footerBtnBase, cursor: "pointer", background: colors.bg, color: colors.text, border: `1px solid ${colors.border}` }}>
                     {t("Cancel", "\u53d6\u6d88")}
                 </button>
                 {hubSelected ? (
-                    <button onClick={onSaveHub} disabled={saving || hubAlreadySynced} style={{
-                        fontSize: "0.76rem", padding: "6px 18px",
-                        cursor: (saving || hubAlreadySynced) ? "default" : "pointer",
-                        background: hubAlreadySynced ? colors.bg : colors.primaryLight,
-                        color: hubAlreadySynced ? colors.textMuted : colors.primaryDark,
-                        border: `1px solid ${hubAlreadySynced ? colors.border : colors.primary}`, borderRadius: 4, opacity: saving ? 0.6 : 1,
-                    }}>
+                    <button onClick={onSaveHub} disabled={saving || hubSaveLocked} style={{ ...footerBtnBase, cursor: (saving || hubSaveLocked) ? "default" : "pointer", background: hubSaveLocked ? colors.bg : colors.primaryLight, color: hubSaveLocked ? colors.textMuted : colors.primaryDark, border: `1px solid ${hubSaveLocked ? colors.border : colors.primary}`, opacity: saving ? 0.6 : 1 }}>
                         {saving ? t("Saving...", "\u4fdd\u5b58\u4e2d...")
+                            : hubModelDirty ? t("Save model", "\u4fdd\u5b58\u6a21\u578b")
                             : hubAlreadySynced ? t("Currently Active", "\u5f53\u524d\u5df2\u542f\u7528")
                             : t("Use This Service", "\u4f7f\u7528\u6b64\u670d\u52a1")}
                     </button>
                 ) : (
-                    <button onClick={onSave} disabled={saving || oauthBusy || !canSave} style={{
-                        fontSize: "0.76rem", padding: "6px 18px", cursor: canSave ? "pointer" : "default",
-                        background: canSave ? colors.primaryLight : colors.bg, color: canSave ? colors.primaryDark : colors.textMuted,
-                        border: `1px solid ${canSave ? colors.primary : colors.border}`, borderRadius: 4, opacity: saving ? 0.6 : 1,
-                    }}>
+                    <button onClick={onSave} disabled={saving || oauthBusy || !canSave} style={{ ...footerBtnBase, cursor: canSave ? "pointer" : "default", background: canSave ? colors.primaryLight : colors.bg, color: canSave ? colors.primaryDark : colors.textMuted, border: `1px solid ${canSave ? colors.primary : colors.border}`, opacity: saving ? 0.6 : 1 }}>
                         {saving ? t("Testing & Saving...", "\u68c0\u6d4b\u5e76\u4fdd\u5b58\u4e2d...") : tested ? t("Save Changes", "\u4fdd\u5b58\u4fee\u6539") : t("Test & Save", "\u68c0\u6d4b\u5e76\u4fdd\u5b58")}
                     </button>
                 )}

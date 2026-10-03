@@ -1,4 +1,5 @@
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
+import { capabilityBandName } from "../../utils/capabilityModelLabel";
 
 /**
  * Pure helpers for the bottom quick-settings model picker.
@@ -58,4 +59,18 @@ export function resolveQuickModelMenuSections(input: {
 
 export function modelIdsEqual(a: string | undefined, b: string | undefined): boolean {
     return String(a || "").trim() === String(b || "").trim();
+}
+
+/** Model written immediately when a provider is chosen. Prefer the provider's
+ * configured model, then the first catalog id. Empty means the picker must
+ * wait for an explicit model click. */
+export function defaultModelForQuickProvider(provider: { model?: string; models?: string[]; isHubService?: boolean } | null | undefined): string {
+    const configured = String(provider?.model || "").trim();
+    if (provider?.isHubService) return capabilityBandName(configured) || "auto";
+    if (configured) return configured;
+    for (const item of provider?.models || []) {
+        const model = String(item || "").trim();
+        if (model) return model;
+    }
+    return "";
 }

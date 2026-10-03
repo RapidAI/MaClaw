@@ -59,6 +59,12 @@ type ProxyConfig struct {
 	HTTPClient  *http.Client
 	NodeID      string // current HubCenter node ID for binding checks
 
+	// TokenBank settles the owner's earning when the provider that answered is
+	// one of their shared models (§5). Nil disables Token Bank settlement
+	// entirely, which is what a deployment without the feature configured
+	// should do — the hook is a no-op rather than a wiring error.
+	TokenBank TokenBankSettler
+
 	// CheckBinding validates that this node is the bound node for the tenant.
 	// Returns (allowed, redirectNodeID). If nil, binding checks are skipped.
 	CheckBinding func(ctx context.Context, hubID, tenantID string) (allowed bool, redirectNodeID string)
@@ -241,20 +247,26 @@ func (s *ProxyBillingAttemptStore) GetContext(ctx context.Context, hubID, tenant
 // authorizing it is opaque and lives only in ProxyQuoteStore; this public
 // snapshot is safe to return to Hub for admission control and audit.
 type ProxyQuote struct {
-	Token              string                       `json:"-"`
-	RequestDigest      string                       `json:"-"`
-	Claimed            bool                         `json:"-"`
-	HubID              string                       `json:"hub_id"`
-	TenantID           string                       `json:"tenant_id"`
-	RequestID          string                       `json:"request_id"`
-	ServiceGroupID     string                       `json:"service_group_id"`
-	LogicalModel       string                       `json:"logical_model"`
-	ProviderID         string                       `json:"provider_id"`
-	UpstreamModel      string                       `json:"upstream_model"`
-	Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
-	PricingSource      string                       `json:"pricing_source,omitempty"`
-	ProviderMultiplier float64                      `json:"provider_multiplier"`
-	ExpiresAt          time.Time                    `json:"expires_at"`
+	Token         string `json:"-"`
+	RequestDigest string `json:"-"`
+	Claimed       bool   `json:"-"`
+	// MemberID is the token-bank member this quote priced. Empty for an
+	// ordinary provider. The claim dials this member first. If that member
+	// fails before any business bytes reach the client, another provider may
+	// finish the request and is billed at its own price.
+	MemberID             string                       `json:"member_id,omitempty"`
+	HubID                string                       `json:"hub_id"`
+	TenantID             string                       `json:"tenant_id"`
+	RequestID            string                       `json:"request_id"`
+	ServiceGroupID       string                       `json:"service_group_id"`
+	LogicalModel         string                       `json:"logical_model"`
+	ProviderID           string                       `json:"provider_id"`
+	UpstreamModel        string                       `json:"upstream_model"`
+	Pricing              llmpool.ResolvedTokenPricing `json:"pricing"`
+	PricingSource        string                       `json:"pricing_source,omitempty"`
+	ProviderMultiplier   float64                      `json:"provider_multiplier"`
+	CapabilityMultiplier float64                      `json:"capability_multiplier,omitempty"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
 }
 
 // ProxyQuoteStore is intentionally process-local: HubCenter node binding
@@ -476,6 +488,9 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	if model == "" {
 		return nil, fmt.Errorf("model not specified in request")
 	}
+	if canon := llmpool.CanonicalClientModel(model); llmpool.IsOfficialTierName(canon) {
+		model = canon
+	}
 	requestedModel := model
 
 	// Force non-streaming: HubCenter proxy returns complete responses.
@@ -507,33 +522,38 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	}
 
 	// 3. Check tenant authorization only when this service group requires a card/grant.
-	var auth *TenantAuthorization
-	requiresGrant := serviceGroupRequiresGrant(matchedGroup)
-	if requiresGrant {
-		var err error
-		auth, err = cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, matchedGroup.ID)
-		if err != nil {
-			return nil, fmt.Errorf("authorization denied: %w", err)
-		}
+	// A pinned official tier is dispatched on the maclaw-official pool, but the
+	// card that pays is the same compute grant auto uses.
+	grant, err := authorizeProxyServiceGroup(ctx, cfg, req, reg, matchedGroup)
+	if err != nil {
+		return nil, err
 	}
+	auth := grant.auth
+	requiresGrant := grant.requiresGrant
+	billingGroupID := grant.billingGroupID
 
 	// 3.5 Check node binding (HA anti-double-spend)
 	if err := rejectIfTenantBound(ctx, cfg, req.HubID, req.TenantID); err != nil {
 		return nil, err
 	}
 
-	// 4. Check cache unless it belongs to a missing or paused provider.
+	// 4. Check cache unless it belongs to a missing or paused provider, or to
+	// a private token-bank member this hub/tenant may not use. The entry is
+	// shared across tenants, so a hit must apply the same audience rule as dial.
 	if cfg.Cache != nil && req.Quote == nil {
 		cacheKey := buildServiceGroupCacheKey(matchedGroup.ID, model, req.Body)
 		if cached, _ := cfg.Cache.Get(ctx, cacheKey); cached != nil {
-			if provider := findProvider(reg, cached.ProviderID); provider != nil && !provider.Paused {
+			if provider := findProvider(reg, cached.ProviderID); provider != nil && !provider.Paused && tokenBankCachedMemberAllowed(provider, req) {
+				// The stored id is the member that produced the payload.
+				// Callers still see the array when this member belongs to one.
+				responseProviderID := canonicalProviderArrayID(*provider)
 				// Record cache hit usage (no credits deducted)
 				if cfg.Usage != nil {
 					if err := cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
 						RequestID:        req.RequestID,
 						ProviderID:       cached.ProviderID,
 						Model:            model,
-						ServiceGroupID:   matchedGroup.ID,
+						ServiceGroupID:   billingGroupID,
 						WorkloadClass:    req.WorkloadClass,
 						ClassSource:      req.ClassSource,
 						Preview:          llmpool.RequestTextPreview(req.Body, 200),
@@ -544,11 +564,19 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 						log.Printf("[llm-proxy] WARN: record cache-hit usage failed provider=%s model=%s: %v", cached.ProviderID, model, err)
 					}
 				}
+				// A cache hit costs the consumer nothing, so the owner is paid
+				// nothing (anti-inversion clamps to zero) — even though the
+				// price book would have priced the model. The usage row is
+				// still written so the owner can see that their model answered,
+				// and net_clamped marks it as a zero rather than a missing
+				// record. §5 calls this out as a deliberate consequence of
+				// free routes, not a bug. Settlement is keyed by the member id.
+				settleTokenBankUsageForProvider(ctx, cfg, req, cached.ProviderID, model, TokenBankSettlementInput{}, 0, nil)
 				recordProxyClassHeadSample(cfg, req, matchedGroup.ID)
 				return &ProxyResponse{
 					StatusCode:       http.StatusOK,
 					Body:             stripProxyResponseUsage(cached.Payload),
-					ProviderID:       cached.ProviderID,
+					ProviderID:       responseProviderID,
 					CacheHit:         true,
 					CreditMultiplier: proxyCacheHitCreditMultiplier(reg, dispatchModel, cached.ProviderID, startedAt),
 				}, nil
@@ -577,19 +605,37 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	gateCtx, cancelGateWait := context.WithTimeout(ctx, defaultProxyCircuitProbeWait)
 	defer cancelGateWait()
 	triedArrays := map[string]struct{}{}
+	quoteFailoverUsed := false
 	for i := 0; i < len(orderedRoutes); i++ {
 		route := orderedRoutes[i]
-		if logicalProviderSeen(triedArrays, reg, route.ProviderID) {
+		if logicalProviderSeen(triedArrays, reg, route.ProviderID, route.Model) {
 			continue
 		}
-		noteLogicalProvider(triedArrays, reg, route.ProviderID)
-		logicalID, profile, members := arrayEgressCandidates(reg, route.ProviderID, acceptLiveProvider)
+		noteLogicalProvider(triedArrays, reg, route.ProviderID, route.Model)
+		logicalID, profile, members := tokenBankRouteMembers(reg, route.ProviderID, acceptLiveProvider, model, req, true)
 		if len(members) == 0 {
-			if profile != nil && profile.Paused {
+			if id := quotedTokenBankMemberID(req); id != "" {
+				// A dial that already failed keeps that error. Replacing it
+				// with "not available" hides a 429 from the member the quote
+				// priced when a later route does not contain that member.
+				if lastErr == nil {
+					lastErr = fmt.Errorf("quoted token bank member %s is not available", id)
+				}
+				continue
+			}
+			if arrayRouteModelPaused(reg, route.ProviderID, acceptLiveProvider, model) {
 				lastErr = fmt.Errorf("provider %s is paused", route.ProviderID)
 			} else if arrayRouteCooling(reg, route.ProviderID, acceptLiveProvider) {
 				if lastErr == nil {
 					lastErr = fmt.Errorf("provider %s is cooling down after upstream failures", route.ProviderID)
+				}
+			} else if arrayRouteQuotaBlocked(reg, route.ProviderID, acceptLiveProvider) {
+				lastErr = fmt.Errorf("provider %s members are over their request quota", route.ProviderID)
+			} else if arrayRouteShareWindowClosed(reg, route.ProviderID, acceptLiveProvider, model, req.HubID, req.TenantID) {
+				// A later closed sibling must not replace an upstream failure
+				// from a member that was actually dialed.
+				if lastErr == nil {
+					lastErr = fmt.Errorf("provider %s is outside its share window", route.ProviderID)
 				}
 			} else {
 				lastErr = fmt.Errorf("provider %s referenced in model but not found in registry", route.ProviderID)
@@ -601,7 +647,8 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 			profile = &copied
 		}
 		// The array is one logical provider. Billing and the response id stay on
-		// the array; each member is only an upstream credential.
+		// the array. Usage is stored on the member that answered so each
+		// upstream shows its own traffic.
 		provider := profile
 		providerID := logicalID
 		logicalModel, routeDispatch := proxyRouteDispatch(reg, matchedGroup, route, model, dispatchModel)
@@ -609,6 +656,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		var resp *providerForwardResponse
 		var fwdErr error
 		var served *llmpool.ProviderConfig
+		servedModel := ""
 		arrayRateLimited := false
 		arrayMemberCount := len(providerArrayMemberIDs(reg, logicalID))
 		egress := egressProvider
@@ -624,6 +672,13 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				if lastErr == nil {
 					lastErr = fmt.Errorf("provider %s is cooling down after upstream failures", member.ID)
 				}
+				continue
+			}
+			if until, blocked := memberQuotaBlocked(member, time.Now()); blocked {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = memberQuotaError(member, until)
 				continue
 			}
 			fresh, err := gate.before(gateCtx, cfg, member)
@@ -645,31 +700,65 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				lastErr = fmt.Errorf("provider %s is at concurrency limit %d", member.ID, member.MaxConcurrency)
 				continue
 			}
+			lease, until, blocked := admitMemberQuota(member, time.Now())
+			if blocked {
+				release()
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = memberQuotaError(member, until)
+				continue
+			}
+			attemptModel := memberUpstreamModel(member, route.Model, logicalModel, "")
+			if attemptModel == "" {
+				release()
+				releaseMemberQuota(lease)
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = fmt.Errorf("provider %s has no upstream model configured for %s", member.ID, logicalModel)
+				log.Printf("[llm-proxy] provider array %s member %s has no upstream model (logical=%s request=%s)", logicalID, member.ID, logicalModel, req.RequestID)
+				continue
+			}
+			attemptStarted := time.Now()
 			resp, fwdErr = func() (*providerForwardResponse, error) {
 				defer release()
-				return egress(ctx, cfg, member, req.Body, upstreamModel, requestedModel)
+				return egress(ctx, cfg, member, req.Body, attemptModel, requestedModel)
 			}()
+			if tokenBankCapErr(fwdErr) {
+				releaseMemberQuota(lease)
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				return nil, fwdErr
+			}
 			if proxyCanceledWithoutUpstreamSuccess(ctx, fwdErr, resp) {
+				if resp == nil {
+					releaseMemberQuota(lease)
+				}
 				if claimed {
 					releaseArrayMemberProbe(member.ID)
 				}
 				proxyAbortResilienceProbe(cfg, member.ID)
 				return nil, ctx.Err()
 			}
-			if fwdErr != nil || resp == nil || shouldRetryProxyProviderStatus(resp.StatusCode) {
+			noteMemberAttempt(member.ID, memberForwardStatus(resp), time.Since(attemptStarted), RedactProviderSecrets(memberForwardError(member, resp, fwdErr), member), "")
+			if fwdErr != nil || resp == nil || shouldRetryProxyProviderFailure(resp.StatusCode, resp.Body) {
 				statusCode := 0
 				if resp != nil {
 					statusCode = resp.StatusCode
 				}
 				pauseFailedArrayMember(arrayMemberCount, member, statusCode)
 				if fwdErr != nil {
-					log.Printf("[llm-proxy] provider array %s member %s transport failure: %v (logical=%s upstream=%s request=%s)", logicalID, member.ID, fwdErr, logicalModel, upstreamModel, req.RequestID)
-					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", member.ID, logicalModel, upstreamModel, fwdErr)
+					logged := trimMemberError(RedactProviderSecrets(fwdErr.Error(), member))
+					log.Printf("[llm-proxy] provider array %s member %s transport failure: %s (logical=%s upstream=%s request=%s)", logicalID, member.ID, logged, logicalModel, attemptModel, req.RequestID)
+					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", member.ID, logicalModel, attemptModel, redactConfiguredError(member, fwdErr))
 				} else if resp == nil {
-					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: empty response", member.ID, logicalModel, upstreamModel)
+					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: empty response", member.ID, logicalModel, attemptModel)
 				} else {
-					log.Printf("[llm-proxy] provider array %s member %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, resp.StatusCode, proxyProviderErrorSnippet(resp.Body), logicalModel, upstreamModel, req.RequestID)
-					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", member.ID, logicalModel, upstreamModel, resp.StatusCode, proxyProviderErrorSnippet(resp.Body))
+					snippet := proxyMemberErrorSnippet(member, resp.Body)
+					log.Printf("[llm-proxy] provider array %s member %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, resp.StatusCode, snippet, logicalModel, attemptModel, req.RequestID)
+					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", member.ID, logicalModel, attemptModel, resp.StatusCode, snippet)
 				}
 				if resp != nil && isProxyRateLimitStatus(resp.StatusCode) {
 					proxyOnProviderRateLimited(cfg, gate, member, lastErr)
@@ -680,9 +769,19 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				continue
 			}
 			served = member
+			servedModel = attemptModel
 			break
 		}
 		if served == nil {
+			if !quoteFailoverUsed && req.Quote != nil {
+				quoteFailoverUsed = true
+				saved := *req.Quote
+				req.Quote = nil
+				orderedRoutes = appendUndeliveredQuoteRoutes(cfg, reg, req, matchedGroup, model, orderedRoutes, &saved, false)
+				if quotePinnedArrayHasSiblings(reg, &saved) {
+					forgetLogicalProvider(triedArrays, reg, saved.ProviderID, route.Model)
+				}
+			}
 			if arrayRateLimited {
 				orderedRoutes = proxyAppendSameGroupRateLimitRoutes(orderedRoutes, reg, matchedGroup, logicalModel, reqWorkloadClass(req), acceptLiveProvider)
 			}
@@ -697,9 +796,13 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		clearArrayMemberPause(served.ID)
 
 		if resp.StatusCode >= http.StatusBadRequest {
+			if servedModel == "" {
+				servedModel = upstreamModel
+			}
+			log.Printf("[llm-proxy] provider array %s member %s attempt returned: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, served.ID, resp.StatusCode, proxyMemberErrorSnippet(served, resp.Body), logicalModel, servedModel, req.RequestID)
 			return &ProxyResponse{
 				StatusCode: resp.StatusCode,
-				Body:       resp.Body,
+				Body:       []byte(RedactProviderSecrets(string(resp.Body), served)),
 				ProviderID: providerID,
 				CacheHit:   false,
 			}, nil
@@ -708,21 +811,29 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		// Parse token usage from response
 		inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, cacheReadObserved, cacheWriteObserved, respBody := proxyResponseUsageWithCacheFallback(req.Body, resp.Body)
 		resp.Body = respBody
+		noteMemberTokens(served.ID, inputTokens, outputTokens)
 
 		// Directional provider pricing is frozen at request start and marked up
 		// once by the service-group route.  The legacy vendor multiplier path is
 		// retained only for routes which have not configured token pricing.
-		credits, multiplier, pricingSnapshot := proxyRequestBillingCredits(req, matchedGroup, provider, routeDispatch, route, providerID, upstreamModel, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, nil)
+		// A token-bank tier bills the member that answered. Members of one tier
+		// do not share a price, and the array profile is only the first record.
+		billProvider := provider
+		if served != nil && IsTokenBankMemberID(served.ID) {
+			billProvider = served
+			upstreamModel = proxyUpstreamModelForRoute(route, billProvider, logicalModel)
+		}
+		credits, multiplier, pricingSnapshot := proxyRequestBillingCredits(req, matchedGroup, billProvider, routeDispatch, route, providerID, upstreamModel, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, nil)
 
 		// Deduct credits
 		var deductions []CreditDeduction
 		if credits > 0 && requiresGrant && auth != nil {
 			var err error
-			deductions, err = cfg.AuthChecker.DeductCreditsForServiceGroup(ctx, req.HubID, req.TenantID, matchedGroup.ID, credits)
+			deductions, err = cfg.AuthChecker.DeductCreditsForServiceGroup(ctx, req.HubID, req.TenantID, billingGroupID, credits)
 			if err != nil {
 				// Log but don't fail: tokens already consumed upstream.
 				// Reconciliation can fix this from usage records.
-				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s group=%s credits=%.2f: %v", auth.ID, matchedGroup.ID, credits, err)
+				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s group=%s credits=%.2f: %v", auth.ID, billingGroupID, credits, err)
 			}
 		}
 		recordCredits := credits
@@ -731,12 +842,18 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		}
 
 		// Record usage
+		usageProviderID := providerID
+		if served != nil {
+			if id := providerIDKey(served.ID); id != "" {
+				usageProviderID = id
+			}
+		}
 		if cfg.Usage != nil {
 			if err := cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
 				RequestID:         req.RequestID,
-				ProviderID:        providerID,
+				ProviderID:        usageProviderID,
 				Model:             logicalModel,
-				ServiceGroupID:    matchedGroup.ID,
+				ServiceGroupID:    billingGroupID,
 				WorkloadClass:     req.WorkloadClass,
 				ClassSource:       req.ClassSource,
 				Preview:           llmpool.RequestTextPreview(req.Body, 200),
@@ -755,14 +872,39 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				log.Printf("[llm-proxy] WARN: record usage failed provider=%s model=%s request=%s: %v", providerID, logicalModel, req.RequestID, err)
 			}
 		}
+		// The owner is paid from the same credit figure the consumer was billed.
+		// recordCredits (not credits) is passed because a grant-backed route
+		// records what was actually deducted, and paying the owner more than the
+		// platform collected is exactly what anti-inversion forbids.
+		settleMemberID := ""
+		if served != nil {
+			settleMemberID = served.ID
+		}
+		settleTokenBankUsageForProvider(ctx, cfg, req, tokenBankSettlementProviderID(providerID, settleMemberID), logicalModel, TokenBankSettlementInput{
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			CachedInputTokens: cachedInputTokens,
+			CacheWriteTokens:  cacheWriteTokens,
+		}, llmpool.CreditsToMicrocredits(recordCredits), served)
 		recordProxyClassHeadSample(cfg, req, matchedGroup.ID)
 
-		// Write to cache
+		// Write to cache under the member that answered. findProvider only
+		// searches providers, so an entry stored as the array id never hits
+		// and the same request is paid again upstream. A direct provider's id
+		// is already that member id. The id is kept as written: a token-bank
+		// member id is case-sensitive. An older entry that still names the
+		// array misses until this write replaces it.
+		cacheProviderID := providerID
+		if served != nil {
+			if id := strings.TrimSpace(served.ID); id != "" {
+				cacheProviderID = id
+			}
+		}
 		if cfg.Cache != nil && resp.StatusCode == http.StatusOK {
 			cacheKey := buildServiceGroupCacheKey(matchedGroup.ID, logicalModel, req.Body)
 			_ = cfg.Cache.Put(ctx, &llmpool.CacheEntry{
 				CacheKey:   cacheKey,
-				ProviderID: providerID,
+				ProviderID: cacheProviderID,
 				Model:      logicalModel,
 				Kind:       "full",
 				Payload:    resp.Body,
@@ -792,7 +934,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	}
 
 	// All providers failed
-	log.Printf("[llm-proxy] all providers failed for model=%s service_group=%s hub=%s tenant=%s request=%s lastErr=%v", model, matchedGroup.ID, req.HubID, req.TenantID, req.RequestID, lastErr)
+	log.Printf("[llm-proxy] all providers failed for model=%s service_group=%s hub=%s tenant=%s request=%s lastErr=%s", model, matchedGroup.ID, req.HubID, req.TenantID, req.RequestID, trimMemberError(lastErr.Error()))
 	if lastErr != nil {
 		return nil, fmt.Errorf("all providers failed, last error: %w", lastErr)
 	}
@@ -953,7 +1095,58 @@ func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, 
 	if inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0 && cacheWriteTokens <= 0 {
 		return 0, displayMultiplier, nil
 	}
-	return estimateProxyCreditsWithFloor(inputTokens+outputTokens, displayMultiplier), displayMultiplier, nil
+	// The operator debit stays on the legacy tokens-per-credit formula. The
+	// snapshot is the same price expressed as directional rates, so Hub can
+	// settle the end user when the response trailer does not survive the proxy.
+	snapshot = proxyLegacyOfficialPricingSnapshot(provider, providerID, upstreamModel, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, startedAt)
+	return estimateProxyCreditsWithFloor(inputTokens+outputTokens, displayMultiplier), displayMultiplier, snapshot
+}
+
+// legacyOfficialTokenPricing is the directional form of the historical
+// tokens-per-credit settlement: one Credit per 10,000 tokens on every leg.
+// Cache Read and Cache Write use the same rate so a cache split does not
+// change the total. An unset cache rate would fall back to one tenth of the
+// input price and undercharge the end user relative to the operator debit.
+func legacyOfficialTokenPricing() llmpool.TokenPricing {
+	cacheRate := 1.0
+	cacheWriteRate := 1.0
+	return llmpool.TokenPricing{
+		InputCreditsPer10K:      1,
+		OutputCreditsPer10K:     1,
+		CacheReadCreditsPer10K:  &cacheRate,
+		CacheWriteCreditsPer10K: &cacheWriteRate,
+		MinimumRequestCredits:   minimumProxyRequestCredits,
+		Version:                 "cache-v1",
+	}
+}
+
+// proxyLegacyOfficialPricingSnapshot freezes that legacy price for a route
+// that is not explicitly free and has no directional Credits configuration.
+// Token-bank tier arrays and many of their members only carry a multiplier.
+// HubCenter still debits the operator card, but a nil snapshot makes the
+// quote endpoint reject the request and leaves no billing attempt. Hub then
+// records the call at zero Credits because nginx 1.14 does not forward the
+// SSE pricing trailer.
+func proxyLegacyOfficialPricingSnapshot(provider *llmpool.ProviderConfig, providerID, upstreamModel string, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, startedAt time.Time) *llmpool.TokenPricingSnapshot {
+	pricing, ok := llmpool.ResolveTokenPricing(legacyOfficialTokenPricing(), startedAt)
+	if !ok {
+		return nil
+	}
+	vendor := 1.0
+	if provider != nil {
+		vendor = llmpool.ResolveCreditMultiplier(provider.BillingPolicy(), startedAt)
+	}
+	return &llmpool.TokenPricingSnapshot{
+		ProviderID:         strings.TrimSpace(providerID),
+		UpstreamModel:      strings.TrimSpace(upstreamModel),
+		Pricing:            pricing,
+		PricingSource:      llmpool.PricingSourceProvider,
+		ProviderMultiplier: vendor,
+		InputTokens:        inputTokens,
+		OutputTokens:       outputTokens,
+		CachedInputTokens:  cachedInputTokens,
+		CacheWriteTokens:   cacheWriteTokens,
+	}
 }
 
 // proxyProviderMultiplierForRequest freezes a quoted provider's resolved
@@ -1000,8 +1193,11 @@ func proxyQuotePricingForRequest(req *ProxyRequest, providerID, upstreamModel st
 }
 
 // proxyOrderedRoutesForRequest permits no fallback when Hub supplied a valid
-// quote. That is essential: retrying a different provider after Hub admitted
-// a fixed price would make the final charge non-deterministic.
+// quote. That is essential while the quoted provider can still answer:
+// retrying a different provider after Hub admitted a fixed price would make
+// the final charge non-deterministic. A retryable failure that has not
+// reached the client drops the pin and continues; the provider that actually
+// finishes is billed at its own price. See appendUndeliveredQuoteRoutes.
 func proxyOrderedRoutesForRequest(cfg *ProxyConfig, reg *Registry, req *ProxyRequest, group *llmpool.ServiceGroup, model *llmpool.DispatchModel, logicalModel string, accept func(*llmpool.ProviderConfig) bool, startedAt time.Time, stream bool) ([]llmpool.DispatchProviderRoute, error) {
 	if req == nil || req.Quote == nil {
 		return orderProxyDispatchRoutes(cfg, reg, group, logicalModel, reqWorkloadClass(req), llmpool.OrderScoredProviderRoutes(req.Body, model), accept, startedAt, stream), nil
@@ -1050,6 +1246,7 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 	// all dispatches of this request (same budget as the non-streaming path).
 	gateCtx, cancelGateWait := context.WithTimeout(ctx, defaultProxyCircuitProbeWait)
 	defer cancelGateWait()
+	quoteFailoverUsed := false
 	for i := 0; i < len(dispatches); i++ {
 		dispatch := dispatches[i]
 		if dispatch == nil || dispatch.provider == nil {
@@ -1063,7 +1260,6 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 		if logicalID == "" {
 			logicalID = dispatch.provider.ID
 		}
-		upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
 		responseModel := strings.TrimSpace(dispatch.responseModel)
 		if responseModel == "" {
 			responseModel = dispatch.model
@@ -1078,6 +1274,13 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 				if lastErr == nil {
 					lastErr = fmt.Errorf("provider %s is cooling down after upstream failures", member.ID)
 				}
+				continue
+			}
+			if until, blocked := memberQuotaBlocked(member, time.Now()); blocked {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = memberQuotaError(member, until)
 				continue
 			}
 			fresh, err := gate.before(gateCtx, cfg, member)
@@ -1099,43 +1302,83 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 				lastErr = fmt.Errorf("provider %s is at concurrency limit %d", member.ID, member.MaxConcurrency)
 				continue
 			}
+			lease, until, blocked := admitMemberQuota(member, time.Now())
+			if blocked {
+				release()
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = memberQuotaError(member, until)
+				continue
+			}
+			attemptModel := memberUpstreamModel(member, dispatch.route.Model, dispatch.model, "")
+			if attemptModel == "" {
+				release()
+				releaseMemberQuota(lease)
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = fmt.Errorf("stream provider %s has no upstream model configured for %s", member.ID, dispatch.model)
+				log.Printf("[llm-proxy] stream provider array %s member %s has no upstream model (logical=%s request=%s)", logicalID, member.ID, dispatch.model, req.RequestID)
+				continue
+			}
+			attemptStarted := time.Now()
 			result, err := func() (*providerStreamResult, error) {
 				defer release()
-				return egressProviderStream(ctx, cfg, member, req.Body, upstreamModel, responseModel, dst)
+				return egressProviderStream(ctx, cfg, member, req.Body, attemptModel, responseModel, dst)
 			}()
+			if tokenBankCapErr(err) {
+				releaseMemberQuota(lease)
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				return nil, err
+			}
 			if err != nil {
 				if proxyCanceledWithoutStreamSuccess(ctx, result) {
+					if result == nil || result.statusCode == 0 {
+						releaseMemberQuota(lease)
+					}
 					if claimed {
 						releaseArrayMemberProbe(member.ID)
 					}
 					proxyAbortResilienceProbe(cfg, member.ID)
 					return nil, ctx.Err()
 				}
+				noteMemberAttempt(member.ID, 0, time.Since(attemptStarted), RedactProviderSecrets(err.Error(), member), "")
 				pauseFailedArrayMember(dispatch.arrayMemberCount, member, 0)
-				log.Printf("[llm-proxy] stream provider array %s member %s transport failure: %v (logical=%s upstream=%s request=%s)", logicalID, member.ID, err, dispatch.model, upstreamModel, req.RequestID)
+				logged := trimMemberError(RedactProviderSecrets(err.Error(), member))
+				log.Printf("[llm-proxy] stream provider array %s member %s transport failure: %s (logical=%s upstream=%s request=%s)", logicalID, member.ID, logged, dispatch.model, attemptModel, req.RequestID)
 				if !hasLaterDispatchForProvider(dispatches, i, member.ID) {
 					proxyRecordResilienceFailure(cfg, member)
 				}
-				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: %w", member.ID, dispatch.model, upstreamModel, err)
+				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: %w", member.ID, dispatch.model, attemptModel, redactConfiguredError(member, err))
+				// wroteBusinessStream means the attempt was already handed to
+				// the client. An uncommitted partial stays off the wire and is
+				// not billed, so the next provider can still finish the request.
 				if result != nil && result.wroteBusinessStream {
-					recordProxyStreamUsage(ctx, cfg, req, dispatch, logicalID, result)
+					recordProxyStreamUsage(ctx, cfg, req, dispatch, logicalID, member.ID, result, member)
+					noteMemberTokens(member.ID, dispatch.billingInputTokens, dispatch.billingOutputTokens)
 					return dispatch, lastErr
 				}
 				continue
 			}
 			if result == nil {
 				pauseFailedArrayMember(dispatch.arrayMemberCount, member, 0)
-				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: empty response", member.ID, dispatch.model, upstreamModel)
+				noteMemberAttempt(member.ID, 0, time.Since(attemptStarted), RedactProviderSecrets("empty response", member), "")
+				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: empty response", member.ID, dispatch.model, attemptModel)
 				if !hasLaterDispatchForProvider(dispatches, i, member.ID) {
 					proxyRecordResilienceFailure(cfg, member)
 				}
 				continue
 			}
 			if result.statusCode >= http.StatusBadRequest {
-				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: HTTP %d%s", member.ID, dispatch.model, upstreamModel, result.statusCode, proxyProviderErrorSnippet(result.errorBody))
-				if shouldRetryProxyProviderStatus(result.statusCode) {
+				snippet := proxyMemberErrorSnippet(member, result.errorBody)
+				noteMemberAttempt(member.ID, result.statusCode, time.Since(attemptStarted), RedactProviderSecrets(fmt.Sprintf("HTTP %d%s", result.statusCode, snippet), member), "")
+				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: HTTP %d%s", member.ID, dispatch.model, attemptModel, result.statusCode, snippet)
+				if shouldRetryProxyProviderFailure(result.statusCode, result.errorBody) {
 					pauseFailedArrayMember(dispatch.arrayMemberCount, member, result.statusCode)
-					log.Printf("[llm-proxy] stream provider array %s member %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, result.statusCode, proxyProviderErrorSnippet(result.errorBody), dispatch.model, upstreamModel, req.RequestID)
+					log.Printf("[llm-proxy] stream provider array %s member %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, result.statusCode, snippet, dispatch.model, attemptModel, req.RequestID)
 					if proxyCanceledWithoutStreamSuccess(ctx, result) {
 						proxyAbortResilienceProbe(cfg, member.ID)
 						return nil, ctx.Err()
@@ -1152,27 +1395,36 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 					cfg.Resilience.RecordSuccess(member.ID)
 				}
 				clearArrayMemberPause(member.ID)
+				log.Printf("[llm-proxy] stream provider array %s member %s attempt returned: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, result.statusCode, snippet, dispatch.model, attemptModel, req.RequestID)
 				return nil, lastErr
 			}
 			if cfg.Resilience != nil {
 				cfg.Resilience.RecordSuccess(member.ID)
 			}
 			clearArrayMemberPause(member.ID)
-			recordProxyStreamUsage(ctx, cfg, req, dispatch, logicalID, result)
+			noteMemberAttempt(member.ID, result.statusCode, time.Since(attemptStarted), "", "")
+			recordProxyStreamUsage(ctx, cfg, req, dispatch, logicalID, member.ID, result, member)
+			noteMemberTokens(member.ID, dispatch.billingInputTokens, dispatch.billingOutputTokens)
 			return dispatch, nil
+		}
+		if !quoteFailoverUsed && req.Quote != nil {
+			quoteFailoverUsed = true
+			saved := *req.Quote
+			req.Quote = nil
+			dispatches = appendUndeliveredQuoteDispatches(ctx, cfg, req, dispatches, dispatch, &saved)
 		}
 		if arrayRateLimited {
 			dispatches = proxyAppendSameGroupRateLimitDispatches(ctx, cfg, req, dispatches, dispatch, true)
 		}
 	}
 	if lastErr != nil {
-		log.Printf("[llm-proxy] all stream providers failed for model=%s hub=%s tenant=%s request=%s lastErr=%v", req.Model, req.HubID, req.TenantID, req.RequestID, lastErr)
+		log.Printf("[llm-proxy] all stream providers failed for model=%s hub=%s tenant=%s request=%s lastErr=%s", req.Model, req.HubID, req.TenantID, req.RequestID, trimMemberError(lastErr.Error()))
 		return nil, fmt.Errorf("all stream providers failed, last error: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no stream-capable providers available")
 }
 
-func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dispatch *proxyDispatch, providerID string, result *providerStreamResult) {
+func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dispatch *proxyDispatch, providerID, servedMemberID string, result *providerStreamResult, served *llmpool.ProviderConfig) {
 	if cfg == nil || req == nil || dispatch == nil || result == nil {
 		return
 	}
@@ -1193,30 +1445,59 @@ func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	dispatch.billingOutputTokens = outputTokens
 	dispatch.billingCachedInputTokens = result.cachedInputTokens
 	dispatch.billingCacheWriteTokens = result.cacheWriteTokens
+	// The trailer and the debit both have to name the member that answered.
+	// Freezing the array profile's price would charge one share for another's
+	// tokens whenever the tier rotated.
+	if served != nil && IsTokenBankMemberID(served.ID) {
+		dispatch.provider = served
+		if req.Quote == nil {
+			dispatch.pricing = proxyResolvedRequestTokenPricing(req, dispatch.matchedGroup, served, proxyDispatchLogicalID(dispatch), proxyUpstreamModelForRoute(dispatch.route, served, dispatch.model), proxyRequestStartedAt(req))
+		}
+	}
 	upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
-	credits, _, _ := proxyRequestBillingCredits(req, dispatch.matchedGroup, dispatch.provider, dispatch.dispatchModel, dispatch.route, providerID, upstreamModel, inputTokens, outputTokens, result.cachedInputTokens, result.cacheWriteTokens, dispatch.pricing)
+	credits, _, billedSnapshot := proxyRequestBillingCredits(req, dispatch.matchedGroup, dispatch.provider, dispatch.dispatchModel, dispatch.route, providerID, upstreamModel, inputTokens, outputTokens, result.cachedInputTokens, result.cacheWriteTokens, dispatch.pricing)
+	// The trailer is written after this function returns, and it reads
+	// dispatch.pricing rather than the snapshot just billed. Keep that field
+	// aligned with the debit: a resolved directional price must stay, and a
+	// multiplier-only route publishes the legacy rates billing just returned.
+	if dispatch.pricing == nil && billedSnapshot != nil {
+		copied := billedSnapshot.Pricing
+		dispatch.pricing = &copied
+	}
 
 	var deductions []CreditDeduction
+	billingGroupID := dispatch.billingGroupID
+	if billingGroupID == "" && dispatch.matchedGroup != nil {
+		billingGroupID = dispatch.matchedGroup.ID
+	}
 	if credits > 0 && dispatch.requiresGrant && dispatch.auth != nil && cfg.AuthChecker != nil {
 		var deductErr error
-		deductions, deductErr = cfg.AuthChecker.DeductCreditsForServiceGroup(ctx, req.HubID, req.TenantID, dispatch.matchedGroup.ID, credits)
+		deductions, deductErr = cfg.AuthChecker.DeductCreditsForServiceGroup(ctx, req.HubID, req.TenantID, billingGroupID, credits)
 		if deductErr != nil {
-			log.Printf("[llm-proxy] WARN: stream credits deduction failed auth=%s group=%s credits=%.2f: %v", dispatch.auth.ID, dispatch.matchedGroup.ID, credits, deductErr)
+			log.Printf("[llm-proxy] WARN: stream credits deduction failed auth=%s group=%s credits=%.2f: %v", dispatch.auth.ID, billingGroupID, credits, deductErr)
 		}
 	}
 	recordCredits := credits
 	if dispatch.requiresGrant {
 		recordCredits = totalDeductionCredits(deductions)
 	}
-	groupID := ""
-	if dispatch.matchedGroup != nil {
+	groupID := billingGroupID
+	if groupID == "" && dispatch.matchedGroup != nil {
 		groupID = dispatch.matchedGroup.ID
 	}
+	dispatchGroupID := groupID
+	if dispatch.matchedGroup != nil && strings.TrimSpace(dispatch.matchedGroup.ID) != "" {
+		dispatchGroupID = dispatch.matchedGroup.ID
+	}
 	settledSnapshot := proxyDispatchTokenPricingSnapshot(req, dispatch, upstreamModel)
+	usageProviderID := providerIDKey(servedMemberID)
+	if usageProviderID == "" {
+		usageProviderID = providerID
+	}
 	if cfg.Usage != nil {
 		if err := cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
 			RequestID:         req.RequestID,
-			ProviderID:        providerID,
+			ProviderID:        usageProviderID,
 			Model:             dispatch.model,
 			ServiceGroupID:    groupID,
 			WorkloadClass:     req.WorkloadClass,
@@ -1237,7 +1518,17 @@ func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 			log.Printf("[llm-proxy] WARN: record stream usage failed provider=%s model=%s request=%s: %v", providerID, dispatch.model, req.RequestID, err)
 		}
 	}
-	recordProxyClassHeadSample(cfg, req, groupID)
+	// A streamed response settles on exactly the same terms as a buffered one.
+	// The measured counts are the ones already persisted on the dispatch for
+	// the response trailer, so the owner's payout and the consumer's bill are
+	// computed from one measurement, not two.
+	settleTokenBankUsageForProvider(ctx, cfg, req, tokenBankSettlementProviderID(providerID, servedMemberID), dispatch.model, TokenBankSettlementInput{
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		CachedInputTokens: result.cachedInputTokens,
+		CacheWriteTokens:  result.cacheWriteTokens,
+	}, llmpool.CreditsToMicrocredits(recordCredits), served)
+	recordProxyClassHeadSample(cfg, req, dispatchGroupID)
 	if cfg.Attempts != nil {
 		if settledSnapshot != nil {
 			if err := persistProxyBillingAttempt(cfg, ProxyBillingAttempt{HubID: req.HubID, TenantID: req.TenantID, RequestID: req.RequestID, StatusCode: http.StatusOK, ProviderID: providerID, PricingSnapshot: *settledSnapshot, CompletedAt: time.Now().UTC()}); err != nil {
@@ -1273,6 +1564,7 @@ type proxyDispatch struct {
 	arrayMemberCount         int
 	auth                     *TenantAuthorization
 	requiresGrant            bool
+	billingGroupID           string
 	billingInputTokens       int64
 	billingOutputTokens      int64
 	billingCachedInputTokens int64
@@ -1336,6 +1628,9 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	if model == "" {
 		return nil, fmt.Errorf("model not specified in request")
 	}
+	if canon := llmpool.CanonicalClientModel(model); llmpool.IsOfficialTierName(canon) {
+		model = canon
+	}
 	requestedModel := model
 
 	reg, err := cfg.Service.LoadRegistry(ctx)
@@ -1358,14 +1653,13 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 		logProxyServiceGroupAliasResolution(requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
 	}
 
-	var auth *TenantAuthorization
-	requiresGrant := serviceGroupRequiresGrant(matchedGroup)
-	if requiresGrant {
-		auth, err = cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, matchedGroup.ID)
-		if err != nil {
-			return nil, fmt.Errorf("authorization denied: %w", err)
-		}
+	grant, err := authorizeProxyServiceGroup(ctx, cfg, req, reg, matchedGroup)
+	if err != nil {
+		return nil, err
 	}
+	auth := grant.auth
+	requiresGrant := grant.requiresGrant
+	billingGroupID := grant.billingGroupID
 	if err := rejectIfTenantBound(ctx, cfg, req.HubID, req.TenantID); err != nil {
 		return nil, err
 	}
@@ -1380,25 +1674,24 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	dispatches := make([]*proxyDispatch, 0, len(orderedRoutes))
 	sawPaused := false
 	sawCooling := false
+	sawQuota := false
+	sawWindow := false
 	triedArrays := map[string]struct{}{}
 	for _, route := range orderedRoutes {
-		if logicalProviderSeen(triedArrays, reg, route.ProviderID) {
+		if logicalProviderSeen(triedArrays, reg, route.ProviderID, route.Model) {
 			continue
 		}
-		noteLogicalProvider(triedArrays, reg, route.ProviderID)
-		var logicalID string
-		var profile *llmpool.ProviderConfig
-		var members []*llmpool.ProviderConfig
-		if rotate {
-			logicalID, profile, members = arrayEgressCandidates(reg, route.ProviderID, accept)
-		} else {
-			logicalID, profile, members = lookupProviderArray(reg, route.ProviderID, accept)
-		}
+		noteLogicalProvider(triedArrays, reg, route.ProviderID, route.Model)
+		logicalID, profile, members := tokenBankRouteMembers(reg, route.ProviderID, accept, model, req, rotate)
 		if len(members) == 0 {
-			if profile != nil && profile.Paused {
+			if arrayRouteModelPaused(reg, route.ProviderID, accept, model) {
 				sawPaused = true
 			} else if arrayRouteCooling(reg, route.ProviderID, accept) {
 				sawCooling = true
+			} else if arrayRouteQuotaBlocked(reg, route.ProviderID, accept) {
+				sawQuota = true
+			} else if arrayRouteShareWindowClosed(reg, route.ProviderID, accept, model, req.HubID, req.TenantID) {
+				sawWindow = true
 			}
 			continue
 		}
@@ -1425,15 +1718,25 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 			arrayMemberCount:  len(providerArrayMemberIDs(reg, logicalID)),
 			auth:              auth,
 			requiresGrant:     requiresGrant,
+			billingGroupID:    billingGroupID,
 			pricing:           pricing,
 		})
 	}
 	if len(dispatches) == 0 {
+		if id := quotedTokenBankMemberID(req); id != "" {
+			return nil, fmt.Errorf("quoted token bank member %s is not available", id)
+		}
 		if sawPaused {
 			return nil, fmt.Errorf("no available providers for model %q: paused", model)
 		}
 		if sawCooling {
 			return nil, fmt.Errorf("no available providers for model %q: cooling down", model)
+		}
+		if sawQuota {
+			return nil, fmt.Errorf("no available providers for model %q: over request quota", model)
+		}
+		if sawWindow {
+			return nil, fmt.Errorf("no available providers for model %q: outside share window", model)
 		}
 		return nil, fmt.Errorf("no available providers for model %q", model)
 	}
@@ -1492,27 +1795,24 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 			reqBody["max_tokens"] = 65536
 		}
 	}
+	if err := applyTokenBankRequestCaps(provider, reqBody); err != nil {
+		return nil, err
+	}
 	// Client-stated reasoning intent must reach the upstream in its own
 	// spelling: Agnes only honors reasoning_effort and silently ignores the
 	// DeepSeek-style thinking object. Auto (no control in the body) stays
 	// untouched. (Mirrors the non-stream path in
 	// corelib/openai_compat_forward.go sanitizeOpenAICompatForwardBody.)
-	corelib.RetargetReasoningControlsForUpstream(corelib.MaclawLLMConfig{
+	upstreamCfg := corelib.MaclawLLMConfig{
 		URL:   provider.APIURL,
 		Model: upstreamModel,
-	}, reqBody, corelib.ReasoningAPIChat)
-	// DeepSeek V4+ thinking mode: older clients may omit the switch. thinking.type
-	// alone is not enough for WorkBuddy, so the stamp also sets reasoning_effort
-	// and drops Anthropic budget_tokens. A caller-supplied low/max survives.
-	if corelib.IsDeepSeekThinkingModeModel(corelib.MaclawLLMConfig{Model: upstreamModel}) {
-		if _, hasThinking := reqBody["thinking"]; !hasThinking {
-			reqBody["thinking"] = map[string]any{"type": "enabled"}
-		}
-		// thinking.type alone is not enough for WorkBuddy: it returns an empty
-		// reasoning_content until reasoning_effort is present. budget_tokens
-		// is not a DeepSeek field and is removed here.
-		corelib.StampDeepSeekReasoningEffort(corelib.MaclawLLMConfig{Model: upstreamModel}, reqBody)
 	}
+	corelib.RetargetReasoningControlsForUpstream(upstreamCfg, reqBody, corelib.ReasoningAPIChat)
+	// DeepSeek V4+ on a native endpoint gets an explicit thinking object when
+	// the client omitted one. AMD does not: that host rejects the object.
+	// Finish turns a caller-supplied thinking value into reasoning_effort.
+	corelib.AddAutoDeepSeekThinkingObject(upstreamCfg, reqBody)
+	corelib.FinishOpenAIChatReasoningControls(upstreamCfg, reqBody)
 
 	data, err := json.Marshal(reqBody)
 	if err != nil {
@@ -1528,7 +1828,13 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	}.MaclawLLMConfig()
 	cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
 	client = proxyStreamingHTTPClient(client, cfg)
-	endpoint := corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(provider.APIURL, cfg.UserAgent()))
+	var decorateWorkBuddy func(*http.Request)
+	client, provider, decorateWorkBuddy = prepareWorkBuddyStream(ctx, client, provider, upstreamModel)
+	endpointURL := provider.APIURL
+	if wb, ok := workBuddyMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(wb.URL) != "" {
+		endpointURL = wb.URL
+	}
+	endpoint := corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(endpointURL, cfg.UserAgent()))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("build stream request: %w", err)
@@ -1543,6 +1849,9 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(httpReq, cfg.UserAgent())
 	corelib.ApplyOpenCodeSessionHeader(httpReq, cfg)
+	if decorateWorkBuddy != nil {
+		decorateWorkBuddy(httpReq)
+	}
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -1626,10 +1935,69 @@ func sanitizeProxyStreamOptions(body map[string]any) {
 	body["stream_options"] = map[string]any{"include_usage": true}
 }
 
-func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult, reqBody map[string]any) error {
+// proxyAttemptBuffer holds one upstream attempt. Business SSE reaches the
+// client only after that attempt finishes cleanly, so a cut or an error
+// event can move on to the next provider. Heartbeats stay on the real
+// client writer and are not part of this buffer.
+type proxyAttemptBuffer struct {
+	buf bytes.Buffer
+}
+
+func (b *proxyAttemptBuffer) Write(p []byte) (int, error) {
+	if b == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return b.buf.Write(p)
+}
+
+func (b *proxyAttemptBuffer) Flush() {}
+
+func (b *proxyAttemptBuffer) commit(dst ProxyStreamWriter) error {
+	if b == nil || b.buf.Len() == 0 {
+		return nil
+	}
+	if dst == nil {
+		return io.ErrClosedPipe
+	}
+	if _, err := dst.Write(b.buf.Bytes()); err != nil {
+		return err
+	}
+	dst.Flush()
+	return nil
+}
+
+// abandonUncommittedProxyStream drops the "bytes already reached the client"
+// flags after a failed attempt. Token counters stay on this result only; the
+// caller must not bill it.
+func abandonUncommittedProxyStream(result *providerStreamResult) {
+	if result == nil {
+		return
+	}
+	result.wroteBusinessStream = false
+	result.wroteStream = false
+}
+
+func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult, reqBody map[string]any) (err error) {
+	attempt := &proxyAttemptBuffer{}
+	defer func() {
+		if err != nil {
+			abandonUncommittedProxyStream(result)
+			return
+		}
+		if commitErr := attempt.commit(dst); commitErr != nil {
+			err = commitErr
+		}
+	}()
+	return writeProxyProviderSSE(src, attempt, responseModel, result, reqBody)
+}
+
+func writeProxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult, reqBody map[string]any) error {
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	event := make([]string, 0, 4)
+	// [DONE] after business data finishes this attempt. A later read error or
+	// error event must not discard that answer and switch providers.
+	streamCompleted := false
 	flushEvent := func() error {
 		if len(event) == 0 {
 			return nil
@@ -1655,6 +2023,7 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 			result.wroteStream = true
 			dst.Flush()
 			event = event[:0]
+			streamCompleted = true
 			return nil
 		}
 		if len(dataLines) > 1 {
@@ -1683,6 +2052,7 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 			event = event[:0]
 			return nil
 		}
+		sawDone := false
 		for _, line := range event {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "data:") {
@@ -1698,6 +2068,7 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 						return err
 					}
 					result.wroteStream = true
+					sawDone = true
 					continue
 				}
 				forwardLine := line
@@ -1730,6 +2101,9 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 		}
 		dst.Flush()
 		event = event[:0]
+		if sawDone {
+			streamCompleted = true
+		}
 		return nil
 	}
 	for scanner.Scan() {
@@ -1739,12 +2113,18 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 			if err := flushEvent(); err != nil {
 				return err
 			}
+			if streamCompleted {
+				return nil
+			}
 			continue
 		}
 		event = append(event, line)
 	}
 	if err := flushEvent(); err != nil {
 		return err
+	}
+	if streamCompleted {
+		return nil
 	}
 	if err := scanner.Err(); err != nil {
 		return err
@@ -1998,6 +2378,12 @@ func proxyStreamChunkText(payload map[string]any) string {
 	return text.String()
 }
 
+// proxyMemberErrorSnippet is the logged upstream excerpt with that member's
+// configured keys removed before the text is shortened.
+func proxyMemberErrorSnippet(member *llmpool.ProviderConfig, body []byte) string {
+	return proxyProviderErrorSnippet([]byte(RedactProviderSecrets(string(body), member)))
+}
+
 func proxyProviderErrorSnippet(body []byte) string {
 	text := strings.ToValidUTF8(string(body), "\ufffd")
 	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
@@ -2102,7 +2488,7 @@ func proxyCanceledWithoutUpstreamSuccess(ctx context.Context, fwdErr error, resp
 	if fwdErr != nil || resp == nil {
 		return true
 	}
-	return shouldRetryProxyProviderStatus(resp.StatusCode)
+	return shouldRetryProxyProviderFailure(resp.StatusCode, resp.Body)
 }
 
 func proxyCanceledWithoutStreamSuccess(ctx context.Context, result *providerStreamResult) bool {
@@ -2135,6 +2521,28 @@ func proxyBeforeAttempt(ctx context.Context, cfg *ProxyConfig, provider *llmpool
 	return cfg.Resilience.BeforeAttemptWithProbeWait(ctx, provider.ID, proxyCircuitThreshold(provider), proxyCircuitBaseMS(provider), defaultProxyCircuitProbeWait)
 }
 
+func memberForwardStatus(resp *providerForwardResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func memberForwardError(member *llmpool.ProviderConfig, resp *providerForwardResponse, fwdErr error) string {
+	if fwdErr != nil {
+		return fwdErr.Error()
+	}
+	if resp == nil {
+		return "empty response"
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		// Redact before the 500-rune cut. Shortening first can leave a key prefix
+		// that no longer matches the configured secret.
+		return fmt.Sprintf("HTTP %d%s", resp.StatusCode, proxyMemberErrorSnippet(member, resp.Body))
+	}
+	return ""
+}
+
 func pauseFailedArrayMember(memberCount int, member *llmpool.ProviderConfig, statusCode int) {
 	if memberCount <= 1 || member == nil {
 		return
@@ -2144,10 +2552,7 @@ func pauseFailedArrayMember(memberCount int, member *llmpool.ProviderConfig, sta
 		pause = time.Duration(member.CircuitBreakerCooldownMS) * time.Millisecond
 	}
 	if isProxyRateLimitStatus(statusCode) {
-		rateLimit := time.Duration(proxyRateLimitCooldownMS) * time.Millisecond
-		if rateLimit > pause {
-			pause = rateLimit
-		}
+		pause = memberRateLimitPause(member)
 	}
 	pauseArrayMember(member.ID, pause)
 }
@@ -2178,9 +2583,11 @@ func proxyRecordRateLimit(cfg *ProxyConfig, provider *llmpool.ProviderConfig) {
 		return
 	}
 	threshold := proxyCircuitThreshold(provider)
-	cooldownMS := proxyRateLimitCooldownMS
-	if base := proxyCircuitBaseMS(provider); base > cooldownMS {
-		cooldownMS = base
+	cooldownMS := int(memberRateLimitPause(provider) / time.Millisecond)
+	if provider == nil || provider.RateLimitCooldownSec <= 0 {
+		if base := proxyCircuitBaseMS(provider); base > cooldownMS {
+			cooldownMS = base
+		}
 	}
 	maxMS := proxyCircuitMaxMS(provider)
 	if cooldownMS > maxMS {
@@ -2398,7 +2805,20 @@ func logicalProviderKeys(reg *Registry, providerID string) []string {
 	return keys
 }
 
-func logicalProviderSeen(seen map[string]struct{}, reg *Registry, providerID string) bool {
+func logicalProviderSeen(seen map[string]struct{}, reg *Registry, providerID, model string) bool {
+	if seen == nil {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, key := range logicalProviderKeys(reg, providerID) {
+		if _, ok := seen[key+"\x00"+model]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func logicalProviderNoted(seen map[string]struct{}, reg *Registry, providerID string) bool {
 	if seen == nil {
 		return false
 	}
@@ -2410,12 +2830,25 @@ func logicalProviderSeen(seen map[string]struct{}, reg *Registry, providerID str
 	return false
 }
 
-func noteLogicalProvider(seen map[string]struct{}, reg *Registry, providerID string) {
+func noteLogicalProvider(seen map[string]struct{}, reg *Registry, providerID, model string) {
 	if seen == nil {
 		return
 	}
+	model = strings.ToLower(strings.TrimSpace(model))
 	for _, key := range logicalProviderKeys(reg, providerID) {
 		seen[key] = struct{}{}
+		seen[key+"\x00"+model] = struct{}{}
+	}
+}
+
+func forgetLogicalProvider(seen map[string]struct{}, reg *Registry, providerID, model string) {
+	if seen == nil {
+		return
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, key := range logicalProviderKeys(reg, providerID) {
+		delete(seen, key)
+		delete(seen, key+"\x00"+model)
 	}
 }
 
@@ -2425,7 +2858,7 @@ func extraLiveServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGr
 	}
 	seen := map[string]struct{}{}
 	for _, route := range routes {
-		noteLogicalProvider(seen, reg, route.ProviderID)
+		noteLogicalProvider(seen, reg, route.ProviderID, route.Model)
 	}
 	var extras []llmpool.DispatchProviderRoute
 	inGroupOnly := officialQualityScopedLogicalModel(group, logicalModel)
@@ -2442,14 +2875,14 @@ func extraLiveServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGr
 		if key == "" {
 			continue
 		}
-		if logicalProviderSeen(seen, reg, providerID) {
+		if logicalProviderNoted(seen, reg, providerID) {
 			continue
 		}
 		provider := findProvider(reg, providerID)
 		if !accept(provider) {
 			continue
 		}
-		noteLogicalProvider(seen, reg, providerID)
+		noteLogicalProvider(seen, reg, providerID, "")
 		failoverRoutes := buildServiceGroupFailoverRoutes(routeReg, group, provider, logicalModel)
 		if len(failoverRoutes) == 0 {
 			continue
@@ -2545,7 +2978,8 @@ func buildServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGroup,
 		}
 		official := llmpool.NormalizeOfficialTier(logicalModel)
 		for _, model := range g.Models {
-			if official != "" && !strings.EqualFold(strings.TrimSpace(model.Name), official) {
+			name := strings.TrimSpace(model.Name)
+			if official != "" && !strings.EqualFold(name, official) && llmpool.CanonicalClientModel(name) != official {
 				continue
 			}
 			for _, pc := range modelProviderConfigs(model) {
@@ -2553,7 +2987,7 @@ func buildServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGroup,
 					continue
 				}
 				route := llmpool.DispatchProviderRoute{ProviderID: id, Model: strings.TrimSpace(pc.Model)}
-				copyFailoverRoutePolicy(&route, pc)
+				copyFailoverRoutePolicy(&route, provider, model.CapabilityTags, pc)
 				route.Model = proxyUpstreamModelForRoute(route, provider, strings.TrimSpace(model.Name))
 				add(route)
 			}
@@ -2563,8 +2997,12 @@ func buildServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGroup,
 	knownModels := providerModelSet(provider)
 	if logicalModel != "" && (len(knownModels) == 0 || hasFoldedKey(knownModels, logicalModel)) {
 		route := llmpool.DispatchProviderRoute{ProviderID: id, Model: logicalModel}
-		if _, pc, ok := findGroupProviderConfig(group, id, logicalModel); ok {
-			copyFailoverRoutePolicy(&route, pc)
+		if name, pc, ok := findGroupProviderConfig(group, id, logicalModel); ok {
+			var modelTags []string
+			if matched := findGroupModelConfig(group, name); matched != nil {
+				modelTags = matched.CapabilityTags
+			}
+			copyFailoverRoutePolicy(&route, provider, modelTags, pc)
 			if model := strings.TrimSpace(pc.Model); model != "" {
 				route.Model = model
 			} else {
@@ -2592,7 +3030,7 @@ func buildServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGroup,
 }
 
 func officialQualityScopedLogicalModel(group *llmpool.ServiceGroup, logicalModel string) bool {
-	if llmpool.IsOfficialTierName(logicalModel) {
+	if llmpool.NormalizeOfficialTier(logicalModel) != "" {
 		return true
 	}
 	return llmpool.NormalizeQuality(llmpool.QualityForModel(group, logicalModel)) != ""
@@ -2696,7 +3134,7 @@ func appendOfficialTierAvailabilityRoutes(reg *Registry, dst []llmpool.DispatchP
 				continue
 			}
 			route := llmpool.DispatchProviderRoute{ProviderID: strings.TrimSpace(pc.ProviderID), Model: strings.TrimSpace(pc.Model)}
-			copyFailoverRoutePolicy(&route, pc)
+			copyFailoverRoutePolicy(&route, provider, model.CapabilityTags, pc)
 			if upstream := strings.TrimSpace(proxyUpstreamModelForRoute(route, provider, tier)); upstream != "" {
 				route.Model = upstream
 			} else if strings.TrimSpace(route.Model) == "" {
@@ -2826,11 +3264,15 @@ func findGroupProviderConfig(group *llmpool.ServiceGroup, providerID, preferMode
 	return fallbackName, fallback, hasFallback
 }
 
-func copyFailoverRoutePolicy(route *llmpool.DispatchProviderRoute, pc llmpool.ModelProviderConfig) {
+func copyFailoverRoutePolicy(route *llmpool.DispatchProviderRoute, provider *llmpool.ProviderConfig, modelTags []string, pc llmpool.ModelProviderConfig) {
 	if route == nil {
 		return
 	}
-	route.CapabilityTags = append([]string(nil), pc.CapabilityTags...)
+	var providerTags []string
+	if provider != nil {
+		providerTags = provider.CapabilityTags
+	}
+	route.CapabilityTags = effectiveMemberCapabilityTags(modelTags, providerTags, pc.CapabilityTags)
 	route.Priority = pc.Priority
 	route.ResolutionTier = pc.ResolutionTier
 	route.CreditMultiplier = pc.CreditMultiplier
@@ -2860,7 +3302,11 @@ func applyProxyWorkloadRouting(req *ProxyRequest, cfg *ProxyConfig, reg *Registr
 		runtime = cfg.Service.HeadRuntimeForGroup(strings.TrimSpace(group.ID), strings.TrimSpace(req.TenantID))
 	}
 	header := req.Header
-	dec := llmpool.ClassifyAndRouteWithHead(header, req.Body, group, model, runtime)
+	scoreGroup := group
+	if llmpool.IsAutoModel(model) {
+		scoreGroup = groupWithMemberCapabilityTags(reg, group)
+	}
+	dec := llmpool.ClassifyAndRouteWithHead(header, req.Body, scoreGroup, model, runtime)
 	req.WorkloadClass = dec.Class
 	req.ClassSource = dec.Source
 	req.RuleClass = dec.RuleClass
@@ -2879,29 +3325,45 @@ func applyProxyWorkloadRouting(req *ProxyRequest, cfg *ProxyConfig, reg *Registr
 		return resolved, group, next
 	}
 	if mismatchedOfficialDispatch(dispatchModel, resolved) {
+		// A direct low pin can use auto's providers when the group has no low
+		// row. A higher band, and auto's own result, must not.
+		if pinnedLowUsesAutoRoutes(model, resolved, dispatchModel) {
+			return resolved, group, dispatchModel
+		}
 		return resolved, group, nil
 	}
 	return resolved, group, dispatchModel
+}
+
+func pinnedLowUsesAutoRoutes(requested, resolved string, dispatch *llmpool.DispatchModel) bool {
+	if dispatch == nil || len(dispatch.ProviderRoutes) == 0 || !llmpool.IsAutoModel(dispatch.Name) {
+		return false
+	}
+	if llmpool.CanonicalClientModel(requested) != llmpool.OfficialTierLow {
+		return false
+	}
+	return llmpool.CanonicalClientModel(resolved) == llmpool.OfficialTierLow
 }
 
 func mismatchedOfficialDispatch(dispatch *llmpool.DispatchModel, logicalModel string) bool {
 	if dispatch == nil {
 		return false
 	}
-	logicalModel = strings.TrimSpace(logicalModel)
-	if llmpool.IsAutoModel(dispatch.Name) && llmpool.IsOfficialTierName(logicalModel) {
+	logicalCanon := llmpool.CanonicalClientModel(logicalModel)
+	dispatchCanon := llmpool.CanonicalClientModel(dispatch.Name)
+	if llmpool.IsAutoModel(dispatch.Name) && llmpool.IsOfficialTierName(logicalCanon) {
 		return true
 	}
-	if !llmpool.IsOfficialTierName(dispatch.Name) {
+	if !llmpool.IsOfficialTierName(dispatchCanon) {
 		return false
 	}
 	if llmpool.IsAutoModel(logicalModel) {
 		return true
 	}
-	if !llmpool.IsOfficialTierName(logicalModel) {
+	if !llmpool.IsOfficialTierName(logicalCanon) {
 		return false
 	}
-	return !strings.EqualFold(strings.TrimSpace(dispatch.Name), logicalModel)
+	return !strings.EqualFold(dispatchCanon, logicalCanon)
 }
 
 func matchProxyServiceGroupModel(reg *Registry, serviceGroupID, model string) (*llmpool.ServiceGroup, *llmpool.DispatchModel) {
@@ -2925,7 +3387,7 @@ func matchProxyServiceGroupModel(reg *Registry, serviceGroupID, model string) (*
 			if dispatchModel := matchProxyGroupModel(reg, group, model); dispatchModel != nil {
 				return group, dispatchModel
 			}
-			if llmpool.IsOfficialTierName(model) {
+			if llmpool.NormalizeOfficialTier(model) != "" {
 				if dispatchModel := matchProxyGroupModel(reg, group, "auto"); dispatchModel != nil && llmpool.IsAutoModel(dispatchModel.Name) {
 					return group, dispatchModel
 				}
@@ -2973,6 +3435,13 @@ func matchProxyGroupModel(reg *Registry, group *llmpool.ServiceGroup, model stri
 	for j := range group.Models {
 		if strings.EqualFold(strings.TrimSpace(group.Models[j].Name), strings.TrimSpace(model)) {
 			return buildDispatchModel(reg, &group.Models[j])
+		}
+	}
+	if canon := llmpool.CanonicalClientModel(model); llmpool.IsOfficialTierName(canon) {
+		for j := range group.Models {
+			if llmpool.CanonicalClientModel(group.Models[j].Name) == canon {
+				return buildDispatchModel(reg, &group.Models[j])
+			}
 		}
 	}
 	if llmpool.IsAutoModel(model) && llmpool.IsDynamicKind(group.Kind) {
@@ -3072,13 +3541,124 @@ func serviceGroupRequiresGrant(group *llmpool.ServiceGroup) bool {
 	return group != nil && normalizeServiceGroupAccessPolicy(group.AccessPolicy) == AccessPolicyGrantRequired
 }
 
+// proxyGrant is the card that pays for one proxied request.
+// BillingGroupID is that card's service group. A pinned official tier is
+// dispatched on the maclaw-official pool, which is not itself the tenant's
+// compute card. Auto already bills the card by entering through the Hub
+// official entry; the pin must use the same card.
+type proxyGrant struct {
+	auth           *TenantAuthorization
+	requiresGrant  bool
+	billingGroupID string
+}
+
+func authorizeProxyServiceGroup(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, reg *Registry, matched *llmpool.ServiceGroup) (proxyGrant, error) {
+	grant := proxyGrant{}
+	if matched != nil {
+		grant.billingGroupID = strings.TrimSpace(matched.ID)
+	}
+	if !serviceGroupRequiresGrant(matched) {
+		return grant, nil
+	}
+	if cfg == nil || cfg.AuthChecker == nil || req == nil {
+		return proxyGrant{}, fmt.Errorf("authorization denied: proxy not configured")
+	}
+	grant.requiresGrant = true
+	auth, err := cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, matched.ID)
+	if err == nil {
+		grant.auth = auth
+		return grant, nil
+	}
+	// Only a quality pin shares auto's card. A concrete model on the official
+	// pool still needs that pool's own grant.
+	if !llmpool.IsOfficialTierName(req.Model) {
+		return proxyGrant{}, fmt.Errorf("authorization denied: %w", err)
+	}
+	card := proxyOfficialComputeGrantGroup(reg, matched)
+	if card == nil {
+		return proxyGrant{}, fmt.Errorf("authorization denied: %w", err)
+	}
+	cardAuth, cardErr := cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, card.ID)
+	if cardErr != nil {
+		if !strings.Contains(cardErr.Error(), "no active authorization") {
+			return proxyGrant{}, fmt.Errorf("authorization denied: %w", cardErr)
+		}
+		return proxyGrant{}, fmt.Errorf("authorization denied: %w", err)
+	}
+	log.Printf("[llm-proxy] official pool %s billed to compute grant group=%s hub=%s tenant=%s model=%s", matched.ID, card.ID, req.HubID, req.TenantID, strings.TrimSpace(req.Model))
+	grant.auth = cardAuth
+	grant.billingGroupID = strings.TrimSpace(card.ID)
+	return grant, nil
+}
+
+// proxyOfficialComputeGrantGroup is the group auto bills when Hub sends the
+// official entry. It is empty when that group is the official pool itself.
+func proxyOfficialComputeGrantGroup(reg *Registry, pool *llmpool.ServiceGroup) *llmpool.ServiceGroup {
+	if reg == nil || pool == nil || !llmpool.IsOfficialConventionGroupID(pool.ID) {
+		return nil
+	}
+	card, _ := matchProxyOfficialComputeFallback(reg, "auto")
+	if card == nil || strings.EqualFold(strings.TrimSpace(card.ID), strings.TrimSpace(pool.ID)) {
+		return nil
+	}
+	if !serviceGroupRequiresGrant(card) {
+		return nil
+	}
+	return card
+}
+
 func shouldRetryProxyProviderStatus(statusCode int) bool {
+	return shouldRetryProxyProviderFailure(statusCode, nil)
+}
+
+// shouldRetryProxyProviderFailure reports that this member did not accept the
+// request, so the array should pause it, log the failure, and try the next
+// member. When every member fails this way, the route loop continues to the
+// next route. A 400 is included only when the body says the model is missing;
+// other 400s are the caller's request and are returned as-is.
+func shouldRetryProxyProviderFailure(statusCode int, body []byte) bool {
+	if statusCode == http.StatusPaymentRequired || proxyUpstreamRejectedModel(statusCode, body) {
+		return true
+	}
 	return statusCode >= 500 ||
 		statusCode == http.StatusNotFound ||
 		statusCode == http.StatusUnprocessableEntity ||
 		statusCode == http.StatusUnauthorized ||
 		statusCode == http.StatusForbidden ||
 		isProxyRateLimitStatus(statusCode)
+}
+
+func proxyUpstreamRejectedModel(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest || len(body) == 0 {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	if strings.Contains(text, "模型不存在") || strings.Contains(text, "模型未找到") || strings.Contains(text, "无此模型") {
+		return true
+	}
+	if !strings.Contains(text, "model") {
+		return false
+	}
+	for _, phrase := range []string{
+		"not found",
+		"does not exist",
+		"doesn't exist",
+		"unknown model",
+		"no such model",
+		"invalid model",
+		"model_not_found",
+		"model not supported",
+		"model is not supported",
+		"model not available",
+		"model is not available",
+		"model unavailable",
+		"no available model",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func isProxyRateLimitStatus(statusCode int) bool {
@@ -3178,6 +3758,113 @@ func proxyAppendSameGroupRateLimitRoutes(ordered []llmpool.DispatchProviderRoute
 	return next
 }
 
+// quotePinnedArrayHasSiblings reports that the quote priced one member of a
+// multi-member array. The other members can still answer this request.
+func quotePinnedArrayHasSiblings(reg *Registry, quote *ProxyQuote) bool {
+	if reg == nil || quote == nil || strings.TrimSpace(quote.MemberID) == "" {
+		return false
+	}
+	return len(providerArrayMemberIDs(reg, quote.ProviderID)) > 1
+}
+
+// appendUndeliveredQuoteRoutes adds the providers an unquoted request would
+// dial after the quoted provider failed before any business bytes were sent.
+// Routes already attempted are skipped, except a quoted array that still has
+// sibling members: that array is appended once so the other members can run.
+// The extra list is the same set orderProxyDispatchRoutes would append, but
+// it is not passed through the WRR balancer, so this request does not take a
+// turn. The caller clears req.Quote first so the provider that finishes is
+// billed at its own price. Official high/mid/low still follows the quality
+// chain, so a lower tier can finish the call when the quoted tier cannot.
+func appendUndeliveredQuoteRoutes(cfg *ProxyConfig, reg *Registry, req *ProxyRequest, group *llmpool.ServiceGroup, logicalModel string, current []llmpool.DispatchProviderRoute, saved *ProxyQuote, stream bool) []llmpool.DispatchProviderRoute {
+	if cfg == nil || reg == nil || req == nil || group == nil || saved == nil {
+		return current
+	}
+	accept := acceptLiveProvider
+	if stream {
+		accept = acceptLiveStreamProvider
+	}
+	var pinned llmpool.DispatchProviderRoute
+	pinnedOK := false
+	for _, route := range current {
+		key := providerIDKey(route.ProviderID)
+		if key == "" {
+			continue
+		}
+		if !pinnedOK && key == providerIDKey(saved.ProviderID) {
+			pinned = route
+			pinnedOK = true
+		}
+	}
+	// Keep the attempted list stable for the extra-provider walk. Appending
+	// the array first must not make that walk treat the sibling retry as a
+	// provider that has already been listed.
+	attempted := current
+	added := 0
+	if pinnedOK && quotePinnedArrayHasSiblings(reg, saved) {
+		current = append(current, pinned)
+		added++
+	}
+	extras := sameModelOfficialFailoverRoutes(reg, group, extraLiveServiceGroupFailoverRoutes(reg, group, logicalModel, attempted, accept), logicalModel)
+	if len(extras) > 0 {
+		current = append(current, extras...)
+		added += len(extras)
+	}
+	beforeTiers := len(current)
+	current = appendOfficialTierAvailabilityRoutes(reg, current, group, logicalModel, reqWorkloadClass(req), accept)
+	added += len(current) - beforeTiers
+	if added > 0 {
+		log.Printf("[llm-proxy] quoted upstream failed before delivery; switching providers model=%s group=%s request=%s added=%d", logicalModel, strings.TrimSpace(group.ID), req.RequestID, added)
+	}
+	return current
+}
+
+func appendUndeliveredQuoteDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dispatches []*proxyDispatch, seed *proxyDispatch, saved *ProxyQuote) []*proxyDispatch {
+	if cfg == nil || cfg.Service == nil || req == nil || seed == nil || seed.matchedGroup == nil || saved == nil {
+		return dispatches
+	}
+	reg, err := cfg.Service.LoadRegistry(ctx)
+	if err != nil || reg == nil {
+		return dispatches
+	}
+	routes := make([]llmpool.DispatchProviderRoute, 0, len(dispatches))
+	for _, dispatch := range dispatches {
+		if dispatch != nil {
+			routes = append(routes, dispatch.route)
+		}
+	}
+	before := len(routes)
+	combined := appendUndeliveredQuoteRoutes(cfg, reg, req, seed.matchedGroup, seed.model, routes, saved, true)
+	if len(combined) <= before {
+		return dispatches
+	}
+	startedAt := proxyRequestStartedAt(req)
+	for _, route := range combined[before:] {
+		logicalID, profile, members := tokenBankRouteMembers(reg, route.ProviderID, acceptLiveStreamProvider, seed.model, req, true)
+		if len(members) == 0 || profile == nil {
+			continue
+		}
+		logicalModel, routeDispatch := proxyRouteDispatch(reg, seed.matchedGroup, route, seed.model, seed.dispatchModel)
+		upstreamModel := proxyUpstreamModelForRoute(route, profile, logicalModel)
+		dispatches = append(dispatches, &proxyDispatch{
+			model:             logicalModel,
+			responseModel:     seed.responseModel,
+			matchedGroup:      seed.matchedGroup,
+			dispatchModel:     routeDispatch,
+			route:             route,
+			provider:          profile,
+			logicalProviderID: logicalID,
+			arrayMembers:      members,
+			arrayMemberCount:  len(providerArrayMemberIDs(reg, logicalID)),
+			auth:              seed.auth,
+			requiresGrant:     seed.requiresGrant,
+			billingGroupID:    seed.billingGroupID,
+			pricing:           proxyResolvedRequestTokenPricing(req, seed.matchedGroup, profile, logicalID, upstreamModel, startedAt),
+		})
+	}
+	return dispatches
+}
+
 func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dispatches []*proxyDispatch, seed *proxyDispatch, stream bool) []*proxyDispatch {
 	if cfg == nil || cfg.Service == nil || seed == nil || seed.matchedGroup == nil {
 		return dispatches
@@ -3217,7 +3904,9 @@ func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConf
 	}
 	startedAt := proxyRequestStartedAt(req)
 	for _, route := range combined[len(ordered):] {
-		logicalID, profile, members := arrayEgressCandidates(reg, route.ProviderID, accept)
+		// The same selector as the first dial. A quoted token-bank member is
+		// not replaced by another share after a 429: that share has its own price.
+		logicalID, profile, members := tokenBankRouteMembers(reg, route.ProviderID, accept, seed.model, req, true)
 		if len(members) == 0 || profile == nil {
 			continue
 		}
@@ -3235,6 +3924,7 @@ func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConf
 			arrayMemberCount:  len(providerArrayMemberIDs(reg, logicalID)),
 			auth:              seed.auth,
 			requiresGrant:     seed.requiresGrant,
+			billingGroupID:    seed.billingGroupID,
 			pricing:           proxyResolvedRequestTokenPricing(req, seed.matchedGroup, profile, logicalID, upstreamModel, startedAt),
 		})
 	}
@@ -3330,6 +4020,19 @@ func proxyUpstreamModelForRoute(route llmpool.DispatchProviderRoute, provider *l
 	if route.Model != "" {
 		return route.Model
 	}
+	// A token-bank member dials the model in its id. That name is not the
+	// service-group route when the caller asked for a billing band. Pricing
+	// and the quote are attached to official-mid/high/low. Looking the route
+	// up by hy3 misses it, and the quote is rejected for having no price.
+	if served, ok := tokenBankServedModel(provider); ok {
+		logicalModel = strings.TrimSpace(logicalModel)
+		if logicalModel == "" || strings.EqualFold(served, logicalModel) || isBillingBandName(logicalModel) {
+			if isBillingBandName(logicalModel) && !strings.EqualFold(served, logicalModel) {
+				return logicalModel
+			}
+			return served
+		}
+	}
 	if provider != nil {
 		switch len(provider.Models) {
 		case 1:
@@ -3352,6 +4055,12 @@ func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpo
 func forwardToProviderAttempts(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, retry bool) (*providerForwardResponse, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
+	}
+	if err := applyTokenBankRequestCaps(provider, body); err != nil {
+		return nil, err
+	}
+	if resp, handled, err := tryForwardWorkBuddy(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
+		return resp, err
 	}
 	endpointProvider := corelib.LLMEndpointProvider{
 		ID:                       provider.ID,
@@ -3753,7 +4462,10 @@ func proxyCacheHitCreditMultiplier(reg *Registry, model *llmpool.DispatchModel, 
 	if provider == nil {
 		return 0
 	}
-	return proxyEffectiveCreditMultiplier(provider, model, proxyRouteForProvider(model, providerID), startedAt)
+	// The vendor rate stays on the member. Service-group routes name the
+	// array, so the markup is read from that array id when the member has one.
+	routeID := canonicalProviderArrayID(*provider)
+	return proxyEffectiveCreditMultiplier(provider, model, proxyRouteForProvider(model, routeID), startedAt)
 }
 
 func proxyRouteForProvider(model *llmpool.DispatchModel, providerID string) llmpool.DispatchProviderRoute {

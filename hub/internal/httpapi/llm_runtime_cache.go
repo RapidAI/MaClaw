@@ -120,26 +120,73 @@ func loadCachedLLMServiceRegistryForViewer(ctx context.Context, system store.Sys
 	return reg, nil
 }
 
+func init() {
+	llmservice.SetAfterServiceRegistrySave(func(system llmservice.SystemSettingsRepository) {
+		repo, ok := system.(store.SystemSettingsRepository)
+		if !ok || repo == nil {
+			return
+		}
+		invalidateLLMRuntimeCaches(repo)
+	})
+}
+
 func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettingsRepository) (*llmservice.Registry, error) {
 	if system == nil {
 		return llmservice.LoadRegistry(ctx, system)
+	}
+	if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+		return reg, err
+	}
+	key := llmRuntimeCacheKey(system)
+	// Merge concurrent misses so the shared multi-MB load runs once; the load
+	// detaches from the requesting context so one caller's cancellation cannot
+	// fail it for every waiter. The registry lock is inside the flight so a
+	// token-bank pull cannot commit between this load and the cache fill.
+	result, _, _ := llmServiceRegistryLoadFlight.Do(key, func() (any, error) {
+		if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+			return loadedLLMServiceRegistryResult{reg: reg, err: err}, nil
+		}
+		llmservice.LockServiceRegistryMutation()
+		defer llmservice.UnlockServiceRegistryMutation()
+		if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+			return loadedLLMServiceRegistryResult{reg: reg, err: err}, nil
+		}
+		return loadLLMServiceRegistryOnce(ctx, system, key)
+	})
+	loaded := result.(loadedLLMServiceRegistryResult)
+	return cloneLLMServiceRegistry(loaded.reg), loaded.err
+}
+
+// loadCachedLLMServiceRegistryLocked is loadCachedLLMServiceRegistry for a
+// caller that already holds the service-registry mutation lock. It must not
+// enter the singleflight above: that flight takes the same lock.
+func loadCachedLLMServiceRegistryLocked(ctx context.Context, system store.SystemSettingsRepository) (*llmservice.Registry, error) {
+	if system == nil {
+		return llmservice.LoadRegistry(ctx, system)
+	}
+	if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+		return reg, err
+	}
+	loaded, err := loadLLMServiceRegistryOnce(ctx, system, llmRuntimeCacheKey(system))
+	if err != nil {
+		return nil, err
+	}
+	return cloneLLMServiceRegistry(loaded.reg), loaded.err
+}
+
+func lookupCachedLLMServiceRegistry(system store.SystemSettingsRepository) (*llmservice.Registry, error, bool) {
+	if system == nil {
+		return nil, nil, false
 	}
 	key := llmRuntimeCacheKey(system)
 	now := time.Now()
 	globalLLMRuntimeCache.mu.RLock()
 	entry, ok := globalLLMRuntimeCache.services[key]
 	globalLLMRuntimeCache.mu.RUnlock()
-	if ok && now.Sub(entry.loadedAt) < llmRuntimeCacheTTL {
-		return cloneLLMServiceRegistry(entry.value), entry.err
+	if !ok || now.Sub(entry.loadedAt) >= llmRuntimeCacheTTL {
+		return nil, nil, false
 	}
-	// Merge concurrent misses so the shared multi-MB load runs once; the load
-	// detaches from the requesting context so one caller's cancellation cannot
-	// fail it for every waiter.
-	result, _, _ := llmServiceRegistryLoadFlight.Do(key, func() (any, error) {
-		return loadLLMServiceRegistryOnce(ctx, system, key)
-	})
-	loaded := result.(loadedLLMServiceRegistryResult)
-	return cloneLLMServiceRegistry(loaded.reg), loaded.err
+	return cloneLLMServiceRegistry(entry.value), entry.err, true
 }
 
 func loadLLMServiceRegistryOnce(ctx context.Context, system store.SystemSettingsRepository, key string) (loadedLLMServiceRegistryResult, error) {

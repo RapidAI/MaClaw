@@ -4099,11 +4099,8 @@ func TestRunAgentLoop_MarkdownWorkflowUsesWriteThenEditInTrace(t *testing.T) {
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 2:
-			// Architecture evolution: on a routing-miss (classifier-less) legacy
-			// turn the surface deliberately strips edit_file (routingMissPrivilegeTools,
-			// parent invariant 11) — bash and write_file are the guaranteed floor.
-			// A markdown revise therefore lands as a write_file overwrite, not an
-			// edit_file patch, and the model never sees edit_file to call it.
+			// This fixture overwrites the draft with write_file. edit_file is also
+			// on the invariant-11 floor, but the scripted model does not call it.
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-edit\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"~/review.md\\\",\\\"content\\\":\\\"# Daily Review\\\\nFinal draft\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))

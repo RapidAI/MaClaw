@@ -435,6 +435,164 @@ func TestRetargetReasoningControlsForUpstreamLeavesAutoUntouched(t *testing.T) {
 	}
 }
 
+func TestAMDRadeonChatReasoningOmitsThinkingForDeepSeekFamily(t *testing.T) {
+	amd := "https://developer.amd.com.cn/radeon/api/v1"
+	for _, model := range []string{"DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4-Pro", "deepseek-reasoner"} {
+		t.Run(model, func(t *testing.T) {
+			body := map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 4096},
+			}
+			RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: model}, body)
+			if _, exists := body["thinking"]; exists {
+				t.Fatalf("AMD body kept thinking: %#v", body)
+			}
+			if got := body["reasoning_effort"]; got != "medium" {
+				t.Fatalf("reasoning_effort = %#v, want medium", got)
+			}
+		})
+	}
+
+	// A plain availability probe states no reasoning control. AMD's DeepSeek
+	// default is already a normal completion, so the body must stay plain.
+	plain := map[string]interface{}{"model": "DeepSeek-V4-Flash"}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: "DeepSeek-V4-Flash"}, plain)
+	if _, exists := plain["thinking"]; exists {
+		t.Fatalf("plain AMD body gained thinking: %#v", plain)
+	}
+	if _, exists := plain["reasoning_effort"]; exists {
+		t.Fatalf("plain AMD body gained reasoning_effort: %#v", plain)
+	}
+
+	kept := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "DeepSeek-V4-Flash"}, kept)
+	if _, exists := kept["thinking"]; !exists {
+		t.Fatalf("official DeepSeek lost thinking: %#v", kept)
+	}
+
+	forwarded := map[string]interface{}{
+		"model":    "DeepSeek-V4.1-Flash",
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"thinking": map[string]interface{}{"type": "enabled"},
+	}
+	sanitizeOpenAICompatForwardBody(MaclawLLMConfig{URL: amd, Model: "DeepSeek-V4.1-Flash"}, forwarded)
+	if _, exists := forwarded["thinking"]; exists {
+		t.Fatalf("forwarded AMD body kept thinking: %#v", forwarded)
+	}
+	if got := forwarded["reasoning_effort"]; got != "medium" {
+		t.Fatalf("forwarded reasoning_effort = %#v, want medium", got)
+	}
+
+	schemeLess := map[string]interface{}{"thinking": true}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: "developer.amd.com.cn/radeon/api/v1", Model: "DeepSeek-V4-Flash"}, schemeLess)
+	if _, exists := schemeLess["thinking"]; exists {
+		t.Fatalf("scheme-less AMD URL kept thinking: %#v", schemeLess)
+	}
+	if got := schemeLess["reasoning_effort"]; got != "medium" {
+		t.Fatalf("scheme-less reasoning_effort = %#v, want medium", got)
+	}
+
+	asString := map[string]interface{}{"thinking": "enabled"}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: "DeepSeek-V4-Pro"}, asString)
+	if _, exists := asString["thinking"]; exists {
+		t.Fatalf("string thinking kept: %#v", asString)
+	}
+	if got := asString["reasoning_effort"]; got != "medium" {
+		t.Fatalf("string thinking effort = %#v, want medium", got)
+	}
+}
+
+func TestApplyReasoningControlsAMDBeatsQwenModelName(t *testing.T) {
+	body := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "https://developer.amd.com.cn/radeon/api/v1",
+		Model:        "Qwen3.8-Flash-Next",
+		ThinkingMode: "enabled",
+	}, body, ReasoningAPIChat)
+	if _, exists := body["thinking"]; exists {
+		t.Fatalf("AMD Qwen kept thinking: %#v", body)
+	}
+	if _, exists := body["enable_thinking"]; exists {
+		t.Fatalf("AMD Qwen used enable_thinking: %#v", body)
+	}
+	if got := body["reasoning_effort"]; got != "medium" {
+		t.Fatalf("AMD Qwen reasoning_effort = %#v, want medium", got)
+	}
+
+	onWithNone := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:             "https://developer.amd.com.cn/radeon/api/v1",
+		Model:           "DeepSeek-V4-Flash",
+		ThinkingMode:    "enabled",
+		ReasoningEffort: "none",
+	}, onWithNone, ReasoningAPIChat)
+	if got := onWithNone["reasoning_effort"]; got != "low" {
+		t.Fatalf("enabled none effort = %#v, want low", got)
+	}
+}
+
+func TestRewriteAMDRadeonChatReasoningClampsEffortAndEnabledFlag(t *testing.T) {
+	amd := "https://developer.amd.com.cn/radeon/api/v1"
+
+	enabledFlag := map[string]interface{}{"reasoning": map[string]interface{}{"enabled": true}}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: "DeepSeek-V4-Flash"}, enabledFlag)
+	if _, exists := enabledFlag["reasoning"]; exists {
+		t.Fatalf("reasoning.enabled kept: %#v", enabledFlag)
+	}
+	if got := enabledFlag["reasoning_effort"]; got != "medium" {
+		t.Fatalf("reasoning.enabled effort = %#v, want medium", got)
+	}
+
+	qwen := map[string]interface{}{"reasoning_effort": "xhigh"}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: "Qwen3.8-27B"}, qwen)
+	if got := qwen["reasoning_effort"]; got != "medium" {
+		t.Fatalf("Qwen xhigh = %#v, want medium", got)
+	}
+
+	deepseek := map[string]interface{}{"reasoning_effort": "xhigh"}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: "DeepSeek-V4.1-Flash"}, deepseek)
+	if got := deepseek["reasoning_effort"]; got != "xhigh" {
+		t.Fatalf("DeepSeek xhigh = %#v, want xhigh", got)
+	}
+
+	blank := map[string]interface{}{"reasoning_effort": "  ", "thinking": 1}
+	RewriteAMDRadeonChatReasoning(MaclawLLMConfig{URL: amd, Model: "DeepSeek-V4-Flash"}, blank)
+	if _, exists := blank["thinking"]; exists {
+		t.Fatalf("numeric thinking kept: %#v", blank)
+	}
+	if _, exists := blank["reasoning_effort"]; exists {
+		t.Fatalf("blank reasoning_effort kept: %#v", blank)
+	}
+}
+
+func TestApplyReasoningControlsAMDUsesReasoningEffort(t *testing.T) {
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:             "https://developer.amd.com.cn/radeon/api/v1",
+		Model:           "DeepSeek-V4.1-Flash",
+		ThinkingMode:    "enabled",
+		ReasoningEffort: "high",
+	}, body, ReasoningAPIChat)
+	if _, exists := body["thinking"]; exists {
+		t.Fatalf("AMD enabled body kept thinking: %#v", body)
+	}
+	if got := body["reasoning_effort"]; got != "high" {
+		t.Fatalf("reasoning_effort = %#v, want high", got)
+	}
+
+	off := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "https://developer.amd.com.cn/radeon/api/v1",
+		Model:        "DeepSeek-V4-Flash",
+		ThinkingMode: "disabled",
+	}, off, ReasoningAPIChat)
+	if _, exists := off["thinking"]; exists {
+		t.Fatalf("AMD disabled body kept thinking: %#v", off)
+	}
+	if got := off["reasoning_effort"]; got != "none" {
+		t.Fatalf("disabled reasoning_effort = %#v, want none", got)
+	}
+}
+
 func TestCoerceAlwaysOnThinkingMode(t *testing.T) {
 	got := CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3", ThinkingMode: "off"})
 	if got.ThinkingMode != "enabled" {

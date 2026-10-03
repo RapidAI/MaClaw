@@ -194,7 +194,7 @@
 .hub-invitation-dialog__link-section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-5); align-items: center; }
 .hub-invitation-dialog__link-copy > label { display: block; margin-bottom: 7px; color: var(--theme-text-secondary); font-size: .76rem; font-weight: 700; }
 .hub-invitation-dialog__link-actions { display: flex; gap: var(--space-2); }
-.hub-invitation-dialog__link-actions input { min-width: 0; flex: 1; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-control-well); color: var(--theme-text-primary); padding: 9px 10px; font: inherit; font-size: .8rem; }
+.hub-invitation-dialog__link-actions input { min-width: 0; flex: 1; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-primary); padding: 9px 10px; font: inherit; font-size: .8rem; }
 .hub-invitation-dialog__button { min-height: 34px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-surface); color: var(--theme-text-primary); padding: 0 11px; font: inherit; font-size: .78rem; font-weight: 700; cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }
 .hub-invitation-dialog__button:hover:not(:disabled) { border-color: var(--theme-primary); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
 .hub-invitation-dialog__button--primary { border-color: var(--theme-primary); background: var(--theme-primary); color: var(--theme-on-primary); }
@@ -3231,7 +3231,7 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .global-action-bar[data-ai-theme='dark'] .form-input,
 .global-action-bar[data-ai-theme='dark'] select,
 .global-action-bar[data-ai-theme='dark'] input[type='text'] {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -7123,7 +7123,7 @@ button.knowledge-chip:disabled {
     box-sizing: border-box;
     min-height: 34px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 6px 10px;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
@@ -7289,9 +7289,11 @@ button.knowledge-chip:disabled {
     font-weight: 800;
     letter-spacing: 0.04em;
 }
-.knowledge-search-input--hero {
+.knowledge-search-input--hero,
+#App[data-nav-tab='settings'] .settings-panel .knowledge-search-input--hero {
     border: none !important;
     background: transparent !important;
+    box-shadow: none !important;
     font-size: 0.92rem;
     padding: 7px 2px;
     flex: 1;
@@ -7734,7 +7736,7 @@ button.knowledge-chip:disabled {
     width: 100%;
     padding: 7px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     font-size: 0.82rem;
     color: var(--theme-text-primary);
     background: var(--theme-surface);
@@ -10329,7 +10331,7 @@ button.knowledge-chip:disabled {
     justify-content: center;
     border: 1px solid var(--theme-border);
     border-left: 0;
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     cursor: pointer;
@@ -10428,8 +10430,8 @@ button.knowledge-chip:disabled {
 }
 
 .provider-config-modal input[data-readonly='true'] {
-    cursor: not-allowed;
-    background: var(--theme-surface-muted);
+    cursor: default;
+    background: var(--theme-surface);
     color: var(--theme-text-muted);
 }
 
@@ -11997,17 +11999,27 @@ button.knowledge-chip:disabled {
 }
 
 .llm-config-form-card__title {
-    margin-bottom: 16px !important;
+    margin-bottom: 0 !important;
     color: var(--theme-text-primary) !important;
     font-size: 0.88rem !important;
     font-weight: 600 !important;
 }
 
-.llm-config-form-card input,
-.llm-config-form-card select {
+/* Radios and checkboxes stay native. The share dialog mounts inside this
+   card, and a 40px text-field box drops the radio glyph off the label line. */
+.llm-config-form-card input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+.llm-config-form-card select,
+.llm-config-form-card textarea {
     min-height: 40px;
-    border-radius: 10px !important;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
     font-size: 0.84rem !important;
+}
+.llm-config-form-card input[role='combobox'] {
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
 }
 
 .model-config-loading {
@@ -12996,6 +13008,1244 @@ button.knowledge-chip:disabled {
     font-weight: 700;
 }
 
+/* Token Bank panel (design doc §6.1).
+ *
+ * Every colour comes from the shared theme tokens in 00-tokens.css, so the panel
+ * follows the app's dark/light switch with no second stylesheet and no
+ * hardcoded surfaces. */
+
+.tbk-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 20px;
+    background: var(--theme-page-bg);
+    color: var(--theme-text-primary);
+}
+
+.tbk-panel__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.tbk-panel__title {
+    margin: 0 0 4px;
+    font-size: 1.05rem;
+}
+
+.tbk-panel__sub {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--theme-text-secondary);
+    max-width: 46ch;
+}
+
+.tbk-panel__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-error {
+    padding: 10px 12px;
+    border: 1px solid var(--theme-danger);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface);
+    color: var(--theme-danger);
+    font-size: 0.82rem;
+}
+
+.tbk-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+}
+
+.tbk-summary__card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-summary__label {
+    font-size: 0.75rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-summary__value {
+    font-size: 1.15rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.tbk-panel .tbk-section h4 {
+    margin: 0;
+}
+
+.tbk-empty {
+    padding: 14px;
+    border: 1px dashed var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    color: var(--theme-text-secondary);
+    font-size: 0.82rem;
+    list-style: none;
+}
+
+.tbk-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Gift links I sent. A card carries the recipient and a full status sentence,
+   so a column stays wide enough for that sentence to wrap about once.
+   auto-fit follows the settings pane: four cards when they fit, fewer when
+   a fixed four-column row would crush the sentence. */
+.tbk-section--gifts {
+    min-width: 0;
+}
+
+.tbk-gift-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.tbk-gift-grid > .tbk-share {
+    min-width: 0;
+}
+
+.tbk-gift-grid .tbk-share__name,
+.tbk-gift-grid .tbk-gift-claim-detail,
+.tbk-gift-grid .tbk-meta,
+.tbk-gift-grid .tbk-gift-claim-detail > span,
+.tbk-gift-grid .tbk-meta > span {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: break-word;
+}
+
+.tbk-gift-grid .tbk-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+/* Stay one chip beside the amount. A phrase wider than the card wraps inside
+   the chip instead of shrinking into a narrow column. */
+.tbk-gift-grid .tbk-pill {
+    flex-shrink: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.tbk-gift-grid > .tbk-share > .tbk-share__actions {
+    margin-top: auto;
+}
+
+/* My shares: three cards a row, nine a page. The section is the container so
+   the count follows the settings pane, not the whole window. */
+.tbk-section--shares {
+    container-type: inline-size;
+    container-name: tbk-shares;
+}
+
+.tbk-share-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    /* An open model list must not stretch the other cards in the row. */
+    align-items: start;
+}
+
+.tbk-share-grid > .tbk-share {
+    min-width: 0;
+    overflow-wrap: break-word;
+}
+
+/* Do not give an open card a definite grid-column. Definite-column items are
+   placed before auto ones, so the card would jump to the first row. */
+
+.tbk-share-grid .tbk-share__name,
+.tbk-share-grid .tbk-list,
+.tbk-share-grid .tbk-model,
+.tbk-share-grid .tbk-model__name {
+    min-width: 0;
+}
+
+/* The fingerprint is one unbroken token. anywhere lets its min-content
+   shrink; break-word would still demand the full hash and widen the column. */
+.tbk-share-grid .tbk-share__fingerprint {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.tbk-share-grid .tbk-model__name {
+    overflow-wrap: anywhere;
+}
+
+.tbk-share-grid .tbk-model > div.tbk-meta {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+.tbk-share-grid > .tbk-share > .tbk-share__actions > button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.tbk-share-pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.tbk-share-pager__status {
+    min-width: 6.5em;
+    text-align: center;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-share-pager button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+@container tbk-shares (max-width: 880px) {
+    .tbk-share-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container tbk-shares (max-width: 560px) {
+    .tbk-share-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.tbk-list--models {
+    margin-top: 2px;
+}
+
+.tbk-share {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-share__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-share__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.tbk-pill {
+    padding: 2px 8px;
+    border-radius: var(--radius-pill, 999px);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    border: 1px solid transparent;
+}
+
+.tbk-pill--on {
+    background: var(--theme-surface-muted);
+    color: var(--theme-success);
+    border-color: var(--theme-success);
+}
+
+.tbk-pill--off {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    border-color: var(--theme-border);
+}
+
+.tbk-pill--wait {
+    background: var(--theme-warning-bg);
+    color: var(--theme-text-primary);
+    border-color: var(--theme-warning);
+}
+
+.tbk-gift-claim-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-gift-claim-detail__who {
+    color: var(--theme-text-primary);
+    /* Prefer the space after the label. Break a long id only when it is wider than the card. */
+    overflow-wrap: anywhere;
+}
+
+.tbk-gift-claim-detail__state--due {
+    color: var(--theme-danger);
+}
+
+.tbk-meta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-share__error {
+    font-size: 0.78rem;
+    color: var(--theme-danger);
+    word-break: break-word;
+}
+
+.tbk-share__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-danger {
+    color: var(--theme-danger);
+    border-color: var(--theme-danger);
+}
+
+.tbk-model {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface-muted);
+}
+
+.tbk-model__name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    flex: 1 1 140px;
+}
+
+.tbk-model__earned {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8rem;
+}
+
+/* Withdrawal history: four cards a row, twenty a page. The section is the
+   container so the count follows the settings pane, not the whole window. */
+.tbk-section--withdrawals {
+    container-type: inline-size;
+    container-name: tbk-withdrawals;
+}
+
+.tbk-withdraw-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.tbk-withdraw {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-withdraw__amount {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+
+.tbk-withdraw__id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+}
+
+.tbk-withdraw .tbk-share__head,
+.tbk-withdraw .tbk-gift-claim-detail,
+.tbk-withdraw .tbk-gift-claim-detail > span {
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* Long hub and grant ids may be one token. The amount stays intact. */
+.tbk-withdraw .tbk-gift-claim-detail > span {
+    overflow-wrap: anywhere;
+}
+
+.tbk-withdraw > .tbk-share__actions {
+    margin-top: auto;
+}
+
+.tbk-withdraw > .tbk-share__actions > button {
+    max-width: 100%;
+    white-space: normal;
+    text-align: start;
+}
+
+/* Four columns until a card would be narrower than the status sentence.
+   The settings pane, not the window, is the container. */
+@container tbk-withdrawals (max-width: 840px) {
+    .tbk-withdraw-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container tbk-withdrawals (max-width: 560px) {
+    .tbk-withdraw-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.tbk-section__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tbk-gift-form,
+.tbk-gift-ticket,
+.tbk-gift-claim {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-gift-form__row,
+.tbk-gift-ticket__linkrow {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.tbk-gift-form input,
+.tbk-gift-claim input {
+    flex: 1 1 160px;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+}
+
+.tbk-gift-ticket__url {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    word-break: break-all;
+}
+
+.tbk-gift-ticket__qr {
+    align-self: flex-start;
+    padding: 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface);
+}
+
+.tbk-gift-note {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-new-models {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+}
+
+/* One dropdown of providers that are configured and connection-tested.
+   The list used to be one card per provider and pushed the rest of the page down.
+   Rows are a custom listbox: a native option cannot draw the provider mark. */
+.tbk-provider-pick {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* Hug the selected name, and stop at 18rem so a long endpoint hint ellipsizes
+   instead of stretching the row. The open list uses this max-width as its floor. */
+.tbk-provider-pick__control {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: fit-content;
+    min-width: 0;
+    max-width: min(100%, 18rem);
+    height: 36px;
+}
+
+.tbk-provider-pick__face {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    width: auto;
+    max-width: 100%;
+    height: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 0 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1.2;
+    text-align: left;
+    cursor: pointer;
+    appearance: none;
+}
+
+.tbk-provider-pick__face:disabled {
+    cursor: default;
+}
+
+.tbk-provider-pick__face:focus,
+.tbk-provider-pick__face:focus-visible {
+    outline: none;
+}
+
+.tbk-provider-pick__field {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.tbk-provider-pick__label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tbk-provider-pick__chevron {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--theme-text-secondary);
+    border-bottom: 1.5px solid var(--theme-text-secondary);
+    transform: translateY(-2px) rotate(45deg);
+}
+
+.tbk-provider-pick__chevron--open {
+    transform: translateY(2px) rotate(225deg);
+}
+
+.tbk-provider-pick__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    color: var(--theme-text-primary);
+}
+
+.tbk-provider-pick__mark--fallback {
+    border: 1px solid var(--theme-border);
+    border-radius: 6px;
+    background: var(--theme-surface-muted);
+}
+
+.tbk-provider-pick__mark svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+
+.tbk-provider-pick__monogram {
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+}
+
+.tbk-provider-pick__menu {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 4px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
+    color: var(--theme-text-primary);
+    /* Above the page, below the confirm dialog (z-index 2000). */
+    z-index: 1300;
+}
+
+.tbk-provider-pick__option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    /* The menu width is the measured text. The row fills that box and
+       ellipsizes once the viewport caps it, instead of spilling sideways. */
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    margin: 0;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: var(--radius-sm, 6px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1.2;
+    text-align: left;
+    cursor: pointer;
+    appearance: none;
+}
+
+.tbk-provider-pick__option-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tbk-provider-pick__option[aria-selected='true'] {
+    background: var(--theme-surface-muted);
+}
+
+.tbk-provider-pick__option--active,
+.tbk-provider-pick__option:hover {
+    background: var(--theme-primary-soft);
+}
+
+.tbk-provider-pick__option:focus,
+.tbk-provider-pick__option:focus-visible {
+    outline: none;
+}
+
+.tbk-provider-pick__control:has(.tbk-provider-pick__face:disabled) {
+    opacity: 0.55;
+}
+
+.tbk-provider-pick__control:focus-within .tbk-provider-pick__face {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+
+.tbk-panel .tbk-provider-pick__deposit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    width: auto;
+    height: 36px;
+    min-height: 36px;
+    margin-left: 0;
+    padding: 0 12px;
+    font-size: 0.9rem;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.tbk-panel .tbk-provider-pick__deposit:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.tbk-provider-pick__deposit:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+    .tbk-provider-pick__chevron {
+        border-right-color: ButtonText;
+        border-bottom-color: ButtonText;
+    }
+
+    .tbk-provider-pick__control:has(.tbk-provider-pick__face:disabled) {
+        opacity: 1;
+    }
+
+    .tbk-provider-pick__face,
+    .tbk-provider-pick__mark--fallback,
+    .tbk-provider-pick__menu,
+    .tbk-provider-pick__option,
+    .tbk-panel .tbk-provider-pick__deposit,
+    .tbk-panel .tbk-provider-pick__deposit:hover,
+    .tbk-panel .tbk-provider-pick__deposit:focus-visible,
+    .tbk-panel .tbk-provider-pick__deposit:disabled {
+        border-color: ButtonText;
+        background: ButtonFace;
+        color: ButtonText;
+        forced-color-adjust: none;
+    }
+
+    .tbk-provider-pick__option[aria-selected='true'],
+    .tbk-provider-pick__option--active,
+    .tbk-provider-pick__option:hover {
+        background: Highlight;
+        color: HighlightText;
+        forced-color-adjust: none;
+    }
+
+    .tbk-provider-pick__control:focus-within .tbk-provider-pick__face,
+    .tbk-panel .tbk-provider-pick__deposit:focus-visible {
+        outline: 2px solid Highlight;
+        box-shadow: none;
+    }
+}
+
+/* Token Bank provider-chip entry and share dialog (design doc §7.1 / §7.2).
+ *
+ * Colours come from the shared theme tokens in 00-tokens.css. No hardcoded
+ * surfaces, so the dialog follows the app's dark/light switch. */
+
+.llm-config-tokenbank-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    min-height: 26px;
+    padding: 0;
+    margin-left: 2px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    border-radius: 999px;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.llm-config-tokenbank-btn:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    color: var(--theme-primary-strong);
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+}
+
+.llm-config-tokenbank-btn:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+/* The settings panel forces a 36px ink button. Keep this mark a small outline circle. */
+.settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
+    width: 26px;
+    height: 26px;
+    min-height: 26px;
+    border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+}
+
+.settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+}
+
+/* Labeled deposit mark on the right of a tested provider's config title. */
+.llm-config-form-card__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    margin-bottom: 16px;
+}
+
+.llm-config-form-card__heading > .llm-config-form-card__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.llm-config-tokenbank-badge,
+.settings-content.settings-panel .llm-config-tokenbank-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 30px;
+    min-height: 30px;
+    padding: 0 11px 0 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    border-radius: 999px;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.llm-config-tokenbank-badge svg,
+.llm-config-tokenbank-btn svg {
+    display: block;
+    flex: 0 0 auto;
+}
+
+.llm-config-tokenbank-badge:hover:not(:disabled),
+.settings-content.settings-panel .llm-config-tokenbank-badge:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+    border-color: var(--theme-primary);
+    color: var(--theme-primary-strong);
+}
+
+.llm-config-tokenbank-badge:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.llm-config-tokenbank-badge:disabled,
+.llm-config-tokenbank-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+@media (forced-colors: active) {
+    .llm-config-tokenbank-badge,
+    .llm-config-tokenbank-btn,
+    .settings-content.settings-panel .llm-config-tokenbank-badge,
+    .settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
+        border-color: ButtonText;
+        background: ButtonFace;
+        color: ButtonText;
+        forced-color-adjust: none;
+    }
+}
+
+.tbk-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 120000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, #000 42%, transparent);
+}
+
+.tbk-modal-backdrop:focus {
+    outline: none;
+}
+
+.tbk-modal-backdrop:focus .tbk-modal {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+    .tbk-modal-backdrop:focus .tbk-modal {
+        outline: 2px solid Highlight;
+    }
+}
+
+.tbk-modal {
+    width: min(560px, 92vw);
+    max-width: 100%;
+    max-height: 86vh;
+    overflow-y: auto;
+    container-type: inline-size;
+    container-name: tbk-share;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px 20px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+}
+
+.tbk-modal__title {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.tbk-modal__sub {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-text-secondary);
+    word-break: break-all;
+}
+
+.tbk-modal__section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border);
+}
+
+.tbk-modal__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 0.82rem;
+}
+
+.tbk-modal__actions {
+    display: inline-flex;
+    gap: 8px;
+}
+
+.tbk-modal__picked {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-modal__progress,
+.tbk-modal__hint {
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-modal__footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border);
+}
+
+.tbk-modal__footer .tbk-modal__hint {
+    margin-right: auto;
+}
+
+.tbk-model-picker {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 360px;
+    overflow-y: auto;
+}
+
+.tbk-model-picker__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface-muted);
+}
+
+.tbk-model-picker__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 160px;
+    cursor: pointer;
+}
+
+.tbk-model-picker__name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    word-break: break-all;
+}
+
+.tbk-model-picker__error {
+    flex: 1 1 100%;
+    font-size: 0.74rem;
+    color: var(--theme-danger);
+    word-break: break-word;
+}
+
+.tbk-share-window {
+    flex: 1 1 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-share-window__day {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    cursor: pointer;
+}
+
+.tbk-share-window__day input {
+    width: 14px;
+    height: 14px;
+    min-height: 0;
+    margin: 0;
+}
+
+.llm-config-form-card .tbk-share-window__clock,
+.settings-panel .tbk-share-window__clock {
+    width: 4.8rem;
+    height: 28px;
+    min-height: 28px !important;
+    padding: 2px 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 0.8rem;
+}
+
+.tbk-field input {
+    width: 120px;
+}
+
+.tbk-visibility {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 8px;
+}
+
+.tbk-visibility__option {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    gap: 8px;
+    width: auto;
+    max-width: 100%;
+    margin: 0;
+    padding: 7px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.tbk-visibility__option:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 35%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
+}
+
+.tbk-visibility__option:has(input:checked) {
+    border-color: color-mix(in srgb, var(--theme-primary) 48%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface));
+}
+
+.tbk-visibility__option input {
+    width: 16px;
+    height: 16px;
+    min-height: 16px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    flex: 0 0 auto;
+    accent-color: var(--theme-primary);
+}
+
+.tbk-visibility__option span {
+    min-width: 0;
+}
+
+.tbk-audience {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+}
+
+.tbk-audience__status {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-audience__column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.tbk-audience__title {
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.tbk-audience__empty {
+    margin: 0;
+    font-size: 0.76rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-audience__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 148px;
+    overflow: auto;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+}
+
+.tbk-audience__list li + li {
+    border-top: 1px solid var(--theme-border);
+}
+
+.tbk-audience__option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 7px 8px;
+    cursor: pointer;
+}
+
+.tbk-audience__option:has(input:checked) {
+    background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface));
+}
+
+.tbk-audience__option input {
+    width: 16px;
+    height: 16px;
+    margin: 2px 0 0;
+    flex: 0 0 auto;
+    accent-color: var(--theme-primary);
+}
+
+.tbk-audience__copy {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.tbk-audience__name {
+    font-size: 0.8rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.tbk-audience__id,
+.tbk-audience__meta {
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+@container tbk-share (max-width: 460px) {
+    .tbk-audience {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.settings-content.settings-panel .tbk-modal .tbk-audience__retry,
+.tbk-panel .tbk-modal .tbk-audience__retry {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
 .hub-service-redeem__models-wrap {
     min-width: 0;
     max-width: 100%;
@@ -13527,8 +14777,8 @@ button.knowledge-chip:disabled {
 .im-audit-input,
 .im-audit-select {
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
-    background: var(--theme-surface-muted);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
 }
 
@@ -14069,8 +15319,8 @@ button.knowledge-chip:disabled {
     width: 100%;
     padding: 5px 8px;
     border: 1px solid var(--theme-border);
-    border-radius: 4px;
-    background: var(--theme-page-bg);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.76rem;
 }
@@ -14600,8 +15850,8 @@ button.knowledge-chip:disabled {
     gap: 8px;
     padding: 6px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
-    background: var(--theme-surface-muted);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     transition: border-color 0.15s;
 }
 
@@ -14618,6 +15868,7 @@ button.knowledge-chip:disabled {
     flex: 1;
     border: none;
     background: transparent;
+    box-shadow: none !important;
     color: var(--theme-text-primary);
     font-size: 0.78rem;
     outline: none;
@@ -14870,8 +16121,8 @@ button.knowledge-chip:disabled {
 .prog-tools__kb-editor-field textarea {
     width: 100%;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
-    background: var(--theme-surface-muted);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.8rem;
     padding: 7px 8px;
@@ -17948,16 +19199,25 @@ button.knowledge-chip:disabled {
  * so dark schemes inherit the layout without a second component tree.
  * ------------------------------------------------------------------------- */
 #App[data-nav-tab='settings'] .main-content[data-nav-tab='settings'] {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     padding: 16px 18px 20px;
     background: var(--theme-page-bg);
 }
 
 #App[data-nav-tab='settings'] .settings-shell {
+    flex: 1 1 auto;
     grid-template-columns: minmax(210px, 236px) minmax(0, 1fr);
+    /* 1fr's default minimum is min-content, so an auto/1fr row grows with the
+       rail and the shell's overflow:hidden clips it. minmax(0, 1fr) is what
+       lets the row stay inside the shell so the rail can scroll. */
+    grid-template-rows: minmax(0, 1fr);
     gap: 16px;
     align-content: stretch;
     align-items: stretch;
-    height: 100%;
+    height: auto;
     min-height: 0;
     overflow: hidden;
     padding: 0;
@@ -17967,17 +19227,35 @@ button.knowledge-chip:disabled {
 }
 
 #App[data-nav-tab='settings'] .settings-top-tabs {
-    position: sticky;
-    top: 0;
+    /* Sticky sizes this item to its content, so it never becomes the scrollport. */
+    position: static;
+    align-self: stretch;
+    height: auto;
     max-height: none;
     min-height: 0;
+    overflow-x: hidden;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    /* A solid muted-text thumb is a dark bar on the white card. Mix the
+       border in so the rail stays in the same blue-gray family as the card
+       edge, and stays visible without turning black. */
+    scrollbar-color: color-mix(in srgb, var(--theme-text-muted) 36%, var(--theme-border)) transparent;
     padding: 12px 10px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-lg);
     background: var(--theme-surface);
     box-shadow: var(--shadow-sm);
     scrollbar-gutter: stable;
+}
+
+#App[data-nav-tab='settings'] .settings-top-tabs::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--theme-text-muted) 36%, var(--theme-border));
+    border-radius: 999px;
+}
+
+#App[data-nav-tab='settings'] .settings-top-tabs::-webkit-scrollbar-thumb:hover,
+#App[data-nav-tab='settings'] .settings-top-tabs::-webkit-scrollbar-thumb:active {
+    background: color-mix(in srgb, var(--theme-text-muted) 58%, var(--theme-border));
 }
 
 #App[data-nav-tab='settings'] .settings-top-tabs__group + .settings-top-tabs__group {
@@ -18075,9 +19353,9 @@ button.knowledge-chip:disabled {
 #App[data-nav-tab='settings'] .settings-panel input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
 #App[data-nav-tab='settings'] .settings-panel select,
 #App[data-nav-tab='settings'] .settings-panel textarea {
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     border-color: var(--theme-border);
-    background: var(--theme-control-well);
+    background: var(--theme-surface);
 }
 
 #App[data-nav-tab='settings'] .settings-panel input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']):focus,
@@ -18089,19 +19367,31 @@ button.knowledge-chip:disabled {
 }
 
 @media (max-width: 860px) {
+    /* The stacked page scrolls here. A definite shell height makes the auto
+       content row collapse to 0 because the body min-height is 0 on desktop. */
     #App[data-nav-tab='settings'] .main-content[data-nav-tab='settings'] {
+        overflow: auto;
         padding: 12px;
     }
 
     #App[data-nav-tab='settings'] .settings-shell {
+        flex: none;
         grid-template-columns: 1fr;
+        grid-template-rows: auto auto;
         grid-template-areas: 'nav' 'content';
         gap: 12px;
-        overflow: auto;
+        height: auto;
+        min-height: auto;
+        overflow: visible;
     }
 
     #App[data-nav-tab='settings'] .settings-top-tabs {
         position: static;
+        align-self: start;
+        height: auto;
+        max-height: none;
+        min-height: auto;
+        overflow: visible;
         padding: 10px;
         border-radius: var(--radius-md);
     }
@@ -18112,6 +19402,7 @@ button.knowledge-chip:disabled {
     }
 
     #App[data-nav-tab='settings'] .settings-shell__body {
+        min-height: auto;
         overflow: visible;
     }
 }
@@ -18281,6 +19572,60 @@ button.knowledge-chip:disabled {
 .llm-cache-settings-dir-reset {
     flex: 0 0 auto;
     white-space: nowrap;
+}
+
+.llm-cache-settings-check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.llm-cache-settings-check input {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.llm-cache-settings-check span {
+    min-width: 0;
+}
+
+.llm-cache-settings-key-options {
+    container-type: inline-size;
+    container-name: llm-cache-key-options;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+.llm-cache-settings-key-options__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, max-content));
+    justify-content: start;
+    align-items: center;
+    column-gap: 28px;
+    row-gap: 6px;
+}
+
+.llm-cache-settings-key-options__grid .llm-cache-settings-check {
+    gap: 8px;
+}
+
+@container llm-cache-key-options (max-width: 520px) {
+    .llm-cache-settings-key-options__grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+/* English labels need about 971px on one line. Stay at two columns below that. */
+@container llm-cache-key-options (min-width: 1040px) {
+    .llm-cache-settings-key-options__grid {
+        grid-template-columns: repeat(4, minmax(0, max-content));
+    }
 }
 
 .proxy-settings-hint {
@@ -18871,7 +20216,7 @@ button.knowledge-chip:disabled {
 #App[data-ai-theme='dark'] .modal-content input:not([type="checkbox"]):not([type="radio"]),
 #App[data-ai-theme='dark'] .modal-content textarea,
 #App[data-ai-theme='dark'] .modal-content select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -19029,7 +20374,7 @@ button.knowledge-chip:disabled {
 .main-container[data-ai-theme='dark'] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
 .main-container[data-ai-theme='dark'] textarea,
 .main-container[data-ai-theme='dark'] select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border: 1px solid var(--theme-border);
 }
@@ -19063,7 +20408,7 @@ button.knowledge-chip:disabled {
 }
 
 .main-container[data-ai-theme='dark'] .form-input {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -19078,7 +20423,7 @@ button.knowledge-chip:disabled {
 }
 
 .main-container[data-ai-theme='dark'] .form-select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -19323,7 +20668,7 @@ button.knowledge-chip:disabled {
 }
 
 .main-container[data-ai-theme='dark'] .launch-project-select {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -19365,7 +20710,7 @@ button.knowledge-chip:disabled {
 
 /* Dark mode: textarea */
 .main-container[data-ai-theme='dark'] textarea.form-input {
-    background: var(--theme-surface-muted);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
 }
@@ -19740,8 +21085,8 @@ button.knowledge-chip:disabled {
 }
 
 .custom-dialog__mark--danger {
-    background: var(--theme-danger-bg);
-    color: var(--theme-danger);
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
 }
 
 .custom-dialog__mark--info {
@@ -19837,11 +21182,6 @@ button.knowledge-chip:disabled {
     background: var(--theme-surface-muted);
 }
 
-.custom-dialog--danger .custom-dialog__subject {
-    border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger-bg) 70%, var(--theme-surface));
-}
-
 .custom-dialog__subject-kicker {
     display: block;
     margin-bottom: 4px;
@@ -19856,9 +21196,14 @@ button.knowledge-chip:disabled {
     margin: 0;
     color: var(--theme-text-primary);
     font-size: 0.9rem;
-    font-weight: 650;
+    font-weight: 400;
     line-height: 1.55;
-    word-break: break-word;
+    text-align: justify;
+    text-align-last: left;
+    /* auto expands between Han characters and at spaces. inter-character
+       would also letter-space URLs inside the name. */
+    text-justify: auto;
+    overflow-wrap: break-word;
 }
 
 .custom-dialog__detail {
@@ -19878,12 +21223,11 @@ button.knowledge-chip:disabled {
     align-items: flex-start;
     gap: 8px;
     margin: 12px 0 0;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: var(--theme-danger-bg);
-    color: var(--theme-danger);
+    padding: 0;
+    background: transparent;
+    color: var(--theme-text-secondary);
     font-size: 0.8125rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.45;
 }
 
@@ -19894,7 +21238,7 @@ button.knowledge-chip:disabled {
     flex-shrink: 0;
     margin-top: 0.45em;
     border-radius: 50%;
-    background: currentColor;
+    background: var(--theme-primary);
 }
 
 .custom-dialog__input {
@@ -19952,19 +21296,6 @@ button.knowledge-chip:disabled {
     box-shadow: none;
 }
 
-.custom-dialog__footer .btn-secondary.btn-danger {
-    background: #c43d34;
-    color: #fff;
-    border-color: transparent;
-}
-
-.custom-dialog__footer .btn-secondary.btn-danger:hover {
-    background: #a8332b;
-    color: #fff;
-    border-color: transparent;
-    filter: none;
-}
-
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary {
     background: transparent;
     color: var(--theme-text-secondary);
@@ -19975,6 +21306,22 @@ button.knowledge-chip:disabled {
     background: var(--theme-surface-muted);
     color: var(--theme-text-primary);
     border-color: var(--theme-border);
+}
+
+/* .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary
+   is (0,4,0) and used to tie this rule, so the later one cleared the fill.
+   The extra .custom-dialog-backdrop class makes this (0,5,0). */
+.modal-backdrop.custom-dialog-backdrop .custom-dialog__footer .btn-secondary.btn-danger,
+.modal-backdrop.custom-dialog-backdrop .custom-dialog__footer .btn-secondary.btn-danger:hover {
+    background: var(--theme-primary);
+    color: var(--theme-on-primary);
+    border-color: transparent;
+    box-shadow: none;
+    filter: none;
+}
+
+.modal-backdrop.custom-dialog-backdrop .custom-dialog__footer .btn-secondary.btn-danger:hover {
+    background: var(--theme-primary-strong);
 }
 
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-primary,
@@ -19990,21 +21337,6 @@ button.knowledge-chip:disabled {
 
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-primary:hover {
     background: #235a9e;
-}
-
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger,
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger:hover {
-    color: #fff;
-    border-color: transparent;
-    filter: none;
-}
-
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger {
-    background: #c43d34;
-}
-
-.modal-backdrop[data-ai-theme='dark'] .custom-dialog__footer .btn-secondary.btn-danger:hover {
-    background: #a8332b;
 }
 
 .modal-backdrop[data-ai-theme='dark'] .custom-dialog__mark--info {
@@ -20330,11 +21662,11 @@ button.knowledge-chip:disabled {
 /* SessionWorkingDirChip.tsx */
 .swdc-placeholder { display: inline-flex; align-items: center; min-height: 24px; box-sizing: border-box; flex-shrink: 0; }
 .swdc-placeholder-icon { opacity: 0.35; display: inline-flex; color: var(--theme-text-muted); }
-.swdc-bar { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; box-sizing: border-box; flex-shrink: 1; overflow: visible; }
+/* Kind label only. Keep it intact; the toolbar row wraps instead of ellipsizing 本地 / 远程 / 云端工作区. */
+.swdc-bar { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; box-sizing: border-box; flex-shrink: 0; overflow: visible; }
 .swdc-root { min-width: 0; max-width: 100%; }
 .swdc-chip-icon { display: inline-flex; flex-shrink: 0; opacity: 0.8; }
 .swdc-chip-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.swdc-chip-caret { font-size: 9px; opacity: 0.6; flex-shrink: 0; }
 
 /* aiAssistantControls.tsx */
 .aac-bars { display: inline-flex; align-items: center; justify-content: center; gap: 1px; width: 22px; height: 18px; overflow: hidden; }
@@ -21107,11 +22439,14 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: 1
   color: var(--office-accent) !important;
   box-shadow: none !important;
 }
-.form-input, .form-select, .provider-config-model-combobox {
+/* Radius stays overridable. A shorthand with !important rounds the combobox's
+   end corners and breaks the seam with its toggle. The shell is not a field. */
+.form-input, .form-select {
   min-height: 40px;
-  border: 1px solid var(--office-line) !important;
-  border-radius: 10px !important;
-  background: var(--office-canvas) !important;
+  border: 1px solid var(--theme-border) !important;
+  border-radius: var(--radius-md);
+  background: var(--theme-surface) !important;
+  color: var(--theme-text-primary);
   transition: border-color .16s ease, box-shadow .16s ease;
 }
 .form-input:focus, .form-select:focus { border-color: var(--office-accent) !important; box-shadow: 0 0 0 3px var(--office-accent-soft) !important; outline: none; }
@@ -21432,9 +22767,9 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
 [data-ai-theme='dark'] .form-select,
 [data-ai-theme='dark'] textarea,
 [data-ai-theme='dark'] input {
-  color: var(--office-ink);
-  background: #181b29 !important;
-  border-color: #34384e !important;
+  color: var(--theme-text-primary);
+  background: var(--theme-surface) !important;
+  border-color: var(--theme-border);
 }
 [data-ai-theme='dark'] .global-action-bar {
   background: rgba(25,28,42,.9) !important;
@@ -21636,7 +22971,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: var(--theme-surface) !important;
   box-shadow: 0 5px 18px rgba(34,56,82,.08);
 }
-.mc-input-stack textarea, .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+.mc-input-stack textarea,
+.mc-input-stack input,
+[data-ai-theme='dark'] .mc-input-stack textarea,
+[data-ai-theme='dark'] .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mc-input-stack button { border-radius: 9px !important; }
 @media (max-width: 720px) {
   .mc-input-stack { margin: 0 12px 12px !important; }
@@ -21765,7 +23103,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
    styles must not draw a second inset frame inside it. */
 .mc-header-search,
 .mc-header-search:focus,
-.mc-header-search:focus-visible { border: 0 !important; outline: none !important; outline-offset: 0 !important; box-shadow: none !important; appearance: none !important; -webkit-appearance: none !important; -webkit-focus-ring-color: transparent !important; }
+.mc-header-search:focus-visible,
+[data-ai-theme='dark'] .mc-header-search { border: 0 !important; outline: none !important; outline-offset: 0 !important; box-shadow: none !important; background: transparent !important; appearance: none !important; -webkit-appearance: none !important; -webkit-focus-ring-color: transparent !important; }
 .mc-header-notification { width: 34px !important; height: 34px !important; border: 1px solid var(--theme-border) !important; background: var(--theme-surface) !important; border-radius: 50% !important; font-size: 18px; color: var(--theme-text-secondary) !important; }
 @media (max-width: 760px) { .mc-header-search-wrap { width: 170px; } }
 @media (max-width: 560px) { .mc-header-search-wrap { display: none; } }
@@ -24889,9 +26228,9 @@ input.stsm-input {
   box-sizing: border-box;
   font-size: 0.74rem;
   color: var(--theme-text-primary);
-  background: var(--theme-surface-muted);
+  background: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 5px 8px;
   outline: none;
 }
@@ -24900,9 +26239,9 @@ input.stsm-remote-input {
   box-sizing: border-box;
   font-size: 0.78rem;
   color: var(--theme-text-primary);
-  background: var(--theme-surface-muted);
+  background: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 8px;
   outline: none;
 }
@@ -24970,10 +26309,17 @@ input.stsm-remote-input {
   z-index: 9998;
 }
 .stsm-menu-icon {
-  width: 28px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  opacity: 0.75;
-  font-size: 0.68rem;
+  color: inherit;
+  opacity: 0.72;
+}
+.stsm-menu-icon[data-danger="true"] {
+  opacity: 1;
 }
 .stsm-dialog-subtext {
   font-size: 0.72rem;
@@ -25309,9 +26655,9 @@ input.cwshare-url {
   min-width: 0;
   font-size: 0.72rem;
   color: var(--theme-text-primary);
-  background: var(--theme-surface-muted);
+  background: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 8px;
 }
 .cwshare-update-btn {
@@ -25828,16 +27174,22 @@ input.cwshare-url {
   }
 }
 
-/* Compact rail system menu: anchor the popup to the actual rail width after the
-   task pane collapses, so the menu does not float 28-48px away at tablet sizes. */
+/* Compact rail popups: anchor to the actual rail width after it shrinks to
+   84px / 64px. A fixed 112px left offset floats the menu 28–48px away. */
 @media (max-width: 1200px) {
-  .mc-nav-rail [data-testid='system-popup-menu'] {
+  .mc-nav-rail [data-testid='system-popup-menu'],
+  .mc-nav-rail [data-testid='extensions-popup-menu'],
+  .mc-nav-rail [data-testid='library-popup-menu'],
+  .mc-nav-rail [data-testid='pro-features-popup-menu'] {
     left: calc(100% + 8px) !important;
     max-width: calc(100vw - 96px) !important;
   }
 }
 @media (max-width: 560px) {
-  .mc-nav-rail [data-testid='system-popup-menu'] {
+  .mc-nav-rail [data-testid='system-popup-menu'],
+  .mc-nav-rail [data-testid='extensions-popup-menu'],
+  .mc-nav-rail [data-testid='library-popup-menu'],
+  .mc-nav-rail [data-testid='pro-features-popup-menu'] {
     left: calc(100% + 6px) !important;
     max-width: calc(100vw - 76px) !important;
   }
@@ -25939,9 +27291,10 @@ input.cwshare-url {
 .settings-panel textarea,
 .settings-panel .form-input,
 .settings-panel .form-select {
-  background: var(--office-canvas, var(--theme-surface-muted));
-  color: var(--office-ink, var(--theme-text-primary));
-  border-color: var(--office-line, var(--theme-border));
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  border-color: var(--theme-border);
+  border-radius: var(--radius-md);
 }
 .settings-panel input:focus,
 .settings-panel select:focus,
@@ -26014,8 +27367,8 @@ input.cwshare-url {
 }
 .secondary-page-shell :where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), select, textarea) {
   border-color: var(--theme-border);
-  border-radius: var(--radius-sm);
-  background: var(--theme-control-well);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
   color: var(--theme-text-primary);
 }
 .secondary-page-shell :where(input, select, textarea):focus-visible {
@@ -26243,8 +27596,8 @@ input.cwshare-url {
   border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border)) !important;
   color: var(--theme-primary-strong) !important;
 }
-#App[data-nav-tab='settings'] :where(.settings-panel input, .settings-panel select, .settings-panel textarea, .settings-panel .form-input, .settings-panel .form-select, .prog-tools__select) {
-  background: var(--theme-control-well) !important;
+#App[data-nav-tab='settings'] :where(.settings-panel input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), .settings-panel select, .settings-panel textarea, .settings-panel .form-input, .settings-panel .form-select, .prog-tools__select) {
+  background: var(--theme-surface) !important;
   border-color: var(--theme-border) !important;
   color: var(--theme-text-primary) !important;
 }
@@ -26986,6 +28339,39 @@ input.cwshare-url {
   border-color: var(--mc-accent) !important;
   color: var(--mc-accent-strong) !important;
 }
+/* Model/provider chip sits in the composer toolbar. The 34px utility-button
+   lock would square it off and push it out of the gap before send. */
+.mc-input-stack button.mc-composer-model-chip,
+#App .mc-input-stack button.mc-composer-model-chip {
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: 220px !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 0 8px !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 5px;
+  box-sizing: border-box;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  line-height: 1.2 !important;
+}
+.mc-input-stack button.mc-composer-model-chip:hover,
+#App .mc-input-stack button.mc-composer-model-chip:hover {
+  background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important;
+  border-color: var(--mc-accent) !important;
+  color: var(--mc-accent-strong) !important;
+}
+/* The working-directory chip is one menu button. Composer button locks repaint
+   every non-primary button, so its inline open colors never show. Match hover. */
+.mc-input-stack button.mc-working-dir-chip[aria-expanded="true"],
+#App .mc-input-stack button.mc-working-dir-chip[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important;
+  border-color: var(--mc-accent) !important;
+  color: var(--mc-accent-strong) !important;
+}
 /* Queue actions share the composer card with the 34px toolbar lock.
    Keep them as one compact 24px set; this block must follow the lock. */
 .mc-input-stack button.ai-queue-action,
@@ -27232,7 +28618,7 @@ input.cwshare-url {
   box-shadow: var(--shadow-sm) !important;
 }
 #App .secondary-page-shell :where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), select, textarea) {
-  background: var(--theme-control-well) !important;
+  background: var(--theme-surface) !important;
   border-color: var(--mc-line) !important;
   color: var(--mc-ink) !important;
 }

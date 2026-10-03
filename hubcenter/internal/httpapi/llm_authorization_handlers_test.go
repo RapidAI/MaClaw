@@ -470,7 +470,7 @@ func TestLLMAuthorizationQueryRequiresHubMachineAuth(t *testing.T) {
 		Source:                 "external_provider_permission",
 	}}})
 	mux := http.NewServeMux()
-	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil)
+	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil, nil)
 
 	noAuth := httptest.NewRequest(http.MethodGet, "/api/llm/v1/authorization?hub_id=hub_secure&tenant_id=tenant_default", nil)
 	noAuthResp := httptest.NewRecorder()
@@ -538,7 +538,7 @@ func TestLLMAuthorizationQueryAllowsActiveExternalComputeGrant(t *testing.T) {
 		Source:                 "external_provider_permission",
 	}}})
 	mux := http.NewServeMux()
-	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil)
+	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/llm/v1/authorization?hub_id=hub_active&tenant_id=tenant_active", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
@@ -602,7 +602,7 @@ func TestLLMAuthorizationQueryMatchesTenantIDAlias(t *testing.T) {
 		Source:                 "external_provider_permission",
 	}}})
 	mux := http.NewServeMux()
-	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil)
+	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/llm/v1/authorization?hub_id=hub_alias&tenant_id=tenant_acme", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
@@ -658,7 +658,7 @@ func TestLLMAuthorizationQueryMatchesDefaultTenantStorageAlias(t *testing.T) {
 		Source:                 "external_provider_permission",
 	}}})
 	mux := http.NewServeMux()
-	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil)
+	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/llm/v1/authorization?hub_id=hub_default_alias&tenant_id=tenant_default", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
@@ -900,7 +900,7 @@ func TestLLMAuthorizationBatchRequiresHubMachineAuth(t *testing.T) {
 		Source:                 "external_provider_permission",
 	}}})
 	mux := http.NewServeMux()
-	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil)
+	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil, nil)
 
 	body := []byte(`{"tenant_ids":["tenant_a","tenant_a","","tenant_b"]}`)
 	noAuth := httptest.NewRequest(http.MethodPost, "/api/llm/v1/authorization/batch", bytes.NewReader(body))

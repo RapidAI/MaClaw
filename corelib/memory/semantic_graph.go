@@ -275,7 +275,7 @@ func (g *SemanticGraph) Diagnostics(opts SemanticSearchOptions) SemanticGraphDia
 		if !ok || !semanticEntryAllowed(meta, asOf, opts.TemporalMode) || !semanticEntryProjectAllowed(meta, projectLower) {
 			continue
 		}
-		if opts.OwnerID != "" && meta.OwnerID != "" && meta.OwnerID != opts.OwnerID {
+		if !namedOwnerVisible(meta.OwnerID, opts.OwnerID) {
 			continue
 		}
 		out.MalformedTriples = append(out.MalformedTriples, semanticMalformedTriplesForEntry(entryID, raw)...)
@@ -472,7 +472,7 @@ func (g *SemanticGraph) SearchWithOptions(queryEntities []string, opts SemanticS
 		if !ok || !semanticEntryAllowed(meta, asOf, temporalMode) || !semanticEntryProjectAllowed(meta, projectLower) {
 			return
 		}
-		if opts.OwnerID != "" && meta.OwnerID != "" && meta.OwnerID != opts.OwnerID {
+		if !namedOwnerVisible(meta.OwnerID, opts.OwnerID) {
 			return
 		}
 		h := hits[entryID]
@@ -740,7 +740,7 @@ func (g *SemanticGraph) semanticDominanceFactorsLocked(now time.Time, ownerID, p
 		if !semanticIsDominanceRelation(fact.Predicate) || !semanticFactVisible(fact, ownerID, projectLower, now, temporalMode) {
 			continue
 		}
-		if ownerID != "" && fact.OwnerID != "" && fact.OwnerID != ownerID {
+		if !namedOwnerVisible(fact.OwnerID, ownerID) {
 			continue
 		}
 		key := semanticDominanceGroupKey(fact, ownerID, projectLower)
@@ -1578,7 +1578,7 @@ func semanticFactCurrent(validAt, invalidAt *time.Time, now time.Time) bool {
 	if validAt != nil && validAt.After(now) {
 		return false
 	}
-	if invalidAt != nil && !invalidAt.After(now) {
+	if entryExpiredAt(invalidAt, now) {
 		return false
 	}
 	return true
@@ -1588,7 +1588,7 @@ func semanticFactVisible(fact SemanticFact, ownerID, projectLower string, now ti
 	if !semanticFactAllowed(fact, now, mode) {
 		return false
 	}
-	if ownerID != "" && fact.OwnerID != "" && fact.OwnerID != ownerID {
+	if !namedOwnerVisible(fact.OwnerID, ownerID) {
 		return false
 	}
 	return semanticProjectAllowed(fact.Scope, fact.Tags, projectLower)

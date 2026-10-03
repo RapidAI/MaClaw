@@ -37,8 +37,14 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		}
 		// The semantic planner owns this surface. A later short reply must not
 		// restore a stale legacy list. An answer-only greeting does not end
-		// the task, so its carry stays.
-		if !loopContextTurnAnswerOnly(ctx) {
+		// the task, so its carry stays. A short continuation, and any full
+		// profile, already decided to keep the parent tools; clearing here
+		// is how the next reply loses them after a managed rebuild.
+		profile := ExecutionProfile{}
+		if ctx != nil {
+			profile = ctx.Runtime.Execution
+		}
+		if !loopContextTurnAnswerOnly(ctx) && !operationalExecutionProfile(profile) && !executionSurfaceIsFull(profile) {
 			h.noteParentExecution(userID, false, nil)
 		}
 		log.Printf("[semantic-routing] skip name-router prepareAgentLoopTools on managed turn request_id=%q", requestID)
@@ -235,15 +241,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		before := namedToolPresence(tools, carried)
 		tools = ensureNamedToolsPresent(tools, lookupCatalog, protectPresentRetrieval(tools, carried))
 		baseTools = ensureNamedToolsPresent(baseTools, lookupCatalog, protectPresentRetrieval(baseTools, carried))
-		after := namedToolPresence(tools, carried)
-		added := false
-		for _, name := range carried {
-			if after[name] && !before[name] {
-				added = true
-				break
-			}
-		}
-		if added {
+		if namedToolsGained(before, namedToolPresence(tools, carried), carried) {
 			tools = h.filterToolsForExpertUser(userID, tools)
 			baseTools = h.filterToolsForExpertUser(userID, baseTools)
 			if ctx != nil && ctx.LansengerGroupPermissions != nil {
@@ -253,12 +251,29 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		}
 		routerRankedNames = rankContinuationTools(routerRankedNames, carried, tools)
 	}
-	// A classifier-timeout leftover is a narrow web lookup. A short
-	// continuation already decided to keep the parent execution tools;
-	// narrowing afterwards is what removes them again.
+	// A light classifier-timeout leftover is a narrow web lookup. A full
+	// assistant turn skips the name router on timeout, so the floor has to
+	// be pinned from the catalog: bash, read_file, write_file, edit_file.
+	// A short continuation already decided to keep the parent execution
+	// tools; narrowing afterwards is what removes them again. The seal
+	// restores workflow, skill-search, expert, and group limits the pin
+	// would otherwise undo.
 	if loopContextHasClassifierTimeoutLookup(ctx) && !operationalExecutionProfile(profile) {
-		tools = keepClassifierTimeoutLookupTools(tools)
-		baseTools = keepClassifierTimeoutLookupTools(baseTools)
+		if executionSurfaceIsFull(profile) {
+			tools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, tools, lookupCatalog)
+			baseTools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, baseTools, lookupCatalog)
+			directMode := h.mainLoopInDirectMode(userID, ctx)
+			tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, nil)
+			baseTools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, baseTools, phase, directMode, nil)
+		} else {
+			tools = keepClassifierTimeoutLookupTools(tools)
+			baseTools = keepClassifierTimeoutLookupTools(baseTools)
+		}
+	} else {
+		// Workflow ensure runs above and can put bash back onto a
+		// skill-search round. The timeout seal does this itself.
+		tools = applySkillPreferenceSurface(tools, phase)
+		baseTools = applySkillPreferenceSurface(baseTools, phase)
 	}
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
@@ -279,15 +294,27 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// a named agent-guided turn still has host tools and not generate_pdf.
 	if phase.SkillMode == skillPreferenceAgentGuided {
 		catalog := stripExecutionContractMetadataForLLM(allTools)
-		plannedTools = h.filterPolicyRejectedSurfaceTools(applyAgentGuidedWorkflowSurface(plannedTools, catalog))
-		baseToolsForLLM = h.filterPolicyRejectedSurfaceTools(applyAgentGuidedWorkflowSurface(baseToolsForLLM, catalog))
+		plannedTools = h.finishAgentGuidedSurface(userID, ctx, plannedTools, catalog, phase)
+		baseToolsForLLM = h.finishAgentGuidedSurface(userID, ctx, baseToolsForLLM, catalog, phase)
+	}
+	// The shared loop publishes this surface from BuildToolsForModelRequest and
+	// never runs the legacy orchestrator step. Strip here so a direct-mode
+	// main loop cannot keep bash/write_file/edit_file on that path either.
+	if h.mainLoopInDirectMode(userID, ctx) {
+		plannedTools = filterDirectModeAllowedTools(plannedTools)
+		baseToolsForLLM = filterDirectModeAllowedTools(baseToolsForLLM)
 	}
 	if ctx != nil {
 		ctx.setExposedToolNames(agentLoopToolNamesForLog(plannedTools))
 	}
 	// A continuation whose plan only kept lookups must not erase the
-	// execution tools it failed to place on this request.
-	if !operationalExecutionProfile(profile) || len(nonLightToolNames(plannedTools)) > 0 {
+	// execution tools it failed to place on this request. A continuation
+	// that did render bash must not drop ssh that was already carried.
+	if operationalExecutionProfile(profile) {
+		if len(nonLightToolNames(plannedTools)) > 0 {
+			h.noteParentExecutionUnion(userID, plannedTools)
+		}
+	} else {
 		h.noteParentExecution(userID, executionSurfaceIsFull(profile), plannedTools)
 	}
 	return agentLoopToolSet{

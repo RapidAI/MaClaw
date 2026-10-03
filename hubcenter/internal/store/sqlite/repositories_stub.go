@@ -556,7 +556,7 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			rollbackRawTx(conn)
 		}
 	}()
 
@@ -2523,7 +2523,7 @@ func (r *gossipRepo) RateComment(ctx context.Context, comment *store.GossipComme
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			rollbackRawTx(conn)
 		}
 	}()
 

@@ -179,6 +179,67 @@ const ExpertMarketIcon = () => (
     </svg>
 );
 
+/** Leading magnifier for the expert library search field. */
+const ExpertSearchIcon = () => (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.4" />
+        <line x1="10.4" y1="10.4" x2="13.6" y2="13.6" />
+    </svg>
+);
+
+/** Capability chips shown on a marketplace-style expert card (capped to keep card heights even). */
+const EXPERT_CARD_TAG_LIMIT = 3;
+
+const expertCardTagChips = (expert: ExpertDefinition): { visible: string[]; overflow: number } => {
+    const labels = expert.managed_industry
+        ? (expert.industry_names || [])
+        : [...(expert.skills || []), ...(expert.tools || [])];
+    // Dedupe after the display mapping: "fs_read" and "fs read" would
+    // otherwise both survive a raw-string Set and collide as React keys.
+    const clean = Array.from(new Set(
+        labels.map(label => String(label).trim().replace(/_/g, ' ')).filter(Boolean),
+    ));
+    return {
+        visible: clean.slice(0, EXPERT_CARD_TAG_LIMIT),
+        overflow: Math.max(0, clean.length - EXPERT_CARD_TAG_LIMIT),
+    };
+};
+
+/**
+ * Marketplace-style card summary: circular avatar, name with a small source
+ * badge (or "optimized from" lineage), two-line description and capability
+ * chips. Shared by builtin, user-created and managed industry cards.
+ */
+const ExpertCardSummary = ({ expert, badge, lineage }: {
+    expert: ExpertDefinition;
+    badge: string;
+    lineage?: { testId: string; text: string };
+}) => {
+    const tags = expertCardTagChips(expert);
+    return <>
+        <div className="utilities-expert-card__head">
+            <div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
+            <div className="utilities-expert-card__heading">
+                <div className="utilities-expert-card__title">{expert.name}</div>
+                <div className="utilities-expert-card__meta">
+                    {lineage ? (
+                        <span className="utilities-expert-card__lineage" data-testid={lineage.testId}>{lineage.text}</span>
+                    ) : (
+                        <span className="utilities-expert-card__badge">{badge}</span>
+                    )}
+                </div>
+            </div>
+        </div>
+        {expert.description ? <div className="utilities-expert-card__desc">{expert.description}</div> : null}
+        {tags.visible.length ? (
+            <div className="utilities-expert-card__tags">
+                {tags.visible.map(tag => <span key={tag} className="utilities-expert-card__tag">{tag}</span>)}
+                {tags.overflow > 0 ? <span className="utilities-expert-card__tag utilities-expert-card__tag--more">+{tags.overflow}</span> : null}
+            </div>
+        ) : null}
+    </>;
+};
+
 /** Structured result of a tool launch attempt (VS Code configure & launch). */
 type LaunchFeedback = {
     kind: 'success' | 'error';
@@ -329,6 +390,8 @@ export const UtilitiesPage = ({
         setExpertMarketOpen(false);
         setExpertShareTarget(null);
         setExpertAboutTarget(null);
+        setExpertSearch('');
+        setExpertFilter('all');
         setError('');
         expertsRequestRef.current += 1;
         expertMarketUploadsRequestRef.current += 1;
@@ -383,6 +446,9 @@ export const UtilitiesPage = ({
     const [expertMarketIntent, setExpertMarketIntent] = useState<'market' | 'library'>('market');
     const [expertShareTarget, setExpertShareTarget] = useState<ExpertDefinition | null>(null);
     const [expertAboutTarget, setExpertAboutTarget] = useState<ExpertDefinition | null>(null);
+    // Library toolbar: local search + marketplace-style source filter chips.
+    const [expertSearch, setExpertSearch] = useState('');
+    const [expertFilter, setExpertFilter] = useState<'all' | 'system' | 'custom'>('all');
     const [expertMarketUploads, setExpertMarketUploads] = useState<Record<string, { id: string; status: string; visibility: string }>>({});
     const meetingStartingRef = useRef(false);
     const vscodeStartingRef = useRef(false);
@@ -523,6 +589,34 @@ export const UtilitiesPage = ({
         for (const expert of experts) map.set(expert.id, expert.name);
         return map;
     }, [experts]);
+
+    // Library toolbar filtering: search across name/description/industry names
+    // and split by source (system defaults vs user-created). Managed industry
+    // entries count as system, matching the read-only badge on their cards.
+    const visibleExperts = useMemo(() => {
+        const query = expertSearch.trim().toLowerCase();
+        const matchesQuery = (expert: ExpertDefinition) => !query
+            || expert.name.toLowerCase().includes(query)
+            || expert.description.toLowerCase().includes(query)
+            || (expert.industry_names || []).some(name => String(name).toLowerCase().includes(query))
+            || (expert.skills || []).some(label => String(label).toLowerCase().includes(query))
+            || (expert.tools || []).some(label => String(label).toLowerCase().includes(query));
+        const matchesFilter = (expert: ExpertDefinition) => expertFilter === 'all'
+            || (expertFilter === 'system'
+                ? !!expert.builtin || !!expert.managed_industry
+                : !expert.builtin && !expert.managed_industry);
+        const keep = (expert: ExpertDefinition) => matchesQuery(expert) && matchesFilter(expert);
+        return {
+            industry: managedIndustryExperts.filter(keep),
+            // Everything not managed by HubCenter industry: builtin + user-created.
+            local: experts.filter(keep),
+        };
+    }, [experts, managedIndustryExperts, expertSearch, expertFilter]);
+    // Empty-state hint only when a filter/search actively hid everything;
+    // a genuinely empty library still shows the new/import entry cards.
+    const expertLibraryEmpty = visibleExperts.industry.length === 0
+        && visibleExperts.local.length === 0
+        && (expertSearch.trim() !== '' || expertFilter !== 'all');
 
     const loadExpertMarketUploads = useCallback(async () => {
         const requestID = ++expertMarketUploadsRequestRef.current;
@@ -1070,6 +1164,19 @@ export const UtilitiesPage = ({
                 ? `优化自：${sourceName}`
                 : `Optimized from: ${sourceName}`,
         expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : isZh ? '优化自：已删除专家' : 'Optimized from: deleted expert',
+        expertSearchPlaceholder: lang === 'zh-Hant' ? '搜尋專家' : isZh ? '搜索专家' : 'Search experts',
+        expertFilterLabel: lang === 'zh-Hant' ? '篩選專家' : isZh ? '筛选专家' : 'Filter experts',
+        expertFilterAll: lang === 'zh-Hant' ? '全部' : isZh ? '全部' : 'All',
+        expertFilterSystem: lang === 'zh-Hant' ? '系統預設' : isZh ? '系统默认' : 'System',
+        expertFilterCustom: lang === 'zh-Hant' ? '我的專家' : isZh ? '我的专家' : 'My experts',
+        expertBadgeSystem: lang === 'zh-Hant' ? '系統預設' : isZh ? '系统默认' : 'Built-in',
+        expertBadgeIndustry: lang === 'zh-Hant' ? '行業專家' : isZh ? '行业专家' : 'Industry',
+        expertBadgeCustom: lang === 'zh-Hant' ? '自訂' : isZh ? '自定义' : 'Custom',
+        expertFilterEmpty: lang === 'zh-Hant'
+            ? '沒有符合條件的專家，試試其他篩選或關鍵詞'
+            : isZh
+                ? '没有符合条件的专家，试试其他筛选或关键词'
+                : 'No experts match this filter or search',
     }), [isZh, lang, mode]);
 
     const handleMeetingRecord = useCallback(async () => {
@@ -1824,17 +1931,33 @@ export const UtilitiesPage = ({
                 onClick: () => { void handleLaunchVSCodeExt(); },
             },
         ];
+        // Shared search + market toolbar for both expert surfaces: the
+        // dedicated page title row and the combined view's section heading.
+        const expertToolbar = (
+            <div className="utilities-experts__toolbar">
+                <div className="utilities-experts__search">
+                    <ExpertSearchIcon />
+                    <input
+                        type="search"
+                        value={expertSearch}
+                        onChange={(event) => setExpertSearch(event.target.value)}
+                        placeholder={t.expertSearchPlaceholder}
+                        aria-label={t.expertSearchPlaceholder}
+                        data-testid="utilities-expert-search"
+                    />
+                </div>
+                <button type="button" className="utilities-btn utilities-experts__market-button" data-testid="utilities-expert-market" onClick={() => { setExpertMarketIntent('market'); setExpertMarketOpen(true); }}>
+                    <ExpertMarketIcon />
+                    <span>{t.expertMarket}</span>
+                </button>
+            </div>
+        );
         return (
             <div className="utilities-page" data-testid="utilities-page" data-mode={mode}>
                 <div className="utilities-page__header">
                     <div className={mode === 'experts' ? 'utilities-page__title-row utilities-page__title-row--experts' : undefined}>
                         <h1 className="utilities-page__title">{t.title}</h1>
-                        {mode === 'experts' ? (
-                            <button type="button" className="utilities-btn utilities-experts__market-button" data-testid="utilities-expert-market" onClick={() => { setExpertMarketIntent('market'); setExpertMarketOpen(true); }}>
-                                <ExpertMarketIcon />
-                                <span>{t.expertMarket}</span>
-                            </button>
-                        ) : null}
+                        {mode === 'experts' ? expertToolbar : null}
                     </div>
                     <p className="utilities-page__subtitle">{t.subtitle}</p>
                     {mode === 'experts' ? <p className="utilities-experts__exchange-hint utilities-page__header-exchange-hint">{t.expertExchangeHint}</p> : null}
@@ -1896,16 +2019,29 @@ export const UtilitiesPage = ({
                     {mode !== 'experts' ? <div className="utilities-experts__heading">
                         <div className="utilities-experts__title-row">
                             <h2 className="utilities-experts__title">{t.expertsTitle}</h2>
-                            <button type="button" className="utilities-btn utilities-experts__market-button" data-testid="utilities-expert-market" onClick={() => { setExpertMarketIntent('market'); setExpertMarketOpen(true); }}>
-                                <ExpertMarketIcon />
-                                <span>{t.expertMarket}</span>
-                            </button>
+                            {expertToolbar}
                         </div>
                         <p className="utilities-experts__subtitle">{t.expertsSubtitle}</p>
                         <p className="utilities-experts__exchange-hint">{t.expertExchangeHint}</p>
                     </div> : null}
+                    <div className="utilities-experts__filters" role="group" aria-label={t.expertFilterLabel}>
+                        {([
+                            ['all', t.expertFilterAll],
+                            ['system', t.expertFilterSystem],
+                            ['custom', t.expertFilterCustom],
+                        ] as const).map(([key, label]) => (
+                            <button
+                                key={key}
+                                type="button"
+                                className={`utilities-experts__filter${expertFilter === key ? ' is-active' : ''}`}
+                                data-testid={`utilities-expert-filter-${key}`}
+                                aria-pressed={expertFilter === key}
+                                onClick={() => setExpertFilter(key)}
+                            >{label}</button>
+                        ))}
+                    </div>
                     <div className="utilities-experts__grid">
-						{managedIndustryExperts.map((expert) => {
+						{visibleExperts.industry.map((expert) => {
 							const installed = !!expert.industry_installed;
 							const autoInstalling = !!expert.industry_auto_installing;
 							const autoInstallFailed = !!expert.industry_auto_install_failed;
@@ -1913,18 +2049,16 @@ export const UtilitiesPage = ({
 							return (
 								<div key={`managed-${expert.industry_asset_id}`} className={`utilities-expert-card utilities-expert-card--industry${installed ? '' : ' utilities-expert-card--industry-placeholder'}`} data-testid={`utilities-industry-expert-card-${expert.industry_asset_id}`}>
 									{installed ? <button type="button" className="utilities-expert-card__main" aria-label={expert.name} title={t.expertOpenHint} onClick={() => onOpenExpert?.(expert)}>
-										<div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
-										<div className="utilities-expert-card__body"><div className="utilities-expert-card__title">{expert.name}</div><div className="utilities-expert-card__desc">{expert.description}</div><div className="utilities-expert-card__industry">{isZh ? '系统默认 · ' : 'System default · '}{(expert.industry_names || []).join('、')}</div></div>
-										<span className="utilities-expert-card__cta">{t.expertOpen}</span>
+										<ExpertCardSummary expert={expert} badge={t.expertBadgeIndustry} />
+										<span className="utilities-expert-card__cta">{t.expertOpen}<ToolCardCtaArrow /></span>
 									</button> : <div className="utilities-expert-card__main utilities-expert-card__main--disabled">
-										<div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
-										<div className="utilities-expert-card__body"><div className="utilities-expert-card__title">{expert.name}</div><div className="utilities-expert-card__desc">{expert.description}</div><div className="utilities-expert-card__industry">{isZh ? '行业默认 · ' : 'Industry default · '}{(expert.industry_names || []).join('、')}</div></div>
+										<ExpertCardSummary expert={expert} badge={t.expertBadgeIndustry} />
 									</div>}
 									{installed ? null : autoInstalling ? <div className="utilities-expert-card__industry-install utilities-expert-card__industry-install--pending" role="status">{isZh ? '正在自动安装…' : 'Installing automatically…'}</div> : autoInstallFailed ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (isZh ? '处理中…' : 'Working…') : (isZh ? '重新安装' : 'Retry install')}</button> : purchaseRequired ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (isZh ? '处理中…' : 'Working…') : (isZh ? `购买并安装 (${Number(expert.industry_price || 0)} Credits)` : `Buy & install (${Number(expert.industry_price || 0)} Credits)`)}</button> : null}
 								</div>
 							);
 						})}
-                        {experts.map((expert) => (
+                        {visibleExperts.local.map((expert) => (
                             <div key={expert.id} className="utilities-expert-card" data-testid={`utilities-expert-card-${expert.id}`}>
                                 <button
                                     type="button"
@@ -1933,19 +2067,17 @@ export const UtilitiesPage = ({
                                     title={t.expertOpenHint}
                                     onClick={() => onOpenExpert?.(expert)}
                                 >
-                                    <div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
-                                    <div className="utilities-expert-card__body">
-                                        <div className="utilities-expert-card__title">{expert.name}</div>
-                                        <div className="utilities-expert-card__desc">{expert.description}</div>
-                                        {expert.optimized_from_id ? (
-                                            <div className="utilities-expert-card__lineage" data-testid={`utilities-expert-lineage-${expert.id}`}>
-                                                {expertNameById.get(expert.optimized_from_id)
-                                                    ? t.expertOptimizedFrom(expertNameById.get(expert.optimized_from_id) as string)
-                                                    : t.expertOptimizedFromDeleted}
-                                            </div>
-                                        ) : null}
-                                    </div>
-                                    <span className="utilities-expert-card__cta">{t.expertOpen}</span>
+                                    <ExpertCardSummary
+                                        expert={expert}
+                                        badge={expert.builtin ? t.expertBadgeSystem : t.expertBadgeCustom}
+                                        lineage={expert.optimized_from_id ? {
+                                            testId: `utilities-expert-lineage-${expert.id}`,
+                                            text: expertNameById.get(expert.optimized_from_id)
+                                                ? t.expertOptimizedFrom(expertNameById.get(expert.optimized_from_id) as string)
+                                                : t.expertOptimizedFromDeleted,
+                                        } : undefined}
+                                    />
+                                    <span className="utilities-expert-card__cta">{t.expertOpen}<ToolCardCtaArrow /></span>
                                 </button>
                                 <div className="utilities-expert-card__actions">
                                     <button
@@ -2020,6 +2152,7 @@ export const UtilitiesPage = ({
                                 </div>
                             </div>
                         ))}
+                        {expertLibraryEmpty ? <div className="utilities-experts__empty" data-testid="utilities-experts-empty">{t.expertFilterEmpty}</div> : null}
                         <button
                             type="button"
                             className="utilities-expert-card utilities-expert-card--new"

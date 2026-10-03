@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -24,6 +24,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'embedding',
     'virtualEmployee',
     'im',
+    'tokenBank',
     'security',
     'migration',
     'system',
@@ -88,6 +89,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     redeem: 'services',
     virtualEmployee: 'services',
     im: 'services',
+    tokenBank: 'services',
     security: 'system',
     system: 'system',
     hardware: 'system',
@@ -125,6 +127,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     misData: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>',
     virtualEmployee: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="3"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg>',
     im: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12v8H9l-2 2v-2H2z" /><path d="M5 6.5h6M5 8.5h4"/></svg>',
+    tokenBank: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2 8 3.5l5.5 2.7L8 8.9z"/><path d="M2.5 9.1 8 11.8l5.5-2.7"/><path d="M2.5 12 8 14.5 13.5 12"/></svg>',
     security: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5L3 3.5v4c0 3.5 2.5 5.5 5 7 2.5-1.5 5-3.5 5-7v-4z"/></svg>',
     migration: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l-2.5 2 2.5 2"/><path d="M12 6l2.5 2-2.5 2"/><path d="M1.5 8h5M9.5 8h5"/></svg>',
     system: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 1.5h2.4l.3 1.8.9.4 1.5-1 1.7 1.7-1 1.5.4.9 1.8.3v2.4l-1.8.3-.4.9 1 1.5-1.7 1.7-1.5-1-.9.4-.3 1.8H6.8l-.3-1.8-.9-.4-1.5 1-1.7-1.7 1-1.5-.4-.9-1.8-.3V6.8l1.8-.3.4-.9-1-1.5 1.7-1.7 1.5 1 .9-.4z"/><circle cx="8" cy="8" r="2"/></svg>',
@@ -238,6 +241,12 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             label: 'IM',
             desc: textForLang(lang, 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations', '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入', '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入'),
             icon: settingsTabIcons.im,
+        },
+        {
+            id: 'tokenBank' as const,
+            label: textForLang(lang, 'Token Bank', 'Token 银行', 'Token 銀行'),
+            desc: textForLang(lang, 'Share models and manage the credits they earn', '共享模型，并管理由此赚取的积分', '共享模型，並管理由此賺取的積分'),
+            icon: settingsTabIcons.tokenBank,
         },
         {
             id: 'security' as const,

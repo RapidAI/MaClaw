@@ -35,22 +35,31 @@ func (s *Store) UpsertSessionCheckpoint(opts SessionCheckpointUpsertOptions) (Up
 	})
 }
 
-// LatestSessionCheckpointForHost returns the content of the most recent
-// session checkpoint whose tags contain the given project path. It touches
-// (increments AccessCount on) the selected entry so that the forgetting curve
-// keeps it alive. Returns "" if no matching checkpoint exists.
+// LatestSessionCheckpointForHost returns the content of the checkpoint with the
+// latest UpdatedAt whose tags contain projectPath. It touches the selected entry.
 func (s *Store) LatestSessionCheckpointForHost(projectPath string) string {
+	return s.LatestSessionCheckpointForOwner(projectPath, "")
+}
+
+// LatestSessionCheckpointForOwner is LatestSessionCheckpointForHost restricted
+// to ownerID. An empty ownerID does not filter. Named owners do not see each
+// other's checkpoints.
+func (s *Store) LatestSessionCheckpointForOwner(projectPath, ownerID string) string {
 	if s == nil || projectPath == "" {
 		return ""
 	}
+	ownerID = strings.TrimSpace(ownerID)
 
 	var id, content string
 
 	s.mu.RLock()
-	var bestIdx int = -1
+	bestIdx := -1
 	for i := range s.entries {
 		e := &s.entries[i]
-		if e.Category != CategorySessionCheckpoint {
+		if e.Category != CategorySessionCheckpoint || !e.IsActive() {
+			continue
+		}
+		if ownerID != "" && !memoryOwnersEqual(e.OwnerID, ownerID) {
 			continue
 		}
 		found := false
@@ -63,7 +72,7 @@ func (s *Store) LatestSessionCheckpointForHost(projectPath string) string {
 		if !found {
 			continue
 		}
-		if bestIdx == -1 || e.CreatedAt.After(s.entries[bestIdx].CreatedAt) {
+		if bestIdx == -1 || checkpointNewer(e, &s.entries[bestIdx]) {
 			bestIdx = i
 		}
 	}
@@ -77,4 +86,14 @@ func (s *Store) LatestSessionCheckpointForHost(projectPath string) string {
 		s.TouchAccess([]string{id})
 	}
 	return content
+}
+
+func checkpointNewer(candidate, current *Entry) bool {
+	if candidate.UpdatedAt.After(current.UpdatedAt) {
+		return true
+	}
+	if current.UpdatedAt.After(candidate.UpdatedAt) {
+		return false
+	}
+	return candidate.CreatedAt.After(current.CreatedAt)
 }

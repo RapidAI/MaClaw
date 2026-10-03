@@ -318,8 +318,10 @@ func extractKeyToolArg(toolName, argsJSON string) string {
 			return truncateStr(v, 80)
 		}
 	case agentToolKindWriteFile, agentToolKindReadFile, agentToolKindEditFile:
-		if v, ok := args["path"].(string); ok {
-			return v
+		for _, key := range []string{"path", "file_path"} {
+			if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
+				return v
+			}
 		}
 	case agentToolKindGeneratePDF:
 		if v, ok := args["title"].(string); ok {

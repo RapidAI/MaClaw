@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,6 +180,49 @@ ha:
 		_, err := Load(path)
 		if err == nil || !strings.Contains(err.Error(), "duplicate ha peer node_id") {
 			t.Fatalf("Load() error = %v, want duplicate peer id error", err)
+		}
+	})
+}
+
+// F3 (token-bank design doc §18.4): the write pool must stay at 1. A wider
+// pool lets two interleaved deferred transactions both pass the same balance
+// check and both debit — the single-node twin of the F1 cross-node overdraw.
+func TestLoadRejectsNonOneMaxWriteOpenConns(t *testing.T) {
+	t.Run("accepts the pinned value", func(t *testing.T) {
+		path := writeConfigFile(t, `
+database:
+  max_write_open_conns: 1
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Database.MaxWriteOpenConns != 1 {
+			t.Fatalf("max_write_open_conns = %d, want 1", cfg.Database.MaxWriteOpenConns)
+		}
+	})
+
+	t.Run("rejects larger pools", func(t *testing.T) {
+		for _, value := range []int{2, 4, 8} {
+			path := writeConfigFile(t, fmt.Sprintf(`
+database:
+  max_write_open_conns: %d
+`, value))
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), "max_write_open_conns must be 1") {
+				t.Fatalf("Load() with max_write_open_conns=%d error = %v, want pinned-writer validation error", value, err)
+			}
+		}
+	})
+
+	t.Run("rejects zero (unlimited)", func(t *testing.T) {
+		path := writeConfigFile(t, `
+database:
+  max_write_open_conns: 0
+`)
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "max_write_open_conns must be 1") {
+			t.Fatalf("Load() error = %v, want pinned-writer validation error (0 means unlimited)", err)
 		}
 	})
 }

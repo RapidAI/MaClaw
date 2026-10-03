@@ -645,6 +645,34 @@ func (a *App) emitLatexPreview(path, phase, message string) {
 	})
 }
 
+// latexRepairSlotBudget is how long one repair may occupy a foreground
+// scheduler slot. It is not a deadline on the model body. Background LLM
+// runs only while activeFG == 0, so holding the slot until the compile
+// context ends freezes every background request. AwaitResponse releases the
+// slot at this budget and keeps reading until that context ends. 75s is the
+// slot hold meeting-minutes already passes to this helper. Releasing at
+// once would drop the concurrency account and pile upstream calls on top
+// of each other.
+const latexRepairSlotBudget = 75 * time.Second
+
+func latexRepairPrompt(path, source, excerpt string) (string, error) {
+	line, ok := tinytex.ErrorLine(excerpt)
+	if !ok {
+		return "", fmt.Errorf("编译日志里没有文件行号")
+	}
+	_, _, window, ok := tinytex.FormatRepairWindow(source, line)
+	if !ok {
+		return "", fmt.Errorf("无法定位出错行")
+	}
+	return "你是 LaTeX 编译修复器。编译器在第 " + strconv.Itoa(line) + " 行失败。\n" +
+		"下面每行以源文件真实行号开头。只返回一个替换块，不要解释，不要代码围栏：\n" +
+		"@@@ 起始行 结束行\n" +
+		"替换后的正文\n" +
+		"@@@\n" +
+		"起始行和结束行是闭区间，必须包含第 " + strconv.Itoa(line) + " 行，并且落在给出的行号里。正文不要行号。\n\n" +
+		"文件: " + filepath.Base(path) + "\n\n编译错误:\n" + excerpt + "\n\n源码:\n" + window, nil
+}
+
 func (a *App) repairLatexSource(ctx context.Context, path, source, excerpt string) (string, bool, error) {
 	if a == nil {
 		return "", false, fmt.Errorf("app not available")
@@ -653,24 +681,68 @@ func (a *App) repairLatexSource(ctx context.Context, path, source, excerpt strin
 	if strings.TrimSpace(cfg.URL) == "" && strings.TrimSpace(cfg.Model) == "" {
 		return "", false, fmt.Errorf("未配置大模型，无法自动修复")
 	}
-	prompt := "你是 LaTeX 编译修复器。根据编译错误修改源文件，保持论文内容不变。只返回完整的修正后源码，放在一个 latex 代码块里，不要解释。\n\n文件: " + filepath.Base(path) + "\n\n编译错误:\n" + excerpt + "\n\n源文件:\n```latex\n" + source + "\n```"
+	prompt, err := latexRepairPrompt(path, source, excerpt)
+	if err != nil {
+		return "", false, err
+	}
 	messages := []interface{}{
 		map[string]interface{}{
 			"role":    "user",
 			"content": prompt,
 		},
 	}
-	client := &http.Client{Timeout: 90 * time.Second}
+	// The client has no deadline. latexRepairSlotBudget only releases the
+	// foreground slot; AwaitResponse waits for the body until the compile
+	// context ends. Returning a budget error here would make
+	// CompileLatexPreview cancel that context and abort the read.
+	client := &http.Client{}
 	reqCtx := llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "latex-preview", OwnerID: "latex-preview"})
-	resp, err := doSimpleLLMRequest(reqCtx, cfg, messages, client, 75*time.Second)
+	resp, err := doSimpleLLMRequestWithOptions(reqCtx, cfg, messages, client, latexRepairSlotBudget, simpleLLMRequestOptions{AwaitResponse: true})
 	if err != nil {
 		return "", false, err
 	}
-	if resp == nil {
-		return "", false, fmt.Errorf("大模型没有返回内容")
+	// An empty or unusable reply consumes a repair slot and asks again.
+	// Returning an error would skip the second slot. The block is read from
+	// the provider fields before and after the chat display filter, because
+	// that filter can delete the only copy.
+	for _, candidate := range latexRepairCandidateTexts(resp) {
+		body, ok := tinytex.ApplyRepairReply(source, excerpt, candidate)
+		if ok {
+			return body, true, nil
+		}
 	}
-	body, ok := tinytex.AcceptRepairedSource(source, stripThinkTags(resp.Content))
-	return body, ok, nil
+	return "", false, nil
+}
+
+// latexRepairCandidateTexts is the provider message in the order the edit
+// protocol reads it. The stripped visible answer comes first. Raw content and
+// reasoning follow when the visible answer has no usable block.
+func latexRepairCandidateTexts(resp *llmSimpleResponse) []string {
+	if resp == nil {
+		return nil
+	}
+	var out []string
+	add := func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		for _, prev := range out {
+			if prev == text {
+				return
+			}
+		}
+		out = append(out, text)
+	}
+	if strings.TrimSpace(resp.RawContent) != "" {
+		add(stripThinkTags(resp.RawContent))
+		add(resp.RawContent)
+	}
+	if strings.TrimSpace(resp.ReasoningContent) != "" {
+		add(stripThinkTags(resp.ReasoningContent))
+		add(resp.ReasoningContent)
+	}
+	add(resp.Content)
+	return out
 }
 
 func runLatexPreviewCommand(ctx context.Context, bin, dir string, args ...string) (string, int, error) {

@@ -193,6 +193,21 @@ func TestCloudWorkspaceHashIndexCorruptFallsBackToHash(t *testing.T) {
 	}
 }
 
+func TestCloudWorkspaceAuditReasonIgnoresDownloadPath(t *testing.T) {
+	if got := cloudWorkspaceAuditReason(`papers/quota_survey.pdf: 云端工作区中的文件已损坏，无法读取`); got != "object_corrupt" {
+		t.Fatalf("corrupt with quota in the name: %s", got)
+	}
+	if got := cloudWorkspaceAuditReason(`papers/corrupt_study.pdf: access denied`); got != "permission_denied" {
+		t.Fatalf("permission behind a corrupt filename: %s", got)
+	}
+	if got := cloudWorkspaceAuditReason(`papers/timeout_notes.pdf: context deadline exceeded`); got != "timeout" {
+		t.Fatalf("timeout behind a path: %s", got)
+	}
+	if got := cloudWorkspaceAuditReason(`open C:\\secret\\token.txt: access denied`); got != "permission_denied" {
+		t.Fatalf("absolute path must stay in the classifier: %s", got)
+	}
+}
+
 func TestCloudWorkspaceAuditIsRedactedAndRotates(t *testing.T) {
 	base := t.TempDir()
 	app := &App{testHomeDir: base}

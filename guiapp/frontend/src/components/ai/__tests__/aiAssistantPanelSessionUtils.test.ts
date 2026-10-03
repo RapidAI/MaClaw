@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -105,6 +105,14 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(activeAssistantTaskIdentity({ type: "expert", expertId: "paper-review" })).toEqual({
             expertId: "paper-review",
         });
+        expect(activeAssistantTaskIdentity({
+            type: "expert",
+            expertId: "builtin-latex-paper",
+            projectPath: "d:/tasks/latex-paper",
+        })).toEqual({
+            expertId: "builtin-latex-paper",
+            projectPath: "D:/tasks/latex-paper",
+        });
         expect(activeAssistantTaskIdentity({ type: "expert" })).toBeNull();
         expect(coerceActiveAssistantTask({})).toBeNull();
         expect(coerceActiveAssistantTask({ projectPath: "  " })).toBeNull();
@@ -152,5 +160,20 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(localStorage.getItem("ai_assistant_project_tabs") || "").not.toContain("cws-tab");
         expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").not.toContain("cloud history");
         expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").toContain("keep");
+    });
+
+    it("archives an expert transcript onto the previous paper and ignores turns before the fresh-session floor", () => {
+        const archived = archiveExpertTranscriptForProject("D:/tasks/old-paper", [
+            { id: "u1", role: "user", content: "old request", sessionKey: "desktop-user:expert:builtin-latex-paper", timestamp: 10 },
+            { id: "a1", role: "assistant", content: "old reply", sessionKey: "desktop-user:expert:builtin-latex-paper", timestamp: 11 },
+        ]);
+        expect(archived?.projectPath).toBe("D:/tasks/old-paper");
+        expect(archived?.history[0]?.sessionKey).toBe(projectSessionKey("D:/tasks/old-paper"));
+        expect(archiveExpertTranscriptForProject("D:/tasks/old-paper", [
+            { id: "w", role: "assistant", content: "welcome", timestamp: 1 },
+        ])).toBeNull();
+        expect(messageAfterSessionFloor({ timestamp: 10 }, 20)).toBe(false);
+        expect(messageAfterSessionFloor({ timestamp: 20 }, 20)).toBe(true);
+        expect(messageAfterSessionFloor({ timestamp: 10 }, 0)).toBe(true);
     });
 });

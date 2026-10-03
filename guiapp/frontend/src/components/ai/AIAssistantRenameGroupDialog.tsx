@@ -56,7 +56,7 @@ export function AIAssistantRenameGroupDialog({
                         if (event.key === "Escape" && !saving) onClose();
                         if (event.key === "Enter") onSubmit();
                     }}
-                    style={{ width: "100%", boxSizing: "border-box", border: `1px solid ${error ? t.errorBorder : t.fieldBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, padding: "8px 10px", fontSize: 14, outline: "none" }}
+                    style={{ width: "100%", boxSizing: "border-box", border: `1px solid ${error ? t.errorBorder : t.fieldBorder}`, borderRadius: "var(--radius-md, 10px)", background: t.fieldBg, color: t.text, padding: "8px 10px", fontSize: 14, outline: "none" }}
                 />
                 {error && (
                     <div id="rename-group-error" role="alert" style={{ marginTop: 6, color: t.errorText, fontSize: 12, lineHeight: 1.4 }}>

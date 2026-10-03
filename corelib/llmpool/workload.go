@@ -195,14 +195,12 @@ func IsOfficialTierName(model string) bool {
 }
 
 // NormalizeOfficialTier returns the canonical official tier name, or empty.
+// low/mid/high are the same bands as official-low/mid/high.
 func NormalizeOfficialTier(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case OfficialTierHigh:
-		return OfficialTierHigh
-	case OfficialTierMid:
-		return OfficialTierMid
-	case OfficialTierLow:
-		return OfficialTierLow
+	canon := CanonicalClientModel(model)
+	switch canon {
+	case OfficialTierHigh, OfficialTierMid, OfficialTierLow:
+		return canon
 	default:
 		return ""
 	}
@@ -757,6 +755,15 @@ func findGroupModel(group *ServiceGroup, name string) *ModelConfig {
 			return &group.Models[i]
 		}
 	}
+	canon := CanonicalClientModel(name)
+	if !IsOfficialTierName(canon) {
+		return nil
+	}
+	for i := range group.Models {
+		if CanonicalClientModel(group.Models[i].Name) == canon {
+			return &group.Models[i]
+		}
+	}
 	return nil
 }
 
@@ -1019,7 +1026,7 @@ func PublicCatalogModels(group *ServiceGroup) []string {
 		}
 		return out
 	}
-	return []string{"auto"}
+	return DefaultCapabilityCatalog()
 }
 
 func headerValue(header http.Header, key string) string {

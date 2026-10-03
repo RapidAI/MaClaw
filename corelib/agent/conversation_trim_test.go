@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -248,6 +249,188 @@ func TestFormatAskedUserHistoryResultKeepsResumeTaskID(t *testing.T) {
 	})
 	if !strings.Contains(got, "Asked user: solve captcha") || !strings.Contains(got, "resume_task_id=bt-9") {
 		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestTrimConversationFallbackKeepsUserRequestAndFilePath(t *testing.T) {
+	msgs := trimConversationOverflowFixture()
+	got := TrimConversation(msgs, 4000, 0, nil)
+	blob := flattenConversation(got)
+	if !strings.Contains(blob, "请改 login.go") || !strings.Contains(blob, "login.go") {
+		t.Fatalf("handoff missing dropped request or path:\n%s", blob)
+	}
+	if !strings.Contains(blob, "KEEP-TAIL") {
+		t.Fatal("recent tail was dropped")
+	}
+	if strings.Contains(blob, "已被省略，请基于最近的上下文继续工作") {
+		t.Fatal("generic placeholder replaced the handoff")
+	}
+}
+
+func TestTrimConversationRejectsOversizedOrToolCallSummary(t *testing.T) {
+	msgs := trimConversationOverflowFixture()
+	oversized := TrimConversation(msgs, 4000, 0, func(string) string {
+		return strings.Repeat("长", 6000)
+	})
+	if strings.Contains(flattenConversation(oversized), strings.Repeat("长", 40)) {
+		t.Fatal("oversized summary was kept")
+	}
+	toolShaped := TrimConversation(msgs, 4000, 0, func(string) string {
+		return `{"tool_calls":[{"name":"read_file"}]}`
+	})
+	if strings.Contains(flattenConversation(toolShaped), `"tool_calls"`) {
+		t.Fatal("tool-call summary was kept")
+	}
+	if !strings.Contains(flattenConversation(toolShaped), "请改 login.go") {
+		t.Fatal("rejected summary did not fall back to the handoff")
+	}
+}
+
+func trimConversationOverflowFixture() []interface{} {
+	msgs := []interface{}{
+		map[string]string{"role": "system", "content": "sys"},
+		map[string]string{"role": "user", "content": "请改 login.go 的登录校验"},
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "read",
+			"tool_calls": []map[string]interface{}{
+				{"id": "r1", "function": map[string]interface{}{"name": "read_file", "arguments": `{"path":"login.go"}`}},
+			},
+		},
+		map[string]string{"role": "tool", "content": "package main"},
+	}
+	for i := 0; i < 4; i++ {
+		msgs = append(msgs, map[string]string{"role": "assistant", "content": strings.Repeat("archived work ", 400)})
+	}
+	msgs = append(msgs, map[string]string{"role": "user", "content": "KEEP-TAIL"})
+	return msgs
+}
+
+func flattenConversation(msgs []interface{}) string {
+	var b strings.Builder
+	for _, msg := range msgs {
+		data, _ := json.Marshal(msg)
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func TestHistoryHandoffMergesEarlierCheckpoint(t *testing.T) {
+	prior := historyHandoffEntry([]ConversationEntry{
+		{Role: "user", Content: "先改 login.go 的过期时间"},
+		{Role: "assistant", Content: "read", ToolCalls: []map[string]interface{}{
+			{"function": map[string]interface{}{"name": "read_file", "arguments": map[string]interface{}{"path": "login.go"}}},
+		}},
+	})
+	again := historyHandoffEntry([]ConversationEntry{
+		prior,
+		{Role: "user", Content: "再改 session.go"},
+		{Role: "assistant", Content: "edit", ToolCalls: []map[string]interface{}{
+			{"name": "edit_file", "arguments": `{"file_path":"session.go"}`},
+		}},
+	})
+	text, _ := again.Content.(string)
+	if strings.Count(text, contextHandoffPrefix) != 1 {
+		t.Fatalf("previous handoff was nested: %s", text)
+	}
+	for _, want := range []string{"先改 login.go", "login.go", "再改 session.go", "session.go"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("merged handoff missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestHistoryHandoffKeepsTaggedFileLists(t *testing.T) {
+	entry := historyHandoffEntry([]ConversationEntry{{
+		Role: "user",
+		Content: "[对话历史摘要]\n登录校验已修好\n\n<read-files>\nlogin.go\n</read-files>\n<modified-files>\nsession.go\n</modified-files>",
+	}})
+	text, _ := entry.Content.(string)
+	if !strings.Contains(text, "login.go") || !strings.Contains(text, "session.go") {
+		t.Fatalf("tagged file lists were dropped:\n%s", text)
+	}
+}
+
+func TestHistoryHandoffKeepsMultilineRequestAndSummary(t *testing.T) {
+	again := historyHandoffEntry([]ConversationEntry{
+		{Role: "user", Content: "[Skill 优先要求]\n先用技能"},
+		{Role: "user", Content: "请改 login.go\n不要动 session.go"},
+		{Role: "user", Content: "[对话历史摘要]\n登录校验已修好，下一步补测试"},
+	})
+	text, _ := again.Content.(string)
+	if strings.Contains(text, "Skill 优先要求") {
+		t.Fatalf("framework prompt was stored as a user request:\n%s", text)
+	}
+	if !strings.Contains(text, "请改 login.go 不要动 session.go") {
+		t.Fatalf("multiline request was split:\n%s", text)
+	}
+	if !strings.Contains(text, "登录校验已修好") {
+		t.Fatalf("summary was dropped:\n%s", text)
+	}
+	merged := historyHandoffEntry([]ConversationEntry{again, {Role: "user", Content: "补上测试"}})
+	mergedText, _ := merged.Content.(string)
+	if !strings.Contains(mergedText, "登录校验已修好") || !strings.Contains(mergedText, "补上测试") {
+		t.Fatalf("second handoff lost summary or new request:\n%s", mergedText)
+	}
+}
+
+func TestTrimHistoryHandoffStaysWithinTokenBudget(t *testing.T) {
+	const early = "请保留这条早期要求"
+	handoffTokens := EstimateConversationEntryTokens(prependHistoryHandoff(
+		[]ConversationEntry{{Role: "user", Content: early}}, nil))
+	target := MaxMemoryTokenEstimate / 2
+	body := ""
+	lo, hi := 1, MaxMemoryTokenEstimate*3
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		tok := EstimateConversationEntryTokens([]ConversationEntry{{Role: "assistant", Content: strings.Repeat("a", mid)}})
+		if tok <= target {
+			body = strings.Repeat("a", mid)
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	unit := EstimateConversationEntryTokens([]ConversationEntry{{Role: "assistant", Content: body}})
+	if unit*2 > MaxMemoryTokenEstimate || unit*2+handoffTokens <= MaxMemoryTokenEstimate || unit*3 <= MaxMemoryTokenEstimate {
+		t.Fatalf("fixture gap is not handoff-sized: unit=%d handoff=%d", unit, handoffTokens)
+	}
+	entries := []ConversationEntry{{Role: "user", Content: early}}
+	for i := 0; i < 3; i++ {
+		entries = append(entries, ConversationEntry{Role: "assistant", Content: body})
+	}
+	trimmed := TrimHistory(entries)
+	if got := EstimateConversationEntryTokens(trimmed); got > MaxMemoryTokenEstimate {
+		t.Fatalf("trimmed tokens=%d budget=%d", got, MaxMemoryTokenEstimate)
+	}
+	text, _ := trimmed[0].Content.(string)
+	if !strings.Contains(text, early) {
+		t.Fatalf("handoff missing early request: %s", text)
+	}
+	large := 0
+	for _, entry := range trimmed {
+		body, _ := entry.Content.(string)
+		if entry.Role == "assistant" && len(body) > 1000 {
+			large++
+		}
+	}
+	if large != 1 {
+		t.Fatalf("kept %d large turns, want 1", large)
+	}
+}
+
+func TestTrimConversationSummarizerSeesDroppedWork(t *testing.T) {
+	var got string
+	out := TrimConversation(trimConversationOverflowFixture(), 4000, 0, func(input string) string {
+		got = input
+		return "摘要：改了校验"
+	})
+	if !strings.Contains(got, "请改 login.go") || !strings.Contains(got, "login.go") || !strings.Contains(got, "package main") {
+		t.Fatalf("summarizer did not see dropped work:\n%s", got)
+	}
+	if !strings.Contains(flattenConversation(out), "摘要：改了校验") {
+		t.Fatal("accepted summary was not installed")
 	}
 }
 

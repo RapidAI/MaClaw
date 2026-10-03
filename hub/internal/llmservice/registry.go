@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
@@ -205,14 +206,15 @@ type ModelServiceGroup struct {
 }
 
 type ModelServiceModel struct {
-	Name             string                       `json:"name"`
-	Description      string                       `json:"description,omitempty"`
-	ProviderIDs      []string                     `json:"provider_ids,omitempty"`
-	ProviderConfigs  []ModelServiceProviderConfig `json:"provider_configs,omitempty"`
-	CapabilityTags   []string                     `json:"capability_tags,omitempty"`
-	Priority         int                          `json:"priority,omitempty"`
-	ResolutionTier   int                          `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64                      `json:"credit_multiplier,omitempty"`
+	Name              string                       `json:"name"`
+	Description       string                       `json:"description,omitempty"`
+	ProviderIDs       []string                     `json:"provider_ids,omitempty"`
+	ProviderConfigs   []ModelServiceProviderConfig `json:"provider_configs,omitempty"`
+	CapabilityTags    []string                     `json:"capability_tags,omitempty"`
+	Priority          int                          `json:"priority,omitempty"`
+	ResolutionTier    int                          `json:"resolution_tier,omitempty"`
+	CreditMultiplier  float64                      `json:"credit_multiplier,omitempty"`
+	BillingMultiplier float64                      `json:"billing_multiplier,omitempty"`
 }
 
 type ModelServiceProviderConfig struct {
@@ -324,6 +326,7 @@ type AuthorizedModel struct {
 	Priority                      int                             `json:"priority,omitempty"`
 	ResolutionTier                int                             `json:"resolution_tier,omitempty"`
 	CreditMultiplier              float64                         `json:"credit_multiplier,omitempty"`
+	BillingMultiplier             float64                         `json:"billing_multiplier,omitempty"`
 	ProviderCapabilityTags        map[string][]string             `json:"provider_capability_tags,omitempty"`
 	ProviderPriorities            map[string]int                  `json:"provider_priorities,omitempty"`
 	ProviderResolutionTiers       map[string]int                  `json:"provider_resolution_tiers,omitempty"`
@@ -352,22 +355,22 @@ type ProviderRouteBilling struct {
 }
 
 type ActiveGrant struct {
-	ID                string                  `json:"id,omitempty"`
-	ServiceGroupID    string                  `json:"service_group_id"`
-	Source            string                  `json:"source"`
-	CardID            string                  `json:"card_id,omitempty"`
-	CardOrderID       string                  `json:"card_order_id,omitempty"`
-	StartsAt          time.Time               `json:"starts_at"`
-	ExpiresAt         time.Time               `json:"expires_at"`
-	Permanent         bool                    `json:"permanent,omitempty"`
-	RollingFiveHour   bool                    `json:"rolling_five_hour,omitempty"`
-	Active            bool                    `json:"active"`
-	Effective         bool                    `json:"effective"`
-	Status            string                  `json:"status,omitempty"`
-	StatusReason      string                  `json:"status_reason,omitempty"`
-	CreditsTotal      float64                 `json:"credits_total,omitempty"`
-	CreditsUsed       float64                 `json:"credits_used,omitempty"`
-	CreditsAvailable  float64                 `json:"credits_available,omitempty"`
+	ID               string    `json:"id,omitempty"`
+	ServiceGroupID   string    `json:"service_group_id"`
+	Source           string    `json:"source"`
+	CardID           string    `json:"card_id,omitempty"`
+	CardOrderID      string    `json:"card_order_id,omitempty"`
+	StartsAt         time.Time `json:"starts_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	Permanent        bool      `json:"permanent,omitempty"`
+	RollingFiveHour  bool      `json:"rolling_five_hour,omitempty"`
+	Active           bool      `json:"active"`
+	Effective        bool      `json:"effective"`
+	Status           string    `json:"status,omitempty"`
+	StatusReason     string    `json:"status_reason,omitempty"`
+	CreditsTotal     float64   `json:"credits_total,omitempty"`
+	CreditsUsed      float64   `json:"credits_used,omitempty"`
+	CreditsAvailable float64   `json:"credits_available,omitempty"`
 	// HeldCredits is the owner-scoped share of this grant's service group that
 	// is currently held by in-flight billing reservations. Admission subtracts
 	// the same amount, so the UI can show why spendable credit is lower than
@@ -434,16 +437,119 @@ func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Regist
 	return &reg, nil
 }
 
+// serviceRegistryMu serializes read-modify-write of the service registry.
+// Token-bank pulls and credit billing both store their result in this one JSON
+// document. Without a shared lock, a billing flush that loaded a snapshot from
+// before the pull saves over the new grant, and the HubCenter debit has no
+// local quota left.
+//
+// Lock order is llmCreditChargeMu, then this mutex. IssueTokenBankGrant takes
+// tokenBankGrantMu, then this mutex. Do not take either of those while holding
+// this mutex, and do not call the public registry loader from a caller that
+// already holds it: that loader locks this mutex inside singleflight.
+var serviceRegistryMu sync.Mutex
+
+// LockServiceRegistryMutation guards one registry read-modify-write. Callers
+// that already hold it must use the locked loader rather than taking it again.
+func LockServiceRegistryMutation() { serviceRegistryMu.Lock() }
+
+// UnlockServiceRegistryMutation releases LockServiceRegistryMutation.
+func UnlockServiceRegistryMutation() { serviceRegistryMu.Unlock() }
+
+// WithServiceRegistryMutation runs fn while holding the registry write lock.
+func WithServiceRegistryMutation(fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	serviceRegistryMu.Lock()
+	defer serviceRegistryMu.Unlock()
+	return fn()
+}
+
+var afterServiceRegistrySave func(SystemSettingsRepository)
+
+// SetAfterServiceRegistrySave registers a hook invoked after every successful
+// registry write. The hub uses it to drop the runtime cache; a stale cache is
+// what the next flush would save back over a token-bank grant.
+func SetAfterServiceRegistrySave(fn func(SystemSettingsRepository)) {
+	afterServiceRegistrySave = fn
+}
+
+func notifyServiceRegistrySave(system SystemSettingsRepository) {
+	if afterServiceRegistrySave != nil && system != nil {
+		afterServiceRegistrySave(system)
+	}
+}
+
 func SaveRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry) error {
 	if reg == nil {
 		reg = &Registry{}
+	}
+	if err := mergeStoredTokenBankGrants(ctx, system, reg); err != nil {
+		return err
 	}
 	reg.Normalize()
 	data, err := json.Marshal(reg)
 	if err != nil {
 		return err
 	}
-	return system.Set(ctx, RegistryKey, string(data))
+	if err := system.Set(ctx, RegistryKey, string(data)); err != nil {
+		return err
+	}
+	notifyServiceRegistrySave(system)
+	return nil
+}
+
+// mergeStoredTokenBankGrants keeps token-bank grants that the caller never
+// loaded. A pull writes the grant into the store, then a saver holding an
+// older snapshot would otherwise delete it. When both copies have the grant,
+// the higher CreditsUsed wins so a debit that already landed is not refunded.
+func mergeStoredTokenBankGrants(ctx context.Context, system SystemSettingsRepository, reg *Registry) error {
+	if system == nil || reg == nil {
+		return nil
+	}
+	fresh, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	if fresh == nil {
+		return nil
+	}
+	index := make(map[string]int)
+	for i := range reg.Grants {
+		if key, ok := tokenBankGrantMergeKey(reg.Grants[i]); ok {
+			index[key] = i
+		}
+	}
+	for _, grant := range fresh.Grants {
+		key, ok := tokenBankGrantMergeKey(grant)
+		if !ok {
+			continue
+		}
+		pos, found := index[key]
+		if !found {
+			reg.Grants = append(reg.Grants, grant)
+			index[key] = len(reg.Grants) - 1
+			continue
+		}
+		if grant.CreditsUsed > reg.Grants[pos].CreditsUsed {
+			reg.Grants[pos].CreditsUsed = grant.CreditsUsed
+		}
+	}
+	return nil
+}
+
+func tokenBankGrantMergeKey(grant Grant) (string, bool) {
+	if strings.TrimSpace(grant.Source) != TokenBankGrantSource {
+		return "", false
+	}
+	if card := strings.TrimSpace(grant.CardID); card != "" {
+		return "card:" + card, true
+	}
+	if id := strings.TrimSpace(grant.ID); id != "" {
+		return "id:" + id, true
+	}
+	return "", false
 }
 
 // BackfillRegistryUserIDs fills user_id on legacy LLM grants, bindings, and

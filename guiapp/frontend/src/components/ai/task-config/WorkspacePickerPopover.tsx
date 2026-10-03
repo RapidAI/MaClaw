@@ -139,7 +139,7 @@ export function WorkspacePickerPopover({
         width: "100%",
         boxSizing: "border-box",
         height: 28,
-        borderRadius: 7,
+        borderRadius: "var(--radius-md, 10px)",
         border: `1px solid ${t.btnColor}`,
         background: t.fieldBg,
         color: t.inputText || t.text,

@@ -1409,13 +1409,48 @@ func cloneSkillHubEvidenceForSearch(e *MaclawAppTestEvidence) *MaclawAppSearchEv
 // Memory management Wails bindings
 // ---------------------------------------------------------------------------
 
-// ListMemories returns memory entries filtered by category and keyword (Wails binding).
+// ListMemories returns active memories for the desktop install (Wails binding).
+// Empty-owner rows and desktop-user project sessions stay visible. Other
+// named owners stay out. Inactive rows stay out. Store.List remains the
+// unfiltered view for migration and tests.
 func (a *App) ListMemories(category, keyword string) []memory.Entry {
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil
 	}
-	return a.memoryStore.List(memory.Category(category), keyword)
+	return filterDesktopManageableMemories(a.memoryStore.List(memory.Category(category), keyword))
+}
+
+func filterDesktopManageableMemories(entries []memory.Entry) []memory.Entry {
+	if len(entries) == 0 {
+		return entries
+	}
+	out := make([]memory.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsActive() && desktopMemoryOwnerVisible(entry) {
+			// The editor renders text fields only. Dropping vectors keeps the
+			// Wails payload small when the hot set is embedded.
+			entry.Embedding = nil
+			entry.RelatedEdges = nil
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func desktopMemoryOwnerVisible(entry memory.Entry) bool {
+	if !desktopLineageOwner(entry.OwnerID) {
+		return false
+	}
+	if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !desktopLineageOwner(entry.Boundary.OwnerID) {
+		return false
+	}
+	return true
+}
+
+func desktopLineageOwner(owner string) bool {
+	owner = strings.TrimSpace(owner)
+	return owner == "" || owner == desktopUserID || strings.HasPrefix(owner, desktopUserID+":")
 }
 
 // SaveMemory creates a new memory entry (Wails binding).
@@ -1659,17 +1694,21 @@ func (a *App) GetMemoryHealth() *memory.HealthReport {
 
 // MemoryStatusData holds the structured memory status for the frontend pie chart.
 type MemoryStatusData struct {
-	TotalEntries    int                  `json:"total_entries"`
-	MaxCapacity     int                  `json:"max_capacity"`
-	CapacityPercent float64              `json:"capacity_percent"`
-	ArchivedEntries int                  `json:"archived_entries"`
-	StaleEntries    int                  `json:"stale_entries"`
-	PinnedEntries   int                  `json:"pinned_entries"`
-	EmbedderActive  bool                 `json:"embedder_active"`
-	NoEmbedding     int                  `json:"no_embedding"`
-	OldestEntry     string               `json:"oldest_entry,omitempty"`
-	NewestEntry     string               `json:"newest_entry,omitempty"`
-	Categories      []MemoryStatusCatRow `json:"categories"`
+	TotalEntries      int                  `json:"total_entries"`
+	MaxCapacity       int                  `json:"max_capacity"`
+	CapacityPercent   float64              `json:"capacity_percent"`
+	RecallableEntries int                  `json:"recallable_entries"`
+	DormantEntries    int                  `json:"dormant_entries"`
+	SupersededEntries int                  `json:"superseded_entries"`
+	InvalidEntries    int                  `json:"invalid_entries"`
+	ArchivedEntries   int                  `json:"archived_entries"`
+	StaleEntries      int                  `json:"stale_entries"`
+	PinnedEntries     int                  `json:"pinned_entries"`
+	EmbedderActive    bool                 `json:"embedder_active"`
+	NoEmbedding       int                  `json:"no_embedding"`
+	OldestEntry       string               `json:"oldest_entry,omitempty"`
+	NewestEntry       string               `json:"newest_entry,omitempty"`
+	Categories        []MemoryStatusCatRow `json:"categories"`
 }
 
 // MemoryStatusCatRow is one row in the category breakdown.
@@ -1689,30 +1728,28 @@ func (a *App) GetMemoryStatus() *MemoryStatusData {
 	if a.memoryStore == nil {
 		return &MemoryStatusData{MaxCapacity: 2000, Categories: []MemoryStatusCatRow{}}
 	}
-	hr := a.memoryStore.HealthReport()
+	status := a.memoryStore.StatusForHost()
 	data := &MemoryStatusData{
-		TotalEntries:    hr.ActiveEntries,
-		MaxCapacity:     hr.MaxCapacity,
-		CapacityPercent: hr.CapacityPercent,
-		ArchivedEntries: hr.ArchivedEntries,
-		StaleEntries:    hr.StaleEntries,
-		PinnedEntries:   hr.PinnedEntries,
-		EmbedderActive:  hr.EmbedderActive,
-		NoEmbedding:     hr.NoEmbedding,
-		OldestEntry:     hr.OldestEntry,
-		NewestEntry:     hr.NewestEntry,
+		TotalEntries:      status.TotalEntries,
+		MaxCapacity:       status.MaxCapacity,
+		CapacityPercent:   status.CapacityPercent,
+		RecallableEntries: status.RecallableEntries,
+		DormantEntries:    status.DormantEntries,
+		SupersededEntries: status.SupersededEntries,
+		InvalidEntries:    status.InvalidEntries,
+		ArchivedEntries:   status.ArchivedEntries,
+		StaleEntries:      status.StaleEntries,
+		PinnedEntries:     status.PinnedEntries,
+		EmbedderActive:    status.EmbedderActive,
+		NoEmbedding:       status.NoEmbedding,
+		OldestEntry:       status.OldestEntry,
+		NewestEntry:       status.NewestEntry,
 	}
-
-	// Build category rows from HealthReport.CategoryCounts (includes ALL categories).
-	total := hr.ActiveEntries
-	if total == 0 {
-		total = 1 // avoid division by zero
-	}
-	for cat, count := range hr.CategoryCounts {
+	for _, row := range status.Categories {
 		data.Categories = append(data.Categories, MemoryStatusCatRow{
-			Category: cat,
-			Count:    count,
-			Percent:  float64(count) / float64(total) * 100,
+			Category: row.Category,
+			Count:    row.Count,
+			Percent:  row.Percent,
 		})
 	}
 	// Sort by count descending for consistent display.

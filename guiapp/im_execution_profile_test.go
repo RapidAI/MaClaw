@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -473,21 +476,26 @@ func TestClassifyIMExecutionProfileDirectRequiresExplicitContract(t *testing.T) 
 	}
 }
 
+func TestClassifyIMExecutionProfileSuppliedSemanticIgnoresClockWording(t *testing.T) {
+	semantic := &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4, Reason: "unmanaged"}
+	profile := classifyIMExecutionProfileWithSemanticAndContracts(IMUserMessage{Text: "现在几点？"}, false, false, semantic, explicitInferredExecutionContractForTest)
+	if profile.IsDirect() || profile.Reason == "local deterministic current time intent" {
+		t.Fatalf("profile = %+v, clock wording must not override a supplied classification", profile)
+	}
+}
+
 func TestClassifyIMExecutionProfileLocalCurrentTimeFallbackUsesDirectTool(t *testing.T) {
 	profile := classifyIMExecutionProfileWithSemanticAndContracts(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9\uff1f"}, false, false, nil, explicitInferredExecutionContractForTest)
-	if !profile.IsDirect() || profile.DirectToolName != "current_datetime" {
-		t.Fatalf("profile = %+v, want direct current_datetime from local time intent", profile)
-	}
-	if profile.Reason != "local deterministic current time intent" {
-		t.Fatalf("reason = %q, want local deterministic current time intent", profile.Reason)
+	if profile.IsDirect() || profile.DirectToolName == "current_datetime" || profile.Reason == "local deterministic current time intent" {
+		t.Fatalf("profile = %+v, clock wording must not select a tool without a classification", profile)
 	}
 }
 
 func TestClassifyIMExecutionProfileLocalCurrentTimeAllowsLongPoliteQuery(t *testing.T) {
 	msg := IMUserMessage{Text: "\u9ebb\u70e6\u4f60\u770b\u4e00\u4e0b\u6211\u8fd9\u8fb9\u7684\u5f53\u524d\u65f6\u95f4\uff0c\u73b0\u5728\u51e0\u70b9\u4e86\uff1f\u987a\u4fbf\u544a\u8bc9\u6211\u4eca\u5929\u5468\u51e0\uff0c\u8c22\u8c22"}
 	profile := classifyIMExecutionProfileWithSemanticAndContracts(msg, false, false, nil, explicitInferredExecutionContractForTest)
-	if !profile.IsDirect() || profile.DirectToolName != "current_datetime" {
-		t.Fatalf("profile = %+v, want direct current_datetime for long polite current-time query", profile)
+	if profile.IsDirect() || profile.DirectToolName == "current_datetime" {
+		t.Fatalf("profile = %+v, a long clock sentence must not select a tool without a classification", profile)
 	}
 }
 
@@ -895,7 +903,7 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 		Confidence:    0.78,
 		Reason:        "test",
 	}
-	prompt := buildLightIMSystemPrompt(IMUserMessage{Text: "\u5927\u8fde\u5929\u6c14"}, profile)
+	prompt := buildLightIMSystemPrompt(IMUserMessage{Text: "\u5927\u8fde\u5929\u6c14"}, profile, nil, "")
 	// Light bundle includes the shared Chinese output-format fence (~1.5KB), a
 	// short GUI capability fence, and the ~0.5KB governed-tool grant fence
 	// (semanticGrantPromptFence). Keep a hard cap so full-agent sections
@@ -927,7 +935,7 @@ func TestBuildLightIMSystemPromptIncludesBotBindingContext(t *testing.T) {
 			BotProfileID: "support", WorkingDirectory: "D:/support/source",
 			DocumentDirectories: []string{"D:/support/manuals"}, InitialPrompt: "仅处理客服问题",
 		},
-	}, profile)
+	}, profile, nil, "")
 	for _, want := range []string{"bot_profile_id: support", "D:/support/source", "D:/support/manuals", "仅处理客服问题"} {
 		if !containsText(prompt, want) {
 			t.Fatalf("light bot prompt missing %q:\n%s", want, prompt)
@@ -1278,6 +1286,229 @@ func TestPrepareAgentLoopToolsLightKeepsToolResultReader(t *testing.T) {
 	}
 }
 
+func TestHydrateParentExecutionWaitsForTheScan(t *testing.T) {
+	const userID = "desktop-user:restored-task"
+	mem := agent.NewConversationMemory()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "分析以下仓库"},
+		{Role: "assistant", ToolCalls: []map[string]interface{}{
+			{"function": map[string]interface{}{"name": "bash"}},
+		}},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+	})
+	h := &IMMessageHandler{memory: mem}
+	var wg sync.WaitGroup
+	misses := make(chan struct{}, 32)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !h.parentExecutionIsFull(userID) {
+				misses <- struct{}{}
+			}
+		}()
+	}
+	wg.Wait()
+	close(misses)
+	if _, ok := <-misses; ok {
+		t.Fatal("a concurrent hydrate observed an empty carry before the history scan finished")
+	}
+}
+
+func TestHydrateParentExecutionReadsTypedToolCalls(t *testing.T) {
+	const userID = "desktop-user:typed-calls"
+	mem := agent.NewConversationMemory()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "分析以下仓库"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{
+			ID: "c1",
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: strings.Repeat("echo ", 2000),
+			},
+		}}},
+		{Role: "tool", ToolCallID: "c1", Content: "ok"},
+	})
+	h := &IMMessageHandler{memory: mem}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", TaskType: "general"}
+	got := h.continuationKeepsParentExecution(light, userID, "嵌入模型用在哪些场景", nil)
+	if got.IsLight() || got.Reason != shortContinuationReason {
+		t.Fatalf("typed tool calls must restore the parent surface, got %+v", got)
+	}
+	if tools := h.parentExecutionTools(userID); len(tools) != 1 || tools[0] != "bash" {
+		t.Fatalf("hydrated carry = %v, want [bash]", tools)
+	}
+}
+
+func TestRestartHydratesParentExecutionFromHistory(t *testing.T) {
+	const userID = "desktop-user:restored-task"
+	mem := agent.NewConversationMemory()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "分析以下仓库"},
+		{Role: "assistant", Content: "reading", ToolCalls: []map[string]interface{}{
+			{"id": "c1", "function": map[string]interface{}{"name": "bash"}},
+		}},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+		{Role: "assistant", Content: "对比结论"},
+		{Role: "user", Content: "再说一下结论"},
+		{Role: "assistant", Content: "结论还是那个"},
+	})
+	h := &IMMessageHandler{memory: mem}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", TaskType: "general"}
+	got := h.continuationKeepsParentExecution(light, userID, "嵌入模型用在哪些场景", nil)
+	if got.IsLight() || got.Reason != shortContinuationReason {
+		t.Fatalf("a short continuation after restart must keep the restored full surface, got %+v", got)
+	}
+	if tools := h.parentExecutionTools(userID); len(tools) != 1 || tools[0] != "bash" {
+		t.Fatalf("hydrated carry = %v, want [bash]", tools)
+	}
+
+	h.noteParentExecution(userID, false, nil)
+	if again := h.continuationKeepsParentExecution(light, userID, "嵌入模型用在哪些场景", nil); !again.IsLight() {
+		t.Fatalf("an in-process light clear must not rehydrate, got %+v", again)
+	}
+
+	lightOnly := agent.NewConversationMemory()
+	lightOnly.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "查一下"},
+		{Role: "tool", ToolName: "web_search", Content: "results"},
+	})
+	h2 := &IMMessageHandler{memory: lightOnly}
+	if got := h2.continuationKeepsParentExecution(light, userID, "接着说", nil); !got.IsLight() {
+		t.Fatalf("a restored light-only turn must stay light, got %+v", got)
+	}
+}
+
+func TestProjectTaskSearchKeepsParentToolsAfterRestart(t *testing.T) {
+	const userID = `desktop-user:C:\tasks\octop`
+	store := filepath.Join(t.TempDir(), "conversation.json")
+	mem := agent.NewPersistentConversationMemory(store)
+	// History compression can drop tool-call names. The carry has to live
+	// beside the transcript, not inside it.
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "分析以下仓库"},
+		{Role: "assistant", Content: "对比结论"},
+	})
+	h := &IMMessageHandler{memory: mem}
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+	})
+	mem.Stop()
+
+	reloaded := agent.NewPersistentConversationMemory(store)
+	defer reloaded.Stop()
+	h2 := &IMMessageHandler{memory: reloaded}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light"}
+	search := &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.96}
+	taskSearch := h2.continuationKeepsParentExecution(light, userID, "octop中有sso登录功能吗？", search)
+	if !taskSearch.IsLight() || !taskSearch.PromptIsLight() || taskSearch.Reason != lookupContinuationReason || taskSearch.ToolBudget != 0 {
+		t.Fatalf("a task search after restart must stay a light lookup with an open tool budget, got %+v", taskSearch)
+	}
+	if taskSearch.IterationBudget != lookupContinuationIterationBudget {
+		t.Fatalf("task search iteration budget = %d, want %d", taskSearch.IterationBudget, lookupContinuationIterationBudget)
+	}
+	loop := NewLoopContext("chat", 300, nil)
+	loop.Runtime.Execution = taskSearch
+	limits := computeAgentLoopIterationLimits(loop, 300, 0)
+	if limits.EffectiveMax != lookupContinuationIterationBudget {
+		t.Fatalf("task search loop cap = %d, want %d", limits.EffectiveMax, lookupContinuationIterationBudget)
+	}
+	if tools := h2.parentExecutionTools(userID); len(tools) != 1 || tools[0] != "bash" {
+		t.Fatalf("durable carry = %v, want [bash]", tools)
+	}
+	longSearch := "请在 octop 仓库里查一下有没有 SSO 或者单点登录，认证入口在哪个目录，登录流程经过哪些服务"
+	longProfile := h2.continuationKeepsParentExecution(light, userID, longSearch, search)
+	if longProfile.Reason != lookupContinuationReason || !longProfile.IsLight() || longProfile.ToolBudget != 0 {
+		t.Fatalf("a longer task search must stay a lookup continuation, got %+v", longProfile)
+	}
+	h2.recordSemanticExecutionSurface(userID, longProfile, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_search"}},
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+	})
+	if tools := h2.parentExecutionTools(userID); len(tools) != 1 || tools[0] != "bash" {
+		t.Fatalf("a longer task search must keep the parent carry, got %v", tools)
+	}
+	if utf8.RuneCountInString(longSearch) <= 40 {
+		t.Fatalf("fixture must be longer than the short-continuation gate, got %d", utf8.RuneCountInString(longSearch))
+	}
+	fetch := &intent.ClassificationResult{Primary: intent.LabelWebFetch, Confidence: 0.95}
+	managedFull := fullExecutionProfile("semantic capability-managed intent")
+	fetchProfile := h2.continuationKeepsParentExecution(managedFull, userID, "打开那个仓库", fetch)
+	if !fetchProfile.IsLight() || !fetchProfile.PromptIsLight() || fetchProfile.Reason != lookupContinuationReason || fetchProfile.ToolBudget != 0 {
+		t.Fatalf("a task page fetch must stay a light lookup, got %+v", fetchProfile)
+	}
+	h2.recordSemanticExecutionSurface(userID, fetchProfile, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+	})
+	if tools := h2.parentExecutionTools(userID); len(tools) != 1 || tools[0] != "bash" {
+		t.Fatalf("a page fetch must not clear the parent carry, got %v", tools)
+	}
+	mutating := fullExecutionProfile("semantic capability-managed mutating intent")
+	if got := h2.continuationKeepsParentExecution(mutating, userID, "打开那个仓库", fetch); got.Reason != mutating.Reason || got.IsLight() {
+		t.Fatalf("a mutating full profile must not be narrowed, got %+v", got)
+	}
+	structural := fullExecutionProfile("structural execution signal")
+	pathSearch := h2.continuationKeepsParentExecution(structural, userID, "认证在 internal/auth/sso.go 吗", search)
+	if pathSearch.Reason != lookupContinuationReason || !pathSearch.IsLight() || pathSearch.ToolBudget != 0 {
+		t.Fatalf("a path inside a task search must stay a lookup continuation, got %+v", pathSearch)
+	}
+	h2.recordSemanticExecutionSurface(userID, pathSearch, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_search"}},
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+	})
+	if tools := h2.parentExecutionTools(userID); len(tools) != 1 || tools[0] != "bash" {
+		t.Fatalf("a path inside a task search must keep the parent carry, got %v", tools)
+	}
+	attached := fullExecutionProfile("attachments present")
+	if got := h2.continuationKeepsParentExecution(attached, userID, "认证在 internal/auth/sso.go 吗", search); got.Reason != attached.Reason || got.IsLight() {
+		t.Fatalf("an attachment turn must stay full, got %+v", got)
+	}
+	live := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98}
+	if got := h2.continuationKeepsParentExecution(light, userID, "北京天气", live); !got.IsLight() {
+		t.Fatalf("live data in a task must start clean, got %+v", got)
+	}
+	chat := &IMMessageHandler{}
+	chat.noteParentExecution("desktop-user", true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	if got := chat.continuationKeepsParentExecution(light, "desktop-user", "搜一下", search); !got.IsLight() {
+		t.Fatalf("a chat search must start clean, got %+v", got)
+	}
+	for _, owner := range []string{"desktop-user:acp:session-1", "desktop-user:expert:builtin-latex-paper"} {
+		h2.noteParentExecution(owner, true, []map[string]interface{}{
+			{"function": map[string]interface{}{"name": "bash"}},
+		})
+		if got := h2.continuationKeepsParentExecution(light, owner, "octop中有sso登录功能吗？", search); !got.IsLight() {
+			t.Fatalf("%s search must start clean, got %+v", owner, got)
+		}
+	}
+}
+
+func TestContinuationSurfaceUnionsCarriedTools(t *testing.T) {
+	h := &IMMessageHandler{}
+	const userID = "desktop-user"
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "ssh"}},
+	})
+	continued := fullExecutionProfile(shortContinuationReason)
+	h.recordSemanticExecutionSurface(userID, continued, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+		{"function": map[string]interface{}{"name": "web_search"}},
+	})
+	got := h.parentExecutionTools(userID)
+	if len(got) != 2 || got[0] != "ssh" || got[1] != "bash" {
+		t.Fatalf("continuation carry = %v, want [ssh bash]", got)
+	}
+}
+
+func TestSearchContinuationDoesNotGrowBaselineShell(t *testing.T) {
+	search := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.96}
+	if semanticBaselineWorkspaceApplies(search) {
+		t.Fatal("a search continuation stays a lookup; shell is not added just because the parent task had it")
+	}
+}
+
 func TestShortContinuationKeepsParentExecutionTools(t *testing.T) {
 	h := &IMMessageHandler{}
 	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", TaskType: "general"}
@@ -1316,8 +1547,8 @@ func TestShortContinuationKeepsParentExecutionTools(t *testing.T) {
 	if got := h.continuationKeepsParentExecution(light, userID, "用这个", knowledge); got.Reason != shortContinuationReason {
 		t.Fatalf("a knowledge read continues the parent task, got %+v", got)
 	}
-	if got := h.continuationKeepsParentExecution(light, userID, "谢谢", nil); !got.IsLight() {
-		t.Fatalf("a greeting must stay light, got %+v", got)
+	if got := h.continuationKeepsParentExecution(light, userID, "谢谢", nil); got.IsLight() || got.Reason != shortContinuationReason {
+		t.Fatalf("a short utterance with no classification keeps the parent surface, got %+v", got)
 	}
 	long := strings.Repeat("续", 41)
 	if got := h.continuationKeepsParentExecution(light, userID, long, nil); !got.IsLight() {
@@ -1371,6 +1602,434 @@ func TestRankContinuationToolsKeepsRetrievalAheadOfRestore(t *testing.T) {
 	}
 }
 
+func TestAmbientRecallDoesNotReplaceOpenExecutionSurface(t *testing.T) {
+	h := &IMMessageHandler{}
+	const userID = "desktop-user"
+	full := fullExecutionProfile("semantic capability-managed mutating intent")
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "ssh"}},
+	})
+	h.recordSemanticExecutionSurface(userID, full, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "memory_recall"}},
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+	})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("ambient recall replaced the open execution surface: %v", got)
+	}
+	onlyRecall := &IMMessageHandler{}
+	onlyRecall.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "memory_recall"}},
+	})
+	if onlyRecall.parentExecutionIsFull(userID) {
+		t.Fatal("memory_recall alone became the parent execution surface")
+	}
+}
+
+func TestRestartRestoresExecutionSurfacePastAmbientCarry(t *testing.T) {
+	const userID = "desktop-user:restored-shell"
+	store := filepath.Join(t.TempDir(), "conversation.json")
+	mem := agent.NewPersistentConversationMemory(store)
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器上的配置"},
+		{Role: "assistant", Content: "connecting", ToolCalls: []map[string]interface{}{
+			{"id": "c1", "function": map[string]interface{}{"name": "ssh"}},
+		}},
+		{Role: "tool", ToolName: "ssh", ToolCallID: "c1", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "assistant", Content: "recall", ToolCalls: []map[string]interface{}{
+			{"id": "c2", "function": map[string]interface{}{"name": "memory_recall"}},
+		}},
+		{Role: "tool", ToolName: "memory_recall", ToolCallID: "c2", Content: "notes"},
+	})
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status:  string(semanticResidueOpen),
+		Summary: "更新api2服务器上的omniroute，保存原始配置",
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:knowledge.read.local:20dd5f458c29", Capability: "knowledge.read.local", Required: true},
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+			{ID: "need:~ambient:memory.recall.agent", Capability: string(coretool.CapabilityMemoryRecallAgent), Required: true},
+		},
+		Remaining: map[string]int{
+			"knowledge.read.local":                            1,
+			string(coretool.CapabilityShellExecuteRemoteHost): 0,
+			string(coretool.CapabilityMemoryRecallAgent):      1,
+		},
+	})
+	mem.SetParentExecutionTools(userID, []string{"memory_recall"})
+	mem.Stop()
+
+	reloaded := agent.NewPersistentConversationMemory(store)
+	defer reloaded.Stop()
+	h := &IMMessageHandler{memory: reloaded}
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("restart restored %v, want [ssh]", got)
+	}
+	again, known := reloaded.ParentExecutionTools(userID)
+	if !known || len(again) != 1 || again[0] != "ssh" {
+		t.Fatalf("durable carry = %v known=%v, want [ssh]", again, known)
+	}
+
+	cleared := agent.NewConversationMemory()
+	defer cleared.Stop()
+	cleared.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "查一下"},
+		{Role: "tool", ToolName: "memory_recall", Content: "notes"},
+	})
+	cleared.SetParentExecutionTools(userID, []string{"memory_recall"})
+	h2 := &IMMessageHandler{memory: cleared}
+	if h2.parentExecutionIsFull(userID) {
+		t.Fatal("ambient carry revived ssh after the obligation was gone")
+	}
+}
+
+func TestRestartDoesNotSubstituteLocalShellForRemoteObligation(t *testing.T) {
+	const userID = "desktop-user:remote-shell"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "看一下本地日志"},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "tool", ToolName: "memory_recall", Content: "notes"},
+	})
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	})
+	mem.SetParentExecutionTools(userID, []string{"memory_recall"})
+	h := &IMMessageHandler{memory: mem}
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("restart restored %v, want [ssh]", got)
+	}
+
+	localOnly := agent.NewConversationMemory()
+	defer localOnly.Stop()
+	localOnly.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "看一下本地日志"},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "tool", ToolName: "memory_recall", Content: "notes"},
+	})
+	localOnly.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	})
+	localOnly.SetParentExecutionTools(userID, []string{"memory_recall"})
+	h2 := &IMMessageHandler{memory: localOnly}
+	if h2.parentExecutionIsFull(userID) {
+		t.Fatal("a later bash became the open remote-shell surface")
+	}
+}
+
+func TestLightSideQuestionKeepsOpenShellCarry(t *testing.T) {
+	const userID = "desktop-user:open-shell"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	})
+	mem.SetParentExecutionTools(userID, []string{"ssh"})
+	h := &IMMessageHandler{memory: mem}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", Reason: "semantic capability-managed lookup"}
+	h.recordSemanticExecutionSurface(userID, light, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_search"}},
+	})
+	raw, known := mem.ParentExecutionTools(userID)
+	if !known || len(raw) != 1 || raw[0] != "ssh" {
+		t.Fatalf("light side question cleared the open shell: known=%v tools=%v", known, raw)
+	}
+
+	ended := agent.NewConversationMemory()
+	defer ended.Stop()
+	ended.SetParentExecutionTools(userID, []string{"bash"})
+	endedHandler := &IMMessageHandler{memory: ended}
+	endedHandler.recordSemanticExecutionSurface(userID, light, nil)
+	cleared, known := ended.ParentExecutionTools(userID)
+	if !known || len(cleared) != 0 {
+		t.Fatalf("a light turn with no open task must clear, known=%v tools=%v", known, cleared)
+	}
+}
+
+func TestExplicitClearRestoresOpenShellFromHistory(t *testing.T) {
+	const userID = "desktop-user:cleared-shell"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "现在几点"},
+		{Role: "tool", ToolName: "web_search", Content: "ok"},
+	})
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	})
+	mem.SetParentExecutionTools(userID, []string{"ssh"})
+	mem.ClearParentExecutionTools(userID)
+	h := &IMMessageHandler{memory: mem}
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("cleared carry restored %v, want [ssh]", got)
+	}
+
+	finished := agent.NewConversationMemory()
+	defer finished.Stop()
+	finished.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+	})
+	finished.SetParentExecutionTools(userID, []string{"ssh"})
+	finished.ClearParentExecutionTools(userID)
+	h2 := &IMMessageHandler{memory: finished}
+	if h2.parentExecutionIsFull(userID) {
+		t.Fatal("a cleared carry revived ssh after the task was gone")
+	}
+}
+
+func TestUnrecordedParentRestoresOpenShellPastAmbient(t *testing.T) {
+	const userID = "desktop-user:unrecorded-shell"
+	openShell := agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	}
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "tool", ToolName: "memory_recall", Content: "notes"},
+	})
+	mem.SetSemanticSessionResidue(userID, openShell)
+	h := &IMMessageHandler{memory: mem}
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("unrecorded parent restored %v, want [ssh]", got)
+	}
+	raw, known := mem.ParentExecutionTools(userID)
+	if !known || len(raw) != 1 || raw[0] != "ssh" {
+		t.Fatalf("durable carry = %v known=%v, want [ssh]", raw, known)
+	}
+
+	finished := agent.NewConversationMemory()
+	defer finished.Stop()
+	finished.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "tool", ToolName: "memory_recall", Content: "notes"},
+	})
+	h2 := &IMMessageHandler{memory: finished}
+	if h2.parentExecutionIsFull(userID) {
+		t.Fatal("an unrecorded parent revived ssh after the task was gone")
+	}
+
+	localOnly := agent.NewConversationMemory()
+	defer localOnly.Stop()
+	localOnly.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "看一下本地日志"},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "tool", ToolName: "memory_recall", Content: "notes"},
+	})
+	localOnly.SetSemanticSessionResidue(userID, openShell)
+	h3 := &IMMessageHandler{memory: localOnly}
+	if h3.parentExecutionIsFull(userID) {
+		t.Fatal("an unrecorded parent installed bash for the open remote shell")
+	}
+}
+
+func TestCompanionRenderDoesNotReplaceOpenShell(t *testing.T) {
+	const userID = "desktop-user:companion-render"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	})
+	mem.SetParentExecutionTools(userID, []string{"ssh"})
+	h := &IMMessageHandler{memory: mem}
+	full := fullExecutionProfile("semantic capability-managed mutating intent")
+	h.recordSemanticExecutionSurface(userID, full, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+		{"function": map[string]interface{}{"name": "write_file"}},
+		{"function": map[string]interface{}{"name": "read_file"}},
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+	})
+	raw, known := mem.ParentExecutionTools(userID)
+	if !known || len(raw) != 1 || raw[0] != "ssh" {
+		t.Fatalf("baseline companions replaced ssh: known=%v tools=%v", known, raw)
+	}
+	continued := fullExecutionProfile(shortContinuationReason)
+	h.recordSemanticExecutionSurface(userID, continued, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+		{"function": map[string]interface{}{"name": "web_search"}},
+	})
+	raw, known = mem.ParentExecutionTools(userID)
+	if !known || len(raw) != 1 || raw[0] != "ssh" {
+		t.Fatalf("continuation unioned baseline bash onto ssh: known=%v tools=%v", known, raw)
+	}
+
+	h.recordSemanticExecutionSurfacePlan(userID, full, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "write_file"}},
+	}, []coretool.CapabilityNeed{
+		{ID: "need:fs.write.local:real", Capability: coretool.CapabilityFSWriteLocal, Required: true},
+	})
+	raw, known = mem.ParentExecutionTools(userID)
+	if !known || len(raw) != 1 || raw[0] != "write_file" {
+		t.Fatalf("a file-write plan kept the shell route: known=%v tools=%v", known, raw)
+	}
+
+	missed := agent.NewConversationMemory()
+	defer missed.Stop()
+	missed.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+	})
+	missed.SetParentExecutionTools(userID, []string{"ssh"})
+	missedHandler := &IMMessageHandler{memory: missed}
+	missedHandler.recordSemanticExecutionSurfacePlan(userID, full, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	}, []coretool.CapabilityNeed{
+		{ID: "need:fs.write.local:real", Capability: coretool.CapabilityFSWriteLocal, Required: true},
+	})
+	raw, known = missed.ParentExecutionTools(userID)
+	if !known || len(raw) != 0 {
+		t.Fatalf("a switched plan that did not render its tool kept ssh: known=%v tools=%v", known, raw)
+	}
+}
+
+func TestDisjointCompanionCarryRestoresOpenShell(t *testing.T) {
+	const userID = "desktop-user:disjoint-carry"
+	openRemote := agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+		Remaining: map[string]int{string(coretool.CapabilityShellExecuteRemoteHost): 0},
+	}
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "已经解封"},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+		{Role: "tool", ToolName: "write_file", Content: "ok"},
+	})
+	mem.SetSemanticSessionResidue(userID, openRemote)
+	mem.SetParentExecutionTools(userID, []string{"bash", "write_file"})
+	h := &IMMessageHandler{memory: mem}
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("disjoint carry restored %v, want [ssh]", got)
+	}
+
+	mixed := agent.NewConversationMemory()
+	defer mixed.Stop()
+	mixed.SetSemanticSessionResidue(userID, openRemote)
+	mixed.SetParentExecutionTools(userID, []string{"ssh", "bash", "write_file"})
+	h2 := &IMMessageHandler{memory: mixed}
+	if got := h2.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("companion names stayed on the shell route: %v", got)
+	}
+	raw, known := mixed.ParentExecutionTools(userID)
+	if !known || len(raw) != 1 || raw[0] != "ssh" {
+		t.Fatalf("durable carry = %v known=%v, want [ssh]", raw, known)
+	}
+
+	local := agent.NewConversationMemory()
+	defer local.Stop()
+	local.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+		{Role: "user", Content: "看一下本地日志"},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+	})
+	local.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.local:real", Capability: string(coretool.CapabilityShellExecuteLocal), Required: true},
+		},
+	})
+	local.SetParentExecutionTools(userID, []string{"bash"})
+	h3 := &IMMessageHandler{memory: local}
+	if got := h3.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("a local-shell obligation restored %v, want [bash]", got)
+	}
+
+	miss := agent.NewConversationMemory()
+	defer miss.Stop()
+	miss.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "看一下本地日志"},
+		{Role: "tool", ToolName: "bash", Content: "ok"},
+	})
+	miss.SetSemanticSessionResidue(userID, openRemote)
+	miss.SetParentExecutionTools(userID, []string{"bash"})
+	h4 := &IMMessageHandler{memory: miss}
+	if h4.parentExecutionIsFull(userID) {
+		t.Fatal("a disjoint bash carry became the open remote-shell surface")
+	}
+	raw, known = miss.ParentExecutionTools(userID)
+	if !known || len(raw) != 0 {
+		t.Fatalf("disjoint bash stayed recorded: known=%v tools=%v", known, raw)
+	}
+}
+
+func TestSessionResetDropsParentExecutionCarry(t *testing.T) {
+	const userID = "desktop-user:reset-carry"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "更新服务器"},
+		{Role: "tool", ToolName: "ssh", Content: "ok"},
+	})
+	mem.SetSemanticSessionResidue(userID, agent.SemanticSessionResidue{
+		Status: string(semanticResidueOpen),
+		Needs: []agent.SemanticSessionResidueNeed{
+			{ID: "need:shell.execute.remote_host:a08acf449f05", Capability: string(coretool.CapabilityShellExecuteRemoteHost), Required: true},
+		},
+	})
+	h := &IMMessageHandler{memory: mem}
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "ssh"}},
+	})
+	h.clearPerUserSessionState(userID)
+	if h.parentExecutionIsFull(userID) {
+		t.Fatal("session reset kept the in-process ssh carry")
+	}
+	raw, known := mem.ParentExecutionTools(userID)
+	if !known || len(raw) != 0 {
+		t.Fatalf("session reset left the durable carry known=%v tools=%v", known, raw)
+	}
+	restarted := &IMMessageHandler{memory: mem}
+	if restarted.parentExecutionIsFull(userID) {
+		t.Fatal("restart restored ssh after the task was reset")
+	}
+}
+
 func TestRecordSemanticExecutionSurface(t *testing.T) {
 	h := &IMMessageHandler{}
 	const userID = "desktop-user"
@@ -1397,6 +2056,13 @@ func TestRecordSemanticExecutionSurface(t *testing.T) {
 	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
 		t.Fatalf("a full managed turn must replace the carry with its own execution tools, got %v", got)
 	}
+	h.recordSemanticExecutionSurface(userID, full, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+	})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("a full turn that only rendered lookups must keep the parent execution tools, got %v", got)
+	}
 	continued := fullExecutionProfile(shortContinuationReason)
 	h.recordSemanticExecutionSurface(userID, continued, []map[string]interface{}{
 		{"function": map[string]interface{}{"name": "knowledge_search"}},
@@ -1404,6 +2070,45 @@ func TestRecordSemanticExecutionSurface(t *testing.T) {
 	})
 	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
 		t.Fatalf("a lookup continuation must keep the parent execution tools, got %v", got)
+	}
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	lookup := ExecutionProfile{
+		Layer:           string(executionLayerLight),
+		PromptProfile:   "light",
+		Reason:          lookupContinuationReason,
+		ToolBudget:      0,
+		IterationBudget: lookupContinuationIterationBudget,
+	}
+	h.recordSemanticExecutionSurface(userID, lookup, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_search"}},
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+	})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("a light task lookup must keep the parent execution tools, got %v", got)
+	}
+}
+
+func TestManagedFullPrepareKeepsParentExecution(t *testing.T) {
+	h := &IMMessageHandler{}
+	const userID = "desktop-user"
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	full := NewLoopContext("chat", 3, nil)
+	full.Runtime.SemanticIntent = &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98}
+	full.Runtime.Execution = fullExecutionProfile("semantic capability-managed mutating intent")
+	h.prepareAgentLoopTools(userID, "继续改", full, agentLoopPhase{})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("a managed full rebuild must keep the parent execution tools, got %v", got)
+	}
+	light := NewLoopContext("chat", 3, nil)
+	light.Runtime.SemanticIntent = &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98}
+	light.Runtime.Execution = ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light"}
+	h.prepareAgentLoopTools(userID, "北京天气", light, agentLoopPhase{})
+	if h.parentExecutionIsFull(userID) {
+		t.Fatal("a managed light rebuild must drop the previous execution tools")
 	}
 }
 
@@ -1418,5 +2123,72 @@ func TestAnswerOnlyTurnKeepsCarriedExecutionTools(t *testing.T) {
 	h.prepareAgentLoopTools("desktop-user", "用这个", ctx, agentLoopPhase{})
 	if got := h.parentExecutionTools("desktop-user"); len(got) != 1 || got[0] != "bash" {
 		t.Fatalf("an answer-only turn must keep the parent execution tools, got %v", got)
+	}
+}
+
+func TestLookupCarryOpensSiblingBudget(t *testing.T) {
+	needs, added := ensureLookupContinuationCarriedNeeds(nil, []string{"bash", "web_search"}, 0.9)
+	if lookupCarryNeedIDPrefix <= "need:lookup-continuation:" {
+		t.Fatal("carried shell ids must sort after the fetch family")
+	}
+	if len(added) != 1 {
+		t.Fatalf("carried capabilities = %v, want one non-light family", added)
+	}
+	if len(needs) != lookupContinuationIterationBudget {
+		t.Fatalf("carry siblings = %d, want the lookup iteration budget %d", len(needs), lookupContinuationIterationBudget)
+	}
+	for _, need := range needs {
+		if need.Required {
+			t.Fatalf("carry sibling is required: %+v", need)
+		}
+		if !strings.HasPrefix(need.ID, lookupCarryNeedIDPrefix) {
+			t.Fatalf("carry sibling id = %s", need.ID)
+		}
+	}
+	stripped := withoutLookupCarryNeeds(needs)
+	if len(stripped) != 0 {
+		t.Fatalf("carry siblings survived stripping: %+v", stripped)
+	}
+}
+
+func TestLookupContinuationCarriedGrant(t *testing.T) {
+	lookup := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", Reason: lookupContinuationReason}
+	if !lookupContinuationCarriedGrant(lookup, []string{"bash", "ssh"}, "bash") {
+		t.Fatal("carried bash must stay authorized on a lookup")
+	}
+	if lookupContinuationCarriedGrant(lookup, []string{"bash"}, "write_file") {
+		t.Fatal("a tool that was not carried must stay unauthorized")
+	}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", Reason: "semantic capability-managed lookup"}
+	if lookupContinuationCarriedGrant(light, []string{"bash"}, "bash") {
+		t.Fatal("a cold lookup must not inherit a carry")
+	}
+	if !lookupContinuationRepeatAllowed(lookup, []string{"bash"}, "web_search") {
+		t.Fatal("a lookup must be able to search again after the first call")
+	}
+	if !lookupContinuationRepeatAllowed(lookup, []string{"bash"}, "bash") {
+		t.Fatal("a lookup must be able to run carried bash again")
+	}
+	if lookupContinuationRepeatAllowed(lookup, []string{"bash"}, "write_file") {
+		t.Fatal("a lookup must not repeat a tool that was not carried")
+	}
+	if lookupContinuationRepeatAllowed(light, nil, "web_search") {
+		t.Fatal("a cold search must not open the next sibling")
+	}
+	if lookupContinuationRepeatAllowed(lookup, []string{"bash"}, "download_file") {
+		t.Fatal("a lookup must not open another download")
+	}
+	bashPrompt := lookupContinuationToolPrompt([]string{"bash", "web_search"}, intent.LabelSearch)
+	if !strings.Contains(bashPrompt, "(bash)") || !strings.Contains(bashPrompt, "call web_fetch") || !strings.Contains(bashPrompt, "not to run shell") {
+		t.Fatalf("lookup prompt = %q", bashPrompt)
+	}
+	if strings.Contains(bashPrompt, "web_search)") || strings.Contains(bashPrompt, "(web_search") {
+		t.Fatal("lookup prompt must not authorize a light tool by name")
+	}
+	if strings.Contains(lookupContinuationToolPrompt(nil, intent.LabelSearch), "bash") {
+		t.Fatal("lookup prompt must not name bash when nothing was carried")
+	}
+	if strings.Contains(lookupContinuationToolPrompt([]string{"bash"}, intent.LabelWebFetch), "After web_search") {
+		t.Fatal("a page-fetch lookup must not send the model to web_search first")
 	}
 }

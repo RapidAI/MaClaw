@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -245,8 +246,9 @@ func isRemoteCodingInquiryTool(name string) bool {
 // inquiry boundary.  Keeping bash/ssh_bash available is useful for CodeGraph,
 // git history, and targeted searches, but the tool allow-list alone cannot
 // make an arbitrary shell command safe.  This deliberately permits a compact
-// inspection vocabulary and rejects wrappers, builds, tests, package managers,
-// redirects, and every command that could mutate the workspace.
+// inspection vocabulary — repository files and read-only host status — and
+// rejects wrappers, builds, tests, package managers, redirects, and every
+// command that could mutate the workspace.
 func rejectCodingInquiryShellCommand(command string) string {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -295,6 +297,37 @@ func codingInquiryShellSegmentAllowed(segment []string) bool {
 		"wc", "sort", "uniq", "cut", "tr", "stat", "file", "readlink", "realpath", "basename", "dirname",
 		"which", "type", "uname", "id", "whoami", "hostname", "nproc", "getconf", "arch", "tree", "du":
 		return true
+	// Host-status programs. The plain forms only print state. Forms that
+	// repeat, sync, follow, or write are checked below: free -s and free -c,
+	// df --sync, vmstat/iostat/mpstat with a delay and no count, netstat -c,
+	// findmnt --poll, top without a batch iteration, and ss --kill / --events /
+	// --diag. dmesg -c/-n, sensors -s, pidstat -e, mount, ip, and sar -o stay
+	// out: they clear, set, exec, or write.
+	case "uptime", "ps", "pstree", "pgrep",
+		"lscpu", "lsmem", "lsblk", "lsmod", "lspci", "lsusb",
+		"w", "who":
+		return true
+	case "df":
+		return codingInquiryDFReadOnly(args)
+	case "free":
+		return codingInquiryFreeExits(args)
+	case "vmstat":
+		return codingInquiryRepeatSamplesExit(codingInquirySampleVM, args)
+	case "iostat":
+		return codingInquiryRepeatSamplesExit(codingInquirySampleIO, args)
+	case "mpstat":
+		return codingInquiryRepeatSamplesExit(codingInquirySampleMP, args)
+	case "netstat":
+		return !codingInquiryNetstatContinuous(args)
+	case "findmnt":
+		return codingInquiryFindmntExits(args)
+	case "top":
+		return codingInquiryTopBatchExits(args)
+	case "ss":
+		// Kill closes sockets, -E follows events, and -D writes a diag file.
+		// The gate lowercases first, so those short flags arrive as -k, -e,
+		// and -d. The read-only names of those letters are refused with them.
+		return !codingInquirySSUnsafe(args)
 	case "find":
 		for _, arg := range args {
 			switch strings.ToLower(strings.TrimSpace(normalizeShellCommandToken(arg))) {
@@ -314,6 +347,539 @@ func codingInquiryShellSegmentAllowed(segment []string) bool {
 	default:
 		return false
 	}
+}
+
+// codingInquirySSUnsafe reports ss forms that close sockets, follow events, or
+// write a diag file. getopt_long accepts a unique abbreviation, so --k is
+// --kill, --ev is --events, and --di is --diag. --ex is --extended and --dc
+// is --dccp; those stay prints. Short e and d are refused with E and D
+// because this gate has already lowercased the command.
+func codingInquirySSUnsafe(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" || arg == "--" {
+			continue
+		}
+		lower := strings.ToLower(arg)
+		name := codingInquiryLongName(lower)
+		if codingInquiryLongExtends(name, "--kill") ||
+			codingInquiryLongExtends(name, "--events") ||
+			codingInquiryLongExtends(name, "--diag") {
+			return true
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.ContainsAny(arg, "dekDEK") {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	// A status inquiry may take a short finite sample. A delay with no count
+	// repeats until the remote wait kills it.
+	codingInquirySampleCountMax  = 30
+	codingInquirySampleWindowMax = 120
+)
+
+type codingInquirySampleKind int
+
+const (
+	codingInquirySampleVM codingInquirySampleKind = iota
+	codingInquirySampleIO
+	codingInquirySampleMP
+)
+
+// codingInquiryRepeatSamplesExit allows one report, or delay+count that ends.
+// vmstat and iostat treat a positive delay without a count as continuous.
+// A lone 0 is the since-boot one-shot for iostat and mpstat: iostat forces
+// its count to 1 when the interval is 0, and mpstat exits before the sample
+// loop. vmstat rejects a delay below 1. iostat device names stay in front of
+// the trailing interval.
+func codingInquiryRepeatSamplesExit(kind codingInquirySampleKind, args []string) bool {
+	head, nums, ok := codingInquirySamplePositionals(kind, args)
+	if !ok {
+		return false
+	}
+	if kind != codingInquirySampleIO && len(head) > 0 {
+		return false
+	}
+	// -N <node> and -n (NUMA, no value) collapse after case folding. Any
+	// integer after that flag might be an unbounded interval, so refuse it.
+	if kind == codingInquirySampleMP && codingInquiryHasExactFlag(args, "-n", "--node") && len(head)+len(nums) > 0 {
+		return false
+	}
+	switch len(nums) {
+	case 0:
+		return true
+	case 1:
+		return nums[0] == 0 && kind != codingInquirySampleVM
+	default:
+		return codingInquirySampleWindowOK(nums[0], nums[1])
+	}
+}
+
+func codingInquirySampleWindowOK(interval, count int) bool {
+	if count < 1 || count > codingInquirySampleCountMax || interval < 0 {
+		return false
+	}
+	if interval == 0 || interval > codingInquirySampleWindowMax {
+		return interval == 0
+	}
+	return interval*count <= codingInquirySampleWindowMax
+}
+
+// codingInquirySamplePositionals splits flag values from the trailing interval
+// and count. A non-numeric token left over is a device name for iostat and a
+// rejection for vmstat/mpstat. The command text is already lowercased.
+func codingInquirySamplePositionals(kind codingInquirySampleKind, args []string) (head []string, nums []int, ok bool) {
+	var positionals []string
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" || arg == "--" {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			positionals = append(positionals, arg)
+			continue
+		}
+		name, _, inline := codingInquiryFlagParts(arg)
+		if inline {
+			continue
+		}
+		if codingInquirySampleFlagTakesValue(kind, name) && i+1 < len(args) {
+			i++
+			continue
+		}
+		if kind == codingInquirySampleIO && name == "-p" && i+1 < len(args) {
+			next := strings.TrimSpace(normalizeShellCommandToken(args[i+1]))
+			if _, isNum := codingInquiryNonNegInt(next); next != "" && !isNum {
+				i++
+			}
+		}
+	}
+	i := len(positionals)
+	for i > 0 && len(nums) < 2 {
+		n, isNum := codingInquiryNonNegInt(positionals[i-1])
+		if !isNum {
+			break
+		}
+		nums = append([]int{n}, nums...)
+		i--
+	}
+	for _, token := range positionals[:i] {
+		if _, isNum := codingInquiryNonNegInt(token); isNum {
+			return nil, nil, false
+		}
+	}
+	return positionals[:i], nums, true
+}
+
+func codingInquirySampleFlagTakesValue(kind codingInquirySampleKind, name string) bool {
+	switch kind {
+	case codingInquirySampleVM:
+		// --u / --un are --unit, and --p / --pa are --partition. No other
+		// vmstat long option shares those prefixes. -S folds into -s, so a
+		// separate unit argument stays on the positional path.
+		return name == "-p" ||
+			codingInquiryLongExtends(name, "--partition") ||
+			codingInquiryLongExtends(name, "--unit")
+	case codingInquirySampleIO:
+		switch name {
+		case "-o", "--output", "-g", "--group", "-j", "-f", "--dec":
+			return true
+		default:
+			return false
+		}
+	case codingInquirySampleMP:
+		// -P and -I. -N and the no-value -n flag fold together, so -n is not
+		// treated as taking a value; see codingInquiryRepeatSamplesExit.
+		switch name {
+		case "-p", "-i", "-o", "--dec":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+// codingInquiryLongName is the --option word without an inline "=value".
+// A short flag returns "" so it cannot match a long option by accident.
+func codingInquiryLongName(arg string) string {
+	if !strings.HasPrefix(arg, "--") {
+		return ""
+	}
+	if eq := strings.IndexByte(arg, '='); eq > 0 {
+		return arg[:eq]
+	}
+	return arg
+}
+
+// codingInquiryLongExtends reports whether name is full or a getopt_long
+// abbreviation of full. "--" itself is too short to be an abbreviation.
+func codingInquiryLongExtends(name, full string) bool {
+	return len(name) >= 3 && strings.HasPrefix(full, name)
+}
+
+// codingInquiryLongMatch returns the single long option that name abbreviates.
+// An ambiguous prefix matches nothing, which is how getopt_long rejects it.
+func codingInquiryLongMatch(name string, options []string) string {
+	if len(name) < 3 || !strings.HasPrefix(name, "--") {
+		return ""
+	}
+	found := ""
+	for _, opt := range options {
+		if strings.HasPrefix(opt, name) {
+			if found != "" {
+				return ""
+			}
+			found = opt
+		}
+	}
+	return found
+}
+
+// codingInquiryDFReadOnly rejects df --sync, including --sy. That flag calls
+// sync(2). df --si is a unit selector and stays allowed; it is not a prefix
+// of --sync. --no-sync is the default and is not a prefix either.
+func codingInquiryDFReadOnly(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "--" {
+			break
+		}
+		if codingInquiryLongExtends(codingInquiryLongName(arg), "--sync") {
+			return false
+		}
+	}
+	return true
+}
+
+func codingInquiryFlagParts(arg string) (name, value string, inline bool) {
+	if strings.HasPrefix(arg, "--") {
+		if eq := strings.IndexByte(arg, '='); eq > 0 {
+			return arg[:eq], arg[eq+1:], true
+		}
+	}
+	return arg, "", false
+}
+
+func codingInquiryNonNegInt(token string) (int, bool) {
+	if token == "" || token[0] < '0' || token[0] > '9' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(token)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// codingInquiryFreeExits allows one free report. -s repeats until -c stops
+// it. -c without -s still repeats: procps free turns on the same repeat loop
+// and sleeps its default of one second. A missing delay uses that default.
+func codingInquiryFreeExits(args []string) bool {
+	seconds := false
+	delay, delayKnown := 0, false
+	count := -1
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" || arg == "--" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(arg, "--"):
+			name, value, inline := codingInquiryFlagParts(arg)
+			switch {
+			case codingInquiryLongExtends(name, "--seconds"):
+				// --si is a unit flag, not seconds. --sec is --seconds.
+				seconds = true
+				if inline {
+					if n, ok := codingInquiryDelaySeconds(value); ok {
+						delay, delayKnown = n, true
+					}
+				} else if i+1 < len(args) {
+					if n, ok := codingInquiryDelaySeconds(strings.TrimSpace(normalizeShellCommandToken(args[i+1]))); ok {
+						delay, delayKnown = n, true
+						i++
+					}
+				}
+			case codingInquiryLongExtends(name, "--count"):
+				if inline {
+					if n, ok := codingInquiryNonNegInt(value); ok {
+						count = n
+					}
+				} else if i+1 < len(args) {
+					if n, ok := codingInquiryNonNegInt(strings.TrimSpace(normalizeShellCommandToken(args[i+1]))); ok {
+						count = n
+						i++
+					}
+				}
+			}
+		case arg == "-s":
+			seconds = true
+			if i+1 < len(args) {
+				if n, ok := codingInquiryDelaySeconds(strings.TrimSpace(normalizeShellCommandToken(args[i+1]))); ok {
+					delay, delayKnown = n, true
+					i++
+				}
+			}
+		case arg == "-c":
+			if i+1 < len(args) {
+				if n, ok := codingInquiryNonNegInt(strings.TrimSpace(normalizeShellCommandToken(args[i+1]))); ok {
+					count = n
+					i++
+				}
+			}
+		case strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--"):
+			body := arg[1:]
+			for j := 0; j < len(body); j++ {
+				switch body[j] {
+				case 's':
+					seconds = true
+					rest := body[j+1:]
+					if rest == "" && i+1 < len(args) {
+						next := strings.TrimSpace(normalizeShellCommandToken(args[i+1]))
+						if n, ok := codingInquiryDelaySeconds(next); ok {
+							delay, delayKnown = n, true
+							i++
+						}
+					} else if n, ok := codingInquiryDelaySeconds(rest); ok {
+						delay, delayKnown = n, true
+					}
+					j = len(body)
+				case 'c':
+					rest := body[j+1:]
+					if rest == "" && i+1 < len(args) {
+						if n, ok := codingInquiryNonNegInt(strings.TrimSpace(normalizeShellCommandToken(args[i+1]))); ok {
+							count = n
+							i++
+						}
+					} else if n, ok := codingInquiryNonNegInt(rest); ok {
+						count = n
+					}
+					j = len(body)
+				}
+			}
+		}
+	}
+	if !seconds && count < 0 {
+		return true
+	}
+	// A missing delay, a count with no -s, or a fractional delay still has
+	// to fit the sample window. The ceiling of a fraction is what that
+	// check sees. procps free uses one second when -s is absent.
+	if !delayKnown {
+		delay = 1
+	}
+	return codingInquirySampleWindowOK(delay, count)
+}
+
+func codingInquiryDelaySeconds(token string) (int, bool) {
+	if n, ok := codingInquiryNonNegInt(token); ok {
+		return n, true
+	}
+	if !codingInquiryFloatToken(token) {
+		return 0, false
+	}
+	whole := 0
+	for _, r := range token {
+		if r == '.' {
+			break
+		}
+		whole = whole*10 + int(r-'0')
+	}
+	return whole + 1, true
+}
+
+func codingInquiryHasExactFlag(args []string, names ...string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		name, _, _ := codingInquiryFlagParts(arg)
+		for _, want := range names {
+			if name == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codingInquiryFloatToken(token string) bool {
+	token = strings.TrimSpace(normalizeShellCommandToken(token))
+	if token == "" || token[0] < '0' || token[0] > '9' {
+		return false
+	}
+	dot := false
+	for _, r := range token {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return dot
+}
+
+func codingInquiryNetstatContinuous(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" || arg == "--" {
+			continue
+		}
+		lower := strings.ToLower(arg)
+		// --cont is --continuous. A short cluster containing c is the same flag.
+		if codingInquiryLongExtends(codingInquiryLongName(lower), "--continuous") {
+			return true
+		}
+		// -c is netstat's continuous flag. No other short flag uses c.
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.ContainsAny(arg, "Cc") {
+			return true
+		}
+	}
+	return false
+}
+
+// codingInquiryFindmntExits rejects --poll. The gate lowercases -P (pairs,
+// which prints once) together with -p (poll), so both are refused.
+func codingInquiryFindmntExits(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" || arg == "--" {
+			continue
+		}
+		lower := strings.ToLower(arg)
+		// --po / --pol are --poll. --pairs does not share that prefix.
+		if codingInquiryLongExtends(codingInquiryLongName(lower), "--poll") {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.ContainsAny(arg, "Pp") {
+			return false
+		}
+	}
+	return true
+}
+
+// codingInquiryTopLongNames are procps top's long options. --batch is the
+// unique abbreviation of --batch-mode. A shared prefix such as --s matches
+// more than one entry, so the lookup rejects it.
+var codingInquiryTopLongNames = []string{
+	"--accum-time-toggle",
+	"--apply-defaults",
+	"--batch-mode",
+	"--cmdline-toggle",
+	"--delay",
+	"--filter-any-user",
+	"--filter-only-euser",
+	"--help",
+	"--idle-toggle",
+	"--iterations",
+	"--list-fields",
+	"--pid",
+	"--scale-summary-mem",
+	"--scale-task-mem",
+	"--secure-mode",
+	"--single-cpu-toggle",
+	"--sort-override",
+	"--threads-show",
+	"--version",
+	"--width",
+}
+
+// codingInquiryTopBatchExits allows the one-shot batch forms. Bare top and
+// top -b do not exit. procps reads -bn1 as -b -n 1, and -n=1 the same as -n 1.
+func codingInquiryTopBatchExits(args []string) bool {
+	batch := false
+	iterations := -1
+	setIterations := func(token string) bool {
+		token = strings.TrimPrefix(strings.TrimSpace(normalizeShellCommandToken(token)), "=")
+		n, ok := codingInquiryNonNegInt(token)
+		if !ok || n < 1 || n > 3 {
+			return false
+		}
+		iterations = n
+		return true
+	}
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" || arg == "--" {
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, value, inline := codingInquiryFlagParts(arg)
+			switch codingInquiryLongMatch(name, codingInquiryTopLongNames) {
+			case "--batch-mode":
+				batch = true
+			case "--iterations":
+				token := value
+				if !inline {
+					if i+1 >= len(args) {
+						return false
+					}
+					token = args[i+1]
+					i++
+				}
+				if !setIterations(token) {
+					return false
+				}
+			case "--delay", "--scale-summary-mem", "--scale-task-mem", "--sort-override",
+				"--pid", "--filter-any-user", "--filter-only-euser", "--width":
+				// Required arguments are consumed only when they do not look
+				// like another flag. A flag-shaped argument makes top exit
+				// with an error, and leaving it in place keeps -n visible.
+				if !inline && i+1 < len(args) && !strings.HasPrefix(strings.TrimSpace(normalizeShellCommandToken(args[i+1])), "-") {
+					i++
+				}
+			case "--accum-time-toggle", "--apply-defaults", "--cmdline-toggle", "--threads-show",
+				"--help", "--idle-toggle", "--list-fields", "--secure-mode", "--single-cpu-toggle",
+				"--version":
+			default:
+				return false
+			}
+			continue
+		}
+		switch {
+		case arg == "-b":
+			batch = true
+		case arg == "-n":
+			if i+1 >= len(args) || !setIterations(args[i+1]) {
+				return false
+			}
+			i++
+		case strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--"):
+			body := arg[1:]
+			for j := 0; j < len(body); j++ {
+				switch body[j] {
+				case 'b':
+					batch = true
+				case 'n':
+					rest := body[j+1:]
+					if rest == "" {
+						if i+1 >= len(args) || !setIterations(args[i+1]) {
+							return false
+						}
+						i++
+					} else if !setIterations(rest) {
+						return false
+					}
+					j = len(body)
+				case 'd', 'p', 'u', 'o', 'w', 'e':
+					// These take a value. The rest of this cluster is that
+					// value; otherwise the next argv is, when it is not a flag.
+					if j == len(body)-1 && i+1 < len(args) && !strings.HasPrefix(strings.TrimSpace(normalizeShellCommandToken(args[i+1])), "-") {
+						i++
+					}
+					j = len(body)
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return batch && iterations >= 1
 }
 
 // gitReadOnlySubcommands only ever report repository state, whatever arguments

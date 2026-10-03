@@ -1,12 +1,56 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchOpenLatexDocument, resetLatexDocumentRequestForTests, takePendingLatexDocument } from '../latexDocumentOpen';
-import { useAssistantPreviewOpenEvents } from '../useAssistantPreviewOpenEvents';
+import { dispatchPreviewTaskResult } from '../taskResultPreview';
+import { latexPreviewSessionAction, useAssistantPreviewOpenEvents } from '../useAssistantPreviewOpenEvents';
 import { getWailsAppModule } from '../../../utils/wailsAppModule';
 
 vi.mock('../../../utils/wailsAppModule', () => ({
     getWailsAppModule: vi.fn(),
 }));
+
+describe('latexPreviewSessionAction', () => {
+    const paper = {
+        parked: false,
+        hasDocument: true,
+        ownerSession: 'tab-latex',
+        openedForSession: 'tab-latex',
+    };
+
+    it('restores only when the owning session is active again', () => {
+        expect(latexPreviewSessionAction({
+            ...paper,
+            previousSession: 'tab-weather',
+            sessionKey: 'tab-latex',
+            openedForSession: undefined,
+        })).toBe('restore');
+        expect(latexPreviewSessionAction({
+            ...paper,
+            previousSession: 'tab-latex',
+            sessionKey: 'tab-weather',
+        })).toBe('cancel-read');
+        expect(latexPreviewSessionAction({
+            ...paper,
+            previousSession: 'tab-weather',
+            sessionKey: 'tab-other',
+            openedForSession: undefined,
+        })).toBe('keep');
+    });
+
+    it('does not open a parked paper twice in the same session', () => {
+        expect(latexPreviewSessionAction({
+            ...paper,
+            parked: true,
+            previousSession: 'tab-latex',
+            sessionKey: 'tab-latex',
+        })).toBe('open-parked');
+        expect(latexPreviewSessionAction({
+            ...paper,
+            previousSession: 'tab-latex',
+            sessionKey: 'tab-latex',
+        })).toBe('keep');
+    });
+});
 
 describe('useAssistantPreviewOpenEvents latex document', () => {
     beforeEach(() => {
@@ -120,11 +164,12 @@ describe('useAssistantPreviewOpenEvents latex document', () => {
         expect(takePendingLatexDocument()).toBeNull();
     });
 
-    it('reads the source again after the assistant tab changes', async () => {
+    it('does not carry the previous LaTeX document into another task', async () => {
         const resolvers: Array<(value: { content: string }) => void> = [];
         const preview = vi.fn().mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
         vi.mocked(getWailsAppModule).mockResolvedValue({ GetCodingWorkbenchFilePreview: preview } as never);
         const openWorkspaceFile = vi.fn();
+        const openPreviewPane = vi.fn();
         const generationRef = { current: 0 };
         const view = renderHook(
             ({ sessionKey }) => useAssistantPreviewOpenEvents({
@@ -133,21 +178,160 @@ describe('useAssistantPreviewOpenEvents latex document', () => {
                 openWorkspaceFile,
                 focusOpenedFile: () => {},
                 generationRef,
+                openPreviewPane,
+                sessionKey,
+            }),
+            { initialProps: { sessionKey: 'tab-latex' } },
+        );
+
+        dispatchOpenLatexDocument({ projectPath: 'D:/tasks/latex', relativePath: 'elsarticle/elsarticle-template-num.tex' });
+        await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+        const paneOpensBeforeSwitch = openPreviewPane.mock.calls.length;
+        view.rerender({ sessionKey: 'tab-weather' });
+        resolvers[0]({ content: '\\documentclass{elsarticle}\n' });
+        await Promise.resolve();
+        expect(preview).toHaveBeenCalledTimes(1);
+        expect(openWorkspaceFile).not.toHaveBeenCalled();
+        expect(openPreviewPane).toHaveBeenCalledTimes(paneOpensBeforeSwitch);
+    });
+
+    it('restores the LaTeX document when returning to the task that owns it', async () => {
+        vi.mocked(getWailsAppModule).mockResolvedValue({} as never);
+        const openWorkspaceFile = vi.fn();
+        const openPreviewPane = vi.fn();
+        const view = renderHook(
+            ({ sessionKey }) => useAssistantPreviewOpenEvents({
+                allowed: true,
+                lang: 'zh-Hans',
+                openWorkspaceFile,
+                focusOpenedFile: () => {},
+                generationRef: { current: 0 },
+                openPreviewPane,
+                sessionKey,
+            }),
+            { initialProps: { sessionKey: 'tab-latex' } },
+        );
+
+        dispatchOpenLatexDocument({
+            projectPath: 'D:/tasks/latex',
+            relativePath: 'elsarticle/elsarticle-template-num.tex',
+            content: '\\documentclass{elsarticle}',
+        });
+        await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(1));
+
+        view.rerender({ sessionKey: 'tab-weather' });
+        expect(openWorkspaceFile).toHaveBeenCalledTimes(1);
+
+        view.rerender({ sessionKey: 'tab-latex' });
+        await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(2));
+        expect(openWorkspaceFile.mock.calls[1][0].filePath).toBe('elsarticle/elsarticle-template-num.tex');
+        expect(openWorkspaceFile.mock.calls[1][0].projectPath).toBe('D:/tasks/latex');
+        expect(openPreviewPane).toHaveBeenLastCalledWith(true);
+    });
+
+    it('closes the pane when the current task refuses a result file', async () => {
+        const openWorkspaceFile = vi.fn().mockReturnValue(false);
+        const openPreviewPane = vi.fn();
+        renderHook(() => useAssistantPreviewOpenEvents({
+            allowed: true,
+            sessionKey: 'tab-weather',
+            lang: 'zh-Hans',
+            openWorkspaceFile,
+            focusOpenedFile: () => {},
+            generationRef: { current: 0 },
+            openPreviewPane,
+        }));
+
+        dispatchPreviewTaskResult('D:/tasks/latex/paper.pdf');
+        await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(1));
+        expect(openPreviewPane).toHaveBeenLastCalledWith(false);
+    });
+
+    it('does not adopt a paper the current task refused', async () => {
+        vi.mocked(getWailsAppModule).mockResolvedValue({} as never);
+        const openWorkspaceFile = vi.fn().mockReturnValue(false);
+        const openPreviewPane = vi.fn();
+        const view = renderHook(
+            ({ sessionKey }) => useAssistantPreviewOpenEvents({
+                allowed: true,
+                lang: 'zh-Hans',
+                openWorkspaceFile,
+                focusOpenedFile: () => {},
+                generationRef: { current: 0 },
+                openPreviewPane,
+                sessionKey,
+            }),
+            { initialProps: { sessionKey: 'tab-weather' } },
+        );
+
+        dispatchOpenLatexDocument({
+            projectPath: 'D:/tasks/latex',
+            relativePath: 'main.tex',
+            content: '\\documentclass{article}',
+        });
+        await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(1));
+        expect(openPreviewPane).toHaveBeenLastCalledWith(false);
+
+        view.rerender({ sessionKey: 'tab-other' });
+        view.rerender({ sessionKey: 'tab-weather' });
+        expect(openWorkspaceFile).toHaveBeenCalledTimes(1);
+        expect(openPreviewPane).toHaveBeenLastCalledWith(false);
+    });
+
+    it('does not cancel a later task switch that does not own the paper', async () => {
+        vi.mocked(getWailsAppModule).mockResolvedValue({} as never);
+        const generationRef = { current: 0 };
+        const view = renderHook(
+            ({ sessionKey }) => useAssistantPreviewOpenEvents({
+                allowed: true,
+                lang: 'zh-Hans',
+                openWorkspaceFile: () => {},
+                focusOpenedFile: () => {},
+                generationRef,
                 openPreviewPane: () => {},
                 sessionKey,
             }),
-            { initialProps: { sessionKey: 'tab-a' } },
+            { initialProps: { sessionKey: 'tab-latex' } },
         );
 
-        dispatchOpenLatexDocument({ projectPath: 'D:/tasks/latex', relativePath: 'main.tex' });
-        await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
-        generationRef.current += 1;
-        view.rerender({ sessionKey: 'tab-b' });
-        await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
-        resolvers[0]({ content: 'stale-template' });
-        resolvers[1]({ content: '\\documentclass{article}\n' });
+        dispatchOpenLatexDocument({
+            projectPath: 'D:/tasks/latex',
+            relativePath: 'main.tex',
+            content: '\\documentclass{article}',
+        });
+        await waitFor(() => expect(generationRef.current).toBe(1));
+        view.rerender({ sessionKey: 'tab-weather' });
+        expect(generationRef.current).toBe(2);
+        view.rerender({ sessionKey: 'tab-other' });
+        expect(generationRef.current).toBe(2);
+    });
+
+    it('restores the paper after a stop on a tab that cannot preview', async () => {
+        vi.mocked(getWailsAppModule).mockResolvedValue({} as never);
+        const openWorkspaceFile = vi.fn();
+        const view = renderHook(
+            ({ allowed, sessionKey }) => useAssistantPreviewOpenEvents({
+                allowed,
+                lang: 'zh-Hans',
+                openWorkspaceFile,
+                focusOpenedFile: () => {},
+                generationRef: { current: 0 },
+                openPreviewPane: () => {},
+                sessionKey,
+            }),
+            { initialProps: { allowed: true, sessionKey: 'tab-latex' } },
+        );
+
+        dispatchOpenLatexDocument({
+            projectPath: 'D:/tasks/latex',
+            relativePath: 'main.tex',
+            content: '\\documentclass{article}',
+        });
         await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(1));
-        expect(openWorkspaceFile.mock.calls[0][0].content).toContain('\\documentclass{article}');
-        expect(openWorkspaceFile.mock.calls[0][0].content).not.toContain('stale-template');
+        view.rerender({ allowed: false, sessionKey: 'tab-group' });
+        expect(openWorkspaceFile).toHaveBeenCalledTimes(1);
+        view.rerender({ allowed: true, sessionKey: 'tab-latex' });
+        await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(2));
+        expect(openWorkspaceFile.mock.calls[1][0].projectPath).toBe('D:/tasks/latex');
     });
 });

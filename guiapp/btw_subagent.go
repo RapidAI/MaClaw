@@ -204,13 +204,13 @@ func (c *btwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 	//    the main agent's cached snapshot)
 	// 2. Main-prompt catalog/tool wiring (appendProactiveRecall is CatalogOnly
 	//    and must not be reused as a /btw dump or tool-pin path)
-	return buildBtwSystemPrompt(c.subagent.handler, userText)
+	return buildBtwSystemPrompt(c.subagent.handler, c.subagent.userID)
 }
 
 // buildBtwSystemPrompt constructs a focused system prompt for /btw.
 // It reads identity and memory directly from the handler's stores,
 // without calling buildSystemPromptBase (which has side effects).
-func buildBtwSystemPrompt(h *IMMessageHandler, _ string) string {
+func buildBtwSystemPrompt(h *IMMessageHandler, userID string) string {
 	var b strings.Builder
 
 	// --- Identity (same source as main agent / srv Runtime) ---
@@ -221,7 +221,7 @@ func buildBtwSystemPrompt(h *IMMessageHandler, _ string) string {
 
 	var selfIdentity string
 	if h.memoryStore != nil {
-		selfIdentity = h.memoryStore.SelfIdentitySummary(600)
+		selfIdentity = h.memoryStore.SelfIdentitySummaryForOwner(600, userID, isIsolatedAssistantSessionUserID(userID))
 	}
 
 	if selfIdentity != "" {
@@ -235,7 +235,11 @@ func buildBtwSystemPrompt(h *IMMessageHandler, _ string) string {
 
 	// --- User fact summary (who the user is, no management guide) ---
 	if h.memoryStore != nil {
-		b.WriteString(h.memoryStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## \u7528\u6237\u4fe1\u606f")))
+		userID = strings.TrimSpace(userID)
+		factOpts := corememory.UserFactPromptOptions("\n## 用户信息")
+		factOpts.OwnerID = userID
+		factOpts.StrictOwner = isIsolatedAssistantSessionUserID(userID)
+		b.WriteString(h.memoryStore.UserFactSummaryForPrompt(factOpts))
 	}
 
 	return b.String()

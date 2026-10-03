@@ -30,7 +30,7 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
 	aliasExpanded := expanded.Entities
 	if s.aliasIndex != nil && len(expanded.Entities) > 0 {
-		aliases := s.aliasIndex.Expand(expanded.Entities)
+		aliases := s.aliasIndex.ExpandForOwner(expanded.Entities, firstOwnerID(ownerID...))
 		if len(aliases) > 0 {
 			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
 		}
@@ -124,7 +124,7 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 
 	// Compute final fusion score per candidate.
 	type scoredCandidate struct {
-		entry      Entry
+		entry       Entry
 		fusionScore float64
 	}
 	var scored []scoredCandidate
@@ -184,7 +184,7 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 	// included in exhaustive results (user explicitly asked to see everything).
 	for i := range aboveThreshold {
 		e := &aboveThreshold[i].entry
-		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+		if entryExpiredAt(e.InvalidAt, now) {
 			aboveThreshold[i].fusionScore *= 0.2
 		} else if e.Stale {
 			aboveThreshold[i].fusionScore *= 0.3

@@ -95,8 +95,8 @@ func (s *Store) findSemanticDupCandidate(queryEmb []float32, category Category, 
 		if MapToCanonical(e.Category) != canonicalCat {
 			continue
 		}
-		// Multi-tenant isolation.
-		if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+		// Same owner only. A shared row must not absorb or be absorbed by a named owner.
+		if !memoryOwnersEqual(e.OwnerID, ownerID) {
 			continue
 		}
 		// Skip pinned.
@@ -208,6 +208,9 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 
 		if newEntry == nil || candEntry == nil {
 			continue // one or both entries no longer exist
+		}
+		if !newEntry.IsActive() || !candEntry.IsActive() || !memoryOwnersEqual(newEntry.OwnerID, candEntry.OwnerID) {
+			continue
 		}
 		// Durable task-management entries are 1:1 task identities. Their
 		// boilerplate task.md content is near-identical across tasks, so they

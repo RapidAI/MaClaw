@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
@@ -219,12 +220,30 @@ func rebuildProviderArrayMembers(reg *Registry) {
 func dropEmptyProviderArrays(reg *Registry) {
 	kept := make([]llmpool.ProviderArray, 0, len(reg.ProviderArrays))
 	for _, arr := range reg.ProviderArrays {
-		if len(arr.MemberIDs) == 0 || strings.TrimSpace(arr.ID) == "" {
+		if strings.TrimSpace(arr.ID) == "" {
+			continue
+		}
+		// Only an operator-created array may sit empty. A derived array that
+		// lost its last provider is removed here; delete also drops the record.
+		// A platform-owned array (Token Bank tiers) is kept regardless.
+		if len(arr.MemberIDs) == 0 && !arr.Manual && !providerArrayProtected(&arr) {
 			continue
 		}
 		kept = append(kept, arr)
 	}
 	reg.ProviderArrays = kept
+}
+
+func withoutProviderArray(arrays []llmpool.ProviderArray, id string) []llmpool.ProviderArray {
+	id = strings.TrimSpace(id)
+	kept := make([]llmpool.ProviderArray, 0, len(arrays))
+	for _, arr := range arrays {
+		if id != "" && strings.EqualFold(strings.TrimSpace(arr.ID), id) {
+			continue
+		}
+		kept = append(kept, arr)
+	}
+	return kept
 }
 
 func applyProviderArrayNames(reg *Registry) {
@@ -235,13 +254,17 @@ func applyProviderArrayNames(reg *Registry) {
 		if name == "" {
 			continue
 		}
-		if arr := findProviderArray(reg, reg.Providers[i].ArrayID); arr != nil {
+		if arr := findProviderArray(reg, reg.Providers[i].ArrayID); arr != nil && !providerArrayProtected(arr) {
 			arr.Name = name
 		}
 	}
 	for i := range reg.ProviderArrays {
 		arr := &reg.ProviderArrays[i]
 		if strings.TrimSpace(arr.Name) != "" {
+			continue
+		}
+		if canonical, ok := tokenBankArrayName(arr.ID); ok {
+			arr.Name = canonical
 			continue
 		}
 		if src := arrayBillingSource(reg, arr); src != nil {
@@ -260,7 +283,11 @@ func syncProviderArrayBilling(reg *Registry) {
 			continue
 		}
 		if len(arr.MemberIDs) == 1 {
-			if src := findProvider(reg, arr.MemberIDs[0]); src != nil {
+			if arrayBillingReady(arr) {
+				if idx := providerIndex(reg, arr.MemberIDs[0]); idx >= 0 {
+					copyArrayBillingToProvider(arr, &reg.Providers[idx])
+				}
+			} else if src := findProvider(reg, arr.MemberIDs[0]); src != nil {
 				copyProviderBillingToArray(src, arr)
 			}
 			continue
@@ -339,7 +366,16 @@ func copyArrayBillingToProvider(arr *llmpool.ProviderArray, dst *llmpool.Provide
 	dst.Timezone = arr.Timezone
 	dst.CreditMultiplier = arr.CreditMultiplier
 	dst.CreditMultiplierSchedule = cloneCreditWindows(arr.CreditMultiplierSchedule)
-	dst.TokenPricing = arr.TokenPricing.Clone()
+	// An array that carries no price of its own must not wipe the member's
+	// price. The member price is the fallback for every route without an
+	// explicit service-group override (llmpool.EffectiveRouteTokenPricing), so
+	// clearing it leaves the request with no resolvable price at all and it
+	// falls through to the defensive billing branch. This bites the Token Bank
+	// tier arrays in particular: they only ever carry a multiplier. See the
+	// design doc, section 3.4 (A2).
+	if arr.TokenPricing.HasCreditPricing() {
+		dst.TokenPricing = arr.TokenPricing.Clone()
+	}
 	dst.NormalizeBilling()
 }
 
@@ -350,7 +386,7 @@ func publishProviderBillingToArray(reg *Registry, providerID string) {
 	}
 	provider := &reg.Providers[idx]
 	arr := findProviderArray(reg, canonicalProviderArrayID(*provider))
-	if arr == nil || len(arr.MemberIDs) < 2 {
+	if arr == nil {
 		return
 	}
 	copyProviderBillingToArray(provider, arr)
@@ -394,9 +430,13 @@ func collapseServiceGroupArrayRoutes(reg *Registry) {
 				pc.ProviderID = providerID
 				pc.Model = strings.TrimSpace(pc.Model)
 				key := strings.ToLower(providerID) + "\x00" + pc.Model
-				if idx, ok := seen[key]; ok {
-					out[idx] = preferProviderRouteConfig(out[idx], pc)
-					continue
+				// Only array targets collapse. Two legacy rows that name the
+				// same provider and an empty model must both survive a save.
+				if _, targetIsArray := arrayIDs[strings.ToLower(providerID)]; targetIsArray {
+					if idx, ok := seen[key]; ok {
+						out[idx] = preferProviderRouteConfig(out[idx], pc)
+						continue
+					}
 				}
 				seen[key] = len(out)
 				out = append(out, pc)
@@ -476,9 +516,251 @@ func retargetProviderRoutes(reg *Registry, fromID, toID string) {
 	}
 }
 
-// DeleteProviderArray removes every member of a logical provider. prune strips
-// the array id and each member id from service groups in the same write.
-func (s *Service) DeleteProviderArray(ctx context.Context, id string, prune bool) ([]string, error) {
+// rejectProtectedArrayRename refuses a display-name change on a platform
+// array. Submitting the name the array already has is not a rename.
+func rejectProtectedArrayRename(arr *llmpool.ProviderArray, name string) error {
+	if arr == nil || !providerArrayProtected(arr) {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == strings.TrimSpace(arr.Name) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrArrayProtected, arr.ID)
+}
+
+const maxProviderArrayNameRunes = 80
+
+func normalizeProviderArrayName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("array name required")
+	}
+	if utf8.RuneCountInString(name) > maxProviderArrayNameRunes {
+		return "", fmt.Errorf("array name is too long")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("array name required")
+		}
+	}
+	return name, nil
+}
+
+func normalizeProviderArrayID(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("provider array id required")
+	}
+	if utf8.RuneCountInString(id) > maxProviderArrayNameRunes {
+		return "", fmt.Errorf("provider array id is too long")
+	}
+	for _, r := range id {
+		if r <= 0x20 || r == 0x7f || r == '/' || r == '\\' || r == '?' || r == '#' {
+			return "", fmt.Errorf("provider array id required")
+		}
+	}
+	return id, nil
+}
+
+// AddProviderArray creates a logical array before any provider joins it.
+// Billing stays on the array and is copied onto members as they are added.
+func (s *Service) AddProviderArray(ctx context.Context, id, name string, billing ProviderArrayBilling) error {
+	id, err := normalizeProviderArrayID(id)
+	if err != nil {
+		return err
+	}
+	name, err = normalizeProviderArrayName(name)
+	if err != nil {
+		return err
+	}
+	if canonical, ok := tokenBankArrayName(id); ok && name != canonical {
+		return fmt.Errorf("%w: %s", ErrArrayProtected, id)
+	}
+	policy, err := normalizeProviderArrayBilling(billing)
+	if err != nil {
+		return err
+	}
+	return s.MutateRegistry(ctx, func(reg *Registry) (bool, error) {
+		if findProviderArray(reg, id) != nil || findProvider(reg, id) != nil {
+			return false, fmt.Errorf("provider array %s already exists", id)
+		}
+		arr := llmpool.ProviderArray{ID: id, Name: name, Manual: true}
+		copyProviderBillingToArray(&policy, &arr)
+		reg.ProviderArrays = append(reg.ProviderArrays, arr)
+		return true, nil
+	})
+}
+
+func normalizeProviderArrayBilling(billing ProviderArrayBilling) (llmpool.ProviderConfig, error) {
+	policy := llmpool.ProviderConfig{
+		Timezone:                 billing.Timezone,
+		CreditMultiplier:         billing.CreditMultiplier,
+		CreditMultiplierSchedule: append([]llmpool.CreditMultiplierWindow(nil), billing.CreditMultiplierSchedule...),
+		TokenPricing:             billing.TokenPricing.Clone(),
+	}
+	policy.NormalizeBilling()
+	if err := validateProviderDefaultBilling(policy); err != nil {
+		return llmpool.ProviderConfig{}, err
+	}
+	return policy, nil
+}
+
+// ProviderArrayBilling is the shared token price and vendor multiplier for
+// every member of one logical array.
+type ProviderArrayBilling struct {
+	Timezone                 string
+	CreditMultiplier         float64
+	CreditMultiplierSchedule []llmpool.CreditMultiplierWindow
+	TokenPricing             llmpool.TokenPricing
+}
+
+// UpdateProviderArray sets the array name and publishes billing onto the
+// array and every current member. A one-member array otherwise copies the
+// member's price back over the array on the next save.
+func (s *Service) UpdateProviderArray(ctx context.Context, id, name string, billing ProviderArrayBilling) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("provider array id required")
+	}
+	nextName, err := normalizeProviderArrayName(name)
+	if err != nil {
+		return err
+	}
+	policy, err := normalizeProviderArrayBilling(billing)
+	if err != nil {
+		return err
+	}
+	return s.MutateRegistry(ctx, func(reg *Registry) (bool, error) {
+		arr := findProviderArray(reg, id)
+		if arr == nil {
+			return false, fmt.Errorf("%w: %s", ErrProviderNotFound, id)
+		}
+		if err := rejectProtectedArrayRename(arr, nextName); err != nil {
+			return false, err
+		}
+		arr.Name = nextName
+		copyProviderBillingToArray(&policy, arr)
+		arrayID := strings.TrimSpace(arr.ID)
+		for i := range reg.Providers {
+			if !strings.EqualFold(canonicalProviderArrayID(reg.Providers[i]), arrayID) {
+				continue
+			}
+			copyArrayBillingToProvider(arr, &reg.Providers[i])
+		}
+		return true, nil
+	})
+}
+
+// RenameProviderArray sets the display name of a logical provider array.
+// Service groups route by array id, so a rename does not change dispatch.
+func (s *Service) RenameProviderArray(ctx context.Context, id, name string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("provider array id required")
+	}
+	name, err := normalizeProviderArrayName(name)
+	if err != nil {
+		return err
+	}
+	return s.MutateRegistry(ctx, func(reg *Registry) (bool, error) {
+		arr := findProviderArray(reg, id)
+		if arr == nil {
+			return false, fmt.Errorf("%w: %s", ErrProviderNotFound, id)
+		}
+		if err := rejectProtectedArrayRename(arr, name); err != nil {
+			return false, err
+		}
+		if arr.Name == name {
+			return false, nil
+		}
+		arr.Name = name
+		return true, nil
+	})
+}
+
+// ProviderArrayReferences returns service groups that route to the array or
+// any of its members. Returned groups are copies.
+func (s *Service) ProviderArrayReferences(ctx context.Context, id string) ([]llmpool.ServiceGroup, error) {
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return nil, err
+	}
+	arr := findProviderArray(reg, id)
+	if arr == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
+	}
+	return cloneServiceGroups(providerArrayReferencedGroups(reg, arr)), nil
+}
+
+func providerArrayRouteIDs(arr *llmpool.ProviderArray) []string {
+	if arr == nil {
+		return nil
+	}
+	ids := make([]string, 0, 1+len(arr.MemberIDs))
+	seen := map[string]struct{}{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		ids = append(ids, id)
+	}
+	add(arr.ID)
+	for _, id := range arr.MemberIDs {
+		add(id)
+	}
+	return ids
+}
+
+func providerArrayReferencedGroups(reg *Registry, arr *llmpool.ProviderArray) []llmpool.ServiceGroup {
+	if reg == nil || arr == nil {
+		return nil
+	}
+	checkIDs := providerArrayRouteIDs(arr)
+	var referenced []llmpool.ServiceGroup
+	for _, group := range reg.ServiceGroups {
+		if groupReferencesAnyFold(group, checkIDs) {
+			referenced = append(referenced, group)
+		}
+	}
+	return referenced
+}
+
+// groupReferencesAnyFold matches route ids without case sensitivity. Stored
+// routes are normally canonical, but a differently cased id must still block
+// deleting the array those routes dispatch to.
+func groupReferencesAnyFold(g llmpool.ServiceGroup, ids []string) bool {
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		for _, model := range g.Models {
+			for _, providerID := range model.ProviderIDs {
+				if strings.EqualFold(strings.TrimSpace(providerID), id) {
+					return true
+				}
+			}
+			for _, cfg := range model.ProviderConfigs {
+				if strings.EqualFold(strings.TrimSpace(cfg.ProviderID), id) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// DeleteProviderArray removes every provider that belongs to a logical array.
+// A service group that still routes to the array, or to any current member,
+// blocks the delete. The array stays intact until those routes are removed.
+func (s *Service) DeleteProviderArray(ctx context.Context, id string) ([]string, error) {
 	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
@@ -489,59 +771,47 @@ func (s *Service) DeleteProviderArray(ctx context.Context, id string, prune bool
 		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
 	}
 	id = arr.ID
-	checkIDs := append([]string{id}, arr.MemberIDs...)
-	var referenced []llmpool.ServiceGroup
-	for _, group := range reg.ServiceGroups {
-		for _, checkID := range checkIDs {
-			if groupReferencesProvider(group, strings.TrimSpace(checkID)) {
-				referenced = append(referenced, group)
-				break
-			}
-		}
+	if providerArrayProtected(arr) {
+		return nil, fmt.Errorf("%w: %s", ErrArrayProtected, id)
 	}
-	if len(referenced) > 0 && !prune {
+	referenced := providerArrayReferencedGroups(reg, arr)
+	if len(referenced) > 0 {
 		return serviceGroupNames(referenced), fmt.Errorf("%w: %s", ErrProviderInUse, id)
-	}
-	drop := map[string]struct{}{}
-	for _, memberID := range arr.MemberIDs {
-		drop[strings.ToLower(strings.TrimSpace(memberID))] = struct{}{}
 	}
 	filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers))
 	for _, provider := range reg.Providers {
-		if _, ok := drop[strings.ToLower(strings.TrimSpace(provider.ID))]; ok {
+		if strings.EqualFold(canonicalProviderArrayID(provider), id) {
 			continue
 		}
 		filtered = append(filtered, provider)
 	}
 	next := cloneRegistry(reg)
 	next.Providers = filtered
-	var pruned []string
-	if prune {
-		seen := map[string]struct{}{}
-		for _, checkID := range checkIDs {
-			for _, name := range pruneProviderFromGroups(next, strings.TrimSpace(checkID)) {
-				if _, ok := seen[name]; ok {
-					continue
-				}
-				seen[name] = struct{}{}
-				pruned = append(pruned, name)
-			}
-		}
-	}
+	next.ProviderArrays = withoutProviderArray(next.ProviderArrays, id)
 	if err := s.persistRegistry(ctx, next); err != nil {
 		return nil, err
 	}
-	return pruned, nil
+	return nil, nil
 }
 
 func lookupProviderArray(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
 	if accept == nil {
 		accept = acceptLiveProvider
 	}
-	logicalID = resolveProviderArrayID(reg, routeProviderID)
+	routeProviderID = strings.TrimSpace(routeProviderID)
+	// The route id is the array id. A provider who left can still own that id.
+	// When resolve follows that leaver, stay on the array current members name,
+	// using the array record's casing so rotation state stays one key.
+	resolved := resolveProviderArrayID(reg, routeProviderID)
+	logicalID = resolved
+	// A route that names an array uses that array's stored casing, even when
+	// resolve follows a provider who left or the route only differs by case.
+	if arrayIDListed(reg, routeProviderID) {
+		logicalID = canonicalListedArrayID(reg, routeProviderID)
+	}
 	ids := providerArrayMemberIDs(reg, logicalID)
 	if len(ids) == 0 {
-		if provider := findProvider(reg, routeProviderID); provider != nil {
+		if provider := findProvider(reg, routeProviderID); provider != nil && providerStillOnArray(*provider, logicalID, routeProviderID) {
 			logicalID = strings.TrimSpace(provider.ID)
 			if logicalID == "" {
 				logicalID = strings.TrimSpace(routeProviderID)
@@ -576,15 +846,125 @@ func lookupProviderArray(reg *Registry, routeProviderID string, accept func(*llm
 	return logicalID, profile, members
 }
 
-func arrayEgressCandidates(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
+// providerChatTestFilterModel is the name used to drop token-bank members that
+// serve a different model. A concrete route pin wins. A billing band keeps
+// every member, matching tokenBankMembersForModel.
+func providerChatTestFilterModel(routeModel, logicalModel, requestedModel string) string {
+	routeModel = strings.TrimSpace(routeModel)
+	if routeModel != "" && !isBillingBandName(routeModel) {
+		return routeModel
+	}
+	if logical := strings.TrimSpace(logicalModel); logical != "" {
+		return logical
+	}
+	return strings.TrimSpace(requestedModel)
+}
+
+// providerChatTestArrayMembers is the member class a status test may dial.
+// It follows the production egress filters and then puts a recovery probe
+// behind siblings that are already in rotation. It does not call
+// orderArrayMembers or orderTokenBankReady: both advance the production cursor.
+func providerChatTestArrayMembers(reg *Registry, id, filterModel string) []*llmpool.ProviderConfig {
+	_, _, members := lookupProviderArray(reg, id, acceptLiveProvider)
+	members = withoutCoolingArrayMembers(members)
+	members = withoutQuotaBlockedMembers(members, time.Now())
+	members = tokenBankMembersForModel(members, filterModel)
+	members = withoutClosedShareWindows(members, time.Now())
+	ready, delayed := splitArrayProbeMembers(members)
+	// An admin status check has no request id, so it is not a canary hit.
+	// Drop canaries when a stable sibling can answer. orderTokenBankReady
+	// does this and then rotates; rotating would take a production turn.
+	ready = withoutTokenBankCanaries(ready, time.Now())
+	if len(ready) == 0 {
+		return delayed
+	}
+	if len(delayed) == 0 {
+		return ready
+	}
+	return append(ready, delayed...)
+}
+
+// withoutTokenBankCanaries keeps the members a non-canary request dials.
+// A canary stays when it is the only supply. Ordinary providers stay.
+func withoutTokenBankCanaries(members []*llmpool.ProviderConfig, now time.Time) []*llmpool.ProviderConfig {
+	if !membersIncludeTokenBank(members) {
+		return members
+	}
+	rest := make([]*llmpool.ProviderConfig, 0, len(members))
+	sawCanary := false
+	for _, member := range members {
+		if tokenBankMemberInCanary(member, now) {
+			sawCanary = true
+			continue
+		}
+		rest = append(rest, member)
+	}
+	if !sawCanary || len(rest) == 0 {
+		return members
+	}
+	return rest
+}
+
+// providerChatTestCandidates lists members a status test may try, in dial order.
+// A service-group test sets preferArray. The route may store an array id or a
+// member id; lookupProviderArray resolves either one to the array production
+// dials. A provider Test Status call sets preferArray false and tests that
+// member alone, including a member who also owns the array id. An id that is
+// only an array still expands. When every filtered member is cooling, over
+// quota, or outside a share window, the test falls back to a live member and
+// then to any member, including a paused one, so the admin still reaches an
+// upstream instead of "provider not found".
+func providerChatTestCandidates(reg *Registry, id string, preferArray bool, filterModel string) []*llmpool.ProviderConfig {
+	id = strings.TrimSpace(id)
+	if reg == nil || id == "" {
+		return nil
+	}
+	if !preferArray {
+		if provider := findProvider(reg, id); provider != nil {
+			return []*llmpool.ProviderConfig{provider}
+		}
+	}
+	if filtered := providerChatTestArrayMembers(reg, id, filterModel); len(filtered) > 0 {
+		return filtered
+	}
+	_, _, members := lookupProviderArray(reg, id, acceptLiveProvider)
+	if len(members) == 0 {
+		_, _, members = lookupProviderArray(reg, id, func(provider *llmpool.ProviderConfig) bool { return provider != nil })
+	}
+	if len(members) > 0 {
+		return members
+	}
+	if provider := findProvider(reg, id); provider != nil {
+		return []*llmpool.ProviderConfig{provider}
+	}
+	return nil
+}
+
+func arrayEgressCandidates(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool, model string) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
+	return arrayEgressForBucket(reg, routeProviderID, accept, model, "")
+}
+
+// arrayEgressForBucket is arrayEgressCandidates for one request id. The id is
+// the canary bucket: the same id always picks the same side of the 5% cut.
+// An empty bucket is not a hit, so a caller that has no request leaves canaries
+// out of rotation whenever a stable sibling can answer.
+func arrayEgressForBucket(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool, model, bucket string) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
 	logicalID, profile, members = lookupProviderArray(reg, routeProviderID, accept)
 	// Drop cooling members before rotating so a paused member does not consume
 	// a turn, and an array that is entirely cooling does not move the cursor.
 	members = withoutCoolingArrayMembers(members)
+	members = withoutQuotaBlockedMembers(members, time.Now())
+	// A tier array mixes models. Drop the other models before rotating, or
+	// their members advance this model's cursor and then get filtered out.
+	members = tokenBankMembersForModel(members, model)
+	// A closed share window is not dialed. Drop it before rotating so it does
+	// not take a turn from the sibling that is open.
+	members = withoutClosedShareWindows(members, time.Now())
 	// Rotate only the members that should take traffic now. A recovery probe
 	// stays behind them and does not consume a turn while a sibling can answer.
+	// Canaries are outside that cursor unless they are the only supply.
 	ready, delayed := splitArrayProbeMembers(members)
-	ready = rotateProviderArray(logicalID, ready)
+	ready = orderTokenBankReady(logicalID, model, bucket, ready, time.Now())
 	if len(delayed) == 0 {
 		return logicalID, profile, ready
 	}
@@ -647,7 +1027,13 @@ func providerArrayMemberIDs(reg *Registry, arrayID string) []string {
 				out = append(out, id)
 			}
 		}
-		return out
+		if len(out) > 0 {
+			return out
+		}
+		// The saved member list is empty. Providers that still name this array
+		// are the members; do not treat a former owner with a blank array id
+		// as one of them.
+		return providersWithArrayID(reg, arrayID)
 	}
 	var out []string
 	for _, provider := range reg.Providers {
@@ -655,6 +1041,30 @@ func providerArrayMemberIDs(reg *Registry, arrayID string) []string {
 			if id := strings.TrimSpace(provider.ID); id != "" {
 				out = append(out, id)
 			}
+		}
+	}
+	return out
+}
+
+// providerStillOnArray reports that this provider is the array the route
+// named. A provider who moved to another array must not fill an empty one.
+func providerStillOnArray(provider llmpool.ProviderConfig, logicalID, routeProviderID string) bool {
+	canon := canonicalProviderArrayID(provider)
+	return strings.EqualFold(canon, logicalID) || strings.EqualFold(canon, routeProviderID)
+}
+
+func providersWithArrayID(reg *Registry, arrayID string) []string {
+	if reg == nil {
+		return nil
+	}
+	arrayID = strings.TrimSpace(arrayID)
+	var out []string
+	for i := range reg.Providers {
+		if !strings.EqualFold(strings.TrimSpace(reg.Providers[i].ArrayID), arrayID) {
+			continue
+		}
+		if id := strings.TrimSpace(reg.Providers[i].ID); id != "" {
+			out = append(out, id)
 		}
 	}
 	return out
@@ -763,6 +1173,20 @@ func releaseArrayMemberProbe(providerID string) {
 	if state.until.IsZero() {
 		delete(providerArrayFailurePause.states, providerID)
 	}
+}
+
+func arrayMemberCooldownUntil(providerID string) time.Time {
+	providerID = providerIDKey(providerID)
+	if providerID == "" {
+		return time.Time{}
+	}
+	providerArrayFailurePause.Lock()
+	defer providerArrayFailurePause.Unlock()
+	state := providerArrayFailurePause.states[providerID]
+	if state == nil || !time.Now().Before(state.until) {
+		return time.Time{}
+	}
+	return state.until
 }
 
 func arrayMemberCooling(providerID string) bool {

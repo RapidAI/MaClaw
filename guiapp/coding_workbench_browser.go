@@ -533,6 +533,9 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 		if workspaceID == "" {
 			workspaceID = cloudWorkspaceIDFromPathString(root)
 		}
+		if workspaceID == "" {
+			workspaceID = cloudWorkspaceIDFromReadOnlyCachePath(root)
+		}
 	}
 	if workspaceID == "" {
 		return fmt.Errorf("delete is only available for cloud workspaces")

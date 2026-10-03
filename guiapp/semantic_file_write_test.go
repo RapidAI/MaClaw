@@ -655,3 +655,48 @@ func TestSemanticFileWriteArgsRouteByFieldPresence(t *testing.T) {
 		t.Fatalf("write request=%+v err=%v", write, err)
 	}
 }
+
+func TestTrustedWriteOfExistingTemplateStillOpensPreview(t *testing.T) {
+	workspace := t.TempDir()
+	dir := filepath.Join(workspace, "elsarticle")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tex := filepath.Join(dir, "elsarticle-template-num.tex")
+	if err := os.WriteFile(tex, []byte("\\documentclass{elsarticle}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	var got *CodeFileEvent
+	app.codePreviewEventObserver = func(evt CodeFileEvent) {
+		copied := evt
+		got = &copied
+	}
+	app.codeEventEmitter = NewCodeEventEmitter(app)
+	h := &IMMessageHandler{app: app}
+	principal := desktopUserID + ":" + workspace
+	written, err := h.writeTrustedFile(principal, "elsarticle/elsarticle-template-num.tex", "\\documentclass{elsarticle}\n\\begin{document}paper\\end{document}\n", "overwrite")
+	if err != nil || !strings.Contains(written, "Written to") {
+		t.Fatalf("write=%q err=%v", written, err)
+	}
+	if got == nil {
+		t.Fatal("rewriting an exported template emitted no preview")
+	}
+	if got.OpType != "modify" || !got.ForceOpen {
+		t.Fatalf("preview=%+v, want a forced modify of the existing paper", *got)
+	}
+	if !strings.Contains(got.FilePath, "elsarticle-template-num.tex") {
+		t.Fatalf("preview path=%q", got.FilePath)
+	}
+	if got.Original == "" || !strings.Contains(got.Content, "paper") {
+		t.Fatalf("preview lost the before/after text: %+v", *got)
+	}
+	got = nil
+	created, err := h.writeTrustedFile(principal, "elsarticle/chapter.tex", "\\section{New}\n", "")
+	if err != nil || !strings.Contains(created, "Written to") {
+		t.Fatalf("create=%q err=%v", created, err)
+	}
+	if got == nil || got.OpType != "create" || !got.ForceOpen || !strings.Contains(got.FilePath, "chapter.tex") {
+		t.Fatalf("new tex preview=%v", got)
+	}
+}

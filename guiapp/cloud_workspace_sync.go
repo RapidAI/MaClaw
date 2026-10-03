@@ -1606,7 +1606,7 @@ func (p *cloudWorkspaceProtocol) pullWithProgress(ctx context.Context, root stri
 		}
 		data, err := p.Transport.GetObject(ctx, e.SHA256, e.Size)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s: %w", cleaned, err)
 		}
 		afterFetch, statErr := observeCloudWorkspaceFile(dest)
 		if statErr != nil {
@@ -1621,7 +1621,7 @@ func (p *cloudWorkspaceProtocol) pullWithProgress(ctx context.Context, root stri
 		}
 		sum := sha256.Sum256(data)
 		if hex.EncodeToString(sum[:]) != e.SHA256 {
-			return nil, fmt.Errorf("cloud workspace object hash mismatch")
+			return nil, fmt.Errorf("%s: cloud workspace object hash mismatch", cleaned)
 		}
 		if err := atomicWriteFile(dest, data); err != nil {
 			return nil, err

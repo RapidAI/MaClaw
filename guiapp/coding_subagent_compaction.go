@@ -47,15 +47,17 @@ type SubAgentCompactor struct {
 	compactionCount int
 	filesModifiedFn func() []string
 	filesCreatedFn  func() []string
+	filesReadFn     func() []string
 	commandsRunFn   func() []CodingSubAgentCommandResult
 }
 
 // NewSubAgentCompactor creates a compactor for a coding task.
-func NewSubAgentCompactor(contextWindow int, filesModifiedFn func() []string, filesCreatedFn func() []string, commandsRunFn func() []CodingSubAgentCommandResult) *SubAgentCompactor {
+func NewSubAgentCompactor(contextWindow int, filesModifiedFn func() []string, filesCreatedFn func() []string, filesReadFn func() []string, commandsRunFn func() []CodingSubAgentCommandResult) *SubAgentCompactor {
 	return &SubAgentCompactor{
 		contextWindow:   contextWindow,
 		filesModifiedFn: filesModifiedFn,
 		filesCreatedFn:  filesCreatedFn,
+		filesReadFn:     filesReadFn,
 		commandsRunFn:   commandsRunFn,
 	}
 }
@@ -78,7 +80,7 @@ func (c *SubAgentCompactor) ShouldCompact(conversation []interface{}) bool {
 // Preserves: system message + recent window + file/command anchors.
 // Middle section is replaced with a static summary.
 func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
-	if c == nil || len(conversation) <= subAgentCompactionRecencyWindow*3+2 {
+	if c == nil || len(conversation) < 4 {
 		return conversation // too short to compact
 	}
 	c.compactionCount++
@@ -91,16 +93,21 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 
 	// Calculate recent window by counting assistant turns from the end.
 	// Each "turn" is: assistant message + N tool result messages.
-	// We want to keep the last subAgentCompactionRecencyWindow complete turns.
+	// We want to keep the last subAgentCompactionRecencyWindow complete turns,
+	// then shrink by token budget and split a turn that still does not fit.
 	recentStart := findSubAgentRecencyWindowStart(conversation, subAgentCompactionRecencyWindow)
+	if recentStart < 2 {
+		recentStart = 2
+	}
+	keepTokens := c.contextWindow * 3 / 10
+	if keepTokens < 1000 {
+		keepTokens = 1000
+	}
+	conversation, recentStart = fitSubAgentRecentWindow(conversation, recentStart, keepTokens)
 	if recentStart <= 2 {
 		return conversation // nothing to compact
 	}
 	recentWindow := conversation[recentStart:]
-
-	// Build compaction summary from middle section
-	middleSection := conversation[2:recentStart]
-	summary := c.buildCompactionSummary(middleSection)
 
 	// Assemble compacted conversation.
 	// Merge the summary into the task message (user role) to avoid message
@@ -112,6 +119,8 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	if tm, ok := taskMsg.(map[string]interface{}); ok {
 		taskContent, _ = tm["content"].(string)
 	}
+	middleSection := conversation[2:recentStart]
+	summary := c.buildCompactionSummary(middleSection, taskContent)
 	mergedTask := map[string]interface{}{
 		"role":    "user",
 		"content": taskContent + "\n\n---\n\n" + summary,
@@ -152,15 +161,24 @@ func findSubAgentRecencyWindowStart(conversation []interface{}, turnsToKeep int)
 
 // buildCompactionSummary creates a static summary of the compacted middle section.
 // This includes file modification anchors and command history.
-func (c *SubAgentCompactor) buildCompactionSummary(middleSection []interface{}) string {
+func (c *SubAgentCompactor) buildCompactionSummary(middleSection []interface{}, taskContent string) string {
 	var b strings.Builder
 
 	b.WriteString("[上下文压缩] 之前的工具调用因 context 长度限制被压缩。以下是工作摘要。\n\n")
 	b.WriteString("另一个编码执行器已经开始处理此任务。文件系统反映了已完成的工作。请基于已完成的工作继续，避免重复已做过的事情。\n\n")
 
-	// File anchors
-	if c.filesModifiedFn != nil {
-		modified := c.filesModifiedFn()
+	// File anchors. Read paths accumulate with any list already written
+	// into the task message by an earlier compaction.
+	readFiles := mergeSubAgentPaths(callStringList(c.filesReadFn), filePathsFromSection(taskContent, "已读取文件"))
+	if len(readFiles) > 0 {
+		b.WriteString("## 已读取文件\n")
+		for _, f := range readFiles {
+			b.WriteString(fmt.Sprintf("- %s\n", f))
+		}
+		b.WriteString("\n")
+	}
+	if c.filesModifiedFn != nil || taskContent != "" {
+		modified := mergeSubAgentPaths(callStringList(c.filesModifiedFn), filePathsFromSection(taskContent, "已修改文件"))
 		if len(modified) > 0 {
 			b.WriteString("## 已修改文件\n")
 			for _, f := range modified {
@@ -323,6 +341,7 @@ func (s *CodingSubAgent) buildLoopHooks(cb *codingSubAgentCallbacks) *codingSubA
 		contextWindow,
 		func() []string { return cb.getFilesModified() },
 		func() []string { return cb.getFilesCreated() },
+		func() []string { return cb.getFilesRead() },
 		func() []CodingSubAgentCommandResult { return cb.getCommandsRun() },
 	)
 
@@ -364,5 +383,223 @@ func (r *RemoteCodingSubAgent) buildRemoteCodingLoopHooks(cb *remoteCodingCallba
 			}
 			return &cb.llmReplanRevision
 		}(),
+	}
+}
+
+func callStringList(fn func() []string) []string {
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
+func mergeSubAgentPaths(parts ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, part := range parts {
+		for _, path := range part {
+			path = strings.TrimSpace(path)
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func filePathsFromSection(summary, heading string) []string {
+	marker := "## " + heading
+	idx := strings.Index(summary, marker)
+	if idx < 0 {
+		return nil
+	}
+	rest := summary[idx+len(marker):]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		rest = rest[:next]
+	}
+	var paths []string
+	for _, line := range strings.Split(rest, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			paths = append(paths, strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+		}
+	}
+	return paths
+}
+
+// fitSubAgentRecentWindow shrinks the kept suffix to keepTokens. A single
+// assistant turn that is still too large is split so its trailing tool
+// results stay verbatim and the earlier tool results fall into the summary.
+func fitSubAgentRecentWindow(conversation []interface{}, recentStart, keepTokens int) ([]interface{}, int) {
+	if keepTokens <= 0 || recentStart >= len(conversation) {
+		return conversation, recentStart
+	}
+	start := recentStart
+	for start < len(conversation)-1 && estimateConversationTokensForSubAgent(conversation[start:]) > keepTokens {
+		if subAgentMsgHasToolCalls(conversation[start]) {
+			rewritten, next, ok := splitSubAgentToolGroup(conversation, start, keepTokens)
+			if ok {
+				return rewritten, next
+			}
+		}
+		start++
+		for start < len(conversation) && subAgentMsgRole(conversation[start]) == "tool" {
+			start++
+		}
+	}
+	return conversation, start
+}
+
+func subAgentMsgRole(msg interface{}) string {
+	switch m := msg.(type) {
+	case map[string]interface{}:
+		role, _ := m["role"].(string)
+		return role
+	case map[string]string:
+		return m["role"]
+	default:
+		return ""
+	}
+}
+
+func subAgentMsgHasToolCalls(msg interface{}) bool {
+	m, ok := msg.(map[string]interface{})
+	if !ok || m["tool_calls"] == nil {
+		return false
+	}
+	switch calls := m["tool_calls"].(type) {
+	case []llm.ToolCall:
+		return len(calls) > 0
+	case []interface{}:
+		return len(calls) > 0
+	default:
+		return true
+	}
+}
+
+func splitSubAgentToolGroup(conversation []interface{}, start, keepTokens int) ([]interface{}, int, bool) {
+	end := start + 1
+	for end < len(conversation) && subAgentMsgRole(conversation[end]) == "tool" {
+		end++
+	}
+	if end-start < 2 {
+		return conversation, start, false
+	}
+	assistantTokens := estimateConversationTokensForSubAgent(conversation[start : start+1])
+	tailTokens := estimateConversationTokensForSubAgent(conversation[end:])
+	remaining := keepTokens - assistantTokens - tailTokens
+	if remaining <= 0 {
+		return conversation, start, false
+	}
+	firstKept := end
+	used := 0
+	for i := end - 1; i > start; i-- {
+		tokens := estimateConversationTokensForSubAgent(conversation[i : i+1])
+		if used+tokens > remaining {
+			break
+		}
+		used += tokens
+		firstKept = i
+	}
+	if firstKept >= end {
+		last, ok := conversation[end-1].(map[string]interface{})
+		if !ok {
+			return conversation, start, false
+		}
+		content, _ := last["content"].(string)
+		maxRunes := remaining * 2
+		if maxRunes < 200 {
+			maxRunes = 200
+		}
+		truncated, _ := truncateEntryContent(content, maxRunes).(string)
+		if strings.TrimSpace(truncated) == "" {
+			return conversation, start, false
+		}
+		copied := map[string]interface{}{}
+		for k, v := range last {
+			copied[k] = v
+		}
+		copied["content"] = truncated
+		assistant, ok := filterSubAgentAssistantCalls(conversation[start], []interface{}{copied})
+		if !ok {
+			return conversation, start, false
+		}
+		out := make([]interface{}, 0, len(conversation))
+		out = append(out, conversation[:start]...)
+		out = append(out, conversation[start+1:end-1]...)
+		newStart := len(out)
+		out = append(out, assistant)
+		out = append(out, copied)
+		out = append(out, conversation[end:]...)
+		return out, newStart, true
+	}
+	assistant, ok := filterSubAgentAssistantCalls(conversation[start], conversation[firstKept:end])
+	if !ok {
+		return conversation, start, false
+	}
+	out := make([]interface{}, 0, len(conversation)-(firstKept-start-1))
+	out = append(out, conversation[:start]...)
+	out = append(out, conversation[start+1:firstKept]...)
+	newStart := len(out)
+	out = append(out, assistant)
+	out = append(out, conversation[firstKept:]...)
+	return out, newStart, true
+}
+
+func filterSubAgentAssistantCalls(assistant interface{}, keptTools []interface{}) (interface{}, bool) {
+	msg, ok := assistant.(map[string]interface{})
+	if !ok {
+		return assistant, false
+	}
+	keep := map[string]bool{}
+	for _, toolMsg := range keptTools {
+		m, ok := toolMsg.(map[string]interface{})
+		if !ok {
+			return assistant, false
+		}
+		id, _ := m["tool_call_id"].(string)
+		if id == "" {
+			return assistant, false
+		}
+		keep[id] = true
+	}
+	copied := map[string]interface{}{}
+	for k, v := range msg {
+		copied[k] = v
+	}
+	switch calls := msg["tool_calls"].(type) {
+	case []llm.ToolCall:
+		filtered := make([]llm.ToolCall, 0, len(keep))
+		for _, call := range calls {
+			if keep[call.ID] {
+				filtered = append(filtered, call)
+			}
+		}
+		if len(filtered) == 0 {
+			return assistant, false
+		}
+		copied["tool_calls"] = filtered
+		return copied, true
+	case []interface{}:
+		filtered := make([]interface{}, 0, len(keep))
+		for _, item := range calls {
+			tc, ok := item.(map[string]interface{})
+			if !ok {
+				return assistant, false
+			}
+			id, _ := tc["id"].(string)
+			if keep[id] {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) == 0 {
+			return assistant, false
+		}
+		copied["tool_calls"] = filtered
+		return copied, true
+	default:
+		return assistant, false
 	}
 }

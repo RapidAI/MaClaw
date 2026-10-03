@@ -19,9 +19,12 @@ func computeAgentLoopIterationLimits(ctx *LoopContext, maxIter int, minIteration
 	if ctx != nil && ctx.Kind == LoopKindChat {
 		chatFinalizeGrace = 2
 	}
-	if ctx != nil && ctx.Runtime.Execution.IsLight() && ctx.Runtime.Execution.IterationBudget > 0 {
+	if ctx != nil && ctx.Runtime.Execution.IterationBudget > 0 &&
+		(ctx.Runtime.Execution.IsLight() || operationalExecutionProfile(ctx.Runtime.Execution)) {
 		effectiveMax = ctx.Runtime.Execution.IterationBudget
-		chatFinalizeGrace = 1
+		if ctx.Runtime.Execution.IsLight() {
+			chatFinalizeGrace = 1
+		}
 	}
 	if minIterations > 0 && effectiveMax < minIterations {
 		effectiveMax = minIterations
@@ -50,7 +53,7 @@ func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iterat
 	if ctx.Kind != LoopKindChat || effectiveMax <= 0 {
 		return effectiveMax
 	}
-	if ctx.Runtime.Execution.IsLight() {
+	if ctx.Runtime.Execution.IsLight() || ctx.Runtime.Execution.IterationBudget > 0 {
 		return effectiveMax
 	}
 	remaining := effectiveMax - iteration

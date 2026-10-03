@@ -19,6 +19,56 @@ func newDedupTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestSave_SubstringReplaceDropsStaleEmbedding(t *testing.T) {
+	s := newDedupTestStore(t)
+	shortText := "The project uses PostgreSQL 16 with pgvector extension"
+	longText := "The project uses PostgreSQL 16 with pgvector extension for vector search and BM25 indexing"
+
+	if err := s.Save(Entry{
+		Content:   shortText,
+		Category:  CategoryProjectKnowledge,
+		Embedding: []float32{1, 0, 0, 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(Entry{
+		Content:  longText,
+		Category: CategoryProjectKnowledge,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := s.List(CategoryProjectKnowledge, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after longer substring merge, got %d", len(entries))
+	}
+	if entries[0].Content != longText {
+		t.Fatalf("content = %q", entries[0].Content)
+	}
+	if len(entries[0].Embedding) != 0 {
+		t.Fatalf("longer merge kept the short text vector: %v", entries[0].Embedding)
+	}
+
+	s2 := newDedupTestStore(t)
+	if err := s2.Save(Entry{
+		Content:   longText,
+		Category:  CategoryProjectKnowledge,
+		Embedding: []float32{1, 0, 0, 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.Save(Entry{
+		Content:  shortText,
+		Category: CategoryProjectKnowledge,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kept := s2.List(CategoryProjectKnowledge, "")
+	if len(kept) != 1 || kept[0].Content != longText || len(kept[0].Embedding) != 4 || kept[0].Embedding[0] != 1 {
+		t.Fatalf("shorter duplicate changed the stored entry: %+v", kept)
+	}
+}
+
 func TestSave_SubstringDedup_ContainedContent(t *testing.T) {
 	s := newDedupTestStore(t)
 
@@ -100,6 +150,108 @@ func TestSave_SubstringDedup_DifferentContentNotDeduped(t *testing.T) {
 	entries := s.List(CategoryProjectKnowledge, "")
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries for different content, got %d", len(entries))
+	}
+}
+
+func TestSave_InactiveEntryDoesNotAbsorbNewContent(t *testing.T) {
+	s := newDedupTestStore(t)
+	old := "The project uses PostgreSQL 16 with pgvector extension for vector search"
+	if err := s.Save(Entry{Content: old, Category: CategoryProjectKnowledge, Status: StatusSuperseded}); err != nil {
+		t.Fatal(err)
+	}
+	newer := old + " and BM25 indexing"
+	if err := s.Save(Entry{Content: newer, Category: CategoryProjectKnowledge, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	entries := s.List("", "")
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, inactive row absorbed the new body", len(entries))
+	}
+	active := 0
+	for _, entry := range entries {
+		if entry.IsActive() && entry.Content == newer {
+			active++
+		}
+	}
+	if active != 1 {
+		t.Fatalf("active copy of the new body = %d", active)
+	}
+}
+
+func TestSave_InactiveHashDoesNotBlockActiveInsert(t *testing.T) {
+	s := newDedupTestStore(t)
+	content := "User prefers concise Chinese status updates every morning"
+	if err := s.Save(Entry{Content: content, Category: CategoryUserFact, Status: StatusSuperseded}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(Entry{Content: content, Category: CategoryUserFact, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	entries := s.List(CategoryUserFact, "")
+	active := 0
+	for _, entry := range entries {
+		if entry.IsActive() && entry.Content == content {
+			active++
+		}
+	}
+	if len(entries) != 2 || active != 1 {
+		t.Fatalf("entries=%d active=%d", len(entries), active)
+	}
+}
+
+func TestRebuildContentHashIdxKeepsActiveSlot(t *testing.T) {
+	s := newDedupTestStore(t)
+	s.Stop()
+	s.mu.Lock()
+	s.entries = []Entry{
+		{ID: "live", Content: "same fact", ContentHash: "h", OwnerID: "user-a", Status: StatusActive, Category: CategoryUserFact},
+		{ID: "dead", Content: "same fact", ContentHash: "h", OwnerID: "user-a", Status: StatusSuperseded, Category: CategoryUserFact},
+	}
+	s.rebuildContentHashIdx()
+	got := s.contentHashIdx[contentHashIndexKey("h", "user-a")]
+	s.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("hash slot = %d, want the active row", got)
+	}
+}
+
+func TestCategoryStatsSkipInactive(t *testing.T) {
+	s := newDedupTestStore(t)
+	if err := s.Save(Entry{Content: "live project fact about the editor", Category: CategoryProjectKnowledge, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(Entry{Content: "old project fact about the editor", Category: CategoryProjectKnowledge, Status: StatusSuperseded}); err != nil {
+		t.Fatal(err)
+	}
+	stats := s.CategoryStats()
+	for _, stat := range stats {
+		if stat.Category == CategoryProjectKnowledge && stat.Count != 1 {
+			t.Fatalf("project_knowledge count = %d", stat.Count)
+		}
+	}
+}
+
+func TestUpsertIgnoresInactiveDuplicate(t *testing.T) {
+	s := newDedupTestStore(t)
+	content := "The release checklist uses the staging database"
+	if err := s.Save(Entry{Content: content, Category: CategoryProjectKnowledge, Status: StatusSuperseded}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.UpsertEntryByID(Entry{Content: content, Category: CategoryProjectKnowledge, Status: StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Created {
+		t.Fatalf("upsert result = %+v", result)
+	}
+	active := 0
+	for _, entry := range s.List("", "") {
+		if entry.IsActive() && entry.Content == content {
+			active++
+		}
+	}
+	if active != 1 {
+		t.Fatalf("active copies = %d", active)
 	}
 }
 
@@ -249,8 +401,8 @@ func TestSemanticDedup_CandidateRecall_HighSimilarity(t *testing.T) {
 	emb := &fakeEmbedderForDedup{
 		dim: 4,
 		vectors: map[string][]float32{
-			"maclaw 使用 Go 语言开发，前端使用 Wails 框架":  vecA,
-			"maclaw 项目基于 Go 语言和 Wails 框架开发":     vecB,
+			"maclaw 使用 Go 语言开发，前端使用 Wails 框架": vecA,
+			"maclaw 项目基于 Go 语言和 Wails 框架开发":   vecB,
 		},
 	}
 	s.SetEmbedder(emb)
@@ -292,7 +444,7 @@ func TestSemanticDedup_CandidateRecall_LowSimilarity(t *testing.T) {
 		dim: 4,
 		vectors: map[string][]float32{
 			"PostgreSQL 数据库性能优化指南": vecA,
-			"Redis 缓存集群部署方案":      vecB,
+			"Redis 缓存集群部署方案":       vecB,
 		},
 	}
 	s.SetEmbedder(emb)
@@ -374,7 +526,7 @@ func TestSemanticDedup_ProcessPending_Keep(t *testing.T) {
 	emb := &fakeEmbedderForDedup{
 		dim: 4,
 		vectors: map[string][]float32{
-			"PostgreSQL 数据库性能优化和索引调优指南":  vecA,
+			"PostgreSQL 数据库性能优化和索引调优指南": vecA,
 			"PostgreSQL 数据库备份恢复和灾难恢复方案": vecB,
 		},
 	}
@@ -415,7 +567,7 @@ func TestSemanticDedup_CrossCategory_NoCandidateRecall(t *testing.T) {
 		dim: 4,
 		vectors: map[string][]float32{
 			"maclaw 使用 Go 语言开发，前端使用 Wails 框架": vecA,
-			"maclaw 项目基于 Go 语言和 Wails 框架开发":    vecB,
+			"maclaw 项目基于 Go 语言和 Wails 框架开发":   vecB,
 		},
 	}
 	s.SetEmbedder(emb)

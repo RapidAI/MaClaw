@@ -2634,17 +2634,22 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	return a.oauthLoginSuccessMessage("OpenAI", "OpenAI OAuth 登录成功")
 }
 
-// StartXAIOAuth runs Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
-// flow. It uses the same native system-browser launcher as OpenAI OAuth.
+// StartXAIOAuth signs in with xAI's device grant. The browser only shows the
+// approval page; this process polls until the user allows it. A deployment
+// without that endpoint falls back to the loopback authorization-code flow.
 func (a *App) StartXAIOAuth() (string, error) {
 	if cfg, err := a.LoadConfig(); err == nil {
 		oauth.ApplyProxyFromAppConfig(cfg)
 	}
-	ctx, finish, claimResult := a.beginOAuthFlow(300 * time.Second)
-	// Use the same native browser launcher as the working OpenAI flow. This
-	// avoids the Wails BrowserOpenURL bridge silently dropping xAI's long OIDC
-	// authorization URL on some Windows installations.
-	result, err := oauth.RunXAIOAuthFlowCtx(ctx)
+	ctx, finish, claimResult := a.beginOAuthFlow(15 * time.Minute)
+	// Device grant: the browser only talks to accounts.x.ai, and MaClaw polls
+	// until the user approves. That finishes without a loopback fetch, which
+	// Chrome often blocks from the accounts page.
+	result, err := oauth.RunXAIDeviceFlowCtx(ctx)
+	if errors.Is(err, oauth.ErrXAIDeviceFlowUnavailable) {
+		log.Printf("[OAuth] xAI device login is unavailable, using the browser callback")
+		result, err = oauth.RunXAIOAuthFlowCtx(ctx)
+	}
 	if err != nil {
 		finish()
 		return "", fmt.Errorf("xAI OAuth 登录失败: %w", err)
@@ -2664,7 +2669,7 @@ func (a *App) StartXAIOAuth() (string, error) {
 			if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 				continue
 			}
-			data.Providers[i] = oauth.ApplyTokenResult(p, result)
+			data.Providers[i] = oauth.ReplaceLoginCredential(p, result)
 			if defaultXAI != nil {
 				data.Providers[i].URL = defaultXAI.URL
 				data.Providers[i].Model = defaultXAI.Model
@@ -2757,6 +2762,45 @@ func (a *App) testAndSaveOAuthProviderCapability(providerName string) (corelib.M
 		}
 	}
 	return result, nil
+}
+
+// ProbeMaclawLLMProviderModel tests one catalog model on a saved provider.
+// Share-dialog probes use this so a row such as "default-model" is the model
+// under test. The provider's saved model and the rest of the provider list
+// stay unchanged: Test & Save would persist the probed model and replace the
+// list with whatever slice the caller passed.
+func (a *App) ProbeMaclawLLMProviderModel(providerName, model string) (corelib.MaclawLLMTestResult, error) {
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	if providerName == "" {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider name is required")
+	}
+	if model == "" {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("model name is not configured")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("load config: %w", err)
+	}
+	var provider corelib.MaclawLLMProvider
+	found := false
+	for _, candidate := range cfg.MaclawLLMProviders {
+		if strings.EqualFold(strings.TrimSpace(candidate.Name), providerName) {
+			provider = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider %q not found", providerName)
+	}
+	prepared, _, err := a.prepareManagedAuthForConnectionTest(provider, maclawLLMProviderIDForRead(provider))
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, err
+	}
+	tested := a.materializeMaclawLLMProvider(prepared)
+	tested.Model = model
+	return a.TestMaclawLLM(tested)
 }
 
 // TestAndSaveMaclawLLMProviders is the authoritative provider-management
@@ -5380,8 +5424,9 @@ func isCodeGenToolModel(existing, target corelib.ModelConfig) bool {
 
 // CodeGenModelItem 描述一个从 CodeGen 服务获取的可用模型。
 type CodeGenModelItem struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	BillingMultiplier float64 `json:"billing_multiplier,omitempty"`
 }
 
 // FetchCodeGenModels 用当前 CodeGen provider 的 access_token 调用
@@ -5707,15 +5752,16 @@ func (a *App) CancelCodeGenSSOPolling() {
 type ProviderModelItem = CodeGenModelItem
 
 type providerModelEntry struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	OwnedBy     string `json:"owned_by"`
-	Available   *bool  `json:"available,omitempty"`
-	Enabled     *bool  `json:"enabled,omitempty"`
-	Active      *bool  `json:"active,omitempty"`
-	Disabled    bool   `json:"disabled,omitempty"`
-	Status      string `json:"status,omitempty"`
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	DisplayName       string  `json:"display_name"`
+	OwnedBy           string  `json:"owned_by"`
+	Available         *bool   `json:"available,omitempty"`
+	Enabled           *bool   `json:"enabled,omitempty"`
+	Active            *bool   `json:"active,omitempty"`
+	Disabled          bool    `json:"disabled,omitempty"`
+	Status            string  `json:"status,omitempty"`
+	BillingMultiplier float64 `json:"billing_multiplier,omitempty"`
 }
 
 func providerModelEntryID(m providerModelEntry) string {
@@ -5759,7 +5805,7 @@ func providerModelItemFromEntry(m providerModelEntry) (ProviderModelItem, bool) 
 	if name == "" {
 		name = id
 	}
-	return ProviderModelItem{ID: id, Name: name}, true
+	return ProviderModelItem{ID: id, Name: name, BillingMultiplier: m.BillingMultiplier}, true
 }
 
 // preserveManagedAuthSecrets keeps OAuth/SSO credentials when the UI saves
@@ -5789,7 +5835,11 @@ func preserveManagedAuthSecrets(incoming, existing []corelib.MaclawLLMProvider) 
 		if strings.TrimSpace(p.Key) == "" && strings.TrimSpace(old.Key) != "" {
 			incoming[i].Key = old.Key
 		}
-		if strings.TrimSpace(p.RefreshToken) == "" && strings.TrimSpace(old.RefreshToken) != "" {
+		// A different access token is a new login grant. The previous refresh
+		// token belongs to the grant that was just replaced. Settings saves
+		// omit the key, and those still keep the stored refresh token.
+		newGrant := strings.TrimSpace(p.Key) != "" && strings.TrimSpace(p.Key) != strings.TrimSpace(old.Key)
+		if !newGrant && strings.TrimSpace(p.RefreshToken) == "" && strings.TrimSpace(old.RefreshToken) != "" {
 			incoming[i].RefreshToken = old.RefreshToken
 		}
 		if strings.TrimSpace(p.OAuthAccessToken) == "" && strings.TrimSpace(old.OAuthAccessToken) != "" {

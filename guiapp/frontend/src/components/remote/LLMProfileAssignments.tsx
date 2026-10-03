@@ -4,6 +4,7 @@ import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
 import { SuggestCombobox } from "../ui/SuggestCombobox";
+import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from "../../utils/capabilityModelLabel";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
 type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
@@ -263,7 +264,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     // until after Save + reload, which contradicts the follow relationship.
     const followingAssistantProvider = providerByID.get(providerLookupKey(assistant?.provider_id));
     const followingAssistantProviderName = followingAssistantProvider?.name || t("No provider", "未配置服务商");
-    const followingAssistantModel = assistant?.model || t("No model", "未配置模型");
+    const followingAssistantModel = (followingAssistantProvider?.is_hub_service
+        ? officialModelAlias(assistant?.model || "")
+        : String(assistant?.model || "").trim()) || t("No model", "未配置模型");
     const followingPreviewPending = codingFollows && !!state && (
         state.profiles.coding.inherit_assistant !== true ||
         state.profiles.assistant.provider_id !== assistant?.provider_id ||
@@ -351,6 +354,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         const id = String(providerID || "").trim();
         const provider = providerByID.get(providerLookupKey(id));
         if (!provider) return [];
+        // MaClaw Official's model names are the four billing aliases. The live
+        // /models catalog is an upstream id list and must not replace them.
+        if (provider.is_hub_service) return hubOfficialModelAliases();
         const options = [
             ...(catalogByProvider[id] || []),
             provider.model,
@@ -358,10 +364,18 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         ].map(value => String(value || "").trim()).filter(Boolean);
         return Array.from(new Set(options));
     };
+    const modelFieldValue = (providerID: string | undefined, model: string | undefined) => {
+        const raw = String(model || "");
+        const provider = providerByID.get(providerLookupKey(providerID));
+        return provider?.is_hub_service ? officialModelAlias(raw) : raw;
+    };
     const setProvider = (profile: "assistant" | "coding" | "caption", providerID: string) => {
         const models = providerModels(providerID);
         const provider = providerByID.get(providerLookupKey(providerID));
-        const preferred = String(provider?.model || "").trim();
+        const preferredRaw = String(provider?.model || "").trim();
+        const preferred = provider?.is_hub_service
+            ? (capabilityBandName(preferredRaw) || hubOfficialModelAliases()[0])
+            : preferredRaw;
         const preferredMatch = preferred
             ? models.find(model => model.toLowerCase() === preferred.toLowerCase())
             : "";
@@ -493,7 +507,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 <SuggestCombobox
                     listboxId={`${profile}-profile-models`}
                     ariaLabel={selectorAria(profile, "model")}
-                    value={value.model || ""}
+                    value={modelFieldValue(value.provider_id, value.model)}
                     options={providerModels(value.provider_id)}
                     onChange={model => setModel(profile, model)}
                     placeholder={t("Select or enter model ID", "选择或输入模型 ID")}

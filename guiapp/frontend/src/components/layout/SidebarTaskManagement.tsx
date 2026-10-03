@@ -9,6 +9,7 @@ import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import { TaskWorkspaceTransferDialog, type TaskTransferCloudWorkspace, type TaskTransferDirection, type TaskTransferTarget } from './TaskWorkspaceTransferDialog';
 import './cloudOverview.css';
@@ -19,6 +20,7 @@ import { extractErrorMessage } from '../ai/participantAddError';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON, type ExpertDefinition } from '../ai/expertTypes';
 import {
     LATEX_BLANK_TEMPLATE_ID,
+    isBlankLatexTemplate,
     isLatexExpertId,
     latexBlankTemplateName,
     latexTemplateText,
@@ -765,7 +767,13 @@ function matchesActiveTaskRowContext(
     ctx: ActiveTaskRowMatchContext,
 ): boolean {
     const expertID = expertIDFromTaskTags(proj.tags);
-    if (ctx.expertId) return expertID === ctx.expertId;
+    if (ctx.expertId) {
+        if (expertID !== ctx.expertId) return false;
+        if (ctx.activePath && isLatexExpertId(ctx.expertId)) {
+            return normalizeProjectSessionPath(proj.project_path) === ctx.activePath;
+        }
+        return true;
+    }
     // Expert rows stay bound to expert tabs even if a project tab shares a path.
     if (expertID) return false;
     const target = normalizeProjectSessionPath(proj.project_path);
@@ -796,14 +804,82 @@ const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
         : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
 );
 
+type TaskContextMenuIconName = 'rename' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'remove';
+
 type TaskContextMenuItem = {
     label: string;
-    icon: string;
+    icon: TaskContextMenuIconName;
     action: () => void | Promise<void>;
     disabled?: boolean;
     title?: string;
     testId?: string;
+    danger?: boolean;
 };
+
+const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
+        {name === 'rename' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M4 20h4L19.5 8.5 15.5 4.5 4 16v4z" />
+                <path {...TASK_ICON_PROPS} d="m13.2 6.8 4 4" />
+            </>
+        )}
+        {name === 'browse' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M3.5 8.2V18a1.6 1.6 0 0 0 1.6 1.6h13.8a1.6 1.6 0 0 0 1.6-1.6V9.4a1.6 1.6 0 0 0-1.6-1.6h-6.8L10.2 5.6H5.1a1.6 1.6 0 0 0-1.6 1.6z" />
+                <path {...TASK_ICON_PROPS} d="M5.6 10.6h12.8" />
+            </>
+        )}
+        {name === 'share' && (
+            <>
+                <circle {...TASK_ICON_PROPS} cx="18" cy="5.5" r="2.15" />
+                <circle {...TASK_ICON_PROPS} cx="6" cy="12" r="2.15" />
+                <circle {...TASK_ICON_PROPS} cx="18" cy="18.5" r="2.15" />
+                <path {...TASK_ICON_PROPS} d="M8.05 10.95 15.9 6.7" />
+                <path {...TASK_ICON_PROPS} d="M8.05 13.05 15.9 17.3" />
+            </>
+        )}
+        {name === 'ssh' && (
+            <>
+                <rect {...TASK_ICON_PROPS} x="3" y="4.5" width="18" height="15" rx="2" />
+                <path {...TASK_ICON_PROPS} d="m7.5 9.5 3 2.5-3 2.5" />
+                <path {...TASK_ICON_PROPS} d="M13 14.5h4" />
+            </>
+        )}
+        {name === 'cloud' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M8 13.6h8.4a2.9 2.9 0 0 0 .25-5.8 4.4 4.4 0 0 0-8.4 1.3 2.6 2.6 0 0 0-.25 4.5z" />
+                <path {...TASK_ICON_PROPS} d="M12 16.2v5" />
+                <path {...TASK_ICON_PROPS} d="m9.2 18.6 2.8-2.8 2.8 2.8" />
+            </>
+        )}
+        {name === 'local' && (
+            <>
+                <rect {...TASK_ICON_PROPS} x="3" y="4" width="18" height="12" rx="2" />
+                <path {...TASK_ICON_PROPS} d="M8 20h8" />
+                <path {...TASK_ICON_PROPS} d="M12 16v4" />
+            </>
+        )}
+        {name === 'pin' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
+                <path {...TASK_ICON_PROPS} d="M14 10 8 16" />
+                <path {...TASK_ICON_PROPS} d="M5 19 8 16" />
+                <path {...TASK_ICON_PROPS} d="M8.5 5.5 18.5 15.5" />
+                <path {...TASK_ICON_PROPS} d="M10 4 20 14" />
+            </>
+        )}
+        {name === 'remove' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M4.5 7h15" />
+                <path {...TASK_ICON_PROPS} d="M9.2 7V4.8h5.6V7" />
+                <path {...TASK_ICON_PROPS} d="M7.4 7.2 8.4 19.2h7.2l1-12" />
+                <path {...TASK_ICON_PROPS} d="M10.2 10.6v5.2" />
+                <path {...TASK_ICON_PROPS} d="M13.8 10.6v5.2" />
+            </>
+        )}
+    </svg>
+);
 
 const contextMenuPosition = (x: number, y: number): { left: number; top: number } => {
     const viewportWidth = typeof window === 'undefined' ? 1280 : Math.max(0, window.innerWidth || 1280);
@@ -843,7 +919,7 @@ function buildTaskContextMenuItems(opts: {
     const items: TaskContextMenuItem[] = [
         {
             label: textForLang(lang, 'Rename', '重命名', '重命名'),
-            icon: 'edit',
+            icon: 'rename',
             action: () => {
                 setRenamingTaskPath(menu.projectPath);
                 setRenameValue(menu.name);
@@ -863,7 +939,7 @@ function buildTaskContextMenuItems(opts: {
     if (cloudWorkspaceId && allowCloudWorkspaceBrowse !== false) {
         items.push({
             label: textForLang(lang, 'Browse', '浏览', '瀏覽'),
-            icon: 'DIR',
+            icon: 'browse',
             testId: 'task-context-browse-cloud',
             title: textForLang(lang, 'Pull remote files and open the in-app cloud file browser', '拉取远程文件并在右侧浏览区打开', '拉取遠端檔案並在右側瀏覽區開啟'),
             action: () => {
@@ -874,7 +950,7 @@ function buildTaskContextMenuItems(opts: {
         if (onShareCloudWorkspace && !cloudWorkspaceSharePermissionFromTags(menu.tags)) {
             items.push({
                 label: textForLang(lang, 'Share…', '分享…', '分享…'),
-                icon: 'SHARE',
+                icon: 'share',
                 testId: 'task-context-share-cloud',
                 title: textForLang(lang, 'Create a share link for this cloud workspace', '为该云端工作区生成分享链接', '為該雲端工作區產生分享連結'),
                 action: () => {
@@ -887,7 +963,7 @@ function buildTaskContextMenuItems(opts: {
     if (menu.isRemoteCoding) {
         items.push({
             label: textForLang(lang, 'Edit remote SSH…', '编辑远程 SSH…', '編輯遠端 SSH…'),
-            icon: 'SSH',
+            icon: 'ssh',
             testId: 'task-context-edit-remote-ssh',
             action: () => { setTaskContextMenu(null); void openEditRemoteDialog(menu.projectPath, menu.name, menu.tags); },
         });
@@ -901,7 +977,7 @@ function buildTaskContextMenuItems(opts: {
             label: toCloud
                 ? textForLang(lang, 'Move to cloud…', '转移到云端…', '轉移到雲端…')
                 : textForLang(lang, 'Move to this computer…', '转移到本地…', '轉移到本機…'),
-            icon: toCloud ? 'CLOUD' : 'DIR',
+            icon: toCloud ? 'cloud' : 'local',
             testId: toCloud ? 'task-context-move-to-cloud' : 'task-context-move-to-local',
             title: toCloud
                 ? textForLang(lang, 'Copy this task and its files into a cloud workspace', '把该任务及其文件复制到一个云端工作区', '把該任務及其檔案複製到一個雲端工作區')
@@ -913,7 +989,7 @@ function buildTaskContextMenuItems(opts: {
         label: menu.pinned
             ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
             : textForLang(lang, 'Pin', '置顶', '置頂'),
-        icon: 'PIN',
+        icon: 'pin',
         action: async () => {
             await pinTask(menu.projectPath, !menu.pinned);
             refreshTasks();
@@ -922,7 +998,8 @@ function buildTaskContextMenuItems(opts: {
     });
     items.push({
         label: textForLang(lang, 'Remove', '删除', '刪除'),
-        icon: 'X',
+        icon: 'remove',
+        danger: true,
         testId: 'task-context-remove',
         action: () => {
             // The confirm dialog (and menu close) lives in confirmRemoveTask so
@@ -1624,6 +1701,7 @@ export const SidebarTaskManagement = ({
     const [deleteConfirmCloudWorkspaceId, setDeleteConfirmCloudWorkspaceId] = useState('');
     const [cloudWorkspaceBusy, setCloudWorkspaceBusy] = useState(false);
     const [cloudOverviewOpen, setCloudOverviewOpen] = useState(false);
+    const [cloudFilesWorkspace, setCloudFilesWorkspace] = useState<{ id: string; name: string } | null>(null);
     const [manageWorkspaceId, setManageWorkspaceId] = useState('');
     const [shareTask, setShareTask] = useState<{ name: string; workspaceId: string } | null>(null);
     const [cloudRestorePending, setCloudRestorePending] = useState(false);
@@ -1640,6 +1718,8 @@ export const SidebarTaskManagement = ({
     cloudOverviewEditorRef.current.renaming = renamingCloudWorkspaceId;
     cloudOverviewEditorRef.current.confirming = deleteConfirmCloudWorkspaceId;
     const forceDeleteConfirmOpenRef = useRef(false);
+    const cloudFilesWorkspaceRef = useRef(cloudFilesWorkspace);
+    cloudFilesWorkspaceRef.current = cloudFilesWorkspace;
     const cloudWorkspaceBusyRef = useRef(false);
     const cloudEntitlementRef = useRef(cloudEntitlement);
     cloudEntitlementRef.current = cloudEntitlement;
@@ -1649,6 +1729,7 @@ export const SidebarTaskManagement = ({
         setRenameCloudWorkspaceValue('');
         setDeleteConfirmCloudWorkspaceId('');
         setCreateError('');
+        setCloudFilesWorkspace(null);
         setCloudOverviewOpen(false);
     };
     const [selectingWorkingDir, setSelectingWorkingDir] = useState(false);
@@ -1760,7 +1841,18 @@ export const SidebarTaskManagement = ({
         return () => { cancelled = true; };
     }, [createDialogOpen]);
     const createSelectedExpertIsLatex = isLatexExpertId(createExpertId);
-    const selectedLatexTemplate = createLatexTemplates.find(t => t.id === createLatexTemplateId) || null;
+    // Blank is not a catalogue row. Keep it first so a picked pack can be undone.
+    const latexTemplateChoices = useMemo(() => {
+        const blankFromList = createLatexTemplates.find(template => isBlankLatexTemplate(template));
+        const blank: LatexTemplate = blankFromList || {
+            id: LATEX_BLANK_TEMPLATE_ID,
+            name: latexBlankTemplateName(lang),
+            description: latexTemplateText(lang, 'Minimal article skeleton', '从最小骨架开始', '從最小骨架開始'),
+        };
+        return [blank, ...createLatexTemplates.filter(template => !isBlankLatexTemplate(template))];
+    }, [createLatexTemplates, lang]);
+    const selectedLatexTemplateId = createLatexTemplateId || LATEX_BLANK_TEMPLATE_ID;
+    const selectedLatexTemplate = latexTemplateChoices.find(template => template.id === selectedLatexTemplateId) || latexTemplateChoices[0];
     // Load the template library only when it is actually needed: the dialog opens
     // for every task type, and reading the index for a non-LaTeX expert is waste.
     useEffect(() => {
@@ -2831,6 +2923,16 @@ export const SidebarTaskManagement = ({
             if (event.isComposing || event.keyCode === 229) return;
             // This capture listener is registered before CustomDialog's, so skip while a confirm owns Escape.
             if (forceDeleteConfirmOpenRef.current || document.querySelector('.custom-dialog')) return;
+            // The file tree's own menu listener closes the context menu. Leave both dialogs up.
+            if (document.querySelector('[data-testid="code-preview-workspace-context-menu"]')) return;
+            // Properties sit inside the file dialog. Its listener closes that panel first.
+            if (cloudFilesWorkspaceRef.current && document.querySelector('[data-testid="task-cloud-overview-files-dialog"] [data-testid="code-preview-workspace-properties"]')) return;
+            if (cloudFilesWorkspaceRef.current) {
+                event.preventDefault();
+                event.stopPropagation();
+                setCloudFilesWorkspace(null);
+                return;
+            }
             event.preventDefault();
             // Leave the dialog up while a rename or delete prompt is open; the next Escape closes it.
             if (cloudOverviewEditorRef.current.renaming || cloudOverviewEditorRef.current.confirming) {
@@ -2851,6 +2953,27 @@ export const SidebarTaskManagement = ({
             window.clearTimeout(focusTimer);
         };
     }, [cloudOverviewOpen]);
+
+    useEffect(() => {
+        if (!taskContextMenu) return;
+        const close = () => setTaskContextMenu(null);
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        // The menu is position:fixed to the click point. Scrolling the task
+        // list or resizing the window would leave it floating off the row.
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.removeEventListener('scroll', close, true);
+            window.removeEventListener('resize', close);
+        };
+    }, [setTaskContextMenu, taskContextMenu]);
 
     useEffect(() => {
         if (!cloudCreateSelected) return;
@@ -3164,16 +3287,17 @@ export const SidebarTaskManagement = ({
                 return;
             }
             if (selectedExpert && onCreateExpertTask) {
-                // Expert path: taskName and workingDir are ignored; the expert
-                // task is registered and its assistant tab opened by the caller.
-                // The options argument is LaTeX-specific, so every other expert
-                // keeps the original single-argument call shape.
+                // Expert path: the caller opens the new-task page. The dialog name
+                // and folder are not the task yet; the page collects the folder
+                // and the first message. LaTeX keeps the template the user picked.
                 if (isLatexExpertId(selectedExpert.id)) {
                     // An empty id is the documented default and means "no
                     // template": the document starts as a blank skeleton.
                     await onCreateExpertTask(selectedExpert, {
-                        latexTemplateId: selectedLatexTemplate?.id || LATEX_BLANK_TEMPLATE_ID,
-                        latexTemplateName: selectedLatexTemplate?.name || latexBlankTemplateName(lang),
+                        latexTemplateId: isBlankLatexTemplate(selectedLatexTemplate) ? LATEX_BLANK_TEMPLATE_ID : selectedLatexTemplate.id,
+                        ...(isBlankLatexTemplate(selectedLatexTemplate) || !selectedLatexTemplate.name
+                            ? {}
+                            : { latexTemplateName: selectedLatexTemplate.name }),
                     });
                 } else {
                     await onCreateExpertTask(selectedExpert);
@@ -3334,6 +3458,12 @@ export const SidebarTaskManagement = ({
     /** True when this row's assistant tab is currently open (running instance). */
     const isTaskInstanceOpen = (task: TaskManagementItem): boolean => {
         const expertID = expertIDFromTaskTags(task.tags);
+        if (expertID && isLatexExpertId(expertID)) {
+            const livePath = activeAssistantTask?.expertId === expertID
+                ? normalizeProjectSessionPath(activeAssistantTask.projectPath)
+                : "";
+            if (livePath) return livePath === normalizeProjectSessionPath(task.project_path);
+        }
         if (expertID) return (openExpertTabIDs || []).includes(expertID);
         return isProjectTabOpen(
             task.project_path,
@@ -4215,6 +4345,7 @@ export const SidebarTaskManagement = ({
                                                     <div className="mc-cloud-overview__actions">
                                                         <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-rename" disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(id); setRenameCloudWorkspaceValue(selected.name || ''); setDeleteConfirmCloudWorkspaceId(''); }}>{textForLang(lang, 'Rename', '重命名', '重命名')}</button>
                                                         <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--danger" data-testid={linked.length ? 'task-cloud-overview-delete-blocked' : 'task-cloud-overview-blank-delete'} disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(''); setDeleteConfirmCloudWorkspaceId(prev => prev === id ? '' : id); }}>{textForLang(lang, 'Delete', '删除', '刪除')}</button>
+                                                        <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-files" disabled={busy} onClick={() => { resetCloudWorkspaceEditors(); setCloudFilesWorkspace({ id, name: selected.name || id }); }}>{textForLang(lang, 'View', '查看', '檢視')}</button>
                                                     </div>
                                                 )}
                                                 {confirmingDelete ? (
@@ -4280,6 +4411,16 @@ export const SidebarTaskManagement = ({
                 </div>
             </div>,
             document.body,
+        )}
+
+        {showCloudWorkspaceManagement && cloudOverviewOpen && cloudFilesWorkspace && (
+            <CloudWorkspaceFilesDialog
+                lang={lang}
+                themeMode={themeMode}
+                workspaceId={cloudFilesWorkspace.id}
+                workspaceName={cloudFilesWorkspace.name}
+                onClose={() => setCloudFilesWorkspace(null)}
+            />
         )}
 
         {createDialogOpen && createPortal(
@@ -4486,11 +4627,11 @@ export const SidebarTaskManagement = ({
                                         onClick={() => setLatexTemplatePickerOpen(prev => !prev)}
                                         disabled={creatingTask}
                                         aria-expanded={latexTemplatePickerOpen}
-                                        title={selectedLatexTemplate?.name || latexTemplateText(lang, 'No template', '空白模板', '空白模板')}
+                                        title={selectedLatexTemplate.name}
                                         style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask ? 0.58 : 1 }}
                                     >
                                         <span className="stsm-ellipsis">
-                                            {selectedLatexTemplate?.name || latexTemplateText(lang, 'No template', '空白模板', '空白模板')}
+                                            {selectedLatexTemplate.name}
                                         </span>
                                         <span aria-hidden="true" className="stsm-no-shrink">▾</span>
                                     </button>
@@ -4512,8 +4653,8 @@ export const SidebarTaskManagement = ({
                                         }}
                                     >
                                         <div className="stsm-picker-list">
-                                            {createLatexTemplates.length ? createLatexTemplates.map(template => {
-                                                const templateSelected = template.id === createLatexTemplateId;
+                                            {latexTemplateChoices.map(template => {
+                                                const templateSelected = template.id === selectedLatexTemplateId;
                                                 return (
                                                     <button
                                                         key={`create-latex-template-${template.id}`}
@@ -4527,7 +4668,8 @@ export const SidebarTaskManagement = ({
                                                         {template.description ? <span className="stsm-option-desc">{template.description}</span> : null}
                                                     </button>
                                                 );
-                                            }) : (
+                                            })}
+                                            {latexTemplateChoices.length === 1 && (
                                                 <div className="stsm-option-desc">
                                                     {latexTemplateText(lang, 'No template available yet. Import one from Library > LaTeX templates.', '还没有可用模板。可在「资料库 > Latex模板」中导入。', '尚無可用模板。可在「資料庫 > Latex 模板」中匯入。')}
                                                 </div>
@@ -4691,7 +4833,9 @@ export const SidebarTaskManagement = ({
                                     || (cloudCreateSelected && boundCloudWorkspaceIds.has(selectedCloudWorkspaceId.trim()) && cloudQuotaReached)
                                 }
                             >
-                                {textForLang(lang, 'Create & open', '创建并打开', '建立並開啟')}
+                                {newTaskMode === '' && !cloudCreateSelected && createSelectedExpert
+                                    ? textForLang(lang, 'Continue', '继续', '繼續')
+                                    : textForLang(lang, 'Create & open', '创建并打开', '建立並開啟')}
                             </button>
                         </div>
                     </div>
@@ -4701,8 +4845,17 @@ export const SidebarTaskManagement = ({
         )}
 
         {taskContextMenu && (<>
-            <div className="stsm-menu-scrim" onClick={() => setTaskContextMenu(null)} />
-            <div data-testid="task-context-menu" style={{ position: 'fixed', ...contextMenuPosition(taskContextMenu.x, taskContextMenu.y), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px' }}>
+            <div
+                className="stsm-menu-scrim"
+                onClick={() => setTaskContextMenu(null)}
+                onContextMenu={event => { event.preventDefault(); setTaskContextMenu(null); }}
+            />
+            <div
+                data-testid="task-context-menu"
+                role="menu"
+                onContextMenu={event => event.preventDefault()}
+                style={{ position: 'fixed', ...contextMenuPosition(taskContextMenu.x, taskContextMenu.y), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+            >
                 {buildTaskContextMenuItems({
                     lang,
                     menu: taskContextMenu,
@@ -4747,16 +4900,22 @@ export const SidebarTaskManagement = ({
                             padding: '7px 12px',
                             cursor: item.disabled ? 'not-allowed' : 'pointer',
                             fontSize: '0.78rem',
-                            color: item.disabled ? 'var(--theme-text-muted)' : 'var(--theme-text-primary)',
+                            color: item.disabled
+                                ? 'var(--theme-text-muted)'
+                                : item.danger
+                                    ? 'var(--theme-danger, #c43d34)'
+                                    : 'var(--theme-text-primary)',
                             opacity: item.disabled ? 0.55 : 1,
                         }}
                         onMouseEnter={e => {
                             if (item.disabled) return;
-                            e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)';
+                            e.currentTarget.style.background = item.danger
+                                ? 'color-mix(in srgb, var(--theme-danger, #c43d34) 10%, transparent)'
+                                : 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)';
                         }}
                         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                     >
-                        <span className="stsm-menu-icon">{item.icon}</span>
+                        <span className="stsm-menu-icon" data-danger={item.danger ? 'true' : undefined} aria-hidden="true"><TaskContextMenuIcon name={item.icon} /></span>
                         <span>{item.label}</span>
                     </div>
                 ))}

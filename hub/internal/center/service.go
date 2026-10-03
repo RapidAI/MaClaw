@@ -1629,6 +1629,12 @@ func (s *Service) startHeartbeatLoop() {
 				return
 			case <-ticker.C:
 				_ = s.sendHeartbeat(ctx)
+				// Automatic Token Bank pulls share this loop so a hub that is
+				// already registered does not grow a second scheduler. A pull
+				// failure must not stop heartbeats.
+				if err := s.RunTokenBankAutoOnce(ctx); err != nil {
+					log.Printf("[center] token bank auto withdraw: %v", err)
+				}
 			}
 		}
 	}()

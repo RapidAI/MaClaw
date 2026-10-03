@@ -110,6 +110,9 @@ type LoopContext struct {
 	semanticResidueLookupUsed  bool
 	// semanticSessionCeilingSpent closes this turn. No legacy tool name may run.
 	semanticSessionCeilingSpent bool
+	// semanticPriorPlanClosed is the previous turn's ceiling, copied off the
+	// residue. It is not inferred from the assistant's wording.
+	semanticPriorPlanClosed bool
 	// semanticTurnAnswerOnly is a greeting while a desktop task is still open.
 	// This turn lists no tools. It does not spend or close that task.
 	semanticTurnAnswerOnly bool

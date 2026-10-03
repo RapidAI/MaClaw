@@ -904,6 +904,14 @@ func (h *IMMessageHandler) emitLocalToolCodeFilePreview(ownerID, absPath string,
 	sessionID := localToolCodePreviewSessionID(ownerID)
 	// Route with the tab/session project path when owner is a project session.
 	routePath := codePreviewRouteProjectPath(ownerID, projectPath)
+	// The LaTeX tab is identified by the task directory, while the file lives
+	// in the working directory the template was exported into. Routing with
+	// the working directory makes the pane drop a rewrite of that export.
+	if expertID := expertIDFromUserID(ownerID); expertID == builtinLatexExpertID && h.app != nil {
+		if taskPath := h.app.resolveLatexExpertProjectPath(expertID); taskPath != "" {
+			routePath = taskPath
+		}
+	}
 	if hasOriginal {
 		emitCodeFilePreviewForPath(h.app, sessionID, projectPath, routePath, absPath, created, true, original)
 		return

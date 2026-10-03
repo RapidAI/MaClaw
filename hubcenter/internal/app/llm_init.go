@@ -33,6 +33,10 @@ type LLMModule struct {
 	CardStoreSvc   *cardstore.Service
 	BindingManager *ha.LLMBindingManager
 	UsageRecorder  *llmservice.UsageRecorderImpl
+	// TokenBank is the ledger repository, exposed so the router can hand it to
+	// the Token Bank client API (§6.1). It is the same instance the HA sync
+	// sink is attached to, so HTTP writes and replicated writes share one path.
+	TokenBank *sqlite.TokenBankRepo
 }
 
 // InitLLMModule initializes the LLM service module and registers routes.
@@ -59,10 +63,16 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	baseOrderRepo := sqlite.NewLLMOrderRepo(provider)
 	orderRepo := cardstore.PurchaseOrderRepository(baseOrderRepo)
 	bindingRepo := sqlite.NewLLMBindingRepo(provider)
+	TokenBankRepo := sqlite.NewTokenBankRepo(provider)
 	if haSvc != nil {
 		haSvc.AttachLLMAuthorizations(baseAuthRepo)
 		haSvc.AttachLLMBindings(bindingRepo)
 		haSvc.AttachLLMUsage(usageRepo)
+		// The Token Bank balance IS the ledger, so an unreplicated ledger is an
+		// unreplicated balance: each node would drift apart by whatever it
+		// settled locally. Attaching here makes every appended ledger row reach
+		// the peers, where it is applied idempotently by deterministic id (E1).
+		haSvc.AttachTokenBankLedger(TokenBankRepo)
 		authRepo = &haLLMAuthorizationRepo{inner: baseAuthRepo, sync: haSvc}
 		haSvc.AttachCardTypes(baseCardTypeRepo)
 		cardTypeRepo = &haCardTypeRepo{inner: baseCardTypeRepo, sync: haSvc}
@@ -71,6 +81,12 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	}
 	// 3. Create services
 	llmSvc := llmservice.NewService(system)
+	// Token Bank tier arrays are platform-owned: seed them before anything can
+	// route through them so a shared model always has somewhere to land.
+	if err := llmSvc.EnsureTokenBankArrays(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure token bank arrays: %w", err)
+	}
+	llmSvc.BindMemberHealth(nodeID)
 	if haSvc != nil {
 		haSvc.SetLLMRegistryCacheInvalidator(llmSvc.InvalidateCache)
 		llmSvc.SetOfficialHeadRoster(haSvc.NodeID(), haSvc.PeerNodeIDs())
@@ -109,6 +125,49 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 			go seedLLMUsageHAOps(context.Background(), haSvc, usageRepo, nodeID, seedCutoff)
 		}
 	}
+	// Token Bank ledger replication. Its cutoff is a wall-clock instant rather
+	// than a row id, because ledger ids are content-derived strings with no
+	// ordering. Rows appended after this instant flow through the live buffer;
+	// anything already in the table is backfilled by the seed pass.
+	if haSvc != nil && strings.TrimSpace(nodeID) != "" {
+		ledgerCutoff := time.Now().UTC()
+		ledgerBuffer := newTokenBankLedgerSyncBuffer(nodeID, haSvc.AppendTokenBankLedgerBatch)
+		TokenBankRepo.SetSyncSink(ledgerBuffer.Add)
+		go ledgerBuffer.Run()
+		go seedTokenBankLedgerHAOps(context.Background(), haSvc, TokenBankRepo, nodeID, ledgerCutoff)
+	}
+	if haSvc != nil && strings.TrimSpace(nodeID) != "" {
+		// The price book is admin-managed and read on every proxied request, so
+		// an edit that stayed local would leave each node charging — and
+		// crediting — its own prices for the same model.
+		haSvc.AttachTokenBankPriceBook(TokenBankRepo)
+		TokenBankRepo.SetPriceBookSyncSink(func(rule sqlite.TokenBankPriceRule, deleted bool) {
+			if deleted {
+				if err := haSvc.AppendTokenBankPriceRuleDelete(context.Background(), rule.ID, time.Now().UTC()); err != nil {
+					// Unlike the ledger buffer there is no retry queue here: the
+					// rule row is already gone locally, so only the log and the
+					// restart seed can surface the gap. The peer keeps serving
+					// the stale price until the admin edits or re-deletes it.
+					log.Printf("[llm-init] token bank price rule delete replicate failed: rule=%s err=%v (peers keep the old rule until the next edit or a re-delete)", rule.ID, err)
+				}
+				return
+			}
+			if err := haSvc.AppendTokenBankPriceRule(context.Background(), &rule); err != nil {
+				log.Printf("[llm-init] token bank price rule replicate failed: rule=%s err=%v (the restart seed pass will republish it)", rule.ID, err)
+			}
+		})
+		// The live sink only fires on writes made after this node started, so a
+		// rule configured while the node ran standalone — or one whose append
+		// hit a transient HA error — would otherwise never reach the peers and
+		// each node would settle at its own prices. Deletes cannot be recovered
+		// this way: the row is gone locally, so a delete whose append failed
+		// needs a re-delete (the sink logs it loudly).
+		go seedTokenBankPriceBookHAOps(context.Background(), haSvc, TokenBankRepo)
+	}
+	// The cached balance is a mirror of the ledger, and nothing else schedules
+	// its repair — without this, drift is permanent. This runs with or without
+	// HA: a single node can drift too (a bump that lost a race with a replay).
+	go runTokenBankCacheReconcile(context.Background(), TokenBankRepo)
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
 	// Expired leases and release tombstones otherwise stay in the table
 	// forever: nothing else calls CleanupExpired, and every HA node applies
@@ -272,12 +331,12 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	llmservice.SetProviderBillingCatalog(func(ctx context.Context) []llmpool.ProviderBillingPolicy {
 		return llmSvc.ListProviderBilling(ctx)
 	})
-	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service) {
+	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service, smHandlers *httpapi.SkillMarketHandlers) {
 		if hubService != nil {
 			cardStoreSvc.SetPublicBaseURLProvider(hubService.PublicBaseURL)
 			cardStoreSvc.SetHubTenantResolver(hubService.ResolveHubTenantDisplayNames)
 		}
-		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
+		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc, smHandlers)
 		if haSvc != nil {
 			mux.HandleFunc("POST /api/internal/ha/llm/upstream", llmservice.UpstreamHopHandler(proxyCfg, haSvc.AuthenticatePeerRequest))
 		}
@@ -292,7 +351,43 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		CardStoreSvc:   cardStoreSvc,
 		BindingManager: bindingMgr,
 		UsageRecorder:  usageRecorder,
+		TokenBank:      TokenBankRepo,
 	}, nil
+}
+
+// seedTokenBankPriceBookHAOps republishes price rules that predate the live
+// replication sink or whose sink append failed. Batch-level dedup is by the
+// rule id: a rule already present in the oplog is skipped, so repeated seed
+// passes (every restart) republish nothing in steady state.
+func seedTokenBankPriceBookHAOps(ctx context.Context, haSvc *ha.Service, repo *sqlite.TokenBankRepo) {
+	if haSvc == nil || repo == nil {
+		return
+	}
+	rules, err := repo.ListPriceRules(ctx)
+	if err != nil {
+		log.Printf("[llm-init] seed token bank price book HA ops failed: %v", err)
+		return
+	}
+	seeded := 0
+	for i := range rules {
+		rule := rules[i]
+		exists, err := haSvc.HasEntityVersion(ctx, ha.EntityTokenBankPriceBook, rule.ID)
+		if err != nil {
+			log.Printf("[llm-init] inspect token bank price book HA entity version failed: rule=%s err=%v", rule.ID, err)
+			continue
+		}
+		if exists {
+			continue
+		}
+		if err := haSvc.AppendTokenBankPriceRule(ctx, &rule); err != nil {
+			log.Printf("[llm-init] seed token bank price book rule failed: rule=%s err=%v", rule.ID, err)
+			continue
+		}
+		seeded++
+	}
+	if seeded > 0 {
+		log.Printf("[llm-init] seeded token bank price book HA ops: count=%d", seeded)
+	}
 }
 
 func seedLLMCardOrderHAOps(ctx context.Context, haSvc *ha.Service, repo cardstore.PurchaseOrderRepository) {

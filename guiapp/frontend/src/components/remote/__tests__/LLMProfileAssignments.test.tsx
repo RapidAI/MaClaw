@@ -638,6 +638,38 @@ describe("LLMProfileAssignments", () => {
         expect(screen.getAllByText("Vision support: enabled").length).toBeGreaterThan(0);
     });
 
+    it("keeps MaClaw Official model names on auto/low/mid/high when the live catalog changes", async () => {
+        fetchProfileModels.mockResolvedValue([
+            { id: "DeepSeek-V4-Flash" },
+            { id: "official-mid" },
+            { id: "gpt-4o" },
+        ]);
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "hub", name: "MaClaw Official", model: "official-mid", models: ["DeepSeek-V4-Flash"], is_hub_service: true, connection_test_passed: true },
+            ],
+            profiles: {
+                version: 1,
+                assistant: { provider_id: "hub", model: "official-mid" },
+                coding: { inherit_assistant: true },
+            },
+            assistant: { profile: "assistant", provider_id: "hub", provider_name: "MaClaw Official", model: "official-mid", health: "configured" },
+            coding: { profile: "coding", inherit_assistant: true, provider_id: "hub", model: "official-mid", health: "configured" },
+        });
+        render(<LLMProfileAssignments lang="zh-Hans" />);
+
+        const input = await screen.findByLabelText("普通 AI 助手模型") as HTMLInputElement;
+        expect(input.value).toBe("mid");
+        await waitFor(() => expect(fetchProfileModels).toHaveBeenCalledWith("hub"));
+        const toggle = document.querySelector<HTMLButtonElement>('button[aria-controls="assistant-profile-models"]');
+        expect(toggle).toBeTruthy();
+        fireEvent.click(toggle!);
+        const optionValues = () => Array.from(document.getElementById("assistant-profile-models")?.querySelectorAll("[data-value]") || []).map((node) => node.getAttribute("data-value"));
+        await waitFor(() => expect(optionValues()).toEqual(["auto", "low", "mid", "high"]));
+        expect(screen.getByText(/MaClaw Official · mid/)).toBeTruthy();
+    });
+
     it("does not offer an image probe for Hub-managed models", async () => {
         getState.mockResolvedValue({
             ...state,

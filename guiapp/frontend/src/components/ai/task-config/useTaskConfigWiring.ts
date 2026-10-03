@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn } from "../../../../wailsjs/runtime";
 import {
+    AbandonUnopenedFreshLatexTask,
     CloudWorkspaceEntitlement,
     CreateCloudWorkspace,
     CreateTaskUnified,
     RenameCloudWorkspace,
     EnsureCodingWorkbenchArmed,
     ListExperts,
+    ListLatexTemplates,
     ListManagedIndustryExperts,
     ListWorkflowTemplateSummaries,
     SelectWorkingDir,
+    SetTabWorkingDir,
 } from "../../../../wailsjs/go/main/App";
 import {
     EVENT_EXPERTS_CHANGED,
@@ -21,12 +24,28 @@ import {
 import { openExpertConversation } from "../../../utils/expertConversationNavigation";
 import type { WelcomePromptSubmitMeta } from "../AssistantWelcomeView";
 import { isCloudWorkspacePath } from "../codingTaskMode";
-import { parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
+import { expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { defaultTaskDraft, isDraftDefault, withCloudWorkspace, type TaskDraft } from "./taskDraft";
+import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import {
+    createLatexDocumentForTask,
+    isLatexExpertId,
+    LATEX_EXPERT_ID,
+    latexPaperTaskMessage,
+    parseLatexTemplateLibrary,
+    type LatexTemplate,
+} from "../../../utils/latexTemplates";
 import { runTaskConfigSend } from "./taskConfigSend";
+
+function sameLatexTemplateList(left: LatexTemplate[], right: LatexTemplate[]): boolean {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+        if (left[i]?.id !== right[i]?.id || left[i]?.name !== right[i]?.name) return false;
+    }
+    return true;
+}
 import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 import type { ExpertOption, WorkflowOption } from "./TaskConfigBar";
 
@@ -104,6 +123,8 @@ export interface TaskConfigPanelModel {
     onDraftChange: (draft: TaskDraft) => void;
     experts: ExpertOption[];
     workflows: WorkflowOption[];
+    latexTemplates?: LatexTemplate[];
+    onPrepareLatexTemplates?: () => void;
     cloudWorkspaces?: CloudWorkspaceOption[];
     recentLocalPaths: string[];
     onBrowseLocal: () => Promise<string | null>;
@@ -147,6 +168,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     taskConfigDraftRef.current = taskConfigDraft;
     const [taskConfigExperts, setTaskConfigExperts] = useState<ExpertOption[]>([]);
     const [taskConfigWorkflows, setTaskConfigWorkflows] = useState<WorkflowOption[]>([]);
+    const [taskConfigLatexTemplates, setTaskConfigLatexTemplates] = useState<LatexTemplate[]>([]);
+    const latexListGenRef = useRef(0);
     const [taskConfigCloudWorkspaces, setTaskConfigCloudWorkspaces] = useState<CloudWorkspaceOption[]>([]);
     const cloudListGenRef = useRef(0);
     const [taskConfigError, setTaskConfigError] = useState("");
@@ -303,6 +326,24 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         return () => { cancelled = true; };
     }, []);
 
+    // A cancelled or failed read must not stick. Opening the template menu
+    // loads again, so a template imported after the first look shows up.
+    const loadTaskConfigLatexTemplates = useCallback(async () => {
+        const gen = ++latexListGenRef.current;
+        try {
+            const library = parseLatexTemplateLibrary(await ListLatexTemplates());
+            if (gen !== latexListGenRef.current) return;
+            setTaskConfigLatexTemplates((prev) => (sameLatexTemplateList(prev, library.templates) ? prev : library.templates));
+        } catch {
+            if (gen !== latexListGenRef.current) return;
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!isLatexExpertId(taskConfigDraft.expertId)) return;
+        void loadTaskConfigLatexTemplates();
+    }, [loadTaskConfigLatexTemplates, taskConfigDraft.expertId]);
+
     // Recent local directories come from the existing task list (most recent
     // first); directories picked through the native browse dialog are
     // prepended so a fresh pick is immediately re-selectable.
@@ -377,6 +418,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                 isZh: !lang?.startsWith("en"),
                 bindings: {
                     createTaskUnified: (opts) => CreateTaskUnified(opts as unknown as Parameters<typeof CreateTaskUnified>[0]),
+                    abandonFreshLatexTask: (projectPath) => AbandonUnopenedFreshLatexTask(projectPath),
                     ensureCodingArmed: (projectPath) => EnsureCodingWorkbenchArmed(projectPath),
                     openTaskLaunch: (nav) => {
                         const detail: OpenTaskLaunchDetail = {
@@ -395,7 +437,36 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                         window.dispatchEvent(new CustomEvent(EVENT_OPEN_TASK_LAUNCH, { detail }));
                     },
                     openExpert: (nav) => {
-                        openExpertConversation({ id: nav.id, name: nav.name, description: nav.description }, nav.initialMessage);
+                        openExpertConversation(
+                            { id: nav.id, name: nav.name, description: nav.description },
+                            nav.initialMessage,
+                            nav.latexDocument,
+                            nav.projectPath,
+                        );
+                    },
+                    materializeLatexDocument: async ({ projectPath, templateId, templateName, userText }) => {
+                        let failure = "";
+                        const document = await createLatexDocumentForTask(projectPath, templateId, "", lang || "zh-Hans", (message) => {
+                            failure = message;
+                        });
+                        if (!document?.relative_path) {
+                            throw new Error(failure || (!lang?.startsWith("en") ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created"));
+                        }
+                        // Reusing a paper that is already in the chosen folder does
+                        // not retarget the expert tab. Point the tools at that
+                        // folder before the first message, or they stay on the
+                        // directory the expert used last time.
+                        const workspacePath = String(document.workspace_path || "").trim();
+                        if (workspacePath) {
+                            await SetTabWorkingDir(expertTabId(LATEX_EXPERT_ID), workspacePath);
+                        }
+                        return {
+                            relativePath: document.relative_path,
+                            initialMessage: latexPaperTaskMessage(lang || "zh-Hans", {
+                                id: document.template_id || templateId,
+                                name: document.template_name || templateName,
+                            }, document, userText),
+                        };
                     },
                 },
             });
@@ -520,8 +591,17 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     // Phase 1 activates the fixed local tab; phase 2 runs one tick later so
     // its closures see the local tab as active (clear/mark target the local
     // session, not whatever tab was active when the button was clicked).
-    const openNewTaskWizardRef = useRef<(switchedFromOtherTab?: boolean) => void>(() => {});
-    openNewTaskWizardRef.current = (switchedFromOtherTab = false) => {
+    const pendingWizardSeedRef = useRef<NewTaskWizardSeed | null>(null);
+    const openNewTaskWizardRef = useRef<(switchedFromOtherTab?: boolean, seed?: NewTaskWizardSeed | null) => void>(() => {});
+    openNewTaskWizardRef.current = (switchedFromOtherTab = false, seed: NewTaskWizardSeed | null = null) => {
+        const applySeed = () => {
+            if (!String(seed?.expertId || "").trim() && !String(seed?.workflowTemplateId || "").trim()) return;
+            setTaskConfigDraft(draftFromWizardSeed(seed));
+            setTaskConfigError("");
+            // A template, workflow, or expert launch is a new task. Leftover
+            // guide text must not become its first message.
+            clearComposerDraft({ clearAttachments: true });
+        };
         const localTab = getTabs().find(tab => tab.type === "local");
         if (!localTab) return;
         const chatTurn = (entry: unknown) => {
@@ -561,6 +641,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         // A second click while the cover is up must not wipe what they just typed.
         if (wizardOverlayRef.current) {
             saveTabState(localTab.id, { newTaskWizard: true });
+            applySeed();
             window.setTimeout(() => inputRef.current?.focus(), 0);
             return;
         }
@@ -570,6 +651,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (localGuideVisible) {
             if (assistantBusy) setWizardOverlay(true);
             saveTabState(localTab.id, { newTaskWizard: true });
+            applySeed();
             window.setTimeout(() => inputRef.current?.focus(), 0);
             return;
         }
@@ -582,6 +664,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             setQueueEditDraftActive(false);
             setEditingEntryId(null);
             saveTabState(localTab.id, { newTaskWizard: true });
+            applySeed();
             window.setTimeout(() => inputRef.current?.focus(), 0);
             return;
         }
@@ -595,6 +678,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             // cancel the turn and delete the transcript.
             setWizardOverlay(true);
             coverRunningConversation();
+            applySeed();
             return;
         }
         // A turn can be running before any transcript line exists. Park the
@@ -602,19 +686,35 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (assistantBusy) {
             setWizardOverlay(true);
             coverRunningConversation();
+            applySeed();
             return;
         }
         markWizardPage();
+        applySeed();
     };
     const openNewTaskWizard = useCallback(() => {
+        const seed = pendingWizardSeedRef.current;
+        pendingWizardSeedRef.current = null;
         const localTab = getTabs().find(tab => tab.type === "local");
         if (!localTab) return;
         const switchedFromOtherTab = activeTab.id !== localTab.id;
         if (switchedFromOtherTab) activateTab(localTab.id);
-        window.setTimeout(() => openNewTaskWizardRef.current(switchedFromOtherTab), 0);
+        window.setTimeout(() => openNewTaskWizardRef.current(switchedFromOtherTab, seed), 0);
     }, [activateTab, activeTab.id, getTabs]);
     useEffect(() => {
-        const handler = () => openNewTaskWizard();
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<NewTaskWizardSeed | undefined>).detail;
+            const expertId = String(detail?.expertId || "").trim();
+            const workflowId = String(detail?.workflowTemplateId || "").trim();
+            pendingWizardSeedRef.current = (expertId || workflowId) ? {
+                expertId: expertId || null,
+                expertName: detail?.expertName ?? null,
+                workflowTemplateId: workflowId || null,
+                latexTemplateId: detail?.latexTemplateId ?? null,
+                latexTemplateName: detail?.latexTemplateName ?? null,
+            } : null;
+            openNewTaskWizard();
+        };
         window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, handler);
         return () => window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, handler);
     }, [openNewTaskWizard]);
@@ -647,6 +747,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         onDraftChange: setTaskConfigDraft,
         experts: taskConfigExperts,
         workflows: taskConfigWorkflows,
+        latexTemplates: taskConfigLatexTemplates,
+        onPrepareLatexTemplates: loadTaskConfigLatexTemplates,
         cloudWorkspaces: taskConfigCloudWorkspaces,
         recentLocalPaths: taskConfigRecentPaths,
         onBrowseLocal: handleTaskConfigBrowseLocal,
@@ -659,7 +761,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         error: taskConfigError,
         defaultExpanded: isNewTaskWizardTabActive(),
     }), [
-        taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigCloudWorkspaces, taskConfigRecentPaths,
+        taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigLatexTemplates, loadTaskConfigLatexTemplates, taskConfigCloudWorkspaces, taskConfigRecentPaths,
         handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, inputLocked, wizardOverlay, isLocalTabActive, taskConfigSending, taskConfigError,
         isNewTaskWizardTabActive,
     ]);

@@ -90,6 +90,8 @@ func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
 	}
 	pct := float64(active) / float64(maxCap) * 100
 	sb.WriteString(fmt.Sprintf("**容量**: %d / %d (%.1f%%)\n", active, maxCap, pct))
+	sb.WriteString(fmt.Sprintf("可召回: %d，其中已失效 %d\n", hr.RecallableEntries, hr.InvalidEntries))
+	sb.WriteString(fmt.Sprintf("休眠: %d，已取代: %d\n", hr.DormantEntries, hr.SupersededEntries))
 	sb.WriteString(renderBarGauge(pct, 20))
 	sb.WriteString("\n\n")
 
@@ -101,12 +103,12 @@ func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
 		count int
 	}
 	var rows []catRow
-	for cat, count := range hr.CategoryCounts {
+	for cat, count := range hr.RecallableCategoryCounts {
 		rows = append(rows, catRow{cat, count})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].count > rows[j].count })
 
-	total := active
+	total := hr.RecallableEntries
 	if total == 0 {
 		total = 1
 	}
@@ -147,7 +149,7 @@ func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
 		sb.WriteString(fmt.Sprintf("  已归档: %d 条\n", hr.ArchivedEntries))
 	}
 	if hr.StaleEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  过期: %d 条\n", hr.StaleEntries))
+		sb.WriteString(fmt.Sprintf("  可能过时: %d 条\n", hr.StaleEntries))
 	}
 	if hr.PinnedEntries > 0 {
 		sb.WriteString(fmt.Sprintf("  固定: %d 条\n", hr.PinnedEntries))
@@ -185,6 +187,8 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 	}
 	pct := float64(active) / float64(maxCap) * 100
 	sb.WriteString(fmt.Sprintf("**Capacity**: %d / %d (%.1f%%)\n", active, maxCap, pct))
+	sb.WriteString(fmt.Sprintf("Recallable: %d, including %d expired\n", hr.RecallableEntries, hr.InvalidEntries))
+	sb.WriteString(fmt.Sprintf("Dormant: %d, superseded: %d\n", hr.DormantEntries, hr.SupersededEntries))
 	sb.WriteString(renderBarGauge(pct, 20))
 	sb.WriteString("\n\n")
 
@@ -194,12 +198,12 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 		count int
 	}
 	var rows []catRow
-	for cat, count := range hr.CategoryCounts {
+	for cat, count := range hr.RecallableCategoryCounts {
 		rows = append(rows, catRow{cat, count})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].count > rows[j].count })
 
-	total := active
+	total := hr.RecallableEntries
 	if total == 0 {
 		total = 1
 	}

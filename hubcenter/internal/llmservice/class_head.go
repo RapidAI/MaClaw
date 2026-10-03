@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -164,6 +165,16 @@ func (s *Service) saveOfficialClassHeadLocked(ctx context.Context, groupID strin
 		return err
 	}
 	return s.system.Set(ctx, officialClassHeadSettingKey(groupID), string(raw))
+}
+
+// saveOfficialClassHeadBestEffort persists bookkeeping state whose loss must
+// not abort the caller, but whose loss must also be visible: a swallowed save
+// leaves a stale pipeline status (admin UI shows "training" for a job that
+// never recorded its outcome) with no trace anywhere else.
+func (s *Service) saveOfficialClassHeadBestEffort(ctx context.Context, groupID string, data *OfficialClassHeadStore) {
+	if err := s.saveOfficialClassHeadLocked(ctx, groupID, data); err != nil {
+		log.Printf("[llm-class-head] WARN: persist class head state group=%q failed: %v", groupID, err)
+	}
 }
 
 func (s *Service) SetOfficialHeadRoster(local string, peers []string) {
@@ -630,7 +641,7 @@ func (s *Service) RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, 
 	if len(data.Samples) > officialClassHeadMaxSamples {
 		data.Samples = pruneOfficialHeadSamples(data.Samples, officialClassHeadMaxSamples)
 	}
-	_ = s.saveOfficialClassHeadLocked(context.Background(), "", data)
+	s.saveOfficialClassHeadBestEffort(context.Background(), "", data)
 }
 
 func pruneOfficialHeadSamples(samples []OfficialClassHeadSample, max int) []OfficialClassHeadSample {
@@ -740,7 +751,7 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 	data := s.loadOfficialClassHeadLocked(context.Background(), groupID)
 	if !s.officialHeadIsLocalTrainer(data) {
 		data.LastTrainError = "this node is not the designated trainer"
-		_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return errors.New(data.LastTrainError)
 	}
 	labeled := make([]llmpool.LabeledEmbedding, 0, len(data.Samples))
@@ -755,7 +766,7 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 			got, err := embedOfficialHeadPreview(sample.Preview)
 			if err != nil {
 				data.LastTrainError = err.Error()
-				_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+				s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 				return err
 			}
 			sample.Embedding = got
@@ -765,14 +776,14 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 	}
 	if len(labeled) == 0 {
 		data.LastTrainError = "no gold samples to train"
-		_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return errors.New(data.LastTrainError)
 	}
 	version := llmpool.NextHeadVersion(data.Current, data.Previous, data.History)
 	head, err := llmpool.TrainClassificationHead(labeled, version, llmpool.DefaultHeadTau)
 	if err != nil {
 		data.LastTrainError = err.Error()
-		_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return err
 	}
 	rotateOfficialHead(data, &head, llmpool.HeadSourceTrain)
@@ -811,7 +822,7 @@ func (s *Service) EnqueueOfficialClassHeadTrainFor(groupID string) error {
 	officialClassHeadMu.Lock()
 	data = s.loadOfficialClassHeadLocked(context.Background(), groupID)
 	data.Status = llmpool.HeadStatusTraining
-	_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+	s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 	officialClassHeadMu.Unlock()
 	officialHeadTrainOnce.Do(func() {
 		officialHeadTrainCh = make(chan officialHeadTrainJob, 4)
@@ -848,7 +859,7 @@ func (s *Service) SetOfficialClassHeadPipelineFor(groupID, mode, override, reaso
 	if err := llmpool.AllowPipelineChange(data.Pipeline, next, officialHeadArtifactReady(data), llmpool.DistributeComplete(data.DistributeAck), gates, override, reason); err != nil {
 		if !llmpool.IsPipelineRuleBlocked(err) {
 			data.Status = llmpool.HeadStatusGatesFailed
-			_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+			s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		}
 		return buildOfficialClassHeadView(s, groupID, data), err
 	}
@@ -1052,7 +1063,7 @@ func (s *Service) AckOfficialClassHeadAfterRemoteApplyKey(key string) {
 	}
 	data.DistributeAck[local] = "acked"
 	s.finishOfficialHeadAckLocked(data)
-	_ = s.saveOfficialClassHeadLocked(context.Background(), "", data)
+	s.saveOfficialClassHeadBestEffort(context.Background(), "", data)
 }
 
 func (s *Service) DistributeOfficialClassHead(nodeID string) (OfficialClassHeadView, error) {

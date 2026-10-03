@@ -140,3 +140,62 @@ func TestClearSessionConversationPreservesTabMetadata(t *testing.T) {
 		t.Fatalf("session after clear = %+v, want metadata with empty conversation", session)
 	}
 }
+
+func TestLoadLatestSessionForProjectSameTimestamp(t *testing.T) {
+	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
+	projectPath := filepath.Join(t.TempDir(), "history-task")
+	stamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	write := func(session *TabSessionData) {
+		t.Helper()
+		if err := persist.SaveSession(session); err != nil {
+			t.Fatal(err)
+		}
+		session.LastActiveAt = stamp
+		data, err := json.Marshal(session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path, err := persist.sessionFilePath(session.TabID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := atomicWriteFile(path, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(&TabSessionData{
+		TabID:       "short",
+		ProjectPath: projectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "one"},
+		},
+	})
+	write(&TabSessionData{
+		TabID:       "full",
+		ProjectPath: projectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "one"},
+			map[string]interface{}{"role": "assistant", "content": "two"},
+		},
+	})
+	latest, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.TabID != "full" {
+		t.Fatalf("same-second latest = %+v, want the fuller transcript", latest)
+	}
+	write(&TabSessionData{
+		TabID:                 "cleared",
+		ProjectPath:           projectPath,
+		Conversation:          []interface{}{},
+		ConversationClearedAt: time.Now().UnixMilli(),
+	})
+	latest, err = persist.LoadLatestSessionForProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.TabID != "cleared" {
+		t.Fatalf("same-second latest = %+v, want the cleared snapshot", latest)
+	}
+}

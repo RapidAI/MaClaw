@@ -99,6 +99,22 @@ func RefreshAccessTokenCtx(ctx context.Context, cfg Config, refreshToken string)
 	}, nil
 }
 
+// ReplaceLoginCredential applies a newly issued login grant. A refresh
+// response may omit refresh_token and still keep the previous one;
+// ApplyTokenResult does that. A new login must not: the previous refresh
+// belongs to the grant that was just replaced, and the credential store
+// copies a blank stored refresh back from the provider on the next read.
+func ReplaceLoginCredential(provider corelib.MaclawLLMProvider, result *TokenResult) corelib.MaclawLLMProvider {
+	if result == nil {
+		return provider
+	}
+	updated := ApplyTokenResult(provider, result)
+	if strings.TrimSpace(result.RefreshToken) == "" {
+		updated.RefreshToken = ""
+	}
+	return updated
+}
+
 // ApplyTokenResult 将 TokenResult 应用到 provider 并返回更新后的副本。
 // Key 和 OAuthAccessToken 都设为 access_token（Codex 订阅模式不区分）。
 // RefreshToken 仅在非空时更新（保留旧值），TokenExpiresAt 设为 now + ExpiresIn。

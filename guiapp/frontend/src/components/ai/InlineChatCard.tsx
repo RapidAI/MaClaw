@@ -107,7 +107,7 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
         width: "100%",
         padding: "6px 10px",
         fontSize: "12px",
-        borderRadius: "6px",
+        borderRadius: "var(--radius-md, 10px)",
         border: `1px solid ${theme.inputBorder}`,
         background: theme.inputBg,
         color: theme.textColor,

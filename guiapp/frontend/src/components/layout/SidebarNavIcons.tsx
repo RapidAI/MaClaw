@@ -8,11 +8,31 @@ export const AppsRailIcon = () => (
 );
 
 /** 专家&工具 — 学士帽。单形体在 18px 侧栏比「帽+人」更易辨认。 */
-export const ExpertRailIcon = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-expert-icon">
+export const ExpertRailIcon = ({ marked = true }: { marked?: boolean } = {}) => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...(marked ? { 'data-testid': 'sidebar-expert-icon' } : {})}>
         <path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z" />
         <path d="M22 10v6" />
         <path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5" />
+    </svg>
+);
+
+/** 专业功能 — 层叠能力，和菜单里的 AI 专家学士帽区分开。 */
+export const ProFeaturesIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-pro-features-icon">
+        <path d="M12 3.5 4 8l8 4.5L20 8z" />
+        <path d="m4 12 8 4.5L20 12" />
+        <path d="m4 16 8 4.5L20 16" />
+    </svg>
+);
+
+/** 工作流 - 两条分支汇入同一节点，和 AI 专家的学士帽区分开。 */
+export const WorkflowIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="3.5" width="6" height="5" rx="1.2" />
+        <rect x="3" y="15.5" width="6" height="5" rx="1.2" />
+        <rect x="15" y="9.5" width="6" height="5" rx="1.2" />
+        <path d="M9 6h3v6h3" />
+        <path d="M9 18h3v-6" />
     </svg>
 );
 
@@ -126,5 +146,15 @@ export const LatexTemplateIcon = () => (
         <path d="M8.5 16.5 11 12l2.5 4.5" />
         <path d="M9.4 14.6h3.2" />
         <path d="M16 12.5h2.5M16 15.5h2.5" />
+    </svg>
+);
+
+/** Token 银行 - 层叠的币册，和「资料库」的书册语义区分开。 */
+export const TokenBankIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3.5 8.5 12 4l8.5 4.5L12 13 3.5 8.5Z" />
+        <path d="m3.5 13 8.5 4.5 8.5-4.5" />
+        <path d="M9 10.2v3.2" />
+        <path d="M15 10.2v3.2" />
     </svg>
 );

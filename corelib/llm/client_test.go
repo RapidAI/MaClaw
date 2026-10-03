@@ -5988,6 +5988,107 @@ func TestBuildOpenAIChatRequestBody_ThinkingModeUsesProviderNativeControl(t *tes
 		t.Fatalf("Grok must not receive incompatible thinking object: %#v", grok)
 	}
 
+	for _, model := range []string{"DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4-Pro"} {
+		amd := buildOpenAIChatRequestBody(
+			corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: model},
+			messages,
+			OpenAIChatRequestOptions{},
+		)
+		if _, hasThinking := amd["thinking"]; hasThinking {
+			t.Fatalf("AMD %s auto body contains thinking: %#v", model, amd["thinking"])
+		}
+		if _, hasEffort := amd["reasoning_effort"]; hasEffort {
+			t.Fatalf("AMD %s auto body contains reasoning_effort: %#v", model, amd["reasoning_effort"])
+		}
+		amdOn := buildOpenAIChatRequestBody(
+			corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: model, ThinkingMode: "enabled", ReasoningEffort: "high"},
+			messages,
+			OpenAIChatRequestOptions{},
+		)
+		if _, hasThinking := amdOn["thinking"]; hasThinking {
+			t.Fatalf("AMD %s enabled body contains thinking: %#v", model, amdOn["thinking"])
+		}
+		if got := amdOn["reasoning_effort"]; got != "high" {
+			t.Fatalf("AMD %s reasoning_effort = %#v, want high", model, got)
+		}
+	}
+
+	keptMedium := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: "DeepSeek-V4-Flash"},
+		messages,
+		OpenAIChatRequestOptions{ExtraBody: map[string]interface{}{
+			"thinking":         map[string]interface{}{"type": "enabled"},
+			"reasoning_effort": "medium",
+		}},
+	)
+	if _, hasThinking := keptMedium["thinking"]; hasThinking {
+		t.Fatalf("AMD body kept caller thinking: %#v", keptMedium["thinking"])
+	}
+	if got := keptMedium["reasoning_effort"]; got != "medium" {
+		t.Fatalf("AMD caller medium was rewritten to %#v", got)
+	}
+
+	qwenClamped := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: "Qwen3.8-27B", ReasoningEffort: "high"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if _, hasThinking := qwenClamped["thinking"]; hasThinking {
+		t.Fatalf("AMD Qwen auto body contains thinking: %#v", qwenClamped["thinking"])
+	}
+	if got := qwenClamped["reasoning_effort"]; got != "medium" {
+		t.Fatalf("AMD Qwen high effort = %#v, want medium", got)
+	}
+
+	off := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: "DeepSeek-V4-Flash", ReasoningEffort: "none"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if got := off["reasoning_effort"]; got != "none" {
+		t.Fatalf("AMD auto none = %#v, want none", got)
+	}
+
+	keptLow := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: "DeepSeek-V4-Flash", ReasoningEffort: "high"},
+		messages,
+		OpenAIChatRequestOptions{ExtraBody: map[string]interface{}{"reasoning_effort": "low"}},
+	)
+	if got := keptLow["reasoning_effort"]; got != "low" {
+		t.Fatalf("caller low was overwritten with %#v", got)
+	}
+
+	temp := 0.2
+	amdTemp := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://developer.amd.com.cn/radeon/api/v1", Model: "DeepSeek-V4-Flash", Temperature: &temp},
+		messages,
+		OpenAIChatRequestOptions{ExtraBody: map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}},
+	)
+	if _, hasThinking := amdTemp["thinking"]; hasThinking {
+		t.Fatalf("AMD temperature case kept thinking: %#v", amdTemp["thinking"])
+	}
+	if got := amdTemp["temperature"]; got != 0.2 {
+		t.Fatalf("AMD temperature = %#v, want 0.2", got)
+	}
+
+	officialTemp := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", Temperature: &temp},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if _, hasTemp := officialTemp["temperature"]; hasTemp {
+		t.Fatalf("official DeepSeek thinking request gained temperature: %#v", officialTemp["temperature"])
+	}
+
+	official := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if thinking, _ := official["thinking"].(map[string]interface{}); thinking["type"] != "enabled" {
+		t.Fatalf("official DeepSeek auto thinking = %#v, want enabled", official["thinking"])
+	}
+
 	qwen := buildOpenAIChatRequestBody(
 		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3", ThinkingMode: "disabled"},
 		messages,

@@ -8,7 +8,7 @@
  * so the tests drive the real generated bindings via the injected `window.go`
  * bridge — exactly how Wails exposes them at runtime.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DialogProvider } from '../../CustomDialog';
 import { UtilitiesPage } from '../UtilitiesPage';
@@ -521,5 +521,66 @@ describe('UtilitiesPage AI expert section', () => {
         await waitFor(() => expect(screen.getByTestId('expert-editor-overlay')).toBeTruthy());
         expect(screen.queryByTestId('expert-idea-input')).toBeNull();
         expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('我的助手');
+    });
+
+    it('filters expert cards via the library search field and shows the empty state', async () => {
+        render(<UtilitiesPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
+        const search = screen.getByTestId('utilities-expert-search') as HTMLInputElement;
+
+        fireEvent.change(search, { target: { value: '论文' } });
+        expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-card-user-exp-1')).toBeNull();
+
+        // Capability labels are searchable too: userExpert's fs_read tool.
+        fireEvent.change(search, { target: { value: 'fs_' } });
+        expect(screen.queryByTestId('utilities-expert-card-builtin-paper-polish')).toBeNull();
+        expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy();
+
+        fireEvent.change(search, { target: { value: '不存在的专家' } });
+        expect(screen.queryByTestId('utilities-expert-card-builtin-paper-polish')).toBeNull();
+        expect(screen.getByTestId('utilities-experts-empty')).toBeTruthy();
+        // Entry cards stay reachable while the filtered list is empty.
+        expect(screen.getByTestId('utilities-expert-new-card')).toBeTruthy();
+    });
+
+    it('filter chips split system defaults from user-created experts', async () => {
+        render(<UtilitiesPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
+
+        fireEvent.click(screen.getByTestId('utilities-expert-filter-custom'));
+        expect(screen.queryByTestId('utilities-expert-card-builtin-paper-polish')).toBeNull();
+        expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy();
+        expect(screen.getByTestId('utilities-expert-filter-custom').getAttribute('aria-pressed')).toBe('true');
+
+        fireEvent.click(screen.getByTestId('utilities-expert-filter-system'));
+        expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-card-user-exp-1')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('utilities-expert-filter-all'));
+        expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy();
+        expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy();
+    });
+
+    it('renders capability chips from skills then tools with an overflow marker', async () => {
+        installAppSpies([builtinExpert, { ...userExpert, skills: ['summarize'], tools: ['fs_read', 'web_search', 'shell_exec', 'todo_write'] }]);
+        render(<UtilitiesPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy());
+        const card = screen.getByTestId('utilities-expert-card-user-exp-1');
+        // Cap is three chips: one skill + two tools; the rest collapses to +N.
+        expect(within(card).getByText('summarize')).toBeTruthy();
+        expect(within(card).getByText('fs read')).toBeTruthy();
+        expect(within(card).getByText('web search')).toBeTruthy();
+        expect(within(card).queryByText('shell exec')).toBeNull();
+        expect(within(card).getByText('+2')).toBeTruthy();
+    });
+
+    it('dedupes capability chips after the display-name mapping', async () => {
+        // "fs_read" and "fs read" map to the same display label; only one chip may remain.
+        installAppSpies([builtinExpert, { ...userExpert, tools: ['fs_read', 'fs read'] }]);
+        render(<UtilitiesPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy());
+        const card = screen.getByTestId('utilities-expert-card-user-exp-1');
+        expect(within(card).getAllByText('fs read')).toHaveLength(1);
     });
 });

@@ -42,42 +42,24 @@ func historicalSessionCeiling(text string) bool {
 		strings.Contains(text, "this turn did not open a new tool plan")
 }
 
-// assistantClaimedConversationQuota is the reply the model writes after a
-// closed plan: this conversation's tool quota is gone, send /new. An API
-// note such as "这个接口的配额用完后会返回 429" is not that claim.
-func assistantClaimedConversationQuota(text string) bool {
-	exhausted := strings.Contains(text, "耗尽") || strings.Contains(text, "用完") || strings.Contains(text, "用尽")
-	if !exhausted {
-		return false
-	}
-	// "当前工具调用配额已用完" has neither 对话 nor /new. An API note
-	// ("这个接口的配额用完后会返回 429") has neither 工具调用 nor a chat scope.
-	if strings.Contains(text, "工具调用") || strings.Contains(text, "工具配额") || strings.Contains(text, "调用额度") || strings.Contains(text, "调用配额") {
-		return true
-	}
-	if !strings.Contains(text, "额度") && !strings.Contains(text, "配额") {
-		return false
-	}
-	return strings.Contains(text, "对话") || strings.Contains(text, "本轮") || strings.Contains(text, "/new")
-}
-
-// neutralizeAssistantQuotaClaim rewrites that reply only in the next model
-// request. The stored chat is left as the user saw it. Leaving the claim, or
-// an assistant quote of "Planned invocations for this session are complete",
-// makes the following turn copy it (production 2026-09-27, the video turn).
+// neutralizeAssistantQuotaClaim rewrites an assistant quote of the host's
+// closed-plan sentence. The assistant's own wording is not read. A turn the
+// host marked plan-closed rewrites the last assistant entry separately.
 func neutralizeAssistantQuotaClaim(entry agent.ConversationEntry) (agent.ConversationEntry, bool) {
 	if !strings.EqualFold(strings.TrimSpace(entry.Role), "assistant") {
 		return entry, false
 	}
 	text := assistantEntryText(entry)
-	if text == "" || (!assistantClaimedConversationQuota(text) && !historicalSessionCeiling(text)) {
+	if text == "" || !historicalSessionCeiling(text) {
 		return entry, false
 	}
+	return rewriteClosedPlanAssistant(entry), true
+}
+
+func rewriteClosedPlanAssistant(entry agent.ConversationEntry) agent.ConversationEntry {
 	entry.Content = "[system] The previous reply wrongly told the user this chat could not continue and to start another chat. That referred to a finished plan. Do not repeat it. Continue the unfinished work with the tools listed now."
-	// reasoning_content is sent back to the model on the next turn. Leaving
-	// the old chain of thought there replays the closed-plan conclusion.
 	entry.ReasoningContent = ""
-	return entry, true
+	return entry
 }
 
 func assistantEntryText(entry agent.ConversationEntry) string {
@@ -90,16 +72,6 @@ func assistantEntryText(entry agent.ConversationEntry) string {
 		return reasoning
 	}
 	return text + "\n" + reasoning
-}
-
-func semanticShortConsent(text string) bool {
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
-	compact = strings.Trim(compact, "。.!！?？~～啊呀吧呢")
-	switch compact {
-	case "要", "好", "好的", "可以", "行", "同意", "允许", "允许使用", "可以用", "用吧", "做吧":
-		return true
-	}
-	return false
 }
 
 func lastAssistantText(history []agent.ConversationEntry) string {
@@ -116,31 +88,23 @@ func lastAssistantText(history []agent.ConversationEntry) string {
 // not run bash or curl, and told the user the turn was out of quota or asked
 // to be allowed to run that command. "不允许" contains "允许" and must not match.
 func assistantBlockedOnShell(text string) bool {
-	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "bash") && !strings.Contains(lower, "curl") {
-		return false
-	}
-	if strings.Contains(text, "额度") || strings.Contains(text, "配额") {
-		return true
-	}
-	if strings.Contains(text, "不允许") {
-		return false
-	}
-	return strings.Contains(text, "允许我") || strings.Contains(text, "允许使用")
+	return historicalSessionCeiling(text)
 }
 
-// semanticConsentLeavesSpentWave is a short yes after that blocked reply.
-// "可爱风" is not one. "要" after "再改一版吗" is not one either: the assistant
-// did not say the shell was blocked.
-func semanticConsentLeavesSpentWave(userText string, history []agent.ConversationEntry) bool {
-	return semanticShortConsent(userText) && assistantBlockedOnShell(lastAssistantText(history))
+// semanticConsentLeavesSpentWave is a continuation label after the host
+// closed the previous plan, or after the assistant quoted that host sentence.
+// A content label is an answer, not a yes. The assistant's own wording is not read.
+func semanticConsentLeavesSpentWave(current intent.ClassificationResult, history []agent.ConversationEntry, planClosed bool) bool {
+	if !isGenericContinuationPrimary(current) {
+		return false
+	}
+	return planClosed || assistantBlockedOnShell(lastAssistantText(history))
 }
 
-// semanticConsentShellClassification is the plan for that yes: local shell,
-// not another copy of the spent knowledge-write grant. Petitioning bash from
-// knowledge_write is outside that label, so the call never starts.
-func semanticConsentShellClassification(userText string, history []agent.ConversationEntry) *intent.ClassificationResult {
-	if !semanticConsentLeavesSpentWave(userText, history) {
+// semanticConsentShellClassification is the plan for that continuation: local
+// shell, not another copy of the spent knowledge-write grant.
+func semanticConsentShellClassification(current intent.ClassificationResult, history []agent.ConversationEntry, planClosed bool) *intent.ClassificationResult {
+	if !semanticConsentLeavesSpentWave(current, history, planClosed) {
 		return nil
 	}
 	return semanticShellClassification("spent-wave consent for bash")
@@ -162,9 +126,6 @@ func semanticShellClassification(reason string) *intent.ClassificationResult {
 // knowledge_write, then on coding, and bash was never started). A source
 // edit keeps its own plan.
 func semanticReleasedRequestPlansShell(current intent.ClassificationResult, userText string, history []agent.ConversationEntry) bool {
-	if semanticUtteranceIsSourceEdit(userText) || semanticUtteranceIsKnowledgeSave(userText) || !semanticUtteranceWantsRemoteCall(userText) {
-		return false
-	}
 	switch current.Primary {
 	case intent.LabelKnowledgeWrite:
 	case intent.LabelCoding, intent.LabelBugFix, intent.LabelMaintenance:
@@ -175,30 +136,6 @@ func semanticReleasedRequestPlansShell(current intent.ClassificationResult, user
 		return false
 	}
 	return semanticTextHasCallTarget(userText) || semanticHistoryHasCallTarget(history)
-}
-
-func semanticUtteranceIsKnowledgeSave(text string) bool {
-	return strings.Contains(text, "保存") || strings.Contains(text, "知识库") || strings.Contains(text, "记下来")
-}
-
-func semanticUtteranceIsSourceEdit(text string) bool {
-	compact := strings.ToLower(text)
-	for _, cue := range []string{"函数", "代码", "文件", "bug", "编译", "重构", "改一下", "修复", ".go", ".py", ".ts", ".java"} {
-		if strings.Contains(compact, cue) {
-			return true
-		}
-	}
-	return false
-}
-
-func semanticUtteranceWantsRemoteCall(text string) bool {
-	compact := strings.ToLower(strings.ReplaceAll(text, " ", ""))
-	for _, cue := range []string{"视频", "curl", "接口", "http"} {
-		if strings.Contains(compact, cue) {
-			return true
-		}
-	}
-	return strings.Contains(compact, "api")
 }
 
 func semanticTextHasCallTarget(text string) bool {
@@ -221,21 +158,20 @@ func semanticHistoryHasCallTarget(history []agent.ConversationEntry) bool {
 	return false
 }
 
-// shortConsentContinuesHere is a one-word yes after the assistant asked the
-// user to open a new chat because tools were "used up". The yes continues
-// the unfinished work here.
-func shortConsentContinuesHere(userText string, history []agent.ConversationEntry) string {
-	if !semanticShortConsent(userText) {
+// shortConsentContinuesHere is a continuation label after the assistant said
+// this chat was out of tools. The label continues the unfinished work here.
+// A content label is a new request and does not get the note.
+func shortConsentContinuesHere(current *intent.ClassificationResult, history []agent.ConversationEntry, planClosed bool) string {
+	if current == nil || !isGenericContinuationPrimary(*current) {
 		return ""
 	}
-	text := lastAssistantText(history)
-	if strings.Contains(text, "/new") && (strings.Contains(text, "额度") || strings.Contains(text, "配额")) {
-		return "[系统] 用户这句是同意在当前对话里把未做完的事做完，不是同意开启新对话。不要让用户另开对话。当前列出的工具可以用；需要 bash 时直接调用。"
+	if !planClosed && !assistantBlockedOnShell(lastAssistantText(history)) {
+		return ""
 	}
-	return ""
+	return "[系统] 用户这句是同意在当前对话里把未做完的事做完，不是同意开启新对话。不要让用户另开对话。当前列出的工具可以用；需要 bash 时直接调用。"
 }
 
-func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userText, systemPrompt, platform string, attachments []MessageAttachment, cfg corelib.MaclawLLMConfig, history []agent.ConversationEntry, priorReplanCount int, recorder *TrajectoryRecorder, tools []map[string]interface{}, onProgress func(string), allowLocalAttachmentStaging bool) agentLoopConversationStart {
+func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userText, systemPrompt, platform string, attachments []MessageAttachment, cfg corelib.MaclawLLMConfig, history []agent.ConversationEntry, priorReplanCount int, recorder *TrajectoryRecorder, tools []map[string]interface{}, onProgress func(string), allowLocalAttachmentStaging bool, semantic *intent.ClassificationResult, planClosed bool) agentLoopConversationStart {
 	startedAt := time.Now()
 	// Capture identity/source before historical attachment stripping and before
 	// any compaction can discard the document body.
@@ -255,8 +191,18 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 	conversation := []interface{}{
 		map[string]string{"role": "system", "content": systemPrompt},
 	}
-	for _, entry := range history {
-		if replaced, ok := neutralizeHistoricalSessionCeiling(entry); ok {
+	lastAssistant := -1
+	if planClosed {
+		for i := range history {
+			if strings.EqualFold(strings.TrimSpace(history[i].Role), "assistant") {
+				lastAssistant = i
+			}
+		}
+	}
+	for i, entry := range history {
+		if i == lastAssistant {
+			entry = rewriteClosedPlanAssistant(entry)
+		} else if replaced, ok := neutralizeHistoricalSessionCeiling(entry); ok {
 			entry = replaced
 		} else if replaced, ok := neutralizeAssistantQuotaClaim(entry); ok {
 			entry = replaced
@@ -267,7 +213,7 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 	userContent := buildUserContentWithPreparedLocalAttachments(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, onProgress, allowLocalAttachmentStaging, true, cfg.EffectiveContextTokens())
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	history = append(history, agent.ConversationEntry{Role: "user", Content: userContent})
-	consentNote := shortConsentContinuesHere(userText, history[:len(history)-1])
+	consentNote := shortConsentContinuesHere(semantic, history[:len(history)-1], planClosed)
 	if consentNote != "" {
 		conversation = append(conversation, map[string]string{"role": "system", "content": consentNote})
 	}

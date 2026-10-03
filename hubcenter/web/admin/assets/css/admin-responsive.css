@@ -43,10 +43,15 @@
 
 .nav-group-label{color:#667085}.nav-group.is-follow{border-top-color:#e4e7ee}
 
-/* Retain the active LLM section tab after the final shared button overrides. */
-#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"]{background:#2563eb!important;color:#fff!important;border-color:#1d4ed8!important;box-shadow:inset 0 -2px 0 rgba(15,23,42,.24),0 2px 5px rgba(37,99,235,.22)!important;font-weight:800!important}
-#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"]:hover{background:#1d4ed8!important;color:#fff!important}
-#tab-llmservice .llm-subtabs [role="tab"][aria-selected="false"]{background:transparent!important;color:#586579!important;border-color:transparent!important;box-shadow:none!important}
+/* pro-ui paints .btn-secondary and .btn-ghost the same white, so the selected
+   sub-tab has to key off aria-selected. Token bank uses the same tab strip. */
+#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"],
+#tab-tokenbank .llm-subtabs [role="tab"][aria-selected="true"]{background:#2563eb!important;color:#fff!important;border-color:#1d4ed8!important;box-shadow:inset 0 -2px 0 rgba(15,23,42,.24),0 2px 5px rgba(37,99,235,.22)!important;font-weight:800!important}
+#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"]:hover,
+#tab-tokenbank .llm-subtabs [role="tab"][aria-selected="true"]:hover{background:#1d4ed8!important;color:#fff!important}
+#tab-llmservice .llm-subtabs [role="tab"][aria-selected="false"],
+#tab-tokenbank .llm-subtabs [role="tab"][aria-selected="false"]{background:transparent!important;color:#586579!important;border-color:transparent!important;box-shadow:none!important}
+#tab-tokenbank button[aria-pressed="true"]:not([role="tab"]){background:#2563eb!important;color:#fff!important;border-color:#1d4ed8!important;box-shadow:none!important}
 
 @media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;height:auto;overflow:visible;border-right:0}.nav{overflow:visible;max-height:none}}
 
@@ -198,4 +203,56 @@
 #tab-userrankings{--head-icon:var(--icon-chart)}
 #tab-notifications{--head-icon:var(--icon-bell)}
 #tab-problemreports{--head-icon:var(--icon-alert)}
+#tab-tokenbank{--head-icon:var(--icon-library)}
+
+/* The shell .item is a full-width hero card (20px padding, 12px gap, and
+   .item+.item margin on top of .list gap). Stats, settings, and record rows
+   opt out of that here. Share rows and model cards compact their own buttons.
+   pro-ui.css locks every button to min-width:44px !important, so a card button
+   that must share a narrow row has to clear that floor with !important too. */
+#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-settings{display:grid;gap:10px}
+#tab-tokenbank .tbk-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}
+#tab-tokenbank .tbk-settings{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:12px}
+#tab-tokenbank .tbk-stat,#tab-tokenbank .tbk-field{margin:0;min-height:0;padding:12px 14px;gap:4px;border-radius:14px}
+#tab-tokenbank .tbk-stat+.tbk-stat,#tab-tokenbank .tbk-field+.tbk-field,#tab-tokenbank .tbk-metrics>.item+.item,#tab-tokenbank .tbk-settings>.item+.item{margin-top:0}
+#tab-tokenbank .tbk-stat .item-title,#tab-tokenbank .tbk-field .item-title{margin:0;font-size:13px;line-height:1.3;letter-spacing:0;text-transform:none}
+#tab-tokenbank .tbk-stat strong{display:block;margin:2px 0 0;font-size:22px;line-height:1.1;letter-spacing:-.02em}
+#tab-tokenbank .tbk-stat .item-meta,#tab-tokenbank .tbk-field .item-meta{margin:0;font-size:12px;line-height:1.4}
+#tab-tokenbank .tbk-field{gap:6px}
+#tab-tokenbank .list{gap:6px}
+#tab-tokenbank .list>.item{margin:0;min-height:0;padding:8px 10px;gap:4px;border-radius:10px}
+#tab-tokenbank .list>.item+.item{margin-top:0}
+#tab-tokenbank .list>.item .item-title{margin:0;font-size:13px;line-height:1.3}
+#tab-tokenbank .list>.item .item-meta{margin:0;font-size:11px;line-height:1.35}
+#tab-tokenbank .list>.item strong{display:block;margin:0;font-size:13px;line-height:1.35;font-weight:650}
+#tab-tokenbank .list .list{margin-top:4px}
+#tab-tokenbank .list .list.section-bottom{margin-bottom:0}
+#tab-tokenbank .tbk-price-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+#tab-tokenbank .tbk-price-fields input{min-width:0;width:100%;flex:none}
+/* Shared models sit under the provider as compact cards, four across.
+   Selectors include .item so they beat the record-row rules above.
+   Background and shadow use !important because pro-ui.css paints every .item
+   with a panel fill and a soft shadow. min-width:0 lets a long model name
+   ellipsize inside the grid instead of widening the share row. */
+#tab-tokenbank .tbk-model-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:6px;min-width:0}
+#tab-tokenbank .tbk-model-card.item{margin:0;min-width:0;padding:6px 8px;gap:3px;border-radius:8px;background:#f7f8fb!important;border:1px solid #e6e8ef;box-shadow:none!important}
+#tab-tokenbank .tbk-model-card.item+.item{margin-top:0}
+#tab-tokenbank .tbk-model-card.item .item-title{margin:0;min-width:0;max-width:100%;font-size:12px;line-height:1.25;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-tokenbank .tbk-model-card.item .item-title::before{width:5px;height:5px;margin-right:4px;box-shadow:none}
+#tab-tokenbank .tbk-model-card.item .tbk-model-facts{display:flex;flex-wrap:wrap;gap:1px 8px;margin:0;min-width:0;max-width:100%;font-size:10px;line-height:1.3}
+#tab-tokenbank .tbk-model-card.item .tbk-model-facts span{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-tokenbank .tbk-model-card.item .inline-actions{gap:3px;flex-wrap:nowrap;margin-top:auto;min-width:0}
+#tab-tokenbank .tbk-model-card.item .inline-actions button{height:22px;min-height:22px!important;min-width:0!important;flex:1 1 0;padding:0 4px;font-size:10px;border-radius:6px}
+#tab-tokenbank #tbkSharesBody>.inline-actions{gap:6px;margin-bottom:8px}
+#tab-tokenbank #tbkSharesBody>.inline-actions button{height:30px;min-height:30px!important;padding:0 10px;font-size:12px;border-radius:8px}
+#tab-tokenbank #tbkSharesBody>.inline-actions input,#tab-tokenbank #tbkSharesBody>.inline-actions select{height:32px;min-height:32px!important}
+#tab-tokenbank #tbkSharesBody .list>.item>.inline-actions{gap:4px}
+#tab-tokenbank #tbkSharesBody .list>.item>.inline-actions button{height:26px;min-height:26px!important;min-width:0;padding:0 8px;font-size:12px;border-radius:7px}
+/* Shell controls are 46px and width:100%, a stacked field. Compact cards use
+   the admin 38px control. The share-status select stays on the filter row. */
+#tab-tokenbank input:not([type=checkbox]):not([type=radio]),#tab-tokenbank select{height:38px}
+#tab-tokenbank .inline-actions select{width:auto;flex:0 1 auto;min-width:9em}
+#tab-tokenbank .inline-actions input{width:auto;flex:1 1 12em;min-width:0}
+@media(max-width:1100px){#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-model-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-settings,#tab-tokenbank .tbk-price-fields,#tab-tokenbank .tbk-model-grid{grid-template-columns:1fr}}
 

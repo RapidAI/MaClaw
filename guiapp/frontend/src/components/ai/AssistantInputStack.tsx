@@ -90,6 +90,8 @@ interface AssistantInputStackProps {
     toolbarTestId?: string;
     /** Extra content rendered in the left toolbar group, after the permission-mode button. */
     trailingToolbarContent?: React.ReactNode;
+    /** Pinned to the right edge of the left toolbar group, in the gap before send. */
+    toolbarEndContent?: React.ReactNode;
     updateInputValue: (value: string) => void;
     voiceInput: UseVoiceInputResult;
 }
@@ -105,7 +107,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         pendingAttachmentsTestId, permissionMode, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
         showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
-        themeMode, toolbarTestId, trailingToolbarContent, updateInputValue, voiceInput,
+        themeMode, toolbarEndContent, toolbarTestId, trailingToolbarContent, updateInputValue, voiceInput,
     } = props;
 
     const queuePanel = queue.length > 0 ? (
@@ -229,6 +231,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     theme={t}
                     themeMode={themeMode}
                     toolbarTestId={toolbarTestId}
+                    toolbarEndContent={toolbarEndContent}
                     trailingToolbarContent={trailingToolbarContent}
                     updateInputValue={updateInputValue}
                     voiceInput={voiceInput}

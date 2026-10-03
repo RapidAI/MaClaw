@@ -6,6 +6,8 @@
   "partials/40-pets-expert.css",
   "partials/50-pet-provider.css",
   "partials/60-hub-updates-models.css",
+  "partials/61-token-bank.css",
+  "partials/62-token-bank-share.css",
   "partials/70-progress-web-im.css",
   "partials/80-im-lansenger.css",
   "partials/90-im-channels-markdown.css",

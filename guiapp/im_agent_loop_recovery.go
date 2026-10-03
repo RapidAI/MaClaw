@@ -58,14 +58,19 @@ func (h *IMMessageHandler) applyAgentLoopRecoverPrompt(
 		// delivery immediately", but an ambient-projected surface carries no
 		// delivery-capable tool at all. The promise itself is runtime evidence
 		// that this turn was under-scoped, so the follow-up round regains the
-		// invariant-11 floor (bash/write_file) and the delivery can actually
+		// invariant-11 floor (bash/read_file/write_file/edit_file) and the delivery can actually
 		// happen instead of being policy_rejected again.
 		if loopContextBlocksLegacyToolRouter(ctx) {
 			log.Printf("[agent-loop] skip deliverable floor unlock on managed semantic recover user=%q", userID)
 		} else {
 			result.Tools = unionMissFloorToolsForSurface(result.Tools, baseTools)
-			// Never resurrect a tool the Hub security policy rejects outright.
-			result.Tools = h.filterPolicyRejectedSurfaceTools(result.Tools)
+			// baseTools predates expert, group, and skill filters. Seal again
+			// so the union cannot hand those tools back.
+			inDirect := h.mainLoopInDirectMode(userID, ctx)
+			result.Tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, result.Tools, *phase, inDirect, boundFloorCatalog(baseTools))
+			if inDirect {
+				result.DirectModeToolsFiltered = true
+			}
 			result.ToolsTokenBudget = estimateToolsTokens(result.Tools)
 		}
 	}

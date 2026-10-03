@@ -60,7 +60,7 @@ export function ProviderModelCombobox({
                         padding: "7px 10px",
                         fontSize: "0.8rem",
                         border: `1px solid ${colors.border}`,
-                        borderRadius: 4,
+                        borderRadius: "var(--radius-md, 10px)",
                         background: colors.surface,
                         color: colors.text,
                         boxSizing: "border-box",
@@ -71,9 +71,9 @@ export function ProviderModelCombobox({
                     onClick={onFetch}
                     disabled={fetching || !canFetch}
                     style={{
-                        fontSize: "0.72rem", padding: "6px 10px", cursor: (fetching || !canFetch) ? "not-allowed" : "pointer",
+                        fontSize: "0.72rem", padding: "6px 10px", minHeight: 40, cursor: (fetching || !canFetch) ? "not-allowed" : "pointer",
                         background: colors.surface, color: colors.text,
-                        border: `1px solid ${colors.border}`, borderRadius: 4,
+                        border: `1px solid ${colors.border}`, borderRadius: "var(--radius-md, 10px)",
                         whiteSpace: "nowrap", flexShrink: 0,
                         opacity: (fetching || !canFetch) ? 0.5 : 1,
                     }}

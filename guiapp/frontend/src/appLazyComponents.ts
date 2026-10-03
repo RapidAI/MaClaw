@@ -36,3 +36,4 @@ export const WorkflowsPage = lazy(() => import('./components/pages/WorkflowsPage
 export const UtilitiesPage = lazy(() => import('./components/pages/UtilitiesPage').then((module) => ({ default: module.UtilitiesPage })));
 export const MobileDocumentsPanel = lazy(() => import('./components/layout/MobileDocumentsPanel').then((module) => ({ default: module.MobileDocumentsPanel })));
 export const LatexTemplateLibraryPage = lazy(() => import('./components/pages/LatexTemplateLibraryPage').then((module) => ({ default: module.LatexTemplateLibraryPage })));
+export const TokenBankPanel = lazy(() => import('./components/TokenBankPanel').then((module) => ({ default: module.TokenBankPanel })));

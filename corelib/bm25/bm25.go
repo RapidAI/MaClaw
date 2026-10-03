@@ -263,6 +263,23 @@ func (idx *Index) scoreQueryLocked(query string, allowed map[string]struct{}) ma
 		return nil
 	}
 	terms, requireAll := scoreQueryTerms(query)
+	return idx.scoreTermsLocked(terms, requireAll, allowed)
+}
+
+// ScoreOverlaps scores ordinary words. It does not apply the short-name
+// conjunction: a workflow request such as 帮我做个竞品分析 contains a template
+// name and also the words around it, and those surrounding words are not
+// required to appear in the template.
+func (idx *Index) ScoreOverlaps(query string) map[string]float64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if len(idx.docs) == 0 {
+		return nil
+	}
+	return idx.scoreTermsLocked(uniqueTerms(Tokenize(query)), false, nil)
+}
+
+func (idx *Index) scoreTermsLocked(terms []string, requireAll bool, allowed map[string]struct{}) map[string]float64 {
 	if len(terms) == 0 {
 		return nil
 	}

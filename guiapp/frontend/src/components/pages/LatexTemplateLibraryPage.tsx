@@ -349,21 +349,41 @@ export function LatexTemplateLibraryPage({ lang, onUseTemplate, onClose }: Latex
                 <div className="latex-template-page__title-row">
                     <h1 className="latex-template-page__title">{text.title}</h1>
                     <span className="latex-template-page__count" data-testid="latex-template-count" title={text.countTitle.replace('{count}', String(total))}>{String(total)}</span>
-                    <div className="latex-template-page__actions">
-                        <button type="button" className="latex-template-page__btn" onClick={() => { setNotice(''); void load(); }} disabled={mutationsLocked}>
-                            {text.refresh}
-                        </button>
-                        <button type="button" className="latex-template-page__btn" data-testid="latex-template-import" title={text.importTitle} onClick={importTemplate} disabled={mutationsLocked}>
-                            {text.importTemplate}
-                        </button>
-                        <button type="button" className="latex-template-page__btn" data-testid="latex-template-sync" title={text.syncHubTitle} onClick={syncFromHub} disabled={mutationsLocked}>
-                            {text.syncHub}
-                        </button>
-                        {onClose ? (
-                            <button type="button" className="latex-template-page__close" onClick={onClose} aria-label={text.close} title={text.close}>
-                                ×
-                            </button>
+                    <div className="latex-template-page__toolbar">
+                        {blank ? (
+                            <div className="latex-template-blank" data-testid={`latex-template-card-${blank.id}`}>
+                                <span className="latex-template-blank__name" title={blank.description || blank.name}>{blank.name}</span>
+                                {blank.description ? (
+                                    <span className="latex-template-blank__desc" title={blank.description}>{blank.description}</span>
+                                ) : null}
+                                <button
+                                    type="button"
+                                    className="latex-template-page__btn latex-template-page__btn--primary"
+                                    data-testid={`latex-template-use-${blank.id}`}
+                                    title={text.useBlank}
+                                    onClick={() => void onUseTemplate(blank)}
+                                    disabled={!!busyId}
+                                >
+                                    {text.useBlank}
+                                </button>
+                            </div>
                         ) : null}
+                        <div className="latex-template-page__actions">
+                            <button type="button" className="latex-template-page__btn" onClick={() => { setNotice(''); void load(); }} disabled={mutationsLocked}>
+                                {text.refresh}
+                            </button>
+                            <button type="button" className="latex-template-page__btn" data-testid="latex-template-import" title={text.importTitle} onClick={importTemplate} disabled={mutationsLocked}>
+                                {text.importTemplate}
+                            </button>
+                            <button type="button" className="latex-template-page__btn" data-testid="latex-template-sync" title={text.syncHubTitle} onClick={syncFromHub} disabled={mutationsLocked}>
+                                {text.syncHub}
+                            </button>
+                            {onClose ? (
+                                <button type="button" className="latex-template-page__close" onClick={onClose} aria-label={text.close} title={text.close}>
+                                    ×
+                                </button>
+                            ) : null}
+                        </div>
                     </div>
                 </div>
                 <p className="latex-template-page__subtitle">{text.subtitle}</p>
@@ -379,29 +399,6 @@ export function LatexTemplateLibraryPage({ lang, onUseTemplate, onClose }: Latex
             ) : null}
             {showEmpty ? (
                 <div className="latex-template-page__state">{text.emptyLibrary}</div>
-            ) : null}
-
-            {blank ? (
-                <article className="latex-template-card latex-template-card--blank" data-testid={`latex-template-card-${blank.id}`}>
-                        <div className="latex-template-card__main">
-                            <div className="latex-template-card__title" title={blank.name}>{blank.name}</div>
-                            {blank.description ? (
-                                <div className="latex-template-card__desc" title={blank.description}>{blank.description}</div>
-                            ) : null}
-                        </div>
-                        <div className="latex-template-card__actions">
-                            <button
-                                type="button"
-                                className="latex-template-page__btn latex-template-page__btn--primary"
-                                data-testid={`latex-template-use-${blank.id}`}
-                                title={text.useBlank}
-                                onClick={() => void onUseTemplate(blank)}
-                                disabled={!!busyId}
-                            >
-                                {text.useBlank}
-                            </button>
-                        </div>
-                    </article>
             ) : null}
 
             {visibleSections.map((section) => {

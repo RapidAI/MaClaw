@@ -21,6 +21,7 @@ func RegisterLLMRoutes(
 	authChecker *llmservice.AuthorizationChecker,
 	cardStoreSvc *cardstore.Service,
 	statsSvc *llmservice.StatsService,
+	smHandlers *SkillMarketHandlers,
 ) {
 	if llmSvc == nil {
 		return
@@ -46,21 +47,50 @@ func RegisterLLMRoutes(
 
 	// --- Admin: LLM Providers ---
 	mux.HandleFunc("GET /api/admin/llm/providers", RequireAdmin(adminService, adminListLLMProviders(llmSvc)))
-	mux.HandleFunc("GET /api/admin/llm/access-nodes", RequireAdmin(adminService, adminListLLMAccessNodes(proxyCfg)))
+	mux.HandleFunc("GET /api/admin/llm/access-nodes", RequireLLMAdminScope(adminService, llmSvc, "read", adminListLLMAccessNodes(proxyCfg)))
+	mux.HandleFunc("GET /api/admin/llm/member-health", RequireLLMAdminScope(adminService, llmSvc, "read", adminListMemberHealth(proxyCfg)))
 	if statsSvc != nil {
-		mux.HandleFunc("GET /api/admin/llm/providers/traffic", RequireAdmin(adminService, adminLLMProviderTrafficHandler(statsSvc)))
+		mux.HandleFunc("GET /api/admin/llm/providers/traffic", RequireAdmin(adminService, adminLLMProviderTrafficHandler(statsSvc, proxyCfg)))
 		mux.HandleFunc("GET /api/admin/llm/service-groups/traffic", RequireAdmin(adminService, adminLLMServiceGroupTrafficHandler(statsSvc)))
 	}
 	mux.HandleFunc("POST /api/admin/llm/providers", RequireAdmin(adminService, adminAddLLMProvider(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/providers/workbuddy/login", RequireAdmin(adminService, adminStartWorkBuddyLogin(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/providers/workbuddy/login/{id}", RequireAdmin(adminService, adminWorkBuddyLoginStatus(llmSvc)))
+	mux.HandleFunc("DELETE /api/admin/llm/providers/workbuddy/login/{id}", RequireAdmin(adminService, adminCancelWorkBuddyLogin(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/providers/probe-models", RequireAdmin(adminService, adminProbeLLMProviderModels(llmSvc, proxyCfg)))
 	mux.HandleFunc("POST /api/admin/llm/providers/test-chat", RequireAdmin(adminService, adminTestLLMProviderChat(llmSvc, proxyCfg)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/sequences", RequireAdmin(adminService, adminSetLLMProviderSequences(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminUpdateLLMProvider(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/paused", RequireAdmin(adminService, adminSetLLMProviderPaused(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/sequence", RequireAdmin(adminService, adminSetLLMProviderSequence(llmSvc)))
-	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminDeleteLLMProvider(llmSvc)))
+	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireLLMAdminScope(adminService, llmSvc, "delete", adminDeleteLLMProvider(llmSvc)))
+	mux.HandleFunc("PATCH /api/admin/llm/providers/{id}", RequireLLMAdminScope(adminService, llmSvc, "write", adminPatchLLMProviderMember(llmSvc, smHandlers)))
+	mux.HandleFunc("POST /api/admin/llm/providers/{id}/test", RequireLLMAdminScope(adminService, llmSvc, "test", adminTestLLMProviderMember(llmSvc, proxyCfg)))
 	mux.HandleFunc("GET /api/admin/llm/providers/{id}/references", RequireAdmin(adminService, adminListLLMProviderReferences(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/provider-arrays", RequireAdmin(adminService, adminAddLLMProviderArray(llmSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/provider-arrays/{id}", RequireAdmin(adminService, adminRenameLLMProviderArray(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/provider-arrays/{id}/references", RequireAdmin(adminService, adminListLLMProviderArrayReferences(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/provider-arrays/{id}", RequireAdmin(adminService, adminDeleteLLMProviderArray(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/provider-arrays", RequireLLMAdminScope(adminService, llmSvc, "read", adminListLLMProviderArrayInventory(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/provider-arrays/batch", RequireLLMAdmin(adminService, llmSvc, adminImportLLMProviderArrays(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/admin-keys", RequireAdmin(adminService, adminListLLMAdminAPIKeys(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/admin-keys", RequireAdmin(adminService, adminCreateLLMAdminAPIKey(llmSvc)))
+	mux.HandleFunc("DELETE /api/admin/llm/admin-keys/{id}", RequireAdmin(adminService, adminRevokeLLMAdminAPIKey(llmSvc)))
+	mux.HandleFunc("GET /api/llm/admin-api.md", llmAdminAPIMarkdown)
+	mux.HandleFunc("GET /api/llm/admin-api.json", llmAdminAPIOpenAPIDoc)
+
+	// --- Admin: Token Bank automation (§6.3) ---
+	// These sit under /api/admin/llm/* so an hck_ key with read/write/delete can
+	// script a user's own shares. The handler set is optional: when SkillMarket
+	// did not initialise, the endpoints simply stay unregistered.
+	if smHandlers != nil {
+		mux.HandleFunc("GET /api/admin/llm/token-bank/shares", RequireLLMAdminScope(adminService, llmSvc, "read", smHandlers.TokenBankAdminShares))
+		mux.HandleFunc("POST /api/admin/llm/token-bank/shares", RequireLLMAdminScope(adminService, llmSvc, "write", smHandlers.TokenBankAutomationCreateShare))
+		mux.HandleFunc("POST /api/admin/llm/token-bank/shares/batch", RequireLLMAdminScope(adminService, llmSvc, "write", smHandlers.TokenBankAutomationBatchShares))
+		mux.HandleFunc("PUT /api/admin/llm/token-bank/shares/{id}/paused", RequireLLMAdminScope(adminService, llmSvc, "write", smHandlers.TokenBankAdminSetSharePaused))
+		mux.HandleFunc("PUT /api/admin/llm/token-bank/shares/{id}/models/{model}/tier", RequireLLMAdminScope(adminService, llmSvc, "write", smHandlers.TokenBankAdminSetModelTier))
+		mux.HandleFunc("DELETE /api/admin/llm/token-bank/shares/{id}", RequireLLMAdminScope(adminService, llmSvc, "delete", smHandlers.TokenBankAdminTakeOutShare))
+	}
 
 	// --- Admin: Provider Monitor ---
 	mux.HandleFunc("GET /api/admin/llm/provider-monitor/config", RequireAdmin(adminService, adminGetLLMProviderMonitorConfig(llmSvc)))

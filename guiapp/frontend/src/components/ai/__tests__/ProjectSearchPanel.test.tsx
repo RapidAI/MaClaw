@@ -7,7 +7,7 @@ import { DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFol
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT } from "../../../utils/fileLibraryNavigation";
 import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT } from "../../../utils/knowledgeSearchNavigation";
 import { OPEN_SETTINGS_EVENT } from "../../../utils/settingsNavigation";
-import { OPEN_EXPERT_CONVERSATION_EVENT } from "../../../utils/expertConversationNavigation";
+import { EVENT_OPEN_NEW_TASK_WIZARD } from "../../../constants/events";
 
 const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeTaskMock, renameTaskMock, pinTaskMock, deleteTaskMock, archiveProjectMock } = vi.hoisted(() => ({
     getArchivedExperienceMock: vi.fn(),
@@ -446,17 +446,17 @@ describe("ProjectSearchPanel", () => {
         }];
         const seen: unknown[] = [];
         const listener = (event: Event) => seen.push((event as CustomEvent).detail);
-        window.addEventListener(OPEN_EXPERT_CONVERSATION_EVENT, listener);
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
         try {
             renderPanel(search);
             expect(screen.getByTestId("search-experts-section")).toBeTruthy();
             fireEvent.click(screen.getByText("Paper polish"));
             expect(search.close).toHaveBeenCalled();
             expect(seen).toEqual([
-                { expert: expect.objectContaining({ id: "builtin-paper", name: "Paper polish" }) },
+                { expertId: "builtin-paper", expertName: "Paper polish" },
             ]);
         } finally {
-            window.removeEventListener(OPEN_EXPERT_CONVERSATION_EVENT, listener);
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
         }
     });
 });

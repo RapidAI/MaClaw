@@ -1,0 +1,481 @@
+/* Token Bank provider-chip entry and share dialog (design doc §7.1 / §7.2).
+ *
+ * Colours come from the shared theme tokens in 00-tokens.css. No hardcoded
+ * surfaces, so the dialog follows the app's dark/light switch. */
+
+.llm-config-tokenbank-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    min-height: 26px;
+    padding: 0;
+    margin-left: 2px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    border-radius: 999px;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.llm-config-tokenbank-btn:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    color: var(--theme-primary-strong);
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+}
+
+.llm-config-tokenbank-btn:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+/* The settings panel forces a 36px ink button. Keep this mark a small outline circle. */
+.settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
+    width: 26px;
+    height: 26px;
+    min-height: 26px;
+    border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+}
+
+.settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+}
+
+/* Labeled deposit mark on the right of a tested provider's config title. */
+.llm-config-form-card__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    margin-bottom: 16px;
+}
+
+.llm-config-form-card__heading > .llm-config-form-card__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.llm-config-tokenbank-badge,
+.settings-content.settings-panel .llm-config-tokenbank-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 30px;
+    min-height: 30px;
+    padding: 0 11px 0 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    border-radius: 999px;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.llm-config-tokenbank-badge svg,
+.llm-config-tokenbank-btn svg {
+    display: block;
+    flex: 0 0 auto;
+}
+
+.llm-config-tokenbank-badge:hover:not(:disabled),
+.settings-content.settings-panel .llm-config-tokenbank-badge:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+    border-color: var(--theme-primary);
+    color: var(--theme-primary-strong);
+}
+
+.llm-config-tokenbank-badge:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.llm-config-tokenbank-badge:disabled,
+.llm-config-tokenbank-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+@media (forced-colors: active) {
+    .llm-config-tokenbank-badge,
+    .llm-config-tokenbank-btn,
+    .settings-content.settings-panel .llm-config-tokenbank-badge,
+    .settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
+        border-color: ButtonText;
+        background: ButtonFace;
+        color: ButtonText;
+        forced-color-adjust: none;
+    }
+}
+
+.tbk-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 120000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, #000 42%, transparent);
+}
+
+.tbk-modal-backdrop:focus {
+    outline: none;
+}
+
+.tbk-modal-backdrop:focus .tbk-modal {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+    .tbk-modal-backdrop:focus .tbk-modal {
+        outline: 2px solid Highlight;
+    }
+}
+
+.tbk-modal {
+    width: min(560px, 92vw);
+    max-width: 100%;
+    max-height: 86vh;
+    overflow-y: auto;
+    container-type: inline-size;
+    container-name: tbk-share;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px 20px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+}
+
+.tbk-modal__title {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.tbk-modal__sub {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-text-secondary);
+    word-break: break-all;
+}
+
+.tbk-modal__section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border);
+}
+
+.tbk-modal__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 0.82rem;
+}
+
+.tbk-modal__actions {
+    display: inline-flex;
+    gap: 8px;
+}
+
+.tbk-modal__picked {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-modal__progress,
+.tbk-modal__hint {
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-modal__footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border);
+}
+
+.tbk-modal__footer .tbk-modal__hint {
+    margin-right: auto;
+}
+
+.tbk-model-picker {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 360px;
+    overflow-y: auto;
+}
+
+.tbk-model-picker__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm, 8px);
+    background: var(--theme-surface-muted);
+}
+
+.tbk-model-picker__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 160px;
+    cursor: pointer;
+}
+
+.tbk-model-picker__name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    word-break: break-all;
+}
+
+.tbk-model-picker__error {
+    flex: 1 1 100%;
+    font-size: 0.74rem;
+    color: var(--theme-danger);
+    word-break: break-word;
+}
+
+.tbk-share-window {
+    flex: 1 1 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-share-window__day {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    cursor: pointer;
+}
+
+.tbk-share-window__day input {
+    width: 14px;
+    height: 14px;
+    min-height: 0;
+    margin: 0;
+}
+
+.llm-config-form-card .tbk-share-window__clock,
+.settings-panel .tbk-share-window__clock {
+    width: 4.8rem;
+    height: 28px;
+    min-height: 28px !important;
+    padding: 2px 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+.tbk-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 0.8rem;
+}
+
+.tbk-field input {
+    width: 120px;
+}
+
+.tbk-visibility {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 8px;
+}
+
+.tbk-visibility__option {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    gap: 8px;
+    width: auto;
+    max-width: 100%;
+    margin: 0;
+    padding: 7px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.tbk-visibility__option:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 35%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
+}
+
+.tbk-visibility__option:has(input:checked) {
+    border-color: color-mix(in srgb, var(--theme-primary) 48%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface));
+}
+
+.tbk-visibility__option input {
+    width: 16px;
+    height: 16px;
+    min-height: 16px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    flex: 0 0 auto;
+    accent-color: var(--theme-primary);
+}
+
+.tbk-visibility__option span {
+    min-width: 0;
+}
+
+.tbk-audience {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+}
+
+.tbk-audience__status {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-audience__column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.tbk-audience__title {
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.tbk-audience__empty {
+    margin: 0;
+    font-size: 0.76rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-audience__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 148px;
+    overflow: auto;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+}
+
+.tbk-audience__list li + li {
+    border-top: 1px solid var(--theme-border);
+}
+
+.tbk-audience__option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 7px 8px;
+    cursor: pointer;
+}
+
+.tbk-audience__option:has(input:checked) {
+    background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface));
+}
+
+.tbk-audience__option input {
+    width: 16px;
+    height: 16px;
+    margin: 2px 0 0;
+    flex: 0 0 auto;
+    accent-color: var(--theme-primary);
+}
+
+.tbk-audience__copy {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.tbk-audience__name {
+    font-size: 0.8rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.tbk-audience__id,
+.tbk-audience__meta {
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+@container tbk-share (max-width: 460px) {
+    .tbk-audience {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.settings-content.settings-panel .tbk-modal .tbk-audience__retry,
+.tbk-panel .tbk-modal .tbk-audience__retry {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    cursor: pointer;
+}

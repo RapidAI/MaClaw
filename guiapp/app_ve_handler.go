@@ -896,11 +896,11 @@ func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, _ string) {
 		return
 	}
 
-	// --- User Facts: always inject the owner's user_fact summary ---
-	// user_fact entries are excluded from
-	// RecallDynamic (they're injected separately in the main AI assistant via
-	// UserFactSummary). VE must also inject them to answer personal questions.
-	b.WriteString(memStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## Owner Information")))
+	// Desktop user facts, newest first. The VE session id is not a memory owner;
+	// other named owners stay out of this 400-rune summary.
+	factOpts := corememory.UserFactPromptOptions("\n## Owner Information")
+	factOpts.OwnerID = desktopUserID
+	b.WriteString(memStore.UserFactSummaryForPrompt(factOpts))
 
 }
 

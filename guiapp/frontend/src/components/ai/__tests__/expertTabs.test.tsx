@@ -19,7 +19,7 @@ import {
     messageIsLocalSession,
     projectPathFromSessionKey,
 } from "../aiAssistantPanelSessionUtils";
-import { ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
+import { AbandonUnopenedFreshLatexTask, ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
 import { resetLatexDocumentRequestForTests, takePendingLatexDocument } from "../latexDocumentOpen";
 import { LATEX_EXPERT_ID } from "../../../utils/latexTemplates";
 
@@ -35,6 +35,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue([]),
     ClearAIAssistantHistoryForSession: vi.fn().mockResolvedValue(undefined),
+    AbandonUnopenedFreshLatexTask: vi.fn().mockResolvedValue(undefined),
 }));
 
 const expertA: ExpertDefinition = {
@@ -445,6 +446,137 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
         expect(sendExpertMessage).toHaveBeenCalledWith("第二段也润色一下", "exp-paper-polish");
         // No re-seed: history keeps exactly the welcome + the prior user turn.
         expect(result.current.manager.getTabState(tabId)?.history?.length).toBe(2);
+    });
+
+    it("a new LaTeX wizard launch clears the previous paper before sending", async () => {
+        const latexExpert: ExpertDefinition = { ...expertA, id: LATEX_EXPERT_ID, name: "LaTeX" };
+        const order: string[] = [];
+        const sendExpertMessage = vi.fn(() => { order.push("send"); });
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const [pending, setPending] = useState<PendingExpertOpen | null>(null);
+            const resetExpertConversation = async (_expertId: string, previousProjectPath?: string) => {
+                order.push("reset");
+                order.push(previousProjectPath || "");
+                const tabId = expertTabId(LATEX_EXPERT_ID);
+                await manager.stashProjectTabHistory(previousProjectPath || "", manager.getTabState(tabId)?.history || []);
+                manager.clearTabConversation(tabId);
+            };
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: () => setPending(null),
+                sendExpertMessage,
+                resetExpertConversation,
+                onEnsureExpertTask: async () => {
+                    manager.createExpertTab(latexExpert, { projectPath: "D:/tasks/new-paper" });
+                    return { projectPath: "D:/tasks/new-paper", relativePath: "main.tex" };
+                },
+            });
+            return { manager, setPending };
+        });
+        act(() => {
+            result.current.manager.createExpertTab(latexExpert, { projectPath: "D:/tasks/old-paper" });
+            result.current.manager.saveTabState(expertTabId(LATEX_EXPERT_ID), {
+                history: [
+                    { id: "u1", role: "user", content: "old paper", timestamp: 1 },
+                    { id: "a1", role: "assistant", content: "compiled", timestamp: 2 },
+                ],
+            });
+        });
+        act(() => {
+            result.current.setPending({ expert: latexExpert, initialMessage: "生成一份演示用学术论文" });
+        });
+        await waitFor(() => {
+            expect(sendExpertMessage).toHaveBeenCalledWith("生成一份演示用学术论文", LATEX_EXPERT_ID);
+        });
+        expect(order).toEqual(["reset", "D:/tasks/old-paper", "send"]);
+        expect(result.current.manager.getTabState(expertTabId(LATEX_EXPERT_ID))?.history).toEqual([]);
+        const stashed = (SaveProjectTabConversation as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        expect(stashed.some(call => String(call[0]).startsWith("proj-") && Array.isArray(call[1]) && call[1].length === 2)).toBe(true);
+    });
+
+    it("a failed LaTeX open drops the paper that was never shown", async () => {
+        const latexExpert: ExpertDefinition = { ...expertA, id: LATEX_EXPERT_ID, name: "LaTeX" };
+        const abandon = AbandonUnopenedFreshLatexTask as unknown as ReturnType<typeof vi.fn>;
+        abandon.mockClear();
+        const sendExpertMessage = vi.fn();
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const [pending, setPending] = useState<PendingExpertOpen | null>(null);
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: () => setPending(null),
+                sendExpertMessage,
+                onEnsureExpertTask: async () => {
+                    throw new Error("task record was not saved");
+                },
+            });
+            return { setPending };
+        });
+        act(() => {
+            result.current.setPending({
+                expert: latexExpert,
+                initialMessage: "生成一份演示用学术论文",
+                projectPath: "D:/tasks/new-paper",
+            });
+        });
+        await waitFor(() => {
+            expect(abandon).toHaveBeenCalledWith("D:/tasks/new-paper");
+        });
+        expect(sendExpertMessage).not.toHaveBeenCalled();
+    });
+
+    it("resuming the live LaTeX paper does not abandon it when registration fails", async () => {
+        const latexExpert: ExpertDefinition = { ...expertA, id: LATEX_EXPERT_ID, name: "LaTeX" };
+        const abandon = AbandonUnopenedFreshLatexTask as unknown as ReturnType<typeof vi.fn>;
+        abandon.mockClear();
+        const ensure = vi.fn(async () => {
+            throw new Error("task record was not saved");
+        });
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const [pending, setPending] = useState<PendingExpertOpen | null>(null);
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: () => setPending(null),
+                onEnsureExpertTask: ensure,
+            });
+            return { setPending };
+        });
+        act(() => {
+            result.current.setPending({ expert: latexExpert, projectPath: "D:/tasks/live-paper" });
+        });
+        await waitFor(() => {
+            expect(ensure).toHaveBeenCalled();
+        });
+        expect(abandon).not.toHaveBeenCalled();
     });
 
     it("expert open without an initial message never calls sendExpertMessage", () => {

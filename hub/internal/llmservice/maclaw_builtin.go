@@ -88,6 +88,7 @@ type MaClawProviderClient struct {
 	nodeURLs           map[string]string             // nodeID -> HubCenter URL
 	ownerCooldown      map[string]time.Time          // owner URL -> pool-unhealthy skip expiry
 	ownerExcluded      map[string]time.Time          // owner URL -> unreachable exclusion expiry
+	ownerGateway       map[string]time.Time          // owner URL -> proxy 502/504 skip expiry
 	ownerRelease       map[string]*ownerReleaseState // owner URL -> binding release state
 	failureCount       int
 	lastFailureAt      time.Time
@@ -123,6 +124,12 @@ var officialOwnerCooldown = 30 * time.Second
 // officialNodeExcludeTTL is the sliding pool-exclusion duration for an owner
 // node that just proved unreachable; every failure refreshes it.
 var officialNodeExcludeTTL = 5 * time.Minute
+
+// officialGatewayCooldown skips a HubCenter node whose reverse proxy returned
+// a non-JSON 502/503/504. The node stays dialable after the window, and a
+// successful chat clears it sooner. It is not an unreachable exclusion: the
+// quality endpoint can still be healthy while the proxy cut the chat headers.
+var officialGatewayCooldown = 2 * time.Minute
 
 var officialOwnerReleaseThreshold = 3 // failures inside the window that trigger a binding release
 
@@ -167,6 +174,7 @@ func NewMaClawProviderClient(cfg MaClawProviderConfig) *MaClawProviderClient {
 		nodeURLs:      map[string]string{},
 		ownerCooldown: map[string]time.Time{},
 		ownerExcluded: map[string]time.Time{},
+		ownerGateway:  map[string]time.Time{},
 		ownerRelease:  map[string]*ownerReleaseState{},
 		stopCh:        make(chan struct{}),
 	}
@@ -255,6 +263,12 @@ func (c *MaClawProviderClient) probeExcludedOwners() {
 		if err := c.probeHubCenterReachable(context.Background(), key); err != nil {
 			continue
 		}
+		// /api/client/quality stays green while nginx is still cutting chat
+		// headers. Re-admit only after the chat route itself returns headers.
+		if err := c.probeHubCenterChatHeaders(context.Background(), key); err != nil {
+			log.Printf("[maclaw-provider] excluded hubcenter node %s answered quality but chat headers failed: %v", key, err)
+			continue
+		}
 		c.mu.Lock()
 		// Re-admit only when no failure refreshed the exclusion while we were
 		// probing; deleting a freshly renewed entry would put a node that just
@@ -341,15 +355,16 @@ type OfficialForwardResult struct {
 // provider route and one resolved directional price. Token is transport-only:
 // callers must never store it in a billing ledger or expose it to users.
 type OfficialPricingQuote struct {
-	Token              string                       `json:"token"`
-	ProviderID         string                       `json:"provider_id"`
-	UpstreamModel      string                       `json:"upstream_model"`
-	ServiceGroupID     string                       `json:"service_group_id,omitempty"`
-	Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
-	PricingSource      string                       `json:"pricing_source,omitempty"`
-	ProviderMultiplier float64                      `json:"provider_multiplier"`
-	ExpiresAt          time.Time                    `json:"expires_at"`
-	targetURL          string
+	Token                string                       `json:"token"`
+	ProviderID           string                       `json:"provider_id"`
+	UpstreamModel        string                       `json:"upstream_model"`
+	ServiceGroupID       string                       `json:"service_group_id,omitempty"`
+	Pricing              llmpool.ResolvedTokenPricing `json:"pricing"`
+	PricingSource        string                       `json:"pricing_source,omitempty"`
+	ProviderMultiplier   float64                      `json:"provider_multiplier"`
+	CapabilityMultiplier float64                      `json:"capability_multiplier,omitempty"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	targetURL            string
 }
 
 // OfficialBillingAttempt is HubCenter's authenticated reconciliation response.
@@ -412,6 +427,9 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 	}
 
 	tried := make(map[string]struct{}, len(targets))
+	gatewayRetried := make(map[string]struct{}, len(targets))
+	var outcome officialGatewayOutcome
+	var lastGateway bool
 	var last OfficialForwardResult
 	var lastErr error
 	var requiredOwner, requiredNodeID string
@@ -432,10 +450,22 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 		if err == nil {
 			if redirect, ok := parseHubCenterBindingRedirect(result.StatusCode, result.Body, result.Header); ok {
 				next, owner, stop := c.applyBindingRedirect(ctx, tenantID, redirect, tried, targets)
+				if errors.Is(stop, errGatewayOwnerHeld) {
+					retry, gerr := c.adoptGatewayRedirect(ctx, redirect, owner, key, gatewayRetried, &outcome)
+					if !retry {
+						return OfficialForwardResult{}, gerr
+					}
+					delete(tried, key)
+					targets = append([]string{target}, next...)
+					requiredOwner, requiredNodeID = "", ""
+					lastGateway = true
+					continue
+				}
 				if stop != nil {
 					ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, redirect.NodeID, owner, stop)
 					if released {
 						targets = next
+						lastGateway = false
 						continue
 					}
 					return OfficialForwardResult{}, ownerErr
@@ -445,6 +475,13 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 					requiredNodeID = firstNonEmptyString(redirect.NodeID, requiredNodeID)
 				}
 				targets = next
+				lastGateway = false
+				continue
+			}
+			if hubCenterGatewayTimeout(result.StatusCode, result.Body) {
+				requiredOwner, requiredNodeID = c.noteRequiredGatewayTimeout(ctx, key, requiredOwner, requiredNodeID, result.StatusCode, &outcome)
+				lastGateway = true
+				log.Printf("[maclaw-provider] LLM upstream gateway timeout hubcenter=%s status=%d; trying next candidate", target, result.StatusCode)
 				continue
 			}
 		}
@@ -455,6 +492,7 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 		if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
 			ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, err)
 			if released {
+				lastGateway = false
 				continue
 			}
 			return OfficialForwardResult{}, ownerErr
@@ -465,7 +503,13 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 			// candidate instead of paying the pool's probe-wait again.
 			c.markOwnerPoolUnhealthy(key)
 		}
+		lastGateway = false
 		log.Printf("[maclaw-provider] LLM upstream failed hubcenter=%s status=%d err=%v; trying next candidate", target, result.StatusCode, err)
+	}
+	if lastGateway {
+		if gerr := outcome.err(); gerr != nil {
+			return OfficialForwardResult{}, gerr
+		}
 	}
 	c.recordFailure()
 	if last.StatusCode == http.StatusConflict {
@@ -622,6 +666,15 @@ func (c *MaClawProviderClient) ForwardDetailedWithQuote(ctx context.Context, quo
 		return OfficialForwardResult{NoUpstreamDispatch: true}, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
 	}
 	result, err := c.forwardToWithQuote(ctx, c.httpClient(), quote.targetURL, body, hubID, token, tenantID, quote.Token, serviceGroupIDs...)
+	if err == nil && hubCenterGatewayTimeout(result.StatusCode, result.Body) {
+		// The quote digest covers the original body, so this path cannot turn
+		// the call into SSE. Drop the quote and let the unquoted forward speak
+		// SSE on a node whose proxy is still answering.
+		c.noteGatewayTimeout(quote.targetURL)
+		c.clearTenantPin(tenantID, quote.targetURL)
+		log.Printf("[maclaw-provider] quoted hubcenter %s gateway status %d; abandoning quote", quote.targetURL, result.StatusCode)
+		return c.ForwardDetailed(ctx, body, tenantID, serviceGroupIDs...)
+	}
 	if err == nil && result.StatusCode == http.StatusServiceUnavailable && hubCenterAllProvidersFailed(result.Body) {
 		// The quoted node's pool is exhausted. The quote path pins to a single
 		// node by design, so without this the same sick node would be quoted
@@ -637,6 +690,124 @@ func (c *MaClawProviderClient) ForwardDetailedWithQuote(ctx context.Context, quo
 		c.clearTenantPin(tenantID, quote.targetURL)
 	}
 	return result, err
+}
+
+// errGatewayOwnerHeld means the binding redirect points at a node whose proxy
+// just cut a chat. The caller releases that lease and retries the node that
+// returned 409 instead of reporting the owner unreachable.
+var errGatewayOwnerHeld = errors.New("official hubcenter gateway timeout holds owner")
+
+func gatewayTimeoutError(nodeID string, status int) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		nodeID = "unknown"
+	}
+	if status == 0 {
+		status = http.StatusGatewayTimeout
+	}
+	return fmt.Errorf("%w: tenant bound to node %s gateway status %d", corellm.ErrOfficialGatewayTimeout, nodeID, status)
+}
+
+// hubCenterGatewayTimeout reports a reverse-proxy cut. HubCenter's own JSON
+// 5xx stays on the normal failover path so an application error is not
+// retried as if the proxy had dropped the headers.
+func hubCenterGatewayTimeout(status int, body []byte) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	default:
+		return false
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return true
+	}
+	return !json.Valid(trimmed)
+}
+
+// officialGatewayOutcome is the gateway failure this request should report
+// when every candidate has been cut by a proxy. It is not an owner death.
+type officialGatewayOutcome struct {
+	saw    bool
+	nodeID string
+	status int
+}
+
+func (o *officialGatewayOutcome) note(nodeID string, status int) {
+	if o == nil {
+		return
+	}
+	o.saw = true
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID != "" && !strings.EqualFold(nodeID, "unknown") && !strings.Contains(nodeID, "://") && !strings.Contains(nodeID, ".") {
+		o.nodeID = nodeID
+	}
+	if status != 0 {
+		o.status = status
+	}
+}
+
+func (o *officialGatewayOutcome) err() error {
+	if o == nil || !o.saw {
+		return nil
+	}
+	return gatewayTimeoutError(o.nodeID, o.status)
+}
+
+// noteRequiredGatewayTimeout records a proxy cut and, when this URL is the
+// bound owner, drops the lease immediately. The owner is not excluded and the
+// release-threshold counter is not incremented.
+func (c *MaClawProviderClient) noteRequiredGatewayTimeout(ctx context.Context, key, requiredOwner, requiredNodeID string, status int, outcome *officialGatewayOutcome) (string, string) {
+	c.noteGatewayTimeout(key)
+	nodeID := strings.TrimSpace(requiredNodeID)
+	if nodeID == "" {
+		nodeID = c.nodeIDForURL(key)
+	}
+	if outcome != nil {
+		outcome.note(nodeID, status)
+	}
+	if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
+		if nodeID != "" {
+			c.releaseGatewayLease(ctx, nodeID, requiredOwner)
+		}
+		return "", ""
+	}
+	return requiredOwner, requiredNodeID
+}
+
+// adoptGatewayRedirect releases a lease the proxy timeout is still holding and
+// retries the node that returned 409 once. A second 409, or a release that
+// does not stick, becomes a gateway timeout instead of an unreachable owner.
+func (c *MaClawProviderClient) adoptGatewayRedirect(ctx context.Context, redirect hubCenterBindingRedirect, owner, heldTarget string, retried map[string]struct{}, outcome *officialGatewayOutcome) (bool, error) {
+	if outcome != nil {
+		outcome.note(redirect.NodeID, http.StatusGatewayTimeout)
+	}
+	key := normalizeHubCenterURLOne(heldTarget)
+	if key == "" {
+		return false, gatewayTimeoutError(redirect.NodeID, http.StatusGatewayTimeout)
+	}
+	if _, done := retried[key]; done {
+		return false, gatewayTimeoutError(redirect.NodeID, http.StatusGatewayTimeout)
+	}
+	if !c.releaseGatewayLease(ctx, redirect.NodeID, owner) {
+		return false, gatewayTimeoutError(redirect.NodeID, http.StatusGatewayTimeout)
+	}
+	retried[key] = struct{}{}
+	return true, nil
+}
+
+func (c *MaClawProviderClient) nodeIDForURL(rawURL string) string {
+	key := normalizeHubCenterURLOne(rawURL)
+	if c == nil || key == "" {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for id, raw := range c.nodeURLs {
+		if sameHubCenterURL(raw, key) {
+			return strings.TrimSpace(id)
+		}
+	}
+	return ""
 }
 
 // shouldFailoverHubCenter only treats failures before a HubCenter application
@@ -670,7 +841,11 @@ func hubCenterAllProvidersFailed(responseBody []byte) bool {
 
 func (c *MaClawProviderClient) forwardTo(ctx context.Context, httpClient *http.Client, targetURL string, body []byte, hubID, token, tenantID string, serviceGroupIDs ...string) (OfficialForwardResult, error) {
 	endpoint := strings.TrimRight(targetURL, "/") + "/api/llm/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	// Unquoted official calls speak SSE so HubCenter can emit headers and
+	// heartbeats before the model finishes. Hub folds the stream back into
+	// the JSON document the desktop already expects. Quoted calls stay on
+	// forwardToWithQuote and must not change the body.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(officialStreamBody(body)))
 	if err != nil {
 		return OfficialForwardResult{}, fmt.Errorf("maclaw official: create request: %w", err)
 	}
@@ -682,20 +857,35 @@ func (c *MaClawProviderClient) forwardTo(ctx context.Context, httpClient *http.C
 		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
 	}
 	applyOfficialForwardMeta(req, ctx)
-	resp, err := httpClient.Do(req)
+	resp, err := streamHTTPClientFrom(httpClient).Do(req)
 	if err != nil {
 		return OfficialForwardResult{}, fmt.Errorf("maclaw official: forward failed: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	multiplier, providerID := officialForwardBilling(resp)
+	header := mergeOfficialBillingTrailers(resp.Header, resp.Trailer)
 	if err != nil {
-		return OfficialForwardResult{Body: respBody, StatusCode: resp.StatusCode, CreditMultiplier: multiplier, ProviderID: providerID}, fmt.Errorf("maclaw official: read response: %w", err)
+		return OfficialForwardResult{Body: respBody, StatusCode: resp.StatusCode, Header: header, CreditMultiplier: multiplier, ProviderID: providerID}, fmt.Errorf("maclaw official: read response: %w", err)
+	}
+	if isOfficialEventStream(resp.Header.Get("Content-Type"), respBody) {
+		aggregated, status, aggErr := aggregateOfficialEventStream(respBody)
+		if aggErr != nil {
+			return OfficialForwardResult{Body: respBody, StatusCode: resp.StatusCode, Header: header, CreditMultiplier: multiplier, ProviderID: providerID}, fmt.Errorf("maclaw official: aggregate stream: %w", aggErr)
+		}
+		header.Set("Content-Type", "application/json")
+		return OfficialForwardResult{
+			Body:             aggregated,
+			StatusCode:       status,
+			Header:           header,
+			CreditMultiplier: multiplier,
+			ProviderID:       providerID,
+		}, nil
 	}
 	return OfficialForwardResult{
 		Body:             respBody,
 		StatusCode:       resp.StatusCode,
-		Header:           resp.Header.Clone(),
+		Header:           header,
 		CreditMultiplier: multiplier,
 		ProviderID:       providerID,
 	}, nil
@@ -751,13 +941,14 @@ func (c *MaClawProviderClient) quoteTo(ctx context.Context, httpClient *http.Cli
 	defer resp.Body.Close()
 	var payload struct {
 		Quote struct {
-			ProviderID         string                       `json:"provider_id"`
-			UpstreamModel      string                       `json:"upstream_model"`
-			ServiceGroupID     string                       `json:"service_group_id,omitempty"`
-			Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
-			PricingSource      string                       `json:"pricing_source,omitempty"`
-			ProviderMultiplier float64                      `json:"provider_multiplier"`
-			ExpiresAt          time.Time                    `json:"expires_at"`
+			ProviderID           string                       `json:"provider_id"`
+			UpstreamModel        string                       `json:"upstream_model"`
+			ServiceGroupID       string                       `json:"service_group_id,omitempty"`
+			Pricing              llmpool.ResolvedTokenPricing `json:"pricing"`
+			PricingSource        string                       `json:"pricing_source,omitempty"`
+			ProviderMultiplier   float64                      `json:"provider_multiplier"`
+			CapabilityMultiplier float64                      `json:"capability_multiplier"`
+			ExpiresAt            time.Time                    `json:"expires_at"`
 		} `json:"quote"`
 		Token string `json:"token"`
 	}
@@ -770,7 +961,23 @@ func (c *MaClawProviderClient) quoteTo(ctx context.Context, httpClient *http.Cli
 	if strings.TrimSpace(payload.Token) == "" || strings.TrimSpace(payload.Quote.ProviderID) == "" || payload.Quote.ExpiresAt.IsZero() {
 		return OfficialPricingQuote{}, resp.StatusCode, fmt.Errorf("maclaw official: malformed quote response")
 	}
-	return OfficialPricingQuote{Token: payload.Token, ProviderID: payload.Quote.ProviderID, UpstreamModel: payload.Quote.UpstreamModel, ServiceGroupID: strings.TrimSpace(payload.Quote.ServiceGroupID), Pricing: payload.Quote.Pricing, PricingSource: payload.Quote.PricingSource, ProviderMultiplier: llmpool.NormalizeCreditMultiplier(payload.Quote.ProviderMultiplier), ExpiresAt: payload.Quote.ExpiresAt}, resp.StatusCode, nil
+	return OfficialPricingQuote{Token: payload.Token, ProviderID: payload.Quote.ProviderID, UpstreamModel: payload.Quote.UpstreamModel, ServiceGroupID: strings.TrimSpace(payload.Quote.ServiceGroupID), Pricing: payload.Quote.Pricing, PricingSource: payload.Quote.PricingSource, ProviderMultiplier: llmpool.NormalizeCreditMultiplier(payload.Quote.ProviderMultiplier), CapabilityMultiplier: payload.Quote.CapabilityMultiplier, ExpiresAt: payload.Quote.ExpiresAt}, resp.StatusCode, nil
+}
+
+func mergeOfficialBillingTrailers(header, trailer http.Header) http.Header {
+	out := http.Header{}
+	if header != nil {
+		out = header.Clone()
+	}
+	if trailer == nil {
+		return out
+	}
+	for _, key := range []string{llmpool.CreditMultiplierHeader, llmpool.ProviderIDHeader, llmpool.TokenPricingSnapshotHeader} {
+		if value := strings.TrimSpace(trailer.Get(key)); value != "" {
+			out.Set(key, value)
+		}
+	}
+	return out
 }
 
 func officialForwardBilling(resp *http.Response) (float64, string) {
@@ -845,13 +1052,13 @@ func (c *MaClawProviderClient) orderedTargets(tenantID string) []string {
 	start := c.boundURL
 	// Exclusion always wins over affinity: a pinned tenant must not be sent to
 	// a node that is out of the pool, even if a pin somehow outlives it.
-	if pinned := c.liveTenantPinLocked(strings.TrimSpace(tenantID), now); pinned != "" && !c.coolingDownLocked(pinned, now) && !c.excludedLocked(pinned, now) {
+	if pinned := c.liveTenantPinLocked(strings.TrimSpace(tenantID), now); pinned != "" && !c.coolingDownLocked(pinned, now) && !c.excludedLocked(pinned, now) && !c.gatewayTimedOutLocked(pinned, now) {
 		start = pinned
 	}
 	ordered := orderedHubCenterURLs(start, append([]string(nil), c.candidateURLs...))
 	filtered := make([]string, 0, len(ordered))
 	for _, raw := range ordered {
-		if !c.coolingDownLocked(raw, now) && !c.excludedLocked(raw, now) {
+		if !c.coolingDownLocked(raw, now) && !c.excludedLocked(raw, now) && !c.gatewayTimedOutLocked(raw, now) {
 			filtered = append(filtered, raw)
 		}
 	}
@@ -881,6 +1088,9 @@ func (c *MaClawProviderClient) rememberSuccessfulTarget(tenantID, rawURL string)
 	}
 	if c.ownerExcluded != nil {
 		delete(c.ownerExcluded, url)
+	}
+	if c.ownerGateway != nil {
+		delete(c.ownerGateway, url)
 	}
 	if !hadPin {
 		c.boundURL = url
@@ -950,6 +1160,63 @@ func (c *MaClawProviderClient) excludedLocked(rawURL string, now time.Time) bool
 		return false
 	}
 	return true
+}
+
+// gatewayTimedOutLocked reports whether rawURL recently returned a reverse-proxy
+// 502/503/504. Expired entries are dropped lazily. Call with c.mu held.
+func (c *MaClawProviderClient) gatewayTimedOutLocked(rawURL string, now time.Time) bool {
+	if c == nil || c.ownerGateway == nil {
+		return false
+	}
+	key := normalizeHubCenterURLOne(rawURL)
+	if key == "" {
+		return false
+	}
+	expiresAt, ok := c.ownerGateway[key]
+	if !ok || expiresAt.IsZero() {
+		return false
+	}
+	if !now.Before(expiresAt) {
+		delete(c.ownerGateway, key)
+		return false
+	}
+	return true
+}
+
+// noteGatewayTimeout skips a node whose proxy cut the chat before HubCenter
+// wrote response headers. Pins move to another candidate. The node is not
+// marked unreachable and its binding-release failure count is left alone.
+func (c *MaClawProviderClient) noteGatewayTimeout(rawURL string) {
+	url := normalizeHubCenterURLOne(rawURL)
+	if c == nil || url == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ownerGateway == nil {
+		c.ownerGateway = map[string]time.Time{}
+	}
+	now := time.Now()
+	if officialGatewayCooldown > 0 {
+		c.ownerGateway[url] = now.Add(officialGatewayCooldown)
+	} else {
+		delete(c.ownerGateway, url)
+	}
+	for id, pin := range c.tenantBound {
+		if sameHubCenterURL(pin.URL, url) {
+			delete(c.tenantBound, id)
+		}
+	}
+	if !sameHubCenterURL(c.boundURL, url) {
+		return
+	}
+	for _, cand := range c.candidateURLs {
+		if cand == "" || sameHubCenterURL(cand, url) || c.coolingDownLocked(cand, now) || c.excludedLocked(cand, now) || c.gatewayTimedOutLocked(cand, now) {
+			continue
+		}
+		c.boundURL = cand
+		return
+	}
 }
 
 // markOwnerPoolUnhealthy temporarily deprioritizes a HubCenter node whose
@@ -1114,6 +1381,17 @@ func (c *MaClawProviderClient) noteOwnerFailure(owner string) bool {
 // discovered the dead owner goes away (callers short-circuit canceled requests
 // before reaching this method).
 func (c *MaClawProviderClient) releaseOwnerBinding(ctx context.Context, ownerNodeID, ownerURL string) bool {
+	return c.releaseOwnerBindingMode(ctx, ownerNodeID, ownerURL, true)
+}
+
+// releaseGatewayLease tombstones the lease so another live node can answer
+// this request. It does not exclude the owner: a proxy timeout is not proof
+// the process is down.
+func (c *MaClawProviderClient) releaseGatewayLease(ctx context.Context, ownerNodeID, ownerURL string) bool {
+	return c.releaseOwnerBindingMode(ctx, ownerNodeID, ownerURL, false)
+}
+
+func (c *MaClawProviderClient) releaseOwnerBindingMode(ctx context.Context, ownerNodeID, ownerURL string, excludeAfter bool) bool {
 	ownerKey := normalizeHubCenterURLOne(ownerURL)
 	if c == nil || ownerKey == "" {
 		return false
@@ -1151,11 +1429,15 @@ func (c *MaClawProviderClient) releaseOwnerBinding(ctx context.Context, ownerNod
 			}
 		}
 		c.mu.Unlock()
-		if released {
+		if released && excludeAfter {
 			c.markOwnerUnreachable(ownerURL)
 			log.Printf("[maclaw-provider] released bindings on dead owner=%s node=%s via hubcenter=%s in %s", ownerKey, ownerNodeID, target, time.Since(started))
-		} else {
+		} else if released {
+			log.Printf("[maclaw-provider] released bindings after gateway timeout owner=%s node=%s via hubcenter=%s in %s", ownerKey, ownerNodeID, target, time.Since(started))
+		} else if excludeAfter {
 			log.Printf("[maclaw-provider] failed to release bindings on dead owner=%s node=%s after %s", ownerKey, ownerNodeID, time.Since(started))
+		} else {
+			log.Printf("[maclaw-provider] failed to release bindings after gateway timeout owner=%s node=%s after %s", ownerKey, ownerNodeID, time.Since(started))
 		}
 	}()
 
@@ -1379,8 +1661,12 @@ func (c *MaClawProviderClient) applyBindingRedirect(ctx context.Context, tenantI
 	ownerKey := normalizeHubCenterURLOne(owner)
 	c.mu.Lock()
 	now := time.Now()
+	gatewayHeld := c.gatewayTimedOutLocked(ownerKey, now)
 	cooling := c.coolingDownLocked(ownerKey, now) || c.excludedLocked(ownerKey, now)
 	c.mu.Unlock()
+	if gatewayHeld {
+		return targets, owner, errGatewayOwnerHeld
+	}
 	if _, seen := tried[ownerKey]; seen || cooling {
 		return targets, owner, ownerUnreachableError(redirect.NodeID, owner, nil)
 	}
@@ -1438,6 +1724,46 @@ func (c *MaClawProviderClient) probeHubCenterReachable(ctx context.Context, base
 	return nil
 }
 
+// probeHubCenterChatHeaders posts an empty chat body and waits only for
+// response headers. Quality staying green is not enough: nginx can still cut
+// the chat route. Any status other than 502/504 means headers arrived. A
+// transport error or those two proxy statuses keeps the node excluded.
+func (c *MaClawProviderClient) probeHubCenterChatHeaders(ctx context.Context, baseURL string) error {
+	baseURL = normalizeHubCenterURLOne(baseURL)
+	if baseURL == "" {
+		return fmt.Errorf("empty hubcenter url")
+	}
+	const timeout = 5 * time.Second
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, baseURL+"/api/llm/v1/chat/completions", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	base := c.httpClient()
+	probeClient := &http.Client{Timeout: timeout}
+	if base != nil {
+		probeClient.Transport = base.Transport
+	}
+	resp, err := probeClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout {
+		return fmt.Errorf("chat headers status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func ownerUnreachableError(nodeID, owner string, err error) error {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
@@ -1471,6 +1797,9 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 
 	httpClient := streamHTTPClientFrom(baseClient)
 	tried := make(map[string]struct{}, len(targets))
+	gatewayRetried := make(map[string]struct{}, len(targets))
+	var outcome officialGatewayOutcome
+	var lastGateway bool
 	var lastErr error
 	var requiredOwner, requiredNodeID string
 	var sawBindingRedirect bool
@@ -1491,11 +1820,13 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 			if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
 				ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, err)
 				if released {
+					lastGateway = false
 					continue
 				}
 				return nil, ownerErr
 			}
 			lastErr = err
+			lastGateway = false
 			log.Printf("[maclaw-provider] streaming LLM upstream failed hubcenter=%s err=%v; trying next candidate", target, err)
 			continue
 		}
@@ -1511,10 +1842,22 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 			_ = resp.Body.Close()
 			sawBindingRedirect = true
 			next, owner, stop := c.applyBindingRedirect(ctx, tenantID, redirect, tried, targets)
+			if errors.Is(stop, errGatewayOwnerHeld) {
+				retry, gerr := c.adoptGatewayRedirect(ctx, redirect, owner, key, gatewayRetried, &outcome)
+				if !retry {
+					return nil, gerr
+				}
+				delete(tried, key)
+				targets = append([]string{target}, next...)
+				requiredOwner, requiredNodeID = "", ""
+				lastGateway = true
+				continue
+			}
 			if stop != nil {
 				ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, redirect.NodeID, owner, stop)
 				if released {
 					targets = next
+					lastGateway = false
 					continue
 				}
 				return nil, ownerErr
@@ -1525,6 +1868,15 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 			}
 			targets = next
 			lastErr = fmt.Errorf("maclaw official: stream upstream HTTP %d", resp.StatusCode)
+			lastGateway = false
+			continue
+		}
+		if hubCenterGatewayTimeout(resp.StatusCode, failureBody) {
+			_ = resp.Body.Close()
+			requiredOwner, requiredNodeID = c.noteRequiredGatewayTimeout(ctx, key, requiredOwner, requiredNodeID, resp.StatusCode, &outcome)
+			lastGateway = true
+			lastErr = fmt.Errorf("maclaw official: stream upstream HTTP %d", resp.StatusCode)
+			log.Printf("[maclaw-provider] streaming LLM upstream gateway timeout hubcenter=%s status=%d; trying next candidate", target, resp.StatusCode)
 			continue
 		}
 		if shouldFailoverHubCenter(resp.StatusCode, failureBody, nil) {
@@ -1532,6 +1884,7 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 			if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
 				ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, fmt.Errorf("HTTP %d", resp.StatusCode))
 				if released {
+					lastGateway = false
 					continue
 				}
 				return nil, ownerErr
@@ -1542,11 +1895,17 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 				c.markOwnerPoolUnhealthy(key)
 			}
 			lastErr = fmt.Errorf("maclaw official: stream upstream HTTP %d", resp.StatusCode)
+			lastGateway = false
 			log.Printf("[maclaw-provider] streaming LLM upstream failed hubcenter=%s status=%d; trying next candidate", target, resp.StatusCode)
 			continue
 		}
 		c.rememberSuccessfulTarget(tenantID, target)
 		return resp, nil
+	}
+	if lastGateway {
+		if gerr := outcome.err(); gerr != nil {
+			return nil, gerr
+		}
 	}
 	c.recordFailure()
 	if lastErr == nil {
@@ -1581,12 +1940,20 @@ func (c *MaClawProviderClient) ForwardStreamWithQuote(ctx context.Context, quote
 	if resp == nil {
 		return nil, nil
 	}
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		// A 503 arrives before any stream bytes; read it to decide whether the
-		// quoted node's pool is exhausted, then restore the body for the caller.
-		failureBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body = io.NopCloser(bytes.NewReader(failureBody))
-		if hubCenterAllProvidersFailed(failureBody) {
+	if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+		// A proxy page arrives before any stream bytes. Read enough to tell a
+		// gateway cut from a JSON pool error, then either abandon the quote or
+		// hand the original body back to the caller.
+		failureBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		if hubCenterGatewayTimeout(resp.StatusCode, failureBody) {
+			_ = resp.Body.Close()
+			c.noteGatewayTimeout(quote.targetURL)
+			c.clearTenantPin(tenantID, quote.targetURL)
+			log.Printf("[maclaw-provider] quoted stream hubcenter %s gateway status %d; abandoning quote", quote.targetURL, resp.StatusCode)
+			return c.ForwardStream(ctx, body, tenantID, serviceGroupIDs...)
+		}
+		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(failureBody), resp.Body))
+		if resp.StatusCode == http.StatusServiceUnavailable && hubCenterAllProvidersFailed(failureBody) {
 			c.markOwnerPoolUnhealthy(quote.targetURL)
 			c.clearTenantPin(tenantID, quote.targetURL)
 		}
@@ -1650,6 +2017,9 @@ func applyOfficialForwardMeta(req *http.Request, ctx context.Context) {
 	}
 	if resolved := strings.TrimSpace(meta.ResolvedModel); resolved != "" {
 		req.Header.Set(llmpool.ResolvedModelHeader, resolved)
+	}
+	if clientModel := strings.TrimSpace(meta.ClientModel); clientModel != "" {
+		req.Header.Set(llmpool.ClientModelHeader, clientModel)
 	}
 	if workflow := strings.TrimSpace(meta.WorkflowType); workflow != "" {
 		req.Header.Set(llmpool.WorkflowTypeHeader, workflow)

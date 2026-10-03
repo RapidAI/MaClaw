@@ -179,7 +179,8 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		if light {
 			limit = 200
 		}
-		if selfIdentityOverride := deps.MemoryStore.SelfIdentitySummary(limit); selfIdentityOverride != "" {
+		selfIdentityOverride := selfIdentitySummaryForPrompt(deps, limit)
+		if selfIdentityOverride != "" {
 			fmt.Fprintf(&retrieved, "\nSelf identity memory for %s:\n%s\nUse this only to guide behavior; do not recite it to the user unless asked.\n", roleName, selfIdentityOverride)
 		}
 	}
@@ -242,6 +243,16 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		SessionContext:     session.String(),
 		RetrievedContext:   retrieved.String(),
 	}
+}
+
+func selfIdentitySummaryForPrompt(deps SystemPromptDeps, limit int) string {
+	if deps.MemoryStore == nil {
+		return ""
+	}
+	if ownerID := strings.TrimSpace(deps.MemoryOwnerID); ownerID != "" {
+		return deps.MemoryStore.SelfIdentitySummaryForOwner(limit, ownerID, deps.MemoryStrictOwner)
+	}
+	return deps.MemoryStore.SelfIdentitySummary(limit)
 }
 
 func appendInternalCodingWorkflowRules(b *strings.Builder) {

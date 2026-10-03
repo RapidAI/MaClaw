@@ -33,6 +33,7 @@ import {
     UISettingsPanel,
     VirtualEmployeeSettingsPanel,
     WebSearchConfigPanel,
+    TokenBankPanel,
 } from '../../appLazyComponents';
 import { PetSettingsPanel } from '../PetSettingsPanel';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
@@ -75,7 +76,12 @@ export type SettingsActiveContentProps = {
     patchConfigFields: (patch: Record<string, any>) => Promise<any>;
     onLLMStatusChange: (online: boolean, configured: boolean) => void;
     onProviderChanged?: () => void;
+    onRequestIdentityVerification?: () => void;
     showToastMessage: (message: string, duration?: number) => void;
+    /** Gift-claim code from a maclaw://credit/ link. Token Bank reads it when that tab opens. */
+    tokenBankClaimCode?: string;
+    /** Increments on every open so the same code is delivered again. */
+    tokenBankClaimSeq?: number;
     memoryTraceFocus: { value: string; seq: number };
     imSubTab: IMSubTab;
     setImSubTab: Dispatch<SetStateAction<IMSubTab>>;
@@ -174,7 +180,10 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         patchConfigFields,
         onLLMStatusChange,
         onProviderChanged,
+        onRequestIdentityVerification,
         showToastMessage,
+        tokenBankClaimCode,
+        tokenBankClaimSeq,
         memoryTraceFocus,
         imSubTab,
         setImSubTab,
@@ -406,6 +415,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     codexModels={config?.codex?.models}
                     onStatusChange={onLLMStatusChange}
                     onProviderChanged={onProviderChanged}
+                    onRequestIdentityVerification={onRequestIdentityVerification}
                 />
             ));
             break;
@@ -493,6 +503,17 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setQQBotQRWaiting={setQQBotQRWaiting}
                     qqBotQRError={qqBotQRError}
                     setQQBotQRError={setQQBotQRError}
+                />
+            );
+            break;
+        case 'tokenBank':
+            body = (
+                <TokenBankPanel
+                    lang={lang}
+                    showToastMessage={showToastMessage}
+                    initialClaimCode={tokenBankClaimCode}
+                    initialClaimSeq={tokenBankClaimSeq}
+                    onRequestVerification={onRequestIdentityVerification}
                 />
             );
             break;

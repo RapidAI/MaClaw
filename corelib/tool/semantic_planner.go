@@ -33,11 +33,15 @@ type CapabilityNeed struct {
 // back to the selection identity so a host cannot invent a later replay key.
 func GrantedNeedFromSelection(selection PlannedSelection) CapabilityNeed {
 	need := CapabilityNeed{
-		ID:         strings.TrimSpace(selection.NeedID),
-		Capability: selection.FitProof.MatchedCapability,
-		Qualifiers: map[string]string{},
-		Polarity:   NeedRequire,
-		Required:   true,
+		ID:          strings.TrimSpace(selection.NeedID),
+		Capability:  selection.FitProof.MatchedCapability,
+		Qualifiers:  map[string]string{},
+		Polarity:    NeedRequire,
+		Required:    true,
+		EvidenceIDs: append([]string(nil), selection.EvidenceIDs...),
+	}
+	if len(need.EvidenceIDs) == 0 {
+		need.EvidenceIDs = nil
 	}
 	for key, value := range selection.FitProof.QualifierBindings {
 		need.Qualifiers[key] = value
@@ -297,6 +301,10 @@ type PlannedSelection struct {
 	// readiness; this separate edge prevents an executor from treating "any
 	// newest matching artifact" in the invocation scope as the dependency.
 	ArtifactDependencies []ArtifactDependency
+	// EvidenceIDs is why this need was granted. The session residue is rebuilt
+	// from selections, and an archetype companion has no id prefix of its own.
+	// Dropping the evidence made that download or search the task.
+	EvidenceIDs []string
 }
 
 // IsLightPromptSafeSelection reports whether an already-planned selection may
@@ -632,6 +640,7 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 			Phase:                  planPhaseForCapability(need.Capability),
 			Consumes:               append([]ArtifactContract(nil), candidate.Consumes...),
 			Produces:               append([]ArtifactContract(nil), candidate.Produces...),
+			EvidenceIDs:            append([]string(nil), need.EvidenceIDs...),
 		}
 		if requiresConfirm {
 			selection.ConfirmationID = ConfirmationRequirementID(need.ID)
@@ -1461,6 +1470,7 @@ func clonePlannedSelection(in PlannedSelection) PlannedSelection {
 	out.Consumes = append([]ArtifactContract(nil), in.Consumes...)
 	out.Produces = append([]ArtifactContract(nil), in.Produces...)
 	out.ArtifactDependencies = append([]ArtifactDependency(nil), in.ArtifactDependencies...)
+	out.EvidenceIDs = append([]string(nil), in.EvidenceIDs...)
 	for i := range out.ArtifactDependencies {
 		out.ArtifactDependencies[i].Artifact = in.ArtifactDependencies[i].Artifact
 	}

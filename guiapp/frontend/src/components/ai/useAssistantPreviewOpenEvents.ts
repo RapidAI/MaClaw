@@ -32,6 +32,10 @@ import type { CodeFile } from './useCodePreviewState';
  * expert tab can host a LaTeX editor: `allowed` admits expert tabs, and the pane
  * is opened in the same commit as the file because the panel clears preview state
  * whenever the "open" flag is false on such a tab.
+ *
+ * The document stays with the session that opened it. Switching to another task
+ * must not paint that file into the new preview, and a read still in flight is
+ * dropped so it cannot land late. Coming back to the owning session restores it.
  */
 export type AssistantPreviewOpenEventsOptions = {
     /** False for tab types that must never show the preview pane. */
@@ -39,11 +43,12 @@ export type AssistantPreviewOpenEventsOptions = {
     /**
      * Identity of the session that owns the pane. The effect re-runs when it
      * changes, so a LaTeX request parked before the target tab was mounted is
-     * picked up and a read started for a previous tab cannot land on this one.
+     * picked up. A document opened for one session is restored only when that
+     * same session is active again.
      */
     sessionKey?: string;
     lang: string;
-    openWorkspaceFile: (file: CodeFile) => void;
+    openWorkspaceFile: (file: CodeFile) => boolean | void;
     /** Bumped by the panel when the pane opens so the tree/file focus follows. */
     focusOpenedFile: () => void;
     /**
@@ -62,6 +67,38 @@ export type AssistantPreviewOpenEventsOptions = {
  */
 const LATEX_SOURCE_READ_ERROR = '无法读取论文源文件';
 
+/** What happens to the open LaTeX paper when the assistant session changes. */
+export type LatexPreviewSessionAction = 'open-parked' | 'restore' | 'cancel-read' | 'keep';
+
+/**
+ * A paper belongs to the session that opened it.
+ * Switching away cancels a read still in flight. Switching back restores the
+ * editor. Any other session keeps its own preview.
+ */
+export function latexPreviewSessionAction(input: {
+    parked: boolean;
+    hasDocument: boolean;
+    previousSession?: string;
+    sessionKey?: string;
+    ownerSession?: string;
+    openedForSession?: string;
+}): LatexPreviewSessionAction {
+    if (input.parked) return 'open-parked';
+    const switched = input.previousSession !== undefined && input.previousSession !== input.sessionKey;
+    if (!switched) return 'keep';
+    if (
+        input.hasDocument
+        && input.sessionKey
+        && input.ownerSession === input.sessionKey
+        && input.openedForSession !== input.sessionKey
+    ) {
+        return 'restore';
+    }
+    // Only the owning session has a read that must not land on the next task.
+    if (input.ownerSession && input.ownerSession === input.previousSession) return 'cancel-read';
+    return 'keep';
+}
+
 export function useAssistantPreviewOpenEvents({
     allowed,
     sessionKey,
@@ -75,16 +112,45 @@ export function useAssistantPreviewOpenEvents({
     // re-subscribe both window listeners on every render.
     const focusRef = useRef(focusOpenedFile);
     focusRef.current = focusOpenedFile;
-    // The LaTeX document currently owned by the pane, plus the session it was
-    // opened for. A LaTeX expert tab is a chat with an editor attached, so
-    // returning to the tab has to put the editor back.
+    // Updated during render so a listener installed for the previous session
+    // still attributes an open to the tab that is current when the event fires.
+    const sessionKeyRef = useRef(sessionKey);
+    sessionKeyRef.current = sessionKey;
+    // The LaTeX document and the session it belongs to. Returning to that
+    // session puts the editor back; any other session must not inherit it.
     const lastLatexRef = useRef<OpenLatexDocumentDetail | null>(null);
+    const latexOwnerSessionRef = useRef<string | undefined>(undefined);
+    const openedForSessionRef = useRef<string | undefined>(undefined);
     const lastSessionRef = useRef<string | undefined>(undefined);
     useEffect(() => {
-        if (!allowed) return;
-        const openFile = (file: CodeFile) => {
-            openWorkspaceFile(file);
+        const previousSession = lastSessionRef.current;
+        // A disallowed tab must leave a parked paper for the task that can show it.
+        const parkedDetail = allowed ? takePendingLatexDocument() : null;
+        const action = latexPreviewSessionAction({
+            parked: parkedDetail != null,
+            hasDocument: lastLatexRef.current != null,
+            previousSession,
+            sessionKey,
+            ownerSession: latexOwnerSessionRef.current,
+            openedForSession: openedForSessionRef.current,
+        });
+        // A tab that cannot show the pane must not consume a parked open, but it
+        // still has to drop a read started on the task we just left. Otherwise
+        // coming back never looks like a return and the editor stays closed.
+        const dropInflightRead = () => {
+            generationRef.current += 1;
+            openedForSessionRef.current = undefined;
+        };
+        if (!allowed) {
+            if (action === 'cancel-read') dropInflightRead();
+            lastSessionRef.current = sessionKey;
+            return;
+        }
+        const openFile = (file: CodeFile): boolean => {
+            // A mock returns undefined. Only an explicit refusal drops the file.
+            if (openWorkspaceFile(file) === false) return false;
             focusRef.current();
+            return true;
         };
         /**
          * Open a LaTeX source. Preloaded content is trusted. Otherwise the file
@@ -92,8 +158,23 @@ export function useAssistantPreviewOpenEvents({
          * never briefly holding an empty buffer it could autosave over the paper.
          */
         const openLatexDocument = (detail: OpenLatexDocumentDetail) => {
+            const owner = sessionKeyRef.current;
+            const previousDoc = lastLatexRef.current;
+            const previousOwner = latexOwnerSessionRef.current;
+            const previousOpened = openedForSessionRef.current;
             lastLatexRef.current = detail;
+            latexOwnerSessionRef.current = owner;
+            openedForSessionRef.current = owner;
             const generation = ++generationRef.current;
+            const rollback = () => {
+                if (latexOwnerSessionRef.current !== owner) return;
+                lastLatexRef.current = previousDoc;
+                latexOwnerSessionRef.current = previousOwner;
+                openedForSessionRef.current = previousOpened;
+            };
+            // The pane flag has to be set before the read returns. The panel
+            // drops preview state whenever the flag is still false, which would
+            // throw away a snapshot just restored for this task.
             openPreviewPane(true);
             const base: CodeFile = {
                 filePath: detail.relativePath,
@@ -105,8 +186,19 @@ export function useAssistantPreviewOpenEvents({
                 updatedAt: Date.now(),
                 latexWorkbench: true,
             };
+            const publish = (file: CodeFile) => {
+                if (generation !== generationRef.current) return;
+                if (sessionKeyRef.current !== owner) return;
+                if (!openFile(file)) {
+                    // Refusal must not replace the paper already owned by
+                    // another task, and must not leave the pane open here.
+                    rollback();
+                    openPreviewPane(false);
+                    return;
+                }
+            };
             if (detail.content) {
-                openFile(base);
+                publish(base);
                 return;
             }
             void (async () => {
@@ -121,13 +213,13 @@ export function useAssistantPreviewOpenEvents({
                     // A truncated or empty read is not a usable buffer either, so
                     // it locks the editor for the same reason a failed read does.
                     if (!next || data?.truncated) {
-                        openFile({ ...base, content: "", latexReadError: LATEX_SOURCE_READ_ERROR });
+                        publish({ ...base, content: "", latexReadError: LATEX_SOURCE_READ_ERROR });
                         return;
                     }
-                    openFile({ ...base, content: next });
+                    publish({ ...base, content: next });
                 } catch {
                     if (generation !== generationRef.current) return;
-                    openFile({ ...base, content: "", latexReadError: LATEX_SOURCE_READ_ERROR });
+                    publish({ ...base, content: "", latexReadError: LATEX_SOURCE_READ_ERROR });
                 }
             })();
         };
@@ -135,10 +227,17 @@ export function useAssistantPreviewOpenEvents({
             const path = previewTaskResultPathFromEvent(event);
             if (!path) return;
             const generation = ++generationRef.current;
-            openPreviewPane(true);
+            const show = (file: CodeFile) => {
+                if (generation !== generationRef.current) return;
+                if (!openFile(file)) {
+                    openPreviewPane(false);
+                    return;
+                }
+                openPreviewPane(true);
+            };
             const immediateKind = taskResultPreviewKindFromPath(path);
             if (immediateKind) {
-                openFile(codeFileForImmediateTaskResultPreview(path, immediateKind));
+                show(codeFileForImmediateTaskResultPreview(path, immediateKind));
                 return;
             }
             void (async () => {
@@ -148,12 +247,10 @@ export function useAssistantPreviewOpenEvents({
                         throw new Error("PreviewTaskResultFile unavailable");
                     }
                     const preview = await PreviewTaskResultFile(path) as TaskResultPreviewPayload;
-                    if (generation !== generationRef.current) return;
-                    openFile(codeFileFromTaskResultPreview(preview || { path }, path));
+                    show(codeFileFromTaskResultPreview(preview || { path }, path));
                 } catch (err) {
-                    if (generation !== generationRef.current) return;
                     const message = err instanceof Error ? err.message : String(err || "");
-                    openFile({
+                    show({
                         filePath: path,
                         fileName: path.split(/[/\\]/).pop() || path,
                         absPath: path,
@@ -174,15 +271,12 @@ export function useAssistantPreviewOpenEvents({
             takePendingLatexDocument();
             if (detail) openLatexDocument(detail);
         };
-        // Drain a request parked before this tab existed: the event above only
-        // reaches a listener that was already attached, so a request fired while
-        // the expert tab was still mounting would otherwise be dropped.
-        const parked = takePendingLatexDocument();
-        if (parked) {
-            openLatexDocument(parked);
-        } else if (lastSessionRef.current !== sessionKey && lastLatexRef.current) {
-            // Returning to a tab that owned a LaTeX document restores its editor.
+        if (action === 'open-parked' && parkedDetail) {
+            openLatexDocument(parkedDetail);
+        } else if (action === 'restore' && lastLatexRef.current) {
             openLatexDocument(lastLatexRef.current);
+        } else if (action === 'cancel-read') {
+            dropInflightRead();
         }
         lastSessionRef.current = sessionKey;
         window.addEventListener(PREVIEW_TASK_RESULT_EVENT, onPreview);

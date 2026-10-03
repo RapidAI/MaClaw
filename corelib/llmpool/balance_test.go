@@ -99,7 +99,33 @@ func TestAnnotateProviderLBGroups(t *testing.T) {
 	}
 }
 
-func TestBalanceProviderRoutesGroupsByMultiplierThenScore(t *testing.T) {
+func TestBalanceProviderRoutesSharesProvidersRegardlessOfMultiplier(t *testing.T) {
+	sched := NewWRRScheduler()
+	candidates := []BalanceCandidate{
+		{Route: DispatchProviderRoute{ProviderID: "expensive"}, Score: 0, ResolutionTier: 1, EffectiveMultiplier: 2.1, Sequence: 1, MaxConcurrency: 10},
+		{Route: DispatchProviderRoute{ProviderID: "cheap"}, Score: 0, ResolutionTier: 1, EffectiveMultiplier: 2, Sequence: 2, MaxConcurrency: 10},
+		{Route: DispatchProviderRoute{ProviderID: "lower-tier"}, Score: 0, ResolutionTier: 2, EffectiveMultiplier: 1, Sequence: 3, MaxConcurrency: 10},
+	}
+	first := BalanceProviderRoutes(sched, "official-high", candidates)
+	second := BalanceProviderRoutes(sched, "official-high", candidates)
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("len = %d/%d", len(first), len(second))
+	}
+	if first[0].Route.ProviderID != "expensive" || first[1].Route.ProviderID != "cheap" {
+		t.Fatalf("first = %s,%s want expensive then cheap in one pool", first[0].Route.ProviderID, first[1].Route.ProviderID)
+	}
+	if first[0].BandKey != first[1].BandKey {
+		t.Fatalf("band keys = %s,%s want one pool across multipliers", first[0].BandKey, first[1].BandKey)
+	}
+	if first[2].Route.ProviderID != "lower-tier" || first[2].BandKey == first[0].BandKey {
+		t.Fatalf("lower tier = %#v, want its own later pool", first[2])
+	}
+	if second[0].Route.ProviderID != "cheap" {
+		t.Fatalf("second pick = %s, want the other provider", second[0].Route.ProviderID)
+	}
+}
+
+func TestBalanceProviderRoutesKeepsHigherCapabilityAheadOfCheaperScore(t *testing.T) {
 	sched := NewWRRScheduler()
 	got := BalanceProviderRoutes(sched, "test", []BalanceCandidate{
 		{Route: DispatchProviderRoute{ProviderID: "tools-x2"}, Score: 800, ResolutionTier: 1, EffectiveMultiplier: 2, Sequence: 1, MaxConcurrency: 10},
@@ -109,14 +135,14 @@ func TestBalanceProviderRoutesGroupsByMultiplierThenScore(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("len = %d", len(got))
 	}
-	if got[0].Route.ProviderID != "tools-x1" {
-		t.Fatalf("first = %s, want cheap tools band", got[0].Route.ProviderID)
+	if got[0].Route.ProviderID != "tools-x2" || got[1].Route.ProviderID != "tools-x1" {
+		t.Fatalf("tools order = %s,%s", got[0].Route.ProviderID, got[1].Route.ProviderID)
 	}
-	if got[1].Route.ProviderID != "basic-x1" {
-		t.Fatalf("second = %s, want cheap basic failover", got[1].Route.ProviderID)
+	if got[0].BandKey != got[1].BandKey {
+		t.Fatalf("tools band keys = %s,%s want one pool", got[0].BandKey, got[1].BandKey)
 	}
-	if got[2].Route.ProviderID != "tools-x2" {
-		t.Fatalf("third = %s, want expensive tools", got[2].Route.ProviderID)
+	if got[2].Route.ProviderID != "basic-x1" || got[2].BandKey == got[0].BandKey {
+		t.Fatalf("basic = %#v, want a later capability pool", got[2])
 	}
 }
 

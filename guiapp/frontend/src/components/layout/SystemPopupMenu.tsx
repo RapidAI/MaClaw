@@ -21,9 +21,11 @@ interface SystemPopupMenuProps {
     excludeTriggerSelector?: string;
     menuId?: string;
     testIdPrefix?: string;
+    /** Menu item that matches the page already open. */
+    activeId?: string;
 }
 
-export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLabel = 'System menu', anchorTop, excludeTriggerSelector, menuId = 'system-popup-menu', testIdPrefix = 'system-menu' }: SystemPopupMenuProps) {
+export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLabel = 'System menu', anchorTop, excludeTriggerSelector, menuId = 'system-popup-menu', testIdPrefix = 'system-menu', activeId }: SystemPopupMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -66,6 +68,7 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
     }, [onClose, excludeTriggerSelector]);
 
     const visibleItems = items.filter(item => item.visible);
+    const initialFocusIndex = Math.max(0, visibleItems.findIndex(item => item.id === activeId));
 
     return (
         <div
@@ -93,25 +96,28 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                 overflowX: 'auto',
             }}
         >
-            {visibleItems.map((item, index) => (
+            {visibleItems.map((item, index) => {
+                const current = activeId === item.id;
+                return (
                 <button
                     key={item.id}
                     ref={node => { itemRefs.current[index] = node; }}
-                    autoFocus={index === 0}
+                    autoFocus={index === initialFocusIndex}
                     data-testid={`${testIdPrefix}-${item.id}`}
                     role="menuitem"
                     type="button"
+                    aria-current={current ? 'page' : undefined}
                     onClick={() => { onSelect(item.id); onClose(); }}
                     onKeyDown={event => {
                         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
                             event.preventDefault();
-                            const current = itemRefs.current.indexOf(event.currentTarget);
-                            if (current < 0 || itemRefs.current.length < 2) return;
+                            const currentIndex = itemRefs.current.indexOf(event.currentTarget);
+                            if (currentIndex < 0 || itemRefs.current.length < 2) return;
                             const next = event.key === 'Home'
                                 ? 0
                                 : event.key === 'End'
                                     ? itemRefs.current.length - 1
-                                    : (current + (event.key === 'ArrowRight' ? 1 : -1) + itemRefs.current.length) % itemRefs.current.length;
+                                    : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + itemRefs.current.length) % itemRefs.current.length;
                             itemRefs.current[next]?.focus();
                             return;
                         }
@@ -131,12 +137,12 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                         position: 'relative',
                         transition: 'background 0.15s',
                         border: 'none',
-                        background: 'transparent',
-                        color: 'inherit',
+                        background: current ? 'var(--theme-primary-soft)' : 'transparent',
+                        color: current ? 'var(--theme-primary-strong, var(--theme-primary))' : 'inherit',
                         font: 'inherit',
                     }}
                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover)'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = current ? 'var(--theme-primary-soft)' : ''; }}
                 >
                     <span className="spm-icon-wrap">
                         <span className="spm-icon">
@@ -152,7 +158,8 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                         {item.label}
                     </span>
                 </button>
-            ))}
+                );
+            })}
         </div>
     );
 }

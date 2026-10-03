@@ -410,7 +410,8 @@ export function cloudWorkspaceNameFromEntitlement(ent: unknown, workspaceId: str
     const id = String(workspaceId || "").trim();
     if (!id || !ent || typeof ent !== "object") return "";
     const rec = ent as Record<string, unknown>;
-    const lists = [rec.workspaces, rec.Workspaces, rec.deleted, rec.Deleted];
+    // Owned rows win over a share of the same id, and both win over a deleted alias.
+    const lists = [rec.workspaces, rec.Workspaces, rec.shared, rec.Shared, rec.deleted, rec.Deleted];
     for (const list of lists) {
         if (!Array.isArray(list)) continue;
         for (const row of list) {
@@ -424,24 +425,51 @@ export function cloudWorkspaceNameFromEntitlement(ent: unknown, workspaceId: str
 }
 
 const cloudWorkspaceDisplayNames = new Map<string, string>();
+const cloudWorkspaceNameListeners = new Set<() => void>();
+let cloudWorkspaceNameBatch = 0;
+let cloudWorkspaceNamePending = false;
+
+function emitCloudWorkspaceDisplayNames(): void {
+    if (cloudWorkspaceNameBatch > 0) {
+        cloudWorkspaceNamePending = true;
+        return;
+    }
+    cloudWorkspaceNamePending = false;
+    for (const listener of [...cloudWorkspaceNameListeners]) listener();
+}
+
+/** Header and preview re-render when a workspace is renamed or entitlement arrives. */
+export function subscribeCloudWorkspaceDisplayNames(listener: () => void): () => void {
+    cloudWorkspaceNameListeners.add(listener);
+    return () => { cloudWorkspaceNameListeners.delete(listener); };
+}
 
 export function rememberCloudWorkspaceDisplayName(id: string, name: string): void {
     const key = String(id || "").trim();
     const value = String(name || "").trim();
     if (!key || !value) return;
+    if (cloudWorkspaceDisplayNames.get(key) === value) return;
     cloudWorkspaceDisplayNames.set(key, value);
+    emitCloudWorkspaceDisplayNames();
 }
 
 export function rememberCloudWorkspaceDisplayNames(ent: unknown): void {
     if (!ent || typeof ent !== "object") return;
     const rec = ent as Record<string, unknown>;
-    for (const list of [rec.workspaces, rec.Workspaces, rec.deleted, rec.Deleted]) {
-        if (!Array.isArray(list)) continue;
-        for (const row of list) {
-            if (!row || typeof row !== "object") continue;
-            const r = row as Record<string, unknown>;
-            rememberCloudWorkspaceDisplayName(String(r.id || r.ID || ""), String(r.name || r.Name || ""));
+    cloudWorkspaceNameBatch += 1;
+    try {
+        // Last write wins, so live owned rows are applied after shares and deleted aliases.
+        for (const list of [rec.deleted, rec.Deleted, rec.shared, rec.Shared, rec.workspaces, rec.Workspaces]) {
+            if (!Array.isArray(list)) continue;
+            for (const row of list) {
+                if (!row || typeof row !== "object") continue;
+                const r = row as Record<string, unknown>;
+                rememberCloudWorkspaceDisplayName(String(r.id || r.ID || ""), String(r.name || r.Name || ""));
+            }
         }
+    } finally {
+        cloudWorkspaceNameBatch -= 1;
+        if (cloudWorkspaceNameBatch === 0 && cloudWorkspaceNamePending) emitCloudWorkspaceDisplayNames();
     }
 }
 
@@ -455,7 +483,11 @@ export function lookupCloudWorkspaceDisplayName(workspaceId: string, fallback = 
 }
 
 export function __resetCloudWorkspaceDisplayNamesForTests(): void {
+    if (cloudWorkspaceDisplayNames.size === 0) return;
     cloudWorkspaceDisplayNames.clear();
+    cloudWorkspaceNameBatch = 0;
+    cloudWorkspaceNamePending = false;
+    emitCloudWorkspaceDisplayNames();
 }
 
 /** Cache-root path (…/cloud-workspaces/{tenant}/{id}) for reveal/resume. */

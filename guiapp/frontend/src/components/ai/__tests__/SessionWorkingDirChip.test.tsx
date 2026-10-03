@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
+import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from '../codingTaskMode';
+import { composerWorkspaceKindLabel, SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
 
 const getTabWorkingDir = vi.fn();
 const setTabWorkingDir = vi.fn();
@@ -25,6 +29,7 @@ const theme = {
 
 afterEach(() => {
     cleanup();
+    __resetCloudWorkspaceDisplayNamesForTests();
 });
 
 describe('SessionWorkingDirChip', () => {
@@ -43,7 +48,7 @@ describe('SessionWorkingDirChip', () => {
         });
         render(<SessionWorkingDirChip tabId="proj-1" theme={theme} lang="zh" />);
         expect(await screen.findByText('云端工作区')).toBeTruthy();
-        expect(screen.getByText('云端')).toBeTruthy();
+        expect(screen.queryByText('云端')).toBeNull();
         expect(screen.queryByText(/cloud-workspaces/i)).toBeNull();
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         expect(await screen.findByLabelText('打开云端工作区文件')).toBeTruthy();
@@ -64,9 +69,11 @@ describe('SessionWorkingDirChip', () => {
             remoteHost="www.driverdevelopment.com"
             remoteWorkDir="/home/ubuntu/app"
         />);
-        expect(await screen.findByText('www.driverdevelopment.com:/home/ubuntu/app')).toBeTruthy();
+        expect(await screen.findByText('远程')).toBeTruthy();
         expect(screen.queryByText(/你好呀/)).toBeNull();
+        expect(screen.queryByText(/driverdevelopment/)).toBeNull();
         expect(screen.queryByText('默认')).toBeNull();
+        expect(screen.getByTestId('working-dir-chip').getAttribute('title')).toBe('www.driverdevelopment.com:/home/ubuntu/app');
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         expect(screen.queryByLabelText('选择其他工作目录')).toBeNull();
         fireEvent.click(await screen.findByLabelText('复制工作目录路径'));
@@ -81,7 +88,12 @@ describe('SessionWorkingDirChip', () => {
         const onWorkingDirChange = vi.fn();
         const onWorkingDirResolved = vi.fn();
         render(<SessionWorkingDirChip tabId="proj-2" theme={theme} lang="zh" onWorkingDirChange={onWorkingDirChange} onWorkingDirResolved={onWorkingDirResolved} />);
-        await waitFor(() => expect(screen.getByText('D:/work/app')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('本地')).toBeTruthy());
+        // The whole chip opens the menu. A trailing caret would only repeat that.
+        expect((screen.getByTestId('working-dir-chip').textContent || '').replace(/\s+/g, '')).toBe('本地');
+        expect(screen.getByTestId('working-dir-chip').querySelector('.swdc-chip-caret')).toBeNull();
+        expect(screen.getByTestId('working-dir-chip').getAttribute('title')).toBe('D:/work/app');
+        expect(screen.queryByText('默认')).toBeNull();
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         fireEvent.click(await screen.findByLabelText('选择其他工作目录'));
         await waitFor(() => expect(setTabWorkingDir).toHaveBeenCalledWith('proj-2', 'D:/work/other'));
@@ -121,10 +133,25 @@ describe('SessionWorkingDirChip', () => {
     it('opens the containing folder for a local directory', async () => {
         getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: false });
         render(<SessionWorkingDirChip tabId="proj-3" theme={theme} lang="zh" />);
-        await waitFor(() => expect(screen.getByText('D:/work/app')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('本地')).toBeTruthy());
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         fireEvent.click(await screen.findByLabelText('打开所在目录'));
         expect(openProjectDirectory).toHaveBeenCalledWith('D:/work/app');
+    });
+
+    it('copies the cloud workspace name from the menu', async () => {
+        const cache = 'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc';
+        rememberCloudWorkspaceDisplayName('cws_abc', '标书项目');
+        getTabWorkingDir.mockResolvedValue({ path: cache, is_default: false });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+        render(<SessionWorkingDirChip tabId="proj-cloud-copy" theme={theme} lang="zh" />);
+        expect(await screen.findByText('云端工作区')).toBeTruthy();
+        expect(screen.getByTestId('working-dir-chip').getAttribute('title')).toBe('标书项目');
+        fireEvent.click(screen.getByTestId('working-dir-chip'));
+        fireEvent.click(await screen.findByLabelText('复制工作区名称'));
+        expect(writeText).toHaveBeenCalledWith('标书项目');
+        expect(writeText.mock.calls.some((call) => String(call[0]).includes('cloud-workspaces'))).toBe(false);
     });
 
     it('copies the working directory path from the menu', async () => {
@@ -132,7 +159,7 @@ describe('SessionWorkingDirChip', () => {
         Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
         getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: false });
         render(<SessionWorkingDirChip tabId="proj-4" theme={theme} lang="zh" />);
-        await waitFor(() => expect(screen.getByText('D:/work/app')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('本地')).toBeTruthy());
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         fireEvent.click(await screen.findByLabelText('复制工作目录路径'));
         expect(writeText).toHaveBeenCalledWith('D:/work/app');
@@ -142,7 +169,7 @@ describe('SessionWorkingDirChip', () => {
     it('closes the menu on Escape and returns focus to the chip', async () => {
         getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: false });
         render(<SessionWorkingDirChip tabId="proj-5" theme={theme} lang="zh" />);
-        await waitFor(() => expect(screen.getByText('D:/work/app')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('本地')).toBeTruthy());
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         expect(await screen.findByTestId('working-dir-menu')).toBeTruthy();
         fireEvent.keyDown(document, { key: 'Escape' });
@@ -153,11 +180,17 @@ describe('SessionWorkingDirChip', () => {
     it('closes the menu on outside click', async () => {
         getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: false });
         render(<SessionWorkingDirChip tabId="proj-6" theme={theme} lang="zh" />);
-        await waitFor(() => expect(screen.getByText('D:/work/app')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('本地')).toBeTruthy());
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         expect(await screen.findByTestId('working-dir-menu')).toBeTruthy();
         fireEvent.mouseDown(document.body);
         expect(screen.queryByTestId('working-dir-menu')).toBeNull();
+    });
+
+    it('keeps the open chip highlighted above the composer button locks', () => {
+        const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../App.css'), 'utf8');
+        expect(css).toContain('button.mc-working-dir-chip[aria-expanded="true"]');
+        expect(css).toMatch(/button\.mc-working-dir-chip\[aria-expanded="true"\][^{]*\{[^}]*border-color:\s*var\(--mc-accent\)/);
     });
 });
 
@@ -175,17 +208,52 @@ describe('workingDirDisplayLabel', () => {
         expect(workingDirDisplayLabel('D:/work/app', 'zh')).toBe('D:/work/app');
     });
 
-    it('prefers remote host and directory over the local sandbox path', () => {
+    it('shows the remote server instead of the sandbox or remote directory', () => {
         expect(workingDirDisplayLabel(
             'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
             'zh',
             { host: 'www.driverdevelopment.com', workDir: '/srv/app' },
-        )).toBe('www.driverdevelopment.com:/srv/app');
+        )).toBe('www.driverdevelopment.com');
+    });
+
+    it('uses a known cloud workspace name', () => {
+        const cache = 'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc';
+        expect(workingDirDisplayLabel(cache, 'zh', null, '标书项目')).toBe('标书项目');
+    });
+});
+
+describe('composerWorkspaceKindLabel', () => {
+    it('names the kind without a path', () => {
+        expect(composerWorkspaceKindLabel('D:/work/app', 'zh')).toBe('本地');
+        expect(composerWorkspaceKindLabel('D:/work/app', 'en')).toBe('Local');
+        expect(composerWorkspaceKindLabel(
+            'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
+            'zh',
+            { host: 'www.driverdevelopment.com', workDir: '/srv/app' },
+        )).toBe('远程');
+        expect(composerWorkspaceKindLabel(
+            'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc',
+            'zh',
+        )).toBe('云端工作区');
+        expect(composerWorkspaceKindLabel(
+            'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc',
+            'zh-Hant',
+        )).toBe('雲端工作區');
     });
 });
 
 describe('truncatePathMiddle', () => {
     it('keeps short paths intact', () => {
         expect(truncatePathMiddle('D:/work', 42)).toBe('D:/work');
+    });
+
+    it('keeps the ending folder when the middle form is still too long', () => {
+        const leaf = `workspace-name-${'1234567890'.repeat(4)}`;
+        const path = `C:/Users/ma139/.maclaw/data/tasks/${leaf}/workspace`;
+        const label = truncatePathMiddle(path, 42);
+        expect(label.length).toBeLessThanOrEqual(42);
+        expect(label.startsWith('...')).toBe(true);
+        expect(label.endsWith('workspace')).toBe(true);
+        expect(label.startsWith('C:')).toBe(false);
     });
 });

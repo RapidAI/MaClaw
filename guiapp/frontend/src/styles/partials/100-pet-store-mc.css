@@ -290,11 +290,14 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: 1
   color: var(--office-accent) !important;
   box-shadow: none !important;
 }
-.form-input, .form-select, .provider-config-model-combobox {
+/* Radius stays overridable. A shorthand with !important rounds the combobox's
+   end corners and breaks the seam with its toggle. The shell is not a field. */
+.form-input, .form-select {
   min-height: 40px;
-  border: 1px solid var(--office-line) !important;
-  border-radius: 10px !important;
-  background: var(--office-canvas) !important;
+  border: 1px solid var(--theme-border) !important;
+  border-radius: var(--radius-md);
+  background: var(--theme-surface) !important;
+  color: var(--theme-text-primary);
   transition: border-color .16s ease, box-shadow .16s ease;
 }
 .form-input:focus, .form-select:focus { border-color: var(--office-accent) !important; box-shadow: 0 0 0 3px var(--office-accent-soft) !important; outline: none; }
@@ -615,9 +618,9 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
 [data-ai-theme='dark'] .form-select,
 [data-ai-theme='dark'] textarea,
 [data-ai-theme='dark'] input {
-  color: var(--office-ink);
-  background: #181b29 !important;
-  border-color: #34384e !important;
+  color: var(--theme-text-primary);
+  background: var(--theme-surface) !important;
+  border-color: var(--theme-border);
 }
 [data-ai-theme='dark'] .global-action-bar {
   background: rgba(25,28,42,.9) !important;
@@ -819,7 +822,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: var(--theme-surface) !important;
   box-shadow: 0 5px 18px rgba(34,56,82,.08);
 }
-.mc-input-stack textarea, .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+.mc-input-stack textarea,
+.mc-input-stack input,
+[data-ai-theme='dark'] .mc-input-stack textarea,
+[data-ai-theme='dark'] .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mc-input-stack button { border-radius: 9px !important; }
 @media (max-width: 720px) {
   .mc-input-stack { margin: 0 12px 12px !important; }
@@ -948,7 +954,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
    styles must not draw a second inset frame inside it. */
 .mc-header-search,
 .mc-header-search:focus,
-.mc-header-search:focus-visible { border: 0 !important; outline: none !important; outline-offset: 0 !important; box-shadow: none !important; appearance: none !important; -webkit-appearance: none !important; -webkit-focus-ring-color: transparent !important; }
+.mc-header-search:focus-visible,
+[data-ai-theme='dark'] .mc-header-search { border: 0 !important; outline: none !important; outline-offset: 0 !important; box-shadow: none !important; background: transparent !important; appearance: none !important; -webkit-appearance: none !important; -webkit-focus-ring-color: transparent !important; }
 .mc-header-notification { width: 34px !important; height: 34px !important; border: 1px solid var(--theme-border) !important; background: var(--theme-surface) !important; border-radius: 50% !important; font-size: 18px; color: var(--theme-text-secondary) !important; }
 @media (max-width: 760px) { .mc-header-search-wrap { width: 170px; } }
 @media (max-width: 560px) { .mc-header-search-wrap { display: none; } }

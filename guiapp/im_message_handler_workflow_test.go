@@ -85,7 +85,12 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	v2Machine := v2.NewStateMachine(v2Store, v2Registry)
 	v2Machine.SetAllowTempTestPaths(true)
 	v2Machine.SetConfirmClassifier(func(_, text string) string {
-		return v2.ClassifyConfirmIntentKeyword(text)
+		switch strings.TrimSpace(text) {
+		case "confirm", "modify", "cancel", "unrelated", "cancel_execute":
+			return strings.TrimSpace(text)
+		default:
+			return ""
+		}
 	})
 
 	// Register test-only templates in V2 registry so machine.Create works.
@@ -180,7 +185,7 @@ func TestResolveIMEntryContextRoutesActiveWorkflow(t *testing.T) {
 		t.Fatal("workflow should be awaiting review before confirmation")
 	}
 
-	trimmed := "ok"
+	trimmed := "__wf_review__ confirm"
 	result := handler.resolveIMEntryContext(imEntryContextOptions{
 		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
 		Trimmed: &trimmed,
@@ -225,7 +230,7 @@ func TestResolveIMEntryContextRoutesEngineOnlyActiveWorkflow(t *testing.T) {
 		t.Fatal("engine workflow should remain awaiting review after machine state is absent")
 	}
 
-	trimmed := "ok"
+	trimmed := "__wf_review__ confirm"
 	result := handler.resolveIMEntryContext(imEntryContextOptions{
 		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
 		Trimmed: &trimmed,
@@ -3478,9 +3483,11 @@ func TestWorkflowReviewConfirmInvalidCodingTaskBreakdownRegenerates(t *testing.T
 		t.Fatalf("SavePhaseOutput phase=%q err=%v", phaseID, err)
 	}
 
-	resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "继续", "desktop")
-	if resp != nil {
-		t.Fatalf("invalid task breakdown confirm should trigger regeneration loop, got immediate response %#v", resp)
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	trimmed := "__wf_review__ confirm"
+	result := handler.routeWithWorkflowV2(IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"}, trimmed)
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("invalid task breakdown confirm should trigger regeneration loop, got %#v", result)
 	}
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil || ws.CurrentPhase != v2.PhaseCodingTaskBreakdown || ws.PendingReviewPhaseID != v2.PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
@@ -3553,15 +3560,81 @@ func TestWorkflowReviewFastConfirmBypassesPendingUserReply(t *testing.T) {
 	}
 }
 
-func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
+func TestWorkflowReviewWordingStaysUntilHostConfirm(t *testing.T) {
 	llm := &mockLLMCallerGUI{Response: "other"}
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
-	userID := "test-review-ok-not-short-chitchat"
-	workflowType := v2.WorkflowType("gui_review_ok_not_short_chitchat")
+	userID := "test-review-wording-stays-until-host-confirm"
+	workflowType := v2.WorkflowType("gui_review_wording_stays")
 	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:        workflowType,
-		Name:        "review ok not short chitchat",
+		Name:        "review wording stays",
+		Description: "test template",
+		Phases: []v2.PhaseSpec{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
+		},
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: workflowType,
+		Summary:  "build a desktop game",
+	}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	saved := reviewStateValidContentGUI()
+	if phaseID, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, saved); err != nil || phaseID != "plan" {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
+	}
+	if !engine.IsAwaitingReview(userID) {
+		t.Fatal("workflow should be awaiting review")
+	}
+
+	if resp, handled := handler.handleImmediateIMCommand(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok", nil, nil); handled {
+		t.Fatalf("workflow review wording must not be consumed by short chitchat, resp=%#v", resp)
+	}
+
+	handler.stashedPhasePrompt.Store(userID, "STALE_PHASE_PROMPT")
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	result := handler.routeWithWorkflowV2(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok")
+	if result.Response == nil || strings.TrimSpace(result.Response.Text) == "" || result.WorkflowAgentLoop {
+		t.Fatalf("unclassified wording should stay on the review barrier, got %#v", result)
+	}
+	if _, ok := handler.stashedPhasePrompt.Load(userID); ok {
+		t.Fatal("unclassified review reply must drop the previous phase prompt")
+	}
+	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); pending {
+		t.Fatal("unclassified review reply must drop the previous subagent execution")
+	}
+	ws := handler.getWorkflowV2().machine.GetActive(userID)
+	if ws == nil || ws.ActivePhase() == nil || ws.ActivePhase().ID != "plan" || ws.ActivePhase().Output != saved {
+		t.Fatalf("unclassified wording must keep the plan output, got %#v", ws)
+	}
+
+	confirmed := "__wf_review__ confirm"
+	advanced := handler.routeWithWorkflowV2(IMUserMessage{UserID: userID, Text: confirmed, Platform: "desktop"}, confirmed)
+	if advanced.Response != nil || !advanced.WorkflowAgentLoop {
+		t.Fatalf("host confirm should schedule the next phase loop, got %#v", advanced)
+	}
+	if prompt, ok := handler.stashedPhasePrompt.Load(userID); !ok || prompt == "STALE_PHASE_PROMPT" || strings.TrimSpace(fmt.Sprint(prompt)) == "" {
+		t.Fatalf("host confirm should stash the next phase prompt, got %#v ok=%v", prompt, ok)
+	}
+	ws = handler.getWorkflowV2().machine.GetActive(userID)
+	if ws == nil || ws.ActivePhase() == nil || ws.ActivePhase().ID != "execute" {
+		t.Fatalf("workflow should advance after host confirm, got %#v", ws)
+	}
+}
+
+func TestWorkflowReviewSwitchTaskDropsEngineReview(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-review-switch-task"
+	workflowType := v2.WorkflowType("gui_review_switch_task")
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
+		Type:        workflowType,
+		Name:        "review switch task",
 		Description: "test template",
 		Phases: []v2.PhaseSpec{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
@@ -3580,23 +3653,22 @@ func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
 		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
 	}
 	if !engine.IsAwaitingReview(userID) {
-		t.Fatal("workflow should be awaiting review before ok confirmation")
+		t.Fatal("workflow should be awaiting review")
 	}
+	handler.workflowAgentLoopMarker.Store(userID, true)
 
-	if resp, handled := handler.handleImmediateIMCommand(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok", nil, nil); handled {
-		t.Fatalf("workflow review ok must not be consumed by short chitchat, resp=%#v", resp)
-	}
+	_ = handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentSwitchTask, "draw a harbor", "desktop")
 
-	result := handler.routeWithWorkflowV2(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok")
-	if result.Response != nil || !result.WorkflowAgentLoop {
-		t.Fatalf("ok should confirm review and schedule next phase loop, got %#v", result)
+	if engine.IsAwaitingReview(userID) {
+		t.Fatal("switch_task must drop the reviewed workflow before the message is routed again")
 	}
-	if llm.Calls != 0 {
-		t.Fatalf("ok review confirmation should use deterministic fast path, LLM calls=%d", llm.Calls)
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
+		t.Fatal("switch_task must not keep the previous phase loop marker")
 	}
-	ws := handler.getWorkflowV2().machine.GetActive(userID)
-	if ws == nil || ws.ActivePhase() == nil || ws.ActivePhase().ID != "execute" {
-		t.Fatalf("workflow should advance after ok confirmation, got %#v", ws)
+	if wf := handler.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(userID); state != nil && state.IsWaitingConfirm() {
+			t.Fatalf("reviewed phase must not stay open, got %#v", state)
+		}
 	}
 }
 
@@ -3687,19 +3759,11 @@ func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing
 }
 
 func TestDetectWorkflowReviewIntentFast(t *testing.T) {
-	for _, text := range []string{"\u786e\u8ba4", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u7ee7\u7eed", "\u5f00\u5de5", "\u597d\u7684", "\u5408\u7406\uff0c\u7ee7\u7eed", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0"} {
-		got, ok := detectWorkflowReviewIntentFast(text)
-		if !ok || got != v2.ReviewIntentConfirm {
-			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
+	for _, text := range []string{"确认", "继续", "继续推进", "OK", "go ahead", "start", "oui", "sí"} {
+		if _, ok := detectWorkflowReviewIntentFast(text); ok {
+			t.Fatalf("detectWorkflowReviewIntentFast(%q) matched wording", text)
 		}
 	}
-	for _, text := range []string{"开工", "继续", "继续推进", "OK", "go ahead", "start"} {
-		got, ok := detectWorkflowReviewIntentFast(text)
-		if !ok || got != v2.ReviewIntentConfirm {
-			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
-		}
-	}
-	// __wf_review__ structured button commands
 	if got, ok := detectWorkflowReviewIntentFast("__wf_review__ confirm"); !ok || got != v2.ReviewIntentConfirm {
 		t.Fatalf("__wf_review__ confirm: got (%q,%v), want confirm,true", got, ok)
 	}

@@ -55,15 +55,35 @@ func TestCloudWorkspaceShareJoinErrorsLocalized(t *testing.T) {
 	}
 }
 
+func TestCloudWorkspaceCorruptObjectErrorLocalized(t *testing.T) {
+	t.Cleanup(func() { setAgentViewLang("zh-Hans") })
+
+	setAgentViewLang("zh-Hans")
+	err := cloudWorkspaceAPIError(500, []byte(`{"code":"CLOUD_WORKSPACE_OBJECT_CORRUPT","message":"cloud workspace object is corrupt"}`))
+	if err == nil || strings.Contains(err.Error(), "corrupt") || !strings.Contains(err.Error(), "已损坏") {
+		t.Fatalf("zh-Hans corrupt=%v", err)
+	}
+	setAgentViewLang("zh-Hant")
+	err = cloudWorkspaceAPIError(500, []byte(`{"code":"CLOUD_WORKSPACE_OBJECT_CORRUPT","message":"cloud workspace object is corrupt"}`))
+	if err == nil || !strings.Contains(err.Error(), "已損壞") {
+		t.Fatalf("zh-Hant corrupt=%v", err)
+	}
+	setAgentViewLang("en")
+	err = cloudWorkspaceAPIError(500, []byte(`{"code":"CLOUD_WORKSPACE_OBJECT_CORRUPT","message":"cloud workspace object is corrupt"}`))
+	if err == nil || !strings.Contains(err.Error(), "damaged") {
+		t.Fatalf("en corrupt=%v", err)
+	}
+}
+
 func TestParseCloudWorkspaceShareToken(t *testing.T) {
 	cases := map[string]string{
 		"abc123": "abc123",
-		"https://hub.example.test/hub/cloud-workspaces/shares/tok_1":                    "tok_1",
-		"https://hub.example.test/hub/cloud-workspaces/shares/tok_1/extra":               "tok_1",
-		"https://hub.example.test/api/v1/cloud-workspace-shares/tok_api/accept":          "tok_api",
-		"https://hub.example.test/api/v1/cloud-workspace-shares/tok_plain":               "tok_plain",
-		"maclaw://cloud-workspace-share?token=tok_2":                                    "tok_2",
-		"MACLAW://Cloud-Workspace-Share?token=tok_3":                                    "tok_3",
+		"https://hub.example.test/hub/cloud-workspaces/shares/tok_1":            "tok_1",
+		"https://hub.example.test/hub/cloud-workspaces/shares/tok_1/extra":      "tok_1",
+		"https://hub.example.test/api/v1/cloud-workspace-shares/tok_api/accept": "tok_api",
+		"https://hub.example.test/api/v1/cloud-workspace-shares/tok_plain":      "tok_plain",
+		"maclaw://cloud-workspace-share?token=tok_2":                            "tok_2",
+		"MACLAW://Cloud-Workspace-Share?token=tok_3":                            "tok_3",
 	}
 	for raw, want := range cases {
 		if got := parseCloudWorkspaceShareToken(raw); got != want {

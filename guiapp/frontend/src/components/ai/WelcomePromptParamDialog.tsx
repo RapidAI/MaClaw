@@ -531,7 +531,7 @@ export function WelcomePromptParamDialog({
     const fieldInputStyle = (multiline: boolean): CSSProperties => ({
         width: "100%",
         boxSizing: "border-box",
-        borderRadius: 8,
+        borderRadius: "var(--radius-md, 10px)",
         border: `1px solid ${t.fieldBorder}`,
         background: t.fieldBg,
         color: t.inputText || t.text,

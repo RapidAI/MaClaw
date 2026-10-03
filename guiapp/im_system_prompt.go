@@ -56,7 +56,15 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	if profile.IsLight() {
 		promptMsg := msg
 		promptMsg.Text = promptMessage
-		systemPrompt = buildLightIMSystemPrompt(promptMsg, profile)
+		var carried []string
+		var primary intent.IntentLabel
+		if loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil {
+			primary = loopCtx.Runtime.SemanticIntent.Primary
+		}
+		if h != nil && lookupContinuationProfile(profile) {
+			carried = h.parentExecutionTools(msg.UserID)
+		}
+		systemPrompt = buildLightIMSystemPrompt(promptMsg, profile, carried, primary)
 	} else if h.memoryStore != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
 	} else {
@@ -148,7 +156,7 @@ func buildAssistantBindingPrompt(binding *agent.AssistantBinding) string {
 	return agentruntime.BuildAssistantBindingPrompt(binding)
 }
 
-func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) string {
+func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile, carried []string, primary intent.IntentLabel) string {
 	// Shared light PromptBundle (identity + short principles + project paths)
 	// plus a hard capability fence for the GUI light execution layer.
 	roleName := "MaClaw"
@@ -163,7 +171,7 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 		}
 		roleDesc += fmt.Sprintf("\n你是%s，请始终以该专家身份回应，不越界处理无关事务。", roleName)
 	}
-	return agentruntime.EnsureLightSemanticGrantPromptFence(agentruntime.BuildLightPrompt(agentruntime.LightPromptRequest{
+	prompt := agentruntime.EnsureLightSemanticGrantPromptFence(agentruntime.BuildLightPrompt(agentruntime.LightPromptRequest{
 		RoleName:            roleName,
 		RoleDescription:     roleDesc,
 		UserText:            msg.Text,
@@ -175,6 +183,10 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 		ClientTools:         msg.ClientTools,
 		AssistantBinding:    msg.AssistantBinding,
 	}))
+	if lookupContinuationProfile(profile) {
+		prompt += lookupContinuationToolPrompt(carried, primary)
+	}
+	return prompt
 }
 
 func buildClientCapabilityPrompt(capabilities *agent.ClientCapabilities) string {
@@ -281,6 +293,15 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		promptABSample = false
 		promptSoftFull = false
 	}
+	// A petition that signed a mutating selection has already left the light
+	// execution layer. Adaptive short-text classification must not write the
+	// prompt profile back to light, or the authorizer drops that selection
+	// again on the next request.
+	if loopCtx != nil && loopCtx.Runtime.Execution.Reason == executionReasonPetitionLeftLight {
+		promptProfile = agent.PromptProfileFull
+		promptABSample = false
+		promptSoftFull = false
+	}
 	// Keep Runtime.PromptProfile in sync so tool filtering + Turn meta observe it.
 	if loopCtx != nil {
 		if promptProfile.IsLight() {
@@ -303,9 +324,11 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			PromptProfile:           promptProfile,
 			ManagedSemantic:         loopContextIsSemanticManaged(loopCtx),
 		},
-		MemoryStore:      h.memoryStore,
-		SkipMemoryRecall: true, // GUI writes catalog + pull hint in appendGUIEpilogue; warehouse bodies stay in tools.
-		HasKnowledgeBase: true,
+		MemoryStore:       h.memoryStore,
+		MemoryOwnerID:     promptUserID,
+		MemoryStrictOwner: isIsolatedAssistantSessionUserID(promptUserID),
+		SkipMemoryRecall:  true, // GUI writes catalog + pull hint in appendGUIEpilogue; warehouse bodies stay in tools.
+		HasKnowledgeBase:  true,
 		// EffectiveProjectDir: uses the SAME resolution function as tool execution,
 		// ensuring the LLM's understanding of "project directory" matches the actual
 		// cwd used by bash/write_file/read_file at runtime.
@@ -578,16 +601,15 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 }
 
 // appendMemorySection appends a lightweight "## 用户记忆" section containing:
-//   - A catalog/index of the store (counts and tags, not claims)
-//   - A hint that warehouse content must be pulled via retrieval tools
+//   - The current owner's newest user_fact bodies, in the frozen snapshot
+//   - A catalog/index of the store (counts and tags, not other warehouse claims)
+//   - A hint that remaining warehouse content must be pulled via retrieval tools
 //   - Full memory management guide in the session-stable snapshot
 //
 // Frozen snapshot caching (Requirement 5.1, 5.2, 5.8):
-// On the first message of a session (per userID), the full memory section is
-// generated and cached as a frozen snapshot. Subsequent calls reuse the cached
-// snapshot instead of regenerating, keeping the LLM's KV cache prefix stable.
-// Mid-session memory writes update persistent storage but do NOT invalidate
-// the cached snapshot (Requirement 5.3).
+// On the first message of a session (per userID), the static memory section is
+// generated and cached. A successful memory save calls RefreshMemorySnapshot,
+// so the next message rebuilds this section with the current owner's facts.
 func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, userID string, eventContext lifecycle.EventContext, userMessage ...string) {
 	if h.memoryStore == nil {
 		return
@@ -734,17 +756,24 @@ func (h *IMMessageHandler) cachedStaticMemorySnapshot(userID string) string {
 }
 
 // generateStaticMemorySection builds the frozen part of the memory section:
-// user_fact summary + memory recall hint + memory guide (first turn only).
-// This content is stable across messages within a session and can be cached.
+// the current owner's newest user facts, the recall hint, and the memory guide.
+// RefreshMemorySnapshot drops this cache after a successful memory save.
 func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFirstTurn bool, userID string) {
 	if h.memoryStore == nil {
 		return
 	}
+	userID = strings.TrimSpace(userID)
 	strictOwner := isIsolatedAssistantSessionUserID(userID)
 	b.WriteString("\n")
 	b.WriteString(corememory.PromptSectionUserMemory)
 	b.WriteByte('\n')
 	opts := corememory.RecallHintAndGuidePromptOptions(isFirstTurn && !strictOwner, corememory.BuildIMMemoryGuidePrompt())
+	opts.UserFacts = corememory.UserFactSummaryPromptOptions{
+		Header:      "用户信息: ",
+		MaxRunes:    400,
+		OwnerID:     userID,
+		StrictOwner: strictOwner,
+	}
 	b.WriteString(h.memoryStore.StaticMemorySectionForPrompt(opts))
 }
 

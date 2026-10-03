@@ -20,3 +20,17 @@ func TestDatabaseQueryAllowedInRestrictedWorkflowPhases(t *testing.T) {
 		t.Fatalf("full policy should allow execute: %v", err)
 	}
 }
+
+func TestParseReviewIntentUsesCategoryToken(t *testing.T) {
+	if ParseReviewIntent("confirm") != ReviewIntentConfirm {
+		t.Fatal("confirm token")
+	}
+	if ParseReviewIntent("  SKIP ") != ReviewIntentSkip {
+		t.Fatal("skip token")
+	}
+	for _, raw := range []string{"确认", "ok", "yes", "继续", "oui"} {
+		if ParseReviewIntent(raw) != ReviewIntentOther {
+			t.Fatalf("ParseReviewIntent(%q) matched wording", raw)
+		}
+	}
+}

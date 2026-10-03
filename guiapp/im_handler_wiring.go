@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type IMMessageHandler struct {
@@ -79,7 +80,20 @@ type IMMessageHandler struct {
 	// parentExecution remembers that the previous turn for this user was a
 	// full tool surface, and which of those tools a light filter would drop.
 	// A short continuation restores them. A light turn clears the record.
-	parentExecution sync.Map // map[string][]string
+	// The map is process-local. parentExecutionResolved records that this
+	// process has already decided (from a turn, or once from restored
+	// history) so a restart can rebuild the carry and an in-process clear
+	// is not immediately undone.
+	parentExecution         sync.Map // map[string][]string
+	parentExecutionResolved sync.Map // map[string]struct{}
+	// parentExecutionGate is one mutex per user. The history read stays
+	// outside the lock so a long transcript does not stall a clear; the
+	// publish does not, so a second caller cannot observe a resolved
+	// session with an empty map and treat a restored full task as light.
+	parentExecutionGate sync.Map // map[string]*sync.Mutex
+	// parentHydrateFlights collapses concurrent restores of one session
+	// onto a single history read.
+	parentHydrateFlights sync.Map // map[string]*parentHydrateFlight
 	// clientToolDispatcher delegates a per-message dynamic tool call to the
 	// originating third-party client. The dispatcher must return quickly; the
 	// authoritative result arrives asynchronously through tool-result.
@@ -672,6 +686,13 @@ type IMMessageHandler struct {
 	// sticky tool grant, and is revalidated before every semantic read.
 	activeLocalDocuments sync.Map // map[string][]activeLocalDocumentContext
 
+	// producedDocuments is the document this desktop task already materialized
+	// from document.generate.file or document.write.office. Residue stores
+	// capability needs, not paths. A later delivery turn binds this snapshot
+	// as a trusted artifact. It is revalidated before every use and cleared
+	// with the residue.
+	producedDocuments sync.Map // map[string]producedDocumentContext
+
 	// taskAnchors is the host-owned charter for the current tab/session
 	// (original request, person/source, work kind, primary files). It is
 	// derived from the user's message, not model memory, so "继续改进 ppt"
@@ -1212,8 +1233,10 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 	// cannot accidentally re-enter the legacy name router and union tools onto
 	// that surface.
 	if loopContextBlocksLegacyToolRouter(ctx) || loopContextHasClassifierTimeoutLookup(ctx) {
-		// Timeout turns have a deterministic read-only lookup scope; never
-		// re-enter the broad legacy name/BM25 router while the tree verdict waits.
+		// A timed-out tree has no verdict to rank against. Skip the broad
+		// name/BM25 router. The empty seed is not the final surface: a light
+		// turn stays on the web pair, and a full turn pins the execution floor
+		// afterwards in prepareAgentLoopTools.
 		return nil, nil
 	}
 	h.toolsMu.RLock()
@@ -1364,12 +1387,18 @@ func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
 
 var classifierTimeoutWebLookupToolNames = []string{"web_search", "web_fetch"}
 
+// keepClassifierTimeoutLookupTools is only for a light lookup whose tree
+// timed out. A full assistant surface uses pinClassifierTimeoutExecutionFloor
+// instead, so the command and file floor is not replaced by web tools.
 func keepClassifierTimeoutLookupTools(tools []map[string]interface{}) []map[string]interface{} {
 	if len(tools) == 0 {
 		return tools
 	}
-	wanted := map[string]bool{"web_search": true, "web_fetch": true}
-	out := make([]map[string]interface{}, 0, 2)
+	wanted := make(map[string]bool, len(classifierTimeoutWebLookupToolNames))
+	for _, name := range classifierTimeoutWebLookupToolNames {
+		wanted[name] = true
+	}
+	out := make([]map[string]interface{}, 0, len(classifierTimeoutWebLookupToolNames))
 	for _, t := range tools {
 		if wanted[extractToolName(t)] {
 			out = append(out, t)
@@ -1384,15 +1413,7 @@ func (h *IMMessageHandler) pinClassifierTimeoutWebLookup(userID string, ctx *Loo
 	}
 	before := namedToolPresence(tools, classifierTimeoutWebLookupToolNames)
 	tools = ensureNamedToolsPresent(tools, catalog, classifierTimeoutWebLookupToolNames)
-	after := namedToolPresence(tools, classifierTimeoutWebLookupToolNames)
-	added := false
-	for _, name := range classifierTimeoutWebLookupToolNames {
-		if after[name] && !before[name] {
-			added = true
-			break
-		}
-	}
-	if !added {
+	if !namedToolsGained(before, namedToolPresence(tools, classifierTimeoutWebLookupToolNames), classifierTimeoutWebLookupToolNames) {
 		return tools
 	}
 	// Allow-lists already ran on the pre-pin surface. Re-apply only if this
@@ -1403,6 +1424,134 @@ func (h *IMMessageHandler) pinClassifierTimeoutWebLookup(userID string, ctx *Loo
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 	return tools
+}
+
+// pinClassifierTimeoutExecutionFloor guarantees the invariant-11 floor on a
+// full turn whose classifier timed out. That turn skips the name router, so
+// the floor is not a ranker miss: without this pin the surface is only the
+// web pair. Expert and group allow-lists still win. Callers that already
+// applied a narrower policy (workflow phase, direct mode, skill search)
+// must seal again; this pin only re-checks expert and group.
+func (h *IMMessageHandler) pinClassifierTimeoutExecutionFloor(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}) []map[string]interface{} {
+	if !loopContextHasClassifierTimeoutLookup(ctx) || !executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
+		return tools
+	}
+	before := namedToolPresence(tools, legacyRoutingMissFloorToolOrder)
+	tools = ensureNamedToolsPresent(tools, catalog, legacyRoutingMissFloorToolOrder)
+	if !namedToolsGained(before, namedToolPresence(tools, legacyRoutingMissFloorToolOrder), legacyRoutingMissFloorToolOrder) {
+		return tools
+	}
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
+	return tools
+}
+
+// sealClassifierTimeoutExecutionFloor puts back the policies that run before
+// the floor pin. A timeout skip of the name router is not permission to
+// reopen a workflow phase, a direct-mode main loop, or a skill-search round.
+// Workflow ensure pulls required names from the host catalog, so every
+// narrower filter runs after that ensure: expert and group allow-lists,
+// skill search, direct mode, truncation, and Hub name-level rejection.
+// boundCatalog nil uses the unmanaged host catalog (prepare, injection,
+// and skill recover render afterwards). A non-nil catalog, including an
+// empty one, is the loop's already-held surface: a floor unlock must not
+// pull a raw definition the turn never had.
+func (h *IMMessageHandler) sealClassifierTimeoutExecutionFloor(userID string, ctx *LoopContext, tools []map[string]interface{}, phase agentLoopPhase, directMode bool, boundCatalog []map[string]interface{}) []map[string]interface{} {
+	if ownerID, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx); apply {
+		if policy == v2.ToolFilterNone {
+			return nil
+		}
+		switch {
+		case boundCatalog == nil:
+			tools = h.applyWorkflowToolFilterWithCatalog(ownerID, tools, h.unmanagedLegacyHostCatalog())
+		case len(boundCatalog) == 0:
+			if h.shouldConstrainCodingWorkflowImplementationMainLoop(ownerID) {
+				tools = filterCodingWorkflowImplementationMainLoopTools(tools)
+			} else {
+				tools = v2.FilterToolDefinitions(policy, tools)
+			}
+		default:
+			tools = h.applyWorkflowToolFilterWithCatalog(ownerID, tools, boundCatalog)
+		}
+	}
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
+	tools = applySkillPreferenceSurface(tools, phase)
+	if directMode {
+		tools = filterDirectModeAllowedTools(tools)
+	}
+	tools = dropTruncationBlockedTools(tools, phase.TruncationBlockedTools)
+	return h.filterPolicyRejectedSurfaceTools(tools)
+}
+
+// narrowToolsToWorkflowPolicy drops tools the active workflow phase does not
+// allow. It does not ensure required names from the host catalog: callers
+// use it after a reseal that already added host tools.
+func (h *IMMessageHandler) narrowToolsToWorkflowPolicy(userID string, ctx *LoopContext, tools []map[string]interface{}) []map[string]interface{} {
+	ownerID, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx)
+	if !apply || len(tools) == 0 {
+		return tools
+	}
+	if policy == v2.ToolFilterNone {
+		return nil
+	}
+	if h.shouldConstrainCodingWorkflowImplementationMainLoop(ownerID) {
+		return filterCodingWorkflowImplementationMainLoopTools(tools)
+	}
+	return v2.FilterToolDefinitions(policy, tools)
+}
+
+// finishAgentGuidedSurface adds the host tools an agent-guided skill needs,
+// then puts back the policies that addition must not undo.
+func (h *IMMessageHandler) finishAgentGuidedSurface(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}, phase agentLoopPhase) []map[string]interface{} {
+	tools = applyAgentGuidedWorkflowSurface(tools, catalog)
+	tools = h.narrowToolsToWorkflowPolicy(userID, ctx, tools)
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
+	tools = dropTruncationBlockedTools(tools, phase.TruncationBlockedTools)
+	if h.mainLoopInDirectMode(userID, ctx) {
+		tools = filterDirectModeAllowedTools(tools)
+	}
+	return h.filterPolicyRejectedSurfaceTools(tools)
+}
+
+// dropTruncationBlockedTools removes tools the loop has already disabled for
+// the rest of this turn. Floor unions and workflow ensures run later and
+// would otherwise put the same names back.
+func dropTruncationBlockedTools(tools []map[string]interface{}, blocked map[string]bool) []map[string]interface{} {
+	if len(tools) == 0 || len(blocked) == 0 {
+		return tools
+	}
+	kept := make([]map[string]interface{}, 0, len(tools))
+	for _, item := range tools {
+		if blocked[extractToolName(item)] {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return kept
+}
+
+func executionProfileFromLoop(ctx *LoopContext) ExecutionProfile {
+	if ctx == nil {
+		return ExecutionProfile{}
+	}
+	return ctx.Runtime.Execution
+}
+
+func namedToolsGained(before, after map[string]bool, names []string) bool {
+	for _, name := range names {
+		if after[name] && !before[name] {
+			return true
+		}
+	}
+	return false
 }
 
 func namedToolPresence(tools []map[string]interface{}, names []string) map[string]bool {

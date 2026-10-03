@@ -145,6 +145,7 @@ export interface AIAssistantPanelProps {
     contactModelId?: string;
     contactIsHubService?: boolean;
     modelOptions?: string[];
+    modelMultipliers?: Record<string, number>;
     modelsLoading?: boolean;
     onSwitchProvider?: (providerName: string) => void;
     onSwitchModel?: (modelId: string) => void;

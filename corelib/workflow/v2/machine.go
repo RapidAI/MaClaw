@@ -22,6 +22,7 @@ const (
 	ActionConfirmed        HandleAction = "confirmed"          // user confirmed, advanced to next (or completed)
 	ActionModify           HandleAction = "modify"             // user wants to modify, re-run current phase
 	ActionPassThrough      HandleAction = "pass_through"       // not relevant to workflow, use normal agent loop
+	ActionReviewPending    HandleAction = "review_pending"     // review gate still closed; do not run tools
 	ActionCancelled        HandleAction = "cancelled"          // workflow cancelled
 	ActionCancelAndExecute HandleAction = "cancel_and_execute" // cancel workflow but execute original task directly
 )
@@ -215,17 +216,20 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 		// Re-acquire lock for state mutation
 		m.mu.Lock()
 
-		// If classifier failed (empty intent), don't advance.
-		// Return a special action so the caller can inform the user.
+		// Classifier failure is not a decision. Keep the review gate closed.
 		if intent == "" {
 			m.mu.Unlock()
-			return &HandleResult{Action: ActionPassThrough, State: state}, nil
+			return &HandleResult{Action: ActionReviewPending, State: state}, nil
 		}
 
 		// Re-load state in case it changed during LLM call
+		prior := state
 		state, err = m.store.Load(userID)
 		if err != nil || state == nil || state.Status != StatusActive {
 			m.mu.Unlock()
+			if err != nil && prior != nil && prior.IsWaitingConfirm() {
+				return &HandleResult{Action: ActionReviewPending, State: prior}, nil
+			}
 			return &HandleResult{Action: ActionPassThrough}, nil
 		}
 		phase = state.ActivePhase()
@@ -271,9 +275,9 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 			m.mu.Unlock()
 			return &HandleResult{Action: ActionCancelAndExecute, State: state}, nil
 		default:
-			// Unrelated message — let it go to normal agent loop
+			// Not a review decision. Leave the phase and its output unchanged.
 			m.mu.Unlock()
-			return &HandleResult{Action: ActionPassThrough}, nil
+			return &HandleResult{Action: ActionReviewPending, State: state}, nil
 		}
 
 	case PhaseCompleted, PhaseSkipped:
@@ -1201,8 +1205,8 @@ func (m *StateMachine) SkipPhaseForm(userID string) error {
 }
 
 // ApplyReviewIntent handles a user's response to a phase review gate.
-// intent can be: "confirm" (advance), "skip" (skip phase), "supplement"/"other" (reopen with feedback)
-// Returns a HandleResult indicating the action taken.
+// confirm and skip advance. supplement and modify reopen the phase.
+// other and any unrecognized category leave the phase and its output unchanged.
 func (m *StateMachine) ApplyReviewIntent(userID string, intent string, feedback string) (*HandleResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1250,18 +1254,22 @@ func (m *StateMachine) ApplyReviewIntent(userID string, intent string, feedback 
 		}
 		return &HandleResult{Action: ActionCancelAndExecute, State: state}, nil
 
-	default:
-		// "supplement", "other", or anything else — reopen phase for revision.
+	case "supplement", "modify":
+		// The user asked to change this phase. Reopen it and drop the previous output.
 		previous := *state
 		previous.Phases = append([]Phase(nil), state.Phases...)
 		phase.Status = PhaseRunning
-		phase.Output = "" // clear previous output for re-generation
+		phase.Output = ""
 		state.UpdatedAt = time.Now()
 		if err := m.store.Save(state); err != nil {
 			*state = previous
 			return nil, fmt.Errorf("save revised workflow state: %w", err)
 		}
 		return &HandleResult{Action: ActionModify, Phase: phase, ModifyHint: feedback, State: state}, nil
+
+	default:
+		// "other" and unrecognized classifier text leave the phase as it is.
+		return &HandleResult{Action: ActionReviewPending, State: state}, nil
 	}
 }
 
@@ -1342,61 +1350,6 @@ func truncateForContext(s string, maxRunes int) string {
 		return s
 	}
 	return string(runes[:maxRunes]) + "..."
-}
-
-// ClassifyConfirmIntentKeyword is the fallback keyword-based classifier.
-// Used when LLM is unavailable or fails.
-func ClassifyConfirmIntentKeyword(text string) string {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return "unrelated"
-	}
-
-	// Cancel takes priority (user might say "取消，不做了")
-	cancelWords := []string{"取消", "cancel", "放弃", "不做了", "算了", "停止"}
-	for _, w := range cancelWords {
-		if strings.Contains(lower, w) {
-			// Check if user also wants direct execution after cancel
-			// e.g. "取消，直接处理" / "取消工作流，直接做" / "cancel and just do it"
-			// We require "直接" as the primary signal — bare "处理"/"做" alone
-			// might appear in pure cancellation phrases like "不做了".
-			cancelExecutePatterns := []string{
-				"直接处理", "直接做", "直接执行", "直接搞", "直接干",
-				"直接帮我", "直接来", "直接开始",
-				"just do", "directly", "do it directly",
-				"跳过流程", "跳过步骤", "跳过确认",
-				"不要流程", "不要工作流", "不走流程",
-			}
-			for _, ep := range cancelExecutePatterns {
-				if strings.Contains(lower, ep) {
-					return "cancel_execute"
-				}
-			}
-			return "cancel"
-		}
-	}
-
-	// Confirm: only if the message is SHORT (≤8 runes) and matches a confirm word.
-	// This prevents "继续完善需求，加一个登录功能" from being classified as confirm.
-	runes := []rune(lower)
-	if len(runes) <= 8 {
-		confirmWords := []string{
-			"确认", "ok", "好的", "可以", "没问题", "通过", "确定",
-			"继续", "confirm", "yes", "lgtm", "好", "行", "对",
-		}
-		for _, w := range confirmWords {
-			if lower == w || strings.HasPrefix(lower, w) {
-				return "confirm"
-			}
-		}
-	}
-
-	// If the message has substantive content (>4 runes), treat as modification
-	if len(runes) > 4 {
-		return "modify"
-	}
-
-	return "unrelated"
 }
 
 func looksLikeTempTestPath(path string) bool {

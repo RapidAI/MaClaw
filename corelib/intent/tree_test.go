@@ -186,6 +186,9 @@ func TestBuildTreePrompt(t *testing.T) {
 	treeText := "── Coding ──\n  coding: create software"
 	prompt := BuildTreePrompt(treeText, "开发一个游戏")
 
+	if !strings.Contains(prompt, "Continuing a document this conversation already has is file_write, not workflow_task") {
+		t.Fatal("tree prompt must keep an in-conversation document edit off workflow_task")
+	}
 	if !strings.Contains(prompt, treeText) {
 		t.Error("prompt should contain tree text")
 	}

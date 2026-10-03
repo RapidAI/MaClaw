@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -368,4 +369,184 @@ func TestSetEmbedderCancelsStaleBackfill(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for replacement embedder backfill")
+}
+
+func TestContentRewriteEmbeddingLandsAfterIndexRebuild(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{
+		Content:   "old fact",
+		Category:  CategoryUserFact,
+		Embedding: []float32{1, 0, 0, 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.WaitRebuild()
+	store.mu.RLock()
+	if len(store.entries) != 1 {
+		t.Fatalf("entries = %d", len(store.entries))
+	}
+	id := store.entries[0].ID
+	store.mu.RUnlock()
+
+	store.SetEmbedder(&fakeEmbedder{dim: 4})
+	// Let the embedder backfill observe the existing vector and exit.
+	// A later content rewrite must not be filled by that scan.
+	time.Sleep(200 * time.Millisecond)
+
+	blocked := make(chan struct{})
+	store.mu.Lock()
+	store.lastRebuildDone = blocked
+	store.mu.Unlock()
+
+	if err := store.Update(id, "new fact", CategoryUserFact, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	store.mu.RLock()
+	early := append([]float32(nil), store.entries[0].Embedding...)
+	store.mu.RUnlock()
+	if len(early) != 0 {
+		t.Fatalf("embedding applied while the index rebuild was still outstanding: %v", early)
+	}
+
+	close(blocked)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.RLock()
+		ready := len(store.entries) == 1 && len(store.entries[0].Embedding) == 4
+		store.mu.RUnlock()
+		store.vecIndex.mu.RLock()
+		_, indexed := store.vecIndex.embeddings[id]
+		store.vecIndex.mu.RUnlock()
+		if ready && indexed {
+			store.WaitRebuild()
+			store.vecIndex.mu.RLock()
+			_, indexed = store.vecIndex.embeddings[id]
+			store.vecIndex.mu.RUnlock()
+			if !indexed {
+				t.Fatal("index rebuild dropped the rewritten embedding")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for rewritten embedding to reach the vector index")
+}
+
+// gatedContentEmbedder blocks each distinct text on its own gate and returns a distinct vector.
+type gatedContentEmbedder struct {
+	oldStarted chan struct{}
+	oldRelease chan struct{}
+	newStarted chan struct{}
+	newRelease chan struct{}
+	oldOnce    sync.Once
+	newOnce    sync.Once
+}
+
+func (e *gatedContentEmbedder) Embed(text string) ([]float32, error) {
+	if text == "old fact" {
+		e.oldOnce.Do(func() { close(e.oldStarted) })
+		<-e.oldRelease
+		return []float32{1, 0, 0, 0}, nil
+	}
+	e.newOnce.Do(func() { close(e.newStarted) })
+	<-e.newRelease
+	return []float32{0, 1, 0, 0}, nil
+}
+
+func (e *gatedContentEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, err := e.Embed(text)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func (e *gatedContentEmbedder) Dim() int { return 4 }
+func (e *gatedContentEmbedder) Close()   {}
+
+func releaseGate(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+func TestBackfillDoesNotAttachOldVectorToRewrittenContent(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: "old fact", Category: CategoryUserFact}); err != nil {
+		t.Fatal(err)
+	}
+
+	emb := &gatedContentEmbedder{
+		oldStarted: make(chan struct{}),
+		oldRelease: make(chan struct{}),
+		newStarted: make(chan struct{}),
+		newRelease: make(chan struct{}),
+	}
+	defer releaseGate(emb.oldRelease)
+	defer releaseGate(emb.newRelease)
+
+	store.SetEmbedder(emb)
+	select {
+	case <-emb.oldStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backfill did not start embedding the original text")
+	}
+
+	store.mu.RLock()
+	id := store.entries[0].ID
+	store.mu.RUnlock()
+	if err := store.Update(id, "new fact", CategoryUserFact, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-emb.newStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rewrite did not start embedding the new text")
+	}
+
+	releaseGate(emb.oldRelease)
+	time.Sleep(200 * time.Millisecond)
+
+	store.mu.RLock()
+	got := store.entries[0]
+	store.mu.RUnlock()
+	if got.Content != "new fact" {
+		t.Fatalf("backfill restored old content: %+v", got)
+	}
+	if len(got.Embedding) != 0 {
+		t.Fatalf("backfill attached a vector for the old text: %v", got.Embedding)
+	}
+
+	releaseGate(emb.newRelease)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.RLock()
+		vec := append([]float32(nil), store.entries[0].Embedding...)
+		content := store.entries[0].Content
+		store.mu.RUnlock()
+		if content == "new fact" && len(vec) == 4 && vec[1] == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("rewritten text did not receive its own embedding")
 }

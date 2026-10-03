@@ -216,13 +216,23 @@ export function SuggestCombobox({
                 autoCorrect="off"
                 spellCheck={false}
                 autoComplete="off"
-                style={inputClassName ? { flex: 1, minWidth: 0, width: "auto" } : {
+                style={inputClassName ? {
+                    flex: 1,
+                    minWidth: 0,
+                    width: "auto",
+                    borderTopRightRadius: 0,
+                    borderBottomRightRadius: 0,
+                    borderTopLeftRadius: "var(--radius-md, 10px)",
+                    borderBottomLeftRadius: "var(--radius-md, 10px)",
+                } : {
                     ...inputStyle,
                     flex: 1,
                     width: "auto",
                     minWidth: 0,
                     borderTopRightRadius: 0,
                     borderBottomRightRadius: 0,
+                    borderTopLeftRadius: "var(--radius-md, 10px)",
+                    borderBottomLeftRadius: "var(--radius-md, 10px)",
                 }}
                 onChange={(event) => {
                     const next = event.target.value;
@@ -304,7 +314,7 @@ export function SuggestCombobox({
                     color: "var(--theme-text-primary)",
                     border: fieldBorder,
                     borderLeft: 0,
-                    borderRadius: "0 4px 4px 0",
+                    borderRadius: "0 var(--radius-md, 10px) var(--radius-md, 10px) 0",
                     opacity: disabled || !hasOptions ? 0.5 : 1,
                 }}
             >
@@ -332,7 +342,7 @@ export function SuggestCombobox({
                         ...(listClassName ? {} : {
                             padding: 4,
                             border: fieldBorder,
-                            borderRadius: 4,
+                            borderRadius: "var(--radius-md, 10px)",
                             background: "var(--theme-surface)",
                             boxShadow: "0 8px 20px rgba(15, 23, 42, 0.14)",
                         }),
@@ -364,7 +374,7 @@ export function SuggestCombobox({
                                     gap: 2,
                                     padding: "8px 10px",
                                     border: 0,
-                                    borderRadius: 4,
+                                    borderRadius: "var(--radius-sm, 6px)",
                                     background: active ? "var(--theme-primary-soft)" : "transparent",
                                     color: "var(--theme-text-primary)",
                                     cursor: "pointer",

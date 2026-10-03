@@ -6,16 +6,7 @@ import (
 	"testing"
 )
 
-// TestStoreAliasWiring_ExpansionProducesAdditionalBM25Hits verifies that the
-// alias index wiring in RecallDynamic produces additional BM25 hits when
-// querying by an alias registered during SaveWithContext.
-//
-// Scenario:
-// 1. Save an entry about "api.rapidai.tech" with contextHint containing "4090服务器"
-// 2. Query using "4090服务器" — without alias expansion, BM25 would not match
-//    "api.rapidai.tech" in the content. With alias expansion, the query expands
-//    to include "api.rapidai.tech" which matches via BM25.
-func TestStoreAliasWiring_ExpansionProducesAdditionalBM25Hits(t *testing.T) {
+func TestStoreAliasWiring_ExplicitAliasSurvivesReloadAndStaysOwnerScoped(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "memories.json")
 
@@ -25,30 +16,21 @@ func TestStoreAliasWiring_ExpansionProducesAdditionalBM25Hits(t *testing.T) {
 	}
 	defer store.Stop()
 
-	// Save an entry about the server with context providing the alias.
 	entry := Entry{
 		Content:  "SSH server api.rapidai.tech port 22 user root, GPU is NVIDIA RTX 4090",
 		Category: CategoryProjectKnowledge,
-		Tags:     []string{"api.rapidai.tech"},
+		Tags:     []string{"api.rapidai.tech", ExplicitAliasTag("4090服务器", "api.rapidai.tech")},
+		OwnerID:  "user-a",
 	}
 	contextHint := "用户称这台服务器为4090服务器，主机名是api.rapidai.tech"
-
 	if err := store.SaveWithContext(entry, contextHint); err != nil {
 		t.Fatalf("SaveWithContext: %v", err)
 	}
 
-	// Verify the alias index was populated by the SaveWithContext call.
-	if store.aliasIndex.Len() == 0 {
-		t.Fatal("aliasIndex should have been populated by SaveWithContext")
+	if got := store.aliasIndex.ExpandForOwner([]string{"4090服务器"}, "user-b"); len(got) != 0 {
+		t.Fatalf("other owner expanded aliases: %v", got)
 	}
-
-	// Verify that querying by the alias "4090服务器" finds the entry.
-	// This relies on alias expansion in RecallDynamic augmenting the BM25 multi-query set.
-	results := store.RecallDynamic("4090服务器", "", "", "")
-	if len(results) == 0 {
-		t.Fatal("RecallDynamic with alias query should return results via alias expansion")
-	}
-
+	results := store.RecallDynamic("4090服务器", "", "", "user-a")
 	found := false
 	for _, r := range results {
 		if r.Content == entry.Content {
@@ -57,21 +39,18 @@ func TestStoreAliasWiring_ExpansionProducesAdditionalBM25Hits(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected to find the server entry via alias '4090服务器' query expansion")
+		t.Fatal("RecallDynamic should find the server entry via the explicit alias")
 	}
 
-	// Also verify rebuild populates alias index after store reload.
 	store.Stop()
 	store2, err := NewStore(storePath)
 	if err != nil {
 		t.Fatalf("NewStore (reload): %v", err)
 	}
 	defer store2.Stop()
-
-	if store2.aliasIndex.Len() == 0 {
-		t.Error("aliasIndex should be populated after store reload (via rebuildDerivedIndexesLocked)")
+	if got := store2.aliasIndex.ExpandForOwner([]string{"4090服务器"}, "user-a"); len(got) != 1 || got[0] != "api.rapidai.tech" {
+		t.Fatalf("explicit alias missing after reload: %v", got)
 	}
-
 	_ = os.RemoveAll(dir)
 }
 

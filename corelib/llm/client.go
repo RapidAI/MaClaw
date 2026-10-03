@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -215,13 +216,9 @@ func buildOpenAIChatRequestBody(
 	// Explicit user choices are translated to the selected provider's native
 	// request shape. Auto keeps the historic DeepSeek V4 default below.
 	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIChat)
-	if corelib.IsAutoThinkingMode(cfg.ThinkingMode) && corelib.IsDeepSeekThinkingModeModel(cfg) {
-		// DeepSeek V4+ thinking mode defaults to enabled, but some deployments
-		// only return reasoning_content when it is stated explicitly.
-		if _, hasThinking := reqBody["thinking"]; !hasThinking {
-			reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
-		}
-	}
+	// DeepSeek V4+ defaults to enabled, but some hosts only return
+	// reasoning_content when thinking.type is present. AMD is not one of them.
+	corelib.AddAutoDeepSeekThinkingObject(cfg, reqBody)
 	// Cap reasoning budget when tools present (room for tool-call JSON).
 	// DeepSeek uses reasoning_effort, not Anthropic budget_tokens. WorkBuddy
 	// returns an empty reasoning_content when only thinking.type is set.
@@ -238,23 +235,50 @@ func buildOpenAIChatRequestBody(
 			}
 		}
 	}
-	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) && !corelib.IsDeepSeekThinkingModeModel(cfg) {
-		// DeepSeek effort is stamped below. This branch must not write
-		// "minimal" or "medium", which that API rejects.
-		switch strings.ToLower(re) {
-		case "none", "off", "0", "false":
-			reqBody["reasoning_effort"] = "minimal"
-		default:
-			reqBody["reasoning_effort"] = re
+	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) && !openAIChatBodyHasReasoningControl(reqBody) {
+		if corelib.IsAMDRadeonPublicChatEndpoint(cfg) {
+			// A configured effort on auto must still be expressed, but only in
+			// a tier this gateway accepts. Do not write the raw value first:
+			// Qwen on AMD rejects high, and minimal is not a portable tier.
+			next := cfg
+			next.ReasoningEffort = re
+			next.ThinkingMode = "enabled"
+			switch strings.ToLower(re) {
+			case "none", "off", "0", "false":
+				next.ThinkingMode = "disabled"
+			}
+			corelib.ApplyReasoningControls(next, reqBody, corelib.ReasoningAPIChat)
+		} else if !corelib.IsDeepSeekThinkingModeModel(cfg) {
+			// Official DeepSeek effort is stamped below and rejects minimal/medium.
+			switch strings.ToLower(re) {
+			case "none", "off", "0", "false":
+				reqBody["reasoning_effort"] = "minimal"
+			default:
+				reqBody["reasoning_effort"] = re
+			}
 		}
 	}
-	applyConfigTemperature(reqBody, cfg)
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		normalizeDeepSeekFlashUnsupportedOptions(reqBody)
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
 	}
-	corelib.StampDeepSeekReasoningEffort(cfg, reqBody)
+	corelib.FinishOpenAIChatReasoningControls(cfg, reqBody)
+	// Temperature is applied after AMD rewrite. A leftover thinking object
+	// used to suppress it, and that object is then removed for this host.
+	applyConfigTemperature(reqBody, cfg)
 	return reqBody
+}
+
+func openAIChatBodyHasReasoningControl(body map[string]interface{}) bool {
+	if body == nil {
+		return false
+	}
+	for _, key := range []string{"thinking", "reasoning", "reasoning_effort", "enable_thinking"} {
+		if _, ok := body[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func isExplicitOpenAIToolChoice(toolChoice interface{}) bool {
@@ -2426,6 +2450,30 @@ func DoOpenAIRequestRaw(
 	return doOpenAIRequestRawWithOptions(ctx, cfg, messages, client, OpenAIChatRequestOptions{Stream: false, Tools: tools})
 }
 
+// llmTransportContextError reports a request that stopped because its context
+// ended. The HTTP status can still be 200 when cancellation arrives while the
+// body is being read.
+func llmTransportContextError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// llmIncompleteSuccessBody is a 200 whose bytes are not a JSON document while
+// the transport also failed. Parsing that prefix replaces a deadline or a
+// dropped connection with a JSON error. A non-200 body, including a 502 HTML
+// page, stays a status error even when it is not JSON.
+func llmIncompleteSuccessBody(statusCode int, body []byte, err error) bool {
+	if err == nil || statusCode != http.StatusOK {
+		return false
+	}
+	return !json.Valid(bytes.TrimSpace(body))
+}
+
 func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, opts OpenAIChatRequestOptions) (*Response, []byte, error) {
 	tools := opts.Tools
 	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
@@ -2440,7 +2488,9 @@ func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 	body, statusCode, err := openAISDKChatRaw(ctx, cfg, reqBody, client)
 	if err != nil {
 		log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
-		if statusCode == 0 {
+		// A canceled or expired request can still report HTTP 200 with a prefix
+		// or an empty body. Parsing that body hides the transport error.
+		if statusCode == 0 || llmTransportContextError(ctx, err) || llmIncompleteSuccessBody(statusCode, body, err) {
 			return nil, nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}
 	}
@@ -2469,7 +2519,7 @@ func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 			body, statusCode, err = openAISDKChatRaw(ctx, cfg, reqBody, client)
 			if err != nil {
 				log.Printf("[LLM] retry_compact_messages done %s model=%s configured_model=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
-				if statusCode == 0 {
+				if statusCode == 0 || llmTransportContextError(ctx, err) || llmIncompleteSuccessBody(statusCode, body, err) {
 					return nil, body, fmt.Errorf("[%s] %w", endpoint, err)
 				}
 			}

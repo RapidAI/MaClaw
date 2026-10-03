@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { applyFileUpdate, applyOpenWorkspaceFile, initialState, type CodePreviewUIState } from '../useCodePreviewState';
+import { acceptTaskResultFileEvent, acceptWorkspacePreviewFile, applyFileUpdate, applyOpenWorkspaceFile, filterCodePreviewStateForProject, initialState, latexWorkbenchFromAgentFile, prepareLatexResultFile, withTaskResultMark, type CodePreviewUIState } from '../useCodePreviewState';
+import { codePreviewHasTaskResult, shouldReopenTaskResultPreview } from '../assistantPreviewState';
 import type { CodeFile } from '../useCodePreviewState';
 
 /**
@@ -50,6 +51,140 @@ describe('applyFileUpdate presentation preservation', () => {
             expect(state.files.get('main.tex')?.latexWorkbench).toBe(true);
         }
         expect(state.files.get('main.tex')?.content).toBe('draft 4');
+    });
+
+    it('opens the result pane for a new or rewritten task file', () => {
+        const sessionID = 'local-tools:desktop-user:expert:builtin-paper-polish';
+        for (const sample of [
+            { opType: 'create' as const, filePath: 'reports/brief.md', fileName: 'brief.md' },
+            { opType: 'modify' as const, filePath: 'reports/deck.pptx', fileName: 'deck.pptx' },
+        ]) {
+            expect(acceptTaskResultFileEvent({
+                opType: sample.opType,
+                forceOpen: true,
+                eventProjectPath: 'F:/work',
+                tabProjectPath: 'D:/tasks/office',
+                sessionID,
+                expertId: 'builtin-paper-polish',
+                expertTab: true,
+            })).toBe(true);
+            const opened = applyFileUpdate(initialState(), {
+                sessionID,
+                filePath: sample.filePath,
+                fileName: sample.fileName,
+                absPath: `F:/work/${sample.filePath}`,
+                projectPath: 'F:/work',
+                content: 'result',
+                language: 'plaintext',
+                opType: sample.opType,
+                updatedAt: 1,
+                forceOpen: true,
+            });
+            expect(opened.active).toBe(true);
+            const kept = filterCodePreviewStateForProject(opened, 'D:/tasks/office', undefined, false, false, true, 'builtin-paper-polish');
+            expect(kept.files.has(sample.filePath)).toBe(true);
+        }
+        expect(acceptTaskResultFileEvent({
+            opType: 'modify',
+            forceOpen: true,
+            eventProjectPath: 'F:/other-project',
+            tabProjectPath: 'D:/tasks/office',
+            sessionID: 'local-tools:desktop-user:project',
+            expertId: 'builtin-paper-polish',
+            expertTab: true,
+        })).toBe(false);
+        expect(acceptTaskResultFileEvent({
+            opType: 'modify',
+            forceOpen: true,
+            eventProjectPath: 'F:/work',
+            sessionID: 'local-tools:desktop-user:expert:builtin-paper-polish-extra',
+            expertId: 'builtin-paper-polish',
+            expertTab: true,
+        })).toBe(false);
+    });
+
+    it('keeps a task result marked after a later read', () => {
+        const written = withTaskResultMark({
+            filePath: 'reports/brief.md',
+            fileName: 'brief.md',
+            content: 'result',
+            language: 'markdown',
+            opType: 'modify' as const,
+            updatedAt: 2,
+            forceOpen: true,
+        }, true);
+        expect((written as { taskResult?: boolean }).taskResult).toBe(true);
+        expect((withTaskResultMark({ opType: 'read' as const }, true) as { taskResult?: boolean }).taskResult).toBeUndefined();
+        expect((withTaskResultMark({ opType: 'modify' as const }, false) as { taskResult?: boolean }).taskResult).toBeUndefined();
+        const opened = applyFileUpdate(initialState(), written);
+        const reread = applyFileUpdate(opened, {
+            filePath: 'reports/brief.md',
+            fileName: 'brief.md',
+            content: 'result',
+            language: 'markdown',
+            opType: 'read',
+            updatedAt: 3,
+        });
+        expect(reread.files.get('reports/brief.md')?.taskResult).toBe(true);
+        expect(codePreviewHasTaskResult(reread)).toBe(true);
+        expect(codePreviewHasTaskResult(initialState())).toBe(false);
+        expect(shouldReopenTaskResultPreview({ ...reread, active: false })).toBe(true);
+        expect(shouldReopenTaskResultPreview(reread)).toBe(false);
+    });
+
+    it('opens the result pane for both a new tex and a rewritten tex', () => {
+        for (const opType of ['create', 'modify'] as const) {
+            const file = prepareLatexResultFile({
+                filePath: 'elsarticle/paper.tex',
+                fileName: 'paper.tex',
+                absPath: 'F:/latex-test3/elsarticle/paper.tex',
+                projectPath: 'D:/tasks/latex',
+                content: '\\begin{document}paper\\end{document}',
+                language: 'plaintext',
+                opType,
+                updatedAt: 1,
+            }, 'D:/tasks/latex');
+            expect(file.latexWorkbench).toBe(true);
+            expect(file.forceOpen).toBe(true);
+            expect(file.opType).toBe(opType);
+            const read = prepareLatexResultFile({ ...file, opType: 'read', forceOpen: false }, 'D:/tasks/latex');
+            expect(read.latexWorkbench).toBe(true);
+            expect(read.forceOpen).toBe(false);
+            expect(acceptWorkspacePreviewFile(file, 'D:/tasks/latex')).toBeNull();
+            const adopted = applyOpenWorkspaceFile(initialState(), file);
+            expect(adopted.active).toBe(true);
+            expect(adopted.files.get('elsarticle/paper.tex')?.latexWorkbench).toBe(true);
+            expect(file.projectPath).toBe('F:/latex-test3');
+            const opened = applyFileUpdate(initialState(), file);
+            expect(opened.active).toBe(true);
+            expect(opened.files.get('elsarticle/paper.tex')?.latexWorkbench).toBe(true);
+            const kept = filterCodePreviewStateForProject(opened, 'D:/tasks/latex', undefined, false, true);
+            expect(kept.files.has('elsarticle/paper.tex')).toBe(true);
+            expect(kept.active).toBe(true);
+        }
+    });
+
+    it('adopts a rewrite of an exported template as the paper preview', () => {
+        const rewrite = latexWorkbenchFromAgentFile({
+            filePath: 'elsarticle/elsarticle-template-num.tex',
+            fileName: 'elsarticle-template-num.tex',
+            projectPath: 'D:/tasks/latex',
+            content: '\\documentclass{elsarticle}\n\\begin{document}paper\\end{document}',
+            language: 'latex',
+            opType: 'modify',
+            updatedAt: 2,
+        }, '');
+        expect(rewrite?.latexWorkbench).toBe(true);
+        expect(rewrite?.projectPath).toBe('D:/tasks/latex');
+        expect(latexWorkbenchFromAgentFile(rewrite!, '')).toBeNull();
+        expect(latexWorkbenchFromAgentFile({
+            filePath: 'notes.md',
+            fileName: 'notes.md',
+            content: 'hello',
+            language: 'markdown',
+            opType: 'modify',
+            updatedAt: 2,
+        })).toBeNull();
     });
 
     it('does not add a workbench flag to an ordinary file', () => {

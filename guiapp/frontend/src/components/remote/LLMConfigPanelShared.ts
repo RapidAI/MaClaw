@@ -2,6 +2,8 @@ import type { CSSProperties } from "react";
 import { colors } from "./styles";
 import { localizeHubServiceReason } from "../../utils/hubServiceI18n";
 import { mergeHubCreditGrants } from "../../utils/hubCredits";
+import { FetchProviderModels } from "../../../wailsjs/go/main/App";
+import { effectiveAgentType } from "./userAgent";
 
 export interface LLMProvider {
 	/** Stable backend identifier; provider name is display-only. */
@@ -16,6 +18,8 @@ export interface LLMProvider {
     is_custom?: boolean;
 	/** Set after this provider's current configuration passes Test & Save. */
 	connection_test_passed?: boolean;
+    /** Platform-hosted MaClaw Official service. Never shared into Token Bank. */
+    is_hub_service?: boolean;
     auth_type?: string;
     refresh_token?: string;
     token_expires_at?: number;
@@ -93,14 +97,14 @@ export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string;
 /* Hoisted style objects (avoid re-creation per render). */
 export const inputStyle: CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: `1px solid ${colors.border}`, borderRadius: 4,
+    border: `1px solid ${colors.border}`, borderRadius: "var(--radius-md, 10px)",
     background: colors.surface, color: colors.text, boxSizing: "border-box",
 };
 export const labelStyle: CSSProperties = {
     fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 4, display: "block",
 };
 export const readonlyStyle: CSSProperties = {
-    ...inputStyle, background: colors.bg, color: colors.textMuted, cursor: "default",
+    ...inputStyle, color: colors.textMuted, cursor: "default",
 };
 
 const secretLikeFieldRe = /(api[_-]?key|authorization|bearer|token|secret|password)\s*[:=]\s*\S+/gi;
@@ -314,4 +318,73 @@ export interface HubLLMServiceStatus {
     active_grants?: HubLLMActiveGrant[];
     credit_grants?: HubLLMActiveGrant[];
     inactive_reasons?: string[];
+}
+
+// ── Token Bank share adapters (§7.1) ─────────────────────────────────────────
+//
+// These live here rather than in LLMConfigPanel so that file stays under its
+// 1600-line guard. They deliberately reuse the same model discovery and provider
+// test the normal provider dialog uses: a second probing implementation would be
+// a second source of truth about whether a provider works.
+
+export type ProviderProbeOutcome = { ok: boolean; latencyMs?: number; error?: string };
+
+/**
+ * Discover the provider's model ids.
+ *
+ * Falls back to the provider's configured model when the live list is empty, so
+ * a provider that exposes exactly one model through its config is still
+ * shareable rather than showing "no models found".
+ */
+export async function listProviderModelsForShare(provider: LLMProvider): Promise<string[]> {
+    const models = await FetchProviderModels(
+        provider.url || "",
+        provider.key || "",
+        provider.protocol || "openai",
+        effectiveAgentType(provider),
+    );
+    const ids = (models || [])
+        .map((item: { id?: string } | null) => String(item?.id || "").trim())
+        .filter(Boolean);
+    // The bank matches model names case-insensitively. Two spellings of the
+    // same id would render two rows and submit two members.
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+        const key = id.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(id);
+    }
+    if (unique.length > 0) return unique;
+    const single = String(provider.model || "").trim();
+    return single ? [single] : [];
+}
+
+/**
+ * Probe one catalog model on the saved provider.
+ *
+ * The binding is loaded on demand so panels that stub the Wails App module do
+ * not have to export a method they never call. The backend looks the provider
+ * up by name, tests `model`, and does not save. The previous call passed the
+ * saved model as the provider name, so every row reported
+ * `provider "<saved model>" not found` and a successful call would have
+ * replaced the provider list.
+ */
+export async function probeProviderModelForShare(
+    provider: LLMProvider,
+    model: string,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): Promise<ProviderProbeOutcome> {
+    const startedAt = Date.now();
+    const providerName = String(provider.name || "").trim();
+    const target = String(model || "").trim();
+    try {
+        const { ProbeMaclawLLMProviderModel } = await import("../../../wailsjs/go/main/App");
+        await ProbeMaclawLLMProviderModel(providerName, target);
+        return { ok: true, latencyMs: Date.now() - startedAt };
+    } catch (error) {
+        const raw = error instanceof Error ? error.message : String(error);
+        return { ok: false, latencyMs: Date.now() - startedAt, error: formatProviderTestErrorOrFallback(raw, t) };
+    }
 }

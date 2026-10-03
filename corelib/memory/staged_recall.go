@@ -61,7 +61,7 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
 	aliasExpanded := expanded.Entities
 	if store.aliasIndex != nil && len(expanded.Entities) > 0 {
-		aliases := store.aliasIndex.Expand(expanded.Entities)
+		aliases := store.aliasIndex.ExpandForOwner(expanded.Entities, opts.OwnerID)
 		if len(aliases) > 0 {
 			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
 		}
@@ -336,7 +336,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 		// Pre-compute alias list once (same for all expanded entries).
 		var aliasTerms []string
 		if store.aliasIndex != nil && len(expanded.Entities) > 0 {
-			aliasTerms = store.aliasIndex.Expand(expanded.Entities)
+			aliasTerms = store.aliasIndex.ExpandForOwner(expanded.Entities, ownerID)
 		}
 		for i := preExpandLen; i < len(scored); i++ {
 			if len(expanded.Entities) > 0 {
@@ -372,7 +372,7 @@ func stagedRecallEntryAllowed(e Entry, ownerID string, strictOwner bool, project
 		return false
 	}
 	// OwnerID isolation: skip entries owned by a different user.
-	if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+	if !namedOwnerVisible(e.OwnerID, ownerID) {
 		return false
 	}
 	// Skip categories not relevant to proactive recall.

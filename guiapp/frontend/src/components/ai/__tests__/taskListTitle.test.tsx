@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+
+const cloudEntitlement = vi.hoisted(() => vi.fn(async () => ({ workspaces: [] as Array<{ id: string; name: string }> })));
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+    CloudWorkspaceEntitlement: () => cloudEntitlement(),
+}));
 import type { AITab } from "../AITabTypes";
 import { TaskExecutionHeading } from "../TaskExecutionHeading";
 import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from "../codingTaskMode";
@@ -96,6 +101,8 @@ describe("assistant task title", () => {
 });
 
 describe("TaskExecutionHeading", () => {
+    afterEach(() => { cleanup(); });
+
     it("shows the title the panel already resolved from the task list", () => {
         render(
             <TaskExecutionHeading
@@ -106,5 +113,89 @@ describe("TaskExecutionHeading", () => {
             />,
         );
         expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(listedName);
+    });
+
+    it("shows a local path, a remote server, and a cloud workspace name", () => {
+        const status = { tone: "done", label: "已完成" };
+        const { rerender } = render(
+            <TaskExecutionHeading
+                activeTab={{ ...tab, type: "project" }}
+                lang="zh-CN"
+                status={status}
+                taskCreatedLabel="10/03 05:15"
+                workingDirPath="D:/work/app"
+                title="北京天气"
+            />,
+        );
+        const localMeta = screen.getByTestId("task-execution-meta");
+        expect(localMeta.textContent).toContain("D:/work/app");
+        expect(localMeta.textContent).not.toContain("本地");
+        expect(localMeta.getAttribute("title")).toContain("D:/work/app");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={{ ...tab, type: "project" }}
+                lang="zh-CN"
+                status={status}
+                taskCreatedLabel="10/03 05:15"
+                workingDirPath="C:\\Users\\me\\.maclaw\\data\\tasks\\你好呀-1\\workspace"
+                remoteWorkspace={{ host: "www.driverdevelopment.com", workDir: "/home/ubuntu/app" }}
+                remoteWorkspaceLabel="www.driverdevelopment.com:/home/ubuntu/app"
+                title="你好呀"
+            />,
+        );
+        const remoteMeta = screen.getByTestId("task-execution-meta");
+        expect(remoteMeta.textContent).toContain("www.driverdevelopment.com");
+        expect(remoteMeta.textContent).not.toContain("/home/ubuntu/app");
+        expect(remoteMeta.textContent).not.toContain("你好呀-1");
+        expect(remoteMeta.getAttribute("title")).toBe("由你创建 · 10/03 05:15 · www.driverdevelopment.com:/home/ubuntu/app");
+
+        rememberCloudWorkspaceDisplayName("cws_abc", "标书项目");
+        try {
+            rerender(
+                <TaskExecutionHeading
+                    activeTab={{ ...tab, type: "project" }}
+                    lang="zh-CN"
+                    status={status}
+                    taskCreatedLabel="10/03 05:15"
+                    workingDirPath="C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant\\cws_abc"
+                    title="标书"
+                />,
+            );
+            const cloudMeta = screen.getByTestId("task-execution-meta");
+            expect(cloudMeta.textContent).toContain("标书项目");
+            expect(cloudMeta.textContent).not.toMatch(/cloud-workspaces/);
+            act(() => { rememberCloudWorkspaceDisplayName("cws_abc", "新名称"); });
+            expect(screen.getByTestId("task-execution-meta").textContent).toContain("新名称");
+        } finally {
+            act(() => { __resetCloudWorkspaceDisplayNamesForTests(); });
+        }
+    });
+
+    it("shows a shared cloud workspace name when entitlement arrives", async () => {
+        __resetCloudWorkspaceDisplayNamesForTests();
+        let resolveEnt: (value: unknown) => void = () => {};
+        cloudEntitlement.mockReturnValue(new Promise((resolve) => { resolveEnt = resolve as (value: unknown) => void; }));
+        try {
+            render(
+                <TaskExecutionHeading
+                    activeTab={{ ...tab, type: "project" }}
+                    lang="zh-CN"
+                    status={{ tone: "done", label: "已完成" }}
+                    workingDirPath="C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_shared"
+                    title="分享任务"
+                />,
+            );
+            expect(screen.getByTestId("task-execution-meta").textContent).toContain("云端工作区");
+            await act(async () => {
+                resolveEnt({ shared: [{ id: "cws_shared", name: "共享标书" }] });
+            });
+            expect(screen.getByTestId("task-execution-meta").textContent).toContain("共享标书");
+            expect(screen.getByTestId("task-execution-meta").textContent).not.toMatch(/cloud-workspaces/);
+        } finally {
+            cloudEntitlement.mockReset();
+            cloudEntitlement.mockResolvedValue({ workspaces: [] });
+            act(() => { __resetCloudWorkspaceDisplayNamesForTests(); });
+        }
     });
 });

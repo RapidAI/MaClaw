@@ -293,7 +293,7 @@ function initNotificationNav() {
     + '<small data-i18n="navNotificationsDesc">' + tr('navNotificationsDesc') + '</small>';
   // Insert into content group after news (or before failurelogs/system fallback)
   var newsBtn = nav.querySelector('[data-tab="news"]');
-  var group = (newsBtn && newsBtn.closest('.nav-group')) || nav.querySelector('.nav-group[data-nav-group="content"]') || nav;
+  var group = (newsBtn && newsBtn.closest('.nav-group')) || nav.querySelector('.nav-group[data-nav-group="community"]') || nav;
   if (newsBtn && newsBtn.parentNode === group) {
     group.insertBefore(btn, newsBtn.nextSibling);
   } else {

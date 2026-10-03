@@ -2,9 +2,11 @@ package tinytex
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -181,28 +183,206 @@ func NeedsRerun(log string) bool {
 		strings.Contains(lower, "please (re)run latex")
 }
 
-// ErrorExcerpt keeps the lines a repair model needs.
-func ErrorExcerpt(log string) string {
+// repairBlockRe is the edit the model is required to return. The marker and
+// the two source line numbers are the fields; a space after the marker is
+// optional. The body replaces that closed range.
+var repairBlockRe = regexp.MustCompile(`(?s)@@@\s*(\d+)\s+(\d+)\s*\n(.*?)@@@`)
+
+const repairWindowRadius = 12
+
+// ErrorLine is the first file:line reported in a TeX log. The line is 1-based.
+func ErrorLine(log string) (int, bool) {
+	match := texErrorRe.FindStringSubmatch(log)
+	if len(match) < 3 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(match[2])
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+// splitSourceLines drops the empty element Split leaves after a final newline,
+// so a window does not gain a phantom line past the last source line.
+func splitSourceLines(source string) (lines []string, trailingNewline bool) {
+	trailingNewline = strings.HasSuffix(source, "\n")
+	lines = strings.Split(source, "\n")
+	if trailingNewline && len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, trailingNewline
+}
+
+func joinSourceLines(lines []string, trailingNewline bool) string {
+	joined := strings.Join(lines, "\n")
+	if trailingNewline {
+		return joined + "\n"
+	}
+	return joined
+}
+
+// FormatRepairWindow returns a numbered slice around line. start and end are
+// 1-based and inclusive.
+func FormatRepairWindow(source string, line int) (start, end int, numbered string, ok bool) {
+	lines, _ := splitSourceLines(source)
+	if line < 1 || line > len(lines) {
+		return 0, 0, "", false
+	}
+	start = line - repairWindowRadius
+	if start < 1 {
+		start = 1
+	}
+	end = line + repairWindowRadius
+	if end > len(lines) {
+		end = len(lines)
+	}
 	var b strings.Builder
-	n := 0
-	for _, line := range strings.Split(log, "\n") {
-		trim := strings.TrimSpace(line)
-		if trim == "" {
+	for i := start; i <= end; i++ {
+		fmt.Fprintf(&b, "%d|%s\n", i, lines[i-1])
+	}
+	return start, end, b.String(), true
+}
+
+// ApplyRepairReply applies the line range named in the model reply.
+// The range must cover the line the compiler reported and must sit inside
+// the window that was shown to the model. Lines outside that range stay.
+func ApplyRepairReply(source, excerpt, reply string) (string, bool) {
+	line, ok := ErrorLine(excerpt)
+	if !ok {
+		return "", false
+	}
+	winStart, winEnd, _, ok := FormatRepairWindow(source, line)
+	if !ok {
+		return "", false
+	}
+	match := repairBlockRe.FindStringSubmatch(extractLatexFence(reply))
+	if len(match) != 4 {
+		return "", false
+	}
+	start, err1 := strconv.Atoi(match[1])
+	end, err2 := strconv.Atoi(match[2])
+	if err1 != nil || err2 != nil || start > end || start < winStart || end > winEnd || line < start || line > end {
+		return "", false
+	}
+	inner := strings.Trim(match[3], "\r\n")
+	var replLines []string
+	if inner != "" {
+		replLines = strings.Split(inner, "\n")
+		for i, replLine := range replLines {
+			replLines[i] = strings.TrimRight(replLine, "\r")
+		}
+	}
+	origLines, trailingNL := splitSourceLines(source)
+	if start < 1 || end > len(origLines) {
+		return "", false
+	}
+	out := append([]string{}, origLines[:start-1]...)
+	out = append(out, replLines...)
+	out = append(out, origLines[end:]...)
+	joined := joinSourceLines(out, trailingNL)
+	if declaresDocument(source) && !declaresDocument(joined) {
+		return "", false
+	}
+	if strings.TrimSpace(joined) == strings.TrimSpace(source) {
+		return "", false
+	}
+	return joined, true
+}
+
+// ErrorExcerpt is the compiler's error record: the first file:line error and
+// the lines TeX printed under it, through the end-of-run trailer. Warnings
+// above that error stay out. The record is what a repair is shown.
+func ErrorExcerpt(log string) string {
+	return errorRecord(log, "", "")
+}
+
+// ErrorExcerptFor is the error record whose file:line belongs to file.
+// file is the source the repair will edit, so the line number in the record
+// is a line of that source. A line number from a different file is not used.
+func ErrorExcerptFor(log, root, file string) string {
+	if strings.TrimSpace(file) == "" {
+		return ErrorExcerpt(log)
+	}
+	return errorRecord(log, root, file)
+}
+
+func errorRecord(log, root, file string) string {
+	lines := strings.Split(log, "\n")
+	start := -1
+	for i, line := range lines {
+		match := texErrorRe.FindStringSubmatch(line)
+		if len(match) < 3 {
 			continue
 		}
-		if strings.HasPrefix(trim, "!") || strings.Contains(trim, ".tex:") || strings.Contains(trim, "not found") {
-			b.WriteString(trim)
-			b.WriteByte('\n')
-			n++
-			if n >= 40 {
+		if file != "" && !texLogNamesFile(match[1], root, file) {
+			continue
+		}
+		start = i
+		break
+	}
+	if start < 0 {
+		if file != "" {
+			return ""
+		}
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "!") {
+				start = i
 				break
 			}
 		}
 	}
-	if b.Len() == 0 {
+	if start < 0 {
 		return clip(log, 2000)
 	}
-	return clip(b.String(), 4000)
+	var b strings.Builder
+	n := 0
+	for i := start; i < len(lines) && n < 40; i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		if i > start && (texLogTrailer(line) || (file != "" && texLogOtherFile(line, root, file))) {
+			break
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+		n++
+	}
+	text := strings.TrimSpace(b.String())
+	if text == "" {
+		return clip(log, 2000)
+	}
+	return clip(text, 4000)
+}
+
+func texLogOtherFile(line, root, file string) bool {
+	match := texErrorRe.FindStringSubmatch(line)
+	return len(match) >= 3 && !texLogNamesFile(match[1], root, file)
+}
+
+// texLogTrailer reports the summary TeX prints after the error record.
+func texLogTrailer(line string) bool {
+	trim := strings.TrimSpace(line)
+	return strings.HasPrefix(trim, "Here is how much of TeX's memory") ||
+		strings.HasPrefix(trim, "Output written on ") ||
+		strings.HasPrefix(trim, "Transcript written on ")
+}
+
+// texLogNamesFile reports that a file:line path from the log is file.
+// The engine's working directory is root, and the log path is relative to it.
+func texLogNamesFile(logName, root, file string) bool {
+	logName = strings.TrimSpace(logName)
+	file = strings.TrimSpace(file)
+	if logName == "" || file == "" {
+		return false
+	}
+	file = filepath.Clean(file)
+	cleaned := filepath.Clean(logName)
+	if filepath.IsAbs(cleaned) {
+		return strings.EqualFold(cleaned, file)
+	}
+	if strings.TrimSpace(root) == "" {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(filepath.Join(root, logName)), file)
 }
 
 // ErrorFile is the .tex named by file:line errors, limited to root.
@@ -467,27 +647,33 @@ func Preview(ctx context.Context, texPath string, opt PreviewOptions) (PreviewRe
 		if didInstall {
 			continue
 		}
-		if repairs >= maxSourceRepairs || opt.Repair == nil {
-			break
-		}
 		target := ErrorFile(root, log, main)
 		source, readErr := readRepairSource(target)
 		if readErr != nil {
 			break
 		}
-		phase(opt, "repairing", filepath.Base(target))
-		replacement, ok, repairErr := opt.Repair(ctx, target, source, ErrorExcerpt(log))
-		repairs++
-		if repairErr != nil || !ok {
+		// A rejected reply leaves the file unchanged, so ask again without
+		// another engine pass. A transport error still stops the loop.
+		wrote := false
+		for repairs < maxSourceRepairs && opt.Repair != nil && !wrote {
+			phase(opt, "repairing", filepath.Base(target))
+			replacement, ok, repairErr := opt.Repair(ctx, target, source, ErrorExcerptFor(log, root, target))
+			repairs++
 			if repairErr != nil {
 				break
 			}
-			continue
+			if !ok {
+				continue
+			}
+			if err := writeRepaired(target, source, replacement); err != nil {
+				return PreviewResult{Log: clip(lastLog, 4000), Message: "无法写回修复后的源文件"}, err
+			}
+			repaired = true
+			wrote = true
 		}
-		if err := writeRepaired(target, source, replacement); err != nil {
-			return PreviewResult{Log: clip(lastLog, 4000), Message: "无法写回修复后的源文件"}, err
+		if !wrote {
+			break
 		}
-		repaired = true
 	}
 	message := "编译失败"
 	if excerpt := ErrorExcerpt(lastLog); excerpt != "" {

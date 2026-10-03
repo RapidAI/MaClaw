@@ -119,7 +119,7 @@ func TestAdminFeatureIcons(t *testing.T) {
 		`item-title" data-icon="mail" id="mailCardTitle"`,
 		`item-title" data-icon="activity" id="routingDiagnosticsTitle"`,
 		`id="llmSubTabProviders" data-icon="spark"`,
-		`admin-responsive.css?v=feature-icons-20260828-9`,
+		`admin-responsive.css?v=token-bank-model-cards-20261002-3`,
 		`pro-ui.css?v=feature-icons-20260828-9`,
 	})
 	assertContainsAll(t, css, "hubcenter feature icons css", []string{
@@ -399,6 +399,7 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/industry-management-admin.js",
 		"assets/js/ha-news-admin.js",
 		"assets/js/llm-service-tab.js",
+		"assets/js/token-bank-tab.js",
 		"assets/js/compute-market-tab.js",
 		"assets/js/user-rankings-tab.js",
 		"assets/js/notification-admin.js",
@@ -951,6 +952,7 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 
 	assertContainsAll(t, html, "llm provider traffic switch", []string{
 		`id="llmProviderTrafficSwitch" class="provider-traffic-switch" hidden`,
+		`id="llmProviderTrafficTotal" class="provider-traffic-total" hidden`,
 	})
 
 	assertContainsAll(t, js, "llm provider traffic cards", []string{
@@ -959,6 +961,13 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 		`function formatTrafficTokens(value)`,
 		`function formatTrafficExact(value)`,
 		`function patchProviderTraffic()`,
+		`function renderAllArrayTraffic()`,
+		`function allArrayTrafficRow(arrays)`,
+		`function displayedArrayTraffic(array)`,
+		`return arrayTrafficRow(array.id)`,
+		`function providerTrafficCells(win, pending, caption)`,
+		`n < 100000000 ? 1 : 0`,
+		`providerArraysTrafficSum`,
 		`Array.isArray(data.traffic)`,
 		`providerTrafficReady`,
 		`providerTrafficLoadSeq`,
@@ -988,6 +997,13 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 	})
 	assertContainsAll(t, css, "llm provider traffic layout", []string{
 		`#llmProvidersList .provider-traffic`,
+		`#llmProviderTrafficTotal:not([hidden])`,
+		`#llmProviderTrafficTotal .provider-traffic-col`,
+		`container-name:llm-provider-head`,
+		`@container llm-provider-head (max-width:900px)`,
+		`justify-content:safe flex-end`,
+		`#llmSubViewProviders>.head>div:first-child{flex:1 1 200px;min-width:0}`,
+		`grid-template-columns:repeat(3,max-content)`,
 		`.provider-traffic-switch{display:inline-flex`,
 		`height:36px`,
 		`.provider-traffic-col`,
@@ -998,6 +1014,9 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 		`grid-template-columns:repeat(3,minmax(0,1fr))`,
 		`font-variant-numeric:tabular-nums`,
 	})
+	if strings.Contains(css, `@media(max-width:860px){#tab-llmservice #llmSubViewProviders>.head`) {
+		t.Fatal("provider traffic total must wrap on the header container, not the viewport")
+	}
 }
 
 func TestAdminPageLLMServiceGroupTrafficCards(t *testing.T) {
@@ -1091,8 +1110,16 @@ func TestAdminPageLLMProviderAvailabilityTestUsesConfiguredModel(t *testing.T) {
 		`var model = (provider.models && provider.models[0]) || '';`,
 		`providerTestStates[id] = { status: 'error', message: 'No model configured' }`,
 		`if (!data.success) throw new Error(data.error || 'unknown');`,
-		`routeModel = pconfigs[0].model || '';`,
-		`model: routeModel || ((provider.models && provider.models.length === 1) ? provider.models[0] : firstModel.name) || ''`,
+		`routeModel: (configs[0] && configs[0].model) || ''`,
+		`logical_model: picked.logicalModel`,
+		`route_model: picked.routeModel`,
+		`provider_id: picked.providerID`,
+		`group.kind === 'dynamic'`,
+		`function sgDynamicStatusModel(group)`,
+		`routes[i].class || '').trim() !== 'balanced'`,
+		`['official-mid', 'official-low', 'official-high']`,
+		`pickRoute(routed, sgCanonicalModelName(routed.name))`,
+		`t('providerTestOK') + (data.model ? ' ' + data.model : '')`,
 		`wire_api: provider.wire_api || 'chat'`,
 	})
 	providerTest := regexp.MustCompile(`window\.testLLMProvider = async function[\s\S]*?function uniqueProviderBillingDays`).FindString(js)
@@ -1493,6 +1520,84 @@ func TestAdminPageLLMServiceDoesNotExposeComputeGrant(t *testing.T) {
 	}
 }
 
+func TestAdminPageTokenBankArraysCannotBeDeleted(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	assertContainsAll(t, html, "token bank array protect cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-canary-mark-20261003-7`,
+	})
+	assertContainsAll(t, js, "token bank array delete guard", []string{
+		`function providerArrayProtected(array)`,
+		`id === 'token_bank_low' || id === 'token_bank_mid' || id === 'token_bank_high'`,
+		`system: !!record.system`,
+		`system: !!array.system`,
+		`providerArrayProtected(array) ? '' : '<button class="btn-ghost" type="button" onclick="renameProviderArray('`,
+		`providerArrayProtected(array) ? '' : '<button class="btn-danger-ghost" type="button" onclick="deleteProviderArray('`,
+		`t('providerArrayRenameProtected')`,
+		`providerArrayRenameProtected: 'This array is maintained by the platform and cannot be renamed.'`,
+		`providerArrayRenameProtected: '\u8be5\u9635\u5217\u7531\u5e73\u53f0\u7ef4\u62a4\uff0c\u4e0d\u80fd\u6539\u540d\u3002'`,
+		`field('llmArrayEditName', t('providerArrayName'), name, !creating && providerArrayProtected(array))`,
+		`if (providerArrayProtected(providerArrayByID(id) || { id: id }))`,
+		`t('providerArrayProtected')`,
+		`providerArrayProtected: 'This array is maintained by the platform and cannot be deleted.'`,
+		`providerArrayProtected: '\u8be5\u9635\u5217\u7531\u5e73\u53f0\u7ef4\u62a4\uff0c\u4e0d\u80fd\u5220\u9664\u3002'`,
+		`providerArrayProtected(array) ? t('providerArrayRemoveProtected') : t('providerArrayRemove')`,
+		`providerArrayRemoveProtected: 'Remove this provider? The platform array stays. A model that no remaining provider in the array serves is taken off service groups.'`,
+		`providerArrayRemoveProtected: '\u79fb\u9664\u8be5\u670d\u52a1\u5546\uff1f\u5e73\u53f0\u9635\u5217\u4f1a\u4fdd\u7559\u3002\u8be5\u9635\u5217\u91cc\u6ca1\u6709\u5269\u4f59\u670d\u52a1\u5546\u80fd\u63a5\u7684\u6a21\u578b\u4f1a\u4ece\u670d\u52a1\u7ec4\u8def\u7531\u91cc\u62ff\u6389\u3002'`,
+		`array.members.length <= 1 && !providerArrayProtected(array)`,
+	})
+}
+
+func TestAdminPageProviderCanaryMark(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	assertContainsAll(t, html, "provider canary mark cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-canary-mark-20261003-7`,
+		`/admin/assets/css/admin-shell.css?v=provider-canary-mark-20261003-7`,
+	})
+	assertContainsAll(t, js, "provider canary mark", []string{
+		`providerCanaryUntil: 'Canary until {time}'`,
+		`providerCanaryUntil: '\u91d1\u4e1d\u96c0\u65f6\u95f4\u81f3 {time}'`,
+		`function providerCanaryActive(provider, now)`,
+		`provider.token_bank_canary_until`,
+		`if ((now || new Date()).getTime() >= until.getTime()) return null;`,
+		`until.getTime() + 8 * 60 * 60 * 1000`,
+		`shifted.getUTCFullYear()`,
+		`function providerCanaryMark(provider)`,
+		`t('providerCanaryUntil').replace('{time}', formatted)`,
+		`class="provider-canary-mark"`,
+		`class="provider-canary-bird"`,
+		`'<title>' + esc(label || '') + '</title>'`,
+		`fill="#F5C542"`,
+		`providerCanaryMark(p)`,
+		`class="provider-array-title"`,
+		`function scheduleProviderCanaryRefresh()`,
+		`function refreshProviderCanaryMarks()`,
+		`if (providerCanaryTimer) clearTimeout(providerCanaryTimer);`,
+		`root.querySelectorAll('.provider-canary-mark')`,
+		`document.addEventListener('visibilitychange'`,
+		`data-provider-id="' + esc(provider && provider.id || '') + '"`,
+		`scheduleProviderCanaryRefresh();`,
+		`class="data-row-name" title="' + dragHint + '"`,
+		`class="data-row-main" draggable="true"><div class="data-row-title"`,
+	})
+	if strings.Contains(js, `class="data-row-main" draggable="true" title="`) {
+		t.Fatal("provider row drag hint must not cover the canary mark")
+	}
+	if strings.Contains(js, `providerArrayCanaryMarks`) {
+		t.Fatal("canary bird must not be drawn after the array name")
+	}
+	assertContainsAll(t, css, "provider canary mark style", []string{
+		`#tab-llmservice #llmProvidersList .provider-canary-mark{display:inline-flex;align-items:center;flex:0 0 auto;line-height:0;cursor:help}`,
+		`#tab-llmservice #llmProvidersList .data-row-title strong{display:flex;align-items:center;gap:6px;overflow:visible}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title>strong{flex:0 1 auto;min-width:2.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title .data-row-meta{flex:0 1 auto;min-width:0;max-width:100%}`,
+		`#tab-llmservice #llmProvidersList .provider-canary-bird{display:block;width:16px;height:16px}`,
+	})
+}
+
 func TestAdminPageRouteQueryRendererIsSingleSource(t *testing.T) {
 	html := readAdminPageBundle(t)
 	if count := strings.Count(html, `function renderRouteQueryResult(meta,data)`); count != 1 {
@@ -1576,6 +1681,166 @@ func assertHATemplate(t *testing.T, html, nodeID, nodeName, advertiseURL string,
 	} {
 		if strings.Count(html, snippet) != 1 {
 			t.Fatalf("admin page should contain exactly one %q, got %d", snippet, strings.Count(html, snippet))
+		}
+	}
+}
+
+// TestAdminPageTabMetaKeysAreDefined guards the tab -> i18n indirection. tabMeta
+// maps each tab to a [titleKey, subtitleKey] pair, and tr() falls back to the
+// raw key when a translation is missing, so a key that exists in tabMeta but not
+// in I18N renders the literal string "tbkTitle" as the page heading. Nothing
+// else in the suite notices: the tab still opens, the panel still renders.
+func TestAdminPageTabMetaKeysAreDefined(t *testing.T) {
+	// The keys may live in any bundled asset, not just admin-core.js: tabs that
+	// own their own i18n table (user-rankings-tab.js, token-bank-tab.js, ...)
+	// define their own title keys. Scanning the whole bundle is what makes this
+	// test meaningful instead of a spelling check on one file.
+	bundle := readAdminPageBundle(t)
+
+	metaRE := regexp.MustCompile(`const tabMeta=\{([^}]*)\}`)
+	metaMatch := metaRE.FindStringSubmatch(bundle)
+	if metaMatch == nil {
+		t.Fatal("tabMeta map not found in the admin bundle")
+	}
+	pairRE := regexp.MustCompile(`\[([^\[\]]+)\]`)
+	keyRE := regexp.MustCompile(`'([A-Za-z0-9_]+)'`)
+
+	keys := map[string]bool{}
+	for _, pair := range pairRE.FindAllStringSubmatch(metaMatch[1], -1) {
+		for _, key := range keyRE.FindAllStringSubmatch(pair[1], -1) {
+			keys[key[1]] = true
+		}
+	}
+	if len(keys) < 20 {
+		t.Fatalf("parsed only %d tabMeta i18n keys; the map shape likely changed", len(keys))
+	}
+
+	// Each language table is a `key: '...'` object literal. Proving the key is
+	// spelled followed by a colon somewhere in the bundle is enough to prove it
+	// is defined, and stays cheap.
+	for key := range keys {
+		if !strings.Contains(bundle, key+":") {
+			t.Fatalf("tabMeta references i18n key %q but no bundled asset defines it; the page title would render as the literal key", key)
+		}
+	}
+
+	// tbkTitle/tbkDesc are easy to reference from tabMeta and forget to define.
+	// They render as the literal strings "tbkTitle"/"tbkDesc" in the heading.
+	for _, must := range []string{"tbkTitle:", "tbkDesc:"} {
+		if !strings.Contains(bundle, must) {
+			t.Fatalf("admin bundle must define %q for the Token Bank tab title", must)
+		}
+	}
+}
+
+// TestTokenBankSubViewsLeaveHiddenClass locks the blank-tab bug: every sub-view
+// except 总览 starts with class hidden-view (display:none). Showing one by
+// clearing an inline style leaves that class on, so 共享模型 and the other tabs
+// render as an empty panel.
+func TestTokenBankSubViewsLeaveHiddenClass(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/token-bank-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-responsive.css")
+	html := readAdminPageHTML(t)
+	for _, must := range []string{
+		`view.classList.toggle('hidden-view', !active)`,
+		`'<div class="tbk-metrics">'`,
+		`'<div class="tbk-settings">'`,
+		`'<div class="tbk-price-fields">'`,
+		`class="item tbk-stat"`,
+		`class="item tbk-field"`,
+		`case 'users': return loadTokenBankUsers();`,
+		`function yesNo(v)`,
+		`yesNo(m.Available)`,
+		`tbkYes: 'Yes'`,
+		`tbkYes: '是'`,
+		`tbkNo: 'No'`,
+		`tbkNo: '否'`,
+		`state.settingsEpoch++`,
+		`epoch !== state.settingsEpoch`,
+		`giftStatusLabel(status)`,
+		`tbkGift_revoked: '已冻结'`,
+		`tbkGift_claimed: '已领取'`,
+		`tbkGift_active: '待领取'`,
+	} {
+		if !strings.Contains(js, must) {
+			t.Fatalf("token-bank-tab.js missing %q", must)
+		}
+	}
+	if strings.Contains(js, `String(!!m.Available)`) {
+		t.Fatal("token bank model row still prints the Available boolean as true/false")
+	}
+	if strings.Contains(js, `status === 'frozen' ? 'warn'`) {
+		t.Fatal("credit-share badge still treats only frozen as the warn state; revoked links would render unstyled")
+	}
+	if strings.Contains(js, `parseFloat(inEl.value) || 0`) {
+		t.Fatal("price book still sends a blank unit as 0, which wipes the other prices on update")
+	}
+	if !strings.Contains(js, `function priceUnit(el)`) {
+		t.Fatal("price book must send a blank unit as null so an update can keep the stored price")
+	}
+	if got := strings.Count(js, `aria-pressed="' + (on ? 'true' : 'false')`); got != 3 {
+		t.Fatalf("margin days, margin group, and tier must mark the current choice with aria-pressed, got %d", got)
+	}
+	if !strings.Contains(js, `Object.assign({}, prev`) {
+		t.Fatal("settings save must start from the loaded blob; a hand-built payload blanks clearing_node_id and provider_denylist")
+	}
+	// Every read shares one generation. A slower page, filter, or settings GET
+	// must not paint over a newer one, including its error and its busy flag.
+	// Saving settings does not take that generation: it would cancel a list on
+	// another sub-tab, or let a reload paint the pre-save form. The settings
+	// epoch covers that GET instead.
+	if got := strings.Count(js, `var seq = noteLoad();`); got != 8 {
+		t.Fatalf("token bank loads must share one generation counter, got %d noteLoad calls", got)
+	}
+	if got := strings.Count(js, `if (!loadLive(seq)) return;`); got != 8 {
+		t.Fatalf("token bank loads must ignore a stale success, got %d checks", got)
+	}
+	if got := strings.Count(js, `showLoadError(seq, root, e);`); got != 8 {
+		t.Fatalf("token bank loads must ignore a stale error, got %d checks", got)
+	}
+	if got := strings.Count(js, `if (loadLive(seq)) busy(`); got != 7 {
+		t.Fatalf("token bank loads must clear busy only for the current generation, got %d checks", got)
+	}
+	if !strings.Contains(js, `if (loadLive(seq) && epoch === state.settingsEpoch) busy('settings', false);`) {
+		t.Fatal("settings load must not clear busy after a save has moved the epoch")
+	}
+	if strings.Contains(js, `view.style.display = active ? '' : 'none'`) {
+		t.Fatal("token bank sub-tabs still toggle visibility with inline display, which cannot override .hidden-view")
+	}
+	// The shell dictionary has tbkTitle and tbkDesc only. data-i18n="tbkReload"
+	// therefore prints the key. The tab dictionary already has the label.
+	if strings.Contains(html, `data-i18n="tbkReload"`) {
+		t.Fatal("token bank reload still uses the shell dictionary and renders the raw key tbkReload")
+	}
+	if !strings.Contains(html, `data-tbk-i18n="tbkReload"`) {
+		t.Fatal("token bank reload must use the tab dictionary")
+	}
+	for _, must := range []string{
+		`#tab-tokenbank .tbk-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}`,
+		`#tab-tokenbank .tbk-settings{grid-template-columns:repeat(2,minmax(0,1fr))`,
+		`#tab-tokenbank .list>.item{margin:0;min-height:0;padding:8px 10px;gap:4px;border-radius:10px}`,
+		`#tab-tokenbank{--head-icon:var(--icon-library)}`,
+		`#tab-tokenbank input:not([type=checkbox]):not([type=radio]),#tab-tokenbank select{height:38px}`,
+		`#tab-tokenbank .inline-actions select{width:auto;flex:0 1 auto;min-width:9em}`,
+		`#tab-tokenbank .llm-subtabs [role="tab"][aria-selected="true"]`,
+		`#tab-tokenbank button[aria-pressed="true"]:not([role="tab"])`,
+		`#tab-tokenbank .tbk-model-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))`,
+		`#tab-tokenbank .tbk-model-card.item .inline-actions button{height:22px;min-height:22px!important;min-width:0!important`,
+		`#tab-tokenbank .tbk-model-card.item{margin:0;min-width:0;padding:6px 8px;gap:3px;border-radius:8px;background:#f7f8fb!important`,
+		`admin/assets/js/token-bank-tab.js?v=token-bank-admin-20261003-canary`,
+	} {
+		if !strings.Contains(css, must) && !strings.Contains(html, must) {
+			t.Fatalf("token bank compact layout missing %q", must)
+		}
+	}
+	for _, must := range []string{
+		`class="tbk-model-grid"`,
+		`class="item tbk-model-card"`,
+		`tbk-model-facts`,
+		`yesNo(m.Available)`,
+	} {
+		if !strings.Contains(js, must) {
+			t.Fatalf("token bank model cards missing %q", must)
 		}
 	}
 }

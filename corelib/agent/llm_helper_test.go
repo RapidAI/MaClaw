@@ -359,6 +359,39 @@ func TestApplyRefreshedLLMAuth(t *testing.T) {
 	}
 }
 
+func TestShouldRetrySimpleLLMError_SkipsTerminalHubDenials(t *testing.T) {
+	period := &llm.HTTPStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`),
+	}
+	if shouldRetrySimpleLLMError(period) {
+		t.Fatal("period limit must not be retried")
+	}
+	canceled := &llm.HTTPStatusError{
+		StatusCode: http.StatusRequestTimeout,
+		Body:       []byte(`{"code":"LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED","message":"request canceled while waiting in Hub user rate-limit queue"}`),
+	}
+	if shouldRetrySimpleLLMError(canceled) {
+		t.Fatal("canceled rate-limit wait must not be retried")
+	}
+	pressure := &llm.HTTPStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"code":"LLM_ENDPOINT_USER_RATE_LIMITED","message":"please retry shortly"}`),
+	}
+	if !shouldRetrySimpleLLMError(pressure) {
+		t.Fatal("hub queue-timeout 429 should still be retried")
+	}
+	if shouldRetrySimpleLLMError(fmt.Errorf("gateway: %w", period)) {
+		t.Fatal("wrapped period limit must not be retried")
+	}
+	if shouldRetrySimpleLLMError(newLLMHTTPError(http.StatusRequestTimeout, "LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED")) {
+		t.Fatal("canceled wait carried on llmHTTPError must not be retried")
+	}
+	if shouldRetrySimpleLLMError(errors.New("MaClaw 官方周期限流：当前周期额度已用尽")) {
+		t.Fatal("user-facing period-limit text must not be retried")
+	}
+}
+
 func TestShouldRetrySimpleLLMError_OAuthTokenValidation(t *testing.T) {
 	oauthErr := &llm.HTTPStatusError{
 		StatusCode: http.StatusForbidden,

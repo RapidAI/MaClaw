@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useState, type RefObject } from "react";
+import { useCallback, useId, useMemo, useState } from "react";
 import { AssistantAttachmentsStrip } from "./AssistantAttachmentsStrip";
 import { AssistantInputActionsLeft, AssistantInputActionsRight } from "./AssistantInputActions";
 import { getAssistantInputComposerStyles } from "./AssistantInputComposerStyles";
@@ -7,17 +7,9 @@ import { InputHistoryAutocomplete } from "./InputHistoryAutocomplete";
 import { useInputHistoryAutocomplete } from "./useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
-import { insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
+import { asTextareaRef, insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
 
-const EMPTY_TEXTAREA_REF: RefObject<HTMLTextAreaElement | null> = { current: null };
 const EMPTY_SUBMITTED_PROMPTS: string[] = [];
-
-function asTextareaRef(ref: AssistantInputComposerProps["inputRef"]): RefObject<HTMLTextAreaElement | null> {
-    if (ref && typeof ref === "object" && "current" in ref) {
-        return ref as RefObject<HTMLTextAreaElement | null>;
-    }
-    return EMPTY_TEXTAREA_REF;
-}
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
     const {
@@ -31,7 +23,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         pendingAttachmentsTestId, permissionMode, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
         resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner,
         showMemoryUsage = true, showVoiceInput = true, submittedPrompts: submittedPromptsProp, textareaAriaLabel, textareaTestId = "ai-input",
-        theme: t, themeMode, toolbarAddon, toolbarTestId = "ai-input-toolbar", trailingToolbarContent, updateInputValue, voiceInput,
+        theme: t, themeMode, toolbarAddon, toolbarEndContent, toolbarTestId = "ai-input-toolbar", trailingToolbarContent, updateInputValue, voiceInput,
     } = props;
 
     // Stable empty fallback — default param `= []` would allocate a new array every render.
@@ -211,6 +203,13 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         </div>
                     ) : null}
                 </div>
+                {toolbarEndContent ? (
+                    // Sibling of the wrapping action group so a long working-directory
+                    // chip cannot push the model switcher onto the next row.
+                    <div data-testid="ai-input-toolbar-end" style={{ marginLeft: "auto", flexShrink: 0, minWidth: 0, maxWidth: "46%" }}>
+                        {toolbarEndContent}
+                    </div>
+                ) : null}
                 <div style={toolbarRightStyle}>
                     {showMemoryUsage && <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />}
                     <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>

@@ -228,80 +228,96 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 			} else {
 				residue, residueOpen, factsOnly := h.loadDesktopTurnResidue(msg, opts.WorkflowAgentLoop, msg.Attachments)
-				// "你好" / "你好啊" while a task is open is not a new plan and
-				// not a continuation. Merging the task summary would relabel
-				// it and pull the open surface back in.
-				if !markOpenTaskAnswerOnly(loopCtx, residueOpen, msg.Text) {
-					// A spent mutating wave stays open so "再改一版" can renew.
-					// A different sentence must not be merged back onto it:
-					// the merge rewrites the label, then the zero ceiling
-					// closes every tool (production 2026-09-27).
-					releasedSpentWave := false
-					shellConsent := semanticConsentShellClassification(msg.Text, history)
-					consentLeaves := shellConsent != nil && semanticResidueWaveSpent(residue)
-					if key, desktop := semanticResidueSessionKey(msg); desktop && residueOpen && semanticIntent != nil && (semanticSpentWaveRelease(*semanticIntent, residue, msg.Text) || consentLeaves) {
-						h.completeSpentSemanticSessionResidue(key, residue)
-						residueOpen = false
-						releasedSpentWave = true
-						log.Printf("[semantic-routing] spent session wave released user=%q", msg.UserID)
+				// A spent mutating wave stays open so a later revision can renew.
+				// A different sentence must not be merged back onto it:
+				// the merge rewrites the label, then the zero ceiling
+				// closes every tool (production 2026-09-27).
+				releasedSpentWave := false
+				planClosed := residue.PlanClosed
+				if planClosed {
+					if loopCtx != nil {
+						loopCtx.semanticPriorPlanClosed = true
 					}
-					if consentLeaves {
-						semanticIntent = shellConsent
+					residue.PlanClosed = false
+					if key, desktop := semanticResidueSessionKey(msg); desktop {
+						h.storeSemanticSessionResidue(key, residue)
+					}
+				}
+				shellConsent := semanticConsentShellClassification(*semanticIntent, history, planClosed)
+				consentLeaves := shellConsent != nil && semanticResidueWaveSpent(residue)
+				if key, desktop := semanticResidueSessionKey(msg); desktop && residueOpen && semanticIntent != nil && (semanticSpentWaveRelease(*semanticIntent, residue, msg.Text) || consentLeaves) {
+					h.completeSpentSemanticSessionResidue(key, residue)
+					residueOpen = false
+					releasedSpentWave = true
+					log.Printf("[semantic-routing] spent session wave released user=%q", msg.UserID)
+				}
+				if consentLeaves {
+					semanticIntent = shellConsent
+					executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+					log.Printf("[semantic-routing] spent-wave consent plans shell user=%q", msg.UserID)
+				} else if releasedSpentWave && semanticReleasedRequestPlansShell(*semanticIntent, msg.Text, history) {
+					semanticIntent = semanticShellClassification("spent-wave release plans shell")
+					executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+					log.Printf("[semantic-routing] spent-wave release plans shell user=%q", msg.UserID)
+				}
+				bareIntent := *semanticIntent
+				mergedBare := false
+				if !releasedSpentWave && (semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn)) {
+					// The bare message classified nowhere actionable, this turn
+					// answers a pending question with a weak standalone verdict,
+					// or a short follow-up still belongs to the open desktop task.
+					// An answer takes its meaning from the question — a 16-rune
+					// reply ("1. 布娃 2。可爱风 3。没有") has no reliable intent of
+					// its own (production 2026-08-27: bare tree verdict coding@0.80
+					// routed the PPT continuation onto the coding surface and the
+					// task died there). Retry once with the recent user task intent
+					// merged in; only a confident bare verdict overrides.
+					taskSummary := ""
+					if residueOpen || factsOnly {
+						taskSummary = residue.Summary
+					}
+					if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6), taskSummary); ok {
+						copied := merged
+						semanticIntent = &copied
+						mergedBare = true
 						executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-						log.Printf("[semantic-routing] spent-wave consent plans shell user=%q", msg.UserID)
-					} else if releasedSpentWave && semanticReleasedRequestPlansShell(*semanticIntent, msg.Text, history) {
-						semanticIntent = semanticShellClassification("spent-wave release plans shell")
+					}
+				}
+				if residueOpen {
+					// The bare sentence is delivery of a document this task
+					// already produced. Unclear or pending-answer merge must
+					// not inherit document_generate: that replans search and
+					// a new PDF, and the open-turn ceiling renews both.
+					if restored, ok := semanticOpenResidueDelivery(bareIntent, residue); ok {
+						semanticIntent = &restored
 						executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-						log.Printf("[semantic-routing] spent-wave release plans shell user=%q", msg.UserID)
-					}
-					followUp := (residueOpen || factsOnly) && semanticUtteranceIsTaskFollowUp(msg.Text)
-					if !releasedSpentWave && (semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn) || (followUp && semanticFollowUpAllowsTaskMerge(semanticIntent, msg.Text))) {
-						// The bare message classified nowhere actionable, this turn
-						// answers a pending question with a weak standalone verdict,
-						// or a short follow-up still belongs to the open desktop task.
-						// An answer takes its meaning from the question — a 16-rune
-						// reply ("1. 布娃 2。可爱风 3。没有") has no reliable intent of
-						// its own (production 2026-08-27: bare tree verdict coding@0.80
-						// routed the PPT continuation onto the coding surface and the
-						// task died there). Retry once with the recent user task intent
-						// merged in; only a confident bare verdict overrides.
-						taskSummary := ""
-						if residueOpen || factsOnly {
-							taskSummary = residue.Summary
-						}
-						if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6), taskSummary); ok {
-							copied := merged
-							semanticIntent = &copied
-							executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-						}
-					}
-					if residueOpen {
+						log.Printf("[semantic-routing] session residue delivery user=%q primary=%s", msg.UserID, restored.Primary)
+					} else {
 						relation := decideSemanticResidueRelation(*semanticIntent, msg.Text, residue)
-						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
-							remaining := semanticResidueRemainingForFollowUp(residue.Remaining, msg.Text)
-							// "继续补图" drops only the download count. Any
-							// other continuation of a finished wave needs a
-							// fresh plan, not the zeros that close the turn.
-							if semanticResidueWaveSpent(residue) && !semanticFollowUpRenewsDownloads(msg.Text) {
-								remaining = semanticResidueDropSpentCounts(remaining)
-							}
-							loopCtx.semanticResidueRemaining = remaining
-							loopCtx.semanticResidueLookupFacts = residue.LookupFacts
+						if mergedBare {
+							relation = decideSemanticResidueRelationWithBare(*semanticIntent, &bareIntent, msg.Text, residue)
 						}
-						if rewritten, applied := semanticClassificationWithOpenResidue(*semanticIntent, residue.Needs, relation); applied {
+						rewritten, applied := semanticClassificationWithOpenResidue(*semanticIntent, residue.Needs, relation)
+						planned := *semanticIntent
+						if applied {
+							planned = rewritten
+						}
+						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
+							loopCtx.semanticResidueRemaining = semanticResidueRemainingForOpenTurn(residue, planned)
+							loopCtx.semanticResidueLookupFacts = residue.LookupFacts && semanticReuseStoredLookupFacts(msg.Text, planned)
+						}
+						if applied {
 							semanticIntent = &rewritten
 							executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 							log.Printf("[semantic-routing] session residue %s user=%q primary=%s", relation, msg.UserID, rewritten.Primary)
 						}
-					} else if factsOnly && semanticReuseStoredLookupFacts(msg.Text, *semanticIntent) {
-						loopCtx.semanticResidueLookupFacts = true
 					}
+				} else if factsOnly && semanticReuseStoredLookupFacts(msg.Text, *semanticIntent) {
+					loopCtx.semanticResidueLookupFacts = true
 				}
 			}
-		} else {
-			_, residueOpen, _ := h.loadDesktopTurnResidue(msg, opts.WorkflowAgentLoop, msg.Attachments)
-			markOpenTaskAnswerOnly(loopCtx, residueOpen, msg.Text)
 		}
+		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, semanticIntent)
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		loopCtx.Runtime.ClassificationMessage = classifyMsg
 		bindLoopSemanticIntent(loopCtx, semanticIntent)

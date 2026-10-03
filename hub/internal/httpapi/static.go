@@ -141,6 +141,58 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 	}
 }
 
+// registerHomeStaticRoutes serves the public default landing page at the site
+// root "/". It is a single self-contained index.html (inline CSS/JS, no local
+// assets) so only the exact root path is handled; everything else keeps
+// matching its own API/static route or falls through to 404. Brand name is
+// injected the same way as the admin console so rebranded builds stay
+// consistent.
+func registerHomeStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+	staticDir = resolveStaticDir(staticDir)
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return
+	}
+	indexPath := filepath.Join(staticDir, "index.html")
+	brandName := brand.Current().DisplayName
+
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		// GET / is a method catch-all in Go 1.22's ServeMux, so only serve the
+		// landing page at the exact root path; everything else keeps its own
+		// specific route or falls through to a real 404 (we must not mask API
+		// 404s with the home page).
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		data, err := os.ReadFile(indexPath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		html := string(data)
+		if brandName != "" && brandName != "MaClaw" {
+			html = strings.ReplaceAll(html, "MaClaw", brandName)
+		}
+		_, _ = w.Write([]byte(html))
+	}
+
+	// Register the methodless "/" catch-all. A method-qualified "GET /"
+	// conflicts with existing methodless subtree patterns such as
+	// "/api/a2a/consultations/" (Go 1.22 mux panics on that conflict), while
+	// the methodless "/" is the legitimate fallback and lets more specific
+	// routes win. The exact-path guard below keeps 404 semantics for any
+	// path other than "/".
+	mux.HandleFunc("/", serve)
+}
+
 func escapeInlineScript(js string) string {
 	var out strings.Builder
 	searchStart := 0

@@ -11,7 +11,10 @@ import {
     needsLocalPath,
     normalizeDraftForTaskType,
     withCloudWorkspace,
+    draftFromWizardSeed,
+    expertNeedsSetup,
     withExpert,
+    withLatexTemplate,
     withLocalWorkspace,
     withRemoteWorkspace,
     withWorkflow,
@@ -21,6 +24,7 @@ import {
     type TaskDraft,
 } from '../taskDraft';
 import { TaskConfigBar, type ExpertOption, type WorkflowOption } from '../TaskConfigBar';
+import { LATEX_BLANK_TEMPLATE_ID, LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { nextDefaultCloudWorkspaceName } from '../WorkspacePickerPopover';
 import { RemoteServerForm } from '../RemoteServerPopover';
 
@@ -194,6 +198,40 @@ describe('taskDraft', () => {
         expect(workspaceSummaryLabel(withRemoteWorkspace(defaultTaskDraft(), { host: '192.168.1.10', port: 22, user: 'root', password: '', workDir: '/opt/app' }))).toBe('192.168.1.10');
     });
 
+    it('defaults a LaTeX expert to the blank template and hides workflow setup', () => {
+        const draft = withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        expect(expertNeedsSetup(draft)).toBe(true);
+        expect(draft.latexTemplateId).toBe(LATEX_BLANK_TEMPLATE_ID);
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(expertNeedsSetup(withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家'))).toBe(false);
+    });
+
+    it('keeps a chosen LaTeX template when the same expert is reselected', () => {
+        let draft = withLatexTemplate(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), 'tpl-ieee', 'IEEE');
+        draft = withExpert(draft, LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        expect(draft.latexTemplateId).toBe('tpl-ieee');
+        expect(draft.latexTemplateName).toBe('IEEE');
+        draft = withExpert(draft, 'exp-data', '数据分析专家');
+        expect(draft.latexTemplateId).toBeNull();
+    });
+
+    it('seeds the new-task draft from a template, workflow, or expert', () => {
+        const latex = draftFromWizardSeed({
+            expertId: LATEX_EXPERT_ID,
+            expertName: 'LaTeX 论文专家',
+            latexTemplateId: 'tpl-ieee',
+            latexTemplateName: 'IEEE',
+        });
+        expect(latex.expertId).toBe(LATEX_EXPERT_ID);
+        expect(latex.latexTemplateId).toBe('tpl-ieee');
+        expect(latex.workflowTemplateId).toBeNull();
+        const workflow = draftFromWizardSeed({ workflowTemplateId: 'wf-table' });
+        expect(workflow.workflowTemplateId).toBe('wf-table');
+        expect(workflow.expertId).toBeNull();
+        const blank = draftFromWizardSeed({ expertId: LATEX_EXPERT_ID, expertName: 'LaTeX' });
+        expect(blank.latexTemplateId).toBe(LATEX_BLANK_TEMPLATE_ID);
+    });
+
     it('summarizes workspace labels in English for en lang', () => {
         expect(workspaceSummaryLabel(defaultTaskDraft(), false)).toBe('Default');
         const coding = { ...defaultTaskDraft(), taskType: 'coding' as const };
@@ -273,6 +311,61 @@ describe('TaskConfigBar', () => {
         expect(draft.workflowTemplateId).toBeNull();
         expect(canSpecifyExpert(draft)).toBe(true);
         expect(draft.expertId).toBeNull();
+    });
+
+    it('replaces the workflow chip with a LaTeX template picker defaulting to blank', () => {
+        const onChange = vi.fn();
+        const onPrepareLatexTemplates = vi.fn();
+        renderBar(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), onChange, {
+            latexTemplates: [
+                { id: 'blank', name: '空白模板', description: '从最小骨架开始' },
+                { id: 'tpl-ieee', name: 'IEEE 会议模板', description: '会议论文' },
+            ],
+            onPrepareLatexTemplates,
+        });
+        expect(screen.queryByTestId('task-config-chip-workflow')).toBeNull();
+        const chip = screen.getByTestId('task-config-chip-latex-template');
+        expect(chip.textContent).toContain('空白模板');
+        fireEvent.click(chip);
+        expect(onPrepareLatexTemplates).toHaveBeenCalled();
+        expect(screen.getByTestId('latex-template-item-blank')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('latex-template-item-tpl-ieee'));
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.latexTemplateId).toBe('tpl-ieee');
+        expect(draft.latexTemplateName).toBe('IEEE 会议模板');
+    });
+
+    it('loads the catalogue once when the template menu opens', () => {
+        const prepare = vi.fn();
+        const draft = withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        function Host({ onPrepare }: { onPrepare: () => void }) {
+            return (
+                <TaskConfigBar
+                    draft={draft}
+                    onChange={vi.fn()}
+                    experts={experts}
+                    workflows={workflows}
+                    theme={theme}
+                    lang="zh"
+                    onPrepareLatexTemplates={onPrepare}
+                />
+            );
+        }
+        const view = render(<Host onPrepare={prepare} />);
+        fireEvent.click(screen.getByTestId('task-config-chip-latex-template'));
+        expect(prepare).toHaveBeenCalledTimes(1);
+        const next = vi.fn();
+        view.rerender(<Host onPrepare={next} />);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(next).not.toHaveBeenCalled();
+    });
+
+    it('keeps a selected template id visible before its display name loads', () => {
+        const draft = withLatexTemplate(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), 'tpl-ieee', null);
+        renderBar(draft, vi.fn(), { latexTemplates: [] });
+        const chip = screen.getByTestId('task-config-chip-latex-template');
+        expect(chip.textContent).toContain('tpl-ieee');
+        expect(chip.textContent).not.toContain('空白模板');
     });
 
     it('locks the workflow chip when an expert is specified', () => {
@@ -754,8 +847,8 @@ describe('TaskConfigBar', () => {
         // 指定具体专家
         fireEvent.click(screen.getByTestId('task-config-chip-expert'));
         fireEvent.click(screen.getByTestId('expert-item-exp-data'));
-        // 工作空间 chip 给出说明（本地仍可选，chip 本身不禁用）
-        expect(screen.getByTestId('task-config-chip-workspace').getAttribute('title')).toContain('专家任务不携带工作空间');
+        // 工作空间 chip 说明本地目录仍可选；云端/远程在弹层里锁定
+        expect(screen.getByTestId('task-config-chip-workspace').getAttribute('title')).toContain('可选择本地工作目录');
         fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
         const cloudRow = screen.getByTestId('workspace-row-cloud');
         const remoteRow = screen.getByTestId('workspace-row-remote');

@@ -7709,6 +7709,82 @@ export namespace knowledge {
 
 export namespace main {
 
+	export class TokenBankShareModelInput {
+	    model: string;
+	    available: boolean;
+	    probe_error: string;
+	    used_input_tokens: number;
+	    used_output_tokens: number;
+
+	    static createFrom(source: any = {}) {
+	        return new TokenBankShareModelInput(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.available = source["available"];
+	        this.probe_error = source["probe_error"];
+	        this.used_input_tokens = source["used_input_tokens"];
+	        this.used_output_tokens = source["used_output_tokens"];
+	    }
+	}
+
+	export class TokenBankShareInput {
+	    DisplayName: string;
+	    APIURL: string;
+	    APIKey: string;
+	    Protocol: string;
+	    KeyFingerprint: string;
+	    Models: TokenBankShareModelInput[];
+	    MaxInputTokens: number;
+	    MaxOutputTokens: number;
+	    ClientInstanceID: string;
+	    Visibility: string;
+	    HubIDs: string;
+	    TenantIDs: string;
+	    SeparateAudiences: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new TokenBankShareInput(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DisplayName = source["DisplayName"];
+	        this.APIURL = source["APIURL"];
+	        this.APIKey = source["APIKey"];
+	        this.Protocol = source["Protocol"];
+	        this.KeyFingerprint = source["KeyFingerprint"];
+	        this.Models = this.convertValues(source["Models"], TokenBankShareModelInput);
+	        this.MaxInputTokens = source["MaxInputTokens"];
+	        this.MaxOutputTokens = source["MaxOutputTokens"];
+	        this.ClientInstanceID = source["ClientInstanceID"];
+	        this.Visibility = source["Visibility"];
+	        this.HubIDs = source["HubIDs"];
+	        this.TenantIDs = source["TenantIDs"];
+	        this.SeparateAudiences = source["SeparateAudiences"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class LegacySkillInstallResult {
 	    ok: boolean;
 	    state: string;
@@ -7788,6 +7864,19 @@ export namespace main {
 			if ('string' === typeof source) source = JSON.parse(source);
 			this.handoff = source["handoff"];
 			this.hub_url = source["hub_url"];
+		}
+	}
+
+	export class CreditGiftLaunch {
+		code: string;
+
+		static createFrom(source: any = {}) {
+			return new CreditGiftLaunch(source);
+		}
+
+		constructor(source: any = {}) {
+			if ('string' === typeof source) source = JSON.parse(source);
+			this.code = source["code"];
 		}
 	}
 	
@@ -14271,6 +14360,10 @@ export namespace main {
 	    total_entries: number;
 	    max_capacity: number;
 	    capacity_percent: number;
+	    recallable_entries: number;
+	    dormant_entries: number;
+	    superseded_entries: number;
+	    invalid_entries: number;
 	    archived_entries: number;
 	    stale_entries: number;
 	    pinned_entries: number;
@@ -14289,6 +14382,10 @@ export namespace main {
 	        this.total_entries = source["total_entries"];
 	        this.max_capacity = source["max_capacity"];
 	        this.capacity_percent = source["capacity_percent"];
+	        this.recallable_entries = source["recallable_entries"];
+	        this.dormant_entries = source["dormant_entries"];
+	        this.superseded_entries = source["superseded_entries"];
+	        this.invalid_entries = source["invalid_entries"];
 	        this.archived_entries = source["archived_entries"];
 	        this.stale_entries = source["stale_entries"];
 	        this.pinned_entries = source["pinned_entries"];

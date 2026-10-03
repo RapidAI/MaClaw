@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
@@ -38,16 +40,22 @@ type AccessNodeView struct {
 }
 
 type upstreamHopRequest struct {
-	Kind          string         `json:"kind"`
-	ProviderID    string         `json:"provider_id"`
-	UpstreamModel string         `json:"upstream_model,omitempty"`
-	ResponseModel string         `json:"response_model,omitempty"`
-	Model         string         `json:"model,omitempty"`
-	Body          map[string]any `json:"body,omitempty"`
+	Kind          string          `json:"kind"`
+	ProviderID    string          `json:"provider_id"`
+	UpstreamModel string          `json:"upstream_model,omitempty"`
+	ResponseModel string          `json:"response_model,omitempty"`
+	Model         string          `json:"model,omitempty"`
+	Tools         json.RawMessage `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
+	// ReportTestResult asks the peer to return the probe body even when the
+	// upstream answers 429 or 5xx. An explicit node test is about that node;
+	// those statuses are the result, not a signal to try a different peer.
+	Body map[string]any `json:"body,omitempty"`
 	// SingleAttempt tells the peer not to repeat a failed upstream call.
 	// Array members already fail over to a sibling, so the extra attempts
 	// only add latency. Older peers ignore the field and keep their retries.
-	SingleAttempt bool `json:"single_attempt,omitempty"`
+	SingleAttempt    bool `json:"single_attempt,omitempty"`
+	ReportTestResult bool `json:"report_test_result,omitempty"`
 }
 
 type upstreamHopForwardResponse struct {
@@ -60,11 +68,12 @@ type upstreamHopProbeResponse struct {
 }
 
 type upstreamHopTestResponse struct {
-	Success   bool   `json:"success"`
-	Error     string `json:"error,omitempty"`
-	Reply     string `json:"reply,omitempty"`
-	Model     string `json:"model,omitempty"`
-	LatencyMs int64  `json:"latency_ms"`
+	Success   bool               `json:"success"`
+	Error     string             `json:"error,omitempty"`
+	Reply     string             `json:"reply,omitempty"`
+	Model     string             `json:"model,omitempty"`
+	LatencyMs int64              `json:"latency_ms"`
+	ToolCalls []ProviderToolCall `json:"tool_calls,omitempty"`
 }
 
 func egressProvider(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
@@ -81,6 +90,11 @@ func egressProviderAttempts(ctx context.Context, cfg *ProxyConfig, provider *llm
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
 	}
+	provider = RotateTokenBankKey(provider)
+	body = tokenBankCappedRequestBody(provider, body)
+	if err := enforceTokenBankRequestCaps(ctx, cfg, provider, body); err != nil {
+		return nil, err
+	}
 	if cfg == nil || llmpool.ProviderAllowedOnNode(*provider, cfg.NodeID) {
 		return forwardToProviderAttempts(ctx, cfgHTTPClient(cfg), provider, body, upstreamModel, responseModel, retry)
 	}
@@ -90,6 +104,11 @@ func egressProviderAttempts(ctx context.Context, cfg *ProxyConfig, provider *llm
 func egressProviderStream(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
+	}
+	provider = RotateTokenBankKey(provider)
+	body = tokenBankCappedRequestBody(provider, body)
+	if err := enforceTokenBankRequestCaps(ctx, cfg, provider, body); err != nil {
+		return nil, err
 	}
 	if cfg == nil || llmpool.ProviderAllowedOnNode(*provider, cfg.NodeID) {
 		return streamProviderToWriter(ctx, cfgHTTPClient(cfg), provider, body, upstreamModel, responseModel, dst)
@@ -119,6 +138,49 @@ func probeHTTPClient(cfg *ProxyConfig) *http.Client {
 	return &http.Client{
 		Timeout:   20 * time.Second,
 		Transport: cfgHTTPClient(cfg).Transport,
+	}
+}
+
+// providerProbeTimeout is the upstream budget for one member probe. It matches
+// a local availability test. The shared proxy client is shorter (180s) and
+// would mark a slow overseas member as down when this node is asked to test it.
+func providerProbeTimeout(provider *llmpool.ProviderConfig) time.Duration {
+	sec := 0
+	if provider != nil {
+		sec = provider.UpstreamTimeoutSec
+	}
+	return time.Duration(corelib.MaclawLLMConfig{TimeoutSec: sec}.EffectiveTimeoutSec()) * time.Second
+}
+
+// MemberProbeContextTimeout is how long the caller waits for a probe that
+// runs on another node: the member's own budget, plus a short hop so the
+// peer can return that result.
+func MemberProbeContextTimeout(provider *llmpool.ProviderConfig) time.Duration {
+	return providerProbeTimeout(provider) + 15*time.Second
+}
+
+func providerProbeError(err error, provider *llmpool.ProviderConfig) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) || isProbeTimeout(err) {
+		return fmt.Sprintf("provider request timed out after %s", providerProbeTimeout(provider).Round(time.Second))
+	}
+	return err.Error()
+}
+
+func isProbeTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func memberProbeHTTPClient(cfg *ProxyConfig, provider *llmpool.ProviderConfig) *http.Client {
+	base := cfgHTTPClient(cfg)
+	// Follow redirects the same way real egress does. Stopping at the first
+	// 3xx made a node-targeted probe fail for an upstream that only redirects.
+	return &http.Client{
+		Transport: base.Transport,
+		Timeout:   providerProbeTimeout(provider),
 	}
 }
 
@@ -173,7 +235,7 @@ func hopProviderForwardAttempts(ctx context.Context, cfg *ProxyConfig, provider 
 			continue
 		}
 		got := &providerForwardResponse{StatusCode: out.StatusCode, Body: out.Body}
-		if shouldRetryProxyProviderStatus(got.StatusCode) {
+		if shouldRetryProxyProviderFailure(got.StatusCode, got.Body) {
 			lastResp = got
 			lastErr = fmt.Errorf("hubcenter node %s hop HTTP %d", nodeID, got.StatusCode)
 			continue
@@ -207,12 +269,15 @@ func hopProviderStream(ctx context.Context, cfg *ProxyConfig, provider *llmpool.
 		if err != nil {
 			lastErr = err
 			lastResult = result
+			// A committed prefix cannot be taken back. An attempt that only
+			// buffered business bytes leaves wroteBusinessStream clear and
+			// tries the next allowed node.
 			if result != nil && result.wroteBusinessStream {
 				return result, err
 			}
 			continue
 		}
-		if result != nil && shouldRetryProxyProviderStatus(result.statusCode) {
+		if result != nil && shouldRetryProxyProviderFailure(result.statusCode, result.errorBody) {
 			lastResult = result
 			lastErr = fmt.Errorf("hubcenter node %s hop HTTP %d", nodeID, result.statusCode)
 			continue
@@ -272,7 +337,11 @@ func hopCandidateNodeIDs(cfg *ProxyConfig, provider *llmpool.ProviderConfig) []s
 }
 
 func hopJSON(ctx context.Context, cfg *ProxyConfig, nodeID string, payload []byte) ([]byte, error) {
-	resp, err := doUpstreamHop(ctx, cfg, nodeID, payload, cfgHTTPClient(cfg).Timeout)
+	return hopJSONTimeout(ctx, cfg, nodeID, payload, cfgHTTPClient(cfg).Timeout)
+}
+
+func hopJSONTimeout(ctx context.Context, cfg *ProxyConfig, nodeID string, payload []byte, timeout time.Duration) ([]byte, error) {
+	resp, err := doUpstreamHop(ctx, cfg, nodeID, payload, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +445,7 @@ func hopStatusError(nodeID string, status int, body []byte) error {
 
 func hopRetryableForwardResponse(err error) *providerForwardResponse {
 	var hopErr *hopHTTPError
-	if !errors.As(err, &hopErr) || hopErr == nil || !shouldRetryProxyProviderStatus(hopErr.Status) {
+	if !errors.As(err, &hopErr) || hopErr == nil || !shouldRetryProxyProviderFailure(hopErr.Status, hopErr.Body) {
 		return nil
 	}
 	return &providerForwardResponse{StatusCode: hopErr.Status, Body: hopErr.Body}
@@ -488,10 +557,12 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			if model == "" && len(provider.Models) > 0 {
 				model = provider.Models[0]
 			}
-			reply, errMsg, latencyMs := testProviderChat(r.Context(), cfgHTTPClient(cfg), provider, model)
-			if code := hopRetryableTestStatus(errMsg); code > 0 {
-				writeJSONError(w, code, errMsg)
-				return
+			reply, errMsg, latencyMs, calls := testProviderChat(r.Context(), memberProbeHTTPClient(cfg, provider), provider, model, req.Tools, req.ToolChoice)
+			if !req.ReportTestResult {
+				if code := hopRetryableTestStatus(errMsg); code > 0 {
+					writeJSONError(w, code, errMsg)
+					return
+				}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(upstreamHopTestResponse{
@@ -500,6 +571,7 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 				Reply:     reply,
 				Model:     model,
 				LatencyMs: latencyMs,
+				ToolCalls: calls,
 			})
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown hop kind")
@@ -624,33 +696,61 @@ func hopModelsEndpoint(apiURL, protocol string) (string, error) {
 	return parsed.String(), nil
 }
 
-func testProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, model string) (reply string, errMsg string, latencyMs int64) {
+func testProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, model string, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []ProviderToolCall) {
 	if provider == nil {
-		return "", "provider is required", 0
+		return "", "provider is required", 0, nil
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return "", "model is required", 0
+		return "", "model is required", 0, nil
+	}
+	prompt := "Reply with exactly: pong"
+	maxTokens := 64
+	if len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null" {
+		prompt = "Call one of the available tools now."
+		maxTokens = 256
 	}
 	body := map[string]any{
 		"model":      model,
-		"messages":   []any{map[string]any{"role": "user", "content": "Reply with exactly: pong"}},
-		"max_tokens": 16,
+		"messages":   []any{map[string]any{"role": "user", "content": prompt}},
+		"max_tokens": maxTokens,
+	}
+	if parsed, ok := rawJSONValue(tools); ok {
+		body["tools"] = parsed
+	}
+	if parsed, ok := rawJSONValue(toolChoice); ok {
+		body["tool_choice"] = parsed
 	}
 	start := time.Now()
-	resp, err := forwardToProvider(ctx, client, provider, body, model, model)
+	resp, err := forwardToProviderAttempts(ctx, client, provider, body, model, model, false)
 	latencyMs = time.Since(start).Milliseconds()
 	if err != nil {
-		return "", err.Error(), latencyMs
+		return "", providerProbeError(err, provider), latencyMs, nil
 	}
 	if resp == nil {
-		return "", "empty response", latencyMs
+		return "", "empty response", latencyMs, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", hopTestHTTPError(resp.StatusCode, resp.Body), latencyMs
+		return "", hopTestHTTPError(resp.StatusCode, resp.Body), latencyMs, nil
 	}
 	reply, errMsg = hopTestReply(resp.Body)
-	return reply, errMsg, latencyMs
+	calls = ParseProviderTestToolCalls(resp.Body)
+	if errMsg == "model returned no completion content" && len(calls) > 0 {
+		errMsg = ""
+	}
+	return reply, errMsg, latencyMs, calls
+}
+
+func rawJSONValue(raw json.RawMessage) (any, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var parsed any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, false
+	}
+	return parsed, true
 }
 
 func hopTestHTTPError(statusCode int, body []byte) string {
@@ -876,36 +976,113 @@ func ProbeProviderModelsWithScope(ctx context.Context, cfg *ProxyConfig, provide
 	return probeProviderModels(ctx, &http.Client{Timeout: 20 * time.Second}, apiURL, apiKey, protocol)
 }
 
+// ProviderChatTest is one saved-member probe. Node empty uses this node when
+// it is allowed, otherwise the first reachable allowed peer. Tools are sent
+// as OpenAI chat tools.
+type ProviderChatTest struct {
+	Model      string
+	Node       string
+	Tools      json.RawMessage
+	ToolChoice json.RawMessage
+}
+
+// ProviderChatTestResult is the probe outcome, including the node that sent it.
+type ProviderChatTestResult struct {
+	Reply     string
+	Err       string
+	LatencyMs int64
+	Model     string
+	Node      string
+	ToolCalls []ProviderToolCall
+}
+
 // TestProviderChatWithScope tests locally when this node is in scope,
 // otherwise hops to an allowed peer.
 func TestProviderChatWithScope(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, model string) (reply string, errMsg string, latencyMs int64, testModel string) {
+	result := TestProviderChat(ctx, cfg, provider, ProviderChatTest{Model: model})
+	return result.Reply, result.Err, result.LatencyMs, result.Model
+}
+
+// TestProviderChat probes one saved member. A non-empty Node sends the probe
+// from that peer instead of the node that received the admin request.
+func TestProviderChat(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, spec ProviderChatTest) ProviderChatTestResult {
+	result := ProviderChatTestResult{Model: strings.TrimSpace(spec.Model), Node: strings.TrimSpace(spec.Node)}
 	if provider == nil {
-		return "", "provider is required", 0, model
+		result.Err = "provider is required"
+		return result
 	}
-	model = strings.TrimSpace(model)
-	if model == "" && len(provider.Models) > 0 {
-		model = provider.Models[0]
+	if result.Model == "" && len(provider.Models) > 0 {
+		result.Model = provider.Models[0]
 	}
-	if providerNeedsUpstreamHop(cfg, provider) {
-		body, err := hopAdminJSON(ctx, cfg, provider, upstreamHopKindTest, model)
+	spec.Model = result.Model
+	if result.Node != "" && (cfg == nil || !strings.EqualFold(result.Node, strings.TrimSpace(cfg.NodeID))) {
+		body, err := hopMemberTest(ctx, cfg, provider, spec, result.Node)
 		if err != nil {
-			return "", err.Error(), 0, model
+			result.Err = err.Error()
+			return result
 		}
-		var out upstreamHopTestResponse
-		if err := json.Unmarshal(body, &out); err != nil {
-			return "", err.Error(), 0, model
-		}
-		if !out.Success {
-			errMsg := strings.TrimSpace(out.Error)
-			if errMsg == "" {
-				errMsg = "provider test failed"
-			}
-			return out.Reply, errMsg, out.LatencyMs, firstNonEmpty(out.Model, model)
-		}
-		return out.Reply, "", out.LatencyMs, firstNonEmpty(out.Model, model)
+		return decodeHopMemberTest(body, result)
 	}
-	reply, errMsg, latencyMs = testProviderChat(ctx, cfgHTTPClient(cfg), provider, model)
-	return reply, errMsg, latencyMs, model
+	if result.Node == "" && providerNeedsUpstreamHop(cfg, provider) {
+		var lastErr error
+		for _, nodeID := range hopCandidateNodeIDs(cfg, provider) {
+			body, err := hopMemberTest(ctx, cfg, provider, spec, nodeID)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			result.Node = nodeID
+			return decodeHopMemberTest(body, result)
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no allowed hubcenter node reachable for provider %s", provider.ID)
+		}
+		result.Err = lastErr.Error()
+		return result
+	}
+	if cfg != nil && result.Node == "" {
+		result.Node = strings.TrimSpace(cfg.NodeID)
+	}
+	reply, errMsg, latencyMs, calls := testProviderChat(ctx, memberProbeHTTPClient(cfg, provider), provider, result.Model, spec.Tools, spec.ToolChoice)
+	result.Reply = reply
+	result.Err = errMsg
+	result.LatencyMs = latencyMs
+	result.ToolCalls = calls
+	return result
+}
+
+func hopMemberTest(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, spec ProviderChatTest, nodeID string) ([]byte, error) {
+	payload, err := json.Marshal(upstreamHopRequest{
+		Kind:             upstreamHopKindTest,
+		ProviderID:       provider.ID,
+		Model:            spec.Model,
+		Tools:            spec.Tools,
+		ToolChoice:       spec.ToolChoice,
+		ReportTestResult: strings.TrimSpace(spec.Node) != "",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return hopJSONTimeout(ctx, cfg, nodeID, payload, MemberProbeContextTimeout(provider))
+}
+
+func decodeHopMemberTest(body []byte, result ProviderChatTestResult) ProviderChatTestResult {
+	var out upstreamHopTestResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		result.Err = err.Error()
+		return result
+	}
+	result.Reply = out.Reply
+	result.LatencyMs = out.LatencyMs
+	result.Model = firstNonEmpty(out.Model, result.Model)
+	result.ToolCalls = out.ToolCalls
+	if !out.Success {
+		result.Err = strings.TrimSpace(out.Error)
+		if result.Err == "" {
+			result.Err = "provider test failed"
+		}
+	}
+	return result
 }
 
 func firstNonEmpty(values ...string) string {

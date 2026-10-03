@@ -147,34 +147,31 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 	return err
 }
 
-// RecallCheckpoint retrieves the most recent session checkpoint for a given
-// project path. Returns empty string if no checkpoint exists.
+// RecallCheckpoint retrieves the most recently updated session checkpoint for a
+// project path, across owners. Prefer RecallCheckpointForUser when the caller
+// knows who is resuming.
 func (c *SessionCheckpointer) RecallCheckpoint(projectPath string) string {
+	return c.RecallCheckpointForUser(projectPath, "")
+}
+
+// RecallCheckpointForUser returns that owner's latest checkpoint for the project.
+func (c *SessionCheckpointer) RecallCheckpointForUser(projectPath, userID string) string {
 	if c.memoryStore == nil || projectPath == "" {
 		return ""
 	}
-
-	entries := c.memoryStore.Search(memory.CategorySessionCheckpoint, projectPath, 3)
-	if len(entries) == 0 {
-		return ""
-	}
-
-	latest := entries[0]
-	for _, e := range entries[1:] {
-		if e.UpdatedAt.After(latest.UpdatedAt) {
-			latest = e
-		}
-	}
-
-	c.memoryStore.TouchAccess([]string{latest.ID})
-	return latest.Content
+	return c.memoryStore.LatestSessionCheckpointForOwner(projectPath, userID)
 }
 
 // BuildResumePrompt constructs a prompt fragment that can be injected into
 // a new session's initial message, giving the model context about what was
 // done previously.
 func (c *SessionCheckpointer) BuildResumePrompt(projectPath string) string {
-	checkpoint := c.RecallCheckpoint(projectPath)
+	return c.BuildResumePromptForUser(projectPath, "")
+}
+
+// BuildResumePromptForUser loads the named owner's latest project checkpoint.
+func (c *SessionCheckpointer) BuildResumePromptForUser(projectPath, userID string) string {
+	checkpoint := c.RecallCheckpointForUser(projectPath, userID)
 	if checkpoint == "" {
 		return ""
 	}
@@ -212,5 +209,5 @@ func (c *SessionCheckpointer) BuildResumePromptForSlot(slot *agent.UnfinishedTas
 	if strings.TrimSpace(slot.ProjectPath) == "" {
 		return ""
 	}
-	return c.BuildResumePrompt(slot.ProjectPath)
+	return c.BuildResumePromptForUser(slot.ProjectPath, slot.UserID)
 }

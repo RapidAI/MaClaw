@@ -1,12 +1,62 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { SettingsTabsRail } from '../SettingsTabsRail';
+import { revealElementInScrollport, scrollportContentInset, SettingsTabsRail } from '../SettingsTabsRail';
 import type { SettingsTabOption } from '../../../config/settingsTabs';
 
 const tabs: SettingsTabOption[] = [
     { id: 'general', label: 'General', desc: 'Language, projects, and environment', icon: '<svg></svg>' },
     { id: 'pet', label: 'Pet', desc: 'Desktop pet appearance and interaction settings', icon: '<svg></svg>' },
 ];
+
+describe('revealElementInScrollport', () => {
+    const rect = (top: number, bottom: number) => ({
+        x: 0, y: top, width: 80, height: bottom - top, top, right: 80, bottom, left: 0, toJSON: () => ({}),
+    });
+
+    it('scrolls a target below the port into view without moving an ancestor', () => {
+        const scrollport = {
+            scrollTop: 20,
+            getBoundingClientRect: () => rect(40, 140),
+        };
+        const target = { getBoundingClientRect: () => rect(200, 240) };
+
+        revealElementInScrollport(scrollport, target);
+
+        expect(scrollport.scrollTop).toBe(20 + (240 - (140 - 8)));
+    });
+
+    it('clears the rail padding and border, not only the outer border box', () => {
+        expect(scrollportContentInset({
+            clientTop: 1,
+            clientHeight: 500,
+            offsetHeight: 502,
+            paddingTop: 12,
+            paddingBottom: 12,
+        })).toEqual({ top: 13, bottom: 13 });
+
+        const scrollport = {
+            scrollTop: 20,
+            getBoundingClientRect: () => rect(40, 140),
+        };
+        const target = { getBoundingClientRect: () => rect(200, 240) };
+
+        revealElementInScrollport(scrollport, target, 8, { top: 13, bottom: 13 });
+
+        expect(scrollport.scrollTop).toBe(20 + (240 - (140 - 13 - 8)));
+    });
+
+    it('leaves the scrollport alone when the target is already visible', () => {
+        const scrollport = {
+            scrollTop: 12,
+            getBoundingClientRect: () => rect(40, 240),
+        };
+        const target = { getBoundingClientRect: () => rect(80, 120) };
+
+        revealElementInScrollport(scrollport, target);
+
+        expect(scrollport.scrollTop).toBe(12);
+    });
+});
 
 describe('SettingsTabsRail', () => {
     it('keeps tab descriptions out of the rail and shows them in a tooltip', () => {

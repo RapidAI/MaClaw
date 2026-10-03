@@ -780,6 +780,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/card-store/products", GetCardStoreProductsHandler(system, tenantRepo))
 	mux.HandleFunc("GET /api/card-store/payment-qr/{tenantID}/{filename}", CardStorePaymentQRImageHandler(cardStoreQRDir))
 	mux.HandleFunc("GET /api/card-store/me", GetCardStoreMeHandler(identity))
+	mux.HandleFunc("GET /api/token-bank/hub", TokenBankHubIDHandler(identity, centerSvc))
+	mux.HandleFunc("POST /api/token-bank/withdraw", TokenBankWithdrawHandler(identity, system, centerSvc))
 	mux.HandleFunc("POST /api/card-store/orders", CreateCardStoreOrderHandler(identity, system, mailer, nil))
 	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/pay", CardStoreAlipayPayPageHandler(system))
 	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/return", CardStoreAlipayReturnHandler(system, mailer, identity))
@@ -1316,5 +1318,6 @@ func NewRouter(
 	registerStaticRoutes(mux, "./web/pet-pack-help", "/pet-pack-help")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
+	registerHomeStaticRoutes(mux, "./web/home", "/")
 	return mux
 }

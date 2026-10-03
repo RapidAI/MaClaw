@@ -134,6 +134,37 @@ func TestQwenOpenAICompatNeedsConservativeSanitization(t *testing.T) {
 	}
 }
 
+func TestUpstreamModelCanonicalizesHubBandAlias(t *testing.T) {
+	hub := MaclawLLMConfig{URL: "https://hub.example/api/llm/v1", Model: "mid"}
+	if got := hub.UpstreamModel(); got != "official-mid" {
+		t.Fatalf("upstream = %q", got)
+	}
+	if got := (MaclawLLMConfig{URL: hub.URL, Model: " LOW "}).UpstreamModel(); got != "official-low" {
+		t.Fatalf("low upstream = %q", got)
+	}
+	if !IsHubManagedLLMEndpoint(hub.URL, hub.Model) {
+		t.Fatal("mid on a hub endpoint must stay hub-managed")
+	}
+	for _, model := range []string{"auto", "official-low", "gpt-4o"} {
+		cfg := MaclawLLMConfig{URL: hub.URL, Model: model}
+		if got := cfg.UpstreamModel(); got != model {
+			t.Fatalf("model %q upstream = %q", model, got)
+		}
+	}
+	other := MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "mid"}
+	if got := other.UpstreamModel(); got != "mid" {
+		t.Fatalf("non-hub upstream = %q", got)
+	}
+	flagged := MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "high", HubManaged: true}
+	if got := flagged.UpstreamModel(); got != "high" {
+		t.Fatalf("non-hub hub-managed upstream = %q", got)
+	}
+	named := MaclawLLMConfig{URL: "https://hub.example/v1", Model: "mid", ProviderName: "MaClaw官方", HubManaged: true}
+	if got := named.UpstreamModel(); got != "official-mid" {
+		t.Fatalf("official provider upstream = %q", got)
+	}
+}
+
 func TestFirstPartyHubLLMSkipsCodeGenPromptRelocationIdentity(t *testing.T) {
 	hub := MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"}
 	if !hub.IsFirstPartyHubLLM() {

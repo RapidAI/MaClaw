@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -108,6 +109,125 @@ func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 		if got[latent] != 0 {
 			t.Fatalf("cold office turn materialized latent %s %d times", latent, got[latent])
 		}
+	}
+}
+
+func TestProjectTaskSearchContinuationPublishesWebFetch(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, query string) (string, error) { return "found: " + query, nil }
+	registerBuiltinTools(h.registry, h)
+	search := &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.96}
+	ctx := withLookupContinuationFetch(withSemanticPlanningBudget(context.Background(), 0))
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		ctx, "user-1", "octop中有sso登录功能吗？", "desktop", "root-sso", "turn-sso", search, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) == "" {
+		t.Fatal("a project-task search continuation must publish web_fetch")
+	}
+	if planHasCapabilities(surface.plan, tool.CapabilityShellExecuteLocal) {
+		t.Fatal("a search continuation must not grow a shell")
+	}
+}
+
+func TestProjectTaskSearchContinuationRestoresCarriedShell(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, query string) (string, error) { return "found: " + query, nil }
+	registerBuiltinTools(h.registry, h)
+	userID := "desktop-user:restored-task"
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	search := &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.96}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		Execution: ExecutionProfile{
+			Layer:           string(executionLayerLight),
+			PromptProfile:   "light",
+			Reason:          lookupContinuationReason,
+			ToolBudget:      0,
+			IterationBudget: lookupContinuationIterationBudget,
+		},
+		SemanticIntent: search,
+	}}
+	ctx.semanticResidueRemaining = map[string]int{
+		"information.search.web":                   0,
+		string(tool.CapabilityInformationFetchWeb): 0,
+		string(tool.CapabilityShellExecuteLocal):   0,
+	}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContext(ctx, userID, "octop中有sso登录功能吗？", "desktop")
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) == "" {
+		t.Fatal("carried lookup must still publish web_fetch")
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter) != "bash" {
+		t.Fatal("carried bash must be on the lookup surface")
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter) != "" {
+		t.Fatal("a bash carry must not grow write_file")
+	}
+	defs, defErr := visibleSemanticCallSurfaceDefinitions(surface)
+	if defErr != nil {
+		t.Fatal(defErr)
+	}
+	kept := closedManagedSemanticDefinitionsKeeping(defs, surface, true, func(name string) bool {
+		return lookupContinuationCarriedGrant(ctx.Runtime.Execution, h.parentExecutionTools(userID), name)
+	})
+	if !toolsIncludeName(kept, "bash") {
+		t.Fatal("light lookup close must keep carried bash")
+	}
+	if !toolsIncludeName(kept, "web_fetch") {
+		t.Fatal("light lookup close must keep web_fetch")
+	}
+	if toolsIncludeName(closedManagedSemanticDefinitionsForTurn(defs, surface, true), "bash") {
+		t.Fatal("a light close without the carry must still drop bash")
+	}
+	h.noteSemanticSessionResidueCandidate(ctx, userID, "desktop", "octop中有sso登录功能吗？", surface.plan)
+	for _, need := range ctx.semanticResidueCandidateNeeds {
+		if need.Capability == tool.CapabilityShellExecuteLocal {
+			t.Fatal("carried bash must not become the session residue")
+		}
+	}
+}
+
+func TestSemanticResidueDropSpentKeepsPositiveBudget(t *testing.T) {
+	got := semanticResidueWithoutLookupCeiling(map[string]int{
+		"information.search.web":                   2,
+		string(tool.CapabilityInformationFetchWeb): 0,
+		string(tool.CapabilityShellExecuteLocal):   1,
+	})
+	if got["information.search.web"] != 2 || got[string(tool.CapabilityShellExecuteLocal)] != 1 {
+		t.Fatalf("positive ceilings must stay, got %#v", got)
+	}
+	if _, ok := got[string(tool.CapabilityInformationFetchWeb)]; ok {
+		t.Fatal("a spent fetch ceiling must be removed")
+	}
+}
+
+func TestProjectTaskSearchContinuationSurvivesSpentLookupCeiling(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, query string) (string, error) { return "found: " + query, nil }
+	registerBuiltinTools(h.registry, h)
+	search := &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.96}
+	ctx := withLookupContinuationFetch(withSemanticPlanningBudget(context.Background(), 0))
+	ctx = withSemanticResidueRemaining(ctx, map[string]int{
+		"information.search.web":                   0,
+		string(tool.CapabilityInformationFetchWeb): 0,
+	})
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		ctx, "user-1", "octop中有sso登录功能吗？", "desktop", "root-sso-spent", "turn-sso-spent", search, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("a spent lookup ceiling must not close the continuation: handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) == "" {
+		t.Fatal("a spent lookup ceiling must not drop web_fetch")
+	}
+	if !planHasCapabilities(surface.plan, "information.search.web") {
+		t.Fatal("a spent lookup ceiling must not drop web_search")
 	}
 }
 

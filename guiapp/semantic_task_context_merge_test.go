@@ -9,6 +9,34 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
+func TestPendingAnswerDoesNotMergePureDocumentDelivery(t *testing.T) {
+	delivery := &intent.ClassificationResult{Primary: intent.LabelDocumentDelivery, Confidence: 0.70, Layer: 3}
+	if pendingAnswerPrefersTaskMerge(delivery, true) {
+		t.Fatal("pure document delivery was merged into the open task")
+	}
+	attachment := &intent.ClassificationResult{Primary: intent.LabelAttachmentDelivery, Confidence: 0.70, Layer: 3}
+	if pendingAnswerPrefersTaskMerge(attachment, true) {
+		t.Fatal("pure attachment delivery was merged into the open task")
+	}
+	if pendingAnswerPrefersTaskMerge(delivery, false) {
+		t.Fatal("a delivery that is not a pending answer was merged")
+	}
+	weak := &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.40}
+	if !pendingAnswerPrefersTaskMerge(weak, true) {
+		t.Fatal("a weak unknown answer must still merge")
+	}
+	coding := &intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.80}
+	if !pendingAnswerPrefersTaskMerge(coding, true) {
+		t.Fatal("a weak coding answer must still merge")
+	}
+	mixed := &intent.ClassificationResult{
+		Primary: intent.LabelDocumentDelivery, Secondary: []intent.IntentLabel{intent.LabelLiveData}, Confidence: 0.70, Layer: 3,
+	}
+	if !pendingAnswerPrefersTaskMerge(mixed, true) {
+		t.Fatal("delivery plus a lookup must still merge")
+	}
+}
+
 func TestSemanticClassificationNeedsTaskContext(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -83,5 +111,37 @@ func TestClassifyWithTaskContextMerge(t *testing.T) {
 	fromSummary, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "再加上照片"}, nil, nil, "生成庆祝布偶宝宝5岁生日的PPT")
 	if !ok || fromSummary.Primary != intent.LabelOffice {
 		t.Fatalf("summary merge=%+v ok=%v", fromSummary, ok)
+	}
+}
+
+func TestTaskContextMergeRestateMarksOnlyTheOpenContext(t *testing.T) {
+	uic := intent.New(intent.Config{LLMFunc: func(_, text string) (string, error) {
+		switch {
+		case strings.Contains(text, "跑一遍"):
+			return `{"top":[{"skill":"ssh","score":0.90}]}`, nil
+		case strings.Contains(text, "保存原始配置"):
+			return `{"top":[{"skill":"file_write","score":0.92}]}`, nil
+		case strings.Contains(text, "周报"):
+			return `{"top":[{"skill":"office","score":0.90}]}`, nil
+		default:
+			return `{"top":[{"skill":"unknown","score":0.2}]}`, nil
+		}
+	}})
+	h := &IMMessageHandler{unifiedClassifier: uic}
+
+	restated, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "已经解封"}, nil, nil, "更新api2服务器上的omniroute，保存原始配置")
+	if !ok || restated.Primary != intent.LabelFileWrite {
+		t.Fatalf("restate=%+v ok=%v", restated, ok)
+	}
+	if !strings.Contains(restated.Reason, "open-task restate") {
+		t.Fatalf("open context was read as a new task: %q", restated.Reason)
+	}
+
+	switched, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "然后连上服务器跑一遍检查"}, nil, nil, "做一份项目周报")
+	if !ok || switched.Primary != intent.LabelSSH {
+		t.Fatalf("switch=%+v ok=%v", switched, ok)
+	}
+	if strings.Contains(switched.Reason, "open-task restate") {
+		t.Fatalf("a sentence that named ssh was kept on the open document: %q", switched.Reason)
 	}
 }

@@ -142,17 +142,22 @@ func TestHandleProxyRequestRotatesAndFailsOverInsideProviderArray(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
+	usage := &recordingUsageRecorder{}
 	resp, err := HandleProxyRequest(context.Background(), &ProxyConfig{
 		Service:     svc,
 		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
 		HTTPClient:  &http.Client{},
 		Resilience:  llmpool.NewResilienceController(),
+		Usage:       usage,
 	}, &ProxyRequest{ServiceGroupID: "pool", Body: map[string]any{"model": "auto"}})
 	if err != nil {
 		t.Fatalf("HandleProxyRequest() error = %v", err)
 	}
 	if resp == nil || resp.ProviderID != "array-fo" {
 		t.Fatalf("provider = %#v, want logical array id", resp)
+	}
+	if len(usage.records) != 1 || usage.records[0].ProviderID != "array-fo-b" {
+		t.Fatalf("usage provider = %#v, want the member that answered", usage.records)
 	}
 	if len(hits) != 2 || hits[0] != "primary" || hits[1] != "spare" {
 		t.Fatalf("hits = %#v, want primary then spare", hits)
@@ -948,5 +953,421 @@ func TestRecoveringArrayMemberYieldsToHealthySibling(t *testing.T) {
 	}
 	if !seenPrimary {
 		t.Fatalf("hits after grace = %#v, want the recovering member tried again", hits)
+	}
+}
+
+func TestProviderArrayReferenceIgnoresRouteCase(t *testing.T) {
+	reg := &Registry{
+		ProviderArrays: []llmpool.ProviderArray{{ID: "Used", MemberIDs: []string{"Used", "spare"}}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "pool", Name: "Pool",
+			Models: []llmpool.ModelConfig{{
+				ProviderIDs:     []string{"used"},
+				ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "used"}},
+			}},
+		}},
+	}
+	groups := providerArrayReferencedGroups(reg, &reg.ProviderArrays[0])
+	if len(groups) != 1 || groups[0].ID != "pool" {
+		t.Fatalf("groups = %#v, a differently cased route must still block deletion", groups)
+	}
+}
+
+func TestRenameProviderArrayKeepsRoutes(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "array-a", Name: "Old", APIURL: "https://a.example", ArrayID: "array-a"},
+			{ID: "array-b", Name: "Spare", APIURL: "https://b.example", ArrayID: "array-a"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "pool", Name: "Pool", AgentID: "maclaw_official",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "array-a", Model: "chat"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	if err := svc.RenameProviderArray(context.Background(), "array-a", "  Nanjing  "); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	arr := findProviderArray(reg, "array-a")
+	if arr == nil || arr.Name != "Nanjing" {
+		t.Fatalf("array = %#v, want renamed Nanjing", arr)
+	}
+	configs := reg.ServiceGroups[0].Models[0].ProviderConfigs
+	if len(configs) != 1 || configs[0].ProviderID != "array-a" {
+		t.Fatalf("routes = %#v, rename must keep the array route", configs)
+	}
+	if err := svc.RenameProviderArray(context.Background(), "array-a", " "); err == nil {
+		t.Fatal("blank name should be rejected")
+	}
+	if err := svc.RenameProviderArray(context.Background(), "array-a", "line\nbreak"); err == nil {
+		t.Fatal("control characters should be rejected")
+	}
+	if err := svc.RenameProviderArray(context.Background(), "array-a", strings.Repeat("名", 81)); err == nil {
+		t.Fatal("overlong name should be rejected")
+	}
+	if err := svc.RenameProviderArray(context.Background(), "missing", "Nope"); !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("missing array err = %v", err)
+	}
+}
+
+func TestUpdateProviderArrayBillingPublishesToMembers(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "array-a", Name: "Old", APIURL: "https://a.example", ArrayID: "array-a", CreditMultiplier: 9, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 8, OutputCreditsPer10K: 8}},
+			{ID: "array-b", Name: "Spare", APIURL: "https://b.example", ArrayID: "array-a", CreditMultiplier: 3, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 1}},
+			{ID: "solo", Name: "Solo", APIURL: "https://solo.example", CreditMultiplier: 4, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 2, OutputCreditsPer10K: 2}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "pool", Name: "Pool", AgentID: "maclaw_official",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "array-a", Model: "chat"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cacheRead := 0.1
+	windowIn := 0.5
+	billing := ProviderArrayBilling{
+		Timezone:         "Asia/Shanghai",
+		CreditMultiplier: 2.1,
+		CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+			Days: []int{1, 2, 3, 4, 5}, Start: "00:30", End: "08:30", Multiplier: 0.5,
+		}},
+		TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K:     1,
+			OutputCreditsPer10K:    4,
+			CacheReadCreditsPer10K: &cacheRead,
+			MinimumRequestCredits:  0.1,
+			Timezone:               "Asia/Shanghai",
+			Version:                "2026-08-23-v1",
+			PriceSchedule: []llmpool.TokenPriceWindow{{
+				ID: "night", Start: "00:00", End: "08:00", InputCreditsPer10K: &windowIn,
+			}},
+		},
+	}
+	if err := svc.UpdateProviderArray(context.Background(), "array-a", "  Nanjing  ", billing); err != nil {
+		t.Fatalf("update array: %v", err)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	arr := findProviderArray(reg, "array-a")
+	if arr == nil || arr.Name != "Nanjing" || arr.CreditMultiplier != 2.1 || arr.TokenPricing.InputCreditsPer10K != 1 || arr.TokenPricing.OutputCreditsPer10K != 4 {
+		t.Fatalf("array billing = %#v", arr)
+	}
+	if len(arr.CreditMultiplierSchedule) != 1 || arr.CreditMultiplierSchedule[0].Multiplier != 0.5 {
+		t.Fatalf("array schedule = %#v", arr.CreditMultiplierSchedule)
+	}
+	if arr.TokenPricing.CacheReadCreditsPer10K == nil || *arr.TokenPricing.CacheReadCreditsPer10K != 0.1 || len(arr.TokenPricing.PriceSchedule) != 1 {
+		t.Fatalf("array token pricing = %#v", arr.TokenPricing)
+	}
+	for _, id := range []string{"array-a", "array-b"} {
+		member := findProvider(reg, id)
+		if member == nil || member.CreditMultiplier != 2.1 || member.TokenPricing.OutputCreditsPer10K != 4 || len(member.CreditMultiplierSchedule) != 1 {
+			t.Fatalf("member %s billing = %#v", id, member)
+		}
+	}
+	if configs := reg.ServiceGroups[0].Models[0].ProviderConfigs; len(configs) != 1 || configs[0].ProviderID != "array-a" {
+		t.Fatalf("routes = %#v, billing edit must keep the array route", configs)
+	}
+	soloPrice := ProviderArrayBilling{
+		Timezone: "Asia/Shanghai", CreditMultiplier: 1.5,
+		TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 6, OutputCreditsPer10K: 7},
+	}
+	if err := svc.UpdateProviderArray(context.Background(), "solo", "Solo", soloPrice); err != nil {
+		t.Fatalf("update solo: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload solo: %v", err)
+	}
+	solo := findProvider(reg, "solo")
+	soloArr := findProviderArray(reg, "solo")
+	if solo == nil || soloArr == nil || solo.TokenPricing.InputCreditsPer10K != 6 || soloArr.TokenPricing.OutputCreditsPer10K != 7 || soloArr.CreditMultiplier != 1.5 {
+		t.Fatalf("solo provider=%#v array=%#v", solo, soloArr)
+	}
+	if err := svc.UpdateProviderArray(context.Background(), "solo", "Solo", ProviderArrayBilling{
+		CreditMultiplier: 1,
+		TokenPricing:     llmpool.TokenPricing{InputCreditsPer10K: -1, OutputCreditsPer10K: 1},
+	}); err == nil {
+		t.Fatal("negative token price should be rejected")
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload after reject: %v", err)
+	}
+	if solo := findProvider(reg, "solo"); solo == nil || solo.TokenPricing.InputCreditsPer10K != 6 {
+		t.Fatalf("rejected update changed solo = %#v", solo)
+	}
+	if err := svc.UpdateProviderArray(context.Background(), "missing", "Nope", billing); !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("missing array err = %v", err)
+	}
+}
+
+func TestAddProviderArrayKeepsBillingBeforeMembers(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.AddProviderArray(context.Background(), "nanjing", "  Nanjing  ", ProviderArrayBilling{
+		Timezone:         "Asia/Shanghai",
+		CreditMultiplier: 2.1,
+		TokenPricing:     llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4},
+	}); err != nil {
+		t.Fatalf("add array: %v", err)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	arr := findProviderArray(reg, "nanjing")
+	if arr == nil || arr.Name != "Nanjing" || len(arr.MemberIDs) != 0 || arr.CreditMultiplier != 2.1 || arr.TokenPricing.InputCreditsPer10K != 1 {
+		t.Fatalf("empty array = %#v", arr)
+	}
+	if err := svc.AddProvider(context.Background(), llmpool.ProviderConfig{
+		ID: "member", Name: "Member", APIURL: "https://member.example", ArrayID: "nanjing",
+		CreditMultiplier: 9, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 8, OutputCreditsPer10K: 8},
+	}); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload member: %v", err)
+	}
+	member := findProvider(reg, "member")
+	arr = findProviderArray(reg, "nanjing")
+	if member == nil || member.CreditMultiplier != 2.1 || member.TokenPricing.OutputCreditsPer10K != 4 || member.TokenPricing.InputCreditsPer10K != 1 {
+		t.Fatalf("member billing = %#v, want the array rate", member)
+	}
+	if arr == nil || arr.TokenPricing.InputCreditsPer10K != 1 || len(arr.MemberIDs) != 1 {
+		t.Fatalf("array after join = %#v", arr)
+	}
+	if _, err := svc.DeleteProviderArray(context.Background(), "nanjing"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload delete: %v", err)
+	}
+	if findProviderArray(reg, "nanjing") != nil || findProvider(reg, "member") != nil {
+		t.Fatalf("deleted array survived: arrays=%#v providers=%#v", reg.ProviderArrays, reg.Providers)
+	}
+	if err := svc.AddProviderArray(context.Background(), " ", "Nanjing", ProviderArrayBilling{CreditMultiplier: 1}); err == nil {
+		t.Fatal("blank id should be rejected")
+	}
+	if err := svc.AddProviderArray(context.Background(), "nanjing", " ", ProviderArrayBilling{CreditMultiplier: 1}); err == nil {
+		t.Fatal("blank name should be rejected")
+	}
+}
+
+func TestMovingLastMemberDropsDerivedArray(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "solo", Name: "Solo", APIURL: "https://solo.example", CreditMultiplier: 4, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 2, OutputCreditsPer10K: 2}},
+		},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := svc.AddProviderArray(context.Background(), "other", "Other", ProviderArrayBilling{
+		Timezone: "Asia/Shanghai", CreditMultiplier: 2.1,
+		TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4},
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	solo := findProvider(reg, "solo")
+	if solo == nil {
+		t.Fatal("missing solo")
+	}
+	solo.ArrayID = "other"
+	if err := svc.UpdateProvider(context.Background(), *solo); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if findProviderArray(reg, "solo") != nil {
+		t.Fatalf("derived array survived: %#v", reg.ProviderArrays)
+	}
+	other := findProviderArray(reg, "other")
+	moved := findProvider(reg, "solo")
+	if other == nil || !other.Manual || other.CreditMultiplier != 2.1 || len(other.MemberIDs) != 1 {
+		t.Fatalf("other = %#v", other)
+	}
+	if moved == nil || moved.CreditMultiplier != 2.1 || moved.TokenPricing.OutputCreditsPer10K != 4 {
+		t.Fatalf("moved billing = %#v", moved)
+	}
+}
+
+func TestMoveMemberIntoArrayKeepsSourceRoute(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "primary", Name: "Primary", APIURL: "https://primary.example", ArrayID: "primary", CreditMultiplier: 2, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 2, OutputCreditsPer10K: 2}},
+			{ID: "spare", Name: "Spare", APIURL: "https://spare.example", ArrayID: "primary", CreditMultiplier: 9, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 8, OutputCreditsPer10K: 8}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "pool", Name: "Official pool", AgentID: "maclaw_official",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "primary", Model: "chat"},
+				{ProviderID: "spare", Model: "chat"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := svc.AddProviderArray(context.Background(), "other", "Other", ProviderArrayBilling{
+		Timezone: "Asia/Shanghai", CreditMultiplier: 2.1,
+		TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4},
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	spare := findProvider(reg, "spare")
+	if spare == nil {
+		t.Fatal("missing spare")
+	}
+	spare.ArrayID = "other"
+	spare.CreditMultiplier = 9
+	spare.TokenPricing = llmpool.TokenPricing{InputCreditsPer10K: 8, OutputCreditsPer10K: 8}
+	if err := svc.UpdateProvider(context.Background(), *spare); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	other := findProviderArray(reg, "other")
+	moved := findProvider(reg, "spare")
+	primary := findProviderArray(reg, "primary")
+	if other == nil || other.CreditMultiplier != 2.1 || other.TokenPricing.InputCreditsPer10K != 1 || len(other.MemberIDs) != 1 {
+		t.Fatalf("other = %#v", other)
+	}
+	if moved == nil || moved.ArrayID != "other" || moved.CreditMultiplier != 2.1 || moved.TokenPricing.OutputCreditsPer10K != 4 {
+		t.Fatalf("moved = %#v", moved)
+	}
+	if primary == nil || len(primary.MemberIDs) != 1 || primary.MemberIDs[0] != "primary" || primary.CreditMultiplier != 2 {
+		t.Fatalf("primary = %#v", primary)
+	}
+	configs := reg.ServiceGroups[0].Models[0].ProviderConfigs
+	if len(configs) != 1 || configs[0].ProviderID != "primary" {
+		t.Fatalf("routes = %#v, moving a member must leave the source array route in place", configs)
+	}
+}
+
+func TestMoveProviderKeepsWorkBuddyLogin(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID: "wb", Name: "WorkBuddy", APIURL: "https://custom.example/v1", Protocol: "openai",
+			APIKey: "access-token", AuthKind: llmpool.ProviderAuthWorkBuddy, WorkBuddyEdition: "china",
+			WorkBuddyRefreshToken: "refresh-token", Models: []string{"glm"},
+		}},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := svc.AddProviderArray(context.Background(), "other", "Other", ProviderArrayBilling{
+		Timezone: "Asia/Shanghai", CreditMultiplier: 2.1,
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	provider := findProvider(reg, "wb")
+	if provider == nil {
+		t.Fatal("missing provider")
+	}
+	provider.ArrayID = "other"
+	provider.AuthKind = ""
+	provider.WorkBuddyRefreshToken = ""
+	provider.APIKey = ""
+	if err := svc.UpdateProvider(context.Background(), *provider); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	moved := findProvider(reg, "wb")
+	if moved == nil || moved.ArrayID != "other" || moved.APIURL != "https://custom.example/v1" || moved.APIKey != "access-token" || moved.WorkBuddyRefreshToken != "refresh-token" || moved.AuthKind != llmpool.ProviderAuthWorkBuddy {
+		t.Fatalf("moved = %#v", moved)
+	}
+	if moved.CreditMultiplier != 2.1 {
+		t.Fatalf("billing = %v", moved.CreditMultiplier)
+	}
+}
+
+func TestDeleteProviderArrayRefusesWhenServiceGroupUsesIt(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "used", Name: "Used", APIURL: "https://used.example"},
+			{ID: "free", Name: "Free", APIURL: "https://free.example", ArrayID: "free"},
+			{ID: "free-b", Name: "Free B", APIURL: "https://free-b.example", ArrayID: "free"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "pool", Name: "Official pool", AgentID: "maclaw_official",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "used", Model: "chat"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	refs, err := svc.ProviderArrayReferences(context.Background(), "used")
+	if err != nil {
+		t.Fatalf("references: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ID != "pool" || refs[0].Name != "Official pool" {
+		t.Fatalf("refs = %#v", refs)
+	}
+	names, err := svc.DeleteProviderArray(context.Background(), "used")
+	if !errors.Is(err, ErrProviderInUse) {
+		t.Fatalf("delete used = %v, want ErrProviderInUse", err)
+	}
+	if len(names) != 1 || names[0] != "Official pool" {
+		t.Fatalf("blocked groups = %#v", names)
+	}
+	reg, err := svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if findProvider(reg, "used") == nil {
+		t.Fatal("referenced array was deleted")
+	}
+	if configs := reg.ServiceGroups[0].Models[0].ProviderConfigs; len(configs) != 1 || configs[0].ProviderID != "used" {
+		t.Fatalf("routes = %#v, a blocked delete must leave the service group alone", configs)
+	}
+	freeRefs, err := svc.ProviderArrayReferences(context.Background(), "free")
+	if err != nil {
+		t.Fatalf("free references: %v", err)
+	}
+	if len(freeRefs) != 0 {
+		t.Fatalf("free refs = %#v", freeRefs)
+	}
+	if _, err := svc.DeleteProviderArray(context.Background(), "free"); err != nil {
+		t.Fatalf("delete free: %v", err)
+	}
+	reg, err = svc.LoadRegistry(context.Background())
+	if err != nil {
+		t.Fatalf("reload after free delete: %v", err)
+	}
+	if findProvider(reg, "free") != nil || findProvider(reg, "free-b") != nil || findProviderArray(reg, "free") != nil {
+		t.Fatalf("free array still present: providers=%#v arrays=%#v", reg.Providers, reg.ProviderArrays)
+	}
+	if findProvider(reg, "used") == nil {
+		t.Fatal("deleting the free array removed the used provider")
 	}
 }

@@ -528,7 +528,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"us_patent_application",
 			},
 			TreeText: "用户要启动工作流面板或 /workflow 里的一类项目。产出物必须落在下面列出的 workflow_type 里（产品设计、商业计划、研究报告、论文、标书、专利、活动策划等）。" +
-				"判据：对象是不是这些项目类型之一？是 → workflow_task，并填写对应 workflow_type。否 → 改用该对象真正对应的标签，不要用本标签。" +
+				"判据：用户是在要求新开一个多阶段项目吗？是 → workflow_task，并填写对应 workflow_type。否 → 改用该对象真正对应的标签，不要用本标签。" +
+				"对象像论文、报告或计划，并不足以使用本标签。当前对话里继续改一份已经在手上的文稿，是 file_write，不是本标签。从零开始、要交给工作流面板的项目，才是本标签。" +
 				"在当前对话里直接做出来的视频、动画、图片、音频或故事不是本标签：哪怕要求风格、情节、分镜或多段拼接，也是 non_coding，workflow_type 留空。" +
 				"在当前对话里点名使用某个 skill（使用 book-pdf skill、use X skill）不是本标签：那是当前 agent 执行该 skill。" +
 				"不是待办清单（task_track），也不是单阶段导出 PDF（document_generate）。" +
@@ -652,6 +653,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Domain: "本地文件 (Local Files)",
 			TreeText: "用户要把指定内容写入、保存到本机文件，或直接修改某个已有的本地文件。" +
 				"语义判据：用户目标是创建/覆盖/追加/编辑一个具体的本地文件，产出物就是该文件本身，包括 markdown/.md 文本。" +
+				"当前对话里继续改一份已经在手上的文稿，也是本标签，不是 workflow_task。" +
 				"边界：「从零开发软件/功能」→ coding；「生成 Word/Excel/PPT 办公文档」→ office；" +
 				"「生成 PDF」→ document_generate；「把内容录入知识库」→ knowledge_write；" +
 				"「删除已有的本地文件」→ file_delete，不是把文件改写为空。",

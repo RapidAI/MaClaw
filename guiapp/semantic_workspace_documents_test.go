@@ -303,6 +303,176 @@ func baseNames(paths []string) []string {
 	return out
 }
 
+// pdflatex writes next to the .tex, which for a template lives under a
+// subdirectory. The sample PDFs shipped in that template, and anything under
+// node_modules, must stay off the card.
+func TestLatexPDFUnderTemplateDirIsDelivered(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".maclaw", "data", "tasks", "job", "workspace")
+	paper := filepath.Join(root, "elsarticle")
+	if err := os.MkdirAll(filepath.Join(paper, "doc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sample := filepath.Join(paper, "doc", "elsdoc.pdf")
+	if err := os.WriteFile(sample, []byte("%PDF-sample"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	junk := filepath.Join(root, "node_modules")
+	if err := os.MkdirAll(junk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(junk, "bundle.pdf"), []byte("%PDF-junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		workspaceDocRoot:     root,
+		workspaceDocBaseline: snapshotWorkspaceDocuments(root),
+	}
+	produced := filepath.Join(paper, "elsarticle-template-num.pdf")
+	if err := os.WriteFile(produced, []byte("%PDF-paper"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(junk, "later.pdf"), []byte("%PDF-later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.attachProducedWorkspaceDocuments()
+	if len(cb.deliveredPaths) != 1 || cb.deliveredPaths[0] != produced {
+		t.Fatalf("delivered = %v, want %s", cb.deliveredPaths, produced)
+	}
+}
+
+func TestWorkspaceDocumentWalkDepthAndHiddenDirs(t *testing.T) {
+	root := t.TempDir()
+	visible := filepath.Join(root, "a", "b", "c", "d", "ok.pdf")
+	tooDeep := filepath.Join(root, "a", "b", "c", "d", "e", "too.pdf")
+	hidden := filepath.Join(root, ".cache", "secret.pdf")
+	for _, path := range []string{visible, tooDeep, hidden} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("%PDF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := snapshotWorkspaceDocuments(root)
+	if _, ok := got[deliveredWorkspaceDocKey(visible)]; !ok {
+		t.Fatalf("shallow pdf missing: %v", keysOf(got))
+	}
+	if _, ok := got[deliveredWorkspaceDocKey(tooDeep)]; ok {
+		t.Fatal("pdf past the depth limit was recorded")
+	}
+	if _, ok := got[deliveredWorkspaceDocKey(hidden)]; ok {
+		t.Fatal("pdf under a dot directory was recorded")
+	}
+}
+
+func TestWorkspaceDocumentWalkSkipsSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.pdf")
+	if err := os.WriteFile(secret, []byte("%PDF-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "alias.pdf")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	for _, stamp := range snapshotWorkspaceDocuments(root) {
+		if filepath.Base(stamp.path) == "secret.pdf" || filepath.Base(stamp.path) == "alias.pdf" {
+			t.Fatalf("symlink leaked into the snapshot: %s", stamp.path)
+		}
+	}
+}
+
+func TestWorkspaceDocumentBudgetKeepsAlphabeticalChild(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"b", "a"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".pdf"), []byte("%PDF-"+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan, ok := scanWorkspaceDocuments(root, 2)
+	if !ok {
+		t.Fatal("root should still be readable")
+	}
+	if !scan.truncated {
+		t.Fatal("the later sibling should be left outside the budget")
+	}
+	kept := filepath.Join(root, "a", "a.pdf")
+	dropped := filepath.Join(root, "b", "b.pdf")
+	if _, ok := scan.files[deliveredWorkspaceDocKey(kept)]; !ok {
+		t.Fatalf("alphabetical child missing: %v", keysOf(scan.files))
+	}
+	if _, ok := scan.files[deliveredWorkspaceDocKey(dropped)]; ok {
+		t.Fatal("later sibling was read past the budget")
+	}
+}
+
+func TestWorkspaceDocumentScanStopsAtDirectoryBudget(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"one", "two", "three"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".pdf"), []byte("%PDF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan, ok := scanWorkspaceDocuments(root, 1)
+	if !ok {
+		t.Fatal("root should still be readable")
+	}
+	if !scan.truncated {
+		t.Fatal("budget of one directory should truncate before the children")
+	}
+	if len(scan.files) != 0 {
+		t.Fatalf("child pdfs were read past the budget: %v", keysOf(scan.files))
+	}
+}
+
+func TestTruncatedBaselineDoesNotResurfaceOldPDF(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".maclaw", "data", "tasks", "job", "workspace")
+	if err := os.MkdirAll(filepath.Join(root, "elsarticle"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(root, "elsarticle", "sample.pdf")
+	if err := os.WriteFile(old, []byte("%PDF-old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		workspaceDocRoot:              root,
+		workspaceDocBaseline:          map[string]workspaceDocumentStamp{},
+		workspaceDocBaselineAt:        time.Now().Add(-time.Second),
+		workspaceDocBaselineTruncated: true,
+	}
+	fresh := filepath.Join(root, "elsarticle", "paper.pdf")
+	if err := os.WriteFile(fresh, []byte("%PDF-paper"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.attachProducedWorkspaceDocuments()
+	if len(cb.deliveredPaths) != 1 || cb.deliveredPaths[0] != fresh {
+		t.Fatalf("delivered = %v, want only %s", cb.deliveredPaths, fresh)
+	}
+}
+
+func keysOf(stamps map[string]workspaceDocumentStamp) []string {
+	out := make([]string, 0, len(stamps))
+	for key := range stamps {
+		out = append(out, key)
+	}
+	return out
+}
+
 func TestProjectWorkspaceDoesNotDumpOldPDFs(t *testing.T) {
 	root := t.TempDir()
 	old := filepath.Join(root, "manual.pdf")

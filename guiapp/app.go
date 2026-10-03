@@ -81,6 +81,8 @@ type App struct {
 	suitePurchases             map[string]string
 	referralHandoffMu          sync.Mutex
 	pendingReferralHandoff     ReferralHandoffLaunch
+	creditGiftMu               sync.Mutex
+	pendingCreditGift          CreditGiftLaunch
 	cloudWorkspaceShareMu      sync.Mutex
 	pendingCloudWorkspaceShare CloudWorkspaceShareLaunch
 	watcher                    *fsnotify.Watcher
@@ -420,6 +422,7 @@ type App struct {
 	workflowArtifactSaver      *deferredArtifactSaver          // shared artifact saver for OwnerID injection
 	steeringStore              *steering.Store                 // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter               // emits code file events to frontend for code preview panel
+	codePreviewEventObserver   func(CodeFileEvent)             // test hook; production leaves this nil
 	codingKnowledgeStore       *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
 	codingRuntimeStore         *codingruntime.SQLiteStore      // durable local/remote coding attempt ledger
 	codingRuntimeStoreMu       sync.Mutex
@@ -2783,6 +2786,9 @@ func (a *App) domReady(ctx context.Context) {
 	a.scheduleClampMaximizedWindowToWorkArea(120 * time.Millisecond)
 	if handoff := a.peekPendingReferralHandoff(); handoff.Handoff != "" {
 		a.emitEvent("referral-handoff", handoff)
+	}
+	if gift := a.peekPendingCreditGift(); gift.Code != "" {
+		a.emitEvent(EventTokenBankCredit, gift)
 	}
 	a.applyPendingCloudWorkspaceShare()
 }

@@ -3,6 +3,9 @@ import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
 import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
 
+/** Keep in sync with LATEX_EXPERT_ID. Local so this module does not import the template catalogue. */
+const LATEX_PAPER_EXPERT_ID = "builtin-latex-paper";
+
 const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
@@ -38,6 +41,38 @@ export function messageBelongsToSession(message: ChatMessage, sessionKey: string
 export function messageBelongsToSessionOrLegacy(message: ChatMessage, sessionKey: string): boolean {
     const owner = normalizeAssistantSessionKey(message.sessionKey);
     return !owner || owner === normalizeAssistantSessionKey(sessionKey);
+}
+
+/** Drop transcript turns that belong to a conversation cleared at floorMs. */
+export function messageAfterSessionFloor(message: { timestamp?: number } | null | undefined, floorMs?: number | null): boolean {
+    const floor = Number(floorMs || 0);
+    if (!Number.isFinite(floor) || floor <= 0) return true;
+    const ts = Number(message?.timestamp || 0);
+    return Number.isFinite(ts) && ts >= floor;
+}
+
+/**
+ * Copy an expert transcript onto the project tab of the paper it belongs to.
+ * Session keys are rewritten so the project view does not filter them out.
+ * Returns null when there is no user turn worth keeping.
+ */
+export function archiveExpertTranscriptForProject(
+    projectPath: string | null | undefined,
+    history: unknown[] | null | undefined,
+): { projectPath: string; history: ChatMessage[] } | null {
+    const path = normalizeProjectSessionPath(projectPath);
+    if (!path || !Array.isArray(history) || history.length === 0) return null;
+    const sessionKey = projectSessionKey(path);
+    const kept: ChatMessage[] = [];
+    let hasUser = false;
+    for (const item of history) {
+        if (!item || typeof item !== "object") continue;
+        const message = item as ChatMessage;
+        if (message.role === "user") hasUser = true;
+        kept.push({ ...message, sessionKey });
+    }
+    if (!hasUser || kept.length === 0) return null;
+    return { projectPath: path, history: kept };
 }
 
 export function projectSessionKey(projectPath?: string | null): string {
@@ -157,7 +192,15 @@ export function coerceActiveAssistantTask(
 ): ActiveAssistantTaskIdentity | null {
     if (!identity) return null;
     const expertId = String(identity.expertId || "").trim();
-    if (expertId) return { expertId };
+    if (expertId) {
+        // Each LaTeX paper is its own sidebar row. Keep the path so the
+        // highlight lands on the paper that is actually open.
+        if (expertId === LATEX_PAPER_EXPERT_ID) {
+            const projectPath = normalizeProjectSessionPath(identity.projectPath);
+            return projectPath ? { expertId, projectPath } : { expertId };
+        }
+        return { expertId };
+    }
     const projectPath = normalizeProjectSessionPath(identity.projectPath);
     if (!projectPath) return null;
     const cloudWorkspaceId = String(identity.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(projectPath);
@@ -182,7 +225,7 @@ export function activeAssistantTaskIdentity(tab: {
     expertId?: string;
 } | null | undefined, workingDir?: string | null): ActiveAssistantTaskIdentity | null {
     if (!tab) return null;
-    if (tab.type === "expert") return coerceActiveAssistantTask({ expertId: tab.expertId });
+    if (tab.type === "expert") return coerceActiveAssistantTask({ expertId: tab.expertId, projectPath: tab.projectPath });
     if (tab.type === "project") {
         return coerceActiveAssistantTask({
             projectPath: tab.projectPath || workingDir || undefined,

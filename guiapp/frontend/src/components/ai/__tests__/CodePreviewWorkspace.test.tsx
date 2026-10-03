@@ -239,6 +239,39 @@ describe('CodePreviewWorkspace merged header', () => {
         await act(async () => { resolveRefresh?.({ root: 'C:/proj', entries: [{ name: 'a.go', path: 'a.go', is_dir: false }] }); });
         await waitFor(() => expect(lastCall()[1]).toBe(false));
     });
+
+    it('reloads an open folder on refresh and does not reuse a collapsed folder cache', async () => {
+        const listing = (openName: string, shutName: string) => async (_project: unknown, path: unknown) => {
+            if (path === 'open') return { root: 'C:/proj', path: 'open', entries: [{ name: openName, path: `open/${openName}`, is_dir: false }] };
+            if (path === 'shut') return { root: 'C:/proj', path: 'shut', entries: [{ name: shutName, path: `shut/${shutName}`, is_dir: false }] };
+            return {
+                root: 'C:/proj',
+                entries: [
+                    { name: 'open', path: 'open', is_dir: true },
+                    { name: 'shut', path: 'shut', is_dir: true },
+                ],
+            };
+        };
+        getDirectory.mockImplementation(listing('old-open.txt', 'old-shut.txt'));
+        const ready = vi.fn();
+        render(<CodePreviewWorkspace projectPath="local-task" hideHeader onRefreshReady={ready} lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        const folderButton = (name: string) => screen.getByText(name).closest('button') as HTMLButtonElement;
+        fireEvent.click(await screen.findByText('open'));
+        expect(await screen.findByText('old-open.txt')).toBeTruthy();
+        fireEvent.click(screen.getByText('shut'));
+        expect(await screen.findByText('old-shut.txt')).toBeTruthy();
+        fireEvent.click(folderButton('shut'));
+        expect(screen.queryByText('old-shut.txt')).toBeNull();
+
+        getDirectory.mockImplementation(listing('new-open.txt', 'new-shut.txt'));
+        const refresh = ready.mock.calls[ready.mock.calls.length - 1][0] as () => void;
+        act(() => refresh());
+        expect(await screen.findByText('new-open.txt')).toBeTruthy();
+        expect(screen.queryByText('old-open.txt')).toBeNull();
+        fireEvent.click(folderButton('shut'));
+        expect(await screen.findByText('new-shut.txt')).toBeTruthy();
+        expect(screen.queryByText('old-shut.txt')).toBeNull();
+    });
 });
 
 describe('workspaceFileIconKind', () => {
@@ -782,6 +815,55 @@ describe('CodePreviewWorkspace context menu', () => {
         await waitFor(() => expect(onFileDeleted).toHaveBeenCalledWith('b.md'));
         await act(async () => { resolveFirst?.(); });
         await waitFor(() => expect(onFileDeleted).toHaveBeenCalledWith('a.md'));
+    });
+
+    it('selects a cloud file in the file manager without previewing it', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'report.md', path: 'report.md', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode manageFiles lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        const file = await screen.findByText('report.md');
+        fireEvent.click(file);
+        expect(file.closest('button')?.getAttribute('data-selected')).toBe('true');
+        expect(getFilePreview).not.toHaveBeenCalled();
+        expect(onOpenFile).not.toHaveBeenCalled();
+        fireEvent.contextMenu(file, { clientX: 30, clientY: 30 });
+        expect(screen.queryByTestId('code-preview-workspace-context-preview')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-context-delete')).toBeTruthy();
+        expect(screen.getByTestId('code-preview-workspace-context-download')).toBeTruthy();
+    });
+
+    it('hides folder preview in the file manager and describes a double-click open', async () => {
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [
+                { name: 'docs', path: 'docs', is_dir: true },
+                { name: 'slide.pptx', path: 'slide.pptx', is_dir: false },
+            ],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode manageFiles lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        const folder = (await screen.findByText('docs')).closest('button');
+        fireEvent.contextMenu(folder!, { clientX: 20, clientY: 20 });
+        expect(folder?.getAttribute('data-selected')).toBe('true');
+        expect(screen.queryByTestId('code-preview-workspace-context-preview')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-context-delete').textContent).toBe('删除文件夹');
+        expect(screen.getByTestId('code-preview-workspace-context-download')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-properties'));
+        const properties = await screen.findByTestId('code-preview-workspace-properties');
+        expect(properties.parentElement?.classList.contains('cpws-properties')).toBe(true);
+        await waitFor(() => expect(getEntryProperties).toHaveBeenCalled());
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByTestId('code-preview-workspace-properties')).toBeNull();
+        expect(folder?.getAttribute('aria-expanded')).toBe('false');
+        fireEvent.click(folder!);
+        expect(folder?.getAttribute('aria-expanded')).toBe('true');
+        fireEvent.click(folder!, { detail: 2 });
+        expect(folder?.getAttribute('aria-expanded')).toBe('true');
+        const slide = screen.getByText('slide.pptx').closest('button');
+        expect(slide?.getAttribute('title')).toContain('双击在本地打开');
+        expect(slide?.getAttribute('title')).not.toContain('单击在本地打开');
     });
 
     it('does not delete a cloud file when the custom confirm is cancelled', async () => {

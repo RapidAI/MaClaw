@@ -198,13 +198,24 @@ func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode str
 	if err != nil {
 		return "", err
 	}
-	if info, statErr := os.Stat(absPath); statErr == nil && info.IsDir() {
-		return "", fmt.Errorf("trusted_file_write_path_is_directory")
+	existed := false
+	if info, statErr := os.Stat(absPath); statErr == nil {
+		if info.IsDir() {
+			return "", fmt.Errorf("trusted_file_write_path_is_directory")
+		}
+		existed = true
+	}
+	original, hasOriginal := "", false
+	if existed {
+		original, hasOriginal = localToolCodePreviewOriginal(absPath)
 	}
 	size, err := tool.WriteTextFile(absPath, content, string(resolvedMode))
 	if err != nil {
 		return "", err
 	}
+	// A template export is already on disk, so this write is a modification,
+	// not a new file. It is still the paper the user has to preview.
+	h.emitLocalToolCodeFilePreview(principalID, absPath, !existed, original, hasOriginal)
 	display := trustedFileWriteDisplayPath(workspace, absPath, path)
 	if resolvedMode == tool.WriteModeAppend {
 		return fmt.Sprintf("Appended to %s (%d bytes total)", display, size), nil
@@ -279,6 +290,7 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 	if err != nil {
 		return "", err
 	}
+	h.emitLocalToolCodeFilePreview(principalID, absPath, false, original, true)
 	return fmt.Sprintf("Edited %s (%d bytes)", trustedFileWriteDisplayPath(workspace, absPath, path), size), nil
 }
 

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"sort"
+	"strings"
 
 	corebm25 "github.com/RapidAI/CodeClaw/corelib/bm25"
 )
@@ -9,18 +10,21 @@ import (
 // RecallTrace captures the retrieval-side signals for the most recent recall.
 // It is intentionally compact and contains IDs/counts rather than entry bodies.
 type RecallTrace struct {
-	Query          string         `json:"query"`
-	Category       Category       `json:"category,omitempty"`
-	ProjectPath    string         `json:"project_path,omitempty"`
-	Entities       []string       `json:"entities,omitempty"`
-	QueryTokens    []string       `json:"query_tokens,omitempty"`
-	BM25Tokens     []string       `json:"bm25_tokens,omitempty"`
-	BM25Hits       int            `json:"bm25_hits"`
-	VectorHits     int            `json:"vector_hits"`
-	SemanticHits   int            `json:"semantic_hits"`
-	CandidateCount int            `json:"candidate_count"`
-	ResultEntryIDs []string       `json:"result_entry_ids,omitempty"`
-	SourceCounts   map[string]int `json:"source_counts,omitempty"`
+	Query          string   `json:"query"`
+	Category       Category `json:"category,omitempty"`
+	ProjectPath    string   `json:"project_path,omitempty"`
+	Entities       []string `json:"entities,omitempty"`
+	QueryTokens    []string `json:"query_tokens,omitempty"`
+	BM25Tokens     []string `json:"bm25_tokens,omitempty"`
+	BM25Hits       int      `json:"bm25_hits"`
+	VectorHits     int      `json:"vector_hits"`
+	SemanticHits   int      `json:"semantic_hits"`
+	CandidateCount int      `json:"candidate_count"`
+	ResultEntryIDs []string `json:"result_entry_ids,omitempty"`
+	// LockTimedOut is set when recall could not read the hot set before the
+	// wait expired. Empty results in that case are a failure, not a miss.
+	LockTimedOut bool           `json:"lock_timed_out,omitempty"`
+	SourceCounts map[string]int `json:"source_counts,omitempty"`
 }
 
 func newRecallTrace(query string, category Category, projectPath string, expanded ExpandResult, bm25Scores, vecScores, semanticScores map[string]float64, candidates []recallScored, results []Entry) RecallTrace {
@@ -53,11 +57,55 @@ func newRecallTrace(query string, category Category, projectPath string, expande
 	return trace
 }
 
+const recallTraceOwnerCap = 64
+
+// recordRecallTrace stores this recall's diagnostics for its owner.
+// A later recall by another owner does not replace it. Caller must not hold s.mu.
+func (s *Store) recordRecallTrace(ownerID string, trace RecallTrace) {
+	if s == nil {
+		return
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRecallTrace = trace
+	if s.recallTraceByOwner == nil {
+		s.recallTraceByOwner = make(map[string]RecallTrace)
+	}
+	s.recallTraceByOwner[ownerID] = cloneRecallTrace(trace)
+	if len(s.recallTraceByOwner) <= recallTraceOwnerCap {
+		return
+	}
+	for key := range s.recallTraceByOwner {
+		if key == ownerID {
+			continue
+		}
+		delete(s.recallTraceByOwner, key)
+		break
+	}
+}
+
 // LastRecallTrace returns diagnostics for the most recent RecallDynamic call.
 func (s *Store) LastRecallTrace() RecallTrace {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return cloneRecallTrace(s.lastRecallTrace)
+}
+
+// LastRecallTraceForOwner returns the latest recall diagnostics for ownerID.
+// An empty owner reads only the empty-owner slot.
+func (s *Store) LastRecallTraceForOwner(ownerID string) RecallTrace {
+	if s == nil {
+		return RecallTrace{}
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	trace, ok := s.recallTraceByOwner[ownerID]
+	if !ok {
+		return RecallTrace{}
+	}
+	return cloneRecallTrace(trace)
 }
 
 func cloneRecallTrace(in RecallTrace) RecallTrace {

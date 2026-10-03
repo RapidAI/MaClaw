@@ -29,6 +29,10 @@ const AccessPolicyGrantRequired = "grant_required"
 // ErrProviderNotFound is returned when a provider id is missing from the registry.
 var ErrProviderNotFound = errors.New("provider not found")
 
+// ErrNoUpstreamTestModel means every status-test candidate resolved to an
+// empty name or a billing band such as auto or official-high.
+var ErrNoUpstreamTestModel = errors.New("no upstream model configured for this route")
+
 // ErrProviderInUse is returned when deleting a provider that is still
 // referenced by one or more service groups and the caller did not request
 // pruning those references.
@@ -58,14 +62,16 @@ type Registry struct {
 
 // Service manages the HubCenter LLM configuration and dispatching.
 type Service struct {
-	system    store.SystemSettingsRepository
-	mu        sync.RWMutex
-	writeMu   sync.Mutex
-	cached     *Registry
-	cachedAt   time.Time
-	headLocal  string
-	headPeers  []string
-	adminKeyMu sync.Mutex
+	system          store.SystemSettingsRepository
+	mu              sync.RWMutex
+	writeMu         sync.Mutex
+	cached          *Registry
+	cachedAt        time.Time
+	headLocal       string
+	headPeers       []string
+	adminKeyMu      sync.Mutex
+	workBuddyMu     sync.Mutex
+	workBuddyLogins map[string]*workBuddyLogin
 }
 
 const registryCacheTTL = 30 * time.Second
@@ -80,7 +86,9 @@ func (s *Service) lockRegistryWrite() func() {
 
 // NewService creates a new LLM service manager.
 func NewService(system store.SystemSettingsRepository) *Service {
-	return &Service{system: system}
+	svc := &Service{system: system}
+	svc.registerWorkBuddyPersister()
+	return svc
 }
 
 // LoadRegistry retrieves the current registry from the system settings store.
@@ -199,6 +207,19 @@ func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig 
 		out[i].CapabilityTags = append([]string(nil), p.CapabilityTags...)
 		out[i].AllowedNodeIDs = append([]string(nil), p.AllowedNodeIDs...)
 		out[i].CreditMultiplierSchedule = cloneCreditWindows(p.CreditMultiplierSchedule)
+		out[i].TokenBankShareWindow.Days = append([]int(nil), p.TokenBankShareWindow.Days...)
+		out[i].ModelMap = cloneStringMap(p.ModelMap)
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }
@@ -281,6 +302,7 @@ func normalizeRegistry(reg *Registry) {
 	for i := range reg.Providers {
 		normalizeProviderGatewayLimits(&reg.Providers[i])
 		normalizeProviderAccessScope(&reg.Providers[i])
+		normalizeProviderAuth(&reg.Providers[i])
 		reg.Providers[i].NormalizeBilling()
 	}
 	normalizeProviderSequences(reg)
@@ -344,7 +366,12 @@ func normalizeProviderAccessScope(provider *llmpool.ProviderConfig) {
 	if provider == nil {
 		return
 	}
-	provider.AllowedNodeIDs = llmpool.NormalizeAllowedNodeIDs(provider.AllowedNodeIDs)
+	if strings.TrimSpace(provider.AllowedNodes) != "" {
+		provider.AllowedNodeIDs = llmpool.ParseAllowedNodeList(provider.AllowedNodes)
+	} else {
+		provider.AllowedNodeIDs = llmpool.NormalizeAllowedNodeIDs(provider.AllowedNodeIDs)
+	}
+	provider.AllowedNodes = ""
 }
 
 func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
@@ -468,6 +495,8 @@ func normalizeServiceGroupModels(group *llmpool.ServiceGroup) {
 		}
 		model.ProviderConfigs = normalized
 		model.ProviderIDs = providerIDs
+		model.Name = strings.TrimSpace(model.Name)
+		model.BillingMultiplier = llmpool.CapabilityBillingMultiplier(model.Name, model.BillingMultiplier)
 	}
 }
 
@@ -756,7 +785,60 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	if strings.TrimSpace(incoming.ArrayID) == "" {
 		incoming.ArrayID = existing.ArrayID
 	}
-	return incoming
+	if incoming.DispatchWeight == 0 {
+		incoming.DispatchWeight = existing.DispatchWeight
+	}
+	if incoming.RequestsPerMinute == 0 {
+		incoming.RequestsPerMinute = existing.RequestsPerMinute
+	}
+	if incoming.RequestsPerDay == 0 {
+		incoming.RequestsPerDay = existing.RequestsPerDay
+	}
+	if incoming.RateLimitCooldownSec == 0 {
+		incoming.RateLimitCooldownSec = existing.RateLimitCooldownSec
+	}
+	if incoming.ModelMap == nil {
+		incoming.ModelMap = cloneStringMap(existing.ModelMap)
+	}
+	// The provider editor and array move send the fields on the form. The
+	// token-bank snapshot is not among them. A zero incoming value was omitted,
+	// so keep the published share. Clearing it would dial a cheap-hour key all
+	// day and turn a private share public. An explicit non-zero value still wins.
+	if strings.TrimSpace(incoming.TokenBankOwnerUserID) == "" {
+		incoming.TokenBankOwnerUserID = existing.TokenBankOwnerUserID
+	}
+	if strings.TrimSpace(incoming.TokenBankTier) == "" {
+		incoming.TokenBankTier = existing.TokenBankTier
+	}
+	if incoming.TokenBankTierMultiplier == 0 {
+		incoming.TokenBankTierMultiplier = existing.TokenBankTierMultiplier
+	}
+	if strings.TrimSpace(incoming.TokenBankShareDisplayName) == "" {
+		incoming.TokenBankShareDisplayName = existing.TokenBankShareDisplayName
+	}
+	if strings.TrimSpace(incoming.TokenBankVisibility) == "" {
+		incoming.TokenBankVisibility = existing.TokenBankVisibility
+	}
+	if incoming.TokenBankAudiences == nil {
+		incoming.TokenBankAudiences = append([]llmpool.TokenBankAudience(nil), existing.TokenBankAudiences...)
+	}
+	if strings.TrimSpace(incoming.TokenBankCanaryUntil) == "" {
+		incoming.TokenBankCanaryUntil = existing.TokenBankCanaryUntil
+	}
+	if incoming.TokenBankExtraKeys == nil {
+		incoming.TokenBankExtraKeys = append([]string(nil), existing.TokenBankExtraKeys...)
+	}
+	if incoming.TokenBankShareWindow.Always() {
+		incoming.TokenBankShareWindow = existing.TokenBankShareWindow
+		incoming.TokenBankShareWindow.Days = append([]int(nil), existing.TokenBankShareWindow.Days...)
+	}
+	if incoming.MaxInputTokensPerRequest == 0 {
+		incoming.MaxInputTokensPerRequest = existing.MaxInputTokensPerRequest
+	}
+	if incoming.MaxOutputTokensPerRequest == 0 {
+		incoming.MaxOutputTokensPerRequest = existing.MaxOutputTokensPerRequest
+	}
+	return mergeWorkBuddyAuth(existing, incoming)
 }
 
 // UpdateProvider updates an existing provider in the registry.
@@ -879,14 +961,24 @@ func (s *Service) DeleteProvider(ctx context.Context, id string, prune bool) ([]
 		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
 	}
 	id = strings.TrimSpace(reg.Providers[idx].ID)
-	if providerArraySiblingCount(reg, id) > 0 {
-		arrayID := canonicalProviderArrayID(reg.Providers[idx])
+	arrayID := canonicalProviderArrayID(reg.Providers[idx])
+	// A platform-owned array stays after its last member leaves. Dropping it
+	// here would delete the array through the member endpoint.
+	siblings := providerArraySiblingCount(reg, id)
+	protected := providerArrayProtected(findProviderArray(reg, arrayID))
+	if siblings > 0 || protected {
 		filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers)-1)
 		filtered = append(filtered, reg.Providers[:idx]...)
 		filtered = append(filtered, reg.Providers[idx+1:]...)
 		next := cloneRegistry(reg)
 		next.Providers = filtered
 		retargetProviderRoutes(next, id, arrayID)
+		// A tier array stays on a model only while a remaining member can
+		// answer it. Other members of the same array do not keep a model
+		// this provider alone served.
+		if IsTokenBankArray(arrayID) {
+			pruneTokenBankArrayRoutes(next)
+		}
 		if err := s.persistRegistry(ctx, next); err != nil {
 			return nil, err
 		}
@@ -909,6 +1001,7 @@ func (s *Service) DeleteProvider(ctx context.Context, id string, prune bool) ([]
 	filtered = append(filtered, reg.Providers[idx+1:]...)
 	next := cloneRegistry(reg)
 	next.Providers = filtered
+	next.ProviderArrays = withoutProviderArray(next.ProviderArrays, canonicalProviderArrayID(reg.Providers[idx]))
 	var pruned []string
 	if prune {
 		pruned = pruneProviderRouteIDs(next, routeIDs)
@@ -1040,7 +1133,8 @@ func serviceGroupDisplayName(g llmpool.ServiceGroup) string {
 	return strings.TrimSpace(g.ID)
 }
 
-// GetProvider returns a provider by ID.
+// GetProvider returns a provider by ID. The provider is a deep copy: callers
+// cannot mutate the cached registry through the returned slices or maps.
 func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.ProviderConfig, error) {
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
@@ -1050,8 +1144,49 @@ func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.Provider
 	if idx < 0 {
 		return nil, nil
 	}
-	got := reg.Providers[idx]
-	return &got, nil
+	clones := cloneProviderConfigs(reg.Providers[idx : idx+1])
+	return &clones[0], nil
+}
+
+// ProviderChatTestTarget resolves a saved provider or array id to the member
+// and upstream model a status test should dial. routeModel is the name written
+// on the service-group route. logicalModel is the client model, such as auto
+// or official-high. Those names select a price. They are not upstream model ids.
+// When both are empty, requestedModel is the provider Test Status selection.
+// A nil provider and a nil error means the id is not a provider or an array.
+// The walk uses the same member class production would dial, then keeps the
+// first candidate whose resolved name is a concrete model. It dials once.
+func (s *Service) ProviderChatTestTarget(ctx context.Context, providerID, routeModel, logicalModel, requestedModel string) (*llmpool.ProviderConfig, string, error) {
+	if s == nil {
+		return nil, "", fmt.Errorf("llm service is required")
+	}
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	preferArray := strings.TrimSpace(routeModel) != "" || strings.TrimSpace(logicalModel) != ""
+	filterModel := providerChatTestFilterModel(routeModel, logicalModel, requestedModel)
+	candidates := providerChatTestCandidates(reg, providerID, preferArray, filterModel)
+	var first *llmpool.ProviderConfig
+	for _, member := range candidates {
+		if member == nil {
+			continue
+		}
+		cloned := cloneProviderConfigs([]llmpool.ProviderConfig{*member})
+		existing := &cloned[0]
+		if first == nil {
+			first = existing
+		}
+		model := chatTestUpstreamModel(existing, routeModel, logicalModel, requestedModel)
+		if model == "" || isBillingBandName(model) {
+			continue
+		}
+		return existing, model, nil
+	}
+	if first == nil {
+		return nil, "", nil
+	}
+	return first, "", ErrNoUpstreamTestModel
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,7 +1296,8 @@ func (s *Service) DeleteServiceGroup(ctx context.Context, id string) error {
 }
 
 // FindServiceGroupForModel searches all service groups for a model and returns
-// the matching group + model dispatch info for provider ordering.
+// the matching group + model dispatch info for provider ordering. The group is
+// a deep copy so callers cannot mutate the cached registry through it.
 func (s *Service) FindServiceGroupForModel(ctx context.Context, serviceGroupID, modelName string) (*llmpool.ServiceGroup, *llmpool.DispatchModel, error) {
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
@@ -1171,11 +1307,12 @@ func (s *Service) FindServiceGroupForModel(ctx context.Context, serviceGroupID, 
 		if serviceGroupID != "" && group.ID != serviceGroupID {
 			continue
 		}
-		for _, model := range group.Models {
-			if model.Name == modelName || modelName == "" {
-				dm := buildDispatchModel(reg, &model)
-				return &reg.ServiceGroups[i], dm, nil
+		for j, model := range group.Models {
+			if model.Name != modelName && modelName != "" {
+				continue
 			}
+			cloned := cloneServiceGroups(reg.ServiceGroups[i : i+1])[0]
+			return &cloned, buildDispatchModel(reg, &cloned.Models[j]), nil
 		}
 	}
 	return nil, nil, fmt.Errorf("model %q not found in service group %q", modelName, serviceGroupID)
@@ -1223,17 +1360,19 @@ func buildDispatchModel(reg *Registry, model *llmpool.ModelConfig) *llmpool.Disp
 			continue
 		}
 		dm.ProviderIDs = append(dm.ProviderIDs, providerID)
+		providerTags := routeProviderCapabilityTags(reg, providerID)
+		tags := effectiveMemberCapabilityTags(model.CapabilityTags, providerTags, pc.CapabilityTags)
 		dm.ProviderRoutes = append(dm.ProviderRoutes, llmpool.DispatchProviderRoute{
 			ProviderID:       providerID,
 			Model:            upstreamModel,
-			CapabilityTags:   pc.CapabilityTags,
+			CapabilityTags:   tags,
 			Priority:         pc.Priority,
 			ResolutionTier:   pc.ResolutionTier,
 			CreditMultiplier: pc.CreditMultiplier,
 			OriginalIndex:    len(dm.ProviderRoutes),
 		})
-		if len(pc.CapabilityTags) > 0 {
-			dm.ProviderCapabilityTags[providerID] = pc.CapabilityTags
+		if len(tags) > 0 {
+			dm.ProviderCapabilityTags[providerID] = tags
 		}
 		if pc.Priority != 0 {
 			dm.ProviderPriorities[providerID] = pc.Priority
@@ -1246,4 +1385,85 @@ func buildDispatchModel(reg *Registry, model *llmpool.ModelConfig) *llmpool.Disp
 		}
 	}
 	return dm
+}
+
+// groupWithMemberCapabilityTags returns a group whose empty route tag lists
+// include the provider editor tags. Classification reads that copy and does
+// not write it back. Route lists that are already set stay as written.
+// A quality band with one model cannot switch, so that group is returned as-is.
+func groupWithMemberCapabilityTags(reg *Registry, group *llmpool.ServiceGroup) *llmpool.ServiceGroup {
+	if reg == nil || group == nil || !llmpool.IsDynamicKind(group.Kind) || !qualityBandHasAlternate(group) {
+		return group
+	}
+	var cloned []llmpool.ModelConfig
+	for i := range group.Models {
+		configs := modelProviderConfigs(group.Models[i])
+		var next []llmpool.ModelProviderConfig
+		for j := range configs {
+			if len(configs[j].CapabilityTags) > 0 {
+				continue
+			}
+			providerTags := routeProviderCapabilityTags(reg, configs[j].ProviderID)
+			if len(providerTags) == 0 {
+				continue
+			}
+			if next == nil {
+				next = append([]llmpool.ModelProviderConfig(nil), configs...)
+			}
+			next[j].CapabilityTags = providerTags
+		}
+		if next == nil {
+			continue
+		}
+		if cloned == nil {
+			cloned = append([]llmpool.ModelConfig(nil), group.Models...)
+		}
+		cloned[i].ProviderConfigs = next
+	}
+	if cloned == nil {
+		return group
+	}
+	out := *group
+	out.Models = cloned
+	return &out
+}
+
+// qualityBandHasAlternate reports whether in-band model upgrade has another
+// model it can switch to. Official high/mid/low each have one model.
+func qualityBandHasAlternate(group *llmpool.ServiceGroup) bool {
+	if group == nil {
+		return false
+	}
+	counts := map[string]int{}
+	for i := range group.Models {
+		name := strings.TrimSpace(group.Models[i].Name)
+		if name == "" || llmpool.IsAutoModel(name) {
+			continue
+		}
+		quality := memberTagBandQuality(group, name)
+		counts[quality]++
+		if counts[quality] > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func memberTagBandQuality(group *llmpool.ServiceGroup, modelName string) string {
+	if q := llmpool.QualityForOfficialTier(modelName); q != "" {
+		return q
+	}
+	name := strings.TrimSpace(modelName)
+	for _, route := range group.Routes {
+		if !strings.EqualFold(strings.TrimSpace(route.Model), name) {
+			continue
+		}
+		if q := llmpool.NormalizeQuality(route.Quality); q != "" {
+			return q
+		}
+		if q := llmpool.QualityForOfficialTier(route.Model); q != "" {
+			return q
+		}
+	}
+	return ""
 }

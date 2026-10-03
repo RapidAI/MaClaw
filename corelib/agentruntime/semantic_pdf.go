@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
 
-var semanticPDFReportDateRE = regexp.MustCompile(`^(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日)$`)
-var pdfReportTitleSuffixRE = regexp.MustCompile(`(?i)[,，、;；\s]*(?:请(?:帮我)?|帮我)?(?:并|and)?\s*(?:生成|generate)\s*(?:一份|a)?\s*pdf(?:\s*(?:报告|report))?[.。!！]*$`)
+var semanticPDFReportDateRE = regexp.MustCompile(`^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$`)
 
 // NormalizePDFInvocationArgs closes the model-facing generate_pdf payload to
 // the fields understood by the shared runtime.  content is required; title
@@ -28,7 +28,7 @@ func NormalizePDFInvocationArgs(argsJSON string) string {
 		return argsJSON
 	}
 	if date := semanticPDFReportDateString(parsed["date"]); date != "" && !strings.Contains(content, date) {
-		content = "日期：" + date + "\n\n" + content
+		content = date + "\n\n" + content
 	}
 	out := map[string]string{"content": content}
 	if title := semanticPDFJSONString(parsed["title"]); title != "" {
@@ -80,58 +80,83 @@ func PDFTitleLine(content string) (string, bool) {
 	return line, hasBody
 }
 
-// PDFLooksLikeTitleOnly recognizes short report titles that smaller models
-// emit instead of actual content.
+// PDFLooksLikeTitleOnly recognizes a short first line with no body. The
+// line's words are not read. Punctuation, units, or digits mark it as content.
 func PDFLooksLikeTitleOnly(content string) bool {
 	line, hasBody := PDFTitleLine(content)
 	if hasBody || line == "" || PDFHasReportBodySignal(line) {
 		return false
 	}
-	n := len([]rune(line))
-	if n > 24 {
-		return false
-	}
-	lower := strings.ToLower(line)
-	return n <= 8 || strings.HasSuffix(line, "报告") || strings.HasSuffix(line, "纪要") ||
-		strings.HasSuffix(line, "文档") || strings.HasSuffix(lower, "report") || strings.HasSuffix(lower, "pdf")
+	return len([]rune(line)) <= 24
 }
 
-// PDFHasReportBodySignal detects punctuation, units, or numbers that make a
-// short first line look like actual report content rather than a title.
+// PDFHasReportBodySignal detects a sentence ending, a unit, or a number.
+// The line's words are not read. An ASCII full stop counts only at the end
+// of a clause, so a dotted token such as a file name stays a title.
 func PDFHasReportBodySignal(content string) bool {
-	return strings.ContainsAny(content, "。！？;；") || strings.Contains(content, "℃") ||
-		strings.Contains(content, "°") || strings.ContainsAny(content, "0123456789")
+	runes := []rune(content)
+	for i, r := range runes {
+		switch {
+		case r >= '0' && r <= '9', r == '℃', r == '°':
+			return true
+		case r == '。' || r == '！' || r == '？' || r == '；' || r == '!' || r == '?' || r == ';':
+			return true
+		case r == '.' && (i+1 >= len(runes) || unicode.IsSpace(runes[i+1])):
+			return true
+		}
+	}
+	return false
 }
 
-// PDFReportDateString returns a bounded ISO or Chinese calendar date.  Other
-// values are intentionally ignored so decorative model fields cannot be
-// folded into report content.
+// PDFReportDateString returns a numeric year-month-day.  The separators are
+// '-', '/' or '.'.  Other values are ignored so a decorative field cannot
+// be folded into report content.
 func PDFReportDateString(value any) string {
 	return semanticPDFReportDateString(value)
 }
 
-// HostOwnedPDFReportTitle derives a bounded title from the user's request
-// after removing a trailing "generate PDF" instruction. It accepts already
-// projected intent text so GUI and headless hosts can share the title policy
-// without importing a host-specific message classifier.
+// HostOwnedPDFReportTitle is the first clause of the request, at most 40
+// runes. The clause ends at the earliest break. A later clause is not read.
 func HostOwnedPDFReportTitle(intentText string) string {
 	text := strings.TrimSpace(intentText)
-	for {
-		next := strings.TrimSpace(pdfReportTitleSuffixRE.ReplaceAllString(text, ""))
-		next = strings.Trim(next, "，。,;； ")
-		if next == text {
-			break
-		}
-		text = next
-	}
 	if text == "" {
-		return "报告"
+		return ""
+	}
+	if i := hostPDFClauseBreak(text); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	text = strings.Trim(text, "。.!！?？ ")
+	if text == "" {
+		return ""
 	}
 	runes := []rune(text)
 	if len(runes) > 40 {
 		return string(runes[:40])
 	}
 	return text
+}
+
+// hostPDFClauseBreak is the byte index of the earliest clause mark. Newlines,
+// commas, and semicolons count. A later mark does not win because it was
+// listed first.
+func hostPDFClauseBreak(text string) int {
+	for i, r := range text {
+		if r == '\n' || r == '\r' || hostPDFClauseMark(r) {
+			return i
+		}
+	}
+	return -1
+}
+
+func hostPDFClauseMark(r rune) bool {
+	switch r {
+	case ',', ';',
+		'，', '、', '；',
+		'،', '؛':
+		return true
+	default:
+		return false
+	}
 }
 
 // SubstantialPDFReportText keeps title-only or acknowledgement fragments out
@@ -142,23 +167,22 @@ func SubstantialPDFReportText(text string) bool {
 }
 
 // HostOwnedPDFReportContent synthesizes the Markdown body for a host-owned
-// PDF report. Trusted lookup evidence wins and is wrapped in a report heading;
-// otherwise the assistant text (with deferred PDF promises and XML tool calls
-// stripped) is used when it is substantial. Either candidate must still pass
-// the shared PDF content validator, so a host can never emit a document the
-// renderer would reject.
+// PDF report. Trusted lookup evidence wins and is wrapped in a report heading.
+// Otherwise the assistant text is used when it is substantial, after XML tool
+// calls and sentences that cite the host PDF tool are removed. Either
+// candidate must still pass the shared PDF content validator.
 func HostOwnedPDFReportContent(assistantText, searchEvidence, title string) string {
 	if evidence := TrustedLookupEvidence(searchEvidence); evidence != "" {
 		heading := strings.TrimSpace(title)
-		if heading == "" {
-			heading = "报告"
+		body := evidence
+		if heading != "" {
+			body = "# " + heading + "\n\n" + evidence
 		}
-		body := "# " + heading + "\n\n" + evidence
 		if swarm.ValidatePDFContent(body) == nil {
 			return body
 		}
 	}
-	cleaned := strings.TrimSpace(llm.StripXMLToolCalls(StripDeferredPDFPromise(assistantText)))
+	cleaned := strings.TrimSpace(llm.StripXMLToolCalls(OmitHostPDFToolStatus(assistantText)))
 	if SubstantialPDFReportText(cleaned) && swarm.ValidatePDFContent(cleaned) == nil {
 		return cleaned
 	}

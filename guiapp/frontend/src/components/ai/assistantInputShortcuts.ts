@@ -1,4 +1,19 @@
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, RefObject } from "react";
+import type { AssistantInputComposerProps } from "./AssistantInputComposerTypes";
+
+/**
+ * Stable empty textarea ref fallback — allocating `{ current: null }` inline
+ * would create a new object every render.
+ */
+export const EMPTY_TEXTAREA_REF: RefObject<HTMLTextAreaElement | null> = { current: null };
+
+/** Normalize the composer's optional/legacy ref prop into a writable ref object. */
+export function asTextareaRef(ref: AssistantInputComposerProps["inputRef"]): RefObject<HTMLTextAreaElement | null> {
+    if (ref && typeof ref === "object" && "current" in ref) {
+        return ref as RefObject<HTMLTextAreaElement | null>;
+    }
+    return EMPTY_TEXTAREA_REF;
+}
 
 /**
  * The assistant sends only on an unmodified Enter. Any modifier preserves the

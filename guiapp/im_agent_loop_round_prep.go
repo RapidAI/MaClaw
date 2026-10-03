@@ -128,9 +128,10 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	// and discover_tool pins must not union soup tools onto it.
 	tools := opts.Tools
 	toolsTokenBudget := opts.ToolsTokenBudget
+	phase := derefAgentLoopPhase(opts.Phase)
 	if !loopContextBlocksLegacyToolRouter(ctx) {
 		if injectedText != "" {
-			tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, false)
+			tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, false, phase)
 		}
 		tools, toolsTokenBudget = h.augmentToolsFromSessionPins(ctx, opts.UserID, tools, toolsTokenBudget)
 	}
@@ -169,9 +170,16 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 				requestID, loopID, compactionTokenLimit, effectiveTokenLimit, len(tools))
 		}
 	}
-	conversation = h.compactAgentLoopConversation(ctx, opts.UserID, conversation, tools, compactionTokenLimit, toolsTokenBudget, opts.FirstRequest)
+	conversation = h.compactAgentLoopConversation(ctx, opts.UserID, conversation, tools, compactionTokenLimit, toolsTokenBudget)
+	// A checkpoint handle is only useful if this request can page it. The
+	// spill path adds the reader for eligibility; the rendered surface has
+	// to carry the same definition or the model is told to call a tool that
+	// is not listed.
+	if conversationHasToolResultHandle(conversation) {
+		tools = h.checkpointToolsWithReader(tools)
+		toolsTokenBudget = estimateToolsTokens(tools)
+	}
 
-	phase := derefAgentLoopPhase(opts.Phase)
 	conversation, systemMessagesStart := h.injectAgentLoopHarnessPrompts(
 		ctx,
 		conversation,
@@ -206,11 +214,14 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	if opts.Phase != nil && opts.Phase.MissFloorToolsUnlock {
 		if !loopContextBlocksLegacyToolRouter(ctx) {
 			tools = unionMissFloorToolsForSurface(tools, opts.BaseTools)
-			// The unlock must not resurrect a tool the Hub security policy
-			// rejects for every argument set (e.g. bash under a mandated
-			// sandbox); execution-time EnforceConfig stays as the defense, but
-			// a never-executable tool must not occupy a surface slot either.
-			tools = h.filterPolicyRejectedSurfaceTools(tools)
+			// baseTools predates expert, group, and skill filters. The
+			// direct-mode latch is already true on later rounds, so this
+			// seal has to drop coding tools itself.
+			inDirect := h.mainLoopInDirectMode(opts.UserID, ctx)
+			if inDirect {
+				directModeToolsFiltered = true
+			}
+			tools = h.sealClassifierTimeoutExecutionFloor(opts.UserID, ctx, tools, *opts.Phase, inDirect, boundFloorCatalog(opts.BaseTools))
 			toolsTokenBudget = estimateToolsTokens(tools)
 			if h.traceService != nil && ctx != nil && ctx.RunID != "" {
 				h.appendTraceEvent(ctx, "surface.floor_unlocked", "warn", "Re-united floor tools after under-scoped surface", truncateTraceText(strings.Join(agentLoopToolNamesForLog(tools), ","), 220), "", "")
@@ -232,7 +243,10 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		toolsTokenBudget = 0
 	}
 	if opts.Phase != nil && opts.Phase.SkillMode == skillPreferenceAgentGuided {
-		tools = h.filterPolicyRejectedSurfaceTools(applyAgentGuidedWorkflowSurface(tools, opts.BaseTools))
+		tools = h.finishAgentGuidedSurface(opts.UserID, ctx, tools, opts.BaseTools, *opts.Phase)
+		if h.mainLoopInDirectMode(opts.UserID, ctx) {
+			directModeToolsFiltered = true
+		}
 		toolsTokenBudget = estimateToolsTokens(tools)
 	}
 
@@ -298,25 +312,34 @@ func (h *IMMessageHandler) agentLoopCompactionSummarizer() func(string) string {
 	return guardedCompactionSummarizer(h.getMaclawLLMConfig(), h.client)
 }
 
-func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int, firstRequestLatencyBudget bool) []interface{} {
-	// A first-response latency budget is intentionally smaller than the normal
-	// context window. Checkpoints are lossless, but their file flush/spill work
-	// is still avoidable local I/O on the critical path, so this one request
-	// still skips checkpointing. Dropped history is nevertheless summarized
-	// (guarded, 15s watchdog) instead of replaced by a bare placeholder —
-	// otherwise a chat-style task that lives entirely on first requests loses
-	// its earlier requirements every turn.
-	if firstRequestLatencyBudget {
-		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, h.agentLoopCompactionSummarizer())
-	}
-	summarizer := h.agentLoopCompactionSummarizer()
+func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int) []interface{} {
+	// The caller may pass a smaller first-request limit. That budget only
+	// decides how much of the transcript is inlined. Dropped history still
+	// goes through the lossless checkpoint: the exact JSON stays behind
+	// read_tool_result, and the preview tells the model to page it before
+	// guessing. Skipping the checkpoint and substituting "history was
+	// omitted" is what made a resumed task's first message deny its own
+	// context. The summarizer remains the fallback when a checkpoint cannot
+	// be stored (mode off, no reader, invalid groups).
+	// The summarizer is an LLM call used only when the checkpoint cannot
+	// store what it drops. Resolving it loads the app config, so a turn
+	// whose transcript already fits must not pay that before the decision.
+	summarizer := h.agentLoopCompactionSummarizer
 	sessionKey := userID
 	if h != nil {
 		sessionKey = h.workflowPolicyOwnerID(userID, ctx)
 	}
 	mode := contextCheckpointMode()
 	if mode == agent.ContextCheckpointOff {
-		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, summarizer)
+		// Checkpoint is the only pass that folds old desktop screenshots.
+		// Trim still has to see that folded transcript, or an image counted
+		// as 85 tokens stays in the request as the original bytes.
+		return trimConversation(agent.FoldComputerUseObserves(conversation), effectiveTokenLimit, toolsTokenBudget, summarizer())
+	}
+	// Short transcripts never reach a checkpoint. Attaching the reader only
+	// when one might apply keeps a lookup turn from building tool defs.
+	if len(conversation) > 3 {
+		tools = h.checkpointToolsWithReader(tools)
 	}
 	var flush func() error
 	if h != nil && h.memoryStore != nil {
@@ -339,7 +362,52 @@ func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID
 			return checkpoint.Conversation
 		}
 	}
-	return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, summarizer)
+	// Folding older desktop screenshots happens before the fit check. Keep
+	// that folded transcript: the token count treats an image as a flat 85,
+	// so handing the original bytes to trim would leave them inline.
+	folded := checkpoint.Conversation
+	switch checkpoint.Reason {
+	case "below_threshold", "protected_window", "no_savings", "opaque_content", "nothing_to_drop":
+		// below_threshold and protected_window already fit. no_savings means
+		// the checkpoint preview was larger than the prefix it would replace,
+		// so the spill did not shrink the prompt. opaque_content and
+		// nothing_to_drop mean an image (or an empty drop set) stayed inline
+		// on purpose. Rewriting that transcript into the omission line is
+		// what made a resumed turn deny its own history. Keep the folded
+		// transcript.
+		return folded
+	}
+	return trimConversation(folded, effectiveTokenLimit, toolsTokenBudget, summarizer())
+}
+
+// checkpointToolsWithReader makes the lossless checkpoint eligible on a
+// surface that did not already list the reader. CheckpointConversation is
+// fail-closed without read_tool_result: it would otherwise fall through to
+// the omission placeholder. The definition is the host builtin, not a new grant.
+func (h *IMMessageHandler) checkpointToolsWithReader(tools []map[string]interface{}) []map[string]interface{} {
+	const name = "read_tool_result"
+	if h == nil || toolsIncludeName(tools, name) {
+		return tools
+	}
+	// Core schema, not the live catalog. continuationHostDefinitionByName
+	// rebuilds every host tool when the registry misses the name, and this
+	// runs on the compaction path of every over-window turn.
+	def := toolDefFromCore(name, "", nil)
+	if extractToolName(def) != name {
+		return tools
+	}
+	out := make([]map[string]interface{}, len(tools), len(tools)+1)
+	copy(out, tools)
+	return append(out, def)
+}
+
+func toolsIncludeName(tools []map[string]interface{}, name string) bool {
+	for _, def := range tools {
+		if extractToolName(def) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldForceLightFinalizeWithoutTools(ctx *LoopContext, iteration int, effectiveMax int, chatFinalizeGrace int) bool {

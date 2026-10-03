@@ -10,19 +10,33 @@ export type ExpertConversationOpenDetail = {
     };
     /** Wizard first message: sent through the expert tab once it opens. */
     initialMessage?: string;
+    /** LaTeX source already written for this launch. */
+    latexDocument?: { relativePath?: string };
+    /**
+     * Task directory created for this launch. If the expert tab never opens,
+     * a fresh LaTeX paper at this path is removed and the previous transcript
+     * is restored.
+     */
+    projectPath?: string;
 };
 
 export function openExpertConversation(
     expert: ExpertConversationOpenDetail["expert"] | null | undefined,
     initialMessage?: string,
+    latexDocument?: { relativePath?: string },
+    projectPath?: string,
 ): void {
     const id = String(expert?.id || "").trim();
     if (!id || typeof window === "undefined") return;
     const message = String(initialMessage || "").trim();
+    const relativePath = String(latexDocument?.relativePath || "").trim();
+    const path = String(projectPath || "").trim();
     window.dispatchEvent(new CustomEvent(OPEN_EXPERT_CONVERSATION_EVENT, {
         detail: {
             expert: { ...expert, id, name: String(expert?.name || "").trim() || id },
             ...(message ? { initialMessage: message } : {}),
+            ...(relativePath ? { latexDocument: { relativePath } } : {}),
+            ...(path ? { projectPath: path } : {}),
         },
     }));
 }

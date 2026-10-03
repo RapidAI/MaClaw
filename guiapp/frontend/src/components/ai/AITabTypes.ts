@@ -80,6 +80,11 @@ export interface AITab {
     veSkillDescription?: string;
     /** Bumped when the visible conversation should clear and start a fresh session. */
     conversationResetSeq?: number;
+    /**
+     * Millisecond floor for a cleared expert conversation. Live events older
+     * than this belong to the previous paper and must not reappear.
+     */
+    sessionFloorMs?: number;
     /** Whether this tab can be closed. The local tab is always false. */
     closable: boolean;
 }

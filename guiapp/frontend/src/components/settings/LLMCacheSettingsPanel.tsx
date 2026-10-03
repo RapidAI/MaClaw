@@ -34,6 +34,13 @@ const defaults = {
 const mb = 1024 * 1024;
 const defaultCacheDir = defaults.cache_dir;
 
+const cacheMatchOptions = [
+    ['normalize_deterministic_params', 'Normalize default deterministic parameters', '\u5f52\u4e00\u5316\u9ed8\u8ba4\u786e\u5b9a\u6027\u53c2\u6570', '\u6b78\u4e00\u5316\u9810\u8a2d\u78ba\u5b9a\u6027\u53c3\u6578'],
+    ['ignore_model_field', 'Ignore model field in cache key', '\u7f13\u5b58\u952e\u5ffd\u7565 model \u5b57\u6bb5', '\u5feb\u53d6\u9375\u5ffd\u7565 model \u6b04\u4f4d'],
+    ['ignore_user_field', 'Ignore user field in cache key', '\u7f13\u5b58\u952e\u5ffd\u7565 user \u5b57\u6bb5', '\u5feb\u53d6\u9375\u5ffd\u7565 user \u6b04\u4f4d'],
+    ['ignore_metadata_field', 'Ignore metadata field in cache key', '\u7f13\u5b58\u952e\u5ffd\u7565 metadata \u5b57\u6bb5', '\u5feb\u53d6\u9375\u5ffd\u7565 metadata \u6b04\u4f4d'],
+] as const;
+
 const normalizeCache = (value: any = {}) => {
     const merged = { ...defaults, ...value };
     return {
@@ -46,6 +53,7 @@ const normalizeCache = (value: any = {}) => {
         ignore_model_field: merged.ignore_model_field ?? defaults.ignore_model_field,
         ignore_user_field: merged.ignore_user_field ?? defaults.ignore_user_field,
         ignore_metadata_field: merged.ignore_metadata_field ?? defaults.ignore_metadata_field,
+        cache_dir: merged.cache_dir ?? defaults.cache_dir,
         ttl_seconds: merged.ttl_seconds || defaults.ttl_seconds,
         memory_max_entries: merged.memory_max_entries || defaults.memory_max_entries,
         memory_max_bytes: merged.memory_max_bytes || defaults.memory_max_bytes,
@@ -164,11 +172,21 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
                 </Field>
             </div>
 
-            <div style={{ display: 'grid', gap: 10 }}>
-                <Check label={textForLang(lang, 'Normalize default deterministic parameters', '\u5f52\u4e00\u5316\u9ed8\u8ba4\u786e\u5b9a\u6027\u53c2\u6570', '\u6b78\u4e00\u5316\u9810\u8a2d\u78ba\u5b9a\u6027\u53c3\u6578')} checked={cache.normalize_deterministic_params} onChange={(v) => updateCache({ normalize_deterministic_params: v })} />
-                <Check label={textForLang(lang, 'Ignore model field in cache key', '\u7f13\u5b58\u952e\u5ffd\u7565 model \u5b57\u6bb5', '\u5feb\u53d6\u9375\u5ffd\u7565 model \u6b04\u4f4d')} checked={cache.ignore_model_field} onChange={(v) => updateCache({ ignore_model_field: v })} />
-                <Check label={textForLang(lang, 'Ignore user field in cache key', '\u7f13\u5b58\u952e\u5ffd\u7565 user \u5b57\u6bb5', '\u5feb\u53d6\u9375\u5ffd\u7565 user \u6b04\u4f4d')} checked={cache.ignore_user_field} onChange={(v) => updateCache({ ignore_user_field: v })} />
-                <Check label={textForLang(lang, 'Ignore metadata field in cache key', '\u7f13\u5b58\u952e\u5ffd\u7565 metadata \u5b57\u6bb5', '\u5feb\u53d6\u9375\u5ffd\u7565 metadata \u6b04\u4f4d')} checked={cache.ignore_metadata_field} onChange={(v) => updateCache({ ignore_metadata_field: v })} />
+            <div className="llm-cache-settings-key-options">
+                <div
+                    className="llm-cache-settings-key-options__grid"
+                    role="group"
+                    aria-label={textForLang(lang, 'Deterministic parameters and cache key', '\u786e\u5b9a\u6027\u53c2\u6570\u4e0e\u7f13\u5b58\u952e', '\u78ba\u5b9a\u6027\u53c3\u6578\u8207\u5feb\u53d6\u9375')}
+                >
+                    {cacheMatchOptions.map(([key, en, zhHans, zhHant]) => (
+                        <Check
+                            key={key}
+                            label={textForLang(lang, en, zhHans, zhHant)}
+                            checked={cache[key]}
+                            onChange={(value) => updateCache({ [key]: value })}
+                        />
+                    ))}
+                </div>
             </div>
 
             <div className="proxy-settings-actions">
@@ -197,7 +215,7 @@ const Field = ({ label, children }: { label: string; children: ReactNode }) => (
 );
 
 const Check = ({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) => (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+    <label className="llm-cache-settings-check">
         <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
         <span>{label}</span>
     </label>

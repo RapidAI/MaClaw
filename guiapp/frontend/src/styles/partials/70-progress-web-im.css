@@ -529,8 +529,8 @@
 .im-audit-input,
 .im-audit-select {
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
-    background: var(--theme-surface-muted);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
 }
 
@@ -1071,8 +1071,8 @@
     width: 100%;
     padding: 5px 8px;
     border: 1px solid var(--theme-border);
-    border-radius: 4px;
-    background: var(--theme-page-bg);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.76rem;
 }
@@ -1602,8 +1602,8 @@
     gap: 8px;
     padding: 6px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
-    background: var(--theme-surface-muted);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     transition: border-color 0.15s;
 }
 
@@ -1620,6 +1620,7 @@
     flex: 1;
     border: none;
     background: transparent;
+    box-shadow: none !important;
     color: var(--theme-text-primary);
     font-size: 0.78rem;
     outline: none;
@@ -1872,8 +1873,8 @@
 .prog-tools__kb-editor-field textarea {
     width: 100%;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
-    background: var(--theme-surface-muted);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.8rem;
     padding: 7px 8px;

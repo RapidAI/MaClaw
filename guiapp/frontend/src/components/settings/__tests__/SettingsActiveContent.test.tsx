@@ -37,6 +37,9 @@ vi.mock('../../../appLazyComponents', () => ({
     ProxySettingsPanel: () => <div>Proxy</div>,
     LLMCacheSettingsPanel: () => <div>Cache</div>,
     VirtualEmployeeSettingsPanel: () => <div>VE</div>,
+    TokenBankPanel: ({ initialClaimCode }: { initialClaimCode?: string }) => (
+        <div data-testid="token-bank-settings">{initialClaimCode || 'Token Bank'}</div>
+    ),
 }));
 
 vi.mock('../../PetSettingsPanel', () => ({
@@ -208,6 +211,14 @@ describe('SettingsActiveContent', () => {
         const kept = updater({ language: 'en', default_proxy_host: 'typed-by-user', default_proxy_port: '1' });
         expect(kept.default_proxy_host).toBe('typed-by-user');
         expect(kept.default_proxy_port).toBe('8080');
+    });
+
+    it('renders Token Bank as a self-loading settings tab', async () => {
+        render(<SettingsActiveContent {...baseProps} settingsTab="tokenBank" tokenBankClaimCode="CRD-1" />);
+        expect(await screen.findByTestId('token-bank-settings')).toBeTruthy();
+        expect(screen.getByTestId('token-bank-settings').textContent).toBe('CRD-1');
+        await new Promise((r) => setTimeout(r, 20));
+        expect(GetSettingsTabConfigMock).not.toHaveBeenCalled();
     });
 
     it('skips GetSettingsTabConfig for self-loading tabs like memory', async () => {
