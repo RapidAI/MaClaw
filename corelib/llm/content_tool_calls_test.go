@@ -100,6 +100,117 @@ func TestParseContentToolCallsDetailed_DeepSeekDSMLUnclosedIsMalformed(t *testin
 	}
 }
 
+func TestParseContentToolCallsDetailed_ParenthesizedWebSearch(t *testing.T) {
+	content := "让我们再确认一下北京天气：\n\n*web_search(query=\"北京天气 2024年1月15日\")*\n"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("calls=%#v malformed=%v", calls, malformed)
+	}
+	if got := calls[0].Function.Arguments; got != `{"query":"北京天气 2024年1月15日"}` {
+		t.Fatalf("arguments = %q", got)
+	}
+
+	prose := "请使用 web_search 查询天气，不要把调用写在回复里。"
+	if calls, malformed := ParseContentToolCallsDetailed(prose); len(calls) != 0 || malformed {
+		t.Fatalf("prose mention was treated as a call: %#v malformed=%v", calls, malformed)
+	}
+	sample := "示例：\nread_file(path=\"main.go\")\nweb_search(query=\"北京天气\")\n*write_file(path=\"a.go\")*\n"
+	if calls, malformed := ParseContentToolCallsDetailed(sample); len(calls) != 0 || malformed {
+		t.Fatalf("code sample became a call: %#v malformed=%v", calls, malformed)
+	}
+	explained := strings.Repeat("这是一段正常说明。", 20) + "\n*web_search(query=\"只是举例\")*"
+	if calls, malformed := ParseContentToolCallsDetailed(explained); len(calls) != 0 || malformed {
+		t.Fatalf("wrapped lookup inside a longer reply = %#v malformed=%v", calls, malformed)
+	}
+	quoted := "*web_search(query=\"a)b\")*"
+	calls, malformed = ParseContentToolCallsDetailed(quoted)
+	if malformed || len(calls) != 1 || calls[0].Function.Arguments != `{"query":"a)b"}` {
+		t.Fatalf("quoted paren = %#v malformed=%v", calls, malformed)
+	}
+	spaced := "我来查一下。\n* web_search(query=\"南京今天天气\") *"
+	calls, malformed = ParseContentToolCallsDetailed(spaced)
+	if malformed || len(calls) != 1 || calls[0].Function.Arguments != `{"query":"南京今天天气"}` {
+		t.Fatalf("spaced wrapper = %#v malformed=%v", calls, malformed)
+	}
+	folded := "İstanbul\n*WEB_SEARCH(query=\"南京今天天气\")*"
+	calls, malformed = ParseContentToolCallsDetailed(folded)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("folded name = %#v malformed=%v", calls, malformed)
+	}
+	bare := "*web_search(query=南京今天天气)*"
+	calls, malformed = ParseContentToolCallsDetailed(bare)
+	if malformed || len(calls) != 1 || calls[0].Function.Arguments != `{"query":"南京今天天气"}` {
+		t.Fatalf("unquoted query = %#v malformed=%v", calls, malformed)
+	}
+	cut := "我来查。\n*web_search(query=\"南京"
+	if calls, malformed = ParseContentToolCallsDetailed(cut); len(calls) != 0 || malformed {
+		t.Fatalf("unfinished narration became an error: %#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestHoldContentToolCallStream_ParenthesizedWebSearch(t *testing.T) {
+	content := "我来帮你查询南京今天的天气情况。\n\n*web_search(query=\"南京今天天气\")*"
+	visible, hold, suppress := HoldContentToolCallStream(content, false)
+	if suppress || !strings.Contains(hold, "web_search") {
+		t.Fatalf("call should be held, not sticky-suppressed: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	if strings.Contains(visible, "web_search") || strings.Contains(visible, "南京今天天气") {
+		t.Fatalf("tool call leaked into visible text: %q", visible)
+	}
+	if !strings.Contains(visible, "我来帮你查询南京今天的天气情况。") {
+		t.Fatalf("preamble dropped: %q", visible)
+	}
+	flushed, hold, suppress := HoldContentToolCallStream(content, true)
+	if suppress || hold != "" || strings.Contains(flushed, "web_search") {
+		t.Fatalf("flush should drop the narrated call: visible=%q hold=%q suppress=%v", flushed, hold, suppress)
+	}
+	continued := content + "\n" + strings.Repeat("这是一段正常说明。", 20)
+	got, hold, suppress := HoldContentToolCallStream(continued, false)
+	if suppress || !strings.Contains(got, "web_search") || !strings.Contains(got, "这是一段正常说明。") {
+		t.Fatalf("text after a narrated call was swallowed: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	long := strings.Repeat("这是一段正常说明。", 20) + "\n*web_search(query=\"只是举例\")*"
+	if got, hold, suppress := HoldContentToolCallStream(long, false); suppress || !strings.Contains(got, "web_search") {
+		t.Fatalf("long reply hid a narrated example: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	plain := "说明\nread"
+	if got, hold, suppress := HoldContentToolCallStream(plain, true); got != plain || hold != "" || suppress {
+		t.Fatalf("ordinary trailing word was held: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	spaced := "我来查一下。\n* web_search(query=\"南京今天天气\") *"
+	visible, hold, suppress = HoldContentToolCallStream(spaced, false)
+	if suppress || strings.Contains(visible, "web_search") || !strings.Contains(hold, "web_search") {
+		t.Fatalf("spaced wrapper leaked: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	folded := "İstanbul 天气。\n*WEB_SEARCH(query=\"南京今天天气\")*"
+	visible, hold, suppress = HoldContentToolCallStream(folded, false)
+	if suppress || !strings.Contains(visible, "İstanbul") || !strings.Contains(strings.ToLower(hold), "web_search") {
+		t.Fatalf("folded name sliced the preamble: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	shortCut := "我来查。\n*web_search(query=\"南京"
+	if got, hold, suppress := HoldContentToolCallStream(shortCut, true); got != shortCut || hold != "" || suppress {
+		t.Fatalf("unfinished narration was replaced: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	longCut := strings.Repeat("这是一段正常说明。", 20) + "\n*web_search(query=\"只是举例\""
+	if got, hold, suppress := HoldContentToolCallStream(longCut, true); suppress || hold != "" || !strings.Contains(got, "web_search") {
+		t.Fatalf("unfinished example at the end of an answer was dropped: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	emphasis := "请使用这个名字：\n*web_search*"
+	if got, hold, suppress := HoldContentToolCallStream(emphasis, true); got != emphasis || hold != "" || suppress {
+		t.Fatalf("closed emphasis was dropped: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	if calls, malformed := ParseContentToolCallsDetailed(emphasis); len(calls) != 0 || malformed {
+		t.Fatalf("closed emphasis became a call: %#v malformed=%v", calls, malformed)
+	}
+	prefix := "说明\n*web_se"
+	if got, hold, suppress := HoldContentToolCallStream(prefix, false); suppress || !strings.HasSuffix(hold, "*web_se") || strings.Contains(got, "web_se") {
+		t.Fatalf("open tool-name prefix was not held: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+	if got, hold, suppress := HoldContentToolCallStream(prefix, true); got != prefix || hold != "" || suppress {
+		t.Fatalf("open tool-name prefix was dropped: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+}
+
 func TestParseContentToolCallsDetailed_WebSearchDropsForgedDestination(t *testing.T) {
 	content := `<tool_call>{"name":"web_search","arguments":{"query":"杭州天气","channel":"lansenger"}}</tool_call>`
 	calls, malformed := ParseContentToolCallsDetailed(content)

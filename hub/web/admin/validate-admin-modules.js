@@ -32,6 +32,7 @@ const expectedScripts = [
   'card-store-tab.js',
   'usage-stats-tab.js',
   'failure-logs-tab.js',
+  'link-health-tab.js',
   'knowledge-management-tab.js',
   'digital-assets-tab.js',
   'notification-tab.js',

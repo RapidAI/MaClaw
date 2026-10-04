@@ -179,7 +179,7 @@ func (r *TokenBankRepo) publish(entry TokenBankLedgerEntry, createdAt time.Time)
 
 // publishWithdraw reuses the same hook for the ledger row a withdrawal writes.
 // The caller has already committed; a nil sink is a single-node deployment.
-func (r *TokenBankRepo) publishWithdraw(requestID, userID string, amount int64, now time.Time) {
+func (r *TokenBankRepo) publishWithdraw(requestID, userID, hubID string, amount int64, now time.Time) {
 	r.publish(TokenBankLedgerEntry{
 		ID:          tokenBankWithdrawLedgerID(requestID),
 		UserID:      userID,
@@ -188,6 +188,9 @@ func (r *TokenBankRepo) publishWithdraw(requestID, userID string, amount int64, 
 		BizKey:      "withdraw:" + requestID,
 		RefType:     "withdrawal",
 		RefID:       requestID,
+		// The withdrawal row stays on the node that inserted it. Peers only
+		// receive this ledger line, and the note is the only copy of the hub id.
+		Note: hubID,
 	}, now)
 }
 

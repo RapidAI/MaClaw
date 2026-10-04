@@ -43,7 +43,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 			metadata["moa_preset"] = preset
 		}
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, ContinuationHandle: in.ContinuationHandle, RefineTask: in.RefineTask, OnToken: in.OnToken, DatabaseApproval: cloneDatabaseApproval(in.DatabaseApproval)})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, ContinuationHandle: in.ContinuationHandle, RefineTask: in.RefineTask, OnToken: in.OnToken, OnToolCall: in.OnToolCall, OnToolResult: in.OnToolResult, DatabaseApproval: cloneDatabaseApproval(in.DatabaseApproval)})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -90,6 +90,8 @@ func (s *Service) SendMessageAsync(ctx context.Context, p Principal, instanceID 
 		ContinuationHandle: in.ContinuationHandle,
 		RefineTask:         in.RefineTask,
 		OnToken:            in.OnToken,
+		OnToolCall:         in.OnToolCall,
+		OnToolResult:       in.OnToolResult,
 		DatabaseApproval:   cloneDatabaseApproval(in.DatabaseApproval),
 	})
 	if err != nil {
@@ -413,7 +415,9 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			userMsg.Metadata,
 			sess.Metadata,
 		),
-		MoAPreset: moaPresetFromMetadata(userMsg.Metadata, sess.Metadata),
+		MoAPreset:    moaPresetFromMetadata(userMsg.Metadata, sess.Metadata),
+		OnToolCall:   in.OnToolCall,
+		OnToolResult: in.OnToolResult,
 	}
 	var firstTokenMu sync.Mutex
 	firstTokenObserved := false

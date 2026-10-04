@@ -3,18 +3,22 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
-/** Mix muted ink into the panel surface — never into `transparent` (black). */
-export function reasoningPanelChrome(t: Pick<Theme, "bg" | "textMuted" | "isDark">): React.CSSProperties {
-    const dark = markdownPreviewIsDark(t.bg, t.isDark);
-    const ink = t.textMuted;
-    const surface = t.bg;
+/** Recessed field surface. Longhands avoid the `border` shorthand resetting
+ *  `borderLeft`. The rail is the assistant response accent so it stays visible
+ *  when a scheme's quote border is nearly the same color as the field border. */
+export function reasoningPanelChrome(t: Pick<Theme, "textMuted" | "fieldBg" | "fieldBorder" | "responseBorderLeft">): React.CSSProperties {
+    const edge = `1px solid ${t.fieldBorder}`;
     return {
         margin: "5px 0 7px 0",
         fontSize: "12px",
-        color: ink,
-        borderLeft: `2px solid color-mix(in srgb, ${ink} ${dark ? "48%" : "32%"}, ${surface})`,
-        background: `color-mix(in srgb, ${ink} ${dark ? "8%" : "4.5%"}, ${surface})`,
-        borderRadius: "0 7px 7px 0",
+        color: t.textMuted,
+        background: t.fieldBg,
+        borderTop: edge,
+        borderRight: edge,
+        borderBottom: edge,
+        borderLeft: `2px solid ${t.responseBorderLeft}`,
+        borderRadius: 8,
+        boxSizing: "border-box",
     };
 }
 
@@ -57,7 +61,7 @@ export function AssistantReasoningPanel({
         setIsOpen(defaultOpen);
     }, [defaultOpen]);
     const dark = markdownPreviewIsDark(t.bg, t.isDark);
-    const liveFg = dark ? "#cbd5e1" : t.textMuted;
+    const liveFg = dark ? t.text : t.textMuted;
     const panelChrome = reasoningPanelChrome(t);
     const summaryStyle: React.CSSProperties = {
         cursor: "pointer",
@@ -83,11 +87,8 @@ export function AssistantReasoningPanel({
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: dark ? "#94a3b8" : t.textMuted,
+                background: live ? t.btnColor : t.textMuted,
                 flex: "0 0 auto",
-                boxShadow: hasBody && isOpen
-                    ? `0 0 0 3px color-mix(in srgb, ${t.textMuted} ${dark ? "16%" : "10%"}, ${t.bg})`
-                    : undefined,
             }}
         />
     );

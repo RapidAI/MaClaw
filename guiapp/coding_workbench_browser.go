@@ -3,6 +3,7 @@ package guiapp
 import (
 	"archive/tar"
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -732,10 +733,16 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 			return fmt.Errorf("cloud workspace is releasing")
 		}
 	}
+	// The file manager browses without a writer lease. PutManifest still
+	// requires one. The borrow runs only after DeletePaths has seen that the
+	// remote tree changes, and an open writable mount keeps its own lease.
+	deleteCtx := withCloudWorkspaceWriteLease(ctx, func(ctx context.Context) (context.Context, func(), error) {
+		return a.cloudWorkspaceDeleteLease(ctx, workspaceID)
+	})
 	// v1 delete replaces the manifest with every remote entry except the
 	// requested paths. It does not scan the cache, so unrelated local edits
 	// stay local, and the cache file is removed only after the manifest lands.
-	if err := proto.DeletePaths(ctx, cacheRoot, paths); err != nil {
+	if err := proto.DeletePaths(deleteCtx, cacheRoot, paths); err != nil {
 		return err
 	}
 	return removeLocal()

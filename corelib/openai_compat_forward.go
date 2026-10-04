@@ -474,6 +474,9 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	}
 	sanitizeOpenAICompatForwardStructuredFields(body, dropOrphanedToolHistory, preserveStandaloneToolResults)
 	ensureOpenAICompatForwardAssistantMessageContent(body)
+	// Kimi rejects a caller temperature. Drop the locked sampling fields after
+	// the other normalizers have finished.
+	OmitKimiLockedSampling(cfg, body)
 }
 
 func sanitizeOpenAICompatForwardStructuredFields(body map[string]interface{}, dropOrphanedToolHistory bool, preserveStandaloneToolResults bool) {

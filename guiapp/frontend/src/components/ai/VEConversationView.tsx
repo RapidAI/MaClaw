@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import {
     ChatBubbleFrame,
@@ -24,9 +24,45 @@ import { classifyDisplayAttachmentType, isBinaryDocumentAttachment } from "./att
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
 import { firstVEStreamText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
+import { applyUserScrollFollow, isAwayFromBottom, tryPinAssistantOutput } from "./assistantOutputScrollLogic";
 import { localizeAIAssistantError } from "./aiAssistantI18n";
 
 export { firstVEStreamText, sanitizeVisibleVEText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
+
+const VE_TOOL_ACTIVITY_LABELS: Record<string, [string, string]> = {
+    knowledge_search: ["正在查阅资料", "Looking up knowledge"],
+    web_search: ["正在搜索", "Searching"],
+    web_fetch: ["正在打开网页", "Opening a page"],
+    file_read: ["正在读取文件", "Reading a file"],
+    read_file: ["正在读取文件", "Reading a file"],
+    bash: ["正在执行命令", "Running a command"],
+    shell: ["正在执行命令", "Running a command"],
+};
+
+export function veActivityToolName(name: unknown): string {
+    const trimmed = typeof name === "string" ? name.trim() : "";
+    if (!trimmed || trimmed.length > 64 || !/^[A-Za-z0-9_.:-]+$/.test(trimmed)) return "";
+    return trimmed;
+}
+
+export function veLiveActivityLabel(phase: string, name: string, isZh: boolean): string {
+    switch (phase) {
+        case "routing":
+            return isZh ? "正在接通" : "Connecting";
+        case "accepted":
+            return isZh ? "正在准备回复" : "Preparing a reply";
+        case "tool_done":
+            return isZh ? "正在整理回复" : "Composing the reply";
+        case "tool_start": {
+            const known = VE_TOOL_ACTIVITY_LABELS[name];
+            if (known) return isZh ? known[0] : known[1];
+            const readable = name.replace(/[_:.-]+/g, " ").trim();
+            return isZh ? (readable ? `正在处理 ${readable}` : "正在处理") : (readable ? `Working on ${readable}` : "Working");
+        }
+        default:
+            return isZh ? "思考中" : "Thinking";
+    }
+}
 
 let wailsAppModulePromise: Promise<WailsAppModule> | null = null;
 let virtualEmployeeDirectoryInFlight: Promise<unknown> | null = null;
@@ -165,6 +201,8 @@ export interface VEConversationState {
     streamFromId: string;
     streamFromName: string;
     streamAttachments: VEMessageAttachment[];
+    activityPhase: string;
+    activityName: string;
     error: VEConversationError | null;
     connectionState: "connected" | "disconnected" | "reconnecting";
     reconnectAttempt: number;
@@ -490,6 +528,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         streamFromId: "",
         streamFromName: "",
         streamAttachments: [],
+        activityPhase: "",
+        activityName: "",
         error: null,
         connectionState: existingSessionId ? "connected" : "connected",
         reconnectAttempt: 0,
@@ -529,6 +569,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     const mountedRef = useRef(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messageListRef = useRef<HTMLDivElement | null>(null);
+    const followTailRef = useRef(true);
+    const scrollIntentRef = useRef(false);
+    const pinningTailRef = useRef(false);
+    const lastFollowedUserIdRef = useRef("");
+    const tailResizeObserverRef = useRef<ResizeObserver | null>(null);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -537,6 +583,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const reconnectAttemptRef = useRef(0);
     const sendingRef = useRef(false);
     const awaitingReplyRef = useRef(false);
+    const activityArmedRef = useRef(false);
+    const toolInProgressRef = useRef(false);
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -648,7 +696,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     }, []);
 
     const showAwaitingReply = useCallback(() => {
-        if (mountedRef.current) setAwaitingReplyVisible(true);
+        activityArmedRef.current = false;
+        toolInProgressRef.current = false;
+        if (!mountedRef.current) return;
+        setAwaitingReplyVisible(true);
+        setState((prev) => prev.activityPhase || prev.activityName
+            ? { ...prev, activityPhase: "", activityName: "" }
+            : prev);
     }, []);
 
     const hideAwaitingReply = useCallback(() => {
@@ -658,6 +712,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const releaseResponseGate = useCallback((timeoutReason?: "silence" | "total", timeoutSeconds?: number) => {
         if (!awaitingReplyRef.current) return; // already released — idempotent guard
         awaitingReplyRef.current = false;
+        activityArmedRef.current = false;
+        toolInProgressRef.current = false;
         hideAwaitingReply();
         if (responseWatchdogRef.current) {
             clearTimeout(responseWatchdogRef.current);
@@ -674,6 +730,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 : `response_total:${Math.max(1, Math.round(timeoutSeconds || DEFAULT_AGENT_TIMEOUT_SEC))}`;
             setState((prev) => ({
                 ...prev,
+                activityPhase: "",
+                activityName: "",
                 error: { type: "response_timeout", message: timeoutMessage },
             }));
             // Keep a durable, privacy-safe breadcrumb for support diagnosis. The
@@ -689,14 +747,17 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     /**
      * Refresh the silence timer — called on every activity signal from the
-     * remote (stream chunk, stream end). Implements a sliding window: as long
+     * remote (stream chunk, stream end, tool status). Implements a sliding window: as long
      * as the remote keeps sending signals, the silence timer never fires.
      * Only when the remote goes truly silent for SILENCE_TIMEOUT_SEC does the
      * gate release.
      */
     const refreshSilenceTimer = useCallback(() => {
         if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        if (!awaitingReplyRef.current) return;
+        silenceTimerRef.current = null;
+        // A running tool may stay quiet longer than the idle window. The total
+        // watchdog still ends a turn that never comes back.
+        if (!awaitingReplyRef.current || toolInProgressRef.current) return;
         silenceTimerRef.current = setTimeout(() => {
             silenceTimerRef.current = null;
             releaseResponseGate("silence");
@@ -819,6 +880,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setVisibleQueue([]);
         sendingRef.current = false;
         awaitingReplyRef.current = false;
+        toolInProgressRef.current = false;
         queueDrainRunningRef.current = false;
         if (responseWatchdogRef.current) {
             clearTimeout(responseWatchdogRef.current);
@@ -962,10 +1024,78 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         reconnectAttemptRef.current = state.reconnectAttempt;
     }, [state.reconnectAttempt]);
 
-    // Scroll to bottom on new messages
+    const pinConversationTail = useCallback((force: boolean) => {
+        const container = messageListRef.current;
+        if (!container) return;
+        if (force) {
+            followTailRef.current = true;
+            scrollIntentRef.current = false;
+        }
+        if (!followTailRef.current) return;
+        pinningTailRef.current = true;
+        try {
+            // Pin this list only. scrollIntoView would also move outer panes,
+            // and a smooth animation lags behind each streamed token.
+            const result = tryPinAssistantOutput(container, null, "auto", scrollIntentRef.current);
+            if (result === "abandoned") followTailRef.current = false;
+            else scrollIntentRef.current = false;
+        } finally {
+            pinningTailRef.current = false;
+        }
+    }, []);
+
+    const noteConversationWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+        if (event.deltaY < 0) scrollIntentRef.current = true;
+    }, []);
+
+    const noteConversationPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        if (event.currentTarget === event.target) scrollIntentRef.current = true;
+    }, []);
+
+    const handleConversationScroll = useCallback(() => {
+        const container = messageListRef.current;
+        if (!container || pinningTailRef.current) return;
+        const next = applyUserScrollFollow(scrollIntentRef.current, isAwayFromBottom(container), !followTailRef.current);
+        followTailRef.current = !next.userScrolledUp;
+        scrollIntentRef.current = next.userIntent;
+    }, []);
+
+    // Keep the latest reply in view while the reader is already at the tail.
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [state.messages, state.streamContent]);
+        let lastUserId = "";
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+            if (state.messages[i]?.role === "user") {
+                lastUserId = state.messages[i].id;
+                break;
+            }
+        }
+        const force = lastUserId !== "" && lastUserId !== lastFollowedUserIdRef.current;
+        if (lastUserId) lastFollowedUserIdRef.current = lastUserId;
+        pinConversationTail(force);
+        const container = messageListRef.current;
+        const tail = container?.lastElementChild;
+        if (tail) tailResizeObserverRef.current?.observe(tail);
+    }, [awaitingReplyVisible, pinConversationTail, state.activityPhase, state.messages, state.streamContent]);
+
+    useEffect(() => {
+        if (typeof ResizeObserver !== "function") return;
+        let frame = 0;
+        const observer = new ResizeObserver(() => {
+            if (!followTailRef.current || frame !== 0) return;
+            frame = requestAnimationFrame(() => {
+                frame = 0;
+                if (followTailRef.current) pinConversationTail(false);
+            });
+        });
+        tailResizeObserverRef.current = observer;
+        const container = messageListRef.current;
+        if (container) observer.observe(container);
+        return () => {
+            observer.disconnect();
+            tailResizeObserverRef.current = null;
+            if (frame !== 0) cancelAnimationFrame(frame);
+        };
+    }, [pinConversationTail]);
 
     // Track VE online/offline status via events
     useEffect(() => {
@@ -1238,6 +1368,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             streamFromId: "",
             streamFromName: "",
             streamAttachments: [],
+            activityPhase: "",
+            activityName: "",
             error: null,
             connectionState: "connected",
             reconnectAttempt: 0,
@@ -1343,6 +1475,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         streamFromName: senderName,
                         streamAttachments: attachments,
                         messages: [...prev.messages, completedMsg],
+                        error: prev.error?.type === "response_timeout" ? null : prev.error,
                     };
                 }
                 return {
@@ -1352,6 +1485,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     streamFromId: senderId || prev.streamFromId,
                     streamFromName: senderName || prev.streamFromName,
                     streamAttachments: attachments.length ? mergeVEMessageAttachments(prev.streamAttachments, attachments) : prev.streamAttachments,
+                    error: prev.error?.type === "response_timeout" ? null : prev.error,
                 };
             });
         };
@@ -1372,7 +1506,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     : terminalContent;
                 const endAttachments = normalizeVEMessageAttachments(data?.attachments);
                 const attachments = endAttachments.length ? mergeVEMessageAttachments(prev.streamAttachments, endAttachments) : prev.streamAttachments;
-                if (!finalContent && attachments.length === 0) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "", streamAttachments: [] };
+                if (!finalContent && attachments.length === 0) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "", streamAttachments: [], activityPhase: "", activityName: "" };
                 const newMsg: VEMessage = {
                     id: generateMsgId(),
                     role: "assistant",
@@ -1389,6 +1523,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     streamFromId: "",
                     streamFromName: "",
                     streamAttachments: [],
+                    activityPhase: "",
+                    activityName: "",
                     messages: [...prev.messages, newMsg],
                 };
             });
@@ -1409,12 +1545,41 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 streamFromId: "",
                 streamFromName: "",
                 streamAttachments: [],
+                activityPhase: "",
+                activityName: "",
                 connectionState: "disconnected",
             }));
             attemptReconnect();
         };
 
+        const handleActivity = (data: any) => {
+            const sessionId = data?.session_id || data?.sessionId;
+            if (sessionId && sessionId !== sessionIdRef.current) return;
+            if (!mountedRef.current) return;
+            const phase = String(data?.phase || "").trim();
+            if (!["routing", "accepted", "tool_start", "tool_done"].includes(phase)) return;
+            if (!awaitingReplyRef.current) return;
+            if (phase === "tool_start" || phase === "tool_done") {
+                if (!activityArmedRef.current) return;
+            } else {
+                activityArmedRef.current = true;
+            }
+            const name = veActivityToolName(data?.name);
+            toolInProgressRef.current = phase === "tool_start";
+            refreshSilenceTimer();
+            setState((prev) => {
+                if (!prev.streaming && !awaitingReplyRef.current) return prev;
+                return {
+                    ...prev,
+                    activityPhase: phase,
+                    activityName: name,
+                    error: prev.error?.type === "response_timeout" ? null : prev.error,
+                };
+            });
+        };
+
         const unsub1 = EventsOn("ve:stream_chunk", handleStreamChunk);
+        const unsubActivity = EventsOn("ve:activity", handleActivity);
         const unsub2 = EventsOn("ve:stream_end", handleStreamEnd);
         const unsub3 = EventsOn("ve:disconnected", handleDisconnect);
         const unsub4 = EventsOn("ve:session_renewed", (data: any) => {
@@ -1432,6 +1597,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         return () => {
             if (typeof unsub1 === "function") unsub1();
             else EventsOff("ve:stream_chunk");
+            if (typeof unsubActivity === "function") unsubActivity();
+            else EventsOff("ve:activity");
             if (typeof unsub2 === "function") unsub2();
             else EventsOff("ve:stream_end");
             if (typeof unsub3 === "function") unsub3();
@@ -1743,6 +1910,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             style={{
                 display: "flex",
                 flexDirection: "column",
+                flex: "1 1 auto",
+                minHeight: 0,
                 height: "100%",
                 background: theme.bg,
             }}
@@ -1774,8 +1943,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
             {/* Message List */}
             <div
+                ref={messageListRef}
                 className="vecv-message-list"
                 data-testid="ve-message-list"
+                onScroll={handleConversationScroll}
+                onWheel={noteConversationWheel}
+                onPointerDown={noteConversationPointerDown}
             >
                 {state.messages.map((msg) => (
                     <MessageBubble
@@ -1806,7 +1979,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             showTail={false}
                             style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: theme.textMuted || theme.text }}
                         >
-                            <span>{isZh ? "思考中" : "Thinking"}</span>
+                            <span data-testid="ve-activity-status">{state.activityPhase ? veLiveActivityLabel(state.activityPhase, state.activityName, isZh) : (isZh ? "思考中" : "Thinking")}</span>
                             <span className="ve-cursor-blink">...</span>
                         </ChatBubbleFrame>
                     </div>
@@ -1860,7 +2033,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 borderRadius: "6px 16px 16px 16px",
                             }}
                         >
-                            {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} />}
+                            {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} isStreaming messageId="ve-live-stream" />}
+                            {state.activityPhase === "tool_start" && (
+                                <div data-testid="ve-activity-status" style={{ marginTop: state.streamContent ? 6 : 0, fontSize: 12, color: theme.textMuted || theme.text }}>
+                                    {veLiveActivityLabel(state.activityPhase, state.activityName, isZh)}
+                                </div>
+                            )}
                             {state.streamAttachments.length > 0 && (
                                 <div style={{ marginTop: state.streamContent ? 6 : 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
                                     {state.streamAttachments.map((att, idx) => (
@@ -1925,7 +2103,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 inputValue={inputText}
                 inline={false}
                 flushBottom
-                isBusy={sending || awaitingReplyVisible || state.streaming}
+                isBusy={sending}
                 isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                 lang={lang || "zh"}
                 pendingAttachments={pendingAttachments}
@@ -1934,6 +2112,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     ? (isZh ? "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00" : "Read-only session")
                     : !veOnline
                     ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
+                    : (awaitingReplyVisible || state.streaming)
+                    ? (isZh ? "可以继续输入，本轮结束后自动发送" : "Keep typing. It sends when this reply finishes.")
                     : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
                 textareaAriaLabel={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}` : `Message ${assistantDisplayName}`}
                 ready={inputReady}
@@ -1947,7 +2127,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 sendButtonStyle={{ minWidth: 54, width: 54, flexShrink: 0 }}
                 sendButtonTestId="ve-send-button"
                 setPendingAttachments={setPendingAttachments}
-                showBusySpinner={sending || awaitingReplyVisible || state.streaming}
+                showBusySpinner={sending}
                 showMemoryUsage={false}
                 showPermissionMode={false}
                 showResizeHandle={true}
@@ -2119,7 +2299,7 @@ function isRecoverableVESendError(err: unknown, type: VEConversationError["type"
     return !lower.includes("unauthorized") && !lower.includes("forbidden") && !lower.includes("access denied");
 }
 
-function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
     const isUser = message.role === "user";
     const speakerName = isUser ? userName : assistantName;
     const hasAttachments = !!message.attachments?.length;
@@ -2244,7 +2424,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             )}
         </div>
     );
-}
+});
 
 interface AttachmentDisplayProps {
     attachment: VEMessageAttachment;
@@ -2608,6 +2788,7 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         // whole chunks. Persisted answers are assembled text: strip tofu runes
         // but keep the reply even if a leftover U+0001 leads the string.
         const content = visibleHistoryMessageContent(kind, message.content, message.Content);
+        if (kind === "stream_status") return;
         if (kind === "stream_end") {
             if (streamIndex >= 0 && (!fromId || sameHistorySender(streamFromId, fromId))) {
                 const existing = out[streamIndex];

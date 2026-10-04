@@ -8,6 +8,8 @@ const listModelsMock = vi.fn();
 const setPausedMock = vi.fn();
 const takeOutMock = vi.fn();
 const listWithdrawalsMock = vi.fn();
+const getAutoSettingsMock = vi.fn();
+const saveAutoSettingsMock = vi.fn();
 const withdrawMock = vi.fn();
 const listGiftsMock = vi.fn();
 const createGiftMock = vi.fn();
@@ -30,6 +32,8 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     TokenBankSetSharePaused: (...args: unknown[]) => setPausedMock(...args),
     TokenBankTakeOutShare: (...args: unknown[]) => takeOutMock(...args),
     TokenBankListWithdrawals: (...args: unknown[]) => listWithdrawalsMock(...args),
+    TokenBankGetAutoSettings: (...args: unknown[]) => getAutoSettingsMock(...args),
+    TokenBankSaveAutoSettings: (...args: unknown[]) => saveAutoSettingsMock(...args),
     TokenBankWithdraw: (...args: unknown[]) => withdrawMock(...args),
     TokenBankListGiftLinks: (...args: unknown[]) => listGiftsMock(...args),
     TokenBankCreateGiftLink: (...args: unknown[]) => createGiftMock(...args),
@@ -90,6 +94,8 @@ describe('TokenBankPanel', () => {
         setPausedMock.mockReset();
         takeOutMock.mockReset();
         listWithdrawalsMock.mockReset();
+        getAutoSettingsMock.mockReset();
+        saveAutoSettingsMock.mockReset();
         withdrawMock.mockReset();
         listGiftsMock.mockReset();
         createGiftMock.mockReset();
@@ -117,9 +123,151 @@ describe('TokenBankPanel', () => {
         summaryMock.mockResolvedValue(summaryFixture);
         listSharesMock.mockResolvedValue({ ok: true, shares: [shareFixture] });
         listWithdrawalsMock.mockResolvedValue({ withdrawals: [] });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 0 });
+        saveAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 0 });
         listGiftsMock.mockResolvedValue({ share_links: [] });
         setPausedMock.mockResolvedValue({ ok: true });
         takeOutMock.mockResolvedValue({ ok: true });
+    });
+
+    it('keeps the newer earnings window when the older load finishes last', async () => {
+        const resolvers: Array<(value: unknown) => void> = [];
+        listSharesMock.mockImplementation(() => new Promise((resolve) => {
+            resolvers.push(resolve);
+        }));
+        const { findByText, getByRole, queryByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        await waitFor(() => expect(resolvers.length).toBe(1));
+        fireEvent.click(getByRole('button', { name: '今日' }));
+        await waitFor(() => expect(resolvers.length).toBe(2));
+        expect(listSharesMock).toHaveBeenLastCalledWith('today');
+
+        resolvers[1]({ shares: [{ ...shareFixture, id: 'sh_today', display_name: 'Today share' }] });
+        expect(await findByText('Today share')).toBeTruthy();
+
+        resolvers[0]({ shares: [{ ...shareFixture, id: 'sh_all', display_name: 'All share' }] });
+        await waitFor(() => {
+            expect(queryByText('All share')).toBeNull();
+            expect(queryByText('Today share')).toBeTruthy();
+        });
+    });
+
+    it('hides the previous window consumption until the new window loads', async () => {
+        const resolvers: Array<() => void> = [];
+        listSharesMock.mockImplementation((range: string) => new Promise((resolve) => {
+            resolvers.push(() => resolve({
+                shares: [{
+                    ...shareFixture,
+                    stats_ready: true,
+                    today_earned_micro: 200_000,
+                    month_earned_micro: 500_000,
+                    all_earned_micro: 3_000_000,
+                    range_gross_micro: range === 'today' ? 300_000 : 4_000_000,
+                    range_tokens: range === 'today' ? 1_200 : 9_000,
+                }],
+            }));
+        }));
+        const { findByText, getByRole, getByText, queryByText } = render(<TokenBankPanel lang="en" />);
+        await waitFor(() => expect(resolvers).toHaveLength(1));
+        resolvers[0]();
+        expect(await findByText(/Consumed: 4/)).toBeTruthy();
+
+        fireEvent.click(getByRole('button', { name: 'Today' }));
+        await waitFor(() => expect(resolvers).toHaveLength(2));
+        expect(queryByText(/Consumed: 4/)).toBeNull();
+        expect(queryByText(/Consumed: 0\.3/)).toBeNull();
+        expect(getByText('Today +0.2')).toBeTruthy();
+
+        resolvers[1]();
+        expect(await findByText(/Consumed: 0\.3/)).toBeTruthy();
+        expect(queryByText(/Consumed: 4/)).toBeNull();
+    });
+
+    it('hides the previous window model rows until that window loads', async () => {
+        const resolvers: Array<() => void> = [];
+        listModelsMock.mockImplementation((_id: string, range: string) => new Promise((resolve) => {
+            resolvers.push(() => resolve({
+                models: [{
+                    id: 'm1',
+                    model_name: range === 'today' ? 'today-model' : 'all-model',
+                    tier: 'mid',
+                    available: true,
+                    earned_micro: 1_000_000,
+                }],
+            }));
+        }));
+        const { findByText, getByRole, getByText, queryByText } = render(<TokenBankPanel lang="en" />);
+        await waitFor(() => expect(getByText('Details')).toBeTruthy());
+        fireEvent.click(getByText('Details'));
+        await waitFor(() => expect(resolvers).toHaveLength(1));
+        resolvers[0]();
+        expect(await findByText('all-model')).toBeTruthy();
+
+        fireEvent.click(getByRole('button', { name: 'Today' }));
+        await waitFor(() => expect(resolvers).toHaveLength(2));
+        expect(listModelsMock).toHaveBeenLastCalledWith('sh_1', 'today');
+        expect(queryByText('all-model')).toBeNull();
+
+        resolvers[1]();
+        expect(await findByText('today-model')).toBeTruthy();
+        expect(queryByText('all-model')).toBeNull();
+    });
+
+    it('shows a model load failure instead of an empty share or a spinner that stays up', async () => {
+        listModelsMock.mockRejectedValue(new Error('models down'));
+        const { findByText, getByText, queryByText } = render(<TokenBankPanel lang="en" />);
+        await waitFor(() => expect(getByText('Details')).toBeTruthy());
+        fireEvent.click(getByText('Details'));
+        expect(await findByText('Could not load models for this window.')).toBeTruthy();
+        expect(queryByText('No models on this share.')).toBeNull();
+        expect(queryByText('Loading…')).toBeNull();
+    });
+
+    it('keeps a closed share on its own window when another share reloads', async () => {
+        listSharesMock.mockResolvedValue({
+            shares: [
+                { ...shareFixture, id: 'sh_a', display_name: 'Share A' },
+                { ...shareFixture, id: 'sh_b', display_name: 'Share B' },
+            ],
+        });
+        const resolvers: Array<() => void> = [];
+        listModelsMock.mockImplementation((id: string, range: string) => new Promise((resolve) => {
+            resolvers.push(() => resolve({
+                models: [{
+                    id: `${id}-${range}`,
+                    model_name: `${id}-${range}`,
+                    tier: 'mid',
+                    available: true,
+                    earned_micro: 1_000_000,
+                }],
+            }));
+        }));
+        const { findByText, getAllByText, getByRole, getByText, queryByText } = render(<TokenBankPanel lang="en" />);
+        await waitFor(() => expect(getByText('Share A')).toBeTruthy());
+
+        fireEvent.click(getAllByText('Details')[0]);
+        await waitFor(() => expect(resolvers).toHaveLength(1));
+        resolvers[0]();
+        expect(await findByText('sh_a-all')).toBeTruthy();
+        fireEvent.click(getByText('Hide details'));
+
+        fireEvent.click(getAllByText('Details')[1]);
+        await waitFor(() => expect(resolvers).toHaveLength(2));
+        resolvers[1]();
+        expect(await findByText('sh_b-all')).toBeTruthy();
+
+        fireEvent.click(getByRole('button', { name: 'Today' }));
+        await waitFor(() => expect(resolvers).toHaveLength(3));
+        expect(listModelsMock).toHaveBeenLastCalledWith('sh_b', 'today');
+        resolvers[2]();
+        expect(await findByText('sh_b-today')).toBeTruthy();
+
+        fireEvent.click(getAllByText('Details')[0]);
+        await waitFor(() => expect(resolvers).toHaveLength(4));
+        expect(listModelsMock).toHaveBeenLastCalledWith('sh_a', 'today');
+        expect(queryByText('sh_a-all')).toBeNull();
+        resolvers[3]();
+        expect(await findByText('sh_a-today')).toBeTruthy();
+        expect(queryByText('sh_a-all')).toBeNull();
     });
 
     it('renders the balance card from the snake_case summary payload', async () => {
@@ -146,6 +294,64 @@ describe('TokenBankPanel', () => {
         await waitFor(() => expect(getByText('My OpenAI')).toBeTruthy());
         expect(getByText('Resume')).toBeTruthy();
         expect(queryByText('Pause')).toBeNull();
+    });
+
+    it('labels an automatic token-cap pause as undo and explains it in Chinese', async () => {
+        const toast = vi.fn();
+        listSharesMock.mockResolvedValue({
+            shares: [{
+                ...shareFixture,
+                status: 'paused',
+                paused_reason: 'token cap: anomaly',
+                last_error: 'token cap: anomaly',
+            }],
+        });
+        const { getByText, queryByText } = render(<TokenBankPanel lang="zh-Hans" showToastMessage={toast} />);
+        await waitFor(() => expect(getByText('My OpenAI')).toBeTruthy());
+        expect(getByText('撤销暂停')).toBeTruthy();
+        expect(queryByText('恢复')).toBeNull();
+        expect(queryByText('token cap: anomaly')).toBeNull();
+        expect(getByText('今日用量曾超过前 7 日均值的 5 倍，因此暂停。该规则已取消，撤销暂停后会保持可用。')).toBeTruthy();
+        expect(getByText('取出')).toBeTruthy();
+        fireEvent.click(getByText('撤销暂停'));
+        await waitFor(() => expect(setPausedMock).toHaveBeenCalledWith('sh_1', false));
+        expect(takeOutMock).not.toHaveBeenCalled();
+        expect(toast).toHaveBeenCalledWith('已撤销暂停。用量尖峰不会再次暂停。');
+    });
+
+    it('keeps 恢复 when a manual pause still carries an old cap note', async () => {
+        listSharesMock.mockResolvedValue({
+            shares: [{ ...shareFixture, status: 'paused', paused_reason: '', last_error: 'token cap: anomaly' }],
+        });
+        const { getByText, queryByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        await waitFor(() => expect(getByText('My OpenAI')).toBeTruthy());
+        expect(getByText('恢复')).toBeTruthy();
+        expect(queryByText('撤销暂停')).toBeNull();
+        expect(queryByText('token cap: anomaly')).toBeNull();
+        expect(getByText('上次因今日用量超过前 7 日均值的 5 倍而暂停。该规则已取消，不会再次因此暂停。')).toBeTruthy();
+    });
+
+    it('keeps 恢复 for a manual pause and still shows an unrelated error', async () => {
+        listSharesMock.mockResolvedValue({
+            shares: [{ ...shareFixture, status: 'paused', paused_reason: '', last_error: 'upstream timeout' }],
+        });
+        const { getByText, queryByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        await waitFor(() => expect(getByText('My OpenAI')).toBeTruthy());
+        expect(getByText('恢复')).toBeTruthy();
+        expect(queryByText('撤销暂停')).toBeNull();
+        expect(getByText('upstream timeout')).toBeTruthy();
+    });
+
+    it('translates a leftover cap note on a live share without calling it paused', async () => {
+        listSharesMock.mockResolvedValue({
+            shares: [{ ...shareFixture, status: 'active', last_error: 'token cap: daily' }],
+        });
+        const { getByText, queryByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        await waitFor(() => expect(getByText('My OpenAI')).toBeTruthy());
+        expect(getByText('暂停')).toBeTruthy();
+        expect(queryByText('撤销暂停')).toBeNull();
+        expect(queryByText('token cap: daily')).toBeNull();
+        expect(getByText('上次因达到每日 token 上限而暂停。仍超标的下一笔会再次暂停。')).toBeTruthy();
     });
 
     it('hides the pause switch entirely on a revoked share', async () => {
@@ -520,6 +726,77 @@ describe('TokenBankPanel', () => {
         expect(shut.textContent).toContain('撤销');
         expect(shut.querySelector('.tbk-pill')?.className).toContain('tbk-pill--wait');
         expect(shut.querySelector('.tbk-pill')?.className).not.toContain('tbk-pill--on');
+    });
+
+    it('lists gift links I sent as twenty cards a page', async () => {
+        listGiftsMock.mockResolvedValue({
+            share_links: Array.from({ length: 21 }, (_, index) => ({
+                id: `gift_${index + 1}`,
+                credits_micro: (index + 1) * 1_000_000,
+                status: 'active',
+                expires_at: '2026-10-08T00:00:00Z',
+            })),
+        });
+        const { getByRole, getByTestId, queryByTestId, queryByText } = render(<TokenBankPanel lang="en" />);
+        const list = await waitFor(() => getByTestId('tbk-gift-list'));
+        expect(list.classList.contains('tbk-gift-grid')).toBe(true);
+        expect(list.querySelectorAll(':scope > li.tbk-share')).toHaveLength(20);
+        expect(getByTestId('tbk-gift-gift_1')).toBeTruthy();
+        expect(queryByTestId('tbk-gift-gift_21')).toBeNull();
+        expect(getByTestId('tbk-gift-pager').textContent).toContain('Gift links, page 1 of 2');
+
+        fireEvent.click(getByRole('button', { name: 'Next gift page' }));
+        await waitFor(() => expect(getByTestId('tbk-gift-gift_21')).toBeTruthy());
+        expect(queryByTestId('tbk-gift-gift_1')).toBeNull();
+        expect(list.querySelectorAll(':scope > li.tbk-share')).toHaveLength(1);
+        expect(getByTestId('tbk-gift-pager').textContent).toContain('Gift links, page 2 of 2');
+
+        fireEvent.click(getByRole('button', { name: 'Previous gift page' }));
+        await waitFor(() => expect(getByTestId('tbk-gift-gift_1')).toBeTruthy());
+        expect(queryByTestId('tbk-gift-gift_21')).toBeNull();
+
+        fireEvent.click(getByRole('button', { name: 'Next gift page' }));
+        await waitFor(() => expect(getByTestId('tbk-gift-pager').textContent).toContain('page 2 of 2'));
+        listGiftsMock.mockResolvedValue({
+            share_links: [{ id: 'gift_only', credits_micro: 1_000_000, status: 'active' }],
+        });
+        fireEvent.click(getByRole('button', { name: 'Refresh' }));
+        await waitFor(() => expect(getByTestId('tbk-gift-gift_only')).toBeTruthy());
+        expect(queryByTestId('tbk-gift-gift_21')).toBeNull();
+        expect(queryByText('Gift links, page 2 of 2')).toBeNull();
+        expect(queryByTestId('tbk-gift-pager')).toBeNull();
+        expect(list.querySelectorAll(':scope > li.tbk-share')).toHaveLength(1);
+    });
+
+    it('returns to the first gift page when a new link is created', async () => {
+        const sent = Array.from({ length: 21 }, (_, index) => ({
+            id: `gift_${index + 1}`,
+            credits_micro: 1_000_000,
+            status: 'active',
+            expires_at: '2026-10-08T00:00:00Z',
+        }));
+        listGiftsMock.mockResolvedValue({ share_links: sent });
+        createGiftMock.mockResolvedValue({
+            id: 'gift_new',
+            code: 'NEWCODE',
+            credits_micro: 1_000_000,
+            status: 'active',
+            claim_url: 'https://hub.example/c/NEWCODE',
+        });
+        const { getByLabelText, getByRole, getByTestId, getByText, queryByTestId } = render(<TokenBankPanel lang="en" />);
+        await waitFor(() => expect(getByTestId('tbk-gift-pager').textContent).toContain('page 1 of 2'));
+        fireEvent.click(getByRole('button', { name: 'Next gift page' }));
+        await waitFor(() => expect(getByTestId('tbk-gift-gift_21')).toBeTruthy());
+
+        listGiftsMock.mockResolvedValue({
+            share_links: [{ id: 'gift_new', credits_micro: 1_000_000, status: 'active', expires_at: '2026-10-08T00:00:00Z' }, ...sent],
+        });
+        fireEvent.click(getByText('Gift credits'));
+        fireEvent.change(getByLabelText('Credits to gift'), { target: { value: '1' } });
+        fireEvent.click(getByText('Create link'));
+        await waitFor(() => expect(getByTestId('tbk-gift-gift_new')).toBeTruthy());
+        expect(queryByTestId('tbk-gift-gift_21')).toBeNull();
+        expect(getByTestId('tbk-gift-pager').textContent).toContain('Gift links, page 1 of 2');
     });
 
     it('does not put the claim code on the owner list', async () => {
@@ -1544,7 +1821,7 @@ describe('TokenBankPanel', () => {
         expect(bound.textContent).toContain('Grant grant-home');
         expect(bound.textContent).not.toContain('self');
         expect(bound.textContent).not.toContain('2026-10-03T01:52:14Z');
-        // The unfinished gift is last in the payload and still sits on page 1.
+        // Date descending keeps this gift on page 1: it is newer than the October 2 rows.
         const gift = getByTestId('tbk-withdraw-w-gift');
         expect(gift.textContent).toContain('A claimed gift');
         expect(gift.textContent).toContain('Pending');
@@ -1569,6 +1846,44 @@ describe('TokenBankPanel', () => {
         await waitFor(() => expect(getByTestId('tbk-withdraw-w-bound')).toBeTruthy());
         expect(queryByText('Grant grant-extra-19')).toBeNull();
         expect(getByTestId('tbk-withdraw-w-gift')).toBeTruthy();
+    });
+
+    it('keeps an older unfinished withdrawal off the first page', async () => {
+        const newer = Array.from({ length: 20 }, (_, index) => ({
+            id: `w-new-${index + 1}`,
+            request_id: `req-new-${index + 1}`,
+            amount_micro: 1_000_000,
+            kind: 'self',
+            state: 'bound',
+            grant_id: `grant-new-${index + 1}`,
+            created_at: `2026-10-04T00:${String(index).padStart(2, '0')}:00Z`,
+        }));
+        listWithdrawalsMock.mockResolvedValue({
+            withdrawals: [
+                ...newer,
+                {
+                    id: 'w-old-gift',
+                    request_id: 'req-old-gift',
+                    hub_id: 'hub-home',
+                    amount_micro: 4_000_000,
+                    kind: 'gift',
+                    link_id: 'gift_old',
+                    state: 'issued',
+                    created_at: '2026-09-01T00:00:00Z',
+                },
+            ],
+        });
+        const { getByRole, getByTestId, queryByTestId } = render(<TokenBankPanel lang="zh-Hans" />);
+        const grid = await waitFor(() => getByTestId('tbk-withdraw-grid'));
+        expect(grid.querySelectorAll(':scope > li.tbk-withdraw')).toHaveLength(20);
+        expect(queryByTestId('tbk-withdraw-w-old-gift')).toBeNull();
+        expect(getByTestId('tbk-withdraw-w-new-20')).toBeTruthy();
+        expect(getByTestId('tbk-withdraw-pending').textContent).toBe('1 笔待完成');
+
+        fireEvent.click(getByTestId('tbk-withdraw-pending'));
+        await waitFor(() => expect(getByTestId('tbk-withdraw-w-old-gift')).toBeTruthy());
+        expect(grid.querySelectorAll(':scope > li.tbk-withdraw')).toHaveLength(1);
+        expect(queryByTestId('tbk-withdraw-w-new-1')).toBeNull();
     });
 
     it('does not call a failed withdrawal load an empty history', async () => {
@@ -1608,6 +1923,7 @@ describe('TokenBankPanel', () => {
         const card = await waitFor(() => hans.getByTestId('tbk-withdraw-w-bound'));
         expect(card.textContent).toContain('已入账');
         expect(card.textContent).toContain('来源 自己的积分');
+        expect(card.textContent).not.toContain('自动提现');
         expect(card.textContent).toContain('发放单已写入该机器，那里的助手可以花费。');
         expect(card.textContent).toContain(`时间 ${formatGiftInstant('2026-10-03T01:52:14Z', true)}`);
         expect(card.textContent).toContain('机器 hub-home');
@@ -1640,6 +1956,7 @@ describe('TokenBankPanel', () => {
         const hans = render(<TokenBankPanel lang="zh-Hans" />);
         const card = await waitFor(() => hans.getByTestId('tbk-withdraw-w-self-issued'));
         expect(card.textContent).toContain('未确认');
+        expect(card.textContent).toContain('自动提现');
         expect(card.textContent).toContain('银行已扣出这笔积分，该机器尚未把发放单号确认回去。');
         expect(card.textContent).not.toContain('尚未写入机器');
         expect(card.textContent).not.toContain('完成这次提取');
@@ -1648,14 +1965,176 @@ describe('TokenBankPanel', () => {
         const en = render(<TokenBankPanel lang="en" />);
         const english = await waitFor(() => en.getByTestId('tbk-withdraw-w-self-issued'));
         expect(english.textContent).toContain('Unconfirmed');
+        expect(english.textContent).toContain('Automatic withdrawal');
         expect(english.textContent).toContain('That machine has not confirmed the grant id back.');
         expect(english.textContent).not.toContain('not recorded on the machine yet');
         expect(english.textContent).not.toContain('Finish this withdrawal');
     });
 
+    it('shows a ledger-only withdrawal as deducted, including an automatic one', async () => {
+        listWithdrawalsMock.mockResolvedValue({
+            withdrawals: [
+                {
+                    id: 'w-posted-manual',
+                    request_id: 'req-posted-manual',
+                    hub_id: 'hub-home',
+                    amount_micro: 12_000_000,
+                    kind: 'self',
+                    state: 'posted',
+                    created_at: '2026-10-04T01:00:00Z',
+                },
+                {
+                    id: 'w-posted-auto',
+                    request_id: 'tbk-auto:hub-home:owner@example.com:paid:4',
+                    hub_id: 'hub-home',
+                    amount_micro: 2_500_000,
+                    kind: 'self',
+                    state: 'posted',
+                    automatic: true,
+                    created_at: '2026-10-04T02:00:00Z',
+                },
+            ],
+        });
+        const hans = render(<TokenBankPanel lang="zh-Hans" />);
+        const manual = await waitFor(() => hans.getByTestId('tbk-withdraw-w-posted-manual'));
+        expect(manual.textContent).toContain('已扣款');
+        expect(manual.textContent).toContain('来源 自己的积分');
+        expect(manual.textContent).toContain('银行已扣出这笔积分。');
+        expect(manual.textContent).not.toContain('自动提现');
+        expect(manual.textContent).not.toContain('未确认');
+        expect(manual.textContent).not.toContain('posted');
+        const auto = hans.getByTestId('tbk-withdraw-w-posted-auto');
+        expect(auto.textContent).toContain('已扣款');
+        expect(auto.textContent).toContain('自动提现');
+        expect(auto.textContent).toContain('机器 hub-home');
+        expect(auto.textContent).not.toContain('未确认');
+        expect(auto.textContent).not.toContain('完成这次提取');
+    });
+
+    it('saves a per-withdrawal cap and treats a blank field as no limit', async () => {
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 12_500_000 });
+        const { findByLabelText, getByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const input = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(input.value).toBe('12.5'));
+        expect(input.placeholder).toBe('不限制');
+
+        fireEvent.change(input, { target: { value: '20' } });
+        fireEvent.click(getByRole('button', { name: '保存' }));
+        await waitFor(() => expect(saveAutoSettingsMock).toHaveBeenCalledWith(20_000_000));
+
+        fireEvent.change(input, { target: { value: '' } });
+        fireEvent.click(getByRole('button', { name: '保存' }));
+        await waitFor(() => expect(saveAutoSettingsMock).toHaveBeenLastCalledWith(0));
+    });
+
+    it('keeps a saved cap when an older refresh returns', async () => {
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 12_500_000 });
+        const { findByLabelText, getByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const input = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(input.value).toBe('12.5'));
+
+        let resolveStale: (value: unknown) => void = () => {};
+        getAutoSettingsMock.mockReturnValue(new Promise((resolve) => {
+            resolveStale = resolve;
+        }));
+        fireEvent.click(getByRole('button', { name: '刷新' }));
+        await waitFor(() => expect(getAutoSettingsMock).toHaveBeenCalledTimes(2));
+
+        fireEvent.change(input, { target: { value: '20' } });
+        fireEvent.click(getByRole('button', { name: '保存' }));
+        await waitFor(() => expect(saveAutoSettingsMock).toHaveBeenCalledWith(20_000_000));
+        expect(input.value).toBe('20');
+
+        resolveStale({ enabled: true, max_per_withdraw_micro: 12_500_000 });
+        await waitFor(() => expect(listGiftsMock).toHaveBeenCalledTimes(2));
+        expect(input.value).toBe('20');
+
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 3_000_000 });
+        fireEvent.click(getByRole('button', { name: '刷新' }));
+        await waitFor(() => expect(input.value).toBe('3'));
+    });
+
+    it('does not clear the cap before the stored value has loaded', async () => {
+        let resolveSettings: (value: unknown) => void = () => {};
+        getAutoSettingsMock.mockReturnValue(new Promise((resolve) => {
+            resolveSettings = resolve;
+        }));
+        const { findByLabelText, getByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const save = getByRole('button', { name: '保存' }) as HTMLButtonElement;
+        expect(save.disabled).toBe(true);
+        fireEvent.click(save);
+        expect(saveAutoSettingsMock).not.toHaveBeenCalled();
+
+        const input = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        expect(input.disabled).toBe(true);
+        fireEvent.change(input, { target: { value: '99' } });
+
+        resolveSettings({ enabled: true, max_per_withdraw_micro: 12_500_000 });
+        await waitFor(() => expect(input.value).toBe('12.5'));
+        expect(input.disabled).toBe(false);
+        expect(save.disabled).toBe(false);
+        expect(saveAutoSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('moves through each page that still has an unfinished withdrawal', async () => {
+        const middle = Array.from({ length: 20 }, (_, index) => ({
+            id: `w-mid-${index + 1}`,
+            request_id: `req-mid-${index + 1}`,
+            amount_micro: 1_000_000,
+            kind: 'self',
+            state: 'bound',
+            grant_id: `grant-mid-${index + 1}`,
+            created_at: `2026-10-03T00:${String(index).padStart(2, '0')}:00Z`,
+        }));
+        listWithdrawalsMock.mockResolvedValue({
+            withdrawals: [
+                {
+                    id: 'w-new-gift',
+                    request_id: 'req-new-gift',
+                    amount_micro: 2_000_000,
+                    kind: 'gift',
+                    link_id: 'gift_new',
+                    state: 'issued',
+                    created_at: '2026-10-04T00:00:00Z',
+                },
+                ...middle,
+                {
+                    id: 'w-old-gift',
+                    request_id: 'req-old-gift',
+                    amount_micro: 4_000_000,
+                    kind: 'gift',
+                    link_id: 'gift_old',
+                    state: 'issued',
+                    created_at: '2026-09-01T00:00:00Z',
+                },
+            ],
+        });
+        const { getByTestId, queryByTestId } = render(<TokenBankPanel lang="zh-Hans" />);
+        await waitFor(() => expect(getByTestId('tbk-withdraw-w-new-gift')).toBeTruthy());
+        expect(queryByTestId('tbk-withdraw-w-old-gift')).toBeNull();
+        expect(getByTestId('tbk-withdraw-pending').textContent).toBe('2 笔待完成');
+
+        fireEvent.click(getByTestId('tbk-withdraw-pending'));
+        await waitFor(() => expect(getByTestId('tbk-withdraw-w-old-gift')).toBeTruthy());
+        expect(queryByTestId('tbk-withdraw-w-new-gift')).toBeNull();
+
+        fireEvent.click(getByTestId('tbk-withdraw-pending'));
+        await waitFor(() => expect(getByTestId('tbk-withdraw-w-new-gift')).toBeTruthy());
+        expect(queryByTestId('tbk-withdraw-w-old-gift')).toBeNull();
+    });
+
+    it('explains an older hub that cannot store the cap', async () => {
+        getAutoSettingsMock.mockRejectedValue(new Error('this Hub does not support the automatic withdrawal cap yet'));
+        const { findByText, getByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        expect(await findByText('当前 Hub 还不能保存自动提取上限。请先更新 Hub。')).toBeTruthy();
+        expect((getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(saveAutoSettingsMock).not.toHaveBeenCalled();
+    });
+
     it('localizes into Chinese', async () => {
         const { getByText } = render(<TokenBankPanel lang="zh-Hans" />);
         await waitFor(() => expect(getByText('Token 银行')).toBeTruthy());
+        expect(getByText('将服务商 Token 额度存入 Token 银行，换取终身有效、可转赠的积分。提取到本机后由助手使用，不可提现。')).toBeTruthy();
         expect(getByText('提取到本机')).toBeTruthy();
         expect(getByText('查验')).toBeTruthy();
         expect(getByText('暂停')).toBeTruthy();

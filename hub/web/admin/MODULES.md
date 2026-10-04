@@ -38,6 +38,8 @@ This folder now uses a thin-shell structure.
 - llm-provider-tab.js: provider management
 - llm-service-tabs.js: model service groups/cards/defaults
 - usage-stats-tab.js: usage reporting
+- failure-logs-tab.js: failure log search and paging
+- link-health-tab.js: device<->brain link health (GUI online ratio, gui_offline rejections, event delivery)
 
 ## Maintenance rule
 

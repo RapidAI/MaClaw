@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { Theme } from "../aiAssistantPanelTheme";
 import { DEFAULT_EXPERT_ICON } from "../expertTypes";
-import { TaskConfigIcon } from "./taskConfigIcons";
+import { TaskConfigIcon, type TaskConfigIconName } from "./taskConfigIcons";
 import { popoverItemKeyDown, TaskConfigPopoverShell } from "./TaskConfigPopoverShell";
 import {
     canSpecifyExpert,
@@ -80,6 +80,23 @@ export interface TaskConfigBarProps {
 
 const CHIP_HEIGHT = 30;
 const CHIP_RADIUS = 15;
+
+/** 维度名前面的图标。类型、工作流随当前值变化；工作空间用显示器，避免和种类徽标里的文件夹/云/服务器重复。 */
+function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boolean): TaskConfigIconName {
+    switch (key) {
+        case 'type':
+            return draft.taskType === 'coding' ? 'code' : 'chat';
+        case 'expert':
+            return 'robot';
+        case 'workflow':
+            if (workflowLocked) return 'lock';
+            return draft.workflowTemplateId === null ? 'ban' : 'spark';
+        case 'latex':
+            return 'file';
+        case 'workspace':
+            return 'monitor';
+    }
+}
 
 /**
  * 新任务引导页配置条：折叠态一枚「⚙ 默认」chip；展开态四枚 chip
@@ -185,6 +202,8 @@ export function TaskConfigBar({
     };
 
     const accent = t.btnColor;
+    const leadIconSize = bare ? 13 : 14;
+    const leadIconStyle: CSSProperties = { color: t.textMuted };
 
     const chipBase: CSSProperties = {
         display: "inline-flex",
@@ -230,6 +249,7 @@ export function TaskConfigBar({
         options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string } = {},
     ) => {
         const valueColor = options.warning ? (t.errorText || "#ef4444") : options.active ? accent : t.text;
+        const lead = configLeadIcon(key, draft, workflowLocked);
         return (
             <button
                 ref={chipRefs[key]}
@@ -245,8 +265,12 @@ export function TaskConfigBar({
                     ...(options.locked ? { opacity: 0.55 } : {}),
                 }}
             >
-                {chipKey(keyLabel)}
+                <span data-testid={`${testId}-label`} style={{ display: "inline-flex", alignItems: "center", gap: bare ? 4 : 5 }}>
+                    <TaskConfigIcon name={lead} size={leadIconSize} style={leadIconStyle} />
+                    {chipKey(keyLabel)}
+                </span>
                 <span
+                    data-testid={`${testId}-value`}
                     style={{
                         color: valueColor,
                         fontWeight: options.active || options.warning ? 600 : 400,
@@ -325,7 +349,7 @@ export function TaskConfigBar({
                         title: workflowLocked ? (isZh ? "已指定专家，工作流由专家决定" : "Expert specified") : undefined,
                     })}
                     {renderChip('workspace', "task-config-chip-workspace", isZh ? "工作空间" : "Workspace", (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: "100%" }}>
                             <WorkspaceTypeBadge
                                 kind={draft.workspace.kind}
                                 label={draft.workspace.kind === 'local'
@@ -334,7 +358,10 @@ export function TaskConfigBar({
                                         ? (isZh ? "云端" : "Cloud")
                                         : (isZh ? "远程" : "Remote")}
                             />
-                            {workspaceLabel}
+                            {draft.workspace.kind === 'local' && !draft.workspace.localPath && !localPathMissing && (
+                                <TaskConfigIcon name="home" size={leadIconSize} style={leadIconStyle} />
+                            )}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspaceLabel}</span>
                         </span>
                     ), {
                         active: draft.workspace.kind !== 'local' || localPathMissing,

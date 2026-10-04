@@ -77,6 +77,13 @@ type ClientFeatureCapabilities struct {
 	// timeout in hardware_config messages. It is separate from brightness: a
 	// device may support a backlight level without owning its idle timer.
 	ScreenSleepControl bool `json:"screenSleepControl,omitempty"`
+	// EventPush declares that the client can render a structured `event` reply:
+	// a category, a severity that selects how loudly it interrupts, and an
+	// optional set of decisions. It is separate from text output because a
+	// client may accept text and still have no way to present an actionable
+	// card, and because silently downgrading an approval request to plain text
+	// would hide the decision buttons the user is supposed to press.
+	EventPush bool `json:"eventPush,omitempty"`
 }
 
 const (
@@ -312,6 +319,9 @@ func BuildClientCapabilityPrompt(capabilities *ClientCapabilities) string {
 	}
 	if normalized.Output.File != nil {
 		fmt.Fprintf(&b, "- File: MIME=%s, maxBytes=%d (0 means transport default).\n", strings.Join(normalized.Output.File.MimeTypes, ","), normalized.Output.File.MaxBytes)
+	}
+	if normalized.Features.EventPush {
+		b.WriteString("- Events: this client accepts structured event pushes with a severity (silent, notice, interrupt) and optional decision actions. Prefer an event over plain text when the user must learn about something or decide something while away from the computer, name the concrete object in the title, and use severity=interrupt only when waiting for the user would be worse than interrupting them.\n")
 	}
 	b.WriteString("Reply only in a declared output modality and combination. Do not create or attach image, audio, video, or file output unless declared. Always keep the useful answer in concise plain text when text is available.")
 	return b.String()

@@ -164,12 +164,89 @@ func TestPullTokenBankForQuoteShortfallSkipsUnlimitedAndPeriodLimits(t *testing.
 			CreditsTotal: 1, Permanent: true, StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
 		}},
 	}
-	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), metered, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 15, []string{"paid"}, nil, puller)
+	// The period-limit label is the model's winning denial. This card can pay
+	// 0.5, so the label must not withdraw. The same card cannot pay 15, and
+	// the label must not hide that shortfall.
+	labeled := &admissionPullRecorder{}
+	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), metered, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 0.5, []string{"paid"}, nil, labeled)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pulled || puller.calls != 0 {
-		t.Fatalf("period limit pulled=%v calls=%d", pulled, puller.calls)
+	if pulled || labeled.calls != 0 {
+		t.Fatalf("period-limit label on a card that covers the floor pulled=%v calls=%d", pulled, labeled.calls)
+	}
+	short := &admissionPullRecorder{}
+	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), metered, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 15, []string{"paid"}, nil, short)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || short.calls != 1 {
+		t.Fatalf("period-limit label on a short card pulled=%v calls=%d", pulled, short.calls)
+	}
+	for _, code := range []string{"LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED"} {
+		queued := &admissionPullRecorder{}
+		pulled, err = pullTokenBankForQuoteShortfall(context.Background(), metered, "u1", "user@example.com", code, 15, []string{"paid"}, nil, queued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pulled || queued.calls != 0 {
+			t.Fatalf("%s pulled=%v calls=%d", code, pulled, queued.calls)
+		}
+	}
+	futureOnly := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired,
+		}},
+		Grants: []llmservice.Grant{{
+			ID: "later", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 20, StartsAt: now.Add(2 * time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+		}},
+	}
+	waiting := &admissionPullRecorder{}
+	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), futureOnly, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 0, []string{"paid"}, nil, waiting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulled || waiting.calls != 0 {
+		t.Fatalf("queued grant pulled=%v calls=%d, want no pull when the grant has not started", pulled, waiting.calls)
+	}
+}
+
+func TestPullTokenBankForQuoteShortfallPullsWhenThePeriodWindowIsExhausted(t *testing.T) {
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired,
+		}},
+		Grants: []llmservice.Grant{{
+			ID: "period", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 100, CreditsUsed: 10, Permanent: true,
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+			PeriodLimits: llmservice.CreditPeriodLimits{Daily: 10},
+			PeriodUsage:  llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+		}},
+	}
+	puller := &admissionPullRecorder{}
+	pulled, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 0, []string{"paid"}, nil, puller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || puller.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a pull when the period window is exhausted and no point card can pay", pulled, puller.calls)
+	}
+
+	reg.Grants = append(reg.Grants, llmservice.Grant{
+		ID: "point", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+		Source: "card", CreditsTotal: 20, StartsAt: now.Add(time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+	})
+	covered := &admissionPullRecorder{}
+	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 0, []string{"paid"}, nil, covered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulled || covered.calls != 0 {
+		t.Fatalf("pulled=%v calls=%d, want no pull when a queued point card already covers the exhausted period", pulled, covered.calls)
 	}
 }
 
@@ -269,6 +346,93 @@ func TestPullTokenBankForQuoteShortfallWaitsWhenHoldsHideAnUnpricedCard(t *testi
 	}
 	if !pulled || emptyPuller.calls != 1 {
 		t.Fatalf("pulled=%v calls=%d, want a pull when the card itself is empty", pulled, emptyPuller.calls)
+	}
+}
+
+func TestCoverFilteredModelsPullsWhenThePeriodWindowIsExhausted(t *testing.T) {
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired,
+		}},
+		Grants: []llmservice.Grant{{
+			ID: "period", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 100, CreditsUsed: 10, Permanent: true,
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+			PeriodLimits: llmservice.CreditPeriodLimits{Daily: 10},
+			PeriodUsage:  llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+		}},
+	}
+	models := []llmservice.AuthorizedModel{{Name: "auto", ChargedServiceGroupIDs: []string{"paid"}}}
+	denied := map[string]llmBillingDenial{
+		"auto": {Code: "LLM_SERVICE_PERIOD_LIMITED"},
+	}
+	puller := &scriptedAdmissionPuller{decide: func(groups []string) (bool, error) {
+		return false, nil
+	}}
+	coverFilteredModelsFromTokenBank(context.Background(), nil, puller, "u1", "user@example.com", map[string]any{}, nil, models, reg, nil, denied, denied["auto"])
+	if puller.calls != 1 || !sameGroups(puller.seen[0], []string{"paid"}) {
+		t.Fatalf("calls=%d seen=%v, want one pull for the exhausted period window", puller.calls, puller.seen)
+	}
+}
+
+func TestCoverFilteredModelsPullsThePointCardBehindAPeriodLimit(t *testing.T) {
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			{ID: "welcome", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		},
+		Grants: []llmservice.Grant{
+			{
+				ID: "period", UserID: "u1", Email: "user@example.com", ServiceGroupID: "welcome",
+				CreditsTotal: 100, CreditsUsed: 10, Permanent: true,
+				StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+				PeriodLimits: llmservice.CreditPeriodLimits{Daily: 10},
+				PeriodUsage:  llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+			},
+			paidGrant("point", "paid", 1),
+		},
+	}
+	models := []llmservice.AuthorizedModel{{
+		Name:        "auto",
+		ProviderIDs: []string{"official", "card"},
+		ProviderServiceGroups: map[string][]string{
+			"official": {"welcome"},
+			"card":     {"paid"},
+		},
+	}}
+	denied := map[string]llmBillingDenial{
+		"auto": {Code: "LLM_SERVICE_PERIOD_LIMITED", NeedCredits: 15},
+	}
+	puller := &scriptedAdmissionPuller{decide: func(groups []string) (bool, error) {
+		if sameGroups(groups, []string{"welcome"}) {
+			return false, llmservice.ErrTokenBankGroupNotCharged
+		}
+		return false, nil
+	}}
+	coverFilteredModelsFromTokenBank(context.Background(), nil, puller, "u1", "user@example.com", map[string]any{}, nil, models, reg, nil, denied, denied["auto"])
+	if puller.calls != 2 || !sameGroups(puller.seen[0], []string{"welcome"}) || !sameGroups(puller.seen[1], []string{"paid"}) {
+		t.Fatalf("calls=%d seen=%v, want the period group skipped and the short point card pulled", puller.calls, puller.seen)
+	}
+}
+
+func TestPreferLLMBillingDenialKeepsThePointCardFloor(t *testing.T) {
+	got := preferLLMBillingDenial(
+		llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", NeedCredits: 15.042, HeldCredits: 1},
+		llmBillingDenial{Code: "LLM_SERVICE_PERIOD_LIMITED", Message: "current period credit limit is exhausted"},
+	)
+	if got.Code != "LLM_SERVICE_PERIOD_LIMITED" || got.NeedCredits != 15.042 || got.HeldCredits != 0 {
+		t.Fatalf("denial = %#v, want the period code, the point-card floor, and no borrowed hold", got)
+	}
+	smaller := preferLLMBillingDenial(
+		llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", NeedCredits: 3},
+		llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", NeedCredits: 15},
+	)
+	if smaller.NeedCredits != 15 {
+		t.Fatalf("floor = %v, want the larger sibling floor", smaller.NeedCredits)
 	}
 }
 

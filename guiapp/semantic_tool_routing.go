@@ -2297,6 +2297,12 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	applyBaseline := semanticApplyBaselineWorkspace(requestCtx, planning, slimOffice)
 	if applyBaseline {
 		needs = agentservice.ExpandBaselineWorkspaceNeeds(registry, imSemanticIntentRuleSet, planning, true, needs)
+	} else if shortDocumentEdit {
+		// Slim office drops the baseline bundle so a short "继续" does not
+		// grow shell and read companions. The write the turn kept is still
+		// the edit, so it keeps the iterative floor instead of the one-shot
+		// file_write rule.
+		needs = agentservice.RaiseExistingLocalFileWriteFloor(needs, planning.Confidence)
 	}
 	remaining := semanticResidueRemaining(requestCtx)
 	if lookupContinuationOpenCeiling(requestCtx) || lookupContinuationFetches(requestCtx) {

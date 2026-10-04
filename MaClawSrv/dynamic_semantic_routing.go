@@ -5,71 +5,250 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-const srvDynamicIntentClassificationTimeout = 12 * time.Second
+// srvIntentTreeHTTPTimeout is only a stuck-connection backstop. The unified
+// classifier's own context is the classification budget: 12s after an
+// embedding guess, 30s when embedding is unavailable.
+const srvIntentTreeHTTPTimeout = 35 * time.Second
 
-// srvPrincipalIntentClassifier is a host-owned semantic classifier. It loads
-// only the requesting principal's configured LLM, sends a fixed intent-tree
-// prompt without tools, and returns a governed intent label. It does not
-// receive an MCP/Skill inventory, provider metadata, or ToolNames.
+type srvIntentPrincipalContextKey struct{}
+
+// srvIntentTreeFunc classifies one utterance with the requesting principal's
+// LLM. Tests replace it; production loads that principal's config.
+type srvIntentTreeFunc func(ctx, parentCtx context.Context, p agentservice.Principal, systemPrompt, userText string) (string, error)
+
+type srvIntentLeaseKey struct {
+	tenantID string
+	userID   string
+	text     string
+}
+
+// srvPrincipalIntentClassifier is the same UnifiedIntentClassifier the GUI
+// uses. Layer 2 (the shared embedding model) decides a plain weather lookup
+// locally. Layer 3 runs only when that guess is ambiguous, and a timeout or
+// protocol failure comes back as a classification result. Returning that
+// failure as an error used to mark the turn managed with an empty tool list,
+// so the model answered that it could not read live weather.
 type srvPrincipalIntentClassifier struct {
 	svc    *agentservice.Service
 	client *http.Client
+	uic    *intent.UnifiedIntentClassifier
+	tree   srvIntentTreeFunc
+	// leases keeps the principal for a late tree verdict. That retry runs on
+	// context.Background after the turn's deadline, so the request context is
+	// gone. The map is keyed by tenant and user; a shared utterance never
+	// borrows another tenant's model.
+	leases sync.Map // srvIntentLeaseKey -> time.Time
 }
 
-func (c srvPrincipalIntentClassifier) ClassifyDynamicIntent(ctx context.Context, p agentservice.Principal, userText string) (intent.ClassificationResult, error) {
-	if c.svc == nil {
+// srvDynamicIntentClassifier is the process classifier so the embedding model
+// can be attached after knowledge startup, the same late wiring the GUI uses.
+var srvDynamicIntentClassifier *srvPrincipalIntentClassifier
+
+func newSrvPrincipalIntentClassifier(svc *agentservice.Service) *srvPrincipalIntentClassifier {
+	c := &srvPrincipalIntentClassifier{
+		svc:    svc,
+		client: &http.Client{Timeout: srvIntentTreeHTTPTimeout},
+	}
+	c.tree = c.defaultIntentTree
+	c.uic = intent.New(intent.Config{
+		LLMContextFunc:     c.classifyTree,
+		LLMTimeout:         intent.DefaultLLMTimeout,
+		FusionTreeDeadline: intent.DefaultFusionTreeDeadline,
+	})
+	return c
+}
+
+func (c *srvPrincipalIntentClassifier) setEmbedder(emb embedding.Embedder) {
+	if c == nil || c.uic == nil {
+		return
+	}
+	c.uic.SetEmbedder(emb)
+}
+
+func attachSrvIntentEmbedder(emb embedding.Embedder) {
+	if srvDynamicIntentClassifier == nil {
+		return
+	}
+	srvDynamicIntentClassifier.setEmbedder(emb)
+}
+
+func (c *srvPrincipalIntentClassifier) ClassifyDynamicIntent(ctx context.Context, p agentservice.Principal, userText string) (intent.ClassificationResult, error) {
+	if c == nil || c.uic == nil {
 		return intent.ClassificationResult{}, fmt.Errorf("semantic intent classifier service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.rememberPrincipal(p, userText)
+	ctx = context.WithValue(ctx, srvIntentPrincipalContextKey{}, p)
+	result := c.uic.ClassifyContext(ctx, intent.MessageContext{Text: userText, UserID: p.UserID})
+	return projectSrvReadOnlyLookupForPlanning(result), nil
+}
+
+func (c *srvPrincipalIntentClassifier) rememberPrincipal(p agentservice.Principal, text string) {
+	if c == nil || strings.TrimSpace(text) == "" || (p.TenantID == "" && p.UserID == "") {
+		return
+	}
+	now := time.Now()
+	c.leases.Range(func(key, value any) bool {
+		until, ok := value.(time.Time)
+		if ok && !now.Before(until) {
+			c.leases.Delete(key)
+		}
+		return true
+	})
+	c.leases.Store(srvIntentLeaseKey{tenantID: p.TenantID, userID: p.UserID, text: text}, now.Add(intent.DefaultLLMTimeout))
+}
+
+func (c *srvPrincipalIntentClassifier) principalForLateTree(text string) (agentservice.Principal, bool) {
+	if c == nil || text == "" {
+		return agentservice.Principal{}, false
+	}
+	now := time.Now()
+	var found agentservice.Principal
+	matches := 0
+	c.leases.Range(func(key, value any) bool {
+		lease, ok := key.(srvIntentLeaseKey)
+		until, untilOK := value.(time.Time)
+		if !ok || !untilOK || !now.Before(until) {
+			c.leases.Delete(key)
+			return true
+		}
+		if lease.text != text {
+			return true
+		}
+		matches++
+		found = agentservice.Principal{TenantID: lease.tenantID, UserID: lease.userID}
+		return true
+	})
+	if matches != 1 {
+		return agentservice.Principal{}, false
+	}
+	return found, true
+}
+
+func (c *srvPrincipalIntentClassifier) classifyTree(ctx, parentCtx context.Context, systemPrompt, userText string) (string, error) {
+	p, ok := principalFromIntentContext(ctx)
+	if !ok {
+		p, ok = principalFromIntentContext(parentCtx)
+	}
+	if !ok {
+		p, ok = c.principalForLateTree(userText)
+	}
+	if !ok {
+		return "", fmt.Errorf("semantic classifier principal is unavailable")
+	}
+	if c == nil || c.tree == nil {
+		return "", fmt.Errorf("semantic intent classifier service is unavailable")
+	}
+	return c.tree(ctx, parentCtx, p, systemPrompt, userText)
+}
+
+func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context, p agentservice.Principal, systemPrompt, userText string) (string, error) {
+	if c == nil || c.svc == nil {
+		return "", fmt.Errorf("semantic intent classifier service is unavailable")
 	}
 	config, err := c.svc.GetRawUserConfig(ctx, p)
 	if err != nil {
-		return intent.ClassificationResult{}, fmt.Errorf("load principal semantic classifier configuration: %w", err)
+		return "", fmt.Errorf("load principal semantic classifier configuration: %w", err)
 	}
 	llmConfig, err := agentservice.ResolveLLMConfig(config.AppConfig)
 	if err != nil {
-		return intent.ClassificationResult{}, fmt.Errorf("resolve principal semantic classifier configuration: %w", err)
+		return "", fmt.Errorf("resolve principal semantic classifier configuration: %w", err)
 	}
 	client := c.client
 	if client == nil {
-		client = &http.Client{Timeout: srvDynamicIntentClassificationTimeout}
+		client = &http.Client{Timeout: srvIntentTreeHTTPTimeout}
 	}
-	tree := intent.BuildIntentTreeText(intent.DefaultDefinitions())
 	messages := []interface{}{
-		map[string]string{"role": "system", "content": intent.BuildTreePrompt(tree, userText)},
+		map[string]string{"role": "system", "content": systemPrompt},
 		map[string]string{"role": "user", "content": userText},
 	}
 	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "maclawsrv-dynamic-semantic-intent"})
-	response, err := agent.DoSimpleLLMRequestContextWithOptions(ctx, llmConfig, messages, client, srvDynamicIntentClassificationTimeout, agent.SimpleLLMRequestOptions{
+	response, err := agent.DoSimpleLLMRequestContextWithOptions(ctx, llmConfig, messages, client, srvIntentCallTimeout(ctx), agent.SimpleLLMRequestOptions{
 		ResponseFormat:         intent.TreeResponseFormat(),
 		PreserveResponseFormat: true,
 	})
 	if err != nil {
-		return intent.ClassificationResult{}, fmt.Errorf("classify dynamic semantic intent: %w", err)
+		return "", err
 	}
-	candidates := intent.ParseTreeResponse(response.Content)
-	if len(candidates) == 0 {
-		return intent.ClassificationResult{}, fmt.Errorf("classify dynamic semantic intent: no valid candidate")
+	return response.Content, nil
+}
+
+func srvIntentCallTimeout(ctx context.Context) time.Duration {
+	timeout := srvIntentTreeHTTPTimeout
+	if ctx == nil {
+		return timeout
 	}
-	top := candidates[0]
-	result := intent.ClassificationResult{
-		Primary: top.Label, Confidence: top.Score, Layer: 3,
-		Reason: "host semantic intent classifier",
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return timeout
 	}
-	for _, candidate := range candidates[1:] {
-		if candidate.Label == result.Primary || candidate.Score < 0.70 || top.Score-candidate.Score > 0.20 {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Millisecond
+	}
+	if remaining < timeout {
+		return remaining
+	}
+	return timeout
+}
+
+func principalFromIntentContext(ctx context.Context) (agentservice.Principal, bool) {
+	if ctx == nil {
+		return agentservice.Principal{}, false
+	}
+	p, ok := ctx.Value(srvIntentPrincipalContextKey{}).(agentservice.Principal)
+	if !ok || (p.TenantID == "" && p.UserID == "") {
+		return agentservice.Principal{}, false
+	}
+	return p, true
+}
+
+// projectSrvReadOnlyLookupForPlanning applies the GUI lookup planning
+// projection. A search/live_data hint at or above 0.70, including the
+// degraded hint left when the tree times out after a local guess, still has
+// to clear the shared 0.78 resolver floor or the governed web_search grant
+// never appears. A protocol failure and every non-lookup label stay put:
+// this projection must not mint a write.
+func projectSrvReadOnlyLookupForPlanning(result intent.ClassificationResult) intent.ClassificationResult {
+	if result.ControlPlaneFailure || result.Confidence < intent.EmbeddingLookupMinScore || !srvReadOnlyLookupFamily(result) {
+		return result
+	}
+	result.Degraded = false
+	if result.Confidence < agentservice.ReviewedIntentMinimumConfidence {
+		result.Confidence = agentservice.ReviewedIntentMinimumConfidence
+	}
+	return result
+}
+
+func srvReadOnlyLookupFamily(result intent.ClassificationResult) bool {
+	switch result.Primary {
+	case intent.LabelSearch, intent.LabelLiveData:
+	default:
+		return false
+	}
+	for _, label := range result.Labels() {
+		if label.IsNonCapabilityLabel() {
 			continue
 		}
-		result.Secondary = append(result.Secondary, candidate.Label)
+		if label != intent.LabelSearch && label != intent.LabelLiveData {
+			return false
+		}
 	}
-	return result, nil
+	return true
 }
 
 // configureSrvDynamicSemanticRouting activates the reviewed
@@ -128,8 +307,10 @@ func configureSrvDynamicSemanticRouting(svc *agentservice.Service) error {
 	if err != nil {
 		return fmt.Errorf("create reviewed dynamic capability registry: %w", err)
 	}
+	classifier := newSrvPrincipalIntentClassifier(svc)
+	srvDynamicIntentClassifier = classifier
 	resolver := &agentservice.PrincipalIntentLabelCapabilityNeedResolver{
-		Classifier:        srvPrincipalIntentClassifier{svc: svc},
+		Classifier:        classifier,
 		Registry:          registry,
 		Rules:             agentservice.ReviewedDynamicIntentCapabilityNeedRules(),
 		MinimumConfidence: agentservice.ReviewedIntentMinimumConfidence,

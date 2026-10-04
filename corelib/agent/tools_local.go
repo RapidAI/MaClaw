@@ -220,7 +220,7 @@ func ToolReadFile(args map[string]interface{}) string {
 		return fmt.Sprintf("读取失败: %s", err.Error())
 	}
 
-	lines := strings.SplitAfter(string(data), "\n")
+	lines := tool.SplitTextLines(string(data))
 	totalLines := len(lines)
 
 	// 自适应策略：LLM 未指定 start_line/lines 时，根据文件大小自动决定返回内容
@@ -276,10 +276,7 @@ func ToolFileRead(args map[string]interface{}) string {
 		return fmt.Sprintf("读取失败: %s", err.Error())
 	}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.SplitAfter(text, "\n")
-	if len(lines) > 1 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
+	lines := tool.SplitTextLines(text)
 	total := len(lines)
 	if total == 0 {
 		return fmt.Sprintf("%s 为空文件", absPath)

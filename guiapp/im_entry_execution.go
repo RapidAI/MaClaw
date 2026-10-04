@@ -496,11 +496,13 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 			remoteCtx.Maintenance = true
 			remoteCtx.RequestKind = codingRequestInquiry
 			remoteCtx.RequestNeedsPlan = false
+			remoteCtx.OperationalAcceptance = ""
 			remoteCtx.ForceInitialInquiry = false
 		} else {
 			decision := h.resolveCodingRequestDecision(agentLoopUserText)
 			remoteCtx.RequestKind = decision.Kind
 			remoteCtx.RequestNeedsPlan = decision.NeedsPlan
+			remoteCtx.OperationalAcceptance = decision.Acceptance
 		}
 		// Attach images/files for this pure-coding turn (vision-capable models).
 		if loopCtx != nil && len(msg.Attachments) > 0 {
@@ -646,6 +648,7 @@ func (h *IMMessageHandler) rearmStickyRemoteCodingEnvironment(userID string, rem
 	// consuming turn clears it before calling this re-arm helper.
 	remoteCtx.RequestKind = ""
 	remoteCtx.RequestNeedsPlan = false
+	remoteCtx.OperationalAcceptance = ""
 	h.pendingTemplateCodingProjectPath.Delete(userID)
 	h.pendingV2SubAgentExecution.Store(userID, true)
 	h.pendingTemplateRemoteCoding.Store(userID, remoteCtx)

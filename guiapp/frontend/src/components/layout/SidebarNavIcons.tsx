@@ -149,12 +149,3 @@ export const LatexTemplateIcon = () => (
     </svg>
 );
 
-/** Token 银行 - 层叠的币册，和「资料库」的书册语义区分开。 */
-export const TokenBankIcon = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3.5 8.5 12 4l8.5 4.5L12 13 3.5 8.5Z" />
-        <path d="m3.5 13 8.5 4.5 8.5-4.5" />
-        <path d="M9 10.2v3.2" />
-        <path d="M15 10.2v3.2" />
-    </svg>
-);

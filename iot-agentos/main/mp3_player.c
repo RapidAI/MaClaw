@@ -7,6 +7,7 @@
 #include "audio_common.h"
 #include "device_api.h"
 #include "services/audio_arbitration_service.h"
+#include "services/latency_trace.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -42,6 +43,9 @@ typedef struct {
     int16_t previous[2];
     bool have_previous;
     bool playback_started;
+    /* The first rendered frame is the "first sound out" latency milestone; it
+     * is stamped once per playback so the trace is not touched per chunk. */
+    bool first_frame_written;
 } mp3_playback_t;
 
 static device_status_t audio_error(esp_audio_err_t err) {
@@ -114,6 +118,10 @@ static device_status_t write_resampled_until(mp3_playback_t *state,
         }
         status = audio_arbitration_playback_write(resampled, (uint32_t)count,
                                              (uint8_t)state->channels);
+        if (status == DEVICE_STATUS_OK && !state->first_frame_written) {
+            state->first_frame_written = true;
+            latency_trace_mark(LATENCY_MARK_AUDIO);
+        }
         written += count;
     }
     if (status == DEVICE_STATUS_OK) state->output_frames = output_end;
@@ -201,6 +209,7 @@ device_status_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
 
     mp3_playback_t state = {0};
     device_status_t result = DEVICE_STATUS_OK;
+    bool decode_marked = false;
     size_t offset = 0;
     while (offset < mp3_len && result == DEVICE_STATUS_OK) {
         size_t chunk = mp3_len - offset;
@@ -256,6 +265,10 @@ device_status_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
                 if (frame.decoded_size % sample_bytes != 0) {
                     result = DEVICE_STATUS_INVALID_ARGUMENT;
                     break;
+                }
+                if (!decode_marked) {
+                    decode_marked = true;
+                    latency_trace_mark(LATENCY_MARK_DECODE);
                 }
                 result = write_resampled(&state, (const int16_t *)output,
                                          frame.decoded_size / sample_bytes,

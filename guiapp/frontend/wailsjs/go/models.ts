@@ -2441,6 +2441,7 @@ export namespace corelib {
 	    hardware_volume?: number;
 	    hardware_device_aliases?: {[key: string]: string};
 	    hardware_allow_custom_pets?: boolean;
+	    coding_quality_gate_enabled?: boolean;
 	    acp_host_enabled?: boolean;
 	    acp_host_port?: number;
 	    acp_host_mirror_ui?: boolean;
@@ -2715,6 +2716,7 @@ export namespace corelib {
 	        this.hardware_volume = source["hardware_volume"];
 	        this.hardware_device_aliases = source["hardware_device_aliases"];
 	        this.hardware_allow_custom_pets = source["hardware_allow_custom_pets"];
+	        this.coding_quality_gate_enabled = source["coding_quality_gate_enabled"];
 	        this.acp_host_enabled = source["acp_host_enabled"];
 	        this.acp_host_port = source["acp_host_port"];
 	        this.acp_host_mirror_ui = source["acp_host_mirror_ui"];

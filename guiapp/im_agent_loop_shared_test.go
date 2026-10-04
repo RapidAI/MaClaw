@@ -55,6 +55,80 @@ func TestOpenNextRepeatWaveExtendsRemoteShell(t *testing.T) {
 	}
 }
 
+func TestOpenNextRepeatWaveExtendsSingleFileWrite(t *testing.T) {
+	base := "need:fs.write.local:abc123def456"
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "selection:" + base, NeedID: base, AdapterName: "write_file", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityFSWriteLocal}},
+		}},
+		completed:     map[string]bool{"selection:" + base: true},
+		materialized:  map[string]bool{},
+		grants:        map[string]tool.InvocationGrant{},
+		retiredGrants: map[string]tool.InvocationGrant{"write_file": {SelectionID: "selection:" + base, Token: "spent"}},
+	}}
+	if cb.OpenNextRepeatWave("write_file") {
+		t.Fatal("refresh cannot issue a grant without a surface issuer")
+	}
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("a single file write must open the next sibling, selections=%d", len(cb.semanticSurface.plan.Selections))
+	}
+	if cb.OpenNextRepeatWave("write_file") || len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatal("a second open appended another sibling before the first was issued")
+	}
+}
+
+func TestEnsureNextObligationFileWriteListsTheFollowingEdit(t *testing.T) {
+	base := "need:fs.write.local:abc123def456"
+	selectionID := "selection:" + base
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: selectionID, NeedID: base, AdapterName: "write_file",
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityFSWriteLocal},
+		}}},
+		materialized: map[string]bool{selectionID: true},
+	}}
+	cb.ensureNextObligationFileWrite(selectionID)
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("spent file write selections=%d", len(cb.semanticSurface.plan.Selections))
+	}
+	cb.ensureNextObligationFileWrite(selectionID)
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatal("a second ensure appended another sibling before the first was issued")
+	}
+
+	pendingID := "selection:" + tool.RepeatSiblingNeedID(base, 1)
+	wave := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: selectionID, NeedID: base, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityFSWriteLocal}},
+			{ID: pendingID, NeedID: tool.RepeatSiblingNeedID(base, 1), FitProof: tool.FitProof{MatchedCapability: tool.CapabilityFSWriteLocal}, EvidenceIDs: []string{"intent:baseline_workspace"}},
+		}},
+		materialized: map[string]bool{selectionID: true},
+	}}
+	wave.ensureNextObligationFileWrite(selectionID)
+	if len(wave.semanticSurface.plan.Selections) != 2 {
+		t.Fatal("an unissued sibling was joined by another node")
+	}
+	wave.semanticSurface.materialized[pendingID] = true
+	wave.ensureNextObligationFileWrite(pendingID)
+	if len(wave.semanticSurface.plan.Selections) != 3 {
+		t.Fatal("a spent obligation family must list the next write")
+	}
+
+	companionID := "selection:need:zz-baseline:fs.write.local:bbb"
+	companion := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: companionID, NeedID: "need:zz-baseline:fs.write.local:bbb",
+			FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityFSWriteLocal},
+			EvidenceIDs: []string{"intent:baseline_workspace"},
+		}}},
+		materialized: map[string]bool{companionID: true},
+	}}
+	companion.ensureNextObligationFileWrite(companionID)
+	if len(companion.semanticSurface.plan.Selections) != 1 {
+		t.Fatal("a baseline companion write grew another invocation")
+	}
+}
+
 func TestNoteSpentRemoteCommandAppendsOnlySettledExhaustedSSH(t *testing.T) {
 	base := "need:shell.execute.remote_host:abc123def456"
 	sibling := tool.RepeatSiblingNeedID(base, 1)

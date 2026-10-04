@@ -298,26 +298,20 @@ export function usePendingAssistantTabOpen({
 
         const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
         const role = discussion?.local_relation || discussion?.role;
-        // A discussion may render as a VE tab when it is one-to-one, or fall
-        // back to a group tab when the VE tab cannot be reused. Its discussion
-        // id is therefore the only stable task identity across both outcomes.
+        // A continuable 1:1 discussion is a digital-employee chat. Open that tab
+        // directly and do not mint a local task. A group (or a 1:1 that cannot
+        // open a VE tab) still gets a discussion row.
         const singleVE = !readOnly ? singlePendingParticipantId(discussion) : "";
+        if (singleVE) {
+            const veTab = createVETab(singleVE, title, discussionId, undefined, undefined, undefined, { allowIdentityReuse: false });
+            if (veTab) return;
+        }
 
         try {
             await Promise.resolve(onEnsureAssistantTabTask?.("discussion", discussionId, title));
         } catch (error) {
             console.error("[task_management] create discussion assistant task failed:", error);
             return;
-        }
-
-        // For continuable 1:1 discussions (non-read-only with a single VE participant),
-        // open as a live VE tab so the full-featured input area is rendered instead of
-        // the simplified history textarea. This matches the user expectation that
-        // "我发起 - 可继续讨论" sessions behave identically to active sessions.
-        if (singleVE) {
-            const veTab = createVETab(singleVE, title, discussionId, undefined, undefined, undefined, { allowIdentityReuse: false });
-            if (veTab) return;
-            // Tab limit reached — fall through to createGroupTab as degraded fallback.
         }
 
         createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role, groupTitle: title });
@@ -330,23 +324,16 @@ export function usePendingAssistantTabOpen({
             onPendingVEOpenHandled?.();
             return;
         }
-        const title = String(pendingVEOpen.name || participantId || pendingVEOpen.id).trim();
-        let cancelled = false;
-        void Promise.resolve(onEnsureAssistantTabTask?.("ve", participantId, title)).then(() => {
-            if (cancelled) return;
-            createVETab(
+        createVETab(
             participantId,
             pendingVEOpen.name,
             undefined,
             pendingVEOpen.online_status,
             pendingVEOpen.avatar_data_url,
             pendingVEOpen.skill_description,
-            );
-        }).catch((error) => console.error("[task_management] create VE assistant task failed:", error)).finally(() => {
-            if (!cancelled) onPendingVEOpenHandled?.();
-        });
-        return () => { cancelled = true; };
-    }, [createVETab, onEnsureAssistantTabTask, onPendingVEOpenHandled, pendingVEOpen]);
+        );
+        onPendingVEOpenHandled?.();
+    }, [createVETab, onPendingVEOpenHandled, pendingVEOpen]);
 
     // Focus a secondary tab when its durable task-list alias is opened. These
     // rows must never be treated as project tasks by the shell.
@@ -689,7 +676,7 @@ export function usePendingAssistantTabOpen({
             }
             latexEntryBindRef.current.set(projectPath, "\0pending");
             latexEntryPendingRef.current.add(projectPath);
-            void createLatexDocumentForTask(projectPath, LATEX_BLANK_TEMPLATE_ID, "", expertLangRef.current).then((document) => {
+            void createLatexDocumentForTask(projectPath, LATEX_BLANK_TEMPLATE_ID, "", expertLangRef.current || "zh-Hans").then((document) => {
                 const entry = String(document?.relative_path || "").trim();
                 const live = (getTabListForExpertRef.current?.() || []).find(item => item.id === tabId);
                 const liveProject = String(live?.projectPath || "").trim();

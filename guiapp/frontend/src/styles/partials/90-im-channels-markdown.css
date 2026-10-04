@@ -3430,8 +3430,10 @@
 .aitb-tab-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* AssistantActiveTabContent.tsx */
-.aatc-live-row { display: flex; flex-direction: row; height: 100%; width: 100%; }
-.aatc-live-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.aatc-live-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
+.aatc-live-shell > .mc-task-execution-header { flex: 0 0 auto; }
+.aatc-live-row { display: flex; flex-direction: row; flex: 1; min-height: 0; width: 100%; }
+.aatc-live-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* AssistantAttachmentsStrip.tsx */
 .aas-thumb-slot { width: 30px; height: 30px; flex-shrink: 0; }

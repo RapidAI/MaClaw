@@ -336,6 +336,25 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !enforceAuthenticatedGroupIdentity(w, r, &msg.FromID, "from_id") {
 			return
 		}
+		if msg.Kind == corea2a.MessageStreamStatus {
+			phase, name, ok := parseDiscussionActivityContent(msg.Content)
+			if !ok {
+				writeError(w, http.StatusBadRequest, "MESSAGE_REJECTED", "invalid stream status")
+				return
+			}
+			session, err := h.svc.GetSession(tid, id)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "CONSULTATION_NOT_FOUND", err.Error())
+				return
+			}
+			if !discussionSessionHasParticipant(session, msg.FromID) {
+				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "sender is not in this discussion")
+				return
+			}
+			h.fanoutDiscussionActivity(session, msg.FromID, phase, name)
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
 		duplicate := h.svc.HasDiscussionMessage(tid, id, msg.ID)
 		session, err := h.svc.AddDiscussionMessage(tid, id, msg)
 		if err != nil {
@@ -730,6 +749,35 @@ func persistedGroupDiscussionMessage(session *corea2a.Session, fallback corea2a.
 		ImageAttachments: last.ImageAttachments,
 		FileAttachments:  last.FileAttachments,
 		CreatedAt:        last.CreatedAt,
+	}
+}
+
+func discussionSessionHasParticipant(session *corea2a.Session, id string) bool {
+	if session == nil {
+		return false
+	}
+	for _, participant := range session.Participants {
+		if groupDiscussionParticipantIdentityMatches(participant.ID, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *GroupDiscussionHandler) fanoutDiscussionActivity(session *corea2a.Session, fromID, phase, name string) {
+	if h == nil || h.sender == nil || session == nil {
+		return
+	}
+	delivered := map[string]struct{}{}
+	for _, participant := range session.Participants {
+		targetID := strings.TrimSpace(participant.ID)
+		if targetID == "" || groupDiscussionParticipantIdentityMatches(targetID, fromID) {
+			continue
+		}
+		if groupDiscussionMarkParticipantDelivered(delivered, targetID) {
+			continue
+		}
+		_ = h.sender.SendToMachine(targetID, discussionActivityWire(session.ID, fromID, phase, name))
 	}
 }
 

@@ -38,6 +38,7 @@ type agentLoopCompletionOptions struct {
 	RecordToolResult       func(string, interface{}, string, string)
 	AttachLLMTelemetry     func(*IMAgentResponse)
 	AttachVisibleArtifacts func(*IMAgentResponse)
+	NoteBonusUsage         func(llmUsageSnapshot)
 	SendProgress           func(string)
 	Debug                  bool
 	LastInputTokens        int
@@ -64,6 +65,11 @@ type agentLoopCompletionResult struct {
 }
 
 func (h *IMMessageHandler) finishAgentLoopAndRecordTelemetry(opts agentLoopCompletionOptions, telemetry *agentLoopTelemetry) *IMAgentResponse {
+	if telemetry != nil {
+		opts.NoteBonusUsage = func(usage llmUsageSnapshot) {
+			noteOfficialTurnCredits(telemetry, usage.CreditsReported, usage.CreditsDeducted)
+		}
+	}
 	completion := h.finishAgentLoopAfterMainIterations(opts)
 	if telemetry != nil {
 		// Bonus / finalize may produce a new LLM round not seen by ApplyLLMDispatch.
@@ -132,6 +138,7 @@ func (h *IMMessageHandler) finishAgentLoopAfterMainIterations(opts agentLoopComp
 			RecordToolResult:       opts.RecordToolResult,
 			AttachLLMTelemetry:     opts.AttachLLMTelemetry,
 			AttachVisibleArtifacts: opts.AttachVisibleArtifacts,
+			NoteUsage:              opts.NoteBonusUsage,
 			SendProgress:           opts.SendProgress,
 			Debug:                  opts.Debug,
 		})

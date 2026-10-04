@@ -104,6 +104,9 @@ type IMAgentResponse struct {
 	CacheWriteTokens       int    `json:"cache_write_tokens,omitempty"`
 	// EstCostRMB is a local default-price estimate for this turn (optional).
 	EstCostRMB float64 `json:"est_cost_rmb,omitempty"`
+	// CreditsDeducted is the Maclaw official grant debit for this turn.
+	// Nil means the turn did not use that provider or settlement was not durable.
+	CreditsDeducted *float64 `json:"credits_deducted,omitempty"`
 	// PromptProfile is the adaptive system-prompt thickness (full|light).
 	PromptProfile string `json:"prompt_profile,omitempty"`
 	// PromptFullTokens / PromptLightTokens are dual-build estimates when light.

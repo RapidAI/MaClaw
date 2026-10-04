@@ -190,6 +190,17 @@ export interface TokenBankWithdrawal {
     link_id: string;
     state: string;
     created_at: string;
+    /** True when this row is an automatic pull, not a person pressing withdraw. */
+    automatic: boolean;
+}
+
+/** Hub automatic pulls use this request-id prefix. Manual pulls do not. */
+export const TOKEN_BANK_AUTO_REQUEST_PREFIX = 'tbk-auto:';
+
+export function isAutomaticTokenBankWithdrawal(raw: { request_id?: string; automatic?: boolean } | null | undefined): boolean {
+    if (!raw) return false;
+    if (raw.automatic === true) return true;
+    return text(raw.request_id).startsWith(TOKEN_BANK_AUTO_REQUEST_PREFIX);
 }
 
 function numeric(value: unknown): number {
@@ -344,6 +355,10 @@ export function normalizeTokenBankWithdrawal(raw: unknown): TokenBankWithdrawal 
         link_id: text(r.link_id ?? r.LinkID),
         state: text(r.state ?? r.State ?? r.status ?? r.Status),
         created_at: text(r.created_at ?? r.CreatedAt),
+        automatic: isAutomaticTokenBankWithdrawal({
+            request_id: text(r.request_id ?? r.RequestID),
+            automatic: r.automatic === true || r.Automatic === true,
+        }),
     };
 }
 
@@ -537,6 +552,40 @@ export function giftCodeFromInput(raw: unknown): string {
  */
 export function isShareLive(share: Pick<TokenBankShare, 'status'> | null | undefined): boolean {
     return text(share?.status).toLowerCase() === 'active';
+}
+
+/** Automatic brake written by the settler as "token cap: daily|monthly|anomaly". */
+export type TokenBankCapPauseKind = 'daily' | 'monthly' | 'anomaly';
+
+const tokenCapPauseKinds: readonly TokenBankCapPauseKind[] = ['anomaly', 'daily', 'monthly'];
+
+function tokenCapNoteKind(raw: unknown): TokenBankCapPauseKind | null {
+    const note = text(raw);
+    if (!note) return null;
+    const marker = 'token cap:';
+    const at = note.toLowerCase().lastIndexOf(marker);
+    if (at < 0) return null;
+    const tail = note.slice(at + marker.length).trim().toLowerCase();
+    return tokenCapPauseKinds.find((kind) => kind === tail) ?? null;
+}
+
+/** Kind of one stored note. A model prefix ("glm-5: token cap: anomaly") is the same note. */
+export function shareCapNoteKind(raw: unknown): TokenBankCapPauseKind | null {
+    return tokenCapNoteKind(raw);
+}
+
+/**
+ * Which automatic token cap is the current pause.
+ *
+ * Only paused_reason counts. A cap sentence left in last_error after an older
+ * resume is a leftover note, not a new automatic pause, so a later manual
+ * pause keeps the ordinary resume label.
+ */
+export function shareCapPauseKind(
+    share: { status?: string; paused_reason?: string; last_error?: string } | null | undefined,
+): TokenBankCapPauseKind | null {
+    if (!share || text(share.status).toLowerCase() !== 'paused') return null;
+    return tokenCapNoteKind(share.paused_reason);
 }
 
 /** Narrow an unknown status string to the union, or null when unrecognized. */

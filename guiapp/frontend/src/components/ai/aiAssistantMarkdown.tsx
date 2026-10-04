@@ -1,9 +1,9 @@
 import React from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { AIAssistantAttachmentPreviewDataURL, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
-import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot, CodingAgentTimelineItem } from "./useAIAssistant";
+import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
@@ -50,7 +50,7 @@ import {
     reasoningCodeBlockStyle,
     reasoningCodeLangStyle,
 } from "./assistantCodeFence";
-import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
+import { UserAttachmentChip } from "./UserAttachmentChip";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { isSafeKBImageDataURL, KB_IMAGE_MARKER_RE } from "./kbImageValidation";
 
@@ -217,7 +217,40 @@ function renderCodePathLink(filePath: string, key: string, t: Theme): React.Reac
     const label = cloudSafePathLabel(display);
     return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={label}>{label}</a>;
 }
+/** Unix path groups are `/Users/` `/home/` `/tmp/` `/var/` `/opt/` `/etc/` `/usr/`. */
+function textHasUnixAbsPathPrefix(text: string): boolean {
+    return text.includes("/Users/")
+        || text.includes("/home/")
+        || text.includes("/tmp/")
+        || text.includes("/var/")
+        || text.includes("/opt/")
+        || text.includes("/etc/")
+        || text.includes("/usr/");
+}
+
+/**
+ * Path regexes match a backslash, `~/` / `~\`, or a Unix abs prefix.
+ * A bare `/` (as in `a/b`) is not enough. Inline markup adds backticks,
+ * `*emphasis*`, and `[label](url)`.
+ */
+function textHasMarkdownTrigger(text: string, includeInlineMarkup: boolean): boolean {
+    let slash = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        if (c === 0x5c || (includeInlineMarkup && (c === 0x60 || c === 0x2a || c === 0x5b))) return true;
+        if (c === 0x7e) {
+            const next = text.charCodeAt(i + 1);
+            if (next === 0x2f || next === 0x5c) return true;
+        } else if (c === 0x2f) {
+            slash = true;
+        }
+    }
+    return slash && textHasUnixAbsPathPrefix(text);
+}
+
 function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
+    if (!text) return [];
+    if (!textHasMarkdownTrigger(text, false)) return [text];
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let idx = 0;
@@ -246,6 +279,12 @@ function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
 }
 function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false): React.ReactNode[] {
     if (!text) return ["\u00A0"];
+    if (!textHasMarkdownTrigger(text, true)) {
+        // Same shape as a regex miss: pictographs still expand, clean prose stays one string.
+        const plain: React.ReactNode[] = [];
+        pushPlainText(plain, text, "t", { n: 0 });
+        return plain.length > 0 ? plain : ["\u00A0"];
+    }
     const parts: React.ReactNode[] = [];
     // Priority order matters:
     // 1. Backtick-wrapped content containing a file path (detected via path pattern inside backticks)
@@ -484,6 +523,11 @@ function renderMath(latex: string, displayMode: boolean, key: React.Key): React.
 }
 
 export function renderInlineMarkdown(text: string, t: Theme, quietCode = false): React.ReactNode[] {
+    // `$` and `\(` are the only inline-math openers. Backticks only hide those
+    // openers, so a line with neither sequence is one text segment.
+    if (!text.includes("$") && !text.includes("\\(")) {
+        return renderInlineMarkdownRestored(text, t, quietCode);
+    }
     const segments = splitInlineMath(text);
     if (segments.length === 1 && segments[0].kind === "text") return renderInlineMarkdownRestored(text, t, quietCode);
     return segments.flatMap((segment, index) => (
@@ -495,6 +539,9 @@ export function renderInlineMarkdown(text: string, t: Theme, quietCode = false):
 
 // Shared across every chat body line (streaming-friendly: no per-call recompile).
 // GFM unordered markers (-/*/+ ) plus digital-employee bullets (U+2022 •, U+00B7 ·).
+const HEADING_LINE_RE = /^(#{1,6})\s+(.+)$/;
+const BLOCKQUOTE_LINE_RE = /^>\s/;
+const HR_LINE_RE = /^[-*_]{3,}\s*$/;
 const UNORDERED_LIST_LINE_RE = /^(?:[-*+]|\u2022|\u00b7)\s+(.*)$/;
 
 function KBImageThumbnail({ assetId, dataUrl, theme: t }: { assetId: string; dataUrl: string; theme: Theme }) {
@@ -539,6 +586,9 @@ function KBImageThumbnail({ assetId, dataUrl, theme: t }: { assetId: string; dat
 
 function renderMarkdownLine(text: string, key: string | number, t: Theme, quietCode = false): React.ReactNode {
     const trimmed = text.trimStart();
+    // Structure regexes are line-start anchored, so the first character decides
+    // which of them can match. Prose skips the rest.
+    const lead = trimmed.charCodeAt(0);
 
     // KB_IMAGE marker: render an inline thumbnail. The marker contains an
     // opaque asset ID, never a local path, so agent-authored content cannot
@@ -547,33 +597,37 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme, quietC
     // revive the deprecated third path field even if it is ignored locally:
     // model output must never normalize a legacy path-carrying marker into a
     // renderable image.
-    const kbImageMatch = trimmed.match(KB_IMAGE_MARKER_RE);
-    if (kbImageMatch && isSafeKBImageDataURL(kbImageMatch[2])) {
-        const [, assetId, dataUrl] = kbImageMatch;
-        return <KBImageThumbnail key={key} assetId={assetId} dataUrl={dataUrl} theme={t} />;
+    if (lead === 0x5b && trimmed.startsWith("[KB_IMAGE:")) {
+        const kbImageMatch = trimmed.match(KB_IMAGE_MARKER_RE);
+        if (kbImageMatch && isSafeKBImageDataURL(kbImageMatch[2])) {
+            const [, assetId, dataUrl] = kbImageMatch;
+            return <KBImageThumbnail key={key} assetId={assetId} dataUrl={dataUrl} theme={t} />;
+        }
     }
 
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-        const level = headingMatch[1].length;
-        const sizes: Record<number, string> = { 1: "1.25em", 2: "1.12em", 3: "1.0em", 4: "0.92em", 5: "0.9em", 6: "0.88em" };
-        const weights: Record<number, number> = { 1: 700, 2: 700, 3: 600, 4: 600, 5: 600, 6: 600 };
-        const margins: Record<number, string> = { 1: "0.6em 0 0.3em", 2: "0.5em 0 0.25em", 3: "0.4em 0 0.2em", 4: "0.3em 0 0.15em", 5: "0.25em 0 0.12em", 6: "0.2em 0 0.1em" };
-        return (
-            <div key={key} style={{
-                fontSize: sizes[level] || "1em",
-                fontWeight: weights[level] || 600,
-                color: t.headingColor,
-                margin: margins[level] || "0.4em 0 0.2em",
-                letterSpacing: level === 1 ? "0.01em" : undefined,
-                ...blockWrapStyle,
-            }}>
-                {renderInlineMarkdown(headingMatch[2], t, quietCode)}
-            </div>
-        );
+    if (lead === 0x23) {
+        const headingMatch = trimmed.match(HEADING_LINE_RE);
+        if (headingMatch) {
+            const level = headingMatch[1].length;
+            const sizes: Record<number, string> = { 1: "1.25em", 2: "1.12em", 3: "1.0em", 4: "0.92em", 5: "0.9em", 6: "0.88em" };
+            const weights: Record<number, number> = { 1: 700, 2: 700, 3: 600, 4: 600, 5: 600, 6: 600 };
+            const margins: Record<number, string> = { 1: "0.6em 0 0.3em", 2: "0.5em 0 0.25em", 3: "0.4em 0 0.2em", 4: "0.3em 0 0.15em", 5: "0.25em 0 0.12em", 6: "0.2em 0 0.1em" };
+            return (
+                <div key={key} style={{
+                    fontSize: sizes[level] || "1em",
+                    fontWeight: weights[level] || 600,
+                    color: t.headingColor,
+                    margin: margins[level] || "0.4em 0 0.2em",
+                    letterSpacing: level === 1 ? "0.01em" : undefined,
+                    ...blockWrapStyle,
+                }}>
+                    {renderInlineMarkdown(headingMatch[2], t, quietCode)}
+                </div>
+            );
+        }
     }
 
-    if (/^>\s/.test(trimmed)) {
+    if (lead === 0x3e && BLOCKQUOTE_LINE_RE.test(trimmed)) {
         return (
             <div key={key} style={{
                 borderLeft: `1px solid ${t.quoteBorder}`,
@@ -589,42 +643,46 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme, quietC
         );
     }
 
-    if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+    if ((lead === 0x2d || lead === 0x2a || lead === 0x5f) && HR_LINE_RE.test(trimmed)) {
         return <hr key={key} style={{ border: "none", borderTop: `1px solid ${t.divider}`, margin: "8px 0" }} />;
     }
 
-    const unorderedListMatch = trimmed.match(UNORDERED_LIST_LINE_RE);
-    if (unorderedListMatch) {
-        const indentPad = orderedListIndentPadding(leadingIndentColumns(text));
-        return (
-            <div key={key} style={{
-                paddingLeft: indentPad ? `calc(1em + ${indentPad})` : "1em",
-                textIndent: "-0.7em",
-                minHeight: "1.4em",
-                ...blockWrapStyle,
-            }}>
-                <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
-                {renderInlineMarkdown(unorderedListMatch[1], t, quietCode)}
-            </div>
-        );
+    if (lead === 0x2d || lead === 0x2a || lead === 0x2b || lead === 0x2022 || lead === 0x00b7) {
+        const unorderedListMatch = trimmed.match(UNORDERED_LIST_LINE_RE);
+        if (unorderedListMatch) {
+            const indentPad = orderedListIndentPadding(leadingIndentColumns(text));
+            return (
+                <div key={key} style={{
+                    paddingLeft: indentPad ? `calc(1em + ${indentPad})` : "1em",
+                    textIndent: "-0.7em",
+                    minHeight: "1.4em",
+                    ...blockWrapStyle,
+                }}>
+                    <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
+                    {renderInlineMarkdown(unorderedListMatch[1], t, quietCode)}
+                </div>
+            );
+        }
     }
 
-    const ordered = parseOrderedListLine(text);
-    if (ordered) {
-        // Keep wrap styles off the marker span (and off the flex row) so indices never
-        // inherit word-break from prose and reflow mid-number. Preserve "." vs ")".
-        const indentPad = orderedListIndentPadding(ordered.indentCols);
-        return (
-            <div key={key} style={{
-                display: "flex",
-                minHeight: "1.4em",
-                minWidth: 0,
-                paddingLeft: indentPad,
-            }}>
-                <span style={{ color: t.bulletColor, ...orderedListMarkerLayoutStyle }}>{ordered.marker}</span>
-                <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(ordered.body, t, quietCode)}</span>
-            </div>
-        );
+    if (lead >= 0x30 && lead <= 0x39) {
+        const ordered = parseOrderedListLine(text);
+        if (ordered) {
+            // Keep wrap styles off the marker span (and off the flex row) so indices never
+            // inherit word-break from prose and reflow mid-number. Preserve "." vs ")".
+            const indentPad = orderedListIndentPadding(ordered.indentCols);
+            return (
+                <div key={key} style={{
+                    display: "flex",
+                    minHeight: "1.4em",
+                    minWidth: 0,
+                    paddingLeft: indentPad,
+                }}>
+                    <span style={{ color: t.bulletColor, ...orderedListMarkerLayoutStyle }}>{ordered.marker}</span>
+                    <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(ordered.body, t, quietCode)}</span>
+                </div>
+            );
+        }
     }
 
     return (
@@ -701,6 +759,10 @@ function inlineCodeChipStyle(t: Theme, quiet: boolean, extra?: React.CSSProperti
         ...inlineWrapStyle,
         ...extra,
     };
+}
+
+function lineHasMarkdownFenceRun(line: string): boolean {
+    return line.includes("```") || line.includes("~~~");
 }
 
 export function renderContentWithCodeBlocks(
@@ -840,18 +902,11 @@ export function renderContentWithCodeBlocks(
             lineIdx++;
             continue;
         }
-        if (!inCodeBlock && /^\|+$/.test(line.trim())) {
-            continue;
-        }
-        // Any non-blank line outside a code fence ends a blank run (code and
-        // display-math bodies keep their blank lines verbatim).
-        if (!inCodeBlock && line.trim() !== "") {
-            lastWasBlankLine = false;
-        }
-        const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
-        if (fenceMatch) {
-            flushTable();
-            if (inCodeBlock) {
+        if (inCodeBlock) {
+            const fenceMatch = lineHasMarkdownFenceRun(line)
+                ? line.trimStart().match(/^(`{3,}|~{3,})(.*)$/)
+                : null;
+            if (fenceMatch) {
                 const marker = fenceMatch[1];
                 // A closing fence must use the same character and be at least
                 // as long as its opener. Otherwise it belongs to the code body.
@@ -862,40 +917,54 @@ export function renderContentWithCodeBlocks(
                     codeBlockLines.push(line);
                 }
             } else {
-                inCodeBlock = true;
-                codeFenceMarker = fenceMatch[1];
-                codeBlockLang = fenceMatch[2].trim();
+                codeBlockLines.push(line);
             }
-        } else if (inCodeBlock) {
-            codeBlockLines.push(line);
-        } else if (line.trim().startsWith("$$") && line.trim().endsWith("$$") && line.trim().length > 4) {
+            lineIdx++;
+            continue;
+        }
+        const trimmed = line.trim();
+        if (/^\|+$/.test(trimmed)) {
+            continue;
+        }
+        // Any non-blank line outside a code fence ends a blank run (code and
+        // display-math bodies keep their blank lines verbatim).
+        if (trimmed !== "") lastWasBlankLine = false;
+        const fenceMatch = lineHasMarkdownFenceRun(line)
+            ? line.trimStart().match(/^(`{3,}|~{3,})(.*)$/)
+            : null;
+        if (fenceMatch) {
             flushTable();
-            const trimmed = line.trim();
-            elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
-        } else if (line.trim().startsWith("$$") && line.trim().length > 2) {
-            flushTable();
-            displayMathDelimiter = "$$";
-            displayMathLines = [line.trim().slice(2)];
-        } else if (line.trim().startsWith("\\[") && line.trim().endsWith("\\]") && line.trim().length > 4) {
-            flushTable();
-            const trimmed = line.trim();
-            elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
-        } else if (line.trim().startsWith("\\[") && line.trim().length > 2) {
-            flushTable();
-            displayMathDelimiter = "\\[";
-            displayMathLines = [line.trim().slice(2)];
-        } else if (line.trim() === "$$" || line.trim() === "\\[") {
-            flushTable();
-            displayMathDelimiter = line.trim() as "$$" | "\\[";
-            displayMathLines = [];
-        } else if (isMarkdownTableRow(line) || (tableLines.length > 0 && isSplitTableRowLabel(line))) {
+            inCodeBlock = true;
+            codeFenceMarker = fenceMatch[1];
+            codeBlockLang = fenceMatch[2].trim();
+        } else if (trimmed.startsWith("$$") || trimmed.startsWith("\\[")) {
+            if (trimmed.startsWith("$$") && trimmed.endsWith("$$") && trimmed.length > 4) {
+                flushTable();
+                elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
+            } else if (trimmed.startsWith("$$") && trimmed.length > 2) {
+                flushTable();
+                displayMathDelimiter = "$$";
+                displayMathLines = [trimmed.slice(2)];
+            } else if (trimmed.startsWith("\\[") && trimmed.endsWith("\\]") && trimmed.length > 4) {
+                flushTable();
+                elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
+            } else if (trimmed.startsWith("\\[") && trimmed.length > 2) {
+                flushTable();
+                displayMathDelimiter = "\\[";
+                displayMathLines = [trimmed.slice(2)];
+            } else if (trimmed === "$$" || trimmed === "\\[") {
+                flushTable();
+                displayMathDelimiter = trimmed;
+                displayMathLines = [];
+            }
+        } else if ((line.includes("|") && isMarkdownTableRow(line)) || (tableLines.length > 0 && isSplitTableRowLabel(line))) {
             // Strip list markers so "- | a | b |" stays inside the table model.
             // buildMarkdownTableModel also normalizes; doing it here keeps the
             // in-progress buffer consistent while streaming.
             tableLines.push(normalizeMarkdownTableLine(line));
         } else {
             flushTable();
-            if (line.trim() === "") {
+            if (trimmed === "") {
                 // Reasoning display omits the spacer entirely. Chat answers
                 // still collapse a run of blank lines to one spacer. Fences
                 // and display math never reach this branch.
@@ -1368,87 +1437,6 @@ function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
 
 /* Render a single ChatMessage */
 
-function compactAttachmentLabel(fileName: string, extension: string): string {
-    const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
-    return raw ? raw.slice(0, 4).toUpperCase() : "FILE";
-}
-
-function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullable<ChatMessage["attachments"]>[number]; theme: Theme; lang: string }) {
-    // Composer object URLs are revoked when the message is sent, so they must
-    // not cross into the transcript. Always resolve a fresh data URL from the
-    // saved local attachment for reliable rendering and history restoration.
-    const [thumbnail, setThumbnail] = React.useState("");
-    const [previewFailed, setPreviewFailed] = React.useState(false);
-
-    React.useEffect(() => {
-        if (!attachment.isImage) {
-            setThumbnail("");
-            setPreviewFailed(false);
-            return;
-        }
-        let active = true;
-        setPreviewFailed(false);
-        void AIAssistantAttachmentPreviewDataURL(attachment.filePath)
-            .then(dataUrl => {
-                if (!active) return;
-                const resolved = String(dataUrl || "");
-                setThumbnail(resolved);
-                setPreviewFailed(!resolved);
-            })
-            .catch(() => {
-                if (!active) return;
-                setThumbnail("");
-                setPreviewFailed(true);
-            });
-        return () => { active = false; };
-    }, [attachment.filePath, attachment.isImage]);
-
-    const chipStyle: React.CSSProperties = {
-        display: "inline-flex",
-        width: 30,
-        height: 30,
-        alignItems: "center",
-        justifyContent: "center",
-        overflow: "hidden",
-        flexShrink: 0,
-        borderRadius: 4,
-        background: theme.codeBlockBg,
-        border: `1px solid ${theme.codeBlockBorder}`,
-        color: theme.pathColor,
-        fontSize: 8,
-        fontWeight: 800,
-        lineHeight: 1,
-    };
-
-    if (thumbnail) {
-        return (
-            <AttachmentImageThumbnail
-                src={thumbnail}
-                filePath={attachment.filePath}
-                fileName={attachment.fileName}
-                lang={lang}
-                theme={theme}
-                frameStyle={chipStyle}
-                title={attachment.filePath}
-            />
-        );
-    }
-    if (attachment.isImage && !previewFailed) {
-        return <span aria-label={attachment.fileName} style={chipStyle} />;
-    }
-    return (
-        <span title={attachment.filePath} aria-label={attachment.fileName} style={chipStyle}>
-            {compactAttachmentLabel(attachment.fileName, attachment.extension)}
-        </span>
-    );
-}
-
-function reasoningPreviewText(text: string, maxLength = 96): string | undefined {
-    const compact = text.replace(/\s+/gu, " ").trim();
-    if (compact.length <= 48) return undefined;
-    return compact.length > maxLength ? `${compact.slice(0, maxLength - 1).trimEnd()}…` : compact;
-}
-
 /** 1-based thought index in an interleaved coding timeline, or undefined. */
 export function codingTimelineThoughtStep(timeline: Array<{ kind: string }>, index: number): number | undefined {
     if (timeline[index]?.kind !== "thinking") return undefined;
@@ -1459,70 +1447,7 @@ export function codingTimelineThoughtStep(timeline: Array<{ kind: string }>, ind
     return step;
 }
 
-/** One collapsed reasoning node at its actual position in a coding turn. */
-export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentThinkingTimelineItem({
-    item,
-    theme: t,
-    lang,
-    step,
-    liveLabel,
-    liveObject,
-}: {
-    item: CodingAgentTimelineItem;
-    theme: Theme;
-    lang: string;
-    step?: number;
-    liveLabel?: string;
-    liveObject?: string;
-}) {
-    const displayReasoning = React.useMemo(() => cleanReasoningTrailForBody(item.content || ""), [item.content]);
-    const live = !!liveLabel;
-    const body = React.useMemo(
-        () => displayReasoning.trim()
-            ? renderContentWithCodeBlocks(displayReasoning, t, reasoningTrailMarkdownOptions)
-            : null,
-        [displayReasoning, t],
-    );
-    if (!displayReasoning.trim() && !live) return null;
-    // Keep short thoughts uncluttered (and avoid repeating the body text in
-    // the summary); longer thoughts get a useful one-line context preview.
-    const preview = live ? undefined : reasoningPreviewText(displayReasoning);
-    return (
-        <AssistantReasoningPanel
-            defaultOpen={false}
-            label={live && liveLabel ? liveLabel : localizeText(lang, "Thought", "思考过程", "思考過程")}
-            objectLabel={live ? liveObject : undefined}
-            step={step}
-            lang={lang}
-            preview={preview}
-            theme={t}
-            contentKey={displayReasoning}
-            live={live}
-        >
-            {body}
-        </AssistantReasoningPanel>
-    );
-});
-
-export function renderCodingAgentThinkingTimelineItem(
-    item: CodingAgentTimelineItem,
-    t: Theme,
-    lang: string,
-    step?: number,
-    liveLabel?: string,
-    liveObject?: string,
-): React.ReactNode {
-    return (
-        <CodingAgentThinkingTimelineItem
-            item={item}
-            theme={t}
-            lang={lang}
-            step={step}
-            liveLabel={liveLabel}
-            liveObject={liveObject}
-        />
-    );
-}
+export { CodingAgentThinkingTimelineItem, renderCodingAgentThinkingTimelineItem } from "./CodingAgentThinkingTimelineItem";
 
 function visibleChatFields(fields: ChatMessage["fields"] | undefined): Array<{ label: string; value: string }> {
     return (fields || []).filter((field) => {
@@ -1724,20 +1649,22 @@ export function renderMessage(
                             </span>
                         )}
                         {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, t, lang)}
-                        {/* Ordinary chat only: the thinking panel follows the token
-                            stream — open while a round is actively streaming, folded
-                            when the stream ends (stream-done fires per LLM round).
-                            Live tool steps reuse this same header. The coding
-                            workbench stays folded. */}
+                        {/* The thinking panel follows the token stream — open while a
+                            round is actively streaming, folded when the stream ends
+                            (stream-done fires per LLM round). Live tool steps reuse
+                            this header and stay folded when no tokens are arriving.
+                            Programming agents use the same rule until the coding
+                            timeline owns the thought. */}
                         {!msg.codingTimeline?.length && (visibleReply.reasoning || (isLastAssistant && liveReasoningLabel)) && (() => {
                             const live = liveForReasoning;
                             const reasoningLabel = live
                                 ? (liveReasoningLabel || assistantLiveActivityLabel("thinking", lang))
                                 : (lang === "en" ? "Thinking process..." : "思考过程...");
                             // Open while reasoning tokens are still arriving. Fold when that
-                            // stream ends. The text stays in the panel; a live tool label
-                            // with no stream, and the coding workbench, stay folded.
-                            const shouldOpen = isStreaming && isLastAssistant && !collapseReasoningByDefault;
+                            // stream ends, or when a coding answer has already started.
+                            // A live tool label with no stream stays folded.
+                            const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!summaryText.trim()));
+                            const shouldOpen = isStreaming && isLastAssistant && !codingAnswerStarted;
                             const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning);
                             if (!displayReasoning.trim() && !live) return null;
                             return (

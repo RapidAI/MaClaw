@@ -669,7 +669,7 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		return fmt.Sprintf("读取失败: %s", err.Error())
 	}
 
-	lines := strings.SplitAfter(string(data), "\n")
+	lines := coretool.SplitTextLines(string(data))
 	totalLines := len(lines)
 
 	// offset 参数：从文件末尾倒数 N 行开始读取（类似 tail -n）

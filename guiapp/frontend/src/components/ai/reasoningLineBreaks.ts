@@ -8,7 +8,8 @@
  * markdown lists, headings, fences, and blank-line paragraphs intact.
  */
 
-const FENCE_LINE = /^(`{3,}|~{3,})(.*)$/;
+import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
+
 const BLOCK_START = /^(?:#{1,6}\s+|>\s?|(?:[-*+]|\u2022|\u00b7)\s+|\d+[.)]\s+|[-*_]{3,}\s*$|\|)/;
 /** `504) to confirm` after `251-` — a range closer, not a new `2)` list. */
 const PAREN_CLOSER_ITEM = /^\d+\)/;
@@ -19,20 +20,6 @@ const HAN_START = /^\p{Script=Han}/u;
 /** Two+ digits so `1-\n2) Compile` is not treated as a wrapped range. */
 const RANGE_HYPHEN_END = /\d{2,}[-–—−‐‑]$/u;
 const DIGIT_START = /^\d/;
-
-function fenceMatch(line: string): { marker: string; rest: string } | null {
-    const match = line.trimStart().match(FENCE_LINE);
-    if (!match) return null;
-    return { marker: match[1], rest: match[2] || "" };
-}
-
-function fenceMarkerAfterLine(fenceMarker: string, fence: { marker: string; rest: string }): string {
-    if (!fenceMarker) return fence.marker;
-    if (fence.marker[0] === fenceMarker[0] && fence.marker.length >= fenceMarker.length && !fence.rest.trim()) {
-        return "";
-    }
-    return fenceMarker;
-}
 
 function parenDelta(line: string): number {
     let delta = 0;
@@ -62,30 +49,55 @@ function canJoinLine(prev: string, line: string, parenDepth: number): boolean {
     return parenDepth > 0 && !BLOCK_START.test(start);
 }
 
+/** Joins need an open parenthesis or a digit (hyphenated ranges such as `251-`). */
+function mayJoinWrappedLine(text: string): boolean {
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        if (c === 0x28 || c === 0xff08) return true;
+        if (c >= 0x30 && c <= 0x39) return true;
+    }
+    return false;
+}
+
 export function repairReasoningLineBreaks(text: string): string {
     if (!text) return text;
     const normalized = text.replace(/\r\n?/g, "\n");
-    if (!normalized.includes("\n")) return normalized;
+    if (!normalized.includes("\n") || !mayJoinWrappedLine(normalized)) return normalized;
 
     const out: string[] = [];
     let fenceMarker = "";
+    let math: "$$" | "\\[" | "" = "";
+    // Set when the previous emitted line belongs to a fence. A dropped blank
+    // inside parentheses must not clear it, or the next line would join onto
+    // the closer.
+    let prevIsFence = false;
     let parenDepth = 0;
     for (const line of normalized.split("\n")) {
-        const fence = fenceMatch(line);
-        if (fenceMarker || fence) {
-            out.push(line);
-            if (fence) fenceMarker = fenceMarkerAfterLine(fenceMarker, fence);
-            continue;
+        if (math) {
+            math = displayMathAfterLine(line, math);
+        } else {
+            const nextFence = markdownFenceAfterLine(line, fenceMarker);
+            if (fenceMarker || nextFence) {
+                out.push(line);
+                fenceMarker = nextFence;
+                prevIsFence = true;
+                continue;
+            }
+            math = displayMathAfterLine(line, "");
         }
         if (!line.trim()) {
-            if (parenDepth <= 0) out.push(line);
+            if (parenDepth <= 0) {
+                out.push(line);
+                prevIsFence = false;
+            }
             continue;
         }
         const prev = out[out.length - 1];
-        if (prev?.trim() && !fenceMatch(prev) && canJoinLine(prev, line, parenDepth)) {
+        if (prev?.trim() && !prevIsFence && canJoinLine(prev, line, parenDepth)) {
             out[out.length - 1] = joinWrappedLine(prev, line);
         } else {
             out.push(line);
+            prevIsFence = false;
         }
         parenDepth = Math.max(0, parenDepth + parenDelta(line));
     }

@@ -62,7 +62,7 @@ import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
-import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, extractInFlightToolName, isGenericCodingLiveKind, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
@@ -120,6 +120,7 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { useAssistantPreviewOpenEvents } from "./useAssistantPreviewOpenEvents";
+import { useCloudWorkspaceSearchFileOpen } from "./useCloudWorkspaceSearchFileOpen";
 import { useLatexPaperPreviewOpen } from "./useLatexPaperPreviewOpen";
 import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
 import { isLatexExpertId } from "../../utils/latexTemplates";
@@ -4066,6 +4067,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setFileFocusNonce(next);
         },
     });
+    useCloudWorkspaceSearchFileOpen({
+        ready: isCloudWorkspaceEnvironment,
+        projectPath: activeTab.projectPath,
+        workspaceId: cloudWorkspaceIdFromPath(cloudPreviewRoot) || cloudWorkspaceIdFromPath(activeTab.projectPath),
+        openWorkspaceFile,
+        reopenPreview: reopenCodePreview,
+        holdPreview: () => setTaskResultPreviewOpen(true),
+    });
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();
@@ -5748,6 +5757,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <div data-testid="coding-agent-interleaved-timeline">
                             {codingTimeline.map((item, index) => {
                                 const step = item.kind === "thinking" ? ++thoughtStep : undefined;
+                                const thoughtOwnsLive = index === lastThinkingIndex;
                                 return (
                                 <Fragment key={item.id}>
                                     {item.kind === "thinking"
@@ -5757,8 +5767,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 theme={t}
                                                 lang={lang}
                                                 step={step}
-                                                liveLabel={index === lastThinkingIndex ? liveReasoningLabel : undefined}
-                                                liveObject={index === lastThinkingIndex ? liveReasoningObject : undefined}
+                                                liveLabel={thoughtOwnsLive ? liveReasoningLabel : undefined}
+                                                liveObject={thoughtOwnsLive ? liveReasoningObject : undefined}
+                                                expanded={thoughtOwnsLive && msg.reasoningLive !== false && isGenericCodingLiveKind(liveReasoningKind)}
                                             />
                                         )
                                         : (
@@ -5869,7 +5880,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return node;
         });
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningLabel, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment]);
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment]);
     // A coding turn with an ordered timeline owns its coding progress rows.
     // Retain the legacy progress feed for non-coding and older in-flight turns.
     const renderedProgressMessages = useMemo(() => {
@@ -6670,7 +6681,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 ) : undefined} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </div>
             )}
-            <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
+            <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} conversationChrome={{ inline: !!inline, maximized: !!maximized, onHideWindow, onToggleMaximize, onActivateTab: activateSwitchingTab, onCloseTab: closeTabWithProjectCleanup }} />
             {panelActive && renameGroupTargetTab && (
                 <AIAssistantRenameGroupDialog
                     error={renameGroupError}

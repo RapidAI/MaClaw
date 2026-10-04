@@ -374,23 +374,95 @@ func cloudWorkspaceHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+type cloudWorkspaceLeaseOverride struct {
+	workspaceID  string
+	leaseID      string
+	fencingToken int64
+}
+
+type cloudWorkspaceLeaseOverrideKey struct{}
+
+// cloudWorkspaceWriteLeaseFunc borrows a writer lease only for the manifest
+// write that follows. DeletePaths calls it after the read, and only when the
+// remote tree actually changes.
+type cloudWorkspaceWriteLeaseFunc func(context.Context) (context.Context, func(), error)
+
+type cloudWorkspaceWriteLeaseKey struct{}
+
+func withCloudWorkspaceWriteLease(ctx context.Context, fn cloudWorkspaceWriteLeaseFunc) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, cloudWorkspaceWriteLeaseKey{}, fn)
+}
+
+func cloudWorkspaceWriteLeaseFrom(ctx context.Context) cloudWorkspaceWriteLeaseFunc {
+	if ctx == nil {
+		return nil
+	}
+	fn, _ := ctx.Value(cloudWorkspaceWriteLeaseKey{}).(cloudWorkspaceWriteLeaseFunc)
+	return fn
+}
+
+func withCloudWorkspaceLeaseOverride(ctx context.Context, workspaceID, leaseID string, fencingToken int64) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, cloudWorkspaceLeaseOverrideKey{}, cloudWorkspaceLeaseOverride{
+		workspaceID:  strings.TrimSpace(workspaceID),
+		leaseID:      strings.TrimSpace(leaseID),
+		fencingToken: fencingToken,
+	})
+}
+
+func cloudWorkspaceLeaseOverrideFrom(ctx context.Context, workspaceID string) (string, int64, bool) {
+	if ctx == nil {
+		return "", 0, false
+	}
+	value, ok := ctx.Value(cloudWorkspaceLeaseOverrideKey{}).(cloudWorkspaceLeaseOverride)
+	if !ok || value.workspaceID != strings.TrimSpace(workspaceID) || value.leaseID == "" || value.fencingToken <= 0 {
+		return "", 0, false
+	}
+	return value.leaseID, value.fencingToken, true
+}
+
+// cloudWorkspaceLeaseHeaders prefers a one-shot delete lease over a browse
+// mount that has no writer lease. Caller headers still replace the result.
+func cloudWorkspaceLeaseHeaders(ctx context.Context, workspaceID string) (fencing, session string) {
+	if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
+		mount.mu.Lock()
+		token := mount.FencingToken
+		leaseID := strings.TrimSpace(mount.LeaseID)
+		mount.mu.Unlock()
+		if token > 0 {
+			fencing = strconv.FormatInt(token, 10)
+		}
+		session = leaseID
+	}
+	if leaseID, token, ok := cloudWorkspaceLeaseOverrideFrom(ctx, workspaceID); ok {
+		fencing = strconv.FormatInt(token, 10)
+		session = leaseID
+	}
+	return fencing, session
+}
+
 func (a *App) cloudWorkspaceHubDoWithShare(ctx context.Context, sess cloudWorkspaceShareAccessSession, method, path string, opt cloudWorkspaceHTTPOptions) ([]byte, int, error) {
 	headers := map[string]string{}
-	for key, value := range opt.headers {
-		headers[key] = value
-	}
 	if workspaceID := cloudWorkspaceWorkspaceIDFromPath(path); workspaceID != "" {
-		if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
-			mount.mu.Lock()
-			token := mount.FencingToken
-			leaseID := mount.LeaseID
-			mount.mu.Unlock()
-			if token > 0 {
-				headers["X-Cloud-Workspace-Fencing"] = strconv.FormatInt(token, 10)
-			}
-			if strings.TrimSpace(leaseID) != "" {
-				headers["X-Cloud-Workspace-Session"] = leaseID
-			}
+		fencing, session := cloudWorkspaceLeaseHeaders(ctx, workspaceID)
+		if fencing != "" {
+			headers["X-Cloud-Workspace-Fencing"] = fencing
+		}
+		if session != "" {
+			headers["X-Cloud-Workspace-Session"] = session
+		}
+	}
+	for key, value := range opt.headers {
+		if strings.TrimSpace(key) != "" {
+			headers[key] = value
 		}
 	}
 	opt.headers = headers
@@ -462,17 +534,12 @@ func (a *App) cloudWorkspaceHubDoRecover(ctx context.Context, method, path strin
 		req.Header.Set("X-Cloud-Workspace-Protocol", cloudWorkspaceProtocolVersion)
 	}
 	if workspaceID := cloudWorkspaceWorkspaceIDFromPath(path); workspaceID != "" {
-		if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
-			mount.mu.Lock()
-			token := mount.FencingToken
-			leaseID := mount.LeaseID
-			mount.mu.Unlock()
-			if token > 0 {
-				req.Header.Set("X-Cloud-Workspace-Fencing", strconv.FormatInt(token, 10))
-			}
-			if strings.TrimSpace(leaseID) != "" {
-				req.Header.Set("X-Cloud-Workspace-Session", leaseID)
-			}
+		fencing, session := cloudWorkspaceLeaseHeaders(ctx, workspaceID)
+		if fencing != "" {
+			req.Header.Set("X-Cloud-Workspace-Fencing", fencing)
+		}
+		if session != "" {
+			req.Header.Set("X-Cloud-Workspace-Session", session)
 		}
 	}
 	for key, value := range opt.headers {

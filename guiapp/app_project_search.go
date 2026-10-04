@@ -55,6 +55,9 @@ const (
 	taskSourceAssistantTabPrefix = taskSourceTagPrefix + "assistant_tab:"
 	// assistantTabACPType is the tabType used for VS Code Mode B connections.
 	assistantTabACPType = "acp"
+	// assistantTabVEType is a digital-employee chat. It stays a VE tab and must
+	// not become a local chat row in the task list.
+	assistantTabVEType = "ve"
 	// assistantTabACPIdentity is the stable ACP tab identity. Session ids change
 	// on every VS Code reconnect; hashing those created a new vs-code-acp-*
 	// sidebar row each time the GUI restarted.
@@ -315,31 +318,50 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	if limit <= 0 {
 		limit = 10
 	}
+	// Digital-employee chats and ACP mirrors are dropped below. Read past the
+	// caller's limit first so those rows cannot push a real project out of the
+	// window.
+	fetchLimit := limit
+	if limit <= maxTaskSearchLimit/2 {
+		fetchLimit = limit * 2
+	}
 
 	var records []memory.ProjectRecord
 	if query == "" {
-		records = pi.ListRecent(limit)
+		records = pi.ListRecent(fetchLimit)
 	} else {
-		records = pi.Search(query, limit)
+		records = pi.Search(query, fetchLimit)
 	}
 	records = collapseRecentTaskForkRecords(records)
 
-	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(limit * 2))
+	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(fetchLimit))
+	// One workflow load for the widened window. A per-row store read would run
+	// twice as often now that omitted digital-employee rows are read past.
+	var v2WorkflowStates map[string]*v2.WorkflowState
+	if len(records) > 0 {
+		v2WorkflowStates = a.v2WorkflowStatesByOwner()
+	}
 	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
+		if omittedFromTaskSidebar(rec) {
+			continue
+		}
 		result := a.projectRecordToSearchResult(pi, rec)
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
+		result.ActiveWorkflow = a.activeWorkflowForProjectFromCache(projectWorkflowProjectPathForRecord(rec), v2WorkflowStates)
 		if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
 			if runtimeState := activeCodingRuntimeWorkflowForTags(result.Tags, codingActiveByRef); runtimeState != nil {
 				result.ActiveWorkflow = runtimeState
 			}
 		}
 		results = append(results, result)
+		if len(results) == limit {
+			break
+		}
 	}
 
 	return results
@@ -476,7 +498,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		if isAutoACPAssistantTabRecord(rec) {
+		if omittedFromTaskSidebar(rec) {
 			continue
 		}
 		result := a.projectRecordToSearchResult(pi, rec)
@@ -512,7 +534,7 @@ func visibleProjectRecords(pi *memory.ProjectIndex, records []memory.ProjectReco
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		if isAutoACPAssistantTabRecord(rec) {
+		if omittedFromTaskSidebar(rec) {
 			continue
 		}
 		out = append(out, rec)
@@ -1545,14 +1567,16 @@ func (a *App) insertExpertTaskRecord(expertID, expertName, workingDir string) Pr
 // invariant so every UI entry point can use the same idempotent registration.
 //
 // If projectPath already identifies a visible task, that task is reused for
-// ordinary project/coding tabs. VE and group tabs keep their own durable
-// sidebar entry. ACP connections are not a task-list identity: the editor cwd
-// is not reused, and after the user deletes the VS Code / ACP row this method
-// returns empty so a reconnect cannot resurrect it.
+// ordinary project/coding tabs. Group discussions keep their own durable
+// sidebar entry. A digital-employee chat does not: opening or messaging a VE
+// must not mint a same-named local chat task. ACP connections are not a
+// task-list identity either: the editor cwd is not reused, and after the user
+// deletes the VS Code / ACP row this method returns empty so a reconnect
+// cannot resurrect it.
 func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath string) ProjectSearchResult {
 	tabType = strings.ToLower(strings.TrimSpace(tabType))
 	tabIdentity = canonicalAssistantTabIdentity(tabType, tabIdentity)
-	if tabType == "" || tabIdentity == "" {
+	if tabType == "" || tabIdentity == "" || tabType == assistantTabVEType {
 		return ProjectSearchResult{}
 	}
 	for _, r := range tabType {
@@ -1716,6 +1740,29 @@ func isAutoACPAssistantTabRecord(rec memory.ProjectRecord) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(rec.Name), "VS Code / ACP")
+}
+
+func isVEAssistantTabContent(content string) bool {
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "secondary ai assistant tab.") {
+		return false
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		if strings.TrimSpace(line) == "type: ve" {
+			return true
+		}
+	}
+	return false
+}
+
+func isVEAssistantTabRecord(rec memory.ProjectRecord) bool {
+	return assistantTabTypeFromTags(rec.Tags) == assistantTabVEType
+}
+
+// omittedFromTaskSidebar reports rows that must not appear as local tasks:
+// VS Code / ACP mirrors and digital-employee chats.
+func omittedFromTaskSidebar(rec memory.ProjectRecord) bool {
+	return isAutoACPAssistantTabRecord(rec) || isVEAssistantTabRecord(rec)
 }
 
 // reconcileDismissedACPAssistantTabTasks drops leftover VS Code / ACP rows so a
@@ -4272,7 +4319,9 @@ func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir str
 	}
 	// VS Code / ACP rows are session-cloned leftovers. Recovering them after
 	// DeleteTask is what made the sidebar task reappear on every GUI restart.
-	if isAutoACPAssistantTabTask(taskDir, content) {
+	// Digital-employee chats are not local tasks; recovering their task.md
+	// would put a same-named local chat back on the sidebar.
+	if isAutoACPAssistantTabTask(taskDir, content) || isVEAssistantTabContent(content) {
 		return false
 	}
 	title, extraTags := inferRecoveredTaskMetadata(taskDir, content)
@@ -7135,8 +7184,8 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 				log.Printf("[LoadProjectTabIndex] skip closed task tab=%q project=%q", entry.ID, entry.ProjectPath)
 				continue
 			}
-			if rec := projectIndex.Get(entry.ProjectPath); rec != nil && isAutoACPAssistantTabRecord(*rec) {
-				log.Printf("[LoadProjectTabIndex] skip ACP assistant tab=%q project=%q", entry.ID, entry.ProjectPath)
+			if rec := projectIndex.Get(entry.ProjectPath); rec != nil && omittedFromTaskSidebar(*rec) {
+				log.Printf("[LoadProjectTabIndex] skip assistant tab=%q project=%q", entry.ID, entry.ProjectPath)
 				continue
 			} else if rec == nil && isAutoACPAssistantTabDirName(entry.ProjectPath) {
 				log.Printf("[LoadProjectTabIndex] skip leftover ACP tab=%q project=%q", entry.ID, entry.ProjectPath)

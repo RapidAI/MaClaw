@@ -6144,12 +6144,22 @@ func (a *App) DeleteNLSkill(name string) error {
 	if oldDir == "." && strings.TrimSpace(target.SkillDir) == "" {
 		oldDir = ""
 	}
+	// Keep the recorded path for cache eviction even when quarantine is skipped.
+	recordedDir := oldDir
 	quarantine := ""
 	if oldDir != "" {
 		if err := validateSkillMutationDir(oldDir); err != nil {
-			return err
+			// errors.Is is required: the inspect error wraps the Lstat failure,
+			// and os.IsNotExist does not unwrap it. A missing directory still
+			// drops the registry row. Permission, symlink, and non-directory
+			// errors stay fatal so a delete cannot skip a directory that exists.
+			if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			oldDir = ""
+		} else {
+			quarantine = oldDir + fmt.Sprintf(".delete-pending-%d", time.Now().UnixNano())
 		}
-		quarantine = oldDir + fmt.Sprintf(".delete-pending-%d", time.Now().UnixNano())
 	}
 	if err := a.recordSkillEvolutionEventStrict("skill:definition_delete_started", auditData); err != nil {
 		return fmt.Errorf("delete audit preflight failed: %w", err)
@@ -6198,9 +6208,11 @@ func (a *App) DeleteNLSkill(name string) error {
 			return a.recordSkillEvolutionEventStrict(event, data)
 		},
 		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
-			if oldDir != "" {
-				record.SetDirectoryBackup(oldDir, quarantine, true)
+			if oldDir == "" {
+				record.SetPostCommitCleanupPaths(nil)
+				return
 			}
+			record.SetDirectoryBackup(oldDir, quarantine, true)
 			record.SetPostCommitCleanupPaths([]string{quarantine})
 		},
 		CompensationClear: a.skillDeleteClearCompensation,
@@ -6233,6 +6245,9 @@ func (a *App) DeleteNLSkill(name string) error {
 				// snapshot is keyed by the canonical registry Name.
 				a.cachedSkillScanner.RemoveByName(target.Name)
 				a.cachedSkillScanner.RemoveByDir(oldDir)
+				if recordedDir != "" && recordedDir != oldDir {
+					a.cachedSkillScanner.RemoveByDir(recordedDir)
+				}
 			} else {
 				// Rollback restores the original directory; keep that identity in the
 				// scanner and discard any stale quarantine snapshot before rescanning.

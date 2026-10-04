@@ -18,6 +18,7 @@ export type TaskConfigIconName =
     | "back"
     | "grid"
     | "home"
+    | "monitor"
     | "clock"
     | "lock"
     | "ban"
@@ -39,6 +40,7 @@ const PATHS: Record<TaskConfigIconName, ReactNode> = {
     back: (<path {...s} d="M15 5l-7 7 7 7" />),
     grid: (<><rect {...s} x="4" y="4" width="7" height="7" rx="1.5" /><rect {...s} x="13" y="4" width="7" height="7" rx="1.5" /><rect {...s} x="4" y="13" width="7" height="7" rx="1.5" /><rect {...s} x="13" y="13" width="7" height="7" rx="1.5" /></>),
     home: (<><path {...s} d="m4 11 8-7 8 7" /><path {...s} d="M6 9.5V20h12V9.5" /></>),
+    monitor: (<><rect {...s} x="3" y="4" width="18" height="13" rx="2" /><path {...s} d="M8 21h8M12 17v4" /></>),
     clock: (<><circle {...s} cx="12" cy="12" r="8.5" /><path {...s} d="M12 7v5l3.5 2" /></>),
     lock: (<><rect {...s} x="5.5" y="10.5" width="13" height="9" rx="2" /><path {...s} d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" /></>),
     ban: (<><circle {...s} cx="12" cy="12" r="8.5" /><path {...s} d="m6 6 12 12" /></>),
@@ -54,6 +56,7 @@ export function TaskConfigIcon({ name, size = 15, style }: { name: TaskConfigIco
             fill="none"
             aria-hidden="true"
             focusable="false"
+            data-icon={name}
             style={{ display: "block", flexShrink: 0, ...style }}
         >
             {PATHS[name]}

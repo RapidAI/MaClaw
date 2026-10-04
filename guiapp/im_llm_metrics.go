@@ -1,12 +1,52 @@
 package guiapp
 
 import (
+	"math"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
+
+func roundTurnCredits(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	return math.Round(v*1000) / 1000
+}
+
+// noteOfficialTurnCredits adds one settled official debit to the turn total.
+// Unsettled rounds stay out so the chip does not show a quote.
+func noteOfficialTurnCredits(t *agentLoopTelemetry, reported bool, credits float64) {
+	if t == nil || !reported {
+		return
+	}
+	t.CreditsDeducted = roundTurnCredits(t.CreditsDeducted + credits)
+	t.CreditsDeductedSet = true
+}
+
+// noteSharedLoopTurnCredits copies the RunLoop's settled official debit onto
+// the turn chip. The shared loop is the path that actually calls the model
+// for eligible chats, and it does not go through ApplyLLMDispatch.
+func noteSharedLoopTurnCredits(telemetry *agentLoopTelemetry, cfg corelib.MaclawLLMConfig, usage agent.TurnUsage) {
+	if usage.CreditsReported && !isHubServiceProviderName(cfg.ProviderName) && !isHubServiceProviderName(usage.Provider) {
+		return
+	}
+	noteOfficialTurnCredits(telemetry, usage.CreditsReported, usage.CreditsDeducted)
+}
+
+func attachSharedLoopTurn(telemetry *agentLoopTelemetry, cb *sharedAgentLoopCallbacks, usage agent.TurnUsage, resp *IMAgentResponse) {
+	if telemetry == nil || resp == nil {
+		return
+	}
+	cfg := corelib.MaclawLLMConfig{}
+	if cb != nil {
+		cfg = cb.llmCfg
+	}
+	noteSharedLoopTurnCredits(telemetry, cfg, usage)
+	telemetry.Attach(resp)
+}
 
 type agentLoopTelemetry struct {
 	LoopStartedAt                         time.Time
@@ -52,6 +92,10 @@ type agentLoopTelemetry struct {
 	PromptABSample bool
 	// PromptSoftFull is true when SoftFullAgentIntent upgraded light→full.
 	PromptSoftFull bool
+	// CreditsDeducted is the sum of Maclaw official grant debits in this turn.
+	// CreditsDeductedSet distinguishes a settled zero from "not official".
+	CreditsDeducted    float64
+	CreditsDeductedSet bool
 	// InputBreakdown is the latest provider-independent request composition.
 	// It is diagnostic-only and never changes the prompt sent to the model.
 	InputBreakdown agent.LoopInputBreakdown
@@ -170,6 +214,13 @@ func (t *agentLoopTelemetry) Attach(resp *IMAgentResponse) {
 		}
 	}
 	// Always-on compact Turn chip for chat UI (route + tokens + prompt; no cost).
+	// Official-provider credits, when the hub reported a durable debit, go last.
+	var creditsDeducted *float64
+	if t.CreditsDeductedSet {
+		credits := t.CreditsDeducted
+		creditsDeducted = &credits
+		resp.CreditsDeducted = &credits
+	}
 	resp.Fields = mergeIMResponseFields(resp.Fields, turnMetaResponseField(
 		t.Route,
 		resp.InputTokens,
@@ -180,6 +231,7 @@ func (t *agentLoopTelemetry) Attach(resp *IMAgentResponse) {
 		resp.PromptUpgraded,
 		resp.PromptABSample,
 		resp.PromptSoftFull,
+		creditsDeducted,
 	))
 	resp.HandlerPostStreamUsageNanos = t.HandlerPostStreamUsageElapsed.Nanoseconds()
 	resp.HandlerPostStreamResponseNanos = t.HandlerPostStreamResponseElapsed.Nanoseconds()
@@ -233,6 +285,10 @@ func (t *agentLoopTelemetry) ApplyLLMDispatch(result agentLoopLLMDispatchResult)
 		t.TotalLLMOutputTokens += result.OutputTokens
 		t.TotalLLMCacheReadTokens += result.CacheReadTokens
 		t.TotalLLMCacheWriteTokens += result.CacheWriteTokens
+	}
+	if result.CreditsReported {
+		t.CreditsDeducted = roundTurnCredits(t.CreditsDeducted + result.CreditsDeducted)
+		t.CreditsDeductedSet = true
 	}
 	if result.PostStreamUsageCompleted {
 		t.HandlerPostStreamUsageElapsed += result.UsageElapsed

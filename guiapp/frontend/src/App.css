@@ -13038,9 +13038,13 @@ button.knowledge-chip:disabled {
 
 .tbk-panel__sub {
     margin: 0;
+    max-width: 34em;
     font-size: 0.82rem;
+    line-height: 1.55;
     color: var(--theme-text-secondary);
-    max-width: 46ch;
+    /* Clauses stay whole. A narrow column still breaks at punctuation. */
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .tbk-panel__actions {
@@ -13079,6 +13083,65 @@ button.knowledge-chip:disabled {
     color: var(--theme-text-secondary);
 }
 
+.tbk-auto-cap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-auto-cap h4 {
+    margin: 0;
+    font-size: 0.95rem;
+}
+
+.tbk-auto-cap__copy p {
+    margin: 4px 0 0;
+    max-width: 62ch;
+    font-size: 0.8rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-auto-cap__row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.tbk-auto-cap__row input {
+    flex: 0 1 16rem;
+    max-width: 16rem;
+}
+
+.tbk-auto-cap__error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-danger);
+}
+
+.tbk-auto-cap__note {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-text-secondary);
+}
+
+button.tbk-pill {
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.72rem;
+    line-height: 1.4;
+}
+
+.tbk-pill--auto {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    border-color: var(--theme-border);
+}
+
 .tbk-summary__value {
     font-size: 1.15rem;
     font-variant-numeric: tabular-nums;
@@ -13112,12 +13175,12 @@ button.knowledge-chip:disabled {
     gap: 10px;
 }
 
-/* Gift links I sent. A card carries the recipient and a full status sentence,
-   so a column stays wide enough for that sentence to wrap about once.
-   auto-fit follows the settings pane: four cards when they fit, fewer when
-   a fixed four-column row would crush the sentence. */
+/* Gift links I sent: five cards a row, twenty a page. The section is the
+   container so the count follows the settings pane, not the whole window. */
 .tbk-section--gifts {
     min-width: 0;
+    container-type: inline-size;
+    container-name: tbk-gifts;
 }
 
 .tbk-gift-grid {
@@ -13125,7 +13188,7 @@ button.knowledge-chip:disabled {
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 12px;
     align-items: stretch;
 }
@@ -13141,7 +13204,23 @@ button.knowledge-chip:disabled {
 .tbk-gift-grid .tbk-meta > span {
     min-width: 0;
     max-width: 100%;
-    overflow-wrap: break-word;
+    /* anywhere, not break-word: a phone id is one token, and this rule is
+       more specific than .tbk-gift-claim-detail__who. */
+    overflow-wrap: anywhere;
+}
+
+/* The amount keeps its width. A chip that does not fit wraps onto the next
+   line instead of squeezing the number into an ellipsis. */
+.tbk-gift-grid .tbk-share__head {
+    align-items: flex-start;
+}
+
+.tbk-gift-grid .tbk-share__name {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
 }
 
 .tbk-gift-grid .tbk-meta {
@@ -13160,6 +13239,19 @@ button.knowledge-chip:disabled {
 
 .tbk-gift-grid > .tbk-share > .tbk-share__actions {
     margin-top: auto;
+}
+
+/* Five columns until a card would be narrower than the status sentence. */
+@container tbk-gifts (max-width: 820px) {
+    .tbk-gift-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@container tbk-gifts (max-width: 520px) {
+    .tbk-gift-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 /* My shares: three cards a row, nine a page. The section is the container so
@@ -13471,7 +13563,8 @@ button.knowledge-chip:disabled {
 }
 
 .tbk-gift-form input,
-.tbk-gift-claim input {
+.tbk-gift-claim input,
+.tbk-auto-cap input {
     flex: 1 1 160px;
     min-width: 0;
     padding: 8px 10px;
@@ -21686,8 +21779,10 @@ button.knowledge-chip:disabled {
 .aitb-tab-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* AssistantActiveTabContent.tsx */
-.aatc-live-row { display: flex; flex-direction: row; height: 100%; width: 100%; }
-.aatc-live-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.aatc-live-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
+.aatc-live-shell > .mc-task-execution-header { flex: 0 0 auto; }
+.aatc-live-row { display: flex; flex-direction: row; flex: 1; min-height: 0; width: 100%; }
+.aatc-live-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* AssistantAttachmentsStrip.tsx */
 .aas-thumb-slot { width: 30px; height: 30px; flex-shrink: 0; }
@@ -27455,6 +27550,61 @@ input.cwshare-url {
 .skills-page > *,
 .mcp-page > * {
   min-width: 0;
+}
+
+/* Skills fills the main column. The card must not grow with its content:
+   main-container clips overflow, and a height:100% page inside an
+   overflow:auto parent never gives the inner scroller a shorter box, so the
+   settings list is cut off with no thumb.
+   :not([hidden]) keeps this layout off the Utilities host that stays mounted
+   after the first visit. The following rule wins on display if a later edit
+   drops the exclusion: an author display beats the hidden attribute and
+   would paint AI experts under Skills. */
+#App[data-nav-tab='skills'] .app-main-content:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+#App[data-nav-tab='skills'] .app-main-content[hidden] {
+  display: none;
+}
+#App[data-nav-tab='skills'] .skills-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+#App[data-nav-tab='skills'] .skills-page > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Console sections set overflow:hidden, which zeroes a flex item's minimum
+   size. Without this the capability-market catalog and the settings sections
+   shrink to the card and clip their rows, so the scroller never overflows. */
+.skills-tab-scroll > * {
+  flex-shrink: 0;
+}
+.skills-tab-scroll {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  /* `* { scrollbar-width: thin; scrollbar-color }` fades the bar in WebView2
+     and disables these webkit rules. `auto` turns the classic thumb back on. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+.skills-tab-scroll::-webkit-scrollbar {
+  width: 12px;
+}
+.skills-tab-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-border));
+  border-radius: 999px;
+}
+.skills-tab-scroll::-webkit-scrollbar-thumb:hover,
+.skills-tab-scroll::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--theme-text-muted) 78%, var(--theme-border));
 }
 
 .gossip-page {

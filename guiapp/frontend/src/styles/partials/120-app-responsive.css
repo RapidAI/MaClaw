@@ -740,6 +740,61 @@
   min-width: 0;
 }
 
+/* Skills fills the main column. The card must not grow with its content:
+   main-container clips overflow, and a height:100% page inside an
+   overflow:auto parent never gives the inner scroller a shorter box, so the
+   settings list is cut off with no thumb.
+   :not([hidden]) keeps this layout off the Utilities host that stays mounted
+   after the first visit. The following rule wins on display if a later edit
+   drops the exclusion: an author display beats the hidden attribute and
+   would paint AI experts under Skills. */
+#App[data-nav-tab='skills'] .app-main-content:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+#App[data-nav-tab='skills'] .app-main-content[hidden] {
+  display: none;
+}
+#App[data-nav-tab='skills'] .skills-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+#App[data-nav-tab='skills'] .skills-page > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Console sections set overflow:hidden, which zeroes a flex item's minimum
+   size. Without this the capability-market catalog and the settings sections
+   shrink to the card and clip their rows, so the scroller never overflows. */
+.skills-tab-scroll > * {
+  flex-shrink: 0;
+}
+.skills-tab-scroll {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  /* `* { scrollbar-width: thin; scrollbar-color }` fades the bar in WebView2
+     and disables these webkit rules. `auto` turns the classic thumb back on. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+.skills-tab-scroll::-webkit-scrollbar {
+  width: 12px;
+}
+.skills-tab-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-border));
+  border-radius: 999px;
+}
+.skills-tab-scroll::-webkit-scrollbar-thumb:hover,
+.skills-tab-scroll::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--theme-text-muted) 78%, var(--theme-border));
+}
+
 .gossip-page {
   padding: 0 !important;
   background: var(--theme-surface);

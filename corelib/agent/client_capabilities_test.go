@@ -31,6 +31,25 @@ func TestBuildClientCapabilityPromptIncludesFormatsAndCombinations(t *testing.T)
 	}
 }
 
+func TestBuildClientCapabilityPromptMentionsEventPushOnlyWhenDeclared(t *testing.T) {
+	base := ClientCapabilities{
+		Output: ClientOutputCapabilities{Modalities: []string{"text"}},
+	}
+	withoutEvents := BuildClientCapabilityPrompt(&base)
+	if strings.Contains(withoutEvents, "Events:") {
+		t.Fatalf("prompt must not advertise events to a client that did not declare them: %s", withoutEvents)
+	}
+
+	withEvents := base
+	withEvents.Features.EventPush = true
+	prompt := BuildClientCapabilityPrompt(&withEvents)
+	for _, want := range []string{"Events:", "silent, notice, interrupt"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestNormalizeClientCapabilitiesDefaultsLegacyClientToTextOnly(t *testing.T) {
 	capabilities := NormalizeClientCapabilities(nil)
 	if !capabilities.SupportsOutput("text") || capabilities.SupportsOutput("image") {

@@ -55,6 +55,11 @@ type llmBillingState struct {
 	// was ambiguous. A later local refusal must not prove the whole request
 	// never left Hub.
 	dispatchObserved bool
+	// deductedCredits is the amount flushCreditChargesDetailed actually applied
+	// to the user's grant for this request. It can be lower than the requested
+	// price when the remaining balance cannot cover it.
+	deductedCredits    float64
+	deductedCreditsSet bool
 }
 
 func withLLMBillingState(ctx context.Context, startedAt time.Time, requestIDs ...string) context.Context {
@@ -78,6 +83,38 @@ func llmBillingRequestID(ctx context.Context) string {
 func llmBillingStateFrom(ctx context.Context) *llmBillingState {
 	state, _ := ctx.Value(llmBillingStateKey{}).(*llmBillingState)
 	return state
+}
+
+// noteSettledDeductedCredits records the credits a successful flush actually
+// removed from the user's grant. Callers must not substitute the pre-flush
+// quote: a short balance settles a smaller amount.
+func noteSettledDeductedCredits(ctx context.Context, credits float64) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return
+	}
+	if math.IsNaN(credits) || math.IsInf(credits, 0) || credits < 0 {
+		credits = 0
+	}
+	credits = math.Round(credits*1000) / 1000
+	state.mu.Lock()
+	state.deductedCredits = credits
+	state.deductedCreditsSet = true
+	state.mu.Unlock()
+}
+
+// settledDeductedCredits returns the grant debit recorded for this request.
+func settledDeductedCredits(ctx context.Context) (float64, bool) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return 0, false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.deductedCreditsSet {
+		return 0, false
+	}
+	return state.deductedCredits, true
 }
 
 func noteOfficialBilling(ctx context.Context, value float64, providerID string) {
@@ -877,7 +914,8 @@ func prepareAndReserveLLMPricing(ctx context.Context, system store.SystemSetting
 }
 
 // coverFilteredModelsFromTokenBank pulls when catalog admission rejected every
-// model because the charged card cannot pay, then filters again. Each denied
+// model because the charged card cannot pay, or because its period window is
+// exhausted and no point card can take over, then filters again. Each denied
 // model is judged on its own groups, and providers that bill different groups
 // are judged apart: a rich sibling must not hide a short card. A group the
 // bank does not pay does not stop a later wallet the bank does pay. One
@@ -937,7 +975,7 @@ func coverFilteredModelsFromTokenBank(ctx context.Context, system store.SystemSe
 
 func creditShortfallDenial(code string) bool {
 	switch strings.ToUpper(strings.TrimSpace(code)) {
-	case "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", "LLM_SERVICE_CREDITS_EXHAUSTED", "LLM_SERVICE_CREDITS_REQUIRED":
+	case "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", "LLM_SERVICE_CREDITS_EXHAUSTED", "LLM_SERVICE_CREDITS_REQUIRED", "LLM_SERVICE_PERIOD_LIMITED":
 		return true
 	default:
 		return false
@@ -950,9 +988,12 @@ func llmDenialCodeIs(code, want string) bool {
 
 // pullTokenBankForQuoteShortfall withdraws when the charged card cannot start
 // the request. An unlimited grant reports available 0 and must not pull. A
-// period window, a queued grant, or an expired grant is not a bank problem.
-// The card is its spendable balance before holds. A floor that balance can
-// pay waits for the holds instead of withdrawing more.
+// queued grant or an expired grant is not a bank problem. A period window
+// that has nothing else to spend is: the request switches to a point card,
+// and a token-bank balance is withdrawn into that card first. A point card
+// that can already pay does not withdraw. The card is its spendable balance
+// before holds. A floor that balance can pay waits for the holds instead of
+// withdrawing more.
 func pullTokenBankForQuoteShortfall(ctx context.Context, reg *llmservice.Registry, userID, email, code string, needCredits float64, groups []string, model *llmservice.AuthorizedModel, puller tokenBankAdmissionPuller) (bool, error) {
 	if puller == nil || !quoteShortfallNeedsPull(ctx, reg, userID, email, code, needCredits, groups, model) {
 		return false, nil
@@ -965,7 +1006,7 @@ func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, user
 		return false
 	}
 	switch strings.ToUpper(strings.TrimSpace(code)) {
-	case "LLM_SERVICE_PERIOD_LIMITED", "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
+	case "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
 		return false
 	}
 	now := time.Now().UTC()
@@ -973,11 +1014,12 @@ func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, user
 	if allowed && available == 0 {
 		return false
 	}
-	if !allowed {
-		switch strings.ToUpper(strings.TrimSpace(eligibilityCode)) {
-		case "LLM_SERVICE_PERIOD_LIMITED", "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
-			return false
-		}
+	// Judge these groups by their own eligibility. A model-level period-limit
+	// code must not hide a short point card on another provider, and a queued
+	// or expired grant is still not a bank problem.
+	switch strings.ToUpper(strings.TrimSpace(eligibilityCode)) {
+	case "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
+		return false
 	}
 	// A denial that priced a floor already requoted at one output token. A
 	// stored quote fills that in only when it can be requoted the same way.
@@ -990,6 +1032,15 @@ func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, user
 		}
 	}
 	gross := grossSpendableMicro(reg, userID, email, groups)
+	if llmDenialCodeIs(eligibilityCode, "LLM_SERVICE_PERIOD_LIMITED") {
+		// The period grant itself is not spendable. Withdraw when no point
+		// card on these groups can start the request. A balance that covers
+		// the floor, including one hidden by a hold, waits.
+		if floorMicro > 0 {
+			return floorMicro > gross
+		}
+		return gross <= 0
+	}
 	if floorMicro > 0 {
 		if floorMicro > gross {
 			return true
@@ -2135,18 +2186,29 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 		// Keep any sent reservation for HubCenter reconciliation. A zero ledger
 		// debit would look settled and block recovery of the upstream price.
 		clearUsageRMBCosts(&usage)
-		publishLoggedLLMUsage(ctx, system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, 0, meta, "", multiplier, providerMultiplier, serviceGroupMultiplier, nil)
+		// No request-scoped debit is durable yet. Do not report 0 credits to the
+		// client: reconciliation may still apply the upstream price.
+		_, _ = publishLoggedLLMUsage(ctx, system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, 0, meta, "", multiplier, providerMultiplier, serviceGroupMultiplier, nil)
 		return 0, multiplier
 	}
 	markLLMBillingSettlementQueued(ctx)
-	publishLoggedLLMUsage(ctx, system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, llmBillingRequestID(ctx), multiplier, providerMultiplier, serviceGroupMultiplier, pricing)
+	deducted, settled := publishLoggedLLMUsage(ctx, system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, llmBillingRequestID(ctx), multiplier, providerMultiplier, serviceGroupMultiplier, pricing)
+	notePublishedDeductedCredits(ctx, deducted, settled)
 	return credits, multiplier
 }
 
-func publishLoggedLLMUsage(ctx context.Context, system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID, email string, serviceGroupIDs, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing) {
-	enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, requestID, multiplier, providerMultiplier, serviceGroupMultiplier, pricing, officialUsageReportServiceGroupIDs(ctx, providerID, serviceGroupIDs), usageReportBillingProviderID(ctx, providerID))
+func notePublishedDeductedCredits(ctx context.Context, deducted float64, settled bool) {
+	if !settled {
+		return
+	}
+	noteSettledDeductedCredits(ctx, deducted)
+}
+
+func publishLoggedLLMUsage(ctx context.Context, system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID, email string, serviceGroupIDs, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing) (float64, bool) {
+	deducted, settled := enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, requestID, multiplier, providerMultiplier, serviceGroupMultiplier, pricing, officialUsageReportServiceGroupIDs(ctx, providerID, serviceGroupIDs), usageReportBillingProviderID(ctx, providerID))
 	recordLLMClassTraffic(system, serviceGroupIDs, meta, usage, meta.Preview)
 	recordLLMClassHeadSample(system, serviceGroupIDs, meta)
+	return deducted, settled
 }
 
 func officialUsageReportServiceGroupIDs(ctx context.Context, providerID string, charged []string) []string {

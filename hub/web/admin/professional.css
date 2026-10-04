@@ -600,4 +600,25 @@ button:active{transform:scale(.985)}
 .main[data-active-tab="console"],#tab-console{--tab-icon:var(--icon-console)}
 .main[data-active-tab="notifications"],#tab-notifications{--tab-icon:var(--icon-bell)}
 .main[data-active-tab="system"],#tab-system{--tab-icon:var(--icon-sliders)}
+.main[data-active-tab="linkhealth"],#tab-linkhealth{--tab-icon:var(--icon-activity)}
+
+/* Link health tab (plan N0-3). Fleet cards + per-tenant table. */
+#tab-linkhealth.active{display:grid!important;gap:14px}
+#tab-linkhealth .lh-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+#tab-linkhealth .lh-card{padding:14px 16px;border:1px solid #e5e8ef;border-radius:14px;background:#fff;display:grid;gap:6px}
+#tab-linkhealth .lh-label{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#737987}
+#tab-linkhealth .lh-value{font-size:24px;line-height:1.1;color:#262b36}
+#tab-linkhealth .lh-note{font-size:11px;line-height:1.45;color:#707684}
+#tab-linkhealth .lh-reasons{margin-top:4px;padding:12px 14px;border:1px solid #e5e8ef;border-radius:14px;background:#fff;display:grid;gap:8px}
+#tab-linkhealth .lh-chips{display:flex;flex-wrap:wrap;gap:8px}
+#tab-linkhealth .lh-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid #e6e9ef;border-radius:999px;background:#f8f9fb;font-size:11px;color:#4b5260}
+#tab-linkhealth .lh-chip b{color:#262b36}
+#tab-linkhealth .lh-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff;border:1px solid #e5e8ef;border-radius:14px;overflow:hidden}
+#tab-linkhealth .lh-table th,#tab-linkhealth .lh-table td{padding:9px 12px;text-align:left;border-bottom:1px solid #eef1f5;white-space:nowrap}
+#tab-linkhealth .lh-table th{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#737987;background:#f6f7f9}
+#tab-linkhealth .lh-table tr:last-child td{border-bottom:0}
+#tab-linkhealth .lh-table td:first-child{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+#tab-linkhealth .lh-on{color:#1d9365;font-weight:600}
+#tab-linkhealth .lh-off{color:#c44e4e;font-weight:600}
+#tab-linkhealth .lh-hint{margin-top:2px}
 #tenantCloudWorkspaceSettingsCard{border-color:#cfe0ff}

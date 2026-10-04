@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,16 +16,18 @@ type fakeHostFileReader struct {
 	path        string
 	query       string
 	filePattern string
+	startLine   int
 	principal   Principal
 	result      string
 	err         error
 }
 
-func (f *fakeHostFileReader) ReadReviewedHostFile(_ context.Context, principal Principal, path, query, filePattern string) (string, error) {
+func (f *fakeHostFileReader) ReadReviewedHostFile(_ context.Context, principal Principal, path, query, filePattern string, startLine int) (string, error) {
 	f.principal = principal
 	f.path = path
 	f.query = query
 	f.filePattern = filePattern
+	f.startLine = startLine
 	return f.result, f.err
 }
 
@@ -58,7 +61,7 @@ func TestReviewedHostFileReadExecutesPathAndRejectsLookupMapping(t *testing.T) {
 	if !result.Succeeded || result.Result != reader.result {
 		t.Fatalf("file read result=%#v", result)
 	}
-	if reader.path != "README.md" || reader.query != "" || reader.filePattern != "" || reader.principal.TenantID != principal.TenantID || reader.principal.UserID != principal.UserID {
+	if reader.path != "README.md" || reader.query != "" || reader.filePattern != "" || reader.startLine != 0 || reader.principal.TenantID != principal.TenantID || reader.principal.UserID != principal.UserID {
 		t.Fatalf("reader=%#v", reader)
 	}
 	empty := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{}`)
@@ -72,6 +75,22 @@ func TestReviewedHostFileReadExecutesPathAndRejectsLookupMapping(t *testing.T) {
 	located := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"file_pattern":"**/*.go"}`)
 	if !located.Succeeded || reader.filePattern != "**/*.go" || reader.query != "" {
 		t.Fatalf("locate by name result=%#v reader=%#v", located, reader)
+	}
+	paged := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"path":"README.md","start_line":40}`)
+	if !paged.Succeeded || reader.path != "README.md" || reader.startLine != 40 || reader.query != "" {
+		t.Fatalf("start_line result=%#v reader=%#v", paged, reader)
+	}
+	conflict := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"path":"README.md","start_line":40,"query":"x"}`)
+	if conflict.Succeeded || conflict.Unknown || conflict.ReasonCode != "host_file_read_conflicting_fields" || reader.query != "" || reader.startLine != 40 {
+		t.Fatalf("start_line plus query must fail closed before the reader, result=%#v reader=%#v", conflict, reader)
+	}
+	linesRejected := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"path":"README.md","lines":20}`)
+	if linesRejected.Succeeded || linesRejected.Unknown {
+		t.Fatalf("lines must stay out of the schema, result=%#v", linesRejected)
+	}
+	washed := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"path":"README.md","start_line":"40"}`)
+	if washed.Succeeded || washed.Unknown {
+		t.Fatalf("a numeric string must not be washed into start_line, result=%#v", washed)
 	}
 	rejected := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"path":"README.md","channel":"lansenger"}`)
 	if rejected.Succeeded || rejected.Unknown {
@@ -133,16 +152,21 @@ func TestProjectReviewedHostFileReadRejectsWriteAndChannelFields(t *testing.T) {
 	if _, ok := props["path"]; !ok {
 		t.Fatalf("file read schema missing path: %#v", props)
 	}
-	if _, ok := props["query"]; !ok || len(props) != 3 {
+	if _, ok := props["query"]; !ok || len(props) != 4 {
 		t.Fatalf("file read schema=%#v", props)
 	}
-	// file_pattern is the reviewed third field: locating files by name is an
-	// outcome neither path nor query can reach. The keys below stay out.
+	// file_pattern locates files by name. start_line is the host-fixed page
+	// cursor. The keys below stay out, including the legacy page knobs.
 	if _, ok := props["file_pattern"]; !ok {
 		t.Fatalf("host file read cannot locate files by name: %#v", props)
 	}
+	startLineSpec, _ := props["start_line"].(map[string]interface{})
+	if startLineSpec["description"] != "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern." {
+		t.Fatalf("host start_line description=%#v", startLineSpec)
+	}
 	for _, key := range []string{
 		"channel", "destination", "group_name", "file_path", "content", "save_path",
+		"lines", "offset", "end_line",
 		"max_results", "include_hidden", "include_dirs", "type", "exclude", "project_path",
 	} {
 		if _, ok := props[key]; ok {
@@ -158,19 +182,32 @@ func TestReviewedHostFileReadStaysInsideWorkspace(t *testing.T) {
 	}
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	cb := &coreAgentCallbacks{principal: principal, workspace: dir}
-	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "")
+	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "", 0)
 	if err != nil || !strings.Contains(out, "hello workspace") {
 		t.Fatalf("read file=%q err=%v", out, err)
 	}
-	listed, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "", "")
+	fromOne, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "", 1)
+	if err != nil || fromOne != "hello workspace" {
+		t.Fatalf("start_line=1 on a short file must stay raw text, out=%q err=%v", fromOne, err)
+	}
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "", 2); err == nil || !strings.Contains(err.Error(), "host_file_read_range_rejected") {
+		t.Fatalf("past end err=%v", err)
+	}
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "", "", 1); err == nil || !strings.Contains(err.Error(), "host_file_read_start_line_unsupported") {
+		t.Fatalf("directory start_line err=%v", err)
+	}
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "needle", "", 2); err == nil || !strings.Contains(err.Error(), "host_file_read_conflicting_fields") {
+		t.Fatalf("conflict err=%v", err)
+	}
+	listed, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "", "", 0)
 	if err != nil || !strings.Contains(listed, "notes.txt") {
 		t.Fatalf("list root=%q err=%v", listed, err)
 	}
-	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, filepath.Join("..", "outside.txt"), "", ""); err == nil {
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, filepath.Join("..", "outside.txt"), "", "", 0); err == nil {
 		t.Fatal("workspace escape must fail closed")
 	}
 	escaped := &coreAgentCallbacks{principal: principal}
-	if _, err := escaped.ReadReviewedHostFile(context.Background(), principal, filepath.Join(dir, "notes.txt"), "", ""); err == nil {
+	if _, err := escaped.ReadReviewedHostFile(context.Background(), principal, filepath.Join(dir, "notes.txt"), "", "", 0); err == nil {
 		t.Fatal("empty workspace must not read absolute paths")
 	}
 }
@@ -183,19 +220,22 @@ func TestReviewedHostFileReadUsesNativeDocumentReaderForOfficeFiles(t *testing.T
 	}
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	cb := &coreAgentCallbacks{principal: principal, workspace: dir}
-	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "table.csv", "", "")
+	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "table.csv", "", "", 0)
 	if err != nil || !strings.Contains(out, "hello-doc") {
 		t.Fatalf("document read=%q err=%v", out, err)
 	}
 	if strings.Contains(out, "\x00") {
 		t.Fatalf("document read returned a binary dump: %q", out)
 	}
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, "table.csv", "", "", 1); err == nil || !strings.Contains(err.Error(), "host_file_read_start_line_unsupported") {
+		t.Fatalf("document start_line err=%v", err)
+	}
 
 	docxPath := filepath.Join(dir, "notes.docx")
 	if err := os.WriteFile(docxPath, []byte("PK\x03\x04not-a-docx\x00binary"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rejected, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.docx", "", "")
+	rejected, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.docx", "", "", 0)
 	// The reader refused this file, and the refusal is the answer. It used to
 	// arrive as a successful read whose body was the refusal notice, which is
 	// how a document nobody could parse got recorded as one that was read.
@@ -222,14 +262,14 @@ func TestReviewedHostFileReadSearchesWorkspaceWithoutLeavingIt(t *testing.T) {
 	}
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	cb := &coreAgentCallbacks{principal: principal, workspace: dir}
-	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "UniqueNeedle123", "")
+	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "UniqueNeedle123", "", 0)
 	if err != nil || !strings.Contains(out, "UniqueNeedle123") || !strings.Contains(out, "alpha.go") {
 		t.Fatalf("workspace search=%q err=%v", out, err)
 	}
 	if strings.Contains(out, "beta.go") && strings.Contains(out, "package beta") && !strings.Contains(out, "UniqueNeedle123") {
 		t.Fatalf("search leaked an unmatched file: %q", out)
 	}
-	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, filepath.Join("..", "outside"), "UniqueNeedle123", ""); err == nil {
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, filepath.Join("..", "outside"), "UniqueNeedle123", "", 0); err == nil {
 		t.Fatal("search path escape must fail closed")
 	}
 }
@@ -254,7 +294,7 @@ func TestReviewedHostFileReadLocatesFilesByName(t *testing.T) {
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	cb := &coreAgentCallbacks{principal: principal, workspace: dir}
 
-	located, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "", "**/*.go")
+	located, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "", "**/*.go", 0)
 	if err != nil {
 		t.Fatalf("locate err=%v", err)
 	}
@@ -267,7 +307,7 @@ func TestReviewedHostFileReadLocatesFilesByName(t *testing.T) {
 
 	// A name shape alongside a query narrows the content search rather than
 	// running a second, separate one.
-	scoped, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "UniqueNeedle123", "*.go")
+	scoped, err := cb.ReadReviewedHostFile(context.Background(), principal, "", "UniqueNeedle123", "*.go", 0)
 	if err != nil || !strings.Contains(scoped, "UniqueNeedle123") {
 		t.Fatalf("scoped search=%q err=%v", scoped, err)
 	}
@@ -275,8 +315,40 @@ func TestReviewedHostFileReadLocatesFilesByName(t *testing.T) {
 		t.Fatalf("scoped search escaped its file shape: %q", scoped)
 	}
 
-	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, filepath.Join("..", "outside"), "", "*.go"); err == nil {
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, filepath.Join("..", "outside"), "", "*.go", 0); err == nil {
 		t.Fatal("locate path escape must fail closed")
+	}
+}
+
+func TestReviewedHostFileReadStartLineCountsCompilerLines(t *testing.T) {
+	dir := t.TempDir()
+	var body strings.Builder
+	for i := 1; i <= srvReadFileMaxLines; i++ {
+		fmt.Fprintf(&body, "EDGE-%d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "exact.txt"), []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A blank line is a real line. The final newline is not a second one.
+	if err := os.WriteFile(filepath.Join(dir, "blank.txt"), []byte("a\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	cb := &coreAgentCallbacks{principal: principal, workspace: dir}
+	out, err := cb.ReadReviewedHostFile(context.Background(), principal, "exact.txt", "", "", 0)
+	if err != nil || out != body.String() || strings.Contains(out, "Next:") {
+		t.Fatalf("exact page=%q err=%v", out, err)
+	}
+	last, err := cb.ReadReviewedHostFile(context.Background(), principal, "exact.txt", "", "", srvReadFileMaxLines)
+	if err != nil || !strings.Contains(last, fmt.Sprintf("EDGE-%d\n", srvReadFileMaxLines)) || strings.Contains(last, "Next:") || strings.Contains(last, "EDGE-1\n") {
+		t.Fatalf("last line=%q err=%v", last, err)
+	}
+	if _, err := cb.ReadReviewedHostFile(context.Background(), principal, "exact.txt", "", "", srvReadFileMaxLines+1); err == nil || !strings.Contains(err.Error(), "host_file_read_range_rejected") {
+		t.Fatalf("one past the last line err=%v", err)
+	}
+	blank, err := cb.ReadReviewedHostFile(context.Background(), principal, "blank.txt", "", "", 2)
+	if err != nil || blank != "(lines 2-3 of 3)\n\nb\n" {
+		t.Fatalf("blank line=%q err=%v", blank, err)
 	}
 }
 
@@ -296,12 +368,20 @@ func TestReviewedHostFileReadTailsLogFilesByType(t *testing.T) {
 	}
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	cb := &coreAgentCallbacks{principal: principal, workspace: dir}
-	logOut, err := cb.ReadReviewedHostFile(context.Background(), principal, "app.log", "", "")
+	logOut, err := cb.ReadReviewedHostFile(context.Background(), principal, "app.log", "", "", 0)
 	if err != nil || !strings.Contains(logOut, "TAIL-MARKER") || strings.Contains(logOut, "HEAD-MARKER") {
 		t.Fatalf("log tail=%q err=%v", logOut, err)
 	}
-	txtOut, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "")
-	if err != nil || !strings.Contains(txtOut, "HEAD-MARKER") || strings.Contains(txtOut, "TAIL-MARKER") {
+	txtOut, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "", 0)
+	if err != nil || !strings.Contains(txtOut, "HEAD-MARKER") || strings.Contains(txtOut, "TAIL-MARKER") || !strings.Contains(txtOut, "Next: start_line=") {
 		t.Fatalf("text files must keep head-first paging, out=%q err=%v", txtOut, err)
+	}
+	logHead, err := cb.ReadReviewedHostFile(context.Background(), principal, "app.log", "", "", 1)
+	if err != nil || !strings.Contains(logHead, "HEAD-MARKER") || strings.Contains(logHead, "TAIL-MARKER") || !strings.Contains(logHead, "Next: start_line=") {
+		t.Fatalf("start_line=1 must read the log head, out=%q err=%v", logHead, err)
+	}
+	later, err := cb.ReadReviewedHostFile(context.Background(), principal, "notes.txt", "", "", srvReadFileMaxLines+1)
+	if err != nil || strings.Contains(later, "HEAD-MARKER") || !strings.HasPrefix(later, fmt.Sprintf("(lines %d-", srvReadFileMaxLines+1)) {
+		t.Fatalf("later page=%q err=%v", later, err)
 	}
 }

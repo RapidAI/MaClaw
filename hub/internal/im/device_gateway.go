@@ -1764,12 +1764,16 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g.plugin == nil {
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventRejected, "unavailable")
 		writeDeviceError(w, 503, "unavailable", "GUI relay is unavailable")
 		return
 	}
 	ownerID := g.plugin.GatewayOwnerForTenant(p.TenantID)
 	if ownerID == "" {
-		writeDeviceError(w, http.StatusServiceUnavailable, "gui_offline", "the paired MaClaw GUI is not connected to Hub")
+		// F3: no brain is reachable for this tenant. This is the signal the
+		// link-health panel exists to quantify.
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventRejected, deviceErrorCodeGuiOffline)
+		writeDeviceError(w, http.StatusServiceUnavailable, deviceErrorCodeGuiOffline, "the paired MaClaw GUI is not connected to Hub")
 		return
 	}
 	attachments, err := g.incomingAttachments(p.ClientID, req.Message.Attachments)
@@ -1790,6 +1794,7 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	// retaining the same eventId (as required for a retry) would receive a
 	// false duplicate success and the corrected message would never reach GUI.
 	if g.markDeviceEvent(p.ClientID, "incoming:"+strings.TrimSpace(req.EventID)) {
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventDuplicate, "")
 		writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": true})
 		return
 	}
@@ -1802,6 +1807,7 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	// race revokes the credential before the goroutine can reach the GUI.
 	dispatchMu := g.deviceDispatchMutex(p.ClientID)
 	go g.forwardIncomingDeviceMessage(dispatchMu, deviceBearerToken(r), p, ownerID, payload)
+	LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventAccepted, "")
 	writeDeviceJSON(w, 200, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": false})
 }
 
@@ -2167,6 +2173,7 @@ func (g *DeviceGateway) handleToolResult(w http.ResponseWriter, r *http.Request)
 	}
 	eventID := coreim.ThirdPartyToolResultEventID(req)
 	if g.markDeviceEvent(p.ClientID, eventID) {
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventDuplicate, "")
 		writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "duplicate": true})
 		return
 	}
@@ -2185,6 +2192,7 @@ func (g *DeviceGateway) handleToolResult(w http.ResponseWriter, r *http.Request)
 		"client_tools": clientTools, "client_tool_context": agent.ClientToolContext{ClientID: p.ClientID, ConversationID: conversationID, ReplyToMessageID: eventID},
 	})
 	go g.plugin.HandleGatewayMessage(ownerID, payload)
+	LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventAccepted, "")
 	writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "duplicate": false})
 }
 
@@ -3612,6 +3620,22 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 			}
 		}
 		return true
+	case "event":
+		// Structured event push (plan N1-1). Requires an explicit capability
+		// declaration: an event carries decision actions the user is meant to
+		// press, and downgrading it to plain text would silently drop them.
+		if !DeviceEventPushSupported(capabilities) {
+			return false
+		}
+		normalized, ok := normalizeDeviceEventPush(reply["event"])
+		if !ok {
+			return false
+		}
+		if capabilities.Output.Text != nil {
+			clampDeviceEventText(normalized, capabilities.Output.Text.MaxChars)
+		}
+		reply["event"] = normalized
+		return true
 	default:
 		if !capabilities.SupportsOutput("text") {
 			return false
@@ -3772,6 +3796,27 @@ func deviceReplyInt64(reply map[string]any, keys ...string) int64 {
 		}
 	}
 	return 0
+}
+
+// deviceReplyBool reads an optional boolean flag. JSON booleans and the string
+// forms "true"/"false" are accepted because hand-written and LLM-produced
+// payloads routinely quote them; anything else is treated as absent so a
+// malformed flag can never be read as an affirmative.
+func deviceReplyBool(reply map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		switch value := reply[key].(type) {
+		case bool:
+			return value
+		case string:
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "true":
+				return true
+			case "false":
+				return false
+			}
+		}
+	}
+	return false
 }
 
 // UpdateMachineAmbient accepts the GUI's compact weather result and publishes

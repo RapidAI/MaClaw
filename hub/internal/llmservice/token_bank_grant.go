@@ -106,10 +106,14 @@ type TokenBankPullResult struct {
 // TokenBankAutoSettings controls the background pull. A missing settings
 // document means enabled. ThresholdMicro is kept so a previously stored
 // document still parses; the pull does not use it as a top-up target.
+// MaxPerWithdrawMicro is the local ceiling for one automatic pull, in
+// microcredits. Zero means no local ceiling: HubCenter still applies the
+// per-machine 1/N share.
 type TokenBankAutoSettings struct {
-	Enabled        bool   `json:"enabled"`
-	ThresholdMicro int64  `json:"threshold_micro"`
-	ServiceGroupID string `json:"service_group_id"`
+	Enabled             bool   `json:"enabled"`
+	ThresholdMicro      int64  `json:"threshold_micro"`
+	ServiceGroupID      string `json:"service_group_id"`
+	MaxPerWithdrawMicro int64  `json:"max_per_withdraw_micro,omitempty"`
 }
 
 // TokenBankGrantCardID is the registry card id for one pull. It is the
@@ -321,7 +325,49 @@ func LoadTokenBankAutoSettings(ctx context.Context, system SystemSettingsReposit
 	if stored.ThresholdMicro < 0 {
 		stored.ThresholdMicro = 0
 	}
+	if stored.MaxPerWithdrawMicro < 0 {
+		stored.MaxPerWithdrawMicro = 0
+	}
 	return stored, nil
+}
+
+// SaveTokenBankAutoMaxPerWithdraw stores the local ceiling for one automatic
+// pull. Zero clears it. Other fields already in the document stay as they
+// were. A hub that has no document yet keeps the pull enabled: an absent
+// enabled field would otherwise load as off.
+func SaveTokenBankAutoMaxPerWithdraw(ctx context.Context, system SystemSettingsRepository, maxMicro int64) error {
+	if system == nil {
+		return fmt.Errorf("token bank auto settings require a store")
+	}
+	if maxMicro < 0 {
+		return fmt.Errorf("token bank auto withdraw cap must not be negative")
+	}
+	raw, err := system.Get(ctx, tokenBankAutoSettingsKey)
+	if err != nil {
+		return err
+	}
+	doc := map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return fmt.Errorf("parse token bank auto settings: %w", err)
+		}
+		// JSON null unmarshals as a nil map. Writing a key on it panics.
+		if doc == nil {
+			doc = map[string]any{"enabled": true}
+		}
+	} else {
+		doc["enabled"] = true
+	}
+	if maxMicro == 0 {
+		delete(doc, "max_per_withdraw_micro")
+	} else {
+		doc["max_per_withdraw_micro"] = maxMicro
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	return system.Set(ctx, tokenBankAutoSettingsKey, string(encoded))
 }
 
 // ResolveTokenBankServiceGroup picks the group a pull will fund.

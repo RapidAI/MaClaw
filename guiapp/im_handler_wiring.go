@@ -126,8 +126,9 @@ type IMMessageHandler struct {
 	// single-passage replacement. It never reads replace_all/line-number soup.
 	semanticTrustedFileEdit func(userID, path, oldString, newString string) (string, error)
 	// semanticTrustedFileRead is a host-owned test/runtime hook for managed
-	// workspace inspect. It never reads lines/start_line/file_path soup.
-	semanticTrustedFileRead func(userID, path, query, filePattern string) (string, error)
+	// workspace inspect. start_line is the host-fixed page cursor. The hook
+	// still does not read lines/offset/end_line/file_path soup.
+	semanticTrustedFileRead func(userID, path, query, filePattern string, startLine int) (string, error)
 	// semanticTrustedRepoInspect is a host-owned test/runtime hook for managed
 	// workspace git inspect. It never reads project_path/staged soup.
 	semanticTrustedRepoInspect func(userID string) (string, error)

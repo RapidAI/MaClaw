@@ -1,5 +1,6 @@
 import { useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import { useTextCompositionGuard } from '../ai/useTextCompositionGuard';
+import { headerSearchPlaceholder } from '../ai/unifiedHeaderSearch';
 import { getAllToolOptions, isToolTab, normalizeToolTab } from '../../config/toolCatalog';
 import { windowDragHandleProps } from '../../utils/windowDrag';
 import { getHeaderTitle } from './mainTopHeaderTitle';
@@ -132,7 +133,7 @@ export const MainTopHeader = ({
             <div className="top-header-window-controls mth-window-controls">
                 <span className="mc-header-search-wrap">
                     <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-                    <input className="mc-header-search" value={searchText} onChange={(event) => setSearchText(event.target.value)} onCompositionStart={searchComposition.onCompositionStart} onCompositionEnd={searchComposition.onCompositionEnd} onKeyDown={handleSearchKeyDown} placeholder={lang === 'en' ? 'Search tasks, files, knowledge, experts...' : '搜索任务、文件、知识、专家…'} aria-label={lang === 'en' ? 'Search' : '搜索'} />
+                    <input className="mc-header-search" value={searchText} onChange={(event) => setSearchText(event.target.value)} onCompositionStart={searchComposition.onCompositionStart} onCompositionEnd={searchComposition.onCompositionEnd} onKeyDown={handleSearchKeyDown} placeholder={headerSearchPlaceholder(lang)} aria-label={lang === 'en' ? 'Search' : '搜索'} />
                 </span>
                 <button className="mc-header-notification" data-testid="main-header-notifications" type="button" onClick={openNotifications} aria-label={lang === 'en' ? 'Notifications' : '通知'} title={lang === 'en' ? 'Notifications' : '通知'}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></button>
                 <span className="mc-header-ready"><i aria-hidden="true" />{lang === 'en' ? 'Ready' : '准备就绪'}</span>

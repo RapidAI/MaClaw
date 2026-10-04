@@ -80,6 +80,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"remote_hub_url",
 	},
 	"programmingTools": {
+		"coding_quality_gate_enabled",
 		"acp_host_enabled",
 		"acp_host_mirror_ui",
 		"acp_host_port",

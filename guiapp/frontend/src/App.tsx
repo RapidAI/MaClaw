@@ -86,20 +86,23 @@ const TASK_LIST_REFRESH_DEBOUNCE_MS = 250;
 // settles; cloud workspace tasks still restore once via the shared restore.
 const TASK_ITEMS_SNAPSHOT_KEY = 'task_items_snapshot_v1';
 const TASK_ITEMS_SNAPSHOT_CAP = 200;
+function isSyntheticAssistantTaskItem(item: { project_path?: unknown; tags?: unknown; name?: unknown } | null | undefined): boolean {
+    return isAutoACPAssistantTabTaskItem(item) || isVEAssistantTabTaskItem(item);
+}
 function loadTaskItemsSnapshot(): Array<{ project_path: string; [key: string]: unknown }> {
     try {
         const raw = localStorage.getItem(TASK_ITEMS_SNAPSHOT_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return parsed.filter(item => item && typeof item.project_path === 'string' && item.project_path.trim() !== '' && !isAutoACPAssistantTabTaskItem(item));
+        return parsed.filter(item => item && typeof item.project_path === 'string' && item.project_path.trim() !== '' && !isSyntheticAssistantTaskItem(item));
     } catch {
         return [];
     }
 }
 function saveTaskItemsSnapshot(items: ReadonlyArray<unknown>): void {
     try {
-        const kept = items.filter(item => !isAutoACPAssistantTabTaskItem(item as { project_path?: unknown; tags?: unknown }));
+        const kept = items.filter(item => !isSyntheticAssistantTaskItem(item as { project_path?: unknown; tags?: unknown; name?: unknown }));
         localStorage.setItem(TASK_ITEMS_SNAPSHOT_KEY, JSON.stringify(kept.slice(0, TASK_ITEMS_SNAPSHOT_CAP)));
     } catch {
         // Quota or serialization issues must never break the task list.
@@ -153,7 +156,7 @@ import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNaviga
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
-import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
+import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
@@ -3013,7 +3016,7 @@ function App() {
             // taskListProp, not this payload).
             setTaskListLoaded(true);
             if (generation === taskRefreshGenerationRef.current) {
-                setTaskItems(r || []);
+                setTaskItems((Array.isArray(r) ? r : []).filter((item: { project_path?: unknown; tags?: unknown; name?: unknown }) => !isSyntheticAssistantTaskItem(item)));
             }
         }).catch(() => {
             // Preserve the last known list on a transient refresh failure rather
@@ -3058,7 +3061,7 @@ function App() {
     // task disappear from the sidebar until the next manual refresh.
     const upsertTaskItem = useCallback((created: any, limit = 1000) => {
         if (!created?.project_path) return;
-        if (isAutoACPAssistantTabTaskItem(created)) return;
+        if (isSyntheticAssistantTaskItem(created)) return;
         taskRefreshGenerationRef.current += 1;
         setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, limit));
     }, []);
@@ -3121,6 +3124,9 @@ function App() {
     }, [switchTool]);
     /** Durable registration gateway for every secondary assistant tab. */
     const ensureAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
+        // Digital-employee chats stay on the VE tab. Registering them created a
+        // same-named local chat task in the sidebar.
+        if (String(tabType || '').trim().toLowerCase() === 've') return;
         const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || '');
         if (!created?.project_path) {
             throw new Error('assistant tab task record was not created');
@@ -5537,7 +5543,7 @@ ${instruction}`;
                     handleWindowMaximizeToggle={handleWindowMaximizeToggle}
                     windowMaximized={windowMaximized}
                 />}
-                {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
+                {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (

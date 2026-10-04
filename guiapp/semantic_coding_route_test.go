@@ -186,7 +186,7 @@ func TestSemanticCodingTurnExecutesThroughTheGrant(t *testing.T) {
 		{
 			adapter: semanticTrustedFileReadAdapter, arguments: `{"path":"main.go"}`, want: "package main",
 			install: func(h *IMMessageHandler, reached *string) {
-				h.semanticTrustedFileRead = func(_, path, _, _ string) (string, error) {
+				h.semanticTrustedFileRead = func(_, path, _, _ string, _ int) (string, error) {
 					*reached = path
 					return "package main", nil
 				}

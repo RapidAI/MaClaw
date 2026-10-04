@@ -73,6 +73,51 @@ func TestExpandBaselineWorkspaceNeedsRaisesOneShotFileAuthoring(t *testing.T) {
 	}
 }
 
+func TestRaiseExistingLocalFileWriteFloorKeepsTheEditIterative(t *testing.T) {
+	base := coretool.CapabilityNeed{
+		ID:         "need:fs.write.local:paper",
+		Capability: coretool.CapabilityFSWriteLocal,
+		Required:   true,
+	}
+	got := RaiseExistingLocalFileWriteFloor([]coretool.CapabilityNeed{
+		base,
+		{ID: "need:fs.read.local:paper", Capability: coretool.CapabilityFSReadLocal, Required: false},
+	}, 0.91)
+	writes, required, reads, shells := 0, 0, 0, 0
+	for _, need := range got {
+		switch need.Capability {
+		case coretool.CapabilityFSWriteLocal:
+			writes++
+			if need.Required {
+				required++
+			}
+			if need.ID != base.ID && coretool.RepeatFamilyID(need.ID) != base.ID {
+				t.Fatalf("raised sibling left the write family: %s", need.ID)
+			}
+		case coretool.CapabilityFSReadLocal:
+			reads++
+		case coretool.CapabilityShellExecuteLocal:
+			shells++
+		}
+	}
+	if writes != localFileWriteRepeatFloor || required != 1 || reads != 1 || shells != 0 {
+		t.Fatalf("writes=%d required=%d reads=%d shells=%d", writes, required, reads, shells)
+	}
+	if again := RaiseExistingLocalFileWriteFloor(got, 0.91); len(again) != len(got) {
+		t.Fatalf("raising twice grew the family from %d to %d", len(got), len(again))
+	}
+	companion := []coretool.CapabilityNeed{
+		{ID: "need:zz-baseline:fs.write.local:ssh", Capability: coretool.CapabilityFSWriteLocal},
+		{ID: "need:other:fs.write.local:task", Capability: coretool.CapabilityFSWriteLocal},
+	}
+	if got := RaiseExistingLocalFileWriteFloor(companion, 0.9); len(got) != len(companion) {
+		t.Fatalf("two write families were merged: %#v", got)
+	}
+	if got := RaiseExistingLocalFileWriteFloor(nil, 0.9); got != nil {
+		t.Fatalf("empty needs grew: %#v", got)
+	}
+}
+
 func TestExpandBaselineWorkspaceNeedsDoesNotDuplicateShellPrimary(t *testing.T) {
 	registry, err := NewReviewedDynamicCapabilityRegistry()
 	if err != nil {

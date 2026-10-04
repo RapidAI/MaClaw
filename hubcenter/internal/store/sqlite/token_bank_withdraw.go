@@ -54,6 +54,11 @@ const (
 	TokenBankWithdrawStatusIssued   = "issued"   // debited, hub has not confirmed the grant yet
 	TokenBankWithdrawStatusBound    = "bound"    // hub reported the grant id back
 	TokenBankWithdrawStatusReissued = "reissued" // grant rebuilt after a hub reinstall
+	// TokenBankWithdrawStatusPosted is a withdrawn ledger row whose withdrawal
+	// record is not on this node. The ledger is replicated; the withdrawal
+	// table is not. The balance already counts the debit, and the history
+	// has to show it. There is no grant id on this copy.
+	TokenBankWithdrawStatusPosted = "posted"
 )
 
 // TokenBankWithdrawRequest asks hubcenter to move credits into a hub grant.
@@ -355,7 +360,7 @@ func (r *TokenBankRepo) Withdraw(ctx context.Context, req TokenBankWithdrawReque
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
-	r.publishWithdraw(req.RequestID, req.UserID, amount, now)
+	r.publishWithdraw(req.RequestID, req.UserID, req.HubID, amount, now)
 	return &TokenBankWithdrawal{
 		ID: id, RequestID: req.RequestID, UserID: req.UserID, HubID: req.HubID,
 		AmountMicro: amount, Kind: req.Kind, LinkID: req.LinkID,
@@ -559,6 +564,85 @@ func (r *TokenBankRepo) ListUnboundGiftWithdrawals(ctx context.Context, userID, 
 		return nil, fmt.Errorf("list unbound gift withdrawals: %w", err)
 	}
 	return scanTokenBankWithdrawals(rows)
+}
+
+// tokenBankHubIDFromAutoRequest reads the hub id out of
+// tbk-auto:<hub>:<email>:<group>:<seq>. A manual request id has no hub in it.
+func tokenBankHubIDFromAutoRequest(requestID string) string {
+	const prefix = "tbk-auto:"
+	requestID = strings.TrimSpace(requestID)
+	if !strings.HasPrefix(requestID, prefix) {
+		return ""
+	}
+	rest := requestID[len(prefix):]
+	hub, _, ok := strings.Cut(rest, ":")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(hub)
+}
+
+// ListOrphanWithdrawals returns withdrawn ledger rows that have no withdrawal
+// record on this node.
+//
+// A pull inserts both, on the node that took the debit. HA copies the ledger
+// line and leaves the withdrawal row behind. The balance on every node then
+// includes the debit, and a history read here would otherwise skip it. The
+// note on that line is the hub id. A blank note still matches an automatic
+// request id of the form tbk-auto:<hub>:. Adjustments use another ref type
+// and stay out of this list. A row this node already has is not returned again.
+func (r *TokenBankRepo) ListOrphanWithdrawals(ctx context.Context, userID, hubID string, limit int) ([]TokenBankWithdrawal, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("list orphan token bank withdrawals requires a user id")
+	}
+	query := `SELECT id, user_id, amount_micro, ref_id, note, created_at
+		 FROM token_bank_ledger
+		 WHERE user_id = ? AND bucket = ? AND ref_type = 'withdrawal'
+		   AND ref_id <> '' AND biz_key = 'withdraw:' || ref_id AND amount_micro > 0
+		   AND NOT EXISTS (
+		     SELECT 1 FROM token_bank_withdrawals w
+		      WHERE w.user_id = token_bank_ledger.user_id AND w.request_id = token_bank_ledger.ref_id
+		   )`
+	args := []any{userID, TokenBankBucketWithdrawn}
+	if hub := strings.TrimSpace(hubID); hub != "" {
+		// The note is the hub id when the replica received one. Older replicas
+		// stored a blank note; the automatic request id still starts with
+		// tbk-auto:<hub>:. Match that same fallback, and keep the colon so
+		// hub_bare does not also match hub_bareX.
+		query += ` AND (trim(note) = ? OR (trim(note) = '' AND instr(ref_id, ?) = 1))`
+		args = append(args, hub, "tbk-auto:"+hub+":")
+	}
+	query += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := r.read.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list orphan token bank withdrawals: %w", err)
+	}
+	defer rows.Close()
+	out := []TokenBankWithdrawal{}
+	for rows.Next() {
+		var w TokenBankWithdrawal
+		var created string
+		if err := rows.Scan(&w.ID, &w.UserID, &w.AmountMicro, &w.RequestID, &w.HubID, &created); err != nil {
+			return nil, err
+		}
+		w.HubID = strings.TrimSpace(w.HubID)
+		w.RequestID = strings.TrimSpace(w.RequestID)
+		if w.HubID == "" {
+			// Older replicas published the ledger line without the hub id.
+			// An automatic request id still carries it: tbk-auto:<hub>:<email>:<group>:<seq>.
+			w.HubID = tokenBankHubIDFromAutoRequest(w.RequestID)
+		}
+		w.Kind = "self"
+		w.Status = TokenBankWithdrawStatusPosted
+		w.Created, _ = time.Parse(time.RFC3339, created)
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 func scanTokenBankWithdrawals(rows *sql.Rows) ([]TokenBankWithdrawal, error) {

@@ -259,6 +259,10 @@ func NewRouter(
 	mux.HandleFunc("POST /api/ve/auth/respond", VEAuthRespondHandler(system, identity, deviceSvc))
 	mux.HandleFunc("GET /api/ve/list", requireTenantAdmin(VEAdminListHandler(system, deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/ve/metrics", requireTenantAdmin(VEMetricsHandler()))
+	// Link health spans every tenant the Hub serves (per-tenant online ratios),
+	// so it needs the global admin guard rather than the tenant-scoped one used
+	// by the VE metrics above.
+	mux.HandleFunc("GET /api/admin/link-health/metrics", requireGlobalAdmin(LinkHealthMetricsHandler()))
 	mux.HandleFunc("GET /api/admin/adaptive-prompt/metrics", requireTenantAdmin(AdaptivePromptMetricsHandler(deviceSvc)))
 	mux.HandleFunc("GET /api/admin/cost-ops/metrics", requireTenantAdmin(CostOpsMetricsHandler(deviceSvc)))
 	mux.HandleFunc("GET /api/ve/{id}/history", requireTenantAdmin(VEHistoryHandler(system, groupDiscussionSvc, userLookup, identity.MachinesRepo())))
@@ -781,6 +785,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/card-store/payment-qr/{tenantID}/{filename}", CardStorePaymentQRImageHandler(cardStoreQRDir))
 	mux.HandleFunc("GET /api/card-store/me", GetCardStoreMeHandler(identity))
 	mux.HandleFunc("GET /api/token-bank/hub", TokenBankHubIDHandler(identity, centerSvc))
+	mux.HandleFunc("GET /api/token-bank/auto", TokenBankAutoSettingsHandler(identity, system))
+	mux.HandleFunc("PUT /api/token-bank/auto", TokenBankAutoSettingsHandler(identity, system))
 	mux.HandleFunc("POST /api/token-bank/withdraw", TokenBankWithdrawHandler(identity, system, centerSvc))
 	mux.HandleFunc("POST /api/card-store/orders", CreateCardStoreOrderHandler(identity, system, mailer, nil))
 	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/pay", CardStoreAlipayPayPageHandler(system))

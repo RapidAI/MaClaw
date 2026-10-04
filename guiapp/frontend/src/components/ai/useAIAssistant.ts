@@ -130,6 +130,8 @@ interface AIAssistantSendResult {
     PromptABSample?: boolean;
     prompt_soft_full?: boolean;
     PromptSoftFull?: boolean;
+    credits_deducted?: number;
+    CreditsDeducted?: number;
     reasoning?: string;
     Reasoning?: string;
 }
@@ -497,8 +499,10 @@ export interface ChatMessage {
     content: string;
     /** Local attachment metadata used only for compact user-bubble rendering. */
     attachments?: ChatAttachment[];
-    /** Reasoning/thinking content from reasoning models. Ordinary chat starts expanded; coding stays collapsed. */
+    /** Reasoning/thinking content from reasoning models. The panel stays open while that thought is in progress, then folds. */
     reasoning?: string;
+    /** True only while reasoning tokens are the latest stream. Answer text clears it so the thought folds. */
+    reasoningLive?: boolean;
     /** Ordered reasoning/tool trail for a coding-agent turn (transient UI state). */
     codingTimeline?: CodingAgentTimelineItem[];
     /** Tool calls kept in this reply so name and arguments stay visible after the live tray moves on. */
@@ -1567,6 +1571,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
             return {
                 ...message,
                 reasoning: nextReasoning || undefined,
+                reasoningLive: true,
                 pendingCodingThoughts: adjacentThoughts || insertCodingTimelineItem(pendingCodingThoughts, thought),
                 reasoningStartSequence: message.reasoning?.trim()
                     ? message.reasoningStartSequence
@@ -1584,7 +1589,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
             content: reasoningDelta,
             timestamp: Date.now(),
         });
-        return { ...message, reasoning: nextReasoning || undefined, codingTimeline: nextTimeline };
+        return { ...message, reasoning: nextReasoning || undefined, reasoningLive: true, codingTimeline: nextTimeline };
     }
 
     const contentDelta = delta;
@@ -1600,6 +1605,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
     return {
         ...message,
         content: nextContent,
+        reasoningLive: false,
     };
 }
 
@@ -1763,6 +1769,21 @@ function isInternalCostFieldLabel(label: string): boolean {
         || normalized === 'session_est_cost_usd';
 }
 
+function formatDeductedCredits(n: number): string {
+    if (!Number.isFinite(n) || n < 0) return '0';
+    const rounded = Math.round(n * 1000) / 1000;
+    const fixed = rounded.toFixed(3);
+    const trimmed = fixed.replace(/0+$/, '').replace(/\.$/, '');
+    return trimmed === '' ? '0' : trimmed;
+}
+
+function deductedCreditsValue(...values: unknown[]): number | null {
+    for (const value of values) {
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    }
+    return null;
+}
+
 function formatCompactTokenCount(n: number): string {
     if (!Number.isFinite(n) || n < 0) return '0';
     if (n < 1000) return String(Math.round(n));
@@ -1823,6 +1844,10 @@ function turnMetaCounterFields(
     }
     if (raw.route_escalated || raw.RouteEscalated) {
         if ((source || '').toLowerCase() !== 'escalate') parts.push('escalated');
+    }
+    const credits = deductedCreditsValue(raw.credits_deducted, raw.CreditsDeducted);
+    if (credits != null) {
+        parts.push(`credits=${formatDeductedCredits(credits)}`);
     }
     if (parts.length === 0) return [];
     return [{ label: 'Turn', value: parts.join(' · ') }];

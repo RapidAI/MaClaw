@@ -355,6 +355,11 @@ type CodingSubAgentResult struct {
 	QualitySummary    string
 	QualityIssueCount int
 
+	// qualityGateDisabled records a passed turn whose programming quality gate
+	// was off. The execution ledger may then accept an unchanged workspace from
+	// that host assertion, without treating the model's summary as evidence.
+	qualityGateDisabled bool
+
 	// Localization records structured root-cause evidence for bug-fix tasks.
 	// It is nil for non-debugging work and for legacy callers that did not need
 	// the bug-localization workflow.
@@ -601,6 +606,8 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 
 	cb := newCodingSubAgentCallbacks(s, task, reqCtx, designCtx, prevOutputs)
+	qualityGateEnabled := codingQualityGateEnabled(s.handler)
+	cb.qualityGateEnabled = &qualityGateEnabled
 	cb.toolScopeSubscriptionID = subscribeCodingToolScope(cb)
 	defer unsubscribeCodingToolScope(cb.toolScopeSubscriptionID)
 	cb.registerDynamicLifecycleOwner()
@@ -662,7 +669,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// clean proof. Both local and remote agents use the same recovery classifier
 	// so a model's display-oriented `2>&1; echo $?` does not become a terminal
 	// quality failure after the underlying compiler already succeeded.
-	if !s.horizonPosture && !operational && !inquiry && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
+	// The recovery exists only to satisfy the quality gate, so it stays idle
+	// while that gate is off.
+	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
 		if verifiers := cb.recoverableVerifications(); len(verifiers) > 0 {
 			// The original wrapper already ran successfully.  Recovery exists to
 			// obtain an auditable exit status, not to let an automatic retry alter
@@ -734,11 +743,17 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	)
 
 	if s.horizonPosture {
-		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "horizon episode: outer auditor decides"
-		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "horizon episode: outer auditor decides"
-		qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "horizon episode: skipped coding quality gates", 0
-		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
-		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		if qualityGateEnabled {
+			explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "horizon episode: outer auditor decides"
+			verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "horizon episode: outer auditor decides"
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "horizon episode: skipped coding quality gates", 0
+			cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
+			cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		} else {
+			explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, ""
+			verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, ""
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
+		}
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 		}
@@ -750,10 +765,17 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "repository inquiry: no code change requested"
 		diffChecked = false
 		diffSummary = ""
-		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
-		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		if qualityGateEnabled {
+			cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
+			cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		} else {
+			explorationSummary = ""
+			verificationSummary = ""
+		}
 		cb.emitCommandSummaryEvent(allCommandsRun)
-		if result.ToolCalls == 0 || (len(allFilesRead) == 0 && len(allSearchesRun) == 0 && len(allCommandsRun) == 0) {
+		if !qualityGateEnabled {
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
+		} else if result.ToolCalls == 0 || (len(allFilesRead) == 0 && len(allSearchesRun) == 0 && len(allCommandsRun) == 0) {
 			status = TaskExecFailed
 			errMsg = "repository inquiry completed without inspection evidence"
 			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityFailed, errMsg, 1
@@ -769,8 +791,13 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		diffChecked = false
 		diffSummary = ""
 		// Keep UI banners consistent with implement path (NOT_NEEDED, not blank).
-		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
-		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		if qualityGateEnabled {
+			cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
+			cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		} else {
+			explorationSummary = ""
+			verificationSummary = ""
+		}
 		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
 		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
 		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
@@ -780,42 +807,65 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		}
 		// Prefer an ops-specific empty-loop diagnostic over the generic hard-exit text.
 		if result.HardExit && result.ToolCalls == 0 && status == TaskExecFailed {
-			errMsg = "模型未调用工具就结束了；运行/演示类任务需要 bash 启动或构建程序"
+			if codingTaskOperationalAcceptance(task) == codingOperationalAcceptanceCommand {
+				errMsg = "模型未调用工具就结束了；主机操作任务需要 bash 执行该命令"
+			} else {
+				errMsg = "模型未调用工具就结束了；运行/演示类任务需要 bash 启动或构建程序"
+			}
 		}
-		qualityStatus, qualitySummary, qualityIssueCount = summarizeOperationalSubAgentQualityForTask(task, audit, result)
-		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
+		if qualityGateEnabled {
+			qualityStatus, qualitySummary, qualityIssueCount = summarizeOperationalSubAgentQualityForTask(task, audit, result)
+			status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
+		} else {
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
+		}
 	} else {
 		existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
-		explorationStatus, explorationSummary = summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
-		verificationStatus, verificationSummary = summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
-		// Scaffold/init plan steps create incomplete skeletons; defer build/test
-		// gates. Implementation-only steps defer as well when the plan assigns
-		// build/test to a later step (same relaxation as the remote path).
-		if task != nil {
-			stepTitle, stepDesc := resolveCodingPlanStepFocus(task.Title, task.Description, reqCtx)
-			verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, reqCtx, verificationStatus, verificationSummary)
-		}
 		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
-		status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
-		status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
+		if qualityGateEnabled {
+			explorationStatus, explorationSummary = summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
+			verificationStatus, verificationSummary = summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
+			// Scaffold/init plan steps create incomplete skeletons; defer build/test
+			// gates. Implementation-only steps defer as well when the plan assigns
+			// build/test to a later step (same relaxation as the remote path).
+			if task != nil {
+				stepTitle, stepDesc := resolveCodingPlanStepFocus(task.Title, task.Description, reqCtx)
+				verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, reqCtx, verificationStatus, verificationSummary)
+			}
+			status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
+			status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
+		} else {
+			explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, ""
+			verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, ""
+		}
 		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
 		cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
 		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
-		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
+		if qualityGateEnabled {
+			cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
+		}
 		cb.emitCommandSummaryEvent(allCommandsRun)
-		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, countFreshSubAgentVerificationAttempts(allCommandsRun, audit.LastEditSeq))
-		diffChecked, diffSummary = cb.ensureFinalGitDiff(allFilesModified, allFilesCreated)
-		status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
+		if qualityGateEnabled {
+			cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, countFreshSubAgentVerificationAttempts(allCommandsRun, audit.LastEditSeq))
+		}
+		if qualityGateEnabled {
+			diffChecked, diffSummary = cb.ensureFinalGitDiff(allFilesModified, allFilesCreated)
+			status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
+		}
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 		}
-		qualityStatus, qualitySummary, qualityIssueCount = summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations, allDynamicToolsRun)
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentNoChangeEvidence(allFilesModified, allFilesCreated, allFilesRead, allSearchesRun, allCommandsRun, allDynamicToolsRun))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentCreatedFileContextEvidence(allFilesCreated, allFilesRead, allSearchesRun, allDynamicToolsRun, cb.workspaceWasEmptyAtStart))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentScopeEvidence(task, modelSummary, allFilesModified, allFilesCreated))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeLocalizationQuality(task.Title+"\n"+task.Description, existingFilesModified, cb.localization.snapshot(), allSearchesRun))
-		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
+		if qualityGateEnabled {
+			qualityStatus, qualitySummary, qualityIssueCount = summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations, allDynamicToolsRun)
+			qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentNoChangeEvidence(allFilesModified, allFilesCreated, allFilesRead, allSearchesRun, allCommandsRun, allDynamicToolsRun))
+			qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentCreatedFileContextEvidence(allFilesCreated, allFilesRead, allSearchesRun, allDynamicToolsRun, cb.workspaceWasEmptyAtStart))
+			qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentScopeEvidence(task, modelSummary, allFilesModified, allFilesCreated))
+			qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
+			qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeLocalizationQuality(task.Title+"\n"+task.Description, existingFilesModified, cb.localization.snapshot(), allSearchesRun))
+			status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
+		} else {
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
+		}
 	}
 	// A request on the S0.5 uncorrelated compatibility surface carries no write
 	// or command authority at all, and its prompt instructs the model to answer
@@ -828,8 +878,14 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 	}
-	cb.emitDiffCheckEvent(diffChecked, diffSummary, len(allFilesModified))
-	cb.emitQualitySummaryEventWithAudit(qualityStatus, qualitySummary, qualityIssueCount)
+	// An unchecked diff is reported as a failed self-check once files changed.
+	// Skip that event while the gate is off, or a successful edit looks failed.
+	if qualityGateEnabled {
+		cb.emitDiffCheckEvent(diffChecked, diffSummary, len(allFilesModified))
+	}
+	if qualityGateEnabled && strings.TrimSpace(qualitySummary) != "" {
+		cb.emitQualitySummaryEventWithAudit(qualityStatus, qualitySummary, qualityIssueCount)
+	}
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
 
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
@@ -871,6 +927,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		QualityStatus:         qualityStatus,
 		QualitySummary:        qualitySummary,
 		QualityIssueCount:     qualityIssueCount,
+		qualityGateDisabled:   !qualityGateEnabled && status == TaskExecPassed,
 		Localization:          cb.localization.snapshot(),
 		HorizonOwned:          s.horizonPosture,
 		RecalledExperienceIDs: cb.snapshotRecalledExperienceIDs(),
@@ -979,6 +1036,10 @@ type codingSubAgentCallbacks struct {
 	// spilledToolResultReader is set when a tool result was spilled. The next
 	// request renders read_tool_result so the model can page the original.
 	spilledToolResultReader atomic.Bool
+
+	// qualityGateEnabled is resolved once per task. Nil means the prompt and
+	// audit read the current setting; a set pointer keeps them in agreement.
+	qualityGateEnabled *bool
 
 	// cachedSystemPrompt is built once per task to avoid repeated knowledge and
 	// dynamic-tool prompt assembly on every LLM turn.
@@ -1451,6 +1512,9 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 
 	if c != nil && c.subagent != nil && c.subagent.scopeApproval != nil && c.subagent.scopeApproval.highRiskApproved() {
 		prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+	}
+	if c != nil && !c.codingQualityGateOn() {
+		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
 	}
 
 	c.cachedSystemPrompt = prompt
@@ -4614,8 +4678,11 @@ func shellWrapperCommandPrefixLength(fields []string) (int, bool) {
 }
 
 func shellWrapperOptionConsumesValue(option string) bool {
-	switch option {
-	case "-executionpolicy", "/executionpolicy", "-inputformat", "/inputformat", "-outputformat", "/outputformat", "-configurationname", "/configurationname":
+	switch strings.ToLower(option) {
+	case "-o", "+o", "--rcfile", "--init-file",
+		"-executionpolicy", "/executionpolicy", "-inputformat", "/inputformat", "-outputformat", "/outputformat", "-configurationname", "/configurationname":
+		// bash -o takes the option name as the next argument. That name is not
+		// the program. -c still marks where the command string starts.
 		return true
 	}
 	return false
@@ -4627,6 +4694,17 @@ func envOptionConsumesValue(option string) bool {
 		return true
 	}
 	return false
+}
+
+// envLoweredChdirTakesDirectory reports env -C after a parser has lowercased
+// the line, so -C arrives as -c. The next token is the directory, including a
+// relative name such as build. A following flag is left for the option walk.
+// The deny-path walker keeps option case and does not use this function.
+func envLoweredChdirTakesDirectory(option string, args []string) bool {
+	if option != "-c" || len(args) < 2 {
+		return false
+	}
+	return !strings.HasPrefix(args[1], "-")
 }
 
 func hasRecursiveDeleteFlag(normalizedCommand string) bool {
@@ -11407,21 +11485,24 @@ func commandNameBase(token string) string {
 
 func stripVerificationCommandPrefixes(segment []string) []string {
 	for len(segment) > 0 {
-		cmd := normalizeShellExecutableToken(segment[0])
+		raw := normalizeShellExecutableToken(segment[0])
+		// Path-qualified prefixes (/usr/bin/env, /usr/bin/timeout) are the same
+		// prefix. Judge the program name, not the directory.
+		base := commandNameBase(segment[0])
 		switch {
-		case isShellEnvAssignment(cmd):
+		case isShellEnvAssignment(raw):
 			segment = segment[1:]
 			continue
-		case cmd == "env":
+		case base == "env":
 			segment = stripEnvCommandPrefix(segment[1:])
 			continue
-		case cmd == "cross-env" || cmd == "cross-env-shell" || cmd == "time":
+		case base == "cross-env" || base == "cross-env-shell" || base == "time":
 			segment = segment[1:]
 			continue
-		case cmd == "timeout" || cmd == "gtimeout":
+		case base == "timeout" || base == "gtimeout":
 			segment = stripTimeoutCommandPrefix(segment[1:])
 			continue
-		case cmd == "cmd" || cmd == "cmd.exe":
+		case base == "cmd":
 			segment = stripCmdCommandPrefix(segment[1:])
 			continue
 		}
@@ -11489,7 +11570,7 @@ func stripEnvCommandPrefix(args []string) []string {
 		case isShellEnvAssignment(arg):
 			args = args[1:]
 			continue
-		case envOptionConsumesValue(arg):
+		case envOptionConsumesValue(arg) || envLoweredChdirTakesDirectory(arg, args):
 			if len(args) > 1 {
 				args = args[2:]
 			} else {
@@ -13937,6 +14018,83 @@ func appendSubAgentVerificationSummary(summary string, status codingSubAgentQual
 	return strings.TrimSpace(summary) + "\n\n## 验证状态\n\n" + label + ": " + verificationSummary
 }
 
+// codingQualityGateEnabled reads the programming-settings switch.
+// Unit tests construct agents without an App, and those keep the historical
+// gate so existing audits stay covered. A published config defaults the gate
+// off. A config that cannot be read also stays off, so a load failure cannot
+// turn the gate back on and fail a finished task.
+func codingQualityGateEnabled(h *IMMessageHandler) bool {
+	if h == nil || h.app == nil {
+		return true
+	}
+	if cfg := h.app.PeekConfig(); cfg != nil {
+		return cfg.IsCodingQualityGateEnabled()
+	}
+	cfg, err := h.app.LoadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.IsCodingQualityGateEnabled()
+}
+
+func (c *codingSubAgentCallbacks) codingQualityGateOn() bool {
+	if c != nil && c.qualityGateEnabled != nil {
+		return *c.qualityGateEnabled
+	}
+	if c == nil || c.subagent == nil {
+		return true
+	}
+	return codingQualityGateEnabled(c.subagent.handler)
+}
+
+// relaxCodingPromptForDisabledQualityGate drops host-enforced audit wording.
+// The model can verify with ordinary shell syntax, and is told not to repeat
+// the setting in the user-visible answer.
+func relaxCodingPromptForDisabledQualityGate(prompt string) string {
+	if prompt == "" {
+		return prompt
+	}
+	replacements := [][2]string{
+		{"- Enforced hard gates: explore before existing-file edits, verify changed tasks, run git_diff, and give inspection/verification evidence for no-change tasks or project-context evidence for new files.\n", ""},
+		{"- Verification evidence must be fresh after the final edit and include real execution output. Empty/weak evidence does not count: blank, \"(无输出)\", \"no tests found\", \"no tests collected\", \"[no test files]\", \"0 tests\", \"0 examples\", list/help/collect-only/dry-run.\n", ""},
+		{"- Do not use failure-suppressing or non-auditable verification shells: no || true, pipes, output redirection, help/list/collect-only flags, watch/UI modes, mutating flags such as --fix/--write, or chained post-verification commands.\n", "- Pipes, redirection, and combined test/build/lint/typecheck commands are allowed. Do not append || true or || echo to hide a failing command. Do not use watch/UI modes or mutating flags such as --fix/--write.\n"},
+		{"- 验证命令不要追加 echo exit=$LASTEXITCODE 显示尾：bash 结果末尾自带 command exited with code N（含成功 0），此类尾巴会判 failure-suppressing 而失败。\n", ""},
+		{"3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。若项目不是 Git 仓库，说明该情况并依赖文件审计列表，不要用 bash 反复跑 git status/diff/log，也不要对 git 自检加 2>/dev/null。\n", "3. 改完后用匹配的测试或构建确认结果。git diff 只在需要核对范围时再看。\n"},
+		{"以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告。唯一例外是第 5 步：当前多步骤计划明确把编译/build/test 交给后续独立步骤时，不要提前构建，但第 4、6 步仍为必做项。\n", "修改后按任务需要回读并运行验证。验证可以和诊断写在同一条命令里，也可以使用管道或重定向。\n"},
+		{"\t5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 \"g++ -o hello hello.cpp\"、\"python3 -m py_compile file.py\"、pytest/go test/npm test 等）。例外仅适用于：当前是多步骤计划的实现步骤，且计划后续明确有独立的编译/build/test 步骤时，不要提前执行完整构建；完成本步骤的修改后回读确认，后续步骤负责可执行验证。没有这一明确的后续步骤时，必须在本步骤验证。\n", "5. 修改后按需要运行匹配的测试或构建。可以和诊断写在一起。计划已把编译或测试交给后续步骤时，不要提前完整构建。\n"},
+		{"6. 修改后运行并查看只读自检命令（优先 git status --short 与 git diff --stat；不要附带 git log，除非任务明确要求）\n", "6. git status 或 git diff 只在需要核对改动范围时再跑，不要为了自检反复重试。\n"},
+		{"并触发质量门误判", ""},
+		{"## Quality audit gates\n", "## Bug-fix notes\n"},
+		{"solely to satisfy an audit gate", "when the workspace inventory is already empty"},
+		{"不要调用 git_diff 来「凑」质量门禁。", "不要为了凑检查而调用 git_diff。"},
+		{"不要为「通过质量门禁」去改代码或造测试。", "不要为了凑检查去改代码或造测试。"},
+		{"，除非门禁明确要求重交", ""},
+		{"只有修复已有文件中的 bug 才提交定位报告；被接受后同任务轮次可直接改根因文件，不要把同一份完整报告再交一遍。", "修复 bug 时可以提交定位报告记录根因。缺少这份报告不会阻止修改。"},
+		{"\t- Bug fixes: localize with code_navigation, reproduction and alternatives, make an explicit research decision, then report_localization before editing. Once accepted, do not resubmit the same report on later turns. Unknown/current/third-party facts require web_search (exact error + component/version) and authoritative sources.\n", "\t- Bug fixes: localize with code_navigation when it helps. report_localization is optional, and a missing report does not block edits.\n"},
+		{"随后调用 report_localization；被接受后即可在后续轮次修改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。", "可以调用 report_localization 记录根因。缺少这份报告不会阻止修改。"},
+	}
+	for _, pair := range replacements {
+		prompt = strings.ReplaceAll(prompt, pair[0], pair[1])
+	}
+	if strings.Contains(prompt, "Host quality gate is off for this turn.") {
+		return prompt
+	}
+	return prompt + "\nHost quality gate is off for this turn. Do not mention that setting. Missing exploration, a pipe or redirection in a verifier, or a skipped git diff will not fail the task. Destructive git, recursive delete, and shell file-write guardrails still apply.\n"
+}
+
+func (c *remoteCodingCallbacks) remoteQualityGateEnabled() bool {
+	if c == nil {
+		return true
+	}
+	if c.qualityGateEnabled != nil {
+		return *c.qualityGateEnabled
+	}
+	if c.agent == nil {
+		return true
+	}
+	return codingQualityGateEnabled(c.agent.handler)
+}
+
 func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg string, verificationStatus codingSubAgentQualityStatus, verificationSummary string) (TaskExecStatus, string) {
 	if status != TaskExecPassed {
 		return status, errMsg
@@ -14889,7 +15047,11 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		return compactCodingSubAgentTaskUserMessage(b.String())
 	}
 	if codingTaskLooksOperational(c.task) {
-		b.WriteString(fmt.Sprintf("请执行以下操作任务（运行/构建/演示，不要改代码）：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
+		if codingTaskOperationalAcceptance(c.task) == codingOperationalAcceptanceCommand {
+			b.WriteString(fmt.Sprintf("请执行以下主机操作任务（执行命令，不要改项目代码）：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
+		} else {
+			b.WriteString(fmt.Sprintf("请执行以下操作任务（运行/构建/演示，不要改代码）：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
+		}
 		if c.task.Description != "" {
 			b.WriteString(compactSubAgentTaskDescription(c.task.Description))
 			b.WriteString("\n\n")
@@ -14897,7 +15059,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		if c.usesUncorrelatedStaticCompatibilityModelSurface() {
 			appendCodingSubAgentCompatibilityChecklist(&b)
 		} else {
-			appendCodingSubAgentOperationalChecklist(&b)
+			appendCodingSubAgentOperationalChecklist(&b, codingTaskOperationalAcceptance(c.task), c.codingQualityGateOn())
 		}
 		if len(c.prevOutputs) > 0 {
 			b.WriteString("**前置任务上下文**（可用来定位已生成的可执行文件）：\n")
@@ -14914,7 +15076,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
 		appendCodingSubAgentCompatibilityChecklist(&b)
 	} else {
-		appendCodingSubAgentPreflightChecklist(&b)
+		appendCodingSubAgentPreflightChecklist(&b, c.codingQualityGateOn())
 	}
 	if len(c.prevOutputs) > 0 {
 		b.WriteString("**前置任务上下文**：\n")
@@ -14954,7 +15116,7 @@ func compactCodingSubAgentTaskUserMessage(message string) string {
 	return truncateRunesForSubAgent(message, codingSubAgentTaskDescriptionMaxRunes+overheadBudget)
 }
 
-func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
+func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabled bool) {
 	if b == nil {
 		return
 	}
@@ -14963,20 +15125,38 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
-	b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code. Once accepted, keep editing the reported files on later turns; resubmit only if the report was rejected, the root cause changed, or the gate says the previous report is bound to an older surface.\n")
+	if qualityGateEnabled {
+		b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code. Once accepted, keep editing the reported files on later turns; resubmit only if the report was rejected, the root cause changed, or the gate says the previous report is bound to an older surface.\n")
+	} else {
+		b.WriteString("5. For bug fixes, call code_navigation when it helps, reproduce or explain why not, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version. report_localization is optional, and a missing report does not block edits.\n")
+	}
 	b.WriteString("\n**Before finalizing**:\n")
-	b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
+	if qualityGateEnabled {
+		b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
+	} else {
+		b.WriteString("1. If you changed code, run a matching test or build when it helps. Pipes, redirection, and combined commands are fine. Do not hide a failure with || true or || echo.\n")
+	}
 	b.WriteString("2. Write the final answer as an engineer: lead with the result, name real files and verification commands in prose, and mention remaining risk only when it is real. Do not emit audit headings.\n\n")
 }
 
-func appendCodingSubAgentOperationalChecklist(b *strings.Builder) {
+func appendCodingSubAgentOperationalChecklist(b *strings.Builder, acceptance codingOperationalAcceptance, qualityGateEnabled bool) {
 	if b == nil {
 		return
 	}
 	b.WriteString("**操作任务要求**：\n")
+	if acceptance == codingOperationalAcceptanceCommand {
+		b.WriteString("1. 先确认要执行的主机命令（安装或移除软件，或查看主机状态）。需要时用 list_directory / glob / read 定位，但不要停在只读检查上。\n")
+		b.WriteString("2. 必须用 bash 实际执行该命令；禁止只文字回复「已运行」。不要改跑项目里的无关程序，也不要只执行 ls、cat、which、hostname 这类查看命令。\n")
+		b.WriteString("3. 最终摘要写清：执行了什么命令、退出码/关键输出、是否成功。不要改代码或造测试。\n\n")
+		return
+	}
 	b.WriteString("1. 先在项目目录定位可执行文件/脚本/构建产物（list_directory / glob / read 少量文件即可）。\n")
 	b.WriteString("2. 必须用 bash 实际执行启动/构建/演示命令；禁止只文字回复「已运行」。\n")
-	b.WriteString("3. GUI/游戏若是阻塞进程：用合适 timeout 启动并回报是否成功拉起；不要为「通过质量门禁」去改代码或造测试。\n")
+	if qualityGateEnabled {
+		b.WriteString("3. GUI/游戏若是阻塞进程：用合适 timeout 启动并回报是否成功拉起；不要为「通过质量门禁」去改代码或造测试。\n")
+	} else {
+		b.WriteString("3. GUI/游戏若是阻塞进程：用合适 timeout 启动并回报是否成功拉起；不要为了凑检查去改代码或造测试。\n")
+	}
 	b.WriteString("4. 最终摘要写清：执行了什么命令、退出码/关键输出、是否成功。\n\n")
 }
 
@@ -14993,13 +15173,24 @@ func codingTaskRequestKind(task *TaskItem) codingRequestKind {
 }
 
 func codingTaskLooksOperational(task *TaskItem) bool {
-	// Operational means run/build/demo without changing files. A workspace
+	// Operational means commands without changing project files. A workspace
 	// wipe is file mutation; treating it as operational sends the model to
 	// launch leftover binaries and lets launch/build quality pass the wrong job.
+	// The evidence contract is codingTaskOperationalAcceptance, not this predicate.
 	if codingTaskLooksWorkspaceClear(task) {
 		return false
 	}
 	return codingTaskRequestKind(task) == codingRequestOperational
+}
+
+// codingTaskOperationalAcceptance returns the classifier's evidence contract.
+// Anything other than an operational command contract stays on project launch,
+// including a task whose title merely says "install".
+func codingTaskOperationalAcceptance(task *TaskItem) codingOperationalAcceptance {
+	if task == nil || codingTaskRequestKind(task) != codingRequestOperational {
+		return codingOperationalAcceptanceLaunch
+	}
+	return normalizeCodingOperationalAcceptance(task.OperationalAcceptance)
 }
 
 func codingTaskLooksInquiry(task *TaskItem) bool {
@@ -15017,16 +15208,27 @@ func summarizeOperationalSubAgentQualityForTask(task *TaskItem, audit codingSubA
 	if codingTaskLooksWorkspaceClear(task) {
 		return codingSubAgentQualityFailed, "workspace clear must not pass as operational launch/build", 1
 	}
-	return summarizeOperationalSubAgentQuality(audit, result)
+	return summarizeOperationalShellQuality(codingTaskOperationalAcceptance(task), audit.AllCommandsRun, result.ToolCalls, "operational task ran no tools (need bash to launch/build)")
 }
 
 // summarizeOperationalSubAgentQuality requires a successful launch/build-style
 // bash command. Pure listing (dir/ls/pwd), mkdir, or read-only tools do not count.
+// Callers that have a classifier decision use summarizeOperationalSubAgentQualityForTask.
 func summarizeOperationalSubAgentQuality(audit codingSubAgentAudit, result agent.LoopResult) (codingSubAgentQualityStatus, string, int) {
-	successfulLaunch := 0
-	failedLaunch := 0
+	return summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, audit.AllCommandsRun, result.ToolCalls, "operational task ran no tools (need bash to launch/build)")
+}
+
+// summarizeOperationalShellQuality scores an operational turn by the contract
+// the classifier stored. Launch still needs a launch or build command: listing,
+// mkdir, hostname, or a package install must not pass it. Command needs one
+// successful command that is not a probe. The task sentence is not an input.
+func summarizeOperationalShellQuality(acceptance codingOperationalAcceptance, commands []CodingSubAgentCommandResult, toolCalls int, noToolsMessage string) (codingSubAgentQualityStatus, string, int) {
+	if normalizeCodingOperationalAcceptance(acceptance) == codingOperationalAcceptanceCommand {
+		return summarizeOperationalCommandQuality(commands, toolCalls)
+	}
+	successfulLaunch, failedLaunch := 0, 0
 	otherBashSuccess := 0
-	for _, cmd := range audit.AllCommandsRun {
+	for _, cmd := range commands {
 		switch classifyOperationalShellCommand(cmd.Command) {
 		case operationalShellLaunchBuild:
 			if cmd.Succeeded {
@@ -15035,7 +15237,7 @@ func summarizeOperationalSubAgentQuality(audit codingSubAgentAudit, result agent
 				failedLaunch++
 			}
 		case operationalShellInspection:
-			// ignore for pass/fail primary evidence
+			// Listing and other probes are not launch evidence.
 		default:
 			if cmd.Succeeded {
 				otherBashSuccess++
@@ -15045,8 +15247,11 @@ func summarizeOperationalSubAgentQuality(audit codingSubAgentAudit, result agent
 	if successfulLaunch > 0 {
 		return codingSubAgentQualityPassed, "operational run: launch/build command evidence present", 0
 	}
-	if result.ToolCalls == 0 {
-		return codingSubAgentQualityFailed, "operational task ran no tools (need bash to launch/build)", 1
+	if toolCalls == 0 {
+		if strings.TrimSpace(noToolsMessage) == "" {
+			noToolsMessage = "operational task ran no tools (need bash to launch/build)"
+		}
+		return codingSubAgentQualityFailed, noToolsMessage, 1
 	}
 	if failedLaunch > 0 {
 		return codingSubAgentQualityFailed, "operational task: launch/build command(s) failed", 1
@@ -15054,8 +15259,37 @@ func summarizeOperationalSubAgentQuality(audit codingSubAgentAudit, result agent
 	if otherBashSuccess > 0 {
 		return codingSubAgentQualityFailed, "operational task: ran shell commands but none looked like launch/build", 1
 	}
-	// Tools ran (list_directory / read_file / dir) but never launched/built.
 	return codingSubAgentQualityFailed, "operational task: no launch/build command executed", 1
+}
+
+// summarizeOperationalCommandQuality is the host-action contract. A probe only
+// looks; it cannot be the work. Any other successful command is evidence,
+// because the classifier already decided which action was requested.
+func summarizeOperationalCommandQuality(commands []CodingSubAgentCommandResult, toolCalls int) (codingSubAgentQualityStatus, string, int) {
+	successful, failed := 0, 0
+	for _, cmd := range commands {
+		if operationalCommandIsHostProbe(cmd.Command) {
+			continue
+		}
+		if cmd.Succeeded {
+			successful++
+		} else {
+			failed++
+		}
+	}
+	if successful > 0 {
+		return codingSubAgentQualityPassed, "operational run: host command evidence present", 0
+	}
+	if toolCalls == 0 {
+		return codingSubAgentQualityFailed, "operational task ran no tools (need a command that performs the host action)", 1
+	}
+	if failed > 0 {
+		return codingSubAgentQualityFailed, "operational task: host command failed", 1
+	}
+	if len(commands) > 0 {
+		return codingSubAgentQualityFailed, "operational task: ran shell commands but none performed the host action", 1
+	}
+	return codingSubAgentQualityFailed, "operational task: no host command executed", 1
 }
 
 type operationalShellClass int
@@ -15069,23 +15303,13 @@ const (
 // classifyOperationalShellCommand classifies a bash command for ops evidence.
 // Compound commands (dir && .\snake.exe) are launch/build if any segment is.
 func classifyOperationalShellCommand(command string) operationalShellClass {
-	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	if normalized == "" {
-		return operationalShellInspection
-	}
-	segments := shellCommandSegments(normalized)
+	segments := operationalJudgedSegments(command)
 	if len(segments) == 0 {
 		return operationalShellInspection
 	}
 	sawLaunch := false
 	sawNonInspection := false
-	sawSegment := false
 	for _, segment := range segments {
-		segment = stripVerificationCommandPrefixes(segment)
-		if len(segment) == 0 {
-			continue
-		}
-		sawSegment = true
 		if isOperationalLaunchOrBuildSegment(segment) {
 			sawLaunch = true
 			continue
@@ -15094,9 +15318,6 @@ func classifyOperationalShellCommand(command string) operationalShellClass {
 			sawNonInspection = true
 		}
 	}
-	if !sawSegment {
-		return operationalShellInspection
-	}
 	if sawLaunch {
 		return operationalShellLaunchBuild
 	}
@@ -15104,6 +15325,415 @@ func classifyOperationalShellCommand(command string) operationalShellClass {
 		return operationalShellUnknown
 	}
 	return operationalShellInspection
+}
+
+// operationalCommandIsHostProbe reports a command that only inspects or prints
+// identity. hostname and uname stay outside the inspection class so a launch
+// turn still fails them with "none looked like launch/build". The command
+// contract treats that same identity output as a probe, not as the host action.
+func operationalCommandIsHostProbe(command string) bool {
+	segments := operationalJudgedSegments(command)
+	if len(segments) == 0 {
+		return true
+	}
+	for _, segment := range segments {
+		if isOperationalLaunchOrBuildSegment(segment) || !operationalSegmentIsHostProbe(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+// operationalJudgedSegments peels wrappers, then parses a su -c or eval payload
+// that is still one command string. The probe and launch rules judge argv0.
+// A string such as "df -h" is df; a string such as "go run ." is a launch.
+// An empty result means every segment was a prefix with no program.
+func operationalJudgedSegments(command string) [][]string {
+	return operationalJudgedSegmentsDepth(command, 0)
+}
+
+func operationalJudgedSegmentsDepth(command string, depth int) [][]string {
+	if depth > 4 {
+		return nil
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return nil
+	}
+	var judged [][]string
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = unwrapOperationalHostSegment(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		segment = rejoinOperationalSpacedProgram(segment)
+		if len(segment) == 1 && operationalTokenIsCommandString(segment[0]) {
+			inner := operationalJudgedSegmentsDepth(segment[0], depth+1)
+			if len(inner) > 0 {
+				judged = append(judged, inner...)
+				continue
+			}
+		}
+		judged = append(judged, segment)
+	}
+	return judged
+}
+
+// operationalTokenIsCommandString reports a peeled payload that still contains
+// a command line. A path with spaces and no separate arguments stays one program.
+func operationalTokenIsCommandString(token string) bool {
+	if token == "" || !strings.ContainsAny(token, " \t;|&") {
+		return false
+	}
+	if strings.ContainsAny(token, ";|&") {
+		return true
+	}
+	fields := strings.Fields(token)
+	if len(fields) <= 1 {
+		return false
+	}
+	return len(rejoinOperationalSpacedProgram(fields)) != 1
+}
+
+// rejoinOperationalSpacedProgram joins "C:\Program" "Files\snake.exe" back into
+// one program. "/bin/echo" "hi" stays echo plus an argument, because "hi" does
+// not continue the path.
+func rejoinOperationalSpacedProgram(segment []string) []string {
+	if len(segment) < 2 {
+		return segment
+	}
+	program := segment[0]
+	i := 1
+	for i < len(segment) && operationalPathContinuation(program, segment[i]) {
+		program += " " + segment[i]
+		i++
+	}
+	if i == 1 {
+		return segment
+	}
+	out := make([]string, 0, 1+len(segment)-i)
+	out = append(out, program)
+	out = append(out, segment[i:]...)
+	return out
+}
+
+func operationalPathContinuation(program, next string) bool {
+	if next == "" || strings.HasPrefix(next, "-") {
+		return false
+	}
+	if strings.HasPrefix(next, "/") || strings.HasPrefix(next, `\`) {
+		return false
+	}
+	if len(next) >= 2 && next[1] == ':' {
+		return false
+	}
+	// ./snake src/test is a program plus an argument. Joining it would score
+	// the probe name "test". Only a drive path continues across a space:
+	// C:\Program + Files\snake.exe, or C:/Program + Files/snake.exe.
+	if len(program) < 2 || program[1] != ':' {
+		return false
+	}
+	if !strings.ContainsAny(next, `/\`) {
+		return false
+	}
+	if hasOperationalLaunchExtension(program) || isSystemExecutablePath(program) {
+		return false
+	}
+	base := commandNameBase(program)
+	if base == "" || operationalSegmentIsHostProbe([]string{base}) || operationalBaseHasOwnLaunchRule(base) {
+		return false
+	}
+	return true
+}
+
+// unwrapOperationalHostSegment peels prefixes that are not the action so the
+// probe check sees the program that runs. Privilege, name lookup, shell -c,
+// and scheduling wrappers are peeled the same way. The task text is not read.
+func unwrapOperationalHostSegment(segment []string) []string {
+	for len(segment) > 0 {
+		key := strings.Join(segment, "\x00")
+		segment = stripOperationalSubstitutionMarker(segment)
+		segment = stripVerificationCommandPrefixes(segment)
+		segment = stripOperationalPrivilegePrefix(segment)
+		segment = stripOperationalSuCommand(segment)
+		segment = stripOperationalExecEval(segment)
+		segment = stripOperationalBuiltin(segment)
+		var lookup bool
+		segment, lookup = stripOperationalCommandLookup(segment)
+		if lookup {
+			return nil
+		}
+		segment = stripOperationalExecutionWrappers(segment)
+		segment = stripOperationalShellWrapper(segment)
+		if len(segment) == 0 || strings.Join(segment, "\x00") == key {
+			return segment
+		}
+	}
+	return nil
+}
+
+// stripOperationalExecutionWrappers peels nice/nohup and the same kind of
+// scheduling prefix. The command after the prefix is what ran.
+func stripOperationalExecutionWrappers(segment []string) []string {
+	for len(segment) > 0 {
+		rest, ok := peelOperationalExecutionWrapper(commandNameBase(segment[0]), segment[1:])
+		if !ok {
+			return segment
+		}
+		segment = rest
+	}
+	return segment
+}
+
+func peelOperationalExecutionWrapper(base string, args []string) ([]string, bool) {
+	switch base {
+	case "nice", "nohup", "ionice", "stdbuf", "setsid":
+	default:
+		return nil, false
+	}
+	for len(args) > 0 {
+		arg := args[0]
+		if arg == "--" {
+			return args[1:], true
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return args, true
+		}
+		if operationalWrapperOptionConsumesValue(base, arg) && len(args) > 1 {
+			args = args[2:]
+			continue
+		}
+		args = args[1:]
+	}
+	return nil, true
+}
+
+func operationalWrapperOptionConsumesValue(base, arg string) bool {
+	if strings.Contains(arg, "=") {
+		return false
+	}
+	switch base {
+	case "nice":
+		return arg == "-n" || arg == "--adjustment"
+	case "ionice":
+		return arg == "-c" || arg == "-n" || arg == "-p" || arg == "--class" || arg == "--classdata" || arg == "--pid"
+	case "stdbuf":
+		return arg == "-i" || arg == "-o" || arg == "-e" || arg == "--input" || arg == "--output" || arg == "--error"
+	default:
+		return false
+	}
+}
+
+// stripOperationalShellWrapper peels bash/sh/cmd -c. The payload is the
+// command that runs. A wrapper left with only options ran nothing.
+func stripOperationalShellWrapper(segment []string) []string {
+	if len(segment) == 0 || !isShellWrapperCommand(commandNameBase(segment[0])) {
+		return segment
+	}
+	if consumed, ok := shellWrapperCommandPrefixLength(segment); ok {
+		if consumed >= len(segment) {
+			return nil
+		}
+		return segment[consumed:]
+	}
+	rest := segment[1:]
+	for len(rest) > 0 {
+		arg := rest[0]
+		if arg == "--" {
+			rest = rest[1:]
+			break
+		}
+		if shellWrapperOptionConsumesValue(arg) {
+			if len(rest) > 1 {
+				rest = rest[2:]
+			} else {
+				rest = rest[1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "/") {
+			rest = rest[1:]
+			continue
+		}
+		return segment
+	}
+	return nil
+}
+
+// stripOperationalPrivilegePrefix peels sudo/doas/pkexec so the check sees the
+// command that will run. It does not decide whether that command was requested.
+// The caller has already lowercased the line, so -C/-D/-T/-R/-U arrive as
+// -c/-d/-t/-r/-u. Each of those short options takes a value.
+func stripOperationalPrivilegePrefix(segment []string) []string {
+	for len(segment) > 0 {
+		base := commandNameBase(segment[0])
+		if base != "sudo" && base != "doas" && base != "pkexec" {
+			return segment
+		}
+		segment = segment[1:]
+		for len(segment) > 0 && strings.HasPrefix(segment[0], "-") {
+			flag := segment[0]
+			if flag == "--" {
+				segment = segment[1:]
+				break
+			}
+			segment = segment[1:]
+			if operationalPrivilegeOptionConsumesValue(flag) && len(segment) > 0 && !strings.HasPrefix(segment[0], "-") {
+				segment = segment[1:]
+			}
+		}
+	}
+	return segment
+}
+
+func operationalPrivilegeOptionConsumesValue(flag string) bool {
+	switch flag {
+	case "-u", "--user", "--other-user",
+		"-g", "--group",
+		"-p", "--prompt",
+		"-c", "--close-from",
+		"-d", "--chdir",
+		"-r", "--role", "--chroot",
+		"-t", "--type", "--command-timeout",
+		"--host":
+		return true
+	default:
+		return false
+	}
+}
+
+// stripOperationalExecEval peels exec and eval. They replace the shell with
+// the following program, so the prefix itself is not the action. exec -c is a
+// flag and does not consume the program name.
+func stripOperationalExecEval(segment []string) []string {
+	if len(segment) == 0 {
+		return segment
+	}
+	switch commandNameBase(segment[0]) {
+	case "eval":
+		args := segment[1:]
+		if len(args) > 0 && args[0] == "--" {
+			args = args[1:]
+		}
+		return args
+	case "exec":
+		args := segment[1:]
+		for len(args) > 0 {
+			arg := args[0]
+			if arg == "--" {
+				return args[1:]
+			}
+			if arg == "-a" && len(args) > 1 {
+				args = args[2:]
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				args = args[1:]
+				continue
+			}
+			return args
+		}
+		return nil
+	default:
+		return segment
+	}
+}
+
+// stripOperationalSuCommand peels su -c. The payload is the command that runs.
+// su without -c is itself the action and stays in place.
+func stripOperationalSuCommand(segment []string) []string {
+	if len(segment) == 0 || commandNameBase(segment[0]) != "su" {
+		return segment
+	}
+	args := segment[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return segment
+		}
+		if arg == "-c" || arg == "--command" {
+			if i+1 >= len(args) {
+				return nil
+			}
+			payload := args[i+1:]
+			// -- ends su options. It is not the program name.
+			if len(payload) > 0 && payload[0] == "--" {
+				payload = payload[1:]
+			}
+			if len(payload) == 0 {
+				return nil
+			}
+			return payload
+		}
+		if (arg == "-s" || arg == "--shell") && i+1 < len(args) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+	}
+	return segment
+}
+
+// stripOperationalSubstitutionMarker drops the "$" left when "$(...)" is split.
+// The marker is not a program. A later argument that starts with "$" stays,
+// because that is a parameter of the real command.
+func stripOperationalSubstitutionMarker(segment []string) []string {
+	if len(segment) > 0 && segment[0] == "$" {
+		return segment[1:]
+	}
+	return segment
+}
+
+// stripOperationalBuiltin peels the bash builtin keyword. builtin hostname is
+// hostname. The keyword itself is not the action.
+func stripOperationalBuiltin(segment []string) []string {
+	if len(segment) == 0 || commandNameBase(segment[0]) != "builtin" {
+		return segment
+	}
+	rest := segment[1:]
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		if rest[0] == "--" {
+			return rest[1:]
+		}
+		rest = rest[1:]
+	}
+	return rest
+}
+
+// stripOperationalCommandLookup peels the POSIX command builtin. command -v
+// only looks up a name, the same evidence as which. command apt-get leaves
+// the real program in place.
+func stripOperationalCommandLookup(segment []string) ([]string, bool) {
+	if len(segment) == 0 || commandNameBase(segment[0]) != "command" {
+		return segment, false
+	}
+	rest := segment[1:]
+	lookup := false
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		flag := rest[0]
+		if flag == "--" {
+			return rest[1:], lookup
+		}
+		if flag == "-v" || flag == "-V" || (!strings.HasPrefix(flag, "--") && (strings.Contains(flag, "v") || strings.Contains(flag, "V"))) {
+			lookup = true
+		}
+		rest = rest[1:]
+	}
+	return rest, lookup
+}
+
+func operationalSegmentIsHostProbe(segment []string) bool {
+	if len(segment) == 0 || isOperationalInspectionOnlySegment(segment) {
+		return true
+	}
+	switch commandNameBase(segment[0]) {
+	case "hostname", "uname", "id", "true", "false", ":", "printf", "test", "[":
+		return true
+	default:
+		return false
+	}
 }
 
 // isOperationalInspectionOnlyCommand is kept for tests and callers that only
@@ -15142,16 +15772,17 @@ func isOperationalLaunchOrBuildSegment(segment []string) bool {
 	base := commandNameBase(raw0)
 	args := segment[1:]
 
-	// Path-like invocation: .\game.exe, ./a.out, build\Release\app.exe
-	// Do not treat bare "." / ".." (or empty relative prefixes) as launch.
+	// Path-like invocation: .\game.exe, ./a.out, build\Release\app.exe.
+	// Interpreters keep their own argument rule, so C:\Python\python.exe is
+	// not a launch until it has a script. Probe names are not launches.
 	if isOperationalPathLaunchToken(raw0) {
 		return true
 	}
-	// Extension-based binaries/scripts (snake.exe, build_and_run.bat).
-	for _, ext := range []string{".exe", ".bat", ".cmd", ".com", ".ps1", ".sh", ".msi"} {
-		if strings.HasSuffix(base, ext) {
-			return true
-		}
+	// commandNameBase already removed .exe/.bat/.cmd/.ps1, so the extension
+	// has to be read from the original file name. snake.exe and
+	// build_and_run.bat are launches; hostname.exe and python.exe are not.
+	if hasOperationalLaunchExtension(raw0) && !operationalSegmentIsHostProbe([]string{base}) && !operationalBaseHasOwnLaunchRule(base) && !isSystemExecutablePath(raw0) {
+		return true
 	}
 
 	switch base {
@@ -15197,8 +15828,10 @@ func isOperationalLaunchOrBuildSegment(segment []string) bool {
 	}
 }
 
-// isOperationalPathLaunchToken reports path-form tokens used to invoke a program
-// (.\app.exe, ./game, build\Release\app). Bare "." / ".." are excluded.
+// isOperationalPathLaunchToken reports a project-relative program path
+// (.\app.exe, ./game, build\Release\app, /home/app/server). A system path such
+// as /usr/bin/hostname or /usr/bin/apt-get is the program named there, not a
+// project launch. A probe name is not a launch in either form.
 func isOperationalPathLaunchToken(token string) bool {
 	token = strings.TrimSpace(token)
 	if token == "" || token == "." || token == ".." {
@@ -15208,8 +15841,62 @@ func isOperationalPathLaunchToken(token string) bool {
 	if token == ".\\" || token == "./" || token == ".\\\\" {
 		return false
 	}
-	if strings.HasPrefix(token, ".") || strings.ContainsAny(token, `/\`) {
+	base := commandNameBase(token)
+	if operationalSegmentIsHostProbe([]string{base}) || operationalBaseHasOwnLaunchRule(base) {
+		return false
+	}
+	if !strings.HasPrefix(token, ".") && !strings.ContainsAny(token, `/\`) {
+		return false
+	}
+	if isSystemExecutablePath(token) {
+		return false
+	}
+	return true
+}
+
+func isSystemExecutablePath(token string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(token), "\\", "/"))
+	if !strings.HasPrefix(normalized, "/") && !(len(normalized) >= 3 && normalized[1] == ':' && (normalized[2] == '/' || normalized[2] == '\\')) {
+		return false
+	}
+	for _, prefix := range []string{
+		"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/", "/usr/local/sbin/",
+		"c:/windows/system32/", "c:/windows/syswow64/",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// operationalBaseHasOwnLaunchRule reports programs whose launch decision
+// depends on their arguments. A path or .exe suffix must not override that.
+func operationalBaseHasOwnLaunchRule(base string) bool {
+	switch base {
+	case "start", "start-process", "invoke-item", "ii", "open", "xdg-open",
+		"make", "mingw32-make", "gmake", "ninja", "msbuild", "cmake",
+		"cl", "g++", "gcc", "clang", "clang++", "rustc", "javac", "mvn", "gradle", "flutter",
+		"go", "cargo",
+		"npm", "pnpm", "yarn", "bun",
+		"python", "python3", "py", "node", "deno", "ruby", "perl", "php", "lua", "dotnet",
+		"powershell", "pwsh",
+		"bash", "sh", "zsh":
 		return true
+	default:
+		return false
+	}
+}
+
+func hasOperationalLaunchExtension(token string) bool {
+	name := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(token), "\\", "/"))
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	for _, ext := range []string{".exe", ".bat", ".cmd", ".com", ".ps1", ".sh", ".msi"} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
 	}
 	return false
 }
@@ -15223,9 +15910,8 @@ func segmentLooksLikeOperationalLaunchArgs(args []string) bool {
 		if isOperationalLaunchOrBuildSegment([]string{al}) {
 			return true
 		}
-		// Nested script body sometimes arrives as one token; cheap markers.
-		if strings.Contains(al, ".exe") || strings.Contains(al, ".bat") || strings.Contains(al, ".cmd") ||
-			strings.Contains(al, "go run") || strings.Contains(al, "npm start") || strings.Contains(al, "npm run") {
+		// Nested script body sometimes arrives as one token.
+		if strings.Contains(al, "go run") || strings.Contains(al, "npm start") || strings.Contains(al, "npm run") {
 			return true
 		}
 	}
@@ -15326,7 +16012,11 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 	hasInspection := len(uniqueSortedSubAgentStrings(filesRead)) > 0 ||
 		countSuccessfulSubAgentSearches(searchesRun) > 0 ||
 		len(commandsRun) > 0
-	if status == TaskExecPassed {
+	qualityGateEnabled := codingQualityGateEnabled(s.handler)
+	if cb != nil && cb.qualityGateEnabled != nil {
+		qualityGateEnabled = *cb.qualityGateEnabled
+	}
+	if status == TaskExecPassed && qualityGateEnabled {
 		if result.ToolCalls == 0 || !hasInspection {
 			status = TaskExecFailed
 			errMsg = fmt.Sprintf("nested %s subagent completed without inspection evidence (read/search/bash)", s.role)
@@ -15335,7 +16025,12 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 			errMsg = fmt.Sprintf("nested %s subagent returned empty summary", s.role)
 		}
 	}
-	if status == TaskExecPassed {
+	qualityStatus := codingSubAgentQualityPassed
+	qualitySummary := "inspection-only nested role"
+	if !qualityGateEnabled {
+		qualityStatus = codingSubAgentQualityNotNeeded
+		qualitySummary = ""
+	} else if status == TaskExecPassed {
 		note := fmt.Sprintf("\n[%s] inspection-only role: skipped write-oriented verification gates", s.role)
 		if !strings.Contains(summary, note) {
 			summary = strings.TrimSpace(summary) + note
@@ -15350,27 +16045,28 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 	}
 	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
 	return &CodingSubAgentResult{
-		Status:         status,
-		Summary:        summary,
-		Error:          errMsg,
-		Iterations:     result.Iterations,
-		ToolCalls:      result.ToolCalls,
-		InputTokens:    inTok,
-		OutputTokens:   outTok,
-		EstCostRMB:     cost,
-		RouteModel:     result.Route.Model,
-		RouteSource:    result.Route.Source,
-		RouteTask:      result.Route.TaskType,
-		RouteReason:    result.Route.Reason,
-		FilesModified:  nil,
-		FilesCreated:   nil,
-		FilesRead:      filesRead,
-		CommandsRun:    commandsRun,
-		SearchesRun:    searchesRun,
-		QualityStatus:  codingSubAgentQualityPassed,
-		QualitySummary: "inspection-only nested role",
-		Localization:   cb.localization.snapshot(),
-		HorizonOwned:   s.horizonPosture,
+		Status:              status,
+		Summary:             summary,
+		Error:               errMsg,
+		Iterations:          result.Iterations,
+		ToolCalls:           result.ToolCalls,
+		InputTokens:         inTok,
+		OutputTokens:        outTok,
+		EstCostRMB:          cost,
+		RouteModel:          result.Route.Model,
+		RouteSource:         result.Route.Source,
+		RouteTask:           result.Route.TaskType,
+		RouteReason:         result.Route.Reason,
+		FilesModified:       nil,
+		FilesCreated:        nil,
+		FilesRead:           filesRead,
+		CommandsRun:         commandsRun,
+		SearchesRun:         searchesRun,
+		QualityStatus:       qualityStatus,
+		QualitySummary:      qualitySummary,
+		qualityGateDisabled: !qualityGateEnabled && status == TaskExecPassed,
+		Localization:        cb.localization.snapshot(),
+		HorizonOwned:        s.horizonPosture,
 	}
 }
 

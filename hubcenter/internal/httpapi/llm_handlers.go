@@ -656,10 +656,16 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		})
 		return req, err
 	}
+	extra := map[string]interface{}{"max_tokens": maxTokens}
+	// Kimi Code and K2/K3 reject every explicit temperature. The probe used to
+	// send 0 and the status check failed with HTTP 400 before the model ran.
+	if !corelib.KimiRequestOmitsSampling(cfg, cfg.Model) {
+		extra["temperature"] = 0
+	}
 	req, _, _, err := corellm.NewOpenAIChatRequest(ctx, cfg, messages, corellm.OpenAIChatRequestOptions{
 		Tools:      parsedTools,
 		ToolChoice: toolChoiceValue,
-		ExtraBody:  map[string]interface{}{"max_tokens": maxTokens, "temperature": 0},
+		ExtraBody:  extra,
 	})
 	return req, err
 }

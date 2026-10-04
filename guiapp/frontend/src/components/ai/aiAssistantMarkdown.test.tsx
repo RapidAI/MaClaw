@@ -94,9 +94,12 @@ describe("renderContentWithCodeBlocks", () => {
 
         const pre = container.querySelector("[data-reasoning-code]") as HTMLElement;
         const code = pre.querySelector("code") as HTMLElement;
+        const borderHex = lightTheme.codeBlockBorder.replace("#", "");
+        const borderRgb = `rgb(${Number.parseInt(borderHex.slice(0, 2), 16)}, ${Number.parseInt(borderHex.slice(2, 4), 16)}, ${Number.parseInt(borderHex.slice(4, 6), 16)})`;
         expect(pre.style.fontFamily).toContain("ui-monospace");
         expect(pre.style.color).toBe("rgb(23, 38, 60)");
         expect(pre.style.backgroundColor).toBe("rgb(255, 255, 255)");
+        expect(pre.style.borderTopColor).toBe(borderRgb);
         expect(pre.style.whiteSpace).toBe("pre");
         expect(pre.style.fontSize).toBe("12px");
         expect(code.style.background).toBe("transparent");
@@ -196,6 +199,36 @@ describe("renderContentWithCodeBlocks", () => {
 
         const code = container.querySelector("code");
         expect(code?.textContent).toBe('{\\"ok\\": true}');
+    });
+
+    it("renders markdown after a fence that was glued to the previous heading", () => {
+        const markdown = [
+            "### `maclaw-hub` CPU 占用偏高```",
+            "PID 20787",
+            "```",
+            "- 持续占用 **半个核心**",
+            "",
+            "### 内存占用最重",
+            "```",
+            "PID 20740",
+            "```",
+            "- 单进程占用 **1.39G 内存**",
+            "",
+            "| 服务 | CPU |",
+            "| --- | --- |",
+            "| maclawsrv | 3.3% |",
+        ].join("\n");
+        const { container } = render(<div>{renderContentWithCodeBlocks(markdown, lightTheme)}</div>);
+
+        const codes = Array.from(container.querySelectorAll("[data-assistant-code]")).map((node) => node.textContent || "");
+        expect(codes.some((text) => text.includes("PID 20787"))).toBe(true);
+        expect(codes.some((text) => text.includes("PID 20740"))).toBe(true);
+        expect(codes.every((text) => !text.includes("半个核心") && !text.includes("###") && !text.includes("maclawsrv"))).toBe(true);
+        expect(screen.getByText("半个核心").tagName).toBe("STRONG");
+        expect(screen.getByText("1.39G 内存").tagName).toBe("STRONG");
+        expect(screen.getByText("内存占用最重")).toBeTruthy();
+        expect(container.querySelector("[data-testid='markdown-table']")).toBeTruthy();
+        expect(container.textContent).not.toContain("```");
     });
 
     it("does not rewrite escaped newline string literals inside fenced code blocks", () => {
@@ -1861,6 +1894,55 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText("#131")).toBeNull();
     });
 
+    it("opens a coding thought while it is live and collapses it when thinking finishes", () => {
+        const item = {
+            id: "thought-phase",
+            sequence: 20,
+            kind: "thinking" as const,
+            content: "Inspect the scanner before editing the header width.",
+            timestamp: 1,
+        };
+        const view = (liveLabel?: string, expanded = false) => (
+            <div>{renderCodingAgentThinkingTimelineItem(item, lightTheme, "zh", 20, liveLabel, undefined, expanded)}</div>
+        );
+        const { rerender } = render(view());
+        expect(screen.getByText("思考过程").closest("details")?.open).toBe(false);
+
+        rerender(view("正在思考", true));
+        expect(screen.getByText("正在思考").closest("details")?.open).toBe(true);
+        expect(screen.getByTestId("assistant-reasoning-body").textContent).toContain("Inspect the scanner");
+
+        rerender(view("正在编辑文件"));
+        const editing = screen.getByText("正在编辑文件").closest("details");
+        expect(editing?.getAttribute("data-live")).toBe("true");
+        expect(editing?.open).toBe(false);
+
+        rerender(view());
+        const settled = screen.getByText("思考过程").closest("details");
+        expect(settled?.open).toBe(false);
+        expect(settled?.textContent).toContain("Inspect the scanner");
+    });
+
+    it("keeps the start and the new tail of a long live coding thought", () => {
+        const head = "Inspect the scanner before editing. ";
+        const item = {
+            id: "thought-long",
+            sequence: 20,
+            kind: "thinking" as const,
+            content: head.repeat(80),
+            timestamp: 1,
+        };
+        const view = (content: string) => (
+            <div>{renderCodingAgentThinkingTimelineItem({ ...item, content }, lightTheme, "zh", 20, "正在思考", undefined, true)}</div>
+        );
+        const { rerender } = render(view(item.content));
+        expect(screen.getByTestId("assistant-reasoning-body").textContent).toContain("Inspect the scanner before editing.");
+        rerender(view(item.content + "TAIL_MARKER stays visible."));
+        const body = screen.getByTestId("assistant-reasoning-body").textContent || "";
+        expect(body).toContain("Inspect the scanner before editing.");
+        expect(body).toContain("TAIL_MARKER stays visible.");
+    });
+
     it("marks a live coding thought with sheen and the current activity label", () => {
         render(<div>{renderCodingAgentThinkingTimelineItem({
             id: "thought-live-edit",
@@ -1878,6 +1960,7 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText("思考过程")).toBeNull();
         const summary = panel.querySelector(".assistant-reasoning-summary");
         expect(summary?.textContent || "").not.toContain("Need to patch the scanner CLI");
+        expect((panel as HTMLDetailsElement).open).toBe(false);
     });
 
     it("keeps a live coding thought header when the body sanitizes to empty", () => {
@@ -2633,22 +2716,25 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
     });
 
-    it("keeps coding-workbench reasoning collapsed while streaming and after completion", () => {
+    it("opens coding-workbench reasoning while the thought streams and folds it when the answer starts", () => {
         const message = {
             id: "assistant-coding-reasoning",
             role: "assistant" as const,
-            content: "Created hello.cpp.",
+            content: "",
             reasoning: "I'll write a small C++ file.",
+            reasoningLive: true,
             timestamp: Date.now(),
         };
         const renderCoding = (next = message, streaming = true) =>
             renderMessage(next, vi.fn(), lightTheme, true, "Saved file", "en", streaming, undefined, undefined, true);
         const { rerender, unmount } = render(<div>{renderCoding()}</div>);
 
-        expect(screen.getByText("Thinking").closest("details")?.open).toBe(false);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
         rerender(<div>{renderCoding({ ...message, reasoning: "I'll write a small C++ file.\nChecking compile." })}</div>);
-        expect(screen.getByText("Thinking").closest("details")?.open).toBe(false);
-        rerender(<div>{renderCoding(message, false)}</div>);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
+        rerender(<div>{renderCoding({ ...message, content: "Created hello.cpp.", reasoningLive: false })}</div>);
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        rerender(<div>{renderCoding({ ...message, content: "Created hello.cpp.", reasoningLive: false }, false)}</div>);
         expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
         unmount();
     });

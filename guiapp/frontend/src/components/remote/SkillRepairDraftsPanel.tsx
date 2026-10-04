@@ -4,7 +4,7 @@ import { useToast } from '../Toast';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { EVENT_SKILL_REPAIRED, EVENT_SKILL_REPAIR_DRAFT_READY } from '../../constants/events';
 import { ApplySkillRepairDraft, ListSkillRepairDrafts, RejectSkillRepairDraft } from '../../../wailsjs/go/main/App';
-import { colors, remoteInfoPanelStyle } from './styles';
+import { colors, consoleInsetHeadStyle, consoleSectionStyle } from './styles';
 
 /** One full step entry in old_steps/new_steps; params is preserved verbatim.
  *  name/label/when/condition only appear when non-empty (omitempty).
@@ -265,9 +265,9 @@ export function SkillRepairDraftsPanel({
     }, [showConfirm, showToast, localizeText, setBusy, loadRepairDrafts, onDraftsChanged]);
 
     return (
-        <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-                <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+        <div style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+            <div style={consoleInsetHeadStyle}>
+                <div style={{ minWidth: 0 }}>
                     {localizeText("Pending repair drafts", "待评审修复", "待評審修復")}
                     {" "}({repairDrafts.length})
                 </div>

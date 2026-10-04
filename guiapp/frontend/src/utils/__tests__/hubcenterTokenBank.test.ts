@@ -10,6 +10,7 @@ import {
     extractTokenBankModels,
     extractTokenBankShares,
     extractTokenBankWithdrawals,
+    isAutomaticTokenBankWithdrawal,
     fingerprintProviderKey,
     matchTokenBankShareCredential,
     modelsMissingFromShare,
@@ -24,6 +25,8 @@ import {
     giftClaimTarget,
     giftCodeFromInput,
     isShareLive,
+    shareCapNoteKind,
+    shareCapPauseKind,
     newWithdrawRequestID,
     normalizeTokenBankShare,
     normalizeTokenBankSummary,
@@ -156,6 +159,45 @@ describe('hubcenterTokenBank share status', () => {
         expect(toShareStatus('available')).toBeNull();
         expect(toShareStatus('')).toBeNull();
     });
+
+    it('recognizes an automatic token-cap pause and ignores a manual one', () => {
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'token cap: anomaly',
+            last_error: 'token cap: anomaly',
+        })).toBe('anomaly');
+        expect(shareCapPauseKind({ status: 'paused', paused_reason: 'Token Cap: Daily' })).toBe('daily');
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'token cap: daily',
+            last_error: 'glm-5: token cap: anomaly',
+        })).toBe('daily');
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'token cap: daily ... token cap: anomaly',
+        })).toBe('anomaly');
+        expect(shareCapNoteKind('glm-5.3-flash: token cap: monthly')).toBe('monthly');
+        expect(shareCapNoteKind('token cap: daily ... token cap: anomaly')).toBe('anomaly');
+        expect(shareCapNoteKind('token cap: anomaly extra')).toBeNull();
+        // A leftover cap sentence is not the current pause.
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: '',
+            last_error: 'token cap: anomaly',
+        })).toBeNull();
+        expect(shareCapPauseKind({
+            status: 'paused',
+            last_error: 'glm-5.3-flash: token cap: monthly',
+        })).toBeNull();
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'manual',
+            last_error: 'upstream timeout',
+        })).toBeNull();
+        expect(shareCapPauseKind({ status: 'active', paused_reason: 'token cap: daily', last_error: 'token cap: anomaly' })).toBeNull();
+        expect(shareCapPauseKind(null)).toBeNull();
+        expect(shareCapPauseKind(undefined)).toBeNull();
+    });
 });
 
 describe('hubcenterTokenBank credit formatting', () => {
@@ -220,6 +262,16 @@ describe('hubcenterTokenBank withdraw helpers', () => {
 
     it('returns an empty hint without a summary', () => {
         expect(describeAutoWithdraw(null)).toBe('');
+    });
+
+    it('marks an automatic withdrawal from the request id or the flag', () => {
+        expect(isAutomaticTokenBankWithdrawal({ request_id: 'tbk-auto:hub:a@b.c:paid:0' })).toBe(true);
+        expect(isAutomaticTokenBankWithdrawal({ request_id: 'req-manual', automatic: true })).toBe(true);
+        expect(isAutomaticTokenBankWithdrawal({ request_id: 'req-manual' })).toBe(false);
+        const [row] = extractTokenBankWithdrawals({
+            withdrawals: [{ id: 'w1', request_id: 'tbk-auto:hub:a@b.c:paid:1', amount_micro: 1 }],
+        });
+        expect(row.automatic).toBe(true);
     });
 });
 

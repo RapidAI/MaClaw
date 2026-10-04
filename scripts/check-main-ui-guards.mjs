@@ -986,17 +986,19 @@ requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'run
   const systemBlock = sliceBlock('const systemMenuItems', 'const selectSystemMenuItem');
   const extensionsBlock = sliceBlock('const extensionsMenuItems', 'const libraryMenuItems');
   if (!systemBlock) failures.push(`${rel} is missing systemMenuItems block`);
-  else if (menuId(systemBlock, 'skills') || menuId(systemBlock, 'mcp') || menuId(systemBlock, 'tokenbank')) {
-    failures.push(`${rel} system menu still lists skills/mcp/tokenbank; those belong on the extensions menu`);
+  else if (menuId(systemBlock, 'skills') || menuId(systemBlock, 'mcp')) {
+    failures.push(`${rel} system menu still lists skills/mcp; those belong on the extensions menu`);
+  } else if (menuId(systemBlock, 'tokenbank')) {
+    failures.push(`${rel} system menu lists tokenbank; Token Bank stays in settings`);
   }
   if (!extensionsBlock) failures.push(`${rel} is missing extensionsMenuItems block`);
-  else if (!menuId(extensionsBlock, 'skills') || !menuId(extensionsBlock, 'mcp') || !menuId(extensionsBlock, 'tokenbank')) {
-    failures.push(`${rel} extensions menu is missing skills/mcp/tokenbank`);
+  else if (!menuId(extensionsBlock, 'skills') || !menuId(extensionsBlock, 'mcp')) {
+    failures.push(`${rel} extensions menu is missing skills/mcp`);
+  } else if (menuId(extensionsBlock, 'tokenbank')) {
+    failures.push(`${rel} extensions menu lists tokenbank; Token Bank stays in settings`);
   }
 }
 requireIncludes('guiapp/frontend/src/components/layout/SystemPopupMenu.tsx', 'data-testid={`${testIdPrefix}-${item.id}`}', 'sidebar popup menu item testid wiring');
-requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'TokenBankIcon', 'Token Bank nav rail icon wiring');
-requireIncludes('guiapp/frontend/src/components/layout/SidebarNavIcons.tsx', 'export const TokenBankIcon', 'Token Bank nav rail icon export');
 requireIncludes('guiapp/frontend/src/appLazyComponents.ts', 'TokenBankPanel', 'Token Bank panel lazy registration');
 requireIncludes('guiapp/frontend/src/App.tsx', "navTab !== 'tokenbank'", 'Token Bank panel redirect branch');
 requireIncludes('guiapp/frontend/src/App.tsx', "setSettingsTab('tokenBank')", 'Token Bank settings tab wiring');

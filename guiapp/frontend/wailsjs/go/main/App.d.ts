@@ -2615,6 +2615,8 @@ export function TokenBankListShareModels(arg1:string,arg2:string):Promise<Record
 export function TokenBankSetSharePaused(arg1:string,arg2:boolean):Promise<Record<string, any>>;
 export function TokenBankTakeOutShare(arg1:string):Promise<Record<string, any>>;
 export function TokenBankListWithdrawals():Promise<Record<string, any>>;
+export function TokenBankGetAutoSettings():Promise<Record<string, any>>;
+export function TokenBankSaveAutoSettings(arg1:number):Promise<Record<string, any>>;
 export function TokenBankWithdraw(arg1:string,arg2:number,arg3:boolean):Promise<Record<string, any>>;
 export function TokenBankCreateShare(arg1:main.TokenBankShareInput):Promise<Record<string, any>>;
 export function TokenBankSyncShareModels(arg1:string, arg2:Array<main.TokenBankShareModelInput>):Promise<Record<string, any>>;

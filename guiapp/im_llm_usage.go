@@ -8,10 +8,12 @@ import (
 )
 
 type llmUsageSnapshot struct {
-	Input      int
-	Output     int
-	CacheRead  int
-	CacheWrite int
+	Input           int
+	Output          int
+	CacheRead       int
+	CacheWrite      int
+	CreditsDeducted float64
+	CreditsReported bool
 }
 
 func (s llmUsageSnapshot) HasAny() bool {
@@ -34,6 +36,11 @@ func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, cfg corelib.Macl
 		log.Printf("[LLM] finish_reason=%q content_len=%d tool_calls=%d", resp.Choices[0].FinishReason, len(resp.Choices[0].Message.Content), len(resp.Choices[0].Message.ToolCalls))
 	}
 	h.accumulateLLMTokenUsageWithCache(providerName, input, output, cacheRead, cacheWrite)
+	snap := llmUsageSnapshot{Input: input, Output: output, CacheRead: cacheRead, CacheWrite: cacheWrite}
+	if resp.Usage != nil && resp.Usage.CreditsDeducted != nil && (isHubServiceProviderName(providerName) || isHubServiceProviderName(cfg.ProviderName)) {
+		snap.CreditsDeducted = *resp.Usage.CreditsDeducted
+		snap.CreditsReported = true
+	}
 	// Preserve the legacy provider roll-up above, but attribute profile usage
 	// from the request's captured config. Re-resolving the assistant config here
 	// races a live coding loop (and a user model switch), mislabelling coding
@@ -45,7 +52,7 @@ func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, cfg corelib.Macl
 	if input > 0 || output > 0 {
 		h.recordLLMCost(cfg.Model, input, output)
 	}
-	return llmUsageSnapshot{Input: input, Output: output, CacheRead: cacheRead, CacheWrite: cacheWrite}
+	return snap
 }
 
 func deriveCacheTokens(resp *llm.Response) (int, int) {

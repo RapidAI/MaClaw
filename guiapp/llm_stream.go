@@ -42,124 +42,12 @@ const (
 	guiMaxToolArgumentsBytes = 180 * 1024
 )
 
-// filterTruncatedToolCalls checks for tool calls with invalid or incomplete
-// JSON arguments when the model hit its output token limit
-// (finish_reason="length"). Two cases are detected:
-//
-//  1. JSON parse failure  - arguments string is not valid JSON (truncated mid-token)
-//  2. Required field missing  - JSON parses OK but a required field is absent,
-//     indicating the model ran out of output tokens before generating all fields.
-//     This happens when a large field (e.g. write_file content) consumes the
-//     entire output budget, leaving no room for subsequent fields like path.
-//
-// Truncated tool calls are removed from msg.ToolCalls. The truncated tool
-// names are returned so the caller (agent loop) can inject a recovery system
-// message and continue the loop. msg.Content is NOT modified  - the hint
-// belongs in a system message, not in the assistant's own text.
-//
-// Returns the (possibly modified) finishReason, the list of truncated
-// tool names (nil if none were truncated), and a map of tool name to raw
-// (incomplete) argument strings for truncated calls.
+// filterTruncatedToolCalls applies the shared truncation rule. Chat and
+// responses streams both land here after a provider finishes, and the GUI
+// wrapper runs again when the core parser kept the call. A second copy of
+// the rule would drop that finished write_file on the way out.
 func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []string, map[string]string) {
-	if len(msg.ToolCalls) == 0 {
-		return finishReason, nil, nil
-	}
-
-	// Primary signal: finish_reason="length" means the model hit max_output_tokens.
-	isLengthTruncated := normalizeLLMFinishReason(finishReason) == llmFinishReasonLength
-
-	var validCalls []llm.ToolCall
-	var truncatedNames []string
-	var truncatedArgs map[string]string
-	for _, tc := range msg.ToolCalls {
-		args := strings.TrimSpace(tc.Function.Arguments)
-		if args == "" {
-			if isLengthTruncated {
-				truncatedNames = append(truncatedNames, tc.Function.Name)
-			} else {
-				validCalls = append(validCalls, tc)
-			}
-			continue
-		}
-		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(args), &parsed); err != nil {
-			// Case 1: JSON parse failure  - the arguments are not valid JSON.
-			// This is always a truncation or generation error regardless of
-			// finish_reason. The tool handler would fail on json.Unmarshal
-			// anyway, so removing the call and hinting is strictly better
-			// than letting it through to produce a confusing error message.
-			truncatedNames = append(truncatedNames, tc.Function.Name)
-			if truncatedArgs == nil {
-				truncatedArgs = make(map[string]string)
-			}
-			truncatedArgs[tc.Function.Name] = args
-			log.Printf("[LLM Stream] truncated tool call (invalid JSON): %s args=%d bytes finish_reason=%s", tc.Function.Name, len(args), finishReason)
-		} else if missingField := detectTruncatedRequiredField(tc.Function.Name, parsed); missingField != "" {
-			// Case 2: JSON valid but required field missing.
-			// With finish_reason="length" this is definitely truncation.
-			// Without "length" but with large args (>4000 bytes), some API
-			// proxies (e.g. 智谱 GLM) return "stop" instead of "length"
-			// when hitting max_output_tokens  - still treat as truncation.
-			if isLengthTruncated || len(args) > 4000 {
-				truncatedNames = append(truncatedNames, tc.Function.Name)
-				if truncatedArgs == nil {
-					truncatedArgs = make(map[string]string)
-				}
-				truncatedArgs[tc.Function.Name] = args
-				log.Printf("[LLM Stream] truncated tool call (missing required field %q): %s args=%d bytes finish_reason=%s",
-					missingField, tc.Function.Name, len(args), finishReason)
-			} else {
-				// Small args + not length-truncated: genuine model error, let
-				// the tool handler report the missing parameter normally.
-				validCalls = append(validCalls, tc)
-			}
-		} else {
-			validCalls = append(validCalls, tc)
-		}
-	}
-	if len(truncatedNames) == 0 {
-		return finishReason, nil, nil
-	}
-	msg.ToolCalls = validCalls
-	// Do NOT append hint to msg.Content  - the agent loop will inject it
-	// as a separate system message. Keeping msg.Content clean ensures the
-	// assistant message in conversation history only contains the LLM's
-	// own text, not system-injected recovery instructions.
-	return finishReason, truncatedNames, truncatedArgs
-}
-
-// truncatedRequiredFields maps tool names to their required fields for
-// truncation detection. These are the tool calls most likely to become unsafe
-// when output stops after emitting only part of the argument object.
-var truncatedRequiredFields = map[string][]string{
-	"write_file": {"path", "content"},
-	"edit_file":  {"path", "old_string", "new_string"},
-	"edit_lines": {"path", "operation", "start_line"},
-	"bash":       {"command"},
-}
-
-// detectTruncatedRequiredField checks if a parsed tool call argument map is
-// missing a required field, which indicates the output was truncated by the
-// model's max_output_tokens limit.
-//
-// This is NOT a general parameter validation  - it specifically detects the
-// pattern where a large field (e.g. content) consumed the entire output
-// budget, preventing subsequent required fields from being generated.
-func detectTruncatedRequiredField(toolName string, parsed map[string]interface{}) string {
-	fields, ok := truncatedRequiredFields[strings.TrimSpace(toolName)]
-	if !ok {
-		return ""
-	}
-	for _, f := range fields {
-		value, exists := parsed[f]
-		if !exists {
-			return f
-		}
-		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
-			return f
-		}
-	}
-	return ""
+	return llm.FilterStreamTruncatedToolCalls(msg, finishReason)
 }
 
 func llmProviderDisplayName(providerName string) string {

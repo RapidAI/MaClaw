@@ -342,6 +342,11 @@ type AppConfig struct {
 	// own pet. It is deliberately opt-in: the default behavior is to mirror the
 	// pet chosen in the desktop's system pet settings on every device.
 	HardwareAllowCustomPets bool `json:"hardware_allow_custom_pets,omitempty"`
+	// CodingQualityGateEnabled is the programming-settings quality gate.
+	// Nil or false means off: a finished coding turn is not failed for missing
+	// exploration, verification-shell shape, diff self-check, or similar audits.
+	// Opt in to restore those checks.
+	CodingQualityGateEnabled *bool `json:"coding_quality_gate_enabled,omitempty"`
 	// ACP Mode B: GUI hosts industry ACP so VS Code programming agents use the
 	// desktop AI assistant. Nil means default enabled. Port 0 = ephemeral bind.
 	AcpHostEnabled *bool `json:"acp_host_enabled,omitempty"`
@@ -2043,6 +2048,20 @@ func (c *AppConfig) IsThirdPartyGatewayLocalMode() bool {
 // SetThirdPartyGatewayLocal sets the ThirdPartyGatewayLocalMode pointer field.
 func (c *AppConfig) SetThirdPartyGatewayLocal(v bool) {
 	c.ThirdPartyGatewayLocalMode = &v
+}
+
+// IsCodingQualityGateEnabled reports whether coding tasks should be failed
+// by the post-run quality audit. The product default is off.
+func (c *AppConfig) IsCodingQualityGateEnabled() bool {
+	if c == nil || c.CodingQualityGateEnabled == nil {
+		return false
+	}
+	return *c.CodingQualityGateEnabled
+}
+
+// SetCodingQualityGateEnabled sets the CodingQualityGateEnabled pointer field.
+func (c *AppConfig) SetCodingQualityGateEnabled(v bool) {
+	c.CodingQualityGateEnabled = &v
 }
 
 // IsAcpHostEnabled returns whether Mode B ACP host should run.

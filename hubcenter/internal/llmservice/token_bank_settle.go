@@ -129,8 +129,9 @@ type TokenBankSettlementOutcome struct {
 	NetMicro   int64
 	NetClamped bool
 	Applied    bool
-	// CapHit is "daily", "monthly", or "anomaly" when this settlement crossed
-	// a share limit. Empty on a replay and when no limit applies.
+	// CapHit is "daily" or "monthly" when this settlement crossed an
+	// owner-configured share limit. Empty on a replay and when no limit applies.
+	// A usage spike does not set it and does not pause the share.
 	CapHit string
 }
 
@@ -295,8 +296,8 @@ type tokenBankPriceFallback interface {
 	TokenBankFallbackPrice(ctx context.Context, model string) (TokenBankShareSettlementView, bool, error)
 }
 
-// tokenBankSharePauser stops routing after a cap or anomaly. Store status
-// alone does not stop dispatch.
+// tokenBankSharePauser stops routing after an owner-configured daily or
+// monthly cap. Store status alone does not stop dispatch.
 type tokenBankSharePauser interface {
 	PauseTokenBankShare(ctx context.Context, shareID, reason string) error
 }

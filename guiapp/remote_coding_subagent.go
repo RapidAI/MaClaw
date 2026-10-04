@@ -90,11 +90,12 @@ type RemoteCodingSubAgent struct {
 	// requestKind is supplied by the workbench before it expands a plan step.
 	// It preserves the classification of the user's original short request.
 	requestKind codingRequestKind
-	// operationalRequest marks a run/build/demo turn. It deliberately gets a
-	// smaller, source-safe tool surface so "run it" does not accidentally turn
-	// into an implementation workflow just because it happens over SSH. Build
-	// output is allowed because it is a normal consequence of executing a build.
-	operationalRequest bool
+	// operationalRequest marks a turn that may run commands but must not change
+	// project source. Project launch and host command share that tool surface.
+	// operationalAcceptance selects the evidence contract the classifier stored.
+	// Empty means project launch. The gate does not infer it from task wording.
+	operationalRequest    bool
+	operationalAcceptance codingOperationalAcceptance
 	// maintenance changes presentation only. The underlying SSH tool and safety
 	// policies remain the remote-coding engine shared with development tasks.
 	maintenance bool
@@ -643,11 +644,13 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		r.workspaceWasEmptyAtStart = remoteCodingWorkspaceWasEmptyFromBootstrap(bootstrapResult)
 		log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	}
+	gateOn := codingQualityGateEnabled(r.handler)
 	cb := &remoteCodingCallbacks{
 		agent:                    r,
 		task:                     taskDescription,
 		taskContext:              taskContext,
 		workspaceWasEmptyAtStart: r.workspaceWasEmptyAtStart,
+		qualityGateEnabled:       &gateOn,
 	}
 	cb.tryAttachQualifiedDynamicLifecycleRelay()
 	cb.registerDynamicLifecycleOwner()
@@ -688,7 +691,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 	}
 	// Explorer/reviewer nested agents do not mutate files — skip write-oriented
 	// post-edit audits (diff re-read / git stat) that would only add noise.
-	if r.role == "" || r.role == codingRoleWorker {
+	if gateOn && (r.role == "" || r.role == codingRoleWorker) {
 		cb.completeRemotePostEditAudit()
 	}
 	out := cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
@@ -839,6 +842,16 @@ func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCo
 	return base("success", "")
 }
 
+// remoteCodingHostSuccess matches the ledger adapter's completed statuses.
+func remoteCodingHostSuccess(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "passed", "completed", "done":
+		return true
+	default:
+		return false
+	}
+}
+
 func remoteCodingSubAgentLoopErrorIsCancelled(errText string) bool {
 	lower := strings.ToLower(strings.TrimSpace(errText))
 	return lower == "cancelled" || strings.HasPrefix(lower, "cancelled ")
@@ -855,6 +868,20 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.Localization = c.localization.snapshot()
 	result.CommandsRun = append([]CodingSubAgentCommandResult(nil), commandsRun...)
 	result.RecalledExperienceIDs = c.snapshotRecalledExperienceIDs()
+
+	// Programming settings leave the quality gate off unless the user opts in.
+	// Skip the audit for every status: a successful turn keeps its own summary,
+	// and a real loop failure is not rewritten into a quality-audit failure.
+	if !c.remoteQualityGateEnabled() {
+		result.QualityStatus = codingSubAgentQualityNotNeeded
+		// A successful turn that did not edit files used to pass the ledger only
+		// after this audit set VerifiedNoChange. With the audit off, model success
+		// is the host assertion that an unchanged workspace is acceptable.
+		if remoteCodingHostSuccess(result.Status) && strings.TrimSpace(result.Error) == "" && len(result.FilesModified) == 0 && len(result.FilesCreated) == 0 {
+			result.VerifiedNoChange = true
+		}
+		return result
+	}
 
 	// Nested explorer/reviewer are inspection-only by tool policy. Do not fail them
 	// for missing post-edit confirmation / git diff / implementation "no change".
@@ -888,7 +915,11 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			return result
 		}
 		if result.Status == "success" {
-			if status, summary, _ := summarizeRemoteOperationalQuality(commandsRun, result.ToolCalls); status != codingSubAgentQualityPassed {
+			acceptance := codingOperationalAcceptanceLaunch
+			if c.agent != nil {
+				acceptance = normalizeCodingOperationalAcceptance(c.agent.operationalAcceptance)
+			}
+			if status, summary, _ := summarizeRemoteOperationalQuality(acceptance, commandsRun, result.ToolCalls); status != codingSubAgentQualityPassed {
 				result.Status = "failed"
 				result.Error = compactSubAgentErrorSummary(summary)
 				result.QualityStatus = status
@@ -896,7 +927,11 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 				return result
 			}
 			result.QualityStatus = codingSubAgentQualityPassed
-			result.QualitySummary = "operational request: launch/build command evidence gathered"
+			if acceptance == codingOperationalAcceptanceCommand {
+				result.QualitySummary = "operational request: host command evidence gathered"
+			} else {
+				result.QualitySummary = "operational request: launch/build command evidence gathered"
+			}
 		}
 		return result
 	}
@@ -1998,6 +2033,9 @@ type remoteCodingCallbacks struct {
 	taskContext string
 
 	workspaceWasEmptyAtStart bool
+	// qualityGateEnabled is resolved once for this turn. Nil means the caller
+	// did not resolve it, so the outcome reads the current setting.
+	qualityGateEnabled *bool
 
 	eventSeq       uint64
 	firstReadSeq   uint64
@@ -2200,7 +2238,7 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	} else if c != nil && c.agent != nil && c.agent.readOnlyInquiry {
 		prompt = buildRemoteInquirySystemPrompt(projectDir, workDir)
 	} else if c != nil && c.agent != nil && c.agent.operationalRequest {
-		prompt = buildRemoteOperationalSystemPrompt(projectDir, workDir)
+		prompt = buildRemoteOperationalSystemPrompt(projectDir, workDir, normalizeCodingOperationalAcceptance(c.agent.operationalAcceptance))
 	} else {
 		prompt = buildFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
 	}
@@ -2235,6 +2273,9 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	}
 	if c != nil && c.agent != nil && c.agent.highRiskApproval != nil && c.agent.highRiskApproval.highRiskApproved() {
 		prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+	}
+	if c != nil && !c.remoteQualityGateEnabled() {
+		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
 	}
 	return prompt
 }
@@ -4814,9 +4855,25 @@ Answer the user's repository/code question using read-only evidence from the rem
 }
 
 // buildRemoteOperationalSystemPrompt is the remote counterpart of the local
-// run/build/demo path.  It preserves useful SSH inspection and execution while
-// making the no-code-change boundary explicit to the model and tool policy.
-func buildRemoteOperationalSystemPrompt(projectDir, workDir string) string {
+// operational path. The acceptance argument is the classifier's contract, so
+// a host action is not told to launch a project binary.
+func buildRemoteOperationalSystemPrompt(projectDir, workDir string, acceptance codingOperationalAcceptance) string {
+	if acceptance == codingOperationalAcceptanceCommand {
+		return fmt.Sprintf(`# Remote operational task
+
+Execute the user's host command on the remote machine. This is not a project launch and not an implementation task.
+
+Remote project directory: %s
+Working directory: %s
+
+Rules:
+1. Use ssh_list_dir, ssh_read_file, code_navigation, or targeted ssh_bash only as needed to locate the package, tool, or status command.
+2. Actually run that command with ssh_bash; do not merely say it was run. Do not substitute an unrelated project binary, and do not stop after inspection commands such as ls, cat, which, or hostname.
+3. Do not edit source files or dependency configuration, generate a plan, create tests, or start a TDD/task-number workflow.
+4. Lead with the result, then report the command and exit code/key output. State that no source changes were requested.
+5. If the current task text explicitly asks to clear or delete files inside the project directory, call ssh_bash so the host can prompt or honor Full Control. Do not refuse in prose, and do not run an unrelated existing binary instead.
+`, projectDir, workDir)
+	}
 	return fmt.Sprintf(`# Remote operational task
 
 Execute the user's run/build/demo request against the existing remote project. This is not an implementation task.
@@ -4834,40 +4891,11 @@ Rules:
 `, projectDir, workDir)
 }
 
-// summarizeRemoteOperationalQuality mirrors the local operational acceptance
-// gate: locating files alone is insufficient, while one successful run/build
-// command is enough and does not require implementation verification or diff.
-func summarizeRemoteOperationalQuality(commands []CodingSubAgentCommandResult, toolCalls int) (codingSubAgentQualityStatus, string, int) {
-	successfulLaunch, failedLaunch, otherBashSuccess := 0, 0, 0
-	for _, cmd := range commands {
-		switch classifyOperationalShellCommand(cmd.Command) {
-		case operationalShellLaunchBuild:
-			if cmd.Succeeded {
-				successfulLaunch++
-			} else {
-				failedLaunch++
-			}
-		case operationalShellInspection:
-			// Inspection locates the artifact but is not execution evidence.
-		default:
-			if cmd.Succeeded {
-				otherBashSuccess++
-			}
-		}
-	}
-	if successfulLaunch > 0 {
-		return codingSubAgentQualityPassed, "operational run: launch/build command evidence present", 0
-	}
-	if toolCalls == 0 {
-		return codingSubAgentQualityFailed, "operational task ran no tools (need ssh_bash to launch/build)", 1
-	}
-	if failedLaunch > 0 {
-		return codingSubAgentQualityFailed, "operational task: launch/build command(s) failed", 1
-	}
-	if otherBashSuccess > 0 {
-		return codingSubAgentQualityFailed, "operational task: ran shell commands but none looked like launch/build", 1
-	}
-	return codingSubAgentQualityFailed, "operational task: no launch/build command executed", 1
+// summarizeRemoteOperationalQuality mirrors the local operational evidence
+// gate. Launch needs one successful launch/build command. Command needs one
+// successful non-probe command. Neither path re-reads the task sentence.
+func summarizeRemoteOperationalQuality(acceptance codingOperationalAcceptance, commands []CodingSubAgentCommandResult, toolCalls int) (codingSubAgentQualityStatus, string, int) {
+	return summarizeOperationalShellQuality(acceptance, commands, toolCalls, "operational task ran no tools (need ssh_bash to launch/build)")
 }
 
 // --- Tool Definitions ---

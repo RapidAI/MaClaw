@@ -305,6 +305,39 @@ func authorizedReferencesEqual(left, right []string) bool {
 	return true
 }
 
+// PositiveSchemaInteger reads one canonical integer that schema validation
+// has already accepted. Canonical JSON keeps numbers as json.Number; a later
+// unmarshal yields float64. A fraction, a non-number, or a value below 1 is
+// not a page start.
+func PositiveSchemaInteger(raw interface{}) (int, bool) {
+	const maxLine = int64(1<<31 - 1)
+	switch n := raw.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil || i < 1 || i > maxLine {
+			return 0, false
+		}
+		return int(i), true
+	case float64:
+		if n < 1 || n > float64(maxLine) || n != float64(int64(n)) {
+			return 0, false
+		}
+		return int(n), true
+	case int:
+		if n < 1 || int64(n) > maxLine {
+			return 0, false
+		}
+		return n, true
+	case int64:
+		if n < 1 || n > maxLine {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 func decodeCanonicalJSON(data []byte) (interface{}, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()

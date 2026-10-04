@@ -62,6 +62,7 @@
 #include "services/gateway_transport.h"
 #include "services/gateway_tool_result_outbox_policy.h"
 #include "services/gateway_tool_result_service.h"
+#include "services/latency_trace.h"
 #include "services/cellular_recovery_service.h"
 #include "services/wifi_runtime_configuration_service.h"
 #include "services/wifi_startup_service.h"
@@ -2040,13 +2041,24 @@ static esp_err_t audio_wake_word_stop_with_timeout(uint32_t timeout_ms) {
 static device_status_t server_audio_play_mp3(const uint8_t *data, uint32_t length,
                                              void *context) {
     (void)context;
-    return mp3_player_play(data, length);
+    /* The bytes are in hand and about to enter the decoder: this is the first
+     * server audio byte of the turn.  Flushing after the call keeps the
+     * rendered-frame mark inside the same latency line. */
+    latency_trace_mark(LATENCY_MARK_TTS);
+    device_status_t status = mp3_player_play(data, length);
+    latency_trace_flush();
+    return status;
 }
 
 static device_status_t server_audio_play_wav(const uint8_t *data, uint32_t length,
                                              void *context) {
     (void)context;
-    return audio_arbitration_play_wav(data, length);
+    /* WAV playback reports no separate decode step, so the first audio byte is
+     * also the best available response metric for this format. */
+    latency_trace_mark(LATENCY_MARK_TTS);
+    device_status_t status = audio_arbitration_play_wav(data, length);
+    latency_trace_flush();
+    return status;
 }
 
 static bool hardware_audio_url_allowed(const char *url) {

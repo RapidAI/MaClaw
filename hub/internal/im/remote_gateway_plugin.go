@@ -1067,6 +1067,14 @@ func (p *RemoteGatewayPlugin) ownerForTenantLocked(tenantID string) *gatewayOwne
 
 func (p *RemoteGatewayPlugin) setOwnerForTenantLocked(tenantID string, owner *gatewayOwner) {
 	tenantID = normalizeRemoteTenantID(tenantID)
+	// Link-health accounting hangs off the single owner-write choke point so
+	// every claim path (initial claim and same-user takeover) is counted, and
+	// so the online period starts exactly when the brain becomes reachable.
+	claimedAt := time.Now()
+	if owner != nil && !owner.ClaimedAt.IsZero() {
+		claimedAt = owner.ClaimedAt
+	}
+	LinkHealth().ObserveGuiClaim(tenantID, claimedAt)
 	if tenantID == store.DefaultTenantID {
 		p.owner = owner
 		return
@@ -1079,6 +1087,10 @@ func (p *RemoteGatewayPlugin) setOwnerForTenantLocked(tenantID string, owner *ga
 
 func (p *RemoteGatewayPlugin) clearOwnerForTenantLocked(tenantID string) {
 	tenantID = normalizeRemoteTenantID(tenantID)
+	// Paired with setOwnerForTenantLocked: closing the online period here keeps
+	// the GUI online ratio honest even when the GUI exits without a clean
+	// release (the seq-guarded release path lands here too).
+	LinkHealth().ObserveGuiRelease(tenantID, time.Now())
 	if tenantID == store.DefaultTenantID {
 		p.owner = nil
 		return

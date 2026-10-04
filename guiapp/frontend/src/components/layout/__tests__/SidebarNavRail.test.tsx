@@ -523,41 +523,7 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
     });
 
-    it('opens the Token Bank settings tab from the extensions menu', () => {
-        const props = renderRail({ lang: 'zh-Hans' });
-        const openSettingsEvents: Array<{ tab?: string }> = [];
-        const listener = (event: Event) => {
-            openSettingsEvents.push((event as CustomEvent<{ tab?: string }>).detail);
-        };
-        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
-        try {
-            fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
-            fireEvent.click(screen.getByTestId('extensions-menu-tokenbank'));
-
-            expect(openSettingsEvents).toEqual([{ tab: 'tokenBank' }]);
-            expect(props.switchTool).not.toHaveBeenCalled();
-            expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
-        } finally {
-            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
-        }
-    });
-
-    it('labels the Token Bank entry per language', () => {
-        const cases: Array<[string, string]> = [
-            ['zh-Hans', 'Token 银行'],
-            ['zh-Hant', 'Token 銀行'],
-            ['en', 'Token Bank'],
-        ];
-
-        for (const [lang, expected] of cases) {
-            const props = renderRail({ lang });
-            fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
-            expect(screen.getByTestId('extensions-menu-tokenbank').textContent).toContain(expected);
-            props.unmount();
-        }
-    });
-
-    it('keeps skills, MCP and Token Bank only on the extensions menu, not the system menu', () => {
+    it('keeps skills and MCP on the extensions menu, and leaves Token Bank off it', () => {
         renderRail({ lang: 'zh-Hans', gossipAllowed: false, config: {} });
 
         fireEvent.click(screen.getByTestId('system-menu-trigger'));
@@ -568,8 +534,9 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual([
             'extensions-menu-skills',
             'extensions-menu-mcp',
-            'extensions-menu-tokenbank',
         ]);
+        expect(screen.queryByTestId('extensions-menu-tokenbank')).toBeNull();
+        expect(screen.getByTestId('extensions-popup-menu').textContent).not.toContain('Token');
     });
 
     it('marks the 扩展 entry active on the skills and mcp pages', () => {

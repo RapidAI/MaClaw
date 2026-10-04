@@ -11,8 +11,14 @@ import (
 	"time"
 )
 
-// DefaultInvocationGrantTTL is the production grant lifetime for IssueReady
-// and PublishSurface. Hosts pass this instead of copying a private duration.
+// DefaultInvocationGrantTTL is the wall-clock bound on one signed invocation
+// grant, measured from issuance. It limits a credential that is no longer in
+// the live turn's hand: a leaked copy, a finished turn, or a process that
+// stopped refreshing the surface. It is not a budget on how long that turn
+// may work. While the same turn is still executing, an unconsumed grant that
+// fails only this clock is replaced by a new one-time grant for the same
+// selection (see PrepareExpiredRenewal). A consumed or revoked grant is never
+// replaced. Hosts pass this duration instead of copying a private one.
 const DefaultInvocationGrantTTL = 10 * time.Minute
 
 // InvocationScope is supplied by the trusted host, never by model arguments.
@@ -280,7 +286,7 @@ func (i *InvocationIssuer) IssueReady(plan ToolPlan, scope InvocationScope, ttl 
 // transaction. Callers that do not own that transaction must use
 // ValidateAndConsume instead.
 func (i *InvocationIssuer) Validate(grant InvocationGrant, scope InvocationScope, plan ToolPlan, satisfied ...map[string]bool) (PlannedSelection, error) {
-	selection, _, err := i.validateWithPayloadVersions(grant, scope, plan, false, satisfied...)
+	selection, _, err := i.validateWithPayloadVersions(grant, scope, plan, false, time.Time{}, satisfied...)
 	return selection, err
 }
 
@@ -292,8 +298,99 @@ func (i *InvocationIssuer) Validate(grant InvocationGrant, scope InvocationScope
 // callers that do not own a trusted route snapshot must not guess one from
 // model input or a function name.
 func (i *InvocationIssuer) ValidateWithCanonicalScope(grant InvocationGrant, scope InvocationScope, plan ToolPlan, satisfied ...map[string]bool) (PlannedSelection, error) {
-	selection, _, err := i.validateWithPayloadVersions(grant, scope, plan, true, satisfied...)
+	selection, _, err := i.validateWithPayloadVersions(grant, scope, plan, true, time.Time{}, satisfied...)
 	return selection, err
+}
+
+// PrepareExpiredRenewal builds a successor for a grant whose only failure is
+// the wall clock. The successor is signed and not yet stored. It carries the
+// same selection, scope, and parameter authorization, with a new nonce and
+// ExpiresAt = now+ttl. A grant that is still inside its window, or that fails
+// scope, catalog, or selection binding, is not renewed: those failures are
+// returned as-is. now is the caller's clock so a durable transaction and this
+// signature agree on the new window.
+func (i *InvocationIssuer) PrepareExpiredRenewal(grant InvocationGrant, scope InvocationScope, plan ToolPlan, ttl time.Duration, now time.Time, satisfied map[string]bool) (InvocationGrant, error) {
+	if i == nil {
+		return InvocationGrant{}, fmt.Errorf("nil invocation issuer")
+	}
+	if ttl <= 0 {
+		return InvocationGrant{}, fmt.Errorf("invocation grant ttl must be positive")
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = i.now().UTC()
+	}
+	if grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(grant.IssuedAt) {
+		return InvocationGrant{}, fmt.Errorf("invocation_grant_expired")
+	}
+	// Binding is checked at a moment still inside the old window, so a scope
+	// or selection mismatch is not hidden behind the clock. The public
+	// Validate path keeps checking the real clock first.
+	if _, _, err := i.validateWithPayloadVersions(grant, scope, plan, true, grant.ExpiresAt.Add(-time.Nanosecond), satisfied); err != nil {
+		return InvocationGrant{}, err
+	}
+	if now.Before(grant.ExpiresAt.UTC()) {
+		return InvocationGrant{}, fmt.Errorf("invocation_grant_not_expired")
+	}
+	nonce, err := randomInvocationNonce()
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	successor := grant
+	successor.Scope = scope
+	successor.IssuedAt = now
+	successor.ExpiresAt = now.Add(ttl)
+	successor.Nonce = nonce
+	successor.Token = ""
+	successor.Signature = ""
+	successor.Token = invocationToken(successor)
+	successor.Signature = i.sign(successor)
+	return successor, nil
+}
+
+// RenewExpired stores the successor from PrepareExpiredRenewal and revokes the
+// previous unconsumed nonce. Hosts that share the grant row with route
+// materialization use the coordinator's single transaction instead.
+func (i *InvocationIssuer) RenewExpired(grant InvocationGrant, scope InvocationScope, plan ToolPlan, ttl time.Duration, now time.Time, satisfied map[string]bool) (InvocationGrant, error) {
+	successor, err := i.PrepareExpiredRenewal(grant, scope, plan, ttl, now, satisfied)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := i.commitExpiredRenewal(grant, successor); err != nil {
+		return InvocationGrant{}, err
+	}
+	return successor, nil
+}
+
+func (i *InvocationIssuer) commitExpiredRenewal(previous, successor InvocationGrant) error {
+	if i == nil || i.store == nil {
+		return fmt.Errorf("invocation grant store is unavailable")
+	}
+	var last error
+	for _, fingerprint := range i.FingerprintCandidates(previous) {
+		err := i.store.ReplaceIssued(previous.Nonce, fingerprint, successor)
+		if err == nil {
+			return nil
+		}
+		// Only a layout miss is safe to continue. Each ReplaceIssued is its
+		// own transaction, but a collision or store error must not be retried
+		// under the next fingerprint and then reported as a miss.
+		if !invocationGrantReplacementMiss(err) {
+			return err
+		}
+		last = err
+	}
+	if last == nil {
+		last = fmt.Errorf("invocation_grant_invalid")
+	}
+	return last
+}
+
+// invocationGrantReplacementMiss is the only store result that means "this
+// fingerprint is not the row". Every other result, including a successor
+// nonce collision, has a final meaning and must stop the candidate loop.
+func invocationGrantReplacementMiss(err error) bool {
+	return err != nil && err.Error() == "invocation_grant_invalid"
 }
 
 // validateWithPayloadVersions is the implementation shared by Validate and
@@ -301,7 +398,7 @@ func (i *InvocationIssuer) ValidateWithCanonicalScope(grant InvocationGrant, sco
 // matched the grant. A caller must use those versions when looking up the
 // durable replay fingerprint; recomputing only the current payload would make
 // a valid pre-migration grant appear to have disappeared from the store.
-func (i *InvocationIssuer) validateWithPayloadVersions(grant InvocationGrant, scope InvocationScope, plan ToolPlan, allowCanonicalSnapshot bool, satisfied ...map[string]bool) (PlannedSelection, []invocationGrantPayloadVersion, error) {
+func (i *InvocationIssuer) validateWithPayloadVersions(grant InvocationGrant, scope InvocationScope, plan ToolPlan, allowCanonicalSnapshot bool, at time.Time, satisfied ...map[string]bool) (PlannedSelection, []invocationGrantPayloadVersion, error) {
 	if i == nil {
 		return PlannedSelection{}, nil, fmt.Errorf("nil invocation issuer")
 	}
@@ -319,7 +416,11 @@ func (i *InvocationIssuer) validateWithPayloadVersions(grant InvocationGrant, sc
 		}
 		effectiveGrant.Scope.ToolSnapshotID = strings.TrimSpace(scope.ToolSnapshotID)
 	}
-	if !i.now().UTC().Before(grant.ExpiresAt.UTC()) || grant.ExpiresAt.Before(grant.IssuedAt) {
+	now := i.now()
+	if !at.IsZero() {
+		now = at
+	}
+	if !now.UTC().Before(grant.ExpiresAt.UTC()) || grant.ExpiresAt.Before(grant.IssuedAt) {
 		return PlannedSelection{}, nil, fmt.Errorf("invocation_grant_expired")
 	}
 	if effectiveGrant.Scope != scope || scope.RootTaskID != plan.RootTaskID || scope.PlanID != plan.ID {
@@ -360,7 +461,7 @@ func (i *InvocationIssuer) validateWithPayloadVersions(grant InvocationGrant, sc
 // across host-call admission and execution must instead use Validate followed
 // by SemanticExecutionCoordinator.Admit.
 func (i *InvocationIssuer) ValidateAndConsume(grant InvocationGrant, scope InvocationScope, plan ToolPlan, satisfied ...map[string]bool) (PlannedSelection, error) {
-	selection, matchedVersions, err := i.validateWithPayloadVersions(grant, scope, plan, false, satisfied...)
+	selection, matchedVersions, err := i.validateWithPayloadVersions(grant, scope, plan, false, time.Time{}, satisfied...)
 	if err != nil {
 		return PlannedSelection{}, err
 	}
@@ -373,7 +474,7 @@ func (i *InvocationIssuer) ValidateAndConsume(grant InvocationGrant, scope Invoc
 // supplies a concrete canonical scope from durable route state. Callers that
 // do not own that state must use the strict ValidateAndConsume method.
 func (i *InvocationIssuer) ValidateAndConsumeWithCanonicalScope(grant InvocationGrant, scope InvocationScope, plan ToolPlan, satisfied ...map[string]bool) (PlannedSelection, error) {
-	selection, matchedVersions, err := i.validateWithPayloadVersions(grant, scope, plan, true, satisfied...)
+	selection, matchedVersions, err := i.validateWithPayloadVersions(grant, scope, plan, true, time.Time{}, satisfied...)
 	if err != nil {
 		return PlannedSelection{}, err
 	}

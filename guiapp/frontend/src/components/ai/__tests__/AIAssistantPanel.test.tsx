@@ -1635,7 +1635,7 @@ describe('AIAssistantPanel property tests', () => {
             'Notifications',
             'Mobile documents (shared Hub library)',
             'Buy service redemption cards',
-            'Search tasks, files, knowledge, experts',
+            'Search tasks, cloud files, workspaces, knowledge, experts',
             'Knowledge Base',
             'Refresh news',
             'New conversation',
@@ -1699,7 +1699,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(getByTestId('ai-welcome-container')).toBeTruthy();
-        fireEvent.mouseDown(getByTitle('Search tasks, files, knowledge, experts'));
+        fireEvent.mouseDown(getByTitle('Search tasks, cloud files, workspaces, knowledge, experts'));
         await waitFor(() => expect(getByTestId('project-search-panel')).toBeTruthy());
 
         const panel = getByTestId('project-search-panel');
@@ -1739,7 +1739,7 @@ describe('AIAssistantPanel property tests', () => {
             state: { messages: [], sending: false, streaming: false, ready: true, active: true },
         });
 
-        fireEvent.mouseDown(getByTitle('Search tasks, files, knowledge, experts'));
+        fireEvent.mouseDown(getByTitle('Search tasks, cloud files, workspaces, knowledge, experts'));
         await waitFor(() => expect(getByTestId('project-search-input')).toBeTruthy());
 
         rerender(
@@ -3689,6 +3689,7 @@ describe('AIAssistantPanel property tests', () => {
             expect(live?.textContent).toBe('正在思考');
             expect(live?.className).toContain('assistant-reasoning-live-label');
         });
+        expect(container.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]')?.open).toBe(true);
         expect(container.textContent || '').toContain('Let me explore the repository.');
         expect(queryByTestId('coding-agent-working-trail')).toBeNull();
 
@@ -3723,6 +3724,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(liveEdit?.className).toContain('assistant-reasoning-live-label');
         expect(container.querySelector('[data-live="true"] .assistant-reasoning-live-label')).toBeTruthy();
         expect(container.querySelector('[data-live="false"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程');
+        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(false);
 
         const calling = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"unknown_mcp"}';
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
@@ -3793,6 +3795,7 @@ describe('AIAssistantPanel property tests', () => {
         });
         expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
         expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(false);
     });
 
     it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {

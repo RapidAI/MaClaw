@@ -2027,14 +2027,87 @@ func TestCreateExpertTaskIsListedAndDeduplicated(t *testing.T) {
 	}
 }
 
+func TestEnsureAssistantTabTaskVEDoesNotCreateLocalChatTask(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	got := app.EnsureAssistantTabTask("ve", "machine-123", "码卡龙安妮小姐姐", "")
+	if got.ProjectPath != "" {
+		t.Fatalf("digital employee chat created local task %q", got.ProjectPath)
+	}
+	if listed := app.ListTasks(50); len(listed) != 0 {
+		t.Fatalf("ListTasks = %#v, want no local chat task for a digital employee", listed)
+	}
+
+	// A row already written by an older build must stay off the sidebar.
+	legacy := app.createTaskRecord("码卡龙安妮小姐姐", "# 码卡龙安妮小姐姐\n\nSecondary AI assistant tab.\nType: ve", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		assistantTabSourceTag("ve", "machine-123"),
+	})
+	if legacy.ProjectPath == "" {
+		t.Fatal("legacy digital employee task was not created")
+	}
+	for _, item := range app.ListTasks(50) {
+		if item.ProjectPath == legacy.ProjectPath || item.Name == "码卡龙安妮小姐姐" {
+			t.Fatalf("legacy digital employee chat still listed: %#v", item)
+		}
+	}
+	for _, item := range app.SearchProjects("码卡龙安妮小姐姐", 20) {
+		if item.ProjectPath == legacy.ProjectPath {
+			t.Fatalf("project search still returned digital employee chat: %#v", item)
+		}
+	}
+
+	ordinary := app.CreateTask("Ordinary chat", "")
+	if ordinary.ProjectPath == "" {
+		t.Fatal("ordinary task was not created")
+	}
+	newerVE := app.createTaskRecord("另一个数字员工", "# 另一个数字员工\n\nSecondary AI assistant tab.\nType: ve", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		assistantTabSourceTag("ve", "machine-456"),
+	})
+	if newerVE.ProjectPath == "" {
+		t.Fatal("newer digital employee task was not created")
+	}
+	// The digital-employee row is newest. A one-row search must still return the
+	// real task instead of an empty window.
+	recent := app.SearchProjects("", 1)
+	if len(recent) != 1 || recent[0].ProjectPath != ordinary.ProjectPath {
+		t.Fatalf("SearchProjects recent = %#v, want ordinary task %q", recent, ordinary.ProjectPath)
+	}
+}
+
+func TestRecoverManagedTaskRecordsFromDiskSkipsDigitalEmployeeChat(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	taskDir := filepath.Join(app.GetDataDir(), "tasks", "码卡龙安妮小姐姐-1787000000001")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatalf("mkdir VE leftover: %v", err)
+	}
+	content := "# 码卡龙安妮小姐姐\n\nSecondary AI assistant tab.\nType: ve\n"
+	if err := os.WriteFile(filepath.Join(taskDir, "task.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write VE leftover: %v", err)
+	}
+	if n := app.recoverManagedTaskRecordsFromDisk(); n != 0 {
+		t.Fatalf("recoverManagedTaskRecordsFromDisk = %d, want 0", n)
+	}
+	wantPath := normalizeProjectSessionPath(taskDir)
+	for _, item := range app.ListTasks(50) {
+		if normalizeProjectSessionPath(item.ProjectPath) == wantPath {
+			t.Fatalf("recovered digital employee chat %q", item.ProjectPath)
+		}
+	}
+}
+
 func TestEnsureAssistantTabTaskIsListedAndDeduplicated(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	first := app.EnsureAssistantTabTask("ve", "machine-123", "Research assistant", "")
+	first := app.EnsureAssistantTabTask("discussion", "discussion-123", "Research assistant", "")
 	if first.ProjectPath == "" {
 		t.Fatal("EnsureAssistantTabTask returned empty project path")
 	}
-	second := app.EnsureAssistantTabTask("ve", "machine-123", "Renamed assistant", "")
+	second := app.EnsureAssistantTabTask("discussion", "discussion-123", "Renamed assistant", "")
 	if second.ProjectPath != first.ProjectPath {
 		t.Fatalf("second assistant tab task path = %q, want %q", second.ProjectPath, first.ProjectPath)
 	}
@@ -2054,7 +2127,7 @@ func TestEnsureAssistantTabTaskIsListedAndDeduplicated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read assistant task content: %v", err)
 	}
-	if strings.Contains(string(content), "machine-123") {
+	if strings.Contains(string(content), "discussion-123") {
 		t.Fatalf("assistant task content leaked raw tab identity: %q", content)
 	}
 }

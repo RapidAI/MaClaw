@@ -2060,7 +2060,7 @@ func TestWriteOpenAIStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 	rec := httptest.NewRecorder()
-	_, wroteStream, err := writeOpenAIStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil)
+	_, wroteStream, err := writeOpenAIStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil)
 	if err != nil {
 		t.Fatalf("writeOpenAIStreamResponse() error = %v", err)
 	}

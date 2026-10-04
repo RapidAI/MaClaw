@@ -15,7 +15,7 @@ func codingRepeatSurface(t *testing.T, turn string) (*IMMessageHandler, *semanti
 	t.Helper()
 	reads := 0
 	h := semanticCodingHandler(t, intent.LabelCoding)
-	h.semanticTrustedFileRead = func(_, path, _, _ string) (string, error) {
+	h.semanticTrustedFileRead = func(_, path, _, _ string, _ int) (string, error) {
 		reads++
 		return "contents of " + path, nil
 	}

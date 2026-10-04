@@ -913,7 +913,7 @@ gpt-4o-mini   tier=high（token_bank_high，×2.0）   定价表: 3.0 / 6.0 Cred
 |---|---|---|
 | 6 | **健康度评分 + 调度权重** ✅ §17.11 | 样本满 5 次后，按成功率给 Token Bank 成员加权；平均延迟超过 5 秒再减半 |
 | 7 | **日/月 token 熔断** ✅ §17.11 | 到达日或月 token 上限后，当笔仍入账，随后暂停分享并记下 `token cap` |
-| 8 | **异常消耗告警** ✅ §17.11 | 当日 token 超过前 7 日日均的 5 倍时记 `anomaly` 并走同一条暂停。硬熔断优先于异常 |
+| 8 | **用量尖峰不自动暂停**（2026-10-04 撤回） | 当日 token 超过前 7 日日均的 5 倍时不再暂停分享。分享者自己设置的日/月 token 上限仍然会在超限后暂停 |
 | 9 | **积分消费闭环** ✅ 沿用既有 hub Grant（§12.1） | 没有提现（§12）。花费发生在 hub `Source=token_bank` 的 permanent Grant 被助手调用消耗时。购买钱包与 `CreditsService.Debit` 不进入这条链路（决策 11） |
 | 10 | **分时/分模型收益曲线** ✅ §17.11 | `GET /api/v1/token-bank/usage/daily`：近 30 天净额与 Top 10 模型 |
 | 11 | **对账导出（CSV）** ✅ §17.11 | `GET /api/v1/token-bank/usage.csv`，最多 5000 行 |
@@ -953,7 +953,7 @@ gpt-4o-mini   tier=high（token_bank_high，×2.0）   定价表: 3.0 / 6.0 Cred
 | **P0-8 身份验证门** ✅ **已落地** | 分享前校验 `sm_users.status == verified`；未验证时桌面先展示服务端原文，仅当文案是身份门时才提供邮箱验证 | `TestTokenBankSubmitShareRejectsUnverifiedAccount` 返回 403 `identity_not_verified`。确认框只在文案含 `identity_not_verified` 或 `verify your account before sharing` 时出现。拒绝验证时分享对话框保持打开 |
 | **P0-9 积分分享链接** ✅ **已落地** | `credit_share_links` 表 + API + 创建时冻结 + 50% 上限。领取只绑定接收人、不转账，并路由到 `origin_node_id`。接收方提取时先 `SettleClaimedGift`，再由该 hub 写入 `Source=token_bank` 的 Grant。C2 解冻差额不为负 | `TestGiftClaimIsFirstComeOnly`、`TestGiftClaimMovesNoMoney`、`TestGiftCannotOverIssueWhenSenderWithdrawsFirst`、`TestGiftUnfreezeShortfallDoesNotDriveFrozenNegative`、`TestTokenBankClaimRoutesToOriginAndRefusesLocalFallback` |
 | **P0-10 GUI 分享积分** ✅ **面板、落地页与深链已落地** | 顶部积分总览条 + 分享弹窗 + 链接/二维码 + 我发出的列表 + 撤销。领取可以粘贴 code 或 URL，也可以打开 `https://<host>/c/<code>` 或 `maclaw://credit/<code>`。code 只在创建时返回一次 | 面板测试覆盖整额链接、列表不含 code、超额拦截、撤销确认、粘贴 URL 后按该笔金额提取，以及深链预填后不自动领取。`GET /c/{code}` 只对 10 位分享码返回页面，不回显非法路径。桌面窗口仍未点击 |
-| **P1** ✅ **已落地（§17.11）** | §9 的 1–8 与 10–12：连续失败自动暂停、原地换 Key、在途结算、新模型提醒、自用豁免、健康度权重、日/月熔断、异常告警、30 天收益与 Top 模型、CSV、服务商黑名单 | 定向 `go test` 与 vitest 通过。桌面 GUI 未做交互点击，也未重新打包 |
+| **P1** ✅ **已落地（§17.11）** | §9 的 1–7 与 10–12：连续失败自动暂停、原地换 Key、在途结算、新模型提醒、自用豁免、健康度权重、日/月熔断、30 天收益与 Top 模型、CSV、服务商黑名单。第 8 条用量尖峰暂停已于 2026-10-04 撤回 | 定向 `go test` 与 vitest 通过。桌面 GUI 未做交互点击，也未重新打包 |
 | **P1-消费闭环** ✅ **沿用既有 hub Grant，本阶段无新代码** | 花费发生在 hub `Source=token_bank` 的 permanent Grant 被助手调用消耗时（§12.1）。不做提现，不接法币，购买钱包不进入这条链路（决策 11） | 闭环 = 结算入账 → 提取 → hub Grant → 助手消耗。Token 银行积分不能购买算力卡（2026-10-02 确认） |
 | **P2** ✅ **2026-10-02** | §9 #14–#20：私有分享、排行榜与徽章、一键导入、多 Key 轮转、24h 灰度、`hck_` 批量创建。毛利透视图此前已有 | 定向 `go test` 与 vitest。没有法币提现，也不能用积分购买算力卡。桌面窗口未点击，安装包未重打 |
 
@@ -1052,7 +1052,7 @@ GUI 的 Token 银行 tab 不出现任何"提现""转出到余额"入口——只
 | 定价表填错导致单价离谱 | 分享者收益异常、消费者投诉 | 定价表改动留审计日志；提供「按官方价试算」的**只读参考**（不进计算）；异常单价告警 |
 | Key 被平台侧泄露 | 信任崩塌、法律 | 双层加密 + 明文零出参 + secretbox 清零 |
 | 服务商 ToS 禁止 key 共享 | 封号/法律 | 黑名单 + 用户声明 |
-| 盗刷导致分享者巨额账单 | 用户流失 | 日/月熔断 + 异常告警（P1 #7 #8） |
+| 盗刷导致分享者巨额账单 | 用户流失 | 分享者自己设置的日/月 token 上限（P1 #7）。用量尖峰不再自动暂停（P1 #8，2026-10-04） |
 | 结算丢失/重复 | 对账纠纷 | request_id 唯一键幂等 |
 | 分享者取出后明细变孤儿 | 用户看不到历史赚了多少 | `token_bank_usage` 冗余 `owner_user_id` + `share_display_name` 快照（§4） |
 | **分享链接被领两次**（HA 并发） | 超发积分，资损 | 领取路由到 `origin_node_id` 裁决 + 条件 UPDATE `RowsAffected==1`（§8 第 9 条）。**必须写并发测试** |
@@ -2150,7 +2150,7 @@ P0-7「模型接入管理」的验收判据是**「评级改后新请求按新�
 | 5 | `HubBelongsToUser` 用邮箱把 hub 连到 `sm_users`。命中则跳过结算；查询出错仍结算；缺表视为非本人 | `TestSettleTokenBankUsageSkipsSelfUse`、`TestSettleTokenBankUsagePaysWhenSelfUseLookupFails`、`TestHubBelongsToUser` |
 | 6 | 只对 `tbk_` 成员、且窗口样本不少于 5 时，把权重乘上 `round(100 * 成功率)`，下限 1。平均延迟超过 5000ms 时，这个百分数再减半。冷成员保持原权重。`DispatchWeight > 1` 仍直接走加权，原有 WRR 用例保持原语义 | `TestEffectiveDispatchWeightScalesTokenBankMembersOnly`、`TestOrderArrayMembersUsesWeight` |
 | 7 | 用量插入成功后累加已用 token，并按上海时区的当日 / 当月合计比较上限。0 表示不限。当笔仍然入账。重放不报 `CapHit`、也不再暂停。日上限优先于月上限。暂停发生在事务外，原因是 `token cap: daily` 或 `token cap: monthly` | `TestSettleTokenBankUsageDailyCapCreditsThenReportsHit`、`TestSettleTokenBankUsageMonthlyCap`、`TestSettleTokenBankUsageDailyCapWinsOverAnomaly`、`TestPauseTokenBankShareRecordsTheCap`、`TestSettleTokenBankUsagePausesOnCapHitOnce` |
-| 8 | 前 7 日（不含今天）合计大于 0，且 `today * 7 > prev * 5` 时记 `anomaly`，走同一条暂停。硬熔断优先 | `TestSettleTokenBankUsageAnomaly`。日界用上海零点；昨天取 `dayStart` 往前一小时的 UTC |
+| 8 | 前 7 日用量再高也不记 `anomaly`，也不暂停。同一组数据只入账。日/月上限仍按第 7 条暂停。启动时在路由锁内先恢复注册表成员，再把仍停着的分享行改为可用，并保留 `token cap: anomaly`。复制来的注册表若再次暂停这些成员，落地后按这条原因再恢复一次。其它暂停原因和它们的成员不动 | `TestSettleTokenBankUsageAnomaly`、`TestPauseTokenBankShareIgnoresUsageSpike`、`TestResumeSharesPausedForUsageSpikeLeavesOtherPauses`、`TestResumeUsageSpikePauseResumesRegistryMembers` |
 | 9 | 助手消耗的是 hub 上 `Source=token_bank` 的 permanent Grant。结算入账、提取、Grant、调用消耗这条链路在 P0-0b 已经接通 | 本阶段无新增代码，也未接 `CreditsService.Debit` |
 | 10 | `GET /api/v1/token-bank/usage/daily?days=`。缺省与非法为 30，大于 366 钳到 366。按所有者隔离，按 UTC 日期分组，Top 模型按净额取 10 条 | `TestTokenBankUsageDailyIsOwnerScoped`、`TestTokenBankUsageDailyAndCSV` |
 | 11 | `GET /api/v1/token-bank/usage.csv`，`text/csv`，列 `created_at,request_id,model,input_tokens,output_tokens,gross_micro,fee_micro,net_micro,charged_micro`，最多 5000 行。导出行类型是 `TokenBankUsageExportRow` | `TestTokenBankUsageExportCapsAt5000`、`TestTokenBankUsageDailyAndCSV` |

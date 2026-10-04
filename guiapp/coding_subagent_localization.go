@@ -674,6 +674,8 @@ const localizationIncompleteReportGuidance = ` If this is exploration or new-fea
 
 const localizationReportNotRequiredMessage = "report_localization skipped: this task is not a bug-fix of existing code. Do not retry this tool. Continue exploring or implementing with read/search/edit tools."
 
+const localizationReportOptionalMessage = "report_localization skipped: a localization report is not required for this turn. Do not retry this tool. Continue with the edit."
+
 func localizationInvalidEvidenceMessage(err error) string {
 	if err == nil {
 		return "invalid localization evidence"
@@ -1783,6 +1785,10 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 	if c == nil {
 		return codingToolExecutionResult{Text: "localization state unavailable", Outcome: codingToolOutcomeFailed}
 	}
+	if !c.codingQualityGateOn() {
+		log.Printf("[coding-localization] report skipped stage=quality_gate_off task=%d", taskDisplayNumber(c.task))
+		return codingToolExecutionResult{Text: localizationReportOptionalMessage, Outcome: codingToolOutcomeSuccess}
+	}
 	text := ""
 	if c.task != nil {
 		text = c.task.Title + "\n" + c.task.Description
@@ -1813,7 +1819,7 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 }
 
 func (c *codingSubAgentCallbacks) requireLocalizationBeforeExistingBugEdit(path string, created bool) string {
-	if c == nil || created || c.task == nil || (c.subagent != nil && c.subagent.horizonPosture) || !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
+	if c == nil || created || (c.subagent != nil && c.subagent.horizonPosture) || !c.codingQualityGateOn() || c.task == nil || !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		return ""
 	}
 	e := c.localizationForCurrentControlPlaneRevision()
@@ -1844,6 +1850,10 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 	if c == nil {
 		return "localization state unavailable"
 	}
+	if !c.remoteQualityGateEnabled() {
+		log.Printf("[remote-localization] report skipped stage=quality_gate_off project=%q", remoteLocalizationLogProject(c))
+		return localizationReportOptionalMessage
+	}
 	taskText := c.task + "\n" + c.taskContext
 	if strings.TrimSpace(taskText) != "" && !codingTaskNeedsLocalization(taskText) {
 		log.Printf("[remote-localization] report skipped stage=not_bug project=%q", remoteLocalizationLogProject(c))
@@ -1872,7 +1882,7 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 }
 
 func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[string]interface{}, definitelyExisting bool) string {
-	if c == nil || !codingTaskNeedsLocalization(c.task+"\n"+c.taskContext) {
+	if c == nil || !c.remoteQualityGateEnabled() || !codingTaskNeedsLocalization(c.task+"\n"+c.taskContext) {
 		return ""
 	}
 	path := remoteArgStr(args, "path")

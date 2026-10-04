@@ -25,6 +25,9 @@ describe("repairReasoningLineBreaks", () => {
         expect(repairReasoningLineBreaks("Let me read the rest of\nsnake.cpp")).toBe(
             "Let me read the rest of\nsnake.cpp",
         );
+        expect(repairReasoningLineBreaks("Let me read the rest of\r\nsnake.cpp")).toBe(
+            "Let me read the rest of\nsnake.cpp",
+        );
     });
 
     it("keeps ordered and bullet lists on their own lines", () => {
@@ -59,6 +62,17 @@ describe("repairReasoningLineBreaks", () => {
 
     it("does not join prose onto a closing fence", () => {
         expect(repairReasoningLineBreaks("```\ncode\n```\nstill outside")).toBe("```\ncode\n```\nstill outside");
+    });
+
+    it("does not join a parenthetical wrap across a fence glued to the previous line", () => {
+        const glued = "see (\nheading```\n251-\n504)\n```\nafter";
+        expect(repairReasoningLineBreaks(glued)).toBe(glued);
+    });
+
+    it("joins a parenthetical wrap after a display formula that contains backticks", () => {
+        expect(repairReasoningLineBreaks("$$\nx```\n$$\n(251-\n504)")).toBe("$$\nx```\n$$\n(251-504)");
+        expect(repairReasoningLineBreaks("$$ x```\n$$\n(251-\n504)")).toBe("$$ x```\n$$\n(251-504)");
+        expect(repairReasoningLineBreaks("\\[\nx```\n\\]\n(251-\n504)")).toBe("\\[\nx```\n\\]\n(251-504)");
     });
 
     it("joins the thinking-panel wrap from a coding-agent thought", () => {

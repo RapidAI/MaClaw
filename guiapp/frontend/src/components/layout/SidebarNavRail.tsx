@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, TokenBankIcon } from './SidebarNavIcons';
+import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
@@ -178,7 +178,6 @@ export const SidebarNavRail = ({
     const mobileDocsLabel = lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents';
     const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
     const latexTemplatesLabel = lang === 'zh-Hans' ? 'Latex模板' : lang === 'zh-Hant' ? 'Latex 模板' : 'LaTeX templates';
-    const tokenBankLabel = lang === 'zh-Hans' ? 'Token 银行' : lang === 'zh-Hant' ? 'Token 銀行' : 'Token Bank';
     const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
     // The LaTeX template library is one of the library entries, so the rail item
     // stays highlighted while the page is open.
@@ -196,17 +195,9 @@ export const SidebarNavRail = ({
         }
         switchTool(id);
     };
-    const selectExtensionsMenuItem = (id: string) => {
-        if (id === 'tokenbank') {
-            openSettingsTab('tokenBank');
-            return;
-        }
-        switchTool(id);
-    };
     const extensionsMenuItems: SystemMenuItem[] = [
         { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
         { id: 'mcp', icon: <MCPIcon />, label: connectorsLabel, visible: true },
-        { id: 'tokenbank', icon: <TokenBankIcon />, label: tokenBankLabel, visible: true },
     ];
     const libraryMenuItems: SystemMenuItem[] = [
         { id: 'documents', icon: <MobileDocsIcon />, label: mobileDocsLabel, visible: true },
@@ -316,7 +307,7 @@ export const SidebarNavRail = ({
             {extensionsMenuOpen && (
                 <SystemPopupMenu
                     items={extensionsMenuItems}
-                    onSelect={selectExtensionsMenuItem}
+                    onSelect={switchTool}
                     onClose={() => setExtensionsMenuOpen(false)}
                     returnFocus={() => extensionsMenuOpenerRef.current}
                     ariaLabel={extensionsLabel}

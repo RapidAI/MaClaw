@@ -212,7 +212,10 @@ func (p *cloudWorkspaceProtocol) DeletePaths(ctx context.Context, root string, p
 		kept = append(kept, entry)
 	}
 	if removed > 0 {
-		out, err := p.Transport.PutManifest(ctx, remote.Revision, kept)
+		// The borrowed lease ends when this returns, before the local baseline
+		// and listing writes below. A browse delete must not keep the exclusive
+		// lease across that disk work.
+		out, err := p.putManifestWithWriteLease(ctx, remote, kept)
 		if err != nil {
 			return err
 		}
@@ -252,6 +255,29 @@ func (p *cloudWorkspaceProtocol) DeletePaths(ctx context.Context, root string, p
 		remote.Entries = []cloudWorkspaceManifestEntry{}
 	}
 	return writeCloudWorkspaceListing(root, remote)
+}
+
+// putManifestWithWriteLease borrows a writer lease only for the manifest
+// replace. defer runs when this function returns, so the caller can update the
+// local cache after the lease is gone. A panic during the upload still releases.
+func (p *cloudWorkspaceProtocol) putManifestWithWriteLease(ctx context.Context, remote *cloudWorkspaceManifest, kept []cloudWorkspaceManifestEntry) (*cloudWorkspaceManifest, error) {
+	writeCtx := ctx
+	if fn := cloudWorkspaceWriteLeaseFrom(ctx); fn != nil {
+		var release func()
+		var leaseErr error
+		writeCtx, release, leaseErr = fn(ctx)
+		if leaseErr != nil {
+			return nil, leaseErr
+		}
+		if release != nil {
+			defer release()
+		}
+	}
+	revision := ""
+	if remote != nil {
+		revision = remote.Revision
+	}
+	return p.Transport.PutManifest(writeCtx, revision, kept)
 }
 
 func cloudWorkspacePathDropped(path string, drop map[string]struct{}) bool {

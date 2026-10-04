@@ -22,6 +22,7 @@
 #include "services/command_service.h"
 #include "services/gateway_transport.h"
 #include "services/gateway_ack_outbox_policy.h"
+#include "services/latency_trace.h"
 #include "services/reply_service.h"
 #include "persistence_service.h"
 #include "task_registry.h"
@@ -203,6 +204,15 @@ static bool outgoing_message_is_final(cJSON *item) {
         return cJSON_IsTrue(final) || cJSON_IsTrue(complete);
     }
     return false;
+}
+
+/* A turn stops producing latency marks once its terminal text is published and
+ * no correlated speech part is still expected.  Close it there; when speech is
+ * pending the audio path owns the flush, so the rendered-frame mark is still
+ * part of the same line. */
+static void latency_close_turn(unsigned pending_speech_parts) {
+    latency_trace_mark(LATENCY_MARK_DONE);
+    if (pending_speech_parts == 0u) latency_trace_flush();
 }
 
 static bool poll_stop_requested(void) {
@@ -496,8 +506,17 @@ static esp_err_t poll_reply(void) {
                             reply_service_active_matches_after_handoff(reply_to);
         bool result_speech_reply = !cancelled_reply && audio_message &&
                                    reply_service_result_speech_matches(reply_to);
+        if (active_reply || result_speech_reply) {
+            /* The first frame that belongs to this turn just left the queue.
+             * First-stamp-wins makes this idempotent across the multipart
+             * reply stream, so it always reports the earliest frame. */
+            latency_trace_mark(LATENCY_MARK_ACK);
+        }
 		if (speech_end_message) {
 			reply_service_finish_result_speech(reply_to);
+			/* The server declared there will be no further speech, so the
+			 * turn is complete even if no audio ever arrived. */
+			latency_trace_flush();
 			tool_handled = true;
 		}
         // A reboot has no live correlation for the command that produced an
@@ -685,6 +704,7 @@ static esp_err_t poll_reply(void) {
 							reply_service_complete_active_image_reply(waiter, "码卡龙", caption,
 									(const uint16_t *)pixels, (size_t)image_width,
 									(size_t)image_height);
+							latency_close_turn(pending_speech_parts);
 							if (reply_service_correlation_matches(reply_to)) command_service_log_timing("image-result");
 							image_handled = true;
 						}
@@ -739,7 +759,9 @@ static esp_err_t poll_reply(void) {
                     }
                     // Keep the final response surface continuous with the
                     // thinking surface. Do not briefly switch to idle here.
+                    latency_trace_mark(LATENCY_MARK_TEXT);
                     reply_service_complete_active_text_reply(waiter, "码卡龙", text);
+                    latency_close_turn(pending_speech_parts);
                     if (reply_service_correlation_matches(reply_to)) command_service_log_timing("text-result");
                     text_handled = true;
                 }
@@ -783,7 +805,9 @@ static esp_err_t poll_reply(void) {
                 if (waiter) {
                     const char *detail = text && text[0] ? text : "远端返回错误，但没有详细说明";
                     ambient_service_apply_pet_state("alert");
+                    latency_trace_mark(LATENCY_MARK_TEXT);
                     reply_service_complete_active_text_reply(waiter, "远端处理失败", detail);
+                    latency_close_turn(outgoing_pending_speech_parts(item));
                     ESP_LOGE(TAG, "remote command failed: replyTo=%s error=%s detail=%s",
                              reply_to, json_string(item, "error") ? json_string(item, "error") : "<none>", detail);
                 }
@@ -796,9 +820,11 @@ static esp_err_t poll_reply(void) {
                                                       strcmp(type, "voice") && strcmp(type, "audio")))) {
             uintptr_t waiter = reply_service_begin_active_reply();
             if (waiter) {
+                latency_trace_mark(LATENCY_MARK_TEXT);
                 reply_service_complete_active_text_reply(
                     waiter, "任务已完成",
                     text && text[0] ? text : "远端已完成，但没有可显示的文字结果");
+                latency_close_turn(outgoing_pending_speech_parts(item));
             }
         }
         if (audio_message && audio_capability_allowed && audio_data && !discard_startup_welcome &&

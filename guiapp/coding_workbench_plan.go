@@ -29,6 +29,17 @@ const (
 	codingRequestImplementation codingRequestKind = "implementation"
 )
 
+// codingOperationalAcceptance is the evidence contract for an operational turn.
+// The classifier sets it once. Empty and launch keep the project run/build
+// gate. Command means the work is a host action, so a successful non-probe
+// command is the evidence. Scoring must not infer this from the user text.
+type codingOperationalAcceptance string
+
+const (
+	codingOperationalAcceptanceLaunch  codingOperationalAcceptance = "launch"
+	codingOperationalAcceptanceCommand codingOperationalAcceptance = "command"
+)
+
 func isValidCodingRequestKind(kind codingRequestKind) bool {
 	switch kind {
 	case codingRequestInquiry, codingRequestOperational, codingRequestImplementation:
@@ -44,6 +55,10 @@ func isValidCodingRequestKind(kind codingRequestKind) bool {
 type codingRequestDecision struct {
 	Kind      codingRequestKind `json:"kind"`
 	NeedsPlan bool              `json:"needs_plan"`
+	// Acceptance is meaningful only for operational. The quality gate reads it
+	// and does not re-read the request. Omitted or unknown values stay launch,
+	// so a missing field never grants the looser host-command contract.
+	Acceptance codingOperationalAcceptance `json:"acceptance,omitempty"`
 }
 
 // approvedCodingPlanDecision is intentionally not model-classified: a plan can
@@ -58,25 +73,45 @@ func approvedCodingPlanDecision() codingRequestDecision {
 // the invariant that only implementation work may have a planning boundary.
 func normalizeCodingRequestDecision(decision codingRequestDecision) (codingRequestDecision, bool) {
 	switch decision.Kind {
-	case codingRequestInquiry, codingRequestOperational:
+	case codingRequestInquiry:
 		decision.NeedsPlan = false
+		decision.Acceptance = ""
+		return decision, true
+	case codingRequestOperational:
+		decision.NeedsPlan = false
+		decision.Acceptance = normalizeCodingOperationalAcceptance(decision.Acceptance)
 		return decision, true
 	case codingRequestImplementation:
+		decision.Acceptance = ""
 		return decision, true
 	default:
 		return codingRequestDecision{}, false
 	}
 }
 
+// normalizeCodingOperationalAcceptance refuses anything other than the host
+// command contract. A malformed acceptance must not loosen the launch gate.
+func normalizeCodingOperationalAcceptance(raw codingOperationalAcceptance) codingOperationalAcceptance {
+	switch codingOperationalAcceptance(strings.ToLower(strings.TrimSpace(string(raw)))) {
+	case codingOperationalAcceptanceCommand:
+		return codingOperationalAcceptanceCommand
+	default:
+		return codingOperationalAcceptanceLaunch
+	}
+}
+
 const codingRequestClassifierSystemPrompt = `Classify the user's coding-workbench request by intent. Return JSON only.
 
-Schema: {"kind":"inquiry|operational|implementation","needs_plan":true|false}
+Schema: {"kind":"inquiry|operational|implementation","needs_plan":true|false,"acceptance":"launch|command"}
 
-inquiry: the user wants explanation, inspection, location, or an answer. It is read-only: never run commands or change files.
-operational: the user wants an existing project run, built, tested, or demonstrated, with no source change requested. It may run commands but must not change source files.
-implementation: the user asks to modify, create, fix, refactor, delete, or clear workspace files. Clearing or emptying the current project directory is implementation, never operational.
-needs_plan is true for an implementation request that is more than one local edit: several files, a feature plus tests, UI plus logic, a richer rewrite, or more than one distinct deliverable. One-line typo, rename, or comment-only fixes stay needs_plan=false.
-Questions about how a command works are inquiry, even when they mention build, test, run, or compile. A question asking you to actually run something is operational.
+inquiry: the user wants explanation, inspection, location, or an answer. It is read-only: never run commands or change files. Omit acceptance.
+operational: the user wants work that may run commands but must not change project source files. Set acceptance to the evidence contract for that work:
+- launch: run, build, test, or demonstrate an existing project.
+- command: a host action that is not a project launch, such as installing or removing a package or tool, or checking server or host status.
+implementation: the user asks to modify, create, fix, refactor, delete, or clear workspace files. Clearing or emptying the current project directory is implementation, never operational. Omit acceptance.
+needs_plan is true for an implementation request that is more than one local edit: several files, a feature plus tests, UI plus logic, a richer rewrite, or more than one distinct deliverable. One-line typo, rename, or comment-only fixes stay needs_plan=false. Inquiry and operational always use needs_plan=false.
+Questions about how a command works are inquiry, even when they mention build, test, run, or compile. Asking to run, build, test, or demonstrate the project is operational with acceptance launch. Asking to run a host tool, install or remove a package, or check the machine is operational with acceptance command. The verb alone does not choose the contract; judge what the user wants done.
+When kind is operational, acceptance is required. When kind is not operational, omit acceptance. An omitted acceptance is treated as launch and does not cover a host action.
 Do not infer intent from isolated words; judge the complete request.`
 
 func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingRequestDecision {
@@ -116,6 +151,132 @@ func applyCodingRequestPlanFloor(decision codingRequestDecision, userText string
 	if decision.Kind == codingRequestImplementation && codingRequestLooksModeratelyComplex(userText) {
 		decision.NeedsPlan = true
 	}
+	return decision
+}
+
+// codingBareContinuations are follow-ups that name no new work. In a session
+// that already wrote project files they mean "keep implementing", not a fresh
+// read-only repository question. A longer change request is recognized
+// separately by codingFollowUpAsksForCodeChange.
+var codingBareContinuations = map[string]bool{
+	"继续": true, "繼續": true, "接着": true, "接著": true,
+	"接着做": true, "接著做": true, "继续做": true, "繼續做": true,
+	"继续吧": true, "繼續吧": true, "请继续": true, "請繼續": true,
+	"continue": true, "go on": true, "keep going": true, "carry on": true, "resume": true,
+}
+
+func codingRequestIsBareContinuation(userText string) bool {
+	text := strings.ToLower(strings.Trim(strings.TrimSpace(userText), " \t\r\n。.!！?？~～,，、"))
+	return text != "" && codingBareContinuations[text]
+}
+
+func codingSessionHasImplementationTrajectory(mem stickyCodingWorkbenchMemory) bool {
+	return codingSessionHasWrittenPath(mem.FilesModified) || codingSessionHasWrittenPath(mem.FilesCreated)
+}
+
+func codingSessionHasWrittenPath(paths []string) bool {
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// codingFollowUpAsksForCodeChange reports a follow-up that mentions changing
+// the project. A question that only mentions the word ("如何修改", "为什么没实现")
+// is not an edit order; codingFollowUpIsDirectEditOrder covers those.
+func codingFollowUpAsksForCodeChange(userText string) bool {
+	lower := strings.ToLower(userText)
+	for _, cue := range []string{
+		"修改", "修复", "修復", "改一下", "修一下", "改成", "改为", "改為", "写成", "寫成",
+		"实现", "實現", "完善", "优化", "優化", "重构", "重構", "补上", "補上", "改进", "改進",
+	} {
+		if strings.Contains(lower, cue) {
+			return true
+		}
+	}
+	for _, word := range []string{"fix", "fixed", "fixes", "fixing", "implement", "refactor", "rewrite"} {
+		if codingHasASCIIWord(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// codingFollowUpIsDirectEditOrder is a polite or explicit edit, including one
+// phrased as a question ("能不能修一下顶栏？"). "如何修改" is not one of these.
+func codingFollowUpIsDirectEditOrder(userText string) bool {
+	lower := strings.ToLower(userText)
+	for _, cue := range []string{
+		"改一下", "修一下", "请修改", "请修复", "請修改", "請修復", "帮我改", "幫我改", "帮我修", "幫我修",
+	} {
+		if strings.Contains(lower, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+// codingFollowUpIsQuestion reports an explanation request. "为什么没实现分页"
+// mentions a change word but is still a question, so it must not reopen writes.
+func codingFollowUpIsQuestion(userText string) bool {
+	text := strings.TrimSpace(userText)
+	if text == "" {
+		return false
+	}
+	if strings.ContainsAny(text, "?？") {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, cue := range []string{
+		"什么", "什麼", "为什么", "為什麼", "为何", "為何", "怎么", "怎麼", "如何", "吗", "嗎",
+	} {
+		if strings.Contains(lower, cue) {
+			return true
+		}
+	}
+	for _, word := range []string{"what", "why", "how", "where"} {
+		if codingHasASCIIWord(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingFollowUpShouldResumeImplementation(userText string) bool {
+	if codingRequestIsBareContinuation(userText) {
+		return true
+	}
+	if !codingFollowUpAsksForCodeChange(userText) {
+		return false
+	}
+	if codingFollowUpIsQuestion(userText) && !codingFollowUpIsDirectEditOrder(userText) {
+		return false
+	}
+	return true
+}
+
+// applyCodingSessionContinuationFloor reopens read/write tools when a session
+// that already changed files is about to be locked into the inquiry posture.
+// That posture removes ssh_write_file/ssh_edit_file and rejects ordinary
+// shell (compound commands, git -C, running the build). The lightweight
+// classifier does this to "继续" and to direct edit requests.
+//
+// A question that only mentions implementation ("为什么没实现分页"), a
+// run/build/list follow-up, and a session with no written files stay on the
+// classifier's answer. Operational decisions are not rewritten. Rescued
+// follow-ups stay single-step: planning already ran against the original decision.
+func applyCodingSessionContinuationFloor(decision codingRequestDecision, userText string, mem stickyCodingWorkbenchMemory) codingRequestDecision {
+	if decision.Kind != codingRequestInquiry || !codingSessionHasImplementationTrajectory(mem) {
+		return decision
+	}
+	if !codingFollowUpShouldResumeImplementation(userText) {
+		return decision
+	}
+	decision.Kind = codingRequestImplementation
+	decision.NeedsPlan = false
+	decision.Acceptance = ""
 	return decision
 }
 

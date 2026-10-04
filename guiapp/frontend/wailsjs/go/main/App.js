@@ -5247,6 +5247,14 @@ export function TokenBankListWithdrawals() {
   return window['go']['main']['App']['TokenBankListWithdrawals']();
 }
 
+export function TokenBankGetAutoSettings() {
+  return window['go']['main']['App']['TokenBankGetAutoSettings']();
+}
+
+export function TokenBankSaveAutoSettings(arg1) {
+  return window['go']['main']['App']['TokenBankSaveAutoSettings'](arg1);
+}
+
 export function TokenBankWithdraw(arg1, arg2, arg3) {
   return window['go']['main']['App']['TokenBankWithdraw'](arg1, arg2, arg3);
 }

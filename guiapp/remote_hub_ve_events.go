@@ -12,16 +12,17 @@ import (
 
 // VE WebSocket event type constants emitted by Maclaw Hub.
 const (
-	veEventListUpdate        = "ve:list_update"
-	veEventStatusChange      = "ve:status_change"
-	veEventAuthRequest       = "ve:auth_request"
-	veEventApproved          = "ve:approved"
-	veEventRejected          = "ve:rejected"
-	veEventDisabled          = "ve:disabled"
-	veEventGroupConfig       = "ve:group_config"
-	veEventDiscussionInvite  = "ve:discussion_invite"
-	veEventDiscussionMessage = "ve:discussion_message"
-	veEventDiscussionRename  = "ve:discussion_rename"
+	veEventListUpdate         = "ve:list_update"
+	veEventStatusChange       = "ve:status_change"
+	veEventAuthRequest        = "ve:auth_request"
+	veEventApproved           = "ve:approved"
+	veEventRejected           = "ve:rejected"
+	veEventDisabled           = "ve:disabled"
+	veEventGroupConfig        = "ve:group_config"
+	veEventDiscussionInvite   = "ve:discussion_invite"
+	veEventDiscussionMessage  = "ve:discussion_message"
+	veEventDiscussionActivity = "ve:discussion_activity"
+	veEventDiscussionRename   = "ve:discussion_rename"
 	// veEventApprovalRequest is Hub → machine delivery of a workflow approval node payload.
 	// Wire type matches hub/internal/httpapi.approvalRequestWireType.
 	veEventApprovalRequest = "ve:approval_request"
@@ -47,6 +48,9 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 	switch msgType {
 	case veEventDiscussionMessage:
 		go c.handleVEDiscussionMessage(msg)
+		return
+	case veEventDiscussionActivity:
+		c.emitVEDiscussionActivity(msg)
 		return
 	case veEventApprovalRequest:
 		// Approval pipeline may call Hub decision API + local registry — never block readLoop.
@@ -91,6 +95,45 @@ func shouldClearDiscoverableVECacheForEvent(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func (c *RemoteHubClient) emitVEDiscussionActivity(msg inboundHubEnvelope) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.emitEvent("ve:activity", discussionActivityFrontendPayload(decodeVEEventPayloadMap(msg)))
+}
+
+func discussionActivityFrontendPayload(payload map[string]any) map[string]any {
+	return map[string]any{
+		"session_id": discussionActivityString(payload, "session_id", "sessionId"),
+		"from_id":    discussionActivityString(payload, "from_id", "fromId"),
+		"phase":      discussionActivityString(payload, "phase"),
+		"name":       discussionActivityString(payload, "name"),
+	}
+}
+
+func streamStatusFields(content string) (string, string) {
+	var payload struct {
+		Phase string `json:"phase"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &payload); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(payload.Phase), strings.TrimSpace(payload.Name)
+}
+
+func discussionActivityString(payload map[string]any, keys ...string) string {
+	if payload == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func decodeVEEventPayloadMap(msg inboundHubEnvelope) map[string]any {
@@ -253,6 +296,18 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	}
 
 	switch envelope.Message.Kind {
+	case a2a.MessageStreamStatus:
+		if isOwnMessage {
+			return
+		}
+		phase, name := streamStatusFields(content)
+		c.app.emitEvent("ve:activity", discussionActivityFrontendPayload(map[string]any{
+			"session_id": sessionID,
+			"from_id":    envelope.Message.FromID,
+			"phase":      phase,
+			"name":       name,
+		}))
+		return
 	case a2a.MessageStreamChunk:
 		if !isOwnMessage && (content != "" || HasAttachments(*envelope.Message)) {
 			c.app.emitEvent("ve:stream_chunk", eventPayload)

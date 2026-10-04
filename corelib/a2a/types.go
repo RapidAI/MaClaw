@@ -19,15 +19,16 @@ const (
 type MessageKind string
 
 const (
-	MessageStatement   MessageKind = "statement"
-	MessageQuestion    MessageKind = "question"
-	MessageAnswer      MessageKind = "answer"
-	MessageEvidence    MessageKind = "evidence"
-	MessageObjection   MessageKind = "objection"
-	MessageHandoff     MessageKind = "handoff"
-	MessageEscalation  MessageKind = "escalation"
-	MessageStreamChunk MessageKind = "stream_chunk" // VE streaming response fragment
-	MessageStreamEnd   MessageKind = "stream_end"   // VE streaming response complete
+	MessageStatement    MessageKind = "statement"
+	MessageQuestion     MessageKind = "question"
+	MessageAnswer       MessageKind = "answer"
+	MessageEvidence     MessageKind = "evidence"
+	MessageObjection    MessageKind = "objection"
+	MessageHandoff      MessageKind = "handoff"
+	MessageEscalation   MessageKind = "escalation"
+	MessageStreamChunk  MessageKind = "stream_chunk"  // VE streaming response fragment
+	MessageStreamEnd    MessageKind = "stream_end"    // VE streaming response complete
+	MessageStreamStatus MessageKind = "stream_status" // VE live activity; not transcript text
 )
 
 type ProposalStatus string

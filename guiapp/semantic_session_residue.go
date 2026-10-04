@@ -1141,7 +1141,8 @@ func semanticPlanCompanionNeed(need tool.CapabilityNeed) bool {
 // unclear turn. A plan that still asks for evidence renews only that
 // evidence and its document, even when every tracked count is already zero.
 // Any other finished obligation renews that capability. A companion zero,
-// including a baseline file write, stays spent.
+// including a baseline file write on another task, stays spent. An open
+// file-write task drops its leftover write count: that count is not a quota.
 func semanticResidueRemainingForOpenTurn(residue semanticSessionResidue, planned intent.ClassificationResult) map[string]int {
 	remaining := semanticResidueRemainingForFollowUp(residue.Remaining, planned)
 	// A continued render ("生成pdf报告") keeps document_generate as primary,
@@ -1151,9 +1152,48 @@ func semanticResidueRemainingForOpenTurn(residue semanticSessionResidue, planned
 		return semanticResidueRenewOpenLookup(remaining, residue.Needs)
 	}
 	if semanticResidueWaveSpent(residue) && !semanticClassificationRequestsAcquire(planned) {
-		return semanticResidueRenewSpentObligation(residue, remaining)
+		remaining = semanticResidueRenewSpentObligation(residue, remaining)
 	}
-	return remaining
+	// A leftover file-write count is not the rest of the task. The previous
+	// turn spent part of the wave and the next "继续" inherited the remainder
+	// as its whole write authority (production 2026-10-04: one fs.write.local
+	// node, then write_file was removed for the rest of the bibliography).
+	// Drop that ceiling so this turn publishes the normal iterative family.
+	// A baseline write riding on another task stays spent.
+	return semanticResidueRenewIterativeFileWrite(remaining, residue, planned)
+}
+
+// semanticResidueRenewIterativeFileWrite drops a carried fs.write.local
+// count when this open task itself writes files. Absence is not a new
+// quota: the planner publishes the capability's own repeat family, and a
+// later call can append siblings up to the turn cap. A companion write on
+// an unrelated task is left untouched.
+func semanticResidueRenewIterativeFileWrite(remaining map[string]int, residue semanticSessionResidue, planned intent.ClassificationResult) map[string]int {
+	if !semanticOpenFileWriteContinues(residue, planned) {
+		return remaining
+	}
+	key := string(tool.CapabilityFSWriteLocal)
+	if _, ok := remaining[key]; !ok {
+		return remaining
+	}
+	out := cloneResidueRemaining(remaining)
+	delete(out, key)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func semanticOpenFileWriteContinues(residue semanticSessionResidue, planned intent.ClassificationResult) bool {
+	if !semanticResidueHasObligationCapability(residue.Needs, tool.CapabilityFSWriteLocal) {
+		return false
+	}
+	switch planned.Primary {
+	case intent.LabelFileWrite, intent.LabelCoding, intent.LabelBugFix, intent.LabelMaintenance:
+		return true
+	default:
+		return false
+	}
 }
 
 // semanticResidueRenewSpentObligation drops zero counters for the open

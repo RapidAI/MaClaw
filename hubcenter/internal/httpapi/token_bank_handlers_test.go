@@ -866,6 +866,9 @@ func TestTokenBankWithdrawalsAreListedForTheCallerOnly(t *testing.T) {
 	if items[0].(map[string]any)["request_id"] != "withdraw:list:m" {
 		t.Fatalf("returned another user's withdrawal: %v", items[0])
 	}
+	if items[0].(map[string]any)["automatic"] != false {
+		t.Fatalf("manual withdrawal marked automatic: %v", items[0])
+	}
 
 	// hub_id narrows the list, which is what a hub uses to reconcile its own
 	// grants without seeing the user's other hubs.
@@ -953,6 +956,70 @@ func TestTokenBankListKeepsUnboundGiftPastTheHistoryPage(t *testing.T) {
 	items, _ = decodeMap(t, rec)["withdrawals"].([]any)
 	if len(items) != 0 {
 		t.Fatalf("other hub withdrawals = %v, want none", items)
+	}
+}
+
+func TestTokenBankListIncludesLedgerWithdrawalsWithoutALocalRow(t *testing.T) {
+	env := newTokenBankTestEnv(t)
+	user, token := env.createUser(t, "orphan-lister@example.test")
+	env.seedCredits(t, user.ID, 20)
+	env.linkHub(t, "hub-a", user.Email)
+
+	rec := env.do(t, http.MethodPost, "/api/v1/token-bank/credits/withdraw", token,
+		map[string]any{"request_id": "withdraw:list:local", "amount_micro": 1_000_000, "hub_id": "hub-a", "manual": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("withdraw status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	requestID := "tbk-auto:hub-b:orphan-lister@example.test:paid:4"
+	if _, err := env.repo.AppendLedger(context.Background(), sqlite.TokenBankLedgerEntry{
+		ID:          "wdledger-auto",
+		UserID:      user.ID,
+		Bucket:      sqlite.TokenBankBucketWithdrawn,
+		AmountMicro: 2_500_000,
+		BizKey:      "withdraw:" + requestID,
+		RefType:     "withdrawal",
+		RefID:       requestID,
+		Note:        "hub-b",
+		CreatedAt:   time.Date(2026, 10, 4, 2, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("AppendLedger() error = %v", err)
+	}
+	if _, err := env.repo.AppendAdjustment(context.Background(), user.ID, sqlite.TokenBankBucketWithdrawn, 500_000, "adjust:reconcile:orphan", "not a withdrawal"); err != nil {
+		t.Fatalf("AppendAdjustment() error = %v", err)
+	}
+
+	rec = env.do(t, http.MethodGet, "/api/v1/token-bank/credits/withdrawals", token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	items, _ := decodeMap(t, rec)["withdrawals"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("withdrawals = %v, want the local row and the ledger debit", items)
+	}
+	var posted map[string]any
+	local := 0
+	for _, item := range items {
+		row := item.(map[string]any)
+		switch row["request_id"] {
+		case "withdraw:list:local":
+			local++
+		case requestID:
+			posted = row
+		default:
+			t.Fatalf("unexpected withdrawal %v", row)
+		}
+	}
+	if local != 1 || posted == nil {
+		t.Fatalf("withdrawals = %v", items)
+	}
+	if posted["state"] != "posted" || posted["automatic"] != true || posted["hub_id"] != "hub-b" || posted["amount_micro"].(float64) != 2_500_000 || posted["kind"] != "self" || posted["grant_id"] != "" {
+		t.Fatalf("posted withdrawal = %v", posted)
+	}
+
+	rec = env.do(t, http.MethodGet, "/api/v1/token-bank/credits/withdrawals?hub_id=hub-b", token, nil)
+	items, _ = decodeMap(t, rec)["withdrawals"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["request_id"] != requestID {
+		t.Fatalf("hub-b withdrawals = %v, want the ledger debit only", items)
 	}
 }
 

@@ -84,6 +84,8 @@ type agentLoopLLMDispatchResult struct {
 	OutputTokens             int
 	CacheReadTokens          int
 	CacheWriteTokens         int
+	CreditsDeducted          float64
+	CreditsReported          bool
 	UsageElapsed             time.Duration
 	PostStreamUsageCompleted bool
 	Exit                     *IMAgentResponse
@@ -142,6 +144,10 @@ func (h *IMMessageHandler) dispatchAgentLoopLLMRound(opts agentLoopLLMDispatchOp
 		result.OutputTokens = llmRound.Usage.Output
 		result.CacheReadTokens = llmRound.Usage.CacheRead
 		result.CacheWriteTokens = llmRound.Usage.CacheWrite
+	}
+	if llmRound.Usage.CreditsReported {
+		result.CreditsDeducted = llmRound.Usage.CreditsDeducted
+		result.CreditsReported = true
 	}
 	if llmRound.UsageDone {
 		result.UsageElapsed = llmRound.UsageElapsed
@@ -212,7 +218,13 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 	result.Response = guardResult.Response
 	result.Err = guardResult.Err
 	result.Conversation = guardResult.Conversation
-	if guardResult.Usage.HasAny() {
+	if guardResult.Usage.HasAny() || guardResult.Usage.CreditsReported {
+		if result.Usage.CreditsReported && guardResult.Usage.CreditsReported {
+			guardResult.Usage.CreditsDeducted = roundTurnCredits(result.Usage.CreditsDeducted + guardResult.Usage.CreditsDeducted)
+		} else if result.Usage.CreditsReported {
+			guardResult.Usage.CreditsDeducted = result.Usage.CreditsDeducted
+			guardResult.Usage.CreditsReported = true
+		}
 		result.Usage = guardResult.Usage
 	}
 	result.Exit = guardResult.Exit

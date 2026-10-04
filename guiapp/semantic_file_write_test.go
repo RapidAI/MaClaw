@@ -76,6 +76,39 @@ func TestIMSemanticFileWriteUsesClosedHostAdapter(t *testing.T) {
 	}
 }
 
+func TestResidueDocumentFileWriteStaysIterative(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelFileWrite)}
+	h.semanticTrustedFileWrite = func(userID, path, content, mode string) (string, error) {
+		t.Fatalf("planning must not execute write user=%q path=%q", userID, path)
+		return "", nil
+	}
+	registerBuiltinTools(h.registry, h)
+	documentTurn := &intent.ClassificationResult{
+		Primary: intent.LabelFileWrite, Confidence: .91, Reason: "session residue document",
+	}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "继续", "desktop", "root-bib", "turn-bib", documentTurn,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	writes := 0
+	for _, selection := range surface.plan.Selections {
+		switch selection.FitProof.MatchedCapability {
+		case tool.CapabilityFSWriteLocal:
+			writes++
+		case tool.CapabilityShellExecuteLocal:
+			t.Fatalf("a short document edit grew a shell: %+v", surface.plan.Selections)
+		}
+	}
+	if writes != 8 {
+		t.Fatalf("document continue published %d file writes, want the iterative floor", writes)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter) == "" {
+		t.Fatal("the first write must still be listed")
+	}
+}
+
 func TestMarkdownFileWritePlanningTextMapsBareContinue(t *testing.T) {
 	history := []agent.ConversationEntry{
 		{Role: "user", Content: "生成markdown"},

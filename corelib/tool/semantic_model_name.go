@@ -43,12 +43,7 @@ func init() {
 	for name := range semanticIdentityHostAdapters {
 		semanticStableHostNames[name] = struct{}{}
 	}
-	seen := make(map[string]string, len(semanticModelFunctionNames))
-	for adapter, name := range semanticModelFunctionNames {
-		if prev, ok := seen[name]; ok {
-			panic("semantic model function name " + name + " mapped from both " + prev + " and " + adapter)
-		}
-		seen[name] = adapter
+	for _, name := range semanticModelFunctionNames {
 		semanticStableHostNames[name] = struct{}{}
 	}
 }
@@ -74,41 +69,75 @@ var semanticStableHostNames map[string]struct{}
 // semanticModelFunctionNames maps internal host adapters onto the names the
 // prompt and conversation history already use. Adapters whose registered
 // name is already that stable spelling (generate_pdf, screenshot, write_file)
-// are omitted and returned unchanged. Each prompt name is used at most once:
-// two ready adapters that share a name cannot both be rendered.
+// are omitted and returned unchanged.
+//
+// GUI (semantic_*) and MaClawSrv (host_*) are separate catalogs for the same
+// outcome. They share a prompt name so the model calls web_search on both.
+// They are never planned together; the renderer still rejects two selections
+// in one plan that would render as the same function.
 var semanticModelFunctionNames = map[string]string{
 	"semantic_search_trusted_web":           "web_search",
+	"host_information_search_web":           "web_search",
 	"semantic_fetch_trusted_web":            "web_fetch",
+	"host_information_fetch_web":            "web_fetch",
 	"semantic_read_trusted_clock":           "current_datetime",
+	"host_information_current_time":         "current_datetime",
 	"semantic_read_trusted_file":            "read_file",
+	"host_fs_read_local":                    "read_file",
 	"semantic_write_trusted_file":           "write_file",
+	"host_fs_write_local":                   "write_file",
 	"semantic_delete_trusted_file":          "delete_file",
 	"semantic_inspect_trusted_repo":         "git_status",
+	"host_repo_inspect_vcs":                 "git_status",
 	"semantic_mutate_trusted_repo":          "git_commit",
+	"host_repo_mutate_vcs":                  "git_commit",
 	"semantic_execute_trusted_shell":        "bash",
+	"host_shell_execute_local":              "bash",
 	"semantic_execute_trusted_ssh":          "ssh",
+	"host_shell_execute_remote_host":        "ssh",
 	"semantic_control_trusted_browser":      "browser",
+	"host_browser_control_web":              "browser",
 	"semantic_control_trusted_desktop":      "computer_use",
+	"host_computer_control_desktop":         "computer_use",
 	"semantic_run_trusted_build_verify":     "build_verify",
+	"host_build_verify_local":               "build_verify",
 	"semantic_acquire_trusted_remote":       "download_file",
+	"host_artifact_acquire_remote":          "download_file",
 	"semantic_delegate_trusted_subtask":     "delegate_task",
+	"host_agent_delegate_subtask":           "delegate_task",
 	"semantic_ingest_trusted_knowledge":     "knowledge_save_text",
+	"host_knowledge_ingest_local":           "knowledge_save_text",
 	"semantic_read_trusted_knowledge":       "knowledge_search",
+	"host_knowledge_read_local":             "knowledge_search",
 	"semantic_administer_trusted_knowledge": "knowledge_maintain",
+	"host_knowledge_admin_maintenance":      "knowledge_maintain",
 	"semantic_administer_trusted_memory":    "memory",
+	"host_memory_manage_agent":              "memory",
 	"semantic_recall_trusted_memory":        "memory_recall",
+	"host_memory_recall_agent":              "memory_recall",
 	"semantic_administer_trusted_task":      "task",
+	"host_task_track_local":                 "task",
 	"semantic_administer_trusted_goal":      "goal",
+	"host_goal_manage_longrunning":          "goal",
 	"semantic_administer_trusted_template":  "manage_template",
+	"host_template_manage_session":          "manage_template",
 	"semantic_inspect_trusted_session":      "list_sessions",
+	"host_session_manage_coding":            "list_sessions",
 	"semantic_administer_trusted_schedule":  "manage_schedule",
+	"host_schedule_administer_local":        "manage_schedule",
 	"semantic_administer_trusted_config":    "manage_config",
+	"host_config_manage_self":               "manage_config",
 	"semantic_send_trusted_im":              "send_im_text",
+	"host_message_send_im":                  "send_im_text",
 	"semantic_transcribe_trusted_audio":     "asr",
+	"host_audio_transcribe_speech":          "asr",
 	"semantic_read_trusted_audit":           "session_search",
+	"host_security_audit_read":              "session_search",
 	"semantic_write_trusted_office":         "office",
+	"host_document_write_office":            "office",
 	"semantic_deliver_current_file":         "send_file",
 	"semantic_deliver_current_image":        "send_image",
 	"semantic_deliver_current_voice":        "send_voice",
 	"semantic_deliver_specified_target":     "send_to_im",
+	"host_artifact_deliver_specified":       "send_to_im",
 }

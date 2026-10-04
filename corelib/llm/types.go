@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -75,6 +76,12 @@ type Usage struct {
 	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
 
+	// CreditsDeducted is the credits the Maclaw hub actually removed from the
+	// caller's grant for this request. Nil means the server did not report a
+	// debit (another provider, or settlement did not finish). A pointer to 0
+	// is a settled free request, not a missing field.
+	CreditsDeducted *float64 `json:"credits_deducted,omitempty"`
+
 	// InputReported / OutputReported are true when the provider payload
 	// contained that directional leg (including an explicit zero). Hosts must
 	// not locally estimate a reported zero; that would diverge from HubCenter.
@@ -88,7 +95,32 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*u = usageFromFields(corelib.ParseLLMUsageFields(payload))
+	if raw, ok := payload["credits_deducted"]; ok {
+		if credits, ok := jsonCreditsDeducted(raw); ok {
+			u.CreditsDeducted = &credits
+		}
+	}
 	return nil
+}
+
+func jsonCreditsDeducted(raw any) (float64, bool) {
+	var credits float64
+	switch v := raw.(type) {
+	case float64:
+		credits = v
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return 0, false
+		}
+		credits = parsed
+	default:
+		return 0, false
+	}
+	if math.IsNaN(credits) || math.IsInf(credits, 0) || credits < 0 {
+		return 0, false
+	}
+	return credits, true
 }
 
 func usageFromFields(fields corelib.LLMUsageFields) Usage {

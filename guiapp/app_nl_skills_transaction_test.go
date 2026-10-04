@@ -423,6 +423,81 @@ func TestDeleteNLSkillQuarantinesAndRemovesDirectoryOnCommit(t *testing.T) {
 	}
 }
 
+func TestDeleteNLSkillRemovesRegistryWhenDirectoryIsMissing(t *testing.T) {
+	app := setupNLSkillTransactionApp(t)
+	app.cachedSkillScanner = nil
+	missing := filepath.Join(t.TempDir(), "skills", ".skill-install-1410969404")
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{Name: "batch-first-orphan", Description: "test", SkillDir: missing, Source: "file", Status: "active"},
+		{Name: "keep-me", Description: "keep", Source: "manual", Status: "active"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteNLSkill("batch-first-orphan"); err != nil {
+		t.Fatalf("DeleteNLSkill() error = %v, want registry removal when directory is already gone", err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("missing skill directory changed during delete: %v", err)
+	}
+	foundKeep := false
+	for _, item := range app.skillExecutor.loadSkills() {
+		if item.Name == "batch-first-orphan" || item.MatchesName("batch-first-orphan") {
+			t.Fatalf("orphan skill remains after delete: %#v", item)
+		}
+		if item.Name == "keep-me" {
+			foundKeep = true
+		}
+	}
+	if !foundKeep {
+		t.Fatal("unrelated skill was removed")
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil {
+		t.Fatal(err)
+	} else if len(summaries) != 0 {
+		t.Fatalf("compensation queue = %#v, want empty", summaries)
+	}
+}
+
+func TestDeleteNLSkillStillRejectsNonDirectory(t *testing.T) {
+	app := setupNLSkillTransactionApp(t)
+	app.cachedSkillScanner = nil
+	filePath := filepath.Join(t.TempDir(), "not-a-skill-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name: "not-a-dir", SkillDir: filePath, Source: "manual", Status: "active",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteNLSkill("not-a-dir"); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("DeleteNLSkill() error = %v, want non-directory refusal", err)
+	}
+	found := false
+	for _, item := range app.skillExecutor.loadSkills() {
+		if item.Name == "not-a-dir" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("skill registry entry was removed despite refused delete")
+	}
+}
+
+func TestRenameNLSkillStillRejectsMissingDirectory(t *testing.T) {
+	app := setupNLSkillTransactionApp(t)
+	app.cachedSkillScanner = nil
+	missing := filepath.Join(t.TempDir(), "skills", "rename-missing")
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name: "rename-missing", SkillDir: missing, Source: "manual", Status: "active",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RenameNLSkill("rename-missing", "rename-missing-next"); err == nil || !strings.Contains(err.Error(), "inspect skill directory") {
+		t.Fatalf("RenameNLSkill() error = %v, want missing-directory refusal", err)
+	}
+}
+
 func TestDeleteNLSkillCleanupFailurePersistsAndRecoversAfterRestart(t *testing.T) {
 	app := setupNLSkillTransactionApp(t)
 	app.cachedSkillScanner = nil

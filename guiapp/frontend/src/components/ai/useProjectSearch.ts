@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { KnowledgeSearch, ListExperts, ListMobileLibraryItems, SearchTasks } from "../../../wailsjs/go/main/App";
-import { localizeText } from "./aiAssistantI18n";
+import { formatProjectSearchTime } from "./projectSearchTime";
 import { isVisibleTaskRow } from "./codingTaskMode";
 import { parseExpertListJSON } from "./expertTypes";
 import type { ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
+import { HEADER_SEARCH_CLOUD_LIMIT, searchCloudWorkspaceContent, type HeaderCloudWorkspaceHit } from "./cloudWorkspaceContentSearch";
+import { HEADER_SEARCH_DATA_DIR_LIMIT, searchDataDirectoryWorkspaces, type HeaderDataDirectoryHit } from "./dataDirectoryWorkspaceSearch";
 import { HEADER_SEARCH_TASK_LIMIT, headerLibrarySearchJobs, type HeaderExpertSearchHit, type HeaderFileSearchHit, type HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
 
 export interface ProjectSearchItem {
@@ -29,6 +31,8 @@ export function useProjectSearch(lang: string) {
     const [fileResults, setFileResults] = useState<HeaderFileSearchHit[]>([]);
     const [knowledgeResults, setKnowledgeResults] = useState<HeaderKnowledgeSearchHit[]>([]);
     const [expertResults, setExpertResults] = useState<HeaderExpertSearchHit[]>([]);
+    const [cloudResults, setCloudResults] = useState<HeaderCloudWorkspaceHit[]>([]);
+    const [dataDirResults, setDataDirResults] = useState<HeaderDataDirectoryHit[]>([]);
     const [loading, setLoading] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const requestIdRef = useRef(0);
@@ -42,6 +46,8 @@ export function useProjectSearch(lang: string) {
         setFileResults([]);
         setKnowledgeResults([]);
         setExpertResults([]);
+        setCloudResults([]);
+        setDataDirResults([]);
         const tasksPromise = SearchTasks(q, HEADER_SEARCH_TASK_LIMIT)
             .then(r => {
                 if (requestId !== requestIdRef.current) return;
@@ -61,6 +67,12 @@ export function useProjectSearch(lang: string) {
             jobs.files.then(applyIfCurrent(setFileResults)),
             jobs.knowledge.then(applyIfCurrent(setKnowledgeResults)),
             jobs.experts.then(applyIfCurrent(setExpertResults)),
+            searchCloudWorkspaceContent(q, HEADER_SEARCH_CLOUD_LIMIT).then(applyIfCurrent(setCloudResults)).catch(() => {
+                if (requestId === requestIdRef.current) setCloudResults([]);
+            }),
+            searchDataDirectoryWorkspaces(q, HEADER_SEARCH_DATA_DIR_LIMIT).then(applyIfCurrent(setDataDirResults)).catch(() => {
+                if (requestId === requestIdRef.current) setDataDirResults([]);
+            }),
         ]).finally(() => {
             if (requestId === requestIdRef.current) setLoading(false);
         });
@@ -102,6 +114,8 @@ export function useProjectSearch(lang: string) {
         setFileResults([]);
         setKnowledgeResults([]);
         setExpertResults([]);
+        setCloudResults([]);
+        setDataDirResults([]);
     }, []);
     const toggle = useCallback(() => { setOpen(v => !v); }, []);
     const openWithQuery = useCallback((value = "") => {
@@ -119,17 +133,7 @@ export function useProjectSearch(lang: string) {
     }, [doSearch, onQueryChange, open]);
     const refresh = useCallback(() => doSearch(query), [doSearch, query]);
 
-    const formatTime = useCallback((iso?: string): string => {
-        if (!iso) return "";
-        try {
-            const d = new Date(iso);
-            const diffH = Math.floor((Date.now() - d.getTime()) / 3600000);
-            if (diffH < 1) return localizeText(lang, "just now", "\u521a\u521a");
-            if (diffH < 24) return `${diffH}${localizeText(lang, "h ago", "\u5c0f\u65f6\u524d")}`;
-            const diffD = Math.floor(diffH / 24);
-            return diffD < 7 ? `${diffD}${localizeText(lang, "d ago", "\u5929\u524d")}` : d.toLocaleDateString();
-        } catch { return ""; }
-    }, [lang]);
+    const formatTime = useCallback((iso?: string) => formatProjectSearchTime(lang, iso), [lang]);
 
-    return { open, query, results, fileResults, knowledgeResults, expertResults, loading, toggle, close, openWithQuery, onQueryDraft, onQueryChange, refresh, formatTime };
+    return { open, query, results, fileResults, knowledgeResults, expertResults, cloudResults, dataDirResults, loading, toggle, close, openWithQuery, onQueryDraft, onQueryChange, refresh, formatTime };
 }

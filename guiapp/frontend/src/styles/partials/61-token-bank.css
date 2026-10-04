@@ -28,9 +28,13 @@
 
 .tbk-panel__sub {
     margin: 0;
+    max-width: 34em;
     font-size: 0.82rem;
+    line-height: 1.55;
     color: var(--theme-text-secondary);
-    max-width: 46ch;
+    /* Clauses stay whole. A narrow column still breaks at punctuation. */
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .tbk-panel__actions {
@@ -69,6 +73,65 @@
     color: var(--theme-text-secondary);
 }
 
+.tbk-auto-cap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+}
+
+.tbk-auto-cap h4 {
+    margin: 0;
+    font-size: 0.95rem;
+}
+
+.tbk-auto-cap__copy p {
+    margin: 4px 0 0;
+    max-width: 62ch;
+    font-size: 0.8rem;
+    color: var(--theme-text-secondary);
+}
+
+.tbk-auto-cap__row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.tbk-auto-cap__row input {
+    flex: 0 1 16rem;
+    max-width: 16rem;
+}
+
+.tbk-auto-cap__error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-danger);
+}
+
+.tbk-auto-cap__note {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-text-secondary);
+}
+
+button.tbk-pill {
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.72rem;
+    line-height: 1.4;
+}
+
+.tbk-pill--auto {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    border-color: var(--theme-border);
+}
+
 .tbk-summary__value {
     font-size: 1.15rem;
     font-variant-numeric: tabular-nums;
@@ -102,12 +165,12 @@
     gap: 10px;
 }
 
-/* Gift links I sent. A card carries the recipient and a full status sentence,
-   so a column stays wide enough for that sentence to wrap about once.
-   auto-fit follows the settings pane: four cards when they fit, fewer when
-   a fixed four-column row would crush the sentence. */
+/* Gift links I sent: five cards a row, twenty a page. The section is the
+   container so the count follows the settings pane, not the whole window. */
 .tbk-section--gifts {
     min-width: 0;
+    container-type: inline-size;
+    container-name: tbk-gifts;
 }
 
 .tbk-gift-grid {
@@ -115,7 +178,7 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 12px;
     align-items: stretch;
 }
@@ -131,7 +194,23 @@
 .tbk-gift-grid .tbk-meta > span {
     min-width: 0;
     max-width: 100%;
-    overflow-wrap: break-word;
+    /* anywhere, not break-word: a phone id is one token, and this rule is
+       more specific than .tbk-gift-claim-detail__who. */
+    overflow-wrap: anywhere;
+}
+
+/* The amount keeps its width. A chip that does not fit wraps onto the next
+   line instead of squeezing the number into an ellipsis. */
+.tbk-gift-grid .tbk-share__head {
+    align-items: flex-start;
+}
+
+.tbk-gift-grid .tbk-share__name {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
 }
 
 .tbk-gift-grid .tbk-meta {
@@ -150,6 +229,19 @@
 
 .tbk-gift-grid > .tbk-share > .tbk-share__actions {
     margin-top: auto;
+}
+
+/* Five columns until a card would be narrower than the status sentence. */
+@container tbk-gifts (max-width: 820px) {
+    .tbk-gift-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@container tbk-gifts (max-width: 520px) {
+    .tbk-gift-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 /* My shares: three cards a row, nine a page. The section is the container so
@@ -461,7 +553,8 @@
 }
 
 .tbk-gift-form input,
-.tbk-gift-claim input {
+.tbk-gift-claim input,
+.tbk-auto-cap input {
     flex: 1 1 160px;
     min-width: 0;
     padding: 8px 10px;

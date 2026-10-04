@@ -1,8 +1,20 @@
+import { localizeText } from "./aiAssistantI18n";
+
 export const HEADER_SEARCH_TASK_LIMIT = 20;
 export const HEADER_SEARCH_FILE_LIST_LIMIT = 200;
 export const HEADER_SEARCH_FILE_LIMIT = 8;
 export const HEADER_SEARCH_KNOWLEDGE_LIMIT = 8;
 export const HEADER_SEARCH_EXPERT_LIMIT = 8;
+
+/** Placeholder and title for the assistant header search box. */
+export function headerSearchPlaceholder(lang: string, ellipsis = true): string {
+    return localizeText(
+        lang,
+        ellipsis ? "Search tasks, cloud files, workspaces, knowledge, experts..." : "Search tasks, cloud files, workspaces, knowledge, experts",
+        ellipsis ? "搜索任务、云端内容、数据目录、文件、知识、专家…" : "搜索任务、云端内容、数据目录、文件、知识、专家",
+        ellipsis ? "搜尋任務、雲端內容、資料目錄、檔案、知識、專家…" : "搜尋任務、雲端內容、資料目錄、檔案、知識、專家",
+    );
+}
 
 export type HeaderFileSearchHit = {
     id: string;

@@ -86,16 +86,14 @@ func TestAttemptLoopPartialWriteFile_Success(t *testing.T) {
 func TestAttemptLoopPartialWriteFile_RefusesOverwriteWithShorterContent(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := filepath.Join(dir, "existing.txt")
-	// Existing file has 200 bytes.
-	os.WriteFile(targetPath, []byte(strings.Repeat("X", 200)), 0o644)
+	// Existing file already starts with the truncated body and is longer.
+	os.WriteFile(targetPath, []byte(strings.Repeat("B", 200)), 0o644)
 
-	// New truncated content is only 100 bytes — should refuse (regression).
 	content := strings.Repeat("B", 100)
 	raw := `{"path": "` + strings.ReplaceAll(targetPath, `\`, `\\`) + `", "content": "` + content + `"}`
 
-	result := attemptLoopPartialWriteFile(raw)
-	if result != nil {
-		t.Fatal("should refuse to overwrite with shorter truncated content")
+	if result := attemptLoopPartialWriteFile(raw); result != nil {
+		t.Fatalf("file already contains this body, got %#v", result)
 	}
 
 	// Verify original content preserved
@@ -108,10 +106,9 @@ func TestAttemptLoopPartialWriteFile_RefusesOverwriteWithShorterContent(t *testi
 func TestAttemptLoopPartialWriteFile_OverwritesWithLongerContent(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := filepath.Join(dir, "partial.txt")
-	// Existing file has 100 bytes from a previous partial write.
-	os.WriteFile(targetPath, []byte(strings.Repeat("X", 100)), 0o644)
+	// Existing file is a prefix of the new body.
+	os.WriteFile(targetPath, []byte(strings.Repeat("Y", 100)), 0o644)
 
-	// New truncated content is 200 bytes — should overwrite (more progress).
 	content := strings.Repeat("Y", 200)
 	raw := `{"path": "` + strings.ReplaceAll(targetPath, `\`, `\\`) + `", "content": "` + content + `"}`
 
@@ -203,6 +200,71 @@ func TestResolvePartialWritePath_Relative(t *testing.T) {
 	}
 	if !filepath.IsAbs(got) {
 		t.Fatalf("expected absolute path, got %q", got)
+	}
+}
+
+func TestPartialWriteRecoveryPromptLeavesUntouchedFile(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "references.bib")
+	original := strings.Repeat("x", 200)
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"path":"` + strings.ReplaceAll(targetPath, `\`, `\\`) + `","old_string":"` + strings.Repeat("y", 80) + `","new_string":"@article{new}"}`
+
+	prompt, saved := partialWriteRecoveryPrompt(raw)
+	if prompt != "" || saved {
+		t.Fatalf("prompt=%q saved=%v, want no partial-write hint", prompt, saved)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("existing file was modified, got %d bytes", len(data))
+	}
+}
+
+func TestPartialWriteRecoveryPromptLeavesUnrelatedFile(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "references.bib")
+	original := strings.Repeat("X", 40)
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"path":"` + strings.ReplaceAll(targetPath, `\`, `\\`) + `","content":"` + strings.Repeat("Y", 80) + `"}`
+
+	prompt, saved := partialWriteRecoveryPrompt(raw)
+	if prompt != "" || saved {
+		t.Fatalf("prompt=%q saved=%v, want the unrelated file left alone", prompt, saved)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatal("unrelated file was overwritten")
+	}
+}
+
+func TestPartialWriteRecoveryPromptLeavesCoveredBody(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "partial.txt")
+	if err := os.WriteFile(targetPath, []byte(strings.Repeat("B", 200)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"path":"` + strings.ReplaceAll(targetPath, `\`, `\\`) + `","content":"` + strings.Repeat("B", 100) + `"}`
+
+	prompt, saved := partialWriteRecoveryPrompt(raw)
+	if prompt != "" || saved {
+		t.Fatalf("prompt=%q saved=%v, want no append hint when the file already contains the body", prompt, saved)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 200 {
+		t.Fatalf("existing file was modified, got %d bytes", len(data))
 	}
 }
 

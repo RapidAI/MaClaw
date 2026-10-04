@@ -3945,6 +3945,47 @@ func TestResolveStatusUsesQueuedGrantWhenCurrentGrantExhausted(t *testing.T) {
 	}
 }
 
+func TestBillingEligibilityDoesNotReportPeriodLimitWhenPointCardBalanceIsHeld(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	windowStart := fiveHourWindowStart(now)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-monthly",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-24 * time.Hour),
+			ExpiresAt:      now.AddDate(0, 1, 0),
+			CreditsTotal:   5000,
+			CreditsUsed:    100,
+			PeriodLimits:   CreditPeriodLimits{FiveHour: 100},
+			PeriodUsage:    CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: windowStart, CreditsUsed: 100}},
+		}, {
+			ID:             "grant-point-card",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.AddDate(1, 0, 0),
+			CreditsTotal:   20,
+		}},
+		BillingReservations: []BillingReservation{{
+			RequestID:       "hold",
+			Email:           "user@example.com",
+			ServiceGroupIDs: []string{"grant-group"},
+			Credits:         20,
+			ExpiresAt:       now.Add(time.Hour),
+		}},
+	}
+	reg.Normalize()
+
+	allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || code == "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("allowed=%v code=%q, want the held point card to keep the period window from blocking", allowed, code)
+	}
+}
+
 func TestBillingEligibilityUsesQueuedPointCardWhenCurrentGrantPeriodLimited(t *testing.T) {
 	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
 	startsAt := now.Add(2 * time.Hour)

@@ -127,6 +127,10 @@ type App struct {
 	// repository mutation. A sync run compares it around its network phase so
 	// it never applies an older snapshot over a newly saved local change.
 	virtualRepositorySyncGeneration atomic.Uint64
+	// headerCloudSearchSeq and headerDataDirSearchSeq let a newer header
+	// search stop the previous one's file reads. Keystrokes overlap otherwise.
+	headerCloudSearchSeq   atomic.Uint64
+	headerDataDirSearchSeq atomic.Uint64
 	// virtualRepositoryBackgroundSyncs counts automatic sync work that should
 	// block the manual Sync button: the short debounce queue and an active run.
 	// Failed-retry waits deliberately do not increment this counter so a Hub or
@@ -8185,6 +8189,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.HardwareAllowCustomPets = v
+		case "coding_quality_gate_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetCodingQualityGateEnabled(v)
 		case "acp_host_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

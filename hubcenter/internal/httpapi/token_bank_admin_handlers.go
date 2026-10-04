@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
@@ -43,8 +44,8 @@ type tokenBankAdminRepoView interface {
 	UpsertPriceRule(ctx context.Context, rule sqlite.TokenBankPriceRule, now time.Time) (*sqlite.TokenBankPriceRule, error)
 	DeletePriceRule(ctx context.Context, idOrPattern string) (bool, error)
 
-	ListGiftLinks(ctx context.Context, senderUserID, status string, limit int) ([]sqlite.TokenBankGiftLink, error)
-	RevokeGiftLink(ctx context.Context, linkID, senderUserID string, now time.Time) error
+	ListGiftLinks(ctx context.Context, senderUserID, status string, limit, offset int) ([]sqlite.TokenBankGiftLink, error)
+	RevokeGiftLinkWithReason(ctx context.Context, linkID, senderUserID, reason string, now time.Time) error
 
 	UsageMargins(ctx context.Context, days int, group sqlite.TokenBankMarginGroup) ([]sqlite.TokenBankMarginRow, error)
 }
@@ -716,9 +717,12 @@ func (h *SkillMarketHandlers) TokenBankAdminUpsertPriceRule(w http.ResponseWrite
 		tbError(w, http.StatusBadRequest, "invalid_price_rule", "only a single trailing * wildcard is supported")
 		return
 	}
-	// A missing unit is not a zero. Zero is a real price (a free model), so the
-	// only way to say "leave the stored unit alone" is to omit the field. A new
-	// pattern has nothing stored, and a missing unit there is 0.
+	// A missing unit is not a zero. Zero is a real stored price, so the only way
+	// to say "leave the stored unit alone" is to omit the field. A new pattern
+	// has nothing stored, and a missing unit there is 0. An input or output
+	// unit of 0 is free. A cache unit of 0 does not replace the platform
+	// default cache price; settlement uses that default, and only a resolved
+	// cache price of 0 keeps those tokens on the input rate.
 	rule := sqlite.TokenBankPriceRule{ModelPattern: pattern}
 	if req.UnitInputPer10K == nil || req.UnitOutputPer10K == nil ||
 		req.UnitCachedReadPer10K == nil || req.UnitCacheWritePer10K == nil {
@@ -798,6 +802,8 @@ type tokenBankCreditSharePayload struct {
 	ExpiresAt        string `json:"expires_at"`
 	ClaimedAt        string `json:"claimed_at"`
 	RevokedAt        string `json:"revoked_at"`
+	RevokedBy        string `json:"revoked_by"`
+	RevokeReason     string `json:"revoke_reason"`
 	Revocable        bool   `json:"revocable"`
 	RemainingSeconds int64  `json:"remaining_seconds"`
 }
@@ -815,7 +821,10 @@ func (h *SkillMarketHandlers) TokenBankAdminListCreditShares(w http.ResponseWrit
 	}
 	sender := strings.TrimSpace(r.URL.Query().Get("sender_user_id"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	links, err := repo.ListGiftLinks(r.Context(), sender, status, tokenBankListLimit(r))
+	// The audit page is 20 rows. tokenBankListLimit defaults to 100 and has no
+	// offset, which is how the tab used to paint every link in one column.
+	limit, offset := tokenBankAdminPage(r)
+	links, err := repo.ListGiftLinks(r.Context(), sender, status, limit, offset)
 	if err != nil {
 		tbError(w, http.StatusInternalServerError, "token_bank_unavailable", err.Error())
 		return
@@ -835,6 +844,8 @@ func (h *SkillMarketHandlers) TokenBankAdminListCreditShares(w http.ResponseWrit
 			ExpiresAt:        formatOptionalTime(link.ExpiresAt),
 			ClaimedAt:        formatOptionalTime(link.ClaimedAt),
 			RevokedAt:        formatOptionalTime(link.RevokedAt),
+			RevokedBy:        link.RevokedBy,
+			RevokeReason:     link.RevokeReason,
 			Revocable:        link.Status == sqlite.TokenBankGiftStatusActive || link.Status == sqlite.TokenBankGiftStatusClaimed,
 			RemainingSeconds: remainingSeconds(link.ExpiresAt, now),
 		})
@@ -858,10 +869,15 @@ func (h *SkillMarketHandlers) TokenBankAdminRevokeCreditShare(w http.ResponseWri
 		tbError(w, http.StatusBadRequest, "invalid_link", "link id is required")
 		return
 	}
+	reason, ok := tokenBankGiftRevokeReason(w, r)
+	if !ok {
+		return
+	}
 	// Empty sender = admin revocation, no ownership check. The unfreeze always
 	// returns to the sender recorded on the row (see RevokeGiftLink), so this
-	// cannot be used to move credits anywhere.
-	if err := repo.RevokeGiftLink(r.Context(), linkID, "", time.Now().UTC()); err != nil {
+	// cannot be used to move credits anywhere. The reason is what the audit
+	// row shows later; a freeze with no note is refused before any money moves.
+	if err := repo.RevokeGiftLinkWithReason(r.Context(), linkID, "", reason, time.Now().UTC()); err != nil {
 		switch {
 		case errors.Is(err, sqlite.ErrGiftLinkNotFound):
 			tbError(w, http.StatusNotFound, "link_not_found", "credit share link not found")
@@ -876,6 +892,41 @@ func (h *SkillMarketHandlers) TokenBankAdminRevokeCreditShare(w http.ResponseWri
 }
 
 // --- helpers ---
+
+// tokenBankGiftRevokeReasonMaxRunes keeps an audit note on one card. A pasted
+// paragraph would wrap a four-across row into a wall of text.
+const tokenBankGiftRevokeReasonMaxRunes = 200
+
+// tokenBankGiftRevokeReason reads the note an admin must type before freezing
+// a transfer. An empty body, a blank string, and a note past the cap are all
+// refused the same way: the row would otherwise say "frozen" with no reason,
+// which is the gap this field exists to close.
+func tokenBankGiftRevokeReason(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			tbError(w, http.StatusBadRequest, "reason_too_long", "freeze reason is too long")
+			return "", false
+		}
+		// An empty body and a body that is not JSON both fail here. Neither
+		// is a reason the audit can show, so the freeze does not run.
+		tbError(w, http.StatusBadRequest, "reason_required", "a freeze reason is required")
+		return "", false
+	}
+	reason := strings.Join(strings.Fields(body.Reason), " ")
+	if reason == "" {
+		tbError(w, http.StatusBadRequest, "reason_required", "a freeze reason is required")
+		return "", false
+	}
+	if utf8.RuneCountInString(reason) > tokenBankGiftRevokeReasonMaxRunes {
+		tbError(w, http.StatusBadRequest, "reason_too_long", "freeze reason is too long")
+		return "", false
+	}
+	return reason, true
+}
 
 // tokenBankAdminPage reads limit/offset. The page size is capped at 200 so a
 // single admin request cannot scan an unbounded number of shares and models.

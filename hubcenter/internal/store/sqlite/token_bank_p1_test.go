@@ -149,7 +149,7 @@ func TestSettleTokenBankUsageAnomaly(t *testing.T) {
 		t.Fatalf("border: %v", err)
 	}
 	if borderOut.CapHit != "" {
-		t.Fatalf("CapHit at 5x mean boundary = %q, want empty", borderOut.CapHit)
+		t.Fatalf("CapHit at the old 5x boundary = %q, want empty", borderOut.CapHit)
 	}
 
 	over := border
@@ -159,8 +159,8 @@ func TestSettleTokenBankUsageAnomaly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("over: %v", err)
 	}
-	if !overOut.Applied || overOut.CapHit != "anomaly" || overOut.NetMicro <= 0 {
-		t.Fatalf("applied/hit/net = %v/%q/%d, want credited anomaly", overOut.Applied, overOut.CapHit, overOut.NetMicro)
+	if !overOut.Applied || overOut.CapHit != "" || overOut.NetMicro <= 0 {
+		t.Fatalf("applied/hit/net = %v/%q/%d, want credited with no pause", overOut.Applied, overOut.CapHit, overOut.NetMicro)
 	}
 }
 

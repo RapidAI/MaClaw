@@ -1490,6 +1490,43 @@ func TestDropUnusedSessionCompanionsKeepsUsedWrite(t *testing.T) {
 	}
 }
 
+func TestOpenFileWriteDropsLeftoverWriteCeiling(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:fs.write.local:real", Capability: tool.CapabilityFSWriteLocal, Required: true},
+			{ID: "need:fs.read.local:real", Capability: tool.CapabilityFSReadLocal, Required: true},
+		},
+		Remaining: map[string]int{
+			string(tool.CapabilityFSWriteLocal): 1,
+			string(tool.CapabilityFSReadLocal):  6,
+		},
+	}
+	planned := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: 0.91, Reason: "session residue continuation"}
+	remaining := semanticResidueRemainingForOpenTurn(residue, planned)
+	if _, ok := remaining[string(tool.CapabilityFSWriteLocal)]; ok {
+		t.Fatalf("leftover file-write ceiling stayed on the continued edit: %v", remaining)
+	}
+	if remaining[string(tool.CapabilityFSReadLocal)] != 6 {
+		t.Fatalf("read ceiling changed: %v", remaining)
+	}
+	companion := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:shell.execute.remote_host:abc", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true},
+			{ID: "need:zz-baseline:fs.write.local:bbb", Capability: tool.CapabilityFSWriteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+		},
+		Remaining: map[string]int{
+			string(tool.CapabilityShellExecuteRemoteHost): 1,
+			string(tool.CapabilityFSWriteLocal):           0,
+		},
+	}
+	kept := semanticResidueRemainingForOpenTurn(companion, intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: 0.97})
+	if kept[string(tool.CapabilityFSWriteLocal)] != 0 {
+		t.Fatalf("baseline write on another task was reopened: %v", kept)
+	}
+}
+
 func TestClampNeedsToResidueRemainingDropsSpentFamily(t *testing.T) {
 	needs := []tool.CapabilityNeed{
 		{ID: "office", Capability: tool.CapabilityDocumentWriteOffice},

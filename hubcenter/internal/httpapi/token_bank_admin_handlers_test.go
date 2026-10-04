@@ -1006,7 +1006,7 @@ func TestTokenBankAdminRevokeCreditShareReturnsFreezeToSender(t *testing.T) {
 		t.Fatalf("frozen_micro before revoke = %v, want 30000000", body["frozen_micro"])
 	}
 
-	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/"+linkID+"/revoke", nil)
+	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/"+linkID+"/revoke", map[string]any{"reason": "duplicate share"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin revoke = %d, want 200; body %s", rec.Code, rec.Body.String())
 	}
@@ -1020,6 +1020,44 @@ func TestTokenBankAdminRevokeCreditShareReturnsFreezeToSender(t *testing.T) {
 	}
 	if avail, _ := body["available_micro"].(float64); avail != 100_000_000 {
 		t.Fatalf("available_micro after revoke = %v, want 100000000 (the freeze returned)", body["available_micro"])
+	}
+
+	rec = env.doAdmin(t, "GET", "/api/admin/token-bank/credit-shares?limit=20&offset=0", nil)
+	body = decodeMap(t, rec)
+	rows, _ := body["credit_shares"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("audit rows after revoke = %d, want 1", len(rows))
+	}
+	row, _ := rows[0].(map[string]any)
+	if got, _ := row["revoked_by"].(string); got != "admin" {
+		t.Fatalf("revoked_by = %q, want admin", got)
+	}
+	if got, _ := row["revoke_reason"].(string); got != "duplicate share" {
+		t.Fatalf("revoke_reason = %q, want the note the admin typed", got)
+	}
+}
+
+func TestTokenBankAdminRevokeCreditShareRequiresAReason(t *testing.T) {
+	env := newTokenBankAdminTestEnv(t)
+	sender, senderToken := env.createUser(t, "sender@example.com")
+	env.seedCredits(t, sender.ID, 100)
+	rec := env.do(t, "POST", "/api/v1/credits/share-links", senderToken, map[string]any{"credits": 10})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d, want 201; body %s", rec.Code, rec.Body.String())
+	}
+	linkID, _ := decodeMap(t, rec)["id"].(string)
+
+	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/"+linkID+"/revoke", map[string]any{"reason": "   "})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("blank reason = %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/"+linkID+"/revoke", map[string]any{"reason": strings.Repeat("a", 201)})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("long reason = %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+	rec = env.do(t, "GET", "/api/v1/token-bank/summary", senderToken, nil)
+	if frozen, _ := decodeMap(t, rec)["frozen_micro"].(float64); frozen != 10_000_000 {
+		t.Fatalf("frozen_micro after refused revoke = %v, want 10000000 (the freeze must stay)", frozen)
 	}
 }
 
@@ -1042,11 +1080,11 @@ func TestTokenBankAdminRevokeCreditShareReportsNotActive(t *testing.T) {
 	}
 	// A second revoke — now from the admin — is a conflict, not a 500: the link
 	// is simply no longer active.
-	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/"+linkID+"/revoke", nil)
+	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/"+linkID+"/revoke", map[string]any{"reason": "duplicate share"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second revoke = %d, want 409; body %s", rec.Code, rec.Body.String())
 	}
-	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/ghost/revoke", nil)
+	rec = env.doAdmin(t, "POST", "/api/admin/token-bank/credit-shares/ghost/revoke", map[string]any{"reason": "missing row"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("revoke unknown = %d, want 404", rec.Code)
 	}

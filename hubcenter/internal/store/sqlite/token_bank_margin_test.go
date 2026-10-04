@@ -103,8 +103,8 @@ func TestUsageMarginsFlagsInversionTheFeeAbsorbed(t *testing.T) {
 	if got.MarginMicro != 52_000_000 {
 		t.Fatalf("margin = %d, want 52000000", got.MarginMicro)
 	}
-	if got.ShortfallMicro != 20_000_000 {
-		t.Fatalf("shortfall = %d, want 20000000 (gross - charged)", got.ShortfallMicro)
+	if got.ShortfallMicro != 0 {
+		t.Fatalf("shortfall = %d, want 0; the fee covered the gap, so the clamp held nothing back", got.ShortfallMicro)
 	}
 }
 
@@ -126,8 +126,9 @@ func TestUsageMarginsClampedInversionLeavesZeroMargin(t *testing.T) {
 	if got.MarginMicro != 0 {
 		t.Fatalf("margin = %d, want 0; §5 ⑥ caps the payout at the charge", got.MarginMicro)
 	}
-	if got.ShortfallMicro != 120_000_000 {
-		t.Fatalf("shortfall = %d, want 120000000", got.ShortfallMicro)
+	// Unclamped net is 648. The clamp pays 600, so it holds back 48.
+	if got.ShortfallMicro != 48_000_000 {
+		t.Fatalf("shortfall = %d, want 48000000 (gross - fee - clamped net)", got.ShortfallMicro)
 	}
 }
 
@@ -150,8 +151,10 @@ func TestUsageMarginsFreeRouteHasNoRateButStillCountsInversion(t *testing.T) {
 	if got.InvertedCount != 1 {
 		t.Fatalf("inverted = %d, want 1; free work is the worst inversion", got.InvertedCount)
 	}
-	if got.ShortfallMicro != 720_000_000 {
-		t.Fatalf("shortfall = %d, want 720000000", got.ShortfallMicro)
+	// List gross is 720 and the fee is 72. The clamp pays nothing, so the
+	// sharer payout it holds back is 648, not the whole list price.
+	if got.ShortfallMicro != 648_000_000 {
+		t.Fatalf("shortfall = %d, want 648000000 (gross - fee)", got.ShortfallMicro)
 	}
 }
 

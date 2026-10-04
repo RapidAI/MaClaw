@@ -329,9 +329,17 @@ func ensureMaxOutputTokens(reqBody map[string]interface{}, cfg corelib.MaclawLLM
 // An explicit temperature from PassThrough/ExtraBody wins. Codex subscription
 // endpoints reject unknown sampling params; thinking-enabled requests
 // (Anthropic extended thinking, DeepSeek V4 default thinking) also reject or
-// ignore temperature, so those bodies are left untouched.
+// ignore temperature, so those bodies are left untouched. Kimi Code and the
+// K2/K3 family reject every explicit sampling value, including an ExtraBody
+// temperature of 0, so those fields are removed instead.
 func applyConfigTemperature(reqBody map[string]interface{}, cfg corelib.MaclawLLMConfig) {
-	if reqBody == nil || cfg.Temperature == nil {
+	if reqBody == nil {
+		return
+	}
+	if corelib.OmitKimiLockedSampling(cfg, reqBody) {
+		return
+	}
+	if cfg.Temperature == nil {
 		return
 	}
 	if _, ok := reqBody["temperature"]; ok {
@@ -2720,7 +2728,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 			}
 		}
 		if chunk.Usage != nil {
-			usage = chunk.Usage
+			usage = mergeSSEUsage(usage, chunk.Usage)
 		}
 		if len(chunk.Choices) == 0 {
 			continue

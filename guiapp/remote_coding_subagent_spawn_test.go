@@ -440,13 +440,13 @@ func TestRemoteSourcePreviewOnlyEnabledForImplementation(t *testing.T) {
 }
 
 func TestRemoteOperationalQualityRequiresLaunchOrBuildEvidence(t *testing.T) {
-	passed, summary, issues := summarizeRemoteOperationalQuality([]CodingSubAgentCommandResult{{
+	passed, summary, issues := summarizeRemoteOperationalQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{{
 		Command: "npm run build", Succeeded: true,
 	}}, 1)
 	if passed != codingSubAgentQualityPassed || issues != 0 || !strings.Contains(summary, "launch/build command evidence") {
 		t.Fatalf("build evidence=%q %q %d", passed, summary, issues)
 	}
-	passed, summary, issues = summarizeRemoteOperationalQuality([]CodingSubAgentCommandResult{{
+	passed, summary, issues = summarizeRemoteOperationalQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{{
 		Command: "ls", Succeeded: true,
 	}}, 1)
 	if passed != codingSubAgentQualityFailed || issues != 1 || !strings.Contains(summary, "no launch/build command") {

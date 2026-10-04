@@ -104,3 +104,159 @@ export function renderStars(avg: number): string {
     if (!Number.isFinite(avg) || avg <= 0) return "Rating -";
     return `Rating ${avg.toFixed(1)}`;
 }
+
+export const hubCatalogDetailStyle: CSSProperties = {
+    flex: "1 1 auto",
+    minWidth: 0,
+};
+
+export const hubCatalogDescStyle: CSSProperties = {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontSize: "0.72rem",
+    color: colors.textSecondary,
+    lineHeight: 1.35,
+};
+
+export const hubCatalogGithubStyle: CSSProperties = {
+    display: "flex",
+    gap: "8px",
+    minWidth: 0,
+    marginTop: "2px",
+    overflow: "hidden",
+    fontSize: "0.66rem",
+    color: colors.textMuted,
+};
+
+export const hubCatalogLinkStyle: CSSProperties = {
+    padding: 0,
+    border: "none",
+    background: "transparent",
+    color: colors.link,
+    cursor: "pointer",
+    fontSize: "0.66rem",
+    textAlign: "left",
+    textDecoration: "underline",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+    flex: "1 1 auto",
+    maxWidth: "100%",
+};
+
+export const hubCatalogPathStyle: CSSProperties = {
+    minWidth: 0,
+    flex: "1 1 auto",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+};
+
+export const hubCatalogTrailStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: "8px",
+    flexShrink: 0,
+};
+
+export const hubCatalogNoteStyle: CSSProperties = {
+    padding: "8px 10px",
+    fontSize: "0.72rem",
+    color: colors.textMuted,
+    lineHeight: 1.4,
+};
+
+export const hubCatalogMetaLineStyle: CSSProperties = {
+    marginTop: "1px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: colors.textMuted,
+    fontSize: "0.66rem",
+    fontVariantNumeric: "tabular-nums",
+};
+
+export const hubCatalogActionStyle: CSSProperties = {
+    fontSize: "0.72rem",
+    padding: "2px 10px",
+    flexShrink: 0,
+    alignSelf: "center",
+};
+
+export const hubMarketToolbarStyle: CSSProperties = {
+    display: "flex",
+    gap: "6px",
+    alignItems: "center",
+    flexShrink: 0,
+    padding: "6px 8px",
+    background: colors.surfaceMuted,
+    borderBottom: `1px solid ${colors.borderLight}`,
+};
+
+export const hubMarketFilterStyle: CSSProperties = {
+    display: "flex",
+    gap: "6px",
+    alignItems: "center",
+    flexWrap: "wrap",
+    flexShrink: 0,
+    fontSize: "0.72rem",
+    padding: "4px 8px",
+    background: colors.surface,
+    borderBottom: `1px solid ${colors.borderLight}`,
+};
+
+export const settingsSegmentStyle: CSSProperties = {
+    display: "inline-flex",
+    alignSelf: "flex-start",
+    flexShrink: 0,
+    border: `1px solid ${colors.border}`,
+    borderRadius: "6px",
+    overflow: "hidden",
+    background: colors.surfaceMuted,
+};
+
+export const settingsSegmentBtnStyle: CSSProperties = {
+    border: "none",
+    background: "transparent",
+    color: colors.textSecondary,
+    fontSize: "0.72rem",
+    fontWeight: 600,
+    padding: "4px 12px",
+    cursor: "pointer",
+};
+
+export const settingsSegmentBtnActiveStyle: CSSProperties = {
+    background: colors.surface,
+    color: colors.text,
+    boxShadow: `inset 0 -2px 0 ${colors.primary}`,
+};
+
+export const settingsControlStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    minWidth: 0,
+};
+
+export const settingsNumberStyle: CSSProperties = {
+    width: "88px",
+    fontSize: "0.74rem",
+    padding: "2px 6px",
+    fontVariantNumeric: "tabular-nums",
+};
+
+export const settingsSaveBtnStyle: CSSProperties = {
+    fontSize: "0.7rem",
+    padding: "2px 8px",
+};
+
+export const settingsFootStyle: CSSProperties = {
+    padding: "6px 10px",
+    borderTop: `1px solid ${colors.borderLight}`,
+    fontSize: "0.68rem",
+    color: colors.textMuted,
+    lineHeight: 1.4,
+};

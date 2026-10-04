@@ -64,7 +64,7 @@ export function MaclawAppMarketPreview({ skill, localizeText }: { skill: MaclawA
 }
 
 const previewStyle: CSSProperties = {
-    marginTop: "6px",
+    marginTop: "2px",
     fontSize: "0.68rem",
     color: colors.textMuted,
 };

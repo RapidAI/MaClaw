@@ -420,6 +420,122 @@ func (c *SQLiteSemanticExecutionCoordinator) MaterializeReadySurface(scope Invoc
 	return state, grants, nil
 }
 
+// CommitExpiredRenewal replaces one unconsumed grant whose only failure is
+// the wall clock. The successor is a new one-time credential for the same
+// selection: new nonce, new signature, ExpiresAt = now+ttl. The previous
+// nonce is revoked, its exposed materialization is retired, and the
+// successor is inserted, together with any model-request alias that still
+// points at the old nonce, in this single transaction. A consumed, revoked,
+// completed, or still-valid grant is not replaced. Callers that do not share
+// this database use InvocationIssuer.RenewExpired instead.
+func (c *SQLiteSemanticExecutionCoordinator) CommitExpiredRenewal(issuer *InvocationIssuer, scope InvocationScope, previous InvocationGrant, ttl time.Duration, now time.Time, satisfied map[string]bool) (InvocationGrant, error) {
+	if c == nil || c.db == nil || issuer == nil || issuer.store != c.Grants {
+		return InvocationGrant{}, fmt.Errorf("semantic surface renewal is unavailable")
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	plan, err := coordinatedPublishedPlan(tx, scope)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := routeRevisionIsCurrent(tx, scope); err != nil {
+		return InvocationGrant{}, err
+	}
+	if satisfied[previous.SelectionID] {
+		return InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	var completedSelection string
+	err = tx.QueryRow(`SELECT selection_id FROM semantic_route_completed_selections WHERE route_key = ? AND selection_id = ?`, routeStateKey(scope), previous.SelectionID).Scan(&completedSelection)
+	if err == nil {
+		return InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return InvocationGrant{}, err
+	}
+	successor, err := issuer.PrepareExpiredRenewal(previous, scope, plan, ttl, now, satisfied)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if _, err := issuer.ValidateWithCanonicalScope(successor, scope, plan, satisfied); err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := replaceExpiredGrantTx(tx, issuer, previous, successor); err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := retireRenewedMaterializationTx(tx, routeStateKey(scope), previous.Token, now); err != nil {
+		return InvocationGrant{}, err
+	}
+	materialization := RouteMaterialization{FunctionName: successor.Token, Grant: successor, State: RouteMaterializationExposed}
+	if !routeMaterializationMatchesPlan(plan, scope, materialization) {
+		return InvocationGrant{}, fmt.Errorf("route_state_grant_binding_mismatch")
+	}
+	grantJSON, err := json.Marshal(successor)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO semantic_route_materializations(route_key, function_name, grant_json, state, created_at, updated_at) VALUES (?, ?, ?, 'exposed', ?, ?)`, routeStateKey(scope), successor.Token, grantJSON, routeStateTime(now), routeStateTime(now)); err != nil {
+		return InvocationGrant{}, err
+	}
+	// Nonce is the one-shot identity. Every presentation of this grant,
+	// including a prepared request that copied the same nonce, moves
+	// together. ResolveModelRequestAlias still requires the active epoch
+	// and response id, so a retired surface cannot spend the successor.
+	if _, err := tx.Exec(`UPDATE semantic_model_request_aliases SET grant_nonce = ?, grant_fingerprint = ?, grant_json = ? WHERE grant_nonce = ?`, successor.Nonce, invocationGrantFingerprint(successor), grantJSON, previous.Nonce); err != nil {
+		return InvocationGrant{}, err
+	}
+	if _, err := tx.Exec(`UPDATE semantic_route_states SET updated_at = ? WHERE route_key = ?`, routeStateTime(now), routeStateKey(scope)); err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return InvocationGrant{}, err
+	}
+	return successor, nil
+}
+
+// retireRenewedMaterializationTx retires the exposed row for the previous
+// token. A missing or already-retired row is not a reason to keep the
+// expired credential: the successor insert is the new authority. Any other
+// state aborts so the caller's transaction restores the issued grant.
+func retireRenewedMaterializationTx(tx *sql.Tx, routeKey, functionName string, now time.Time) error {
+	if strings.TrimSpace(functionName) == "" {
+		return fmt.Errorf("route_state_function_invalid")
+	}
+	result, err := tx.Exec(`UPDATE semantic_route_materializations SET state = 'retired', updated_at = ? WHERE route_key = ? AND function_name = ? AND state = 'exposed'`, routeStateTime(now), routeKey, functionName)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 1 {
+		return nil
+	}
+	var state string
+	err = tx.QueryRow(`SELECT state FROM semantic_route_materializations WHERE route_key = ? AND function_name = ?`, routeKey, functionName).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if state == string(RouteMaterializationRetired) {
+		return nil
+	}
+	return fmt.Errorf("route_state_materialization_conflict")
+}
+
 // ensureSurfaceSelectionsUnmaterialized is the durable half of the
 // materialization idempotency check. Host-local maps are only caches; without
 // this check two processes recovering the same revision could both mint a

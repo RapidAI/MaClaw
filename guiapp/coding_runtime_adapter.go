@@ -100,19 +100,20 @@ func (a *guiRemoteCodingRuntimeAdapter) Execute(ctx context.Context, request cod
 	}
 	noChangeDigest := ""
 	if status == codingruntime.TaskCompleted && len(result.FilesModified) == 0 && len(result.FilesCreated) == 0 && verifiedGUIRemoteNoChangeResult(result) {
-		// Remote verification has already gathered concrete inspection and
-		// acceptance-command facts. Persist only the derived digest, paired with
-		// an explicit evidence type, so corelib can accept an unchanged remote
-		// workspace without trusting the model's summary prose.
-		noChangeDigest = codingRuntimeDigest(result.ExplorationSummary + "\n" + result.VerificationSummary + "\n" + result.QualitySummary)
+		// Persist a host digest, paired with an explicit evidence type, so corelib
+		// can accept an unchanged remote workspace without trusting the model's
+		// summary prose. A disabled programming quality gate uses a fixed host
+		// assertion; an enabled gate uses the bounded audit text.
+		noChangeDigest = codingRuntimeVerifiedNoChangeDigest(result.ExplorationSummary, result.VerificationSummary, result.QualitySummary, result.QualityStatus == codingSubAgentQualityNotNeeded)
 		evidence = append(evidence, codingruntime.Evidence{Type: "verified_no_change", Digest: noChangeDigest})
 	}
 	return codingruntime.ExecutionResult{Status: status, SideEffectState: effects, ErrorCode: remoteCodingRuntimeErrorCode(result), ErrorSummary: result.Error, Evidence: evidence, NoWorkspaceChangeEvidenceDigest: noChangeDigest}
 }
 
-// verifiedGUIRemoteNoChangeResult accepts only the remote subagent's
-// quality-gated outcome. applyRemoteVerificationOutcome sets VerifiedNoChange
-// after read/command/diff audit establishes a verified existing result.
+// verifiedGUIRemoteNoChangeResult accepts a host-marked unchanged workspace.
+// The quality audit sets VerifiedNoChange after inspection evidence. With the
+// programming quality gate off, a successful turn that did not edit files sets
+// the same flag, and the digest is a fixed host assertion rather than model prose.
 func verifiedGUIRemoteNoChangeResult(result *RemoteCodingSubAgentResult) bool {
 	if result == nil {
 		return false
@@ -177,22 +178,41 @@ func (a *guiCodingRuntimeAdapter) Execute(ctx context.Context, request codingrun
 	}
 	noChangeDigest := ""
 	if status == codingruntime.TaskCompleted && len(result.FilesModified) == 0 && len(result.FilesCreated) == 0 && verifiedGUINoChangeResult(result) {
-		// The GUI quality gate has already rejected no-op turns without
-		// inspection/verification evidence. Preserve a digest of that bounded
-		// audit, rather than the model's free-form completion text, so corelib
-		// can distinguish verified "already satisfied" work from false success.
-		noChangeDigest = codingRuntimeDigest(result.ExplorationSummary + "\n" + result.VerificationSummary + "\n" + result.QualitySummary)
+		// Persist a host digest rather than the model's free-form completion text.
+		// A disabled programming quality gate uses a fixed host assertion; an
+		// enabled gate uses the bounded audit text.
+		noChangeDigest = codingRuntimeVerifiedNoChangeDigest(result.ExplorationSummary, result.VerificationSummary, result.QualitySummary, result.qualityGateDisabled)
 		evidence = append(evidence, codingruntime.Evidence{Type: "verified_no_change", Digest: noChangeDigest})
 	}
 	return codingruntime.ExecutionResult{Status: status, SideEffectState: sideEffects, ErrorCode: codingRuntimeErrorCode(result), ErrorSummary: compactSubAgentErrorSummary(result.Error), Evidence: evidence, FinalDiffGatePassed: finalDiffGatePassed, NoWorkspaceChangeEvidenceDigest: noChangeDigest}
 }
 
-// verifiedGUINoChangeResult recognizes only the GUI SubAgent's quality-gated
-// no-op outcome. This deliberately does not inspect Summary: prose such as
-// "already implemented" is not evidence. At least one concrete inspection or
-// verification fact and a passing aggregate quality result are required.
+// codingQualityGateDisabledNoChangeSource is the host assertion recorded when
+// a successful turn leaves the workspace unchanged and the programming quality
+// gate is off. It is not derived from the model summary.
+const codingQualityGateDisabledNoChangeSource = "coding_quality_gate_disabled"
+
+func codingRuntimeVerifiedNoChangeDigest(exploration, verification, quality string, gateDisabled bool) string {
+	source := exploration + "\n" + verification + "\n" + quality
+	if gateDisabled {
+		source = codingQualityGateDisabledNoChangeSource
+	}
+	return codingRuntimeDigest(source)
+}
+
+// verifiedGUINoChangeResult recognizes a host-accepted unchanged workspace.
+// The programming quality gate, when on, requires a passing audit plus a
+// concrete inspection or verification fact. When that gate is off, a passed
+// turn carries qualityGateDisabled and that host flag is the evidence.
+// Model prose such as "already implemented" is never inspected.
 func verifiedGUINoChangeResult(result *CodingSubAgentResult) bool {
-	if result == nil || result.QualityStatus != codingSubAgentQualityPassed {
+	if result == nil {
+		return false
+	}
+	if result.qualityGateDisabled {
+		return true
+	}
+	if result.QualityStatus != codingSubAgentQualityPassed {
 		return false
 	}
 	return strings.TrimSpace(result.ExplorationSummary) != "" || strings.TrimSpace(result.VerificationSummary) != ""

@@ -77,6 +77,19 @@
 .sg-form-dialog .sg-form-actions button{min-width:96px;height:36px}
 .sg-form-dialog .sg-route-card{margin-top:8px;padding:10px 12px}
 .sg-form-dialog .sg-route-grid{margin-top:8px;gap:8px}
+.sg-form-dialog .sg-provider-card{display:flex;align-items:flex-start;gap:8px}
+.sg-form-dialog .sg-provider-card.is-draggable{cursor:grab;user-select:none}
+.sg-form-dialog .sg-provider-card:focus{outline:2px solid #2f80ed;outline-offset:2px}
+.sg-form-dialog .sg-provider-card.is-draggable .sg-provider-meta{cursor:text;user-select:text}
+.sg-form-dialog .sg-provider-card .sg-row-head{flex-wrap:wrap;gap:6px 8px;min-width:0}
+.sg-form-dialog .sg-provider-card .sg-row-head>strong{min-width:0;overflow-wrap:anywhere}
+.sg-form-dialog .sg-provider-card .sg-actions{flex:0 0 auto;margin-left:auto}
+.sg-form-dialog .sg-provider-card.is-dragging{opacity:.45;cursor:grabbing}
+.sg-form-dialog .sg-provider-card.is-drop-before{box-shadow:inset 0 2px 0 #2f80ed}
+.sg-form-dialog .sg-provider-card.is-drop-after{box-shadow:inset 0 -2px 0 #2f80ed}
+.sg-form-dialog .sg-provider-grip{flex:0 0 14px;align-self:center;width:14px;height:18px;border-radius:4px;background-color:rgba(47,128,237,.06);background-image:radial-gradient(currentColor 1.35px, transparent 1.55px);background-size:4px 5px;background-position:center;background-repeat:repeat;color:#3f5674}
+.sg-form-dialog .sg-provider-body{flex:1 1 auto;min-width:0}
+.sg-form-dialog .sg-provider-card.is-draggable .sg-actions button{cursor:pointer}
 .sg-advanced{margin-top:12px;border:1px solid #e5e8ef;border-radius:10px;background:#fafbfc}
 .sg-advanced>summary{cursor:pointer;list-style:none;padding:10px 12px;font-size:13px;font-weight:750;color:#262b36}
 .sg-advanced>summary::-webkit-details-marker{display:none}
@@ -304,6 +317,7 @@
     #llmProviderTrafficTotal .provider-traffic.is-pending .v{color:#8a93a0;font-weight:700}
     @container llm-provider-head (max-width:900px){#llmProviderTrafficTotal:not([hidden]){order:1;flex:1 1 100%;margin-left:0;justify-content:safe flex-end;max-width:100%}}
     #tab-llmservice #llmServiceGroupsList.llm-card-grid{grid-template-columns:1fr}#tab-llmservice #llmServiceGroupsList .llm-service-group-row{min-height:0;align-items:center;display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(240px,auto) minmax(228px,280px);grid-template-areas:"main actions traffic";column-gap:20px;row-gap:10px;content-visibility:auto;contain-intrinsic-size:112px}#tab-llmservice #llmServiceGroupsList .data-row-main{grid-area:main}#tab-llmservice #llmServiceGroupsList .data-row-actions{grid-area:actions;max-width:420px;align-items:center;justify-content:flex-end}#tab-llmservice #llmServiceGroupsList .service-group-traffic{grid-area:traffic;display:flex;min-width:0;align-items:stretch;padding:0}#tab-llmservice #llmServiceGroupsList .service-group-traffic-col{flex:1;min-width:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}#tab-llmservice #llmServiceGroupsList .service-group-traffic-line{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;min-width:0;padding:6px 8px;border-radius:10px;background:#f6f7fa;font-variant-numeric:tabular-nums}#tab-llmservice #llmServiceGroupsList .service-group-traffic-line .k{color:#667085;font-size:11px;font-weight:700;line-height:1.2}#tab-llmservice #llmServiceGroupsList .service-group-traffic-line .v{color:#262b36;font-size:15px;font-weight:800;line-height:1.2;max-width:100%;overflow:hidden;text-overflow:ellipsis}#tab-llmservice #llmServiceGroupsList .service-group-traffic-line .v.total{color:#1f2230}#tab-llmservice #llmServiceGroupsList .service-group-traffic.is-pending .v{color:#667085;font-weight:700}@media(max-width:1100px){#tab-llmservice #llmServiceGroupsList .llm-service-group-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"main actions" "traffic traffic"}}@media(max-width:560px){#tab-llmservice #llmServiceGroupsList .llm-service-group-row{grid-template-columns:1fr;grid-template-areas:"main" "actions" "traffic"}#tab-llmservice #llmServiceGroupsList .data-row-actions{justify-content:flex-start}}
+    #tab-llmservice #llmServiceGroupsList .llm-service-group-row.sg-group-reveal{content-visibility:visible}#tab-llmservice #llmServiceGroupsList .llm-service-group-row:focus{outline:2px solid #2f80ed;outline-offset:2px}
     #tab-llmservice .llm-subtabs{gap:8px;padding:4px;border:1px solid #dbe3ee;border-radius:12px;background:#f6f8fb;width:max-content;max-width:100%}#tab-llmservice .llm-subtabs button{height:34px;border:1px solid transparent;border-radius:8px;box-shadow:none;transition:background-color .16s ease,color .16s ease,border-color .16s ease}#tab-llmservice .llm-subtabs .btn-ghost{background:transparent;color:#586579}#tab-llmservice .llm-subtabs .btn-ghost:hover{background:#eaf0f7;color:#253b55;border-color:#d7e1ed;transform:none}#tab-llmservice .llm-subtabs .btn-secondary{background:#e8f0fb;color:#1f4d7d;border-color:#b8cee7;box-shadow:inset 0 -2px 0 #2f6fae;font-weight:800;transform:none}#tab-llmservice .llm-subtabs button:focus-visible{outline:2px solid #2f6fae;outline-offset:2px}
     #tab-llmservice .llm-class-head-card{padding:12px 14px;gap:8px;border-radius:14px;overflow:visible;min-width:0;width:100%}
     #tab-llmservice .llm-embedding-card{padding:12px 14px;gap:8px;border-radius:14px}

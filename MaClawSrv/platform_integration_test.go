@@ -3059,3 +3059,43 @@ func platformRuntimeTenantIDForTest(t *testing.T, svc *agentservice.Service, hub
 	t.Fatalf("runtime tenant for hub tenant %s not found", hubTenantID)
 	return ""
 }
+
+func TestPlatformSSEWriterStreamsActivityBeforeText(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writer := newPlatformSSEWriter(rec)
+	writer.WriteHeader()
+	writer.WriteActivity("accepted", "")
+	writer.WriteActivity("tool_start", "knowledge_search")
+	writer.WriteActivity("nope", "ignored")
+	writer.WriteChunk("hello")
+	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering=%q", got)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content type=%q", rec.Header().Get("Content-Type"))
+	}
+	body := rec.Body.String()
+	accepted := strings.Index(body, `"status":"accepted"`)
+	tool := strings.Index(body, `"status":"tool_start"`)
+	chunk := strings.Index(body, `"chunk":"hello"`)
+	if accepted < 0 || tool < accepted || chunk < tool {
+		t.Fatalf("body=%s", body)
+	}
+	if strings.Contains(body, "nope") || strings.Contains(body, "ignored") {
+		t.Fatalf("unknown activity leaked: %s", body)
+	}
+}
+
+func TestPlatformCachedBindingRejectsLegacyWhenTenantSpecified(t *testing.T) {
+	binding := platformRuntimeBinding{Instance: agentservice.Instance{Metadata: map[string]string{"ve_employee_id": "emp-1"}}}
+	if platformCachedBindingMatches(binding, "emp-1", "tenant-a", false) {
+		t.Fatal("legacy binding must not satisfy a tenant-scoped lookup")
+	}
+	binding.Instance.Metadata["ve_hub_tenant_id"] = "tenant-a"
+	if !platformCachedBindingMatches(binding, "emp-1", "tenant-a", false) {
+		t.Fatal("matching hub tenant should hit")
+	}
+	if platformCachedBindingMatches(binding, "emp-1", "other-tenant", false) {
+		t.Fatal("different hub tenant should miss")
+	}
+}

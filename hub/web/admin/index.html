@@ -269,6 +269,7 @@
         </div>
         <div class="nav-group" data-nav-group="ops" role="group" aria-labelledby="nav-group-label-ops">
           <div class="nav-group-label" id="nav-group-label-ops" data-i18n="navGroupOps">Ops & Settings</div>
+          <button data-tab="linkhealth" onclick="openTab('linkhealth')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h3.5l2.5-6 3 12 2.5-6H21"></path></svg></span><div class="nav-copy"><span id="navLinkHealth"></span><small id="navLinkHealthDesc"></small></div></div></button>
           <button data-tab="failurelogs" onclick="openTab('failurelogs')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h8l4 4v12H7z"></path><path d="M15 4v4h4"></path><path d="M10 12h4"></path><path d="M10 16h4"></path></svg></span><div class="nav-copy"><span data-i18n="navFailureLogs"></span><small data-i18n="navFailureLogsDesc"></small></div></div></button>
           <button data-tab="console" onclick="openTab('console')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 9 3 3-3 3"></path><path d="M13 15h3"></path><rect x="4" y="5" width="16" height="14" rx="2"></rect></svg></span><div class="nav-copy"><span data-i18n="navConsole"></span><small data-i18n="navConsoleDesc"></small></div></div></button>
           <button data-tab="notifications" onclick="openTab('notifications')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg></span><div class="nav-copy"><span data-i18n="navNotifications"></span><small data-i18n="navNotificationsDesc"></small></div></div></button>
@@ -1542,6 +1543,12 @@
         <div class="head"><div><h3 id="usageStatsTabTitle" data-i18n="usageStatsTabTitle"></h3><div class="desc" id="usageStatsTabSubtitle" data-i18n="usageStatsTabSubtitle"></div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn" data-i18n="reload"></button></div>
       </section>
 
+      <!-- Tab: Link Health -->
+      <section id="tab-linkhealth" class="panel card">
+        <div class="head"><div><h3 id="linkHealthTitle"></h3><div class="desc" id="linkHealthSubtitle"></div></div><button class="btn-ghost" type="button" id="linkHealthRefresh" onclick="loadLinkHealth()"></button></div>
+        <div id="linkHealthBody"></div>
+      </section>
+
       <!-- Tab: Failure Logs -->
       <section id="tab-failurelogs" class="panel card">
         <div class="head"><div><h3 data-i18n="failureLogsTabTitle"></h3><div class="desc" data-i18n="failureLogsTabSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadFailureLogs()" data-i18n="failureLogsReload"></button></div>
@@ -1628,6 +1635,7 @@
 <script defer src="/admin/card-store-tab.js"></script>
 <script defer src="/admin/usage-stats-tab.js?v=feature-icons-20260828-4"></script>
 <script defer src="/admin/failure-logs-tab.js"></script>
+<script defer src="/admin/link-health-tab.js?v=n03-1"></script>
 <script defer src="/admin/knowledge-management-tab.js"></script>
 <script defer src="/admin/notification-tab.js"></script>
 <script defer src="/admin/admin-module-health.js"></script>

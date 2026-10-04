@@ -15,7 +15,11 @@ import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags
 import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { useDialog } from "../CustomDialog";
 import { useProjectSearch, type ProjectSearchItem } from "./useProjectSearch";
-import type { HeaderExpertSearchHit, HeaderFileSearchHit, HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
+import type { HeaderCloudWorkspaceHit } from "./cloudWorkspaceContentSearch";
+import type { HeaderDataDirectoryHit } from "./dataDirectoryWorkspaceSearch";
+import { clearParkedCloudWorkspaceFileOpen } from "./cloudWorkspaceFileOpen";
+import { openHeaderCloudSearchHit, openHeaderDataDirectorySearchHit } from "./openHeaderWorkspaceSearchHit";
+import { headerSearchPlaceholder, type HeaderExpertSearchHit, type HeaderFileSearchHit, type HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
 
 export { useProjectSearch } from "./useProjectSearch";
 
@@ -79,8 +83,10 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const fileResults = search.fileResults || [];
     const knowledgeResults = search.knowledgeResults || [];
     const expertResults = search.expertResults || [];
-    const showSectionLabels = [visibleResults.length, fileResults.length, knowledgeResults.length, expertResults.length].filter(count => count > 0).length > 1;
-    const hasAnyResults = visibleResults.length > 0 || fileResults.length > 0 || knowledgeResults.length > 0 || expertResults.length > 0;
+    const cloudResults = search.cloudResults || [];
+    const dataDirResults = search.dataDirResults || [];
+    const showSectionLabels = [visibleResults.length, cloudResults.length, dataDirResults.length, fileResults.length, knowledgeResults.length, expertResults.length].filter(count => count > 0).length > 1;
+    const hasAnyResults = visibleResults.length > 0 || cloudResults.length > 0 || dataDirResults.length > 0 || fileResults.length > 0 || knowledgeResults.length > 0 || expertResults.length > 0;
 
     useEffect(() => {
         if (!search.open) return;
@@ -146,15 +152,24 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
         }
     }, [lang]);
 
+    const onSelectCloud = useCallback((item: HeaderCloudWorkspaceHit) => {
+        openHeaderCloudSearchHit(item, { close: () => search.close(), onCreateProjectTab, onProjectSwitch });
+    }, [search, onCreateProjectTab, onProjectSwitch]);
+    const onSelectDataDirectory = useCallback((item: HeaderDataDirectoryHit) => {
+        openHeaderDataDirectorySearchHit(item, { close: () => search.close(), onCreateProjectTab, onProjectSwitch });
+    }, [search, onCreateProjectTab, onProjectSwitch]);
     const onSelectFile = useCallback((item: HeaderFileSearchHit) => {
+        clearParkedCloudWorkspaceFileOpen();
         search.close();
         openFileLibrary({ documentId: item.id });
     }, [search]);
     const onSelectKnowledge = useCallback((item: HeaderKnowledgeSearchHit) => {
+        clearParkedCloudWorkspaceFileOpen();
         search.close();
         openKnowledgeSearch({ query: search.query.trim() || item.title });
     }, [search]);
     const onSelectExpert = useCallback((item: HeaderExpertSearchHit) => {
+        clearParkedCloudWorkspaceFileOpen();
         search.close();
         openNewTaskWizard({
             expertId: item.expert.id,
@@ -164,6 +179,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const onSelect = useCallback(async (item: ProjectSearchItem) => {
         if (renamingPath) return;
         if (item.archived) { await openArchived(item); return; }
+        clearParkedCloudWorkspaceFileOpen();
         search.close();
         try {
             const title = item.name || item.project_path;
@@ -190,7 +206,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
         <div ref={panelRef} data-testid="project-search-panel" role="dialog" aria-modal="true" aria-label={localizeText(lang, "Search", "搜索")} style={searchSurfaceRootStyle(t)}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px", flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg }}>
                 <span style={{ color: t.textMuted, opacity: 0.8, flexShrink: 0 }}><ProjectSearchIcon name="search" /></span>
-                <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => { const value = event.target.value; if (composingRef.current) search.onQueryDraft?.(value); else search.onQueryChange(value); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; search.onQueryChange(event.currentTarget.value); }} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={localizeText(lang, "Search tasks, files, knowledge, experts...", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6...")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
+                <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => { const value = event.target.value; if (composingRef.current) search.onQueryDraft?.(value); else search.onQueryChange(value); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; search.onQueryChange(event.currentTarget.value); }} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={headerSearchPlaceholder(lang)} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
                 {onForkCurrentChat && (
                     <button
                         type="button"
@@ -209,6 +225,10 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
                 {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query.trim() ? localizeText(lang, "No results found", "\u672a\u627e\u5230\u7ed3\u679c") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
                 {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" />}
                 {visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
+                {cloudResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Cloud workspace" zh="云端工作区" testId="search-cloud-section" />}
+                {cloudResults.map(item => <LibrarySearchRow key={`cloud-${item.id}`} kind={lang === "en" ? "CWS" : "云"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-cloud-row" onSelect={() => onSelectCloud(item)} />)}
+                {dataDirResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Data directory" zh="数据目录" testId="search-data-section" />}
+                {dataDirResults.map(item => <LibrarySearchRow key={`data-${item.id}`} kind={lang === "en" ? "DIR" : "目录"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-data-row" onSelect={() => onSelectDataDirectory(item)} />)}
                 {fileResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Files" zh="文件" testId="search-files-section" />}
                 {fileResults.map(item => <LibrarySearchRow key={`file-${item.id}`} kind={item.type === "audio" ? "AUDIO" : "FILE"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-file-row" onSelect={() => onSelectFile(item)} />)}
                 {knowledgeResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Knowledge" zh="知识库" testId="search-knowledge-section" />}

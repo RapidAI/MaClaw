@@ -1536,7 +1536,11 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		cacheCfg := loadCachedHubLLMPromptCacheConfig(ctx, system)
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
 		if llmEndpointStreamRequested(body) {
-			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedModelRequest(w, r, providerReg, authorizedModel, body, requestedModel, selectedModelDebug)
+			tail := &openAIStreamTail{}
+			streamReq := r.WithContext(withOpenAIStreamTail(ctx, tail))
+			var deducted *float64
+			defer func() { flushOpenAIStreamTail(w, tail, deducted) }()
+			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedModelRequest(w, streamReq, providerReg, authorizedModel, body, requestedModel, selectedModelDebug)
 			logStatusCode = statusCode
 			logProviderID = strings.TrimSpace(usedProviderID)
 			logUpstreamStatus = statusCode
@@ -1551,6 +1555,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 						logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
 						logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
 						logBillingRecorded = true
+						deducted = officialSettledCreditsPtr(ctx, usedProviderID)
 					}
 					return
 				}
@@ -1583,6 +1588,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
 				logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
 				logBillingRecorded = true
+				deducted = officialSettledCreditsPtr(ctx, usedProviderID)
 			}
 			return
 		}
@@ -1600,6 +1606,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				logCreditMultiplier = resolveBillableCreditMultiplier(ctx, authorizedModel, usedProviderID, providerReg)
 				logCredits = 0
 				logBillingRecorded = true
+				if IsMaClawProviderRequest(usedProviderID) {
+					noteSettledDeductedCredits(ctx, 0)
+				}
 				if err == nil && statusCode < 400 {
 					// A local full-response cache hit is free and has no real
 					// upstream token usage, but it still belongs in Usage Stats
@@ -1641,6 +1650,11 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
 			logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
 			logBillingRecorded = true
+		}
+		if statusCode < 400 {
+			if deducted := officialSettledCreditsPtr(ctx, usedProviderID); deducted != nil {
+				respBody = injectCreditsDeductedJSON(respBody, *deducted)
+			}
 		}
 		if statusCode >= 400 {
 			bodySnippet := string(respBody)
@@ -2446,7 +2460,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 				return statusCode, providerID, nil, corelib.TokenUsageStat{}, false, fmt.Errorf("%s", strings.TrimSpace(string(bodyBytes)))
 			}
 			provider := maclawOfficialStreamProvider()
-			usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug)
+			usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug, openAIStreamTailFrom(request.Context()))
 			_ = resp.Body.Close()
 			if copyErr != nil {
 				return statusCode, providerID, chargedIDs, usageStat, wroteStream, copyErr
@@ -2495,7 +2509,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 			log.Printf("[LLM-V1] provider %q returned %d for stream, trying next provider", provider.ID, statusCode)
 			continue
 		}
-		usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug)
+		usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug, nil)
 		_ = resp.Body.Close()
 		release()
 		if copyErr != nil {
@@ -2643,18 +2657,19 @@ func openLLMStreamRequest(r *http.Request, p *im.LLMProvider, body map[string]an
 	return resp, release, nil
 }
 
-func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug, tail *openAIStreamTail) (corelib.TokenUsageStat, bool, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
 	}
 	reader := bufio.NewReaderSize(resp.Body, 4096)
 	if !looksLikeOpenAIStream(resp, reader) {
-		return writeOpenAINonStreamAsStreamResponse(w, flusher, reader, resp.StatusCode, provider, model, externalModel, selectedModelDebug)
+		return writeOpenAINonStreamAsStreamResponse(w, flusher, reader, resp.StatusCode, provider, model, externalModel, selectedModelDebug, tail)
 	}
 	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
+	tail.markStarted()
 
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -2668,23 +2683,30 @@ func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provi
 			event = event[:0]
 			return nil
 		}
+		var eventBuf bytes.Buffer
 		wrote := false
 		for _, line := range event {
 			if isSSECommentLine(line) {
 				continue
 			}
 			out := rewriteOpenAIStreamLine(line, externalModel, &usage)
-			out = append(out, '\n')
-			if _, err := w.Write(out); err != nil {
-				return err
-			}
+			eventBuf.Write(out)
+			eventBuf.WriteByte('\n')
 			wrote = true
 		}
 		if wrote {
-			if _, err := w.Write([]byte("\n")); err != nil {
-				return err
+			eventBuf.WriteByte('\n')
+		}
+		if wrote {
+			// Stop chunks wait for the settled debit. Visible deltas on that
+			// same chunk are written now so the last tokens are not delayed.
+			immediate := tail.retain(eventBuf.Bytes())
+			if len(immediate) > 0 {
+				if _, err := w.Write(immediate); err != nil {
+					return err
+				}
+				flusher.Flush()
 			}
-			flusher.Flush()
 		}
 		event = event[:0]
 		return nil
@@ -3496,7 +3518,7 @@ func sseEventHasNonEmptyData(event [][]byte) bool {
 	return false
 }
 
-func writeOpenAINonStreamAsStreamResponse(w http.ResponseWriter, flusher http.Flusher, reader io.Reader, statusCode int, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+func writeOpenAINonStreamAsStreamResponse(w http.ResponseWriter, flusher http.Flusher, reader io.Reader, statusCode int, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug, tail *openAIStreamTail) (corelib.TokenUsageStat, bool, error) {
 	body, err := io.ReadAll(io.LimitReader(reader, 32<<20))
 	if err != nil {
 		return corelib.TokenUsageStat{}, false, fmt.Errorf("read non-stream upstream response: %w", err)
@@ -3507,13 +3529,26 @@ func writeOpenAINonStreamAsStreamResponse(w http.ResponseWriter, flusher http.Fl
 	}
 	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
 	w.WriteHeader(statusCode)
-	if _, err := w.Write([]byte("data: ")); err != nil {
-		return applyProviderUsageCost(usage, provider), true, err
+	tail.markStarted()
+	framed := append(append([]byte("data: "), chunk...), []byte("\n\ndata: [DONE]\n\n")...)
+	if tail != nil {
+		// Same rule as a live stream: only a stop chunk waits for the debit.
+		// Tool-call finishes, and any text on the stop chunk, are written now.
+		var now bytes.Buffer
+		for _, ev := range splitSSEEvents(framed) {
+			if immediate := tail.retain(ev); len(immediate) > 0 {
+				now.Write(immediate)
+			}
+		}
+		if now.Len() > 0 {
+			if _, err := w.Write(now.Bytes()); err != nil {
+				return applyProviderUsageCost(usage, provider), true, err
+			}
+			flusher.Flush()
+		}
+		return applyProviderUsageCost(usage, provider), true, nil
 	}
-	if _, err := w.Write(chunk); err != nil {
-		return applyProviderUsageCost(usage, provider), true, err
-	}
-	if _, err := w.Write([]byte("\n\ndata: [DONE]\n\n")); err != nil {
+	if _, err := w.Write(framed); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
 	}
 	flusher.Flush()
@@ -5083,9 +5118,7 @@ func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmser
 			}
 			denial = enrichLLMBillingDenialRetry(reg, userID, email, body, &models[i], denial)
 			denied[strings.ToLower(strings.TrimSpace(models[i].Name))] = denial
-			if firstDenial.Code == "" || llmBillingDenialRank(denial.Code) < llmBillingDenialRank(firstDenial.Code) {
-				firstDenial = denial
-			}
+			firstDenial = preferLLMBillingDenial(firstDenial, denial)
 			continue
 		}
 		filtered = append(filtered, *eligibleModel)
@@ -5110,9 +5143,7 @@ func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmserv
 			eligibleProviderIDs = append(eligibleProviderIDs, providerID)
 			continue
 		}
-		if firstDenial.Code == "" || llmBillingDenialRank(denial.Code) < llmBillingDenialRank(firstDenial.Code) {
-			firstDenial = denial
-		}
+		firstDenial = preferLLMBillingDenial(firstDenial, denial)
 	}
 	if len(eligibleProviderIDs) == 0 {
 		if firstDenial.Code == "" {
@@ -5127,6 +5158,23 @@ func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmserv
 	}
 	clone.ProviderIDs = eligibleProviderIDs
 	return clone, llmBillingDenial{}, nil
+}
+
+// preferLLMBillingDenial keeps the denial the caller should see, and the
+// larger priced floor. A period window outranks an insufficient point card,
+// but the withdraw still needs that card's floor. Held credits stay on the
+// denial they belong to: another wallet's hold does not explain this one.
+func preferLLMBillingDenial(current, next llmBillingDenial) llmBillingDenial {
+	if strings.TrimSpace(current.Code) == "" || llmBillingDenialRank(next.Code) < llmBillingDenialRank(current.Code) {
+		if current.NeedCredits > next.NeedCredits {
+			next.NeedCredits = current.NeedCredits
+		}
+		return next
+	}
+	if next.NeedCredits > current.NeedCredits {
+		current.NeedCredits = next.NeedCredits
+	}
+	return current
 }
 
 func llmBillingDenialRank(code string) int {

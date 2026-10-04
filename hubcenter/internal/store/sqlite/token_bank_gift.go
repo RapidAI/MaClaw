@@ -51,6 +51,12 @@ type TokenBankGiftLink struct {
 	CreatedAt    time.Time
 	ClaimedAt    time.Time
 	RevokedAt    time.Time
+	// RevokedBy is who released the freeze: "sender" or "admin". Empty on a
+	// link revoked before the audit recorded an actor.
+	RevokedBy string
+	// RevokeReason is the note an admin typed when freezing the link. A sender
+	// cancel has no free-text note; the actor is the whole explanation.
+	RevokeReason string
 }
 
 const (
@@ -59,6 +65,11 @@ const (
 	TokenBankGiftStatusRevoked = "revoked"
 	TokenBankGiftStatusExpired = "expired"
 	TokenBankGiftStatusSettled = "settled" // claimed, and the receiver has withdrawn
+
+	// Who released a freeze. The audit list translates these; it does not
+	// invent a sentence for a row that predates the columns.
+	TokenBankGiftRevokedBySender = "sender"
+	TokenBankGiftRevokedByAdmin  = "admin"
 )
 
 // TokenBankGiftSharePercent is the single-share cap from §3.6: half the
@@ -437,9 +448,27 @@ func (r *TokenBankRepo) SettleClaimedGift(ctx context.Context, linkID string, no
 // check (§6.2 freezes a suspicious link). The unfreeze always credits the
 // sender recorded on the row, never the argument, so passing a different id can
 // only ever be refused — it can never redirect the refund.
+//
+// A sender cancel records the actor and drops any free-text note. An admin
+// freeze keeps the note the operator typed; RevokeGiftLink passes an empty
+// note, and the admin HTTP handler refuses that before it calls
+// RevokeGiftLinkWithReason.
 func (r *TokenBankRepo) RevokeGiftLink(ctx context.Context, linkID, senderUserID string, now time.Time) error {
+	return r.revokeGiftLink(ctx, linkID, senderUserID, "", now)
+}
+
+// RevokeGiftLinkWithReason is the admin freeze. reason is stored as typed so
+// the audit row can say why the credits went back. A non-empty senderUserID
+// is still a sender cancel: the note is discarded so a caller cannot attach
+// an admin explanation to somebody else's own revoke.
+func (r *TokenBankRepo) RevokeGiftLinkWithReason(ctx context.Context, linkID, senderUserID, reason string, now time.Time) error {
+	return r.revokeGiftLink(ctx, linkID, senderUserID, reason, now)
+}
+
+func (r *TokenBankRepo) revokeGiftLink(ctx context.Context, linkID, senderUserID, reason string, now time.Time) error {
 	linkID = strings.TrimSpace(linkID)
 	senderUserID = strings.TrimSpace(senderUserID)
+	reason = strings.TrimSpace(reason)
 	if linkID == "" {
 		return fmt.Errorf("link id required")
 	}
@@ -471,9 +500,14 @@ func (r *TokenBankRepo) RevokeGiftLink(ctx context.Context, linkID, senderUserID
 	if err != nil {
 		return err
 	}
+	actor := TokenBankGiftRevokedByAdmin
+	if senderUserID != "" {
+		actor = TokenBankGiftRevokedBySender
+		reason = ""
+	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE credit_share_links SET status = ?, revoked_at = ? WHERE id = ? AND status = ?`,
-		TokenBankGiftStatusRevoked, stamp, linkID, link.Status)
+		`UPDATE credit_share_links SET status = ?, revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND status = ?`,
+		TokenBankGiftStatusRevoked, stamp, actor, reason, linkID, link.Status)
 	if err != nil {
 		return fmt.Errorf("revoke gift link: %w", err)
 	}
@@ -629,7 +663,7 @@ func (r *TokenBankRepo) ExpireGiftLinks(ctx context.Context, now time.Time) (int
 // `sender_user_id = ”` — the latter silently returns no rows at all, which an
 // admin would read as "nobody has ever sent credits" instead of seeing the
 // audit they asked for. It mirrors ListShares' owner filter for the same reason.
-func (r *TokenBankRepo) ListGiftLinks(ctx context.Context, senderUserID, status string, limit int) ([]TokenBankGiftLink, error) {
+func (r *TokenBankRepo) ListGiftLinks(ctx context.Context, senderUserID, status string, limit, offset int) ([]TokenBankGiftLink, error) {
 	where := ""
 	args := []any{}
 	if sender := strings.TrimSpace(senderUserID); sender != "" {
@@ -640,7 +674,7 @@ func (r *TokenBankRepo) ListGiftLinks(ctx context.Context, senderUserID, status 
 		where += ` AND status = ?`
 		args = append(args, s)
 	}
-	return r.listGiftLinks(ctx, where, args, limit)
+	return r.listGiftLinks(ctx, where, args, limit, offset)
 }
 
 // ListClaimedGiftLinks returns gifts this person claimed and has not withdrawn.
@@ -655,17 +689,22 @@ func (r *TokenBankRepo) ListClaimedGiftLinks(ctx context.Context, claimerUserID 
 	return r.listGiftLinks(ctx,
 		` AND claimed_by_user_id = ? AND status = ?`,
 		[]any{claimerUserID, TokenBankGiftStatusClaimed},
-		limit)
+		limit, 0)
 }
 
-func (r *TokenBankRepo) listGiftLinks(ctx context.Context, where string, args []any, limit int) ([]TokenBankGiftLink, error) {
-	query := `SELECT id, code, sender_user_id, sender_email, credits_micro, status,
-		claimed_by_user_id, claimed_by_email, origin_node_id, expires_at, created_at, claimed_at, revoked_at
-		FROM credit_share_links WHERE 1 = 1` + where + ` ORDER BY created_at DESC`
+func (r *TokenBankRepo) listGiftLinks(ctx context.Context, where string, args []any, limit, offset int) ([]TokenBankGiftLink, error) {
+	// id is the tie-break. created_at is RFC3339 to the second, so two links
+	// minted together would otherwise trade places between pages.
+	query := `SELECT ` + giftLinkColumns + `
+		FROM credit_share_links WHERE 1 = 1` + where + ` ORDER BY created_at DESC, id DESC`
 	queryArgs := append([]any{}, args...)
 	if limit > 0 {
 		query += ` LIMIT ?`
 		queryArgs = append(queryArgs, limit)
+		if offset > 0 {
+			query += ` OFFSET ?`
+			queryArgs = append(queryArgs, offset)
+		}
 	}
 	rows, err := r.read.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -749,7 +788,7 @@ func scanGiftLink(row giftLinkScanner) (*TokenBankGiftLink, error) {
 	var expiresAt, createdAt, claimedAt, revokedAt string
 	if err := row.Scan(&link.ID, &link.Code, &link.SenderUserID, &link.SenderEmail, &link.CreditsMicro,
 		&link.Status, &link.ClaimedByUser, &link.ClaimedByEmail, &link.OriginNodeID,
-		&expiresAt, &createdAt, &claimedAt, &revokedAt); err != nil {
+		&expiresAt, &createdAt, &claimedAt, &revokedAt, &link.RevokedBy, &link.RevokeReason); err != nil {
 		return nil, err
 	}
 	link.ExpiresAt, _ = time.Parse(time.RFC3339, expiresAt)
@@ -760,7 +799,8 @@ func scanGiftLink(row giftLinkScanner) (*TokenBankGiftLink, error) {
 }
 
 const giftLinkColumns = `id, code, sender_user_id, sender_email, credits_micro, status,
-	claimed_by_user_id, claimed_by_email, origin_node_id, expires_at, created_at, claimed_at, revoked_at`
+	claimed_by_user_id, claimed_by_email, origin_node_id, expires_at, created_at, claimed_at, revoked_at,
+	revoked_by, revoke_reason`
 
 // GiftLinkByCode loads one link for the public preview endpoint. It reads on
 // the read pool and moves nothing: the preview must be cheap enough to rate

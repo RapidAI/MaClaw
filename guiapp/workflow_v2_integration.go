@@ -3207,6 +3207,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
 	}
 	decision = forceWorkspaceClearCodingDecision(userText, decision)
+	if upgraded := applyCodingSessionContinuationFloor(decision, userText, sessionMem); upgraded.Kind != decision.Kind {
+		log.Printf("[coding-plan] follow-up keeps read/write implementation: %q", truncateRunesV2(userText, 40))
+		decision = upgraded
+	}
 	requestKind := decision.Kind
 	inquiry := requestKind == codingRequestInquiry
 	sourcePreview := requestKind == codingRequestImplementation
@@ -3341,12 +3345,13 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 
 		v1Task := &TaskItem{
-			Index:       t.Index,
-			Title:       t.Title,
-			Description: t.Description,
-			Files:       t.Files,
-			DependsOn:   t.DependsOn,
-			RequestKind: requestKind,
+			Index:                 t.Index,
+			Title:                 t.Title,
+			Description:           t.Description,
+			Files:                 t.Files,
+			DependsOn:             t.DependsOn,
+			RequestKind:           requestKind,
+			OperationalAcceptance: decision.Acceptance,
 		}
 		// Snapshot prevOutputs under lock so parallel waves don't race the slice.
 		usageMu.Lock()
@@ -3572,7 +3577,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		log.Printf("[workflow-v2] pure coding: TDD enabled for single implement task user=%s", userID)
 	}
 	if operational {
-		log.Printf("[workflow-v2] pure coding: operational run/build path user=%s", userID)
+		log.Printf("[workflow-v2] pure coding: operational path user=%s acceptance=%s", userID, decision.Acceptance)
 	}
 	config := v2.TaskRunnerConfig{
 		ProjectPath: projectPath,
@@ -3874,8 +3879,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	recordUserText := userText
 	decisionForRecord := func() codingRequestDecision {
 		if decision, ok := normalizeCodingRequestDecision(codingRequestDecision{
-			Kind:      remoteCtx.RequestKind,
-			NeedsPlan: remoteCtx.RequestNeedsPlan,
+			Kind:       remoteCtx.RequestKind,
+			NeedsPlan:  remoteCtx.RequestNeedsPlan,
+			Acceptance: remoteCtx.OperationalAcceptance,
 		}); ok {
 			return decision
 		}
@@ -3938,10 +3944,19 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	// Preserve the kind of the user's actual turn for the remote subagent. The
 	// expanded per-step prompt may include a prior session plan, which must not
 	// make a short remote "run it" follow-up look like implementation work.
+	// "继续" or an explicit change request after this session has already
+	// written files keeps the read/write surface. A run/build follow-up does not.
 	// The normalized root decision is canonical for every remote plan step.
 	decision = forceWorkspaceClearCodingDecision(userText, decision)
+	if !remoteCtx.Maintenance {
+		if upgraded := applyCodingSessionContinuationFloor(decision, userText, sessionMem); upgraded.Kind != decision.Kind {
+			log.Printf("[coding-plan] remote follow-up keeps read/write implementation: %q", truncateRunesV2(userText, 40))
+			decision = upgraded
+		}
+	}
 	remoteCtx.RequestKind = decision.Kind
 	remoteCtx.RequestNeedsPlan = decision.NeedsPlan
+	remoteCtx.OperationalAcceptance = decision.Acceptance
 
 	buildRemoteTaskText := func(step *v2.TaskItem, stepIdx, stepTotal int) string {
 		return buildRemoteCodingPlanStepText(
@@ -3958,8 +3973,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		)
 	}
 
-	log.Printf("[workflow-v2] pure remote coding: user=%s session=%s project=%s task=%q sticky_turn=%d planned=%v steps=%d",
-		userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80), sessionMem.TurnCount, planned, len(tasks))
+	log.Printf("[workflow-v2] pure remote coding: user=%s session=%s project=%s task=%q sticky_turn=%d planned=%v steps=%d acceptance=%s",
+		userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80), sessionMem.TurnCount, planned, len(tasks), remoteCtx.OperationalAcceptance)
 	if planned {
 		memSteps := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
 		if len(memSteps) == 0 {
@@ -4325,6 +4340,7 @@ var remoteCodingTemplateRunner remoteCodingTemplateRunnerFunc
 func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
 	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
 	subAgent.requestKind = remoteCtx.RequestKind
+	subAgent.operationalAcceptance = remoteCtx.OperationalAcceptance
 	subAgent.maintenance = remoteCtx.Maintenance
 	// The preview is a code-change affordance. Keep it out of simple remote
 	// inquiry/run/build turns: they may read files to locate an artifact, but
@@ -4485,11 +4501,12 @@ type pendingWorkflowChoice struct {
 }
 
 type remoteCodingTemplateContext struct {
-	SessionID        string
-	WorkDir          string
-	ProjectDir       string
-	RequestKind      codingRequestKind
-	RequestNeedsPlan bool
+	SessionID             string
+	WorkDir               string
+	ProjectDir            string
+	RequestKind           codingRequestKind
+	RequestNeedsPlan      bool
+	OperationalAcceptance codingOperationalAcceptance
 	// Maintenance keeps the user-visible operation intent separate from the
 	// shared remote-coding execution engine (including tool activity events).
 	Maintenance bool

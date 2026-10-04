@@ -9,25 +9,25 @@ const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(resolve(here, "../../../App.css"), "utf8");
 
 describe("reasoningPanelChrome", () => {
-    it("washes muted ink into the theme surface instead of transparent black", () => {
+    it("uses the scheme recessed surface, field border, and response rail", () => {
         const light = reasoningPanelChrome(lightTheme);
-        expect(light.background).toBe(`color-mix(in srgb, ${lightTheme.textMuted} 4.5%, ${lightTheme.bg})`);
-        expect(light.borderLeft).toBe(`2px solid color-mix(in srgb, ${lightTheme.textMuted} 32%, ${lightTheme.bg})`);
-        expect(String(light.background)).not.toContain("transparent");
-        expect(String(light.borderLeft)).not.toContain("transparent");
+        const lightEdge = `1px solid ${lightTheme.fieldBorder}`;
+        expect(light.background).toBe(lightTheme.fieldBg);
+        expect(light.borderTop).toBe(lightEdge);
+        expect(light.borderRight).toBe(lightEdge);
+        expect(light.borderBottom).toBe(lightEdge);
+        expect(light.borderLeft).toBe(`2px solid ${lightTheme.responseBorderLeft}`);
+        expect(light.border).toBeUndefined();
+        expect(light.borderRadius).toBe(8);
+        expect(light.color).toBe(lightTheme.textMuted);
+        expect(light.boxSizing).toBe("border-box");
 
         const dark = reasoningPanelChrome(darkTheme);
-        expect(dark.background).toBe(`color-mix(in srgb, ${darkTheme.textMuted} 8%, ${darkTheme.bg})`);
-        expect(dark.borderLeft).toBe(`2px solid color-mix(in srgb, ${darkTheme.textMuted} 48%, ${darkTheme.bg})`);
-        expect(String(dark.background)).not.toContain("transparent");
-        expect(String(dark.borderLeft)).not.toMatch(/rgba\(/);
-    });
-
-    it("honors an explicit isDark flag over background luminance", () => {
-        const forcedDark = reasoningPanelChrome({ ...lightTheme, isDark: true });
-        expect(forcedDark.background).toBe(`color-mix(in srgb, ${lightTheme.textMuted} 8%, ${lightTheme.bg})`);
-        const forcedLight = reasoningPanelChrome({ ...darkTheme, isDark: false });
-        expect(forcedLight.background).toBe(`color-mix(in srgb, ${darkTheme.textMuted} 4.5%, ${darkTheme.bg})`);
+        const darkEdge = `1px solid ${darkTheme.fieldBorder}`;
+        expect(dark.background).toBe(darkTheme.fieldBg);
+        expect(dark.borderTop).toBe(darkEdge);
+        expect(dark.borderLeft).toBe(`2px solid ${darkTheme.responseBorderLeft}`);
+        expect(dark.border).toBeUndefined();
     });
 });
 

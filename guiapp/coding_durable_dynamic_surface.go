@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -402,6 +403,25 @@ func (s *codingDurableDynamicSurface) ExecuteBoundSelection(ctx context.Context,
 		return rejectedCodingDynamicSelection("semantic_execution_coordinator_unavailable")
 	}
 	selection, err := issuer.ValidateWithCanonicalScope(grant, scope, publishedPlan)
+	if err != nil && err.Error() == "invocation_grant_expired" && (ctx == nil || ctx.Err() == nil) {
+		successor, renewErr := s.coordinator.CommitExpiredRenewal(issuer, scope, grant, tool.DefaultInvocationGrantTTL, now, nil)
+		if renewErr != nil {
+			log.Printf("[semantic-routing] expired grant for alias %s selection %s stayed expired: %v", alias, grant.SelectionID, renewErr)
+			return rejectedCodingDynamicSelection(err.Error())
+		}
+		grant = successor
+		// Commit signs with the route's canonical scope, which may fill an
+		// empty tool snapshot. Re-validate that signed scope when it is the
+		// same turn as the alias the caller resolved.
+		validateScope := scope
+		if tool.InvocationScopesCompatible(scope, successor.Scope) {
+			validateScope = successor.Scope
+		}
+		selection, err = issuer.ValidateWithCanonicalScope(grant, validateScope, publishedPlan)
+		if err == nil {
+			log.Printf("[semantic-routing] renewed unconsumed grant for alias %s selection %s", alias, grant.SelectionID)
+		}
+	}
 	if err != nil {
 		return rejectedCodingDynamicSelection(err.Error())
 	}

@@ -113,6 +113,53 @@ func TestAdminTestLLMProviderChatRequiresSuccessfulCompletion(t *testing.T) {
 	}
 }
 
+func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
+	req, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      "https://api.kimi.com/coding/v1",
+		Key:      "sk-test",
+		Model:    "kimi-for-coding",
+		Protocol: "openai",
+		WireAPI:  "chat",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("newLLMProviderTestRequest() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		t.Fatalf("decode test request: %v", err)
+	}
+	if _, exists := body["temperature"]; exists {
+		t.Fatalf("kimi probe sent temperature: %#v", body["temperature"])
+	}
+	if _, exists := body["top_p"]; exists {
+		t.Fatalf("kimi probe sent top_p: %#v", body["top_p"])
+	}
+	if body["model"] != "kimi-for-coding" {
+		t.Fatalf("model = %#v", body["model"])
+	}
+	if _, exists := body["max_tokens"]; !exists {
+		t.Fatal("kimi probe dropped max_tokens")
+	}
+
+	plain, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      "https://api.openai.com/v1",
+		Key:      "sk-test",
+		Model:    "gpt-4o",
+		Protocol: "openai",
+		WireAPI:  "chat",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("plain probe: %v", err)
+	}
+	var plainBody map[string]any
+	if err := json.NewDecoder(plain.Body).Decode(&plainBody); err != nil {
+		t.Fatalf("decode plain probe: %v", err)
+	}
+	if plainBody["temperature"] != float64(0) {
+		t.Fatalf("plain probe temperature = %#v, want 0", plainBody["temperature"])
+	}
+}
+
 func TestLLMProviderTestRequestOmitsThinkingForAMDDeepSeek(t *testing.T) {
 	for _, model := range []string{"DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4-Pro", "deepseek-reasoner"} {
 		t.Run(model, func(t *testing.T) {

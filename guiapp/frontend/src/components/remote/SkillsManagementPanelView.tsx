@@ -7,11 +7,11 @@ import { SkillInstallProgressPanel } from './SkillInstallProgressPanel';
 import { SkillRepairDraftsPanel } from './SkillRepairDraftsPanel';
 import { MaclawAppMarketPreview } from './MaclawAppMarketPreview';
 import { SkillProductBadge, isMaclawAppSearchResult } from './SkillProductBadge';
-import { SkillSourceBadge } from './SkillSourceBadge';
+import { SkillSourceBadge, getSkillSourceLabel } from './SkillSourceBadge';
 import { formatInstalledOpenPanelMessage, localizeMiniAppPack, miniAppLabels } from '../../i18n/maclawMiniAppLabels';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
-import { displayHubVersion, executionClassBadgeStyle, formatDate, formatDownloads, renderStars, shouldShowTrustBadge, statusDotStyle, trustBadgeStyle, trustLevelLabel, uploadBtnStyle } from './skillsManagementUtils';
-import { colors, remoteCardStyle, remoteCodeBlockStyle, remoteEmptyStateStyle, remoteErrorStateStyle, remoteInfoPanelStyle, remoteLoadingStateStyle, remoteStatusBadgeStyle, remoteTableCellStyle, remoteTableContainerStyle, remoteTableHeaderCellStyle, remoteTagStyle } from './styles';
+import { displayHubVersion, executionClassBadgeStyle, formatDownloads, hubCatalogActionStyle, hubCatalogDescStyle, hubCatalogDetailStyle, hubCatalogGithubStyle, hubCatalogLinkStyle, hubCatalogMetaLineStyle, hubCatalogNoteStyle, hubCatalogPathStyle, hubCatalogTrailStyle, hubMarketFilterStyle, hubMarketToolbarStyle, settingsControlStyle, settingsFootStyle, settingsNumberStyle, settingsSaveBtnStyle, settingsSegmentBtnActiveStyle, settingsSegmentBtnStyle, settingsSegmentStyle, shouldShowTrustBadge, statusDotStyle, trustBadgeStyle, trustLevelLabel, uploadBtnStyle } from './skillsManagementUtils';
+import { colors, consoleInsetHeadStyle, consoleMetricCellStyle, consoleMetricGridStyle, consoleMetricLabelStyle, consoleMetricValueStyle, consolePropRowStyle, consoleSectionHeadStyle, consoleSectionStyle, remoteCardStyle, remoteCodeBlockStyle, remoteEmptyStateStyle, remoteErrorStateStyle, remoteInfoPanelStyle, remoteLoadingStateStyle, remoteStatusBadgeStyle, remoteTableCellStyle, remoteTableHeaderCellStyle, remoteTagStyle } from './styles';
 import { AddExternalSkillDir, ApplySkillMaintenanceAction, BatchSetNLSkillStatus, CancelSkillEvolution, CheckHubSkillUpdates, ClearSkillEvolutionCompensation, CreateNLSkill, DeleteNLSkill, DiagnoseSkillFiles, DownloadSkillSuiteZip, ExportLearnedSkillsZip, ExportTextFile, GetExperienceAuditHealth, GetHubRecommendations, GetSkillEvolutionStatus, ImportLearnedSkillsZip, ImportNLSkillZip, InstallMixedSkill, InstallSkillSuite, ListExperienceAudit, ListExternalSkillDirsDetailed, ListNLSkills, ListSkillEvolutionAudit, ListSkillEvolutionCompensations, ListSkillMaintenanceDrafts, ListSkillSuites, ListSkillYAMLBackups, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, PurchaseSkillSuite, RemoveExternalSkillDir, RenameNLSkill, ResolveCriticalConfirm, RestoreSkillYAMLBackup, RetrySkillEvolutionCompensation, SearchMixedSkills, SelectProjectDir, SetNLSkillStatus, TriggerSkillOptimize, TriggerSkillSelfRepair, UpdateHubSkill, UpdateNLSkill, UploadNLSkillToMarket, UploadSkillSuite, VerifyAndActivateNLSkillWithArgs } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { openSettingsTab } from '../../utils/settingsNavigation';
@@ -695,9 +695,9 @@ function learnedSourceIcon(source: string): string {
 }
 
 const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
-const LOCAL_SKILLS_COL_PX = { name: 190, description: 160, type: 110, usage: 100, status: 72, actionsMin: 148 } as const;
-export const LOCAL_SKILLS_DESCRIPTION_COL_PX = LOCAL_SKILLS_COL_PX.description;
-export const LOCAL_SKILLS_TABLE_MIN_WIDTH_PX = LOCAL_SKILLS_COL_PX.name + LOCAL_SKILLS_COL_PX.description + LOCAL_SKILLS_COL_PX.type + LOCAL_SKILLS_COL_PX.usage + LOCAL_SKILLS_COL_PX.status + LOCAL_SKILLS_COL_PX.actionsMin;
+/** Installed-skill catalog: four cards across, twenty cards on a page. */
+export const SKILL_CARD_COLUMNS = 4;
+export const SKILL_CARD_PAGE_SIZE = 20;
 
 function previewSkillDescription(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS, emptyText = "-"): { preview: string; tooltip?: string } {
     const normalized = description.trim().replace(/\s+/g, " ");
@@ -757,26 +757,13 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     };
     const backdropMouseDownRef = useRef(false);
+    const skillsTabScrollRef = useRef<HTMLDivElement>(null);
+    const hubCatalogScrollRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState<"local" | "maclaw_app" | "hub" | "learned" | "extdirs" | "evolution">("local");
     // Derived: is the "My Skills" top-level tab active? (covers all sub-filters)
     const isMySkillsTabActive = activeTab === "local" || activeTab === "maclaw_app" || activeTab === "learned";
     const isSettingsTabActive = activeTab === "extdirs" || activeTab === "evolution";
-    // Panel width tracking for responsive layout (table vs card)
-    const panelRef = useRef<HTMLDivElement>(null);
-    const [panelWidth, setPanelWidth] = useState(900);
-    useEffect(() => {
-        const el = panelRef.current;
-        if (!el) return;
-        const obs = new ResizeObserver((entries) => {
-            for (const entry of entries) {
-                const w = entry.contentRect.width;
-                if (w > 0) setPanelWidth(w); // Ignore 0-width (hidden/unmounting)
-            }
-        });
-        obs.observe(el);
-        if (el.clientWidth > 0) setPanelWidth(el.clientWidth);
-        return () => obs.disconnect();
-    }, []);
+    const [skillCardPage, setSkillCardPage] = useState(1);
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [suiteSelected, setSuiteSelected] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
@@ -905,6 +892,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [repairCooldownHours, setRepairCooldownHours] = useState<number>(1);
     const [repairCooldownSaving, setRepairCooldownSaving] = useState(false);
     const [repairCooldownMsg, setRepairCooldownMsg] = useState("");
+    const [settingsNoticeError, setSettingsNoticeError] = useState(false);
     const [evolutionEnabled, setEvolutionEnabled] = useState(true);
     const [evolutionEnabledSaving, setEvolutionEnabledSaving] = useState(false);
     const [observationEnabled, setObservationEnabled] = useState(true);
@@ -1812,6 +1800,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const handleHubSearch = useCallback(async () => {
         const q = hubSearchQuery.trim();
         if (!q) return;
+        if (hubCatalogScrollRef.current) hubCatalogScrollRef.current.scrollTop = 0;
         setHubSearching(true);
         setHubError("");
         setHubSearched(true);
@@ -1932,7 +1921,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             const cfg = await LoadConfig();
             const hours = Number((cfg as any)?.skill_evolution_repair_cooldown_hours ?? 0);
             setRepairCooldownHours(hours > 0 ? hours : 1);
-            setRepairCooldownMsg("");
             // Automatic definition changes are opt-in.
             const en = (cfg as any)?.skill_evolution_enabled;
             setEvolutionEnabled(en === true);
@@ -1955,32 +1943,35 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     }, []);
 
+    const showSettingsNotice = useCallback((message: string, isError = false) => {
+        setRepairCooldownMsg(message);
+        setSettingsNoticeError(isError);
+    }, []);
+
     const saveRepairCooldown = useCallback(async () => {
         let hours = Math.floor(Number(repairCooldownHours) || 0);
         if (hours < 0) hours = 0;
         if (hours > 24 * 30) hours = 24 * 30;
         setRepairCooldownSaving(true);
-        setRepairCooldownMsg("");
+        showSettingsNotice("");
         try {
             await PatchConfigFields({ skill_evolution_repair_cooldown_hours: hours });
             setRepairCooldownHours(hours > 0 ? hours : 1);
-            setRepairCooldownMsg(
-                localizeText("Saved.", "已保存。", "已儲存。"),
-            );
+            showSettingsNotice(localizeText("Saved.", "已保存。", "已儲存。"));
         } catch (err) {
-            setRepairCooldownMsg(localizeHubError(String(err)));
+            showSettingsNotice(localizeHubError(String(err)), true);
         } finally {
             setRepairCooldownSaving(false);
         }
-    }, [repairCooldownHours, localizeText, localizeHubError]);
+    }, [repairCooldownHours, localizeText, localizeHubError, showSettingsNotice]);
 
     const saveEvolutionEnabled = useCallback(async (enabled: boolean) => {
         setEvolutionEnabledSaving(true);
-        setRepairCooldownMsg("");
+        showSettingsNotice("");
         try {
             await PatchConfigFields({ skill_evolution_enabled: enabled });
             setEvolutionEnabled(enabled);
-            setRepairCooldownMsg(
+            showSettingsNotice(
                 enabled
                     ? localizeText("Automatic evolution enabled.", "已开启自动自进化。", "已開啟自動自進化。")
                     : localizeText("Automatic evolution disabled.", "已关闭自动自进化。", "已關閉自動自進化。"),
@@ -1992,52 +1983,65 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 /* keep prior */
             }
         } catch (err) {
-            setRepairCooldownMsg(localizeHubError(String(err)));
+            showSettingsNotice(localizeHubError(String(err)), true);
         } finally {
             setEvolutionEnabledSaving(false);
         }
-    }, [localizeText, localizeHubError]);
+    }, [localizeText, localizeHubError, showSettingsNotice]);
 
     const saveObservationEnabled = useCallback(async (enabled: boolean) => {
         setObservationSaving(true);
+        showSettingsNotice("");
         try {
             await PatchConfigFields({ skill_maintenance_observation_enabled: enabled });
             setObservationEnabled(enabled);
+            showSettingsNotice(
+                enabled
+                    ? localizeText("Observation enabled.", "已开启维护观察。", "已開啟維護觀察。")
+                    : localizeText("Observation disabled.", "已关闭维护观察。", "已關閉維護觀察。"),
+            );
         } catch (err) {
-            setRepairCooldownMsg(localizeHubError(String(err)));
+            showSettingsNotice(localizeHubError(String(err)), true);
         } finally {
             setObservationSaving(false);
         }
-    }, [localizeHubError]);
+    }, [localizeText, localizeHubError, showSettingsNotice]);
 
     const saveMaxConcurrentWorkers = useCallback(async () => {
-        const value = Math.max(1, Math.min(16, Math.floor(Number(maxConcurrentWorkers) || 2)));
+        const value = clampInt(maxConcurrentWorkers, 1, 16, 2);
         setWorkersSaving(true);
+        showSettingsNotice("");
         try {
             await PatchConfigFields({ skill_evolution_max_concurrent_workers: value });
             setMaxConcurrentWorkers(value);
+            showSettingsNotice(localizeText("Concurrent workers saved.", "并发工作数已保存。", "並發工作數已儲存。"));
         } catch (err) {
-            setRepairCooldownMsg(localizeHubError(String(err)));
+            showSettingsNotice(localizeHubError(String(err)), true);
         } finally {
             setWorkersSaving(false);
         }
-    }, [maxConcurrentWorkers, localizeHubError]);
+    }, [maxConcurrentWorkers, localizeText, localizeHubError, showSettingsNotice]);
 
     const saveWorkerTimeout = useCallback(async () => {
-        const value = Math.max(30, Math.min(1800, Math.floor(Number(workerTimeoutSeconds) || 180)));
+        const value = clampInt(workerTimeoutSeconds, 30, 1800, 180);
         setWorkerTimeoutSaving(true);
+        showSettingsNotice("");
         try {
             await PatchConfigFields({ skill_evolution_worker_timeout_seconds: value });
             setWorkerTimeoutSeconds(value);
-            setRepairCooldownMsg(localizeText("Worker timeout saved.", "Worker 超时已保存。", "Worker 逾時已儲存。"));
-            const st = await GetSkillEvolutionStatus();
-            setEvolutionStatus(st && typeof st === "object" ? st : null);
+            showSettingsNotice(localizeText("Worker timeout saved.", "Worker 超时已保存。", "Worker 逾時已儲存。"));
+            try {
+                const st = await GetSkillEvolutionStatus();
+                setEvolutionStatus(st && typeof st === "object" ? st : null);
+            } catch {
+                /* the timeout is saved; a status refresh failure is separate */
+            }
         } catch (err) {
-            setRepairCooldownMsg(localizeHubError(String(err)));
+            showSettingsNotice(localizeHubError(String(err)), true);
         } finally {
             setWorkerTimeoutSaving(false);
         }
-    }, [workerTimeoutSeconds, localizeText, localizeHubError]);
+    }, [workerTimeoutSeconds, localizeText, localizeHubError, showSettingsNotice]);
 
     useEffect(() => {
         if (activeTab === "extdirs") {
@@ -2320,7 +2324,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             return (
                 <button
                     className="btn-primary"
-                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center", opacity: 0.7 }}
+                    style={{ ...hubCatalogActionStyle, opacity: 0.7 }}
                     disabled
                 >
                     {localizeText("Installing...", "安装中...", "安裝中...")}
@@ -2331,7 +2335,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             return (
                 <button
                     className="btn-primary"
-                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center" }}
+                    style={hubCatalogActionStyle}
                     disabled={isUpdating}
                     onClick={() => handleUpdate(skill.installed_name!)}
                 >
@@ -2343,7 +2347,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             return (
                 <button
                     className="btn-secondary"
-                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center", opacity: 0.6 }}
+                    style={{ ...hubCatalogActionStyle, opacity: 0.6 }}
                     disabled
                 >
                     {localizeText("Installed", "已安装", "已安裝")}
@@ -2353,11 +2357,81 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         return (
             <button
                 className="btn-primary"
-                style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center" }}
+                style={hubCatalogActionStyle}
                 onClick={() => handleInstall(skill)}
             >
                 {localizeText("Install", "安装", "安裝")}
             </button>
+        );
+    };
+
+    const renderHubCatalogRow = (skill: MixedSkillSearchResult, index: number) => {
+        const descTitle = [skill.description, ...(skill.tags || [])].filter(Boolean).join(" · ");
+        const priceLabel = skill.price > 0
+            ? localizeText(`Price ${skill.price}`, `价格 ${skill.price}`, `價格 ${skill.price}`)
+            : "";
+        const ratingValue = Number(skill.avg_rating);
+        const ratingLabel = skill.rating_count > 0 && Number.isFinite(ratingValue)
+            ? `${ratingValue.toFixed(1)} (${skill.rating_count})`
+            : "";
+        const metaParts = [
+            skill.author,
+            skill.downloads > 0 ? formatDownloads(skill.downloads) : "",
+            ratingLabel,
+            priceLabel,
+        ].filter(Boolean);
+        const showSourceBadges = Boolean(
+            getSkillSourceLabel(skill)
+            || isMaclawAppSearchResult(skill)
+            || shouldShowTrustBadge(skill.trust_level),
+        );
+        return (
+            <div key={`${skill.source || "skill"}-${skill.id || skill.name}-${index}`} style={{ ...hubSkillRowStyle, borderTop: index > 0 ? `1px solid ${colors.borderLight}` : "none" }}>
+                <div style={hubCatalogIdentityStyle}>
+                    <div style={hubCatalogNameLineStyle}>
+                        <span style={hubCatalogNameStyle}>{skill.name}</span>
+                        {skill.version && <span style={hubCatalogVersionStyle}>v{skill.version}</span>}
+                    </div>
+                    {showSourceBadges && (
+                        <div style={hubCatalogBadgeLineStyle}>
+                            <SkillSourceBadge skill={skill} localizeText={localizeText} />
+                            <SkillProductBadge skill={skill} localizeText={localizeText} />
+                            {shouldShowTrustBadge(skill.trust_level) && (
+                                <span style={trustBadgeStyle(skill.trust_level!)}>
+                                    {trustLevelLabel(skill.trust_level!, localizeText)}
+                                </span>
+                            )}
+                        </div>
+                    )}
+                </div>
+                <div style={hubCatalogDetailStyle}>
+                    <div style={hubCatalogDescStyle} title={descTitle || undefined}>
+                        {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
+                    </div>
+                    {metaParts.length > 0 && (
+                        <div style={hubCatalogMetaLineStyle} title={metaParts.join(" · ")}>{metaParts.join(" · ")}</div>
+                    )}
+                    {skill.source === "github" && (skill.repo_url || skill.file_path) && (
+                        <div style={hubCatalogGithubStyle}>
+                            {skill.repo_url && (
+                                <button
+                                    type="button"
+                                    onClick={() => OpenSystemUrl(skill.repo_url!)}
+                                    style={hubCatalogLinkStyle}
+                                    title={skill.repo_url}
+                                >
+                                    {skill.repo_url}
+                                </button>
+                            )}
+                            {skill.file_path && <span style={hubCatalogPathStyle} title={skill.file_path}>{skill.file_path}</span>}
+                        </div>
+                    )}
+                    <MaclawAppMarketPreview skill={skill} localizeText={localizeText} />
+                </div>
+                <div style={hubCatalogTrailStyle}>
+                    {renderHubActionButton(skill)}
+                </div>
+            </div>
         );
     };
 
@@ -2633,6 +2707,33 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         if (activeTab === "learned") return learnedSkills;
         return skills; // "local" shows all
     }, [activeTab, skills, maclawAppSkills, learnedSkills]);
+
+    const skillCardPageCount = Math.max(1, Math.ceil(filteredSkillsForMyTab.length / SKILL_CARD_PAGE_SIZE));
+    if (skillCardPage > skillCardPageCount) {
+        setSkillCardPage(skillCardPageCount);
+    }
+    const skillCardPageSafe = Math.min(Math.max(1, skillCardPage), skillCardPageCount);
+    const skillCardRangeStart = filteredSkillsForMyTab.length === 0 ? 0 : (skillCardPageSafe - 1) * SKILL_CARD_PAGE_SIZE + 1;
+    const skillCardRangeEnd = Math.min(skillCardPageSafe * SKILL_CARD_PAGE_SIZE, filteredSkillsForMyTab.length);
+    const pagedSkillsForMyTab = useMemo(() => {
+        const start = (skillCardPageSafe - 1) * SKILL_CARD_PAGE_SIZE;
+        return filteredSkillsForMyTab.slice(start, start + SKILL_CARD_PAGE_SIZE);
+    }, [filteredSkillsForMyTab, skillCardPageSafe]);
+
+    useEffect(() => {
+        const node = skillsTabScrollRef.current;
+        if (!node) return;
+        node.scrollTop = 0;
+    }, [activeTab]);
+
+    useEffect(() => {
+        // Market and Settings share this scroller. A catalog page clamp must
+        // not jump those views back to the top.
+        if (!isMySkillsTabActive) return;
+        const node = skillsTabScrollRef.current;
+        if (!node) return;
+        node.scrollTop = 0;
+    }, [skillCardPageSafe, isMySkillsTabActive]);
 
     // Evolution attention queues (shown on Evolution settings tab).
     const reviewQueue = useMemo(() => {
@@ -3198,8 +3299,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             .join("\n\n");
     };
 
+    const openMySkillsCategory = (tab: "local" | "maclaw_app" | "learned") => {
+        if (tab === activeTab) return;
+        setActiveTab(tab);
+        setSkillCardPage(1);
+    };
+
     return (
-        <div style={skillsPanelShellStyle} ref={panelRef}>
+        <div style={skillsPanelShellStyle}>
             {/* Keep tabs outside the scroll container so the vertical scrollbar starts below them. */}
             <div style={skillsTabBarStyle}>
                 <button
@@ -3207,7 +3314,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         ...tabBtnStyle,
                         ...(isMySkillsTabActive ? tabBtnActiveStyle : {}),
                     }}
-                    onClick={() => setActiveTab("local")}
+                    onClick={() => openMySkillsCategory("local")}
                 >
                     {localizeText("My Skills", "我的技能", "我的技能")}
                 </button>
@@ -3231,19 +3338,45 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 </button>
             </div>
 
-            <div style={skillsTabContentStyle}>
+            {/* Settings tabs stay outside the scroller. Inside it they are flex
+                items with overflow:hidden, so they shrink to a sliver and the
+                column never overflows — no scrollbar, and the labels vanish. */}
+            {isSettingsTabActive && (
+                <div style={settingsSegmentStyle} role="tablist" aria-label={localizeText("Skill settings", "技能设置", "技能設定")}>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={activeTab === "evolution"}
+                        style={{ ...settingsSegmentBtnStyle, ...(activeTab === "evolution" ? settingsSegmentBtnActiveStyle : {}) }}
+                        onClick={() => setActiveTab("evolution")}
+                    >
+                        {localizeText("Evolution", "自进化", "自進化")}
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={activeTab === "extdirs"}
+                        style={{ ...settingsSegmentBtnStyle, ...(activeTab === "extdirs" ? settingsSegmentBtnActiveStyle : {}), borderLeft: `1px solid ${colors.border}` }}
+                        onClick={() => setActiveTab("extdirs")}
+                    >
+                        {localizeText("External dirs", "外部目录", "外部目錄")}
+                    </button>
+                </div>
+            )}
+
+            <div ref={skillsTabScrollRef} className="skills-tab-scroll" data-testid="skills-tab-scroll" style={activeTab === "hub" ? hubMarketScrollerStyle : skillsTabContentStyle}>
             {/* === My Skills Tab (merged: installed + app + learned) === */}
             {isMySkillsTabActive && (
                 <>
                     {/* Sub-filter chips */}
                     <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-                        <button style={{ ...chipStyle, ...(activeTab === "local" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("local")}>
+                        <button style={{ ...chipStyle, ...(activeTab === "local" ? chipActiveStyle : {}) }} onClick={() => openMySkillsCategory("local")}>
                             {localizeText("All", "全部", "全部")} ({skills.length})
                         </button>
-                        <button style={{ ...chipStyle, ...(activeTab === "maclaw_app" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("maclaw_app")}>
+                        <button style={{ ...chipStyle, ...(activeTab === "maclaw_app" ? chipActiveStyle : {}) }} onClick={() => openMySkillsCategory("maclaw_app")}>
                             {miniAppShort} ({maclawAppSkills.length})
                         </button>
-                        <button style={{ ...chipStyle, ...(activeTab === "learned" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("learned")}>
+                        <button style={{ ...chipStyle, ...(activeTab === "learned" ? chipActiveStyle : {}) }} onClick={() => openMySkillsCategory("learned")}>
                             {localizeText("Learned", "自学习", "自學習")} ({learnedSkills.length})
                         </button>
                         <div style={{ marginLeft: "auto", display: "flex", gap: "6px", flexWrap: "wrap" }}>
@@ -3285,7 +3418,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {/* Loading */}
-                    {loading && (
+                    {loading && skills.length === 0 && (
                         <div style={remoteLoadingStateStyle}>
                             {localizeText("Loading...", "加载中...", "載入中...")}
                         </div>
@@ -3298,21 +3431,21 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
 
-                    {/* Skills list — responsive: cards when narrow, table when wide */}
-                    {!loading && filteredSkillsForMyTab.length > 0 && (
-                        panelWidth < LOCAL_SKILLS_TABLE_MIN_WIDTH_PX ? (
-                            /* Card layout for narrow panels */
-                            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                                {filteredSkillsForMyTab.map((s) => (
-                                    <div key={s.name} style={skillCardStyle}>
-                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                                                    <input type="checkbox" checked={suiteSelected.has(s.name)} onChange={() => setSuiteSelected((prev) => { const next = new Set(prev); next.has(s.name) ? next.delete(s.name) : next.add(s.name); return next; })} aria-label={`Select ${s.name} for Suite`} />
-                                                    <span style={skillNameLinkStyle} onClick={() => setDetailSkill(s)}>{s.name}</span>
+                    {/* Installed skills: four cards per row, twenty per page. */}
+                    {filteredSkillsForMyTab.length > 0 && (
+                        <>
+                            <div data-testid="skill-card-grid" style={skillCardGridStyle}>
+                                {pagedSkillsForMyTab.map((s) => (
+                                    <div key={s.name} data-testid="skill-card" style={skillCatalogCardStyle}>
+                                            <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                                                    <input type="checkbox" checked={suiteSelected.has(s.name)} onChange={() => setSuiteSelected((prev) => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next; })} aria-label={localizeText(`Select ${s.name} for Suite`, `将 ${s.name} 加入 Suite`, `將 ${s.name} 加入 Suite`)} style={skillCardCheckStyle} />
+                                                    <span role="button" tabIndex={0} style={skillCardNameStyle} onClick={() => setDetailSkill(s)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setDetailSkill(s); } }} title={s.name}>{s.name}</span>
+                                                </div>
+                                                <div style={skillCardBadgeRowStyle}>
                                                     {s.is_maclaw_app && <span style={appBadgeStyle}>{miniAppShort}</span>}
                                                     {isLearnedSource(s.source ?? "") && <span style={learnedBadgeStyle}>{localizeText("Learned", "自学习", "自學習")}</span>}
-                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
+                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : localizeSkillStatus(s.status)}>{localizeSkillStatus(s.status)}</span>
                                                 </div>
                                                 {renderSkillDescriptionPreview(s.description || "", { marginTop: "4px" })}
                                                 {(s.status === "needs_setup" || s.status === "needs_review") && (
@@ -3323,34 +3456,42 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     </div>
                                                 )}
                                                 {s.status === "needs_review" && skillReviewReason(s, localizeText) && (
-                                                    <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginTop: "3px" }} title={skillReviewReason(s, localizeText)}>
-                                                        {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {skillReviewReasonPreview(s, localizeText)}
+                                                    <div style={skillCardReasonStyle} title={skillReviewReason(s, localizeText)}>
+                                                        {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {getLearnedSkillDescriptionPreview(skillReviewReason(s, localizeText))}
                                                     </div>
                                                 )}
-                                                <div style={{ display: "flex", gap: "8px", marginTop: "6px", fontSize: "0.7rem", color: colors.textMuted }}>
-                                                    {s.execution_class && <span>{getExecutionClassLabel(s.execution_class)}</span>}
-                                                    {displayHubVersion(s.hub_version) && <span>v{displayHubVersion(s.hub_version)}</span>}
-                                                    {(s.usage_count ?? 0) > 0 && <span>{s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%</span>}
+                                                <div style={skillCardMetaRowStyle}>
+                                                    {s.execution_class ? (
+                                                        <span style={localSkillsTypeBadgeStyle} title={getExecutionClassTitle(s)}>{getExecutionClassLabel(s.execution_class)}</span>
+                                                    ) : (
+                                                        <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>
+                                                    )}
+                                                    {displayHubVersion(s.hub_version) && <span style={localSkillsMetaTextStyle}>v{displayHubVersion(s.hub_version)}</span>}
+                                                    <span style={{ ...localSkillsMetaTextStyle, color: (s.usage_count ?? 0) > 0 ? colors.textSecondary : colors.textMuted }}>
+                                                        {(s.usage_count ?? 0) > 0
+                                                            ? `${s.usage_count}${localizeText("x", "次", "次")} / ${Math.round((s.success_rate ?? 0) * 100)}%`
+                                                            : localizeText("Unused", "未使用", "未使用")}
+                                                    </span>
                                                 </div>
                                             </div>
-                                            <div style={{ display: "flex", gap: "4px", flexShrink: 0, alignItems: "center" }}>
+                                            <div style={skillCardActionsStyle}>
                                                 {s.status === "staged" && (
-                                                    <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => { void handleVerifyAndActivate(s); }} disabled={busy} title={localizeText("Replay with arguments, verify, and activate", "使用参数重放、验证并激活", "使用參數重放、驗證並啟用")} aria-label={localizeText("Verify and activate", "验证并激活", "驗證並啟用")}>
+                                                    <button className="btn-primary" style={skillCardTextBtnStyle} onClick={() => { void handleVerifyAndActivate(s); }} disabled={busy} title={localizeText("Replay with arguments, verify, and activate", "使用参数重放、验证并激活", "使用參數重放、驗證並啟用")} aria-label={localizeText("Verify and activate", "验证并激活", "驗證並啟用")}>
                                                         {localizeText("Verify", "验证", "驗證")}
                                                     </button>
                                                 )}
                                                 {s.status === "needs_setup" && (
-                                                    <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
+                                                    <button className="btn-primary" style={skillCardTextBtnStyle} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
                                                         {localizeText("Configure", "配置", "設定")}
                                                     </button>
                                                 )}
                                                 {s.status === "needs_review" && (
-                                                    <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{localizeText("OK", "通过", "通過")}</button>
+                                                    <button className="btn-secondary" style={skillCardTextBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{localizeText("OK", "通过", "通過")}</button>
                                                 )}
                                                 {!!s.last_error && !isAgentGuidedWorkflow(s) && (
                                                     <button
                                                         className="btn-secondary"
-                                                        style={{ ...iconBtnStyle, color: "var(--theme-warning, #b45309)" }}
+                                                        style={{ ...skillCardTextBtnStyle, color: "var(--theme-warning, #b45309)" }}
                                                         onClick={() => { void handleTriggerSelfRepair(s); }}
                                                         disabled={busy || detailActionBusy !== null}
                                                         title={localizeText("Repair now", "立即修复", "立即修復")}
@@ -3365,7 +3506,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 })() && (
                                                     <button
                                                         className="btn-secondary"
-                                                        style={iconBtnStyle}
+                                                        style={skillCardTextBtnStyle}
                                                         onClick={() => { void handleTriggerOptimize(s); }}
                                                         disabled={busy || detailActionBusy !== null}
                                                         title={localizeText("Optimize now", "立即优化", "立即優化")}
@@ -3375,125 +3516,58 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     </button>
                                                 )}
                                                 {isAgentGuidedWorkflow(s) ? (
-                                                    <button className="btn-primary" style={{ ...runBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => handleStartAgentGuidedWorkflow(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Open an AI-agent project task for this workflow", "在 AI 助手中启动此工作流任务", "在 AI 助手中啟動此工作流程任務")} aria-label={localizeText("Start with AI Agent", "用 AI 助手启动", "用 AI 助手啟動")}>{localizeText("Start", "启动", "啟動")}</button>
+                                                    <button className="btn-primary" style={skillCardTextBtnStyle} onClick={() => handleStartAgentGuidedWorkflow(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Open an AI-agent project task for this workflow", "在 AI 助手中启动此工作流任务", "在 AI 助手中啟動此工作流程任務")} aria-label={localizeText("Start with AI Agent", "用 AI 助手启动", "用 AI 助手啟動")}>{localizeText("Start", "启动", "啟動")}</button>
                                                 ) : (
-                                                    <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
+                                                    <button className="btn-primary" style={skillCardTextBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
                                                 )}
-                                                <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{localizeText("Edit", "编辑", "編輯")}</button>
-                                                <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
+                                                <button className="btn-secondary" style={skillCardTextBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{localizeText("Edit", "编辑", "編輯")}</button>
+                                                <button className="btn-secondary" style={skillCardIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
                                                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                                                 </button>
                                             </div>
-                                        </div>
                                     </div>
                                 ))}
                             </div>
-                        ) : (
-                            /* Table layout for wide panels */
-                            <div style={localSkillsTableContainerStyle}>
-                                <table style={localSkillsTableStyle}>
-                                    <colgroup>
-                                        <col style={{ width: LOCAL_SKILLS_COL_PX.name }} /><col style={{ width: LOCAL_SKILLS_COL_PX.description }} /><col style={{ width: LOCAL_SKILLS_COL_PX.type }} /><col style={{ width: LOCAL_SKILLS_COL_PX.usage }} /><col style={{ width: LOCAL_SKILLS_COL_PX.status }} /><col style={{ width: "auto" }} />
-                                    </colgroup>
-                                    <thead>
-                                        <tr style={{ background: colors.surfaceMuted }}>
-                                            <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
-                                            <th style={{ ...thStyle, ...localSkillsDescriptionColStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
-                                            <th style={{ ...thStyle, textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
-                                            <th style={{ ...thStyle, textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                            <th style={{ ...thStyle, whiteSpace: "nowrap", textAlign: "center", paddingRight: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
-                                            <th style={{ ...thStyle, textAlign: "center", paddingLeft: 4 }}>{localizeText("Actions", "操作", "操作")}</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {filteredSkillsForMyTab.map((s) => (
-                                            <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
-                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "left" }}>
-                                                    <div style={localSkillsNameCellStyle}>
-                                                        {s.is_maclaw_app && <span title={miniAppShort} style={appBadgeStyle}>{miniAppShort}</span>}
-                                                        {isLearnedSource(s.source ?? "") && <span title={localizeText("Learned", "自学习", "自學習")} style={learnedBadgeStyle}>{localizeText("Learned", "自学习", "自學習")}</span>}
-                                                        <span style={localSkillsNameLinkStyle} onClick={() => setDetailSkill(s)} title={s.name}>{s.name}</span>
-                                                    </div>
-                                                </td>
-                                                <td style={{ ...tdStyle, ...localSkillsDescriptionColStyle }}>
-                                                    {renderSkillDescriptionPreview(s.description || "")}
-                                                    {s.status === "needs_review" && skillReviewReason(s, localizeText) && (
-                                                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginTop: "3px", lineHeight: 1.35, overflowWrap: "anywhere" }} title={skillReviewReason(s, localizeText)}>
-                                                            {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {skillReviewReasonPreview(s, localizeText)}
-                                                        </div>
-                                                    )}
-                                                </td>
-                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "left", paddingRight: 4 }}>
-                                                    {s.execution_class ? (<span style={localSkillsTypeBadgeStyle} title={getExecutionClassTitle(s)}>{getExecutionClassLabel(s.execution_class)}</span>) : (<span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>)}
-                                                </td>
-                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "left", paddingRight: 4 }}>
-                                                    {(s.usage_count ?? 0) > 0 ? (<span style={localSkillsMetaTextStyle}>{s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%</span>) : (<span style={{ ...localSkillsMetaTextStyle, color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>)}
-                                                </td>
-                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 4 }}>
-                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" && skillReviewReason(s, localizeText) ? skillReviewReason(s, localizeText) : localizeSkillStatus(s.status)}>{localizeSkillStatus(s.status)}</span>
-                                                </td>
-                                                <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, minWidth: 0 }}>
-                                                    <div style={localSkillsRowActionsStyle}>
-                                                        {s.status === "staged" && (
-                                                            <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => { void handleVerifyAndActivate(s); }} disabled={busy} title={localizeText("Replay with arguments, verify, and activate", "使用参数重放、验证并激活", "使用參數重放、驗證並啟用")} aria-label={localizeText("Verify and activate", "验证并激活", "驗證並啟用")}>
-                                                                {localizeText("Verify", "验证", "驗證")}
-                                                            </button>
-                                                        )}
-                                                        {s.status === "needs_setup" && (
-                                                            <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
-                                                                {localizeText("Configure", "配置", "設定")}
-                                                            </button>
-                                                        )}
-                                                        {s.status === "needs_review" && (
-                                                            <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{localizeText("OK", "通过", "通過")}</button>
-                                                        )}
-                                                        {!!s.last_error && !isAgentGuidedWorkflow(s) && (
-                                                            <button
-                                                                className="btn-secondary"
-                                                                style={{ ...iconBtnStyle, color: "var(--theme-warning, #b45309)" }}
-                                                                onClick={() => { void handleTriggerSelfRepair(s); }}
-                                                                disabled={busy || detailActionBusy !== null}
-                                                                title={localizeText("Repair now", "立即修复", "立即修復")}
-                                                                aria-label={localizeText("Repair now", "立即修复", "立即修復")}
-                                                            >
-                                                                {localizeText("Fix", "修复", "修復")}
-                                                            </button>
-                                                        )}
-                                                        {!isAgentGuidedWorkflow(s) && !s.last_error && (s.usage_count ?? 0) >= 3 && (() => {
-                                                            const rate = typeof s.success_rate === "number" ? s.success_rate : 0;
-                                                            return rate >= 0.5 && rate <= 0.85;
-                                                        })() && (
-                                                            <button
-                                                                className="btn-secondary"
-                                                                style={iconBtnStyle}
-                                                                onClick={() => { void handleTriggerOptimize(s); }}
-                                                                disabled={busy || detailActionBusy !== null}
-                                                                title={localizeText("Optimize now", "立即优化", "立即優化")}
-                                                                aria-label={localizeText("Optimize now", "立即优化", "立即優化")}
-                                                            >
-                                                                {localizeText("Opt", "优化", "優化")}
-                                                            </button>
-                                                        )}
-                                                        {isAgentGuidedWorkflow(s) ? (
-                                                            <button className="btn-primary" style={{ ...runBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => handleStartAgentGuidedWorkflow(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Open an AI-agent project task for this workflow", "在 AI 助手中启动此工作流任务", "在 AI 助手中啟動此工作流程任務")} aria-label={localizeText("Start with AI Agent", "用 AI 助手启动", "用 AI 助手啟動")}>{localizeText("Start", "启动", "啟動")}</button>
-                                                        ) : (
-                                                            <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
-                                                        )}
-                                                        <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{localizeText("Edit", "编辑", "編輯")}</button>
-                                                        <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
-                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
-                                                        </button>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )
+                            {skillCardPageCount > 1 && <div style={skillCardPagerStyle}>
+                                <span style={skillCardPagerMetaStyle}>
+                                    {localizeText(
+                                        `${skillCardRangeStart}–${skillCardRangeEnd} of ${filteredSkillsForMyTab.length}`,
+                                        `第 ${skillCardRangeStart}–${skillCardRangeEnd} 个，共 ${filteredSkillsForMyTab.length} 个`,
+                                        `第 ${skillCardRangeStart}–${skillCardRangeEnd} 個，共 ${filteredSkillsForMyTab.length} 個`,
+                                    )}
+                                </span>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        style={skillCardPageBtnStyle}
+                                        disabled={skillCardPageSafe <= 1}
+                                        onClick={() => setSkillCardPage(skillCardPageSafe - 1)}
+                                    >
+                                        {localizeText("Previous", "上一页", "上一頁")}
+                                    </button>
+                                    <span style={skillCardPagerMetaStyle}>
+                                        {localizeText(
+                                            `Page ${skillCardPageSafe} / ${skillCardPageCount}`,
+                                            `第 ${skillCardPageSafe} / ${skillCardPageCount} 页`,
+                                            `第 ${skillCardPageSafe} / ${skillCardPageCount} 頁`,
+                                        )}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        style={skillCardPageBtnStyle}
+                                        disabled={skillCardPageSafe >= skillCardPageCount}
+                                        onClick={() => setSkillCardPage(skillCardPageSafe + 1)}
+                                    >
+                                        {localizeText("Next", "下一页", "下一頁")}
+                                    </button>
+                                </div>
+                            </div>}
+                        </>
                     )}
 
-                    {!loading && filteredSkillsForMyTab.length === 0 && !error && (
+                    {filteredSkillsForMyTab.length === 0 && !error && !(loading && skills.length === 0) && (
                         <div style={skillsEmptyStateStyle}>
                             {activeTab === "learned"
                                 ? localizeText("No learned skills yet. MaClaw automatically learns and generates skills during use.", "暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。", "暫無自學習技能。MaClaw 在使用過程中會自動學習並生成技能。")
@@ -3509,12 +3583,15 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             {activeTab === "hub" && (
                 <>
                     {(hubSuitesLoading || hubSuites.length > 0) && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "10px" }}>
-                            <div style={{ fontSize: "0.78rem", color: colors.textSecondary, fontWeight: 600 }}>{localizeText("Skill Suites", "Skill 套件", "Skill 套件")}</div>
-                            {hubSuitesLoading && <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Loading suites...", "正在加载套件…", "正在載入套件…")}</span>}
+                        <div style={consoleSectionStyle}>
+                            <div style={{ ...consoleSectionHeadStyle, borderBottom: "none" }}>
+                                <span>{localizeText("Skill Suites", "Skill 套件", "Skill 套件")}</span>
+                                {hubSuitesLoading && <span style={{ marginLeft: "auto", fontWeight: 500, color: colors.textMuted }}>{localizeText("Loading suites...", "正在加载套件…", "正在載入套件…")}</span>}
+                                {!hubSuitesLoading && <span style={{ marginLeft: "auto", fontWeight: 500, color: colors.textMuted, fontVariantNumeric: "tabular-nums" }}>{hubSuites.length}</span>}
+                            </div>
                             {hubSuites.map((suite) => (
-                                <div key={suite.id} style={{ ...hubCardStyle, padding: "9px 10px" }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center" }}>
+                                <div key={suite.id} style={{ ...hubCatalogRowStyle, alignItems: "flex-start" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center", flex: "1 1 auto", minWidth: 0 }}>
                                         <div style={{ minWidth: 0 }}>
                                             <div style={{ fontWeight: 600, fontSize: "0.8rem" }}>{suite.name} <span style={{ color: colors.textMuted, fontWeight: 400 }}>({(suite.members || []).length})</span></div>
                                             <div style={{ fontSize: "0.7rem", color: colors.textSecondary }}>{suite.description || localizeText("Related Skills", "相关 Skill", "相關 Skill")}</div>
@@ -3549,8 +3626,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             ))}
                         </div>
                     )}
+                    <div style={hubCatalogStyle}>
                     {/* Search input */}
-                    <div style={{ display: "flex", gap: "6px" }}>
+                    <div style={hubMarketToolbarStyle}>
                         <input
                             className="form-input"
                             value={hubSearchQuery}
@@ -3558,7 +3636,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             onKeyDown={(e) => { if (e.key === "Enter") handleHubSearch(); }}
                             placeholder={localizeText("Search Hub Skills...", "搜索 Hub Skill...", "搜尋 Hub Skill...")}
                             spellCheck={false}
-                            style={{ flex: 1, fontSize: "0.78rem" }}
+                            style={{ flex: "1 1 0%", width: 0, minWidth: 96, fontSize: "0.75rem" }}
                         />
                         <button
                             className="btn-primary"
@@ -3576,6 +3654,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     setHubSearchQuery("");
                                     setHubResults([]);
                                     setHubSearched(false);
+                                    if (hubCatalogScrollRef.current) hubCatalogScrollRef.current.scrollTop = 0;
                                     setHubError("");
                                     void loadHubSuites();
                                     // Always refresh recommendations to pick up installed state changes
@@ -3594,7 +3673,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Filter & Sort (shown when results exist) */}
                     {hubSearched && hubResults.length > 0 && (
-                        <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", fontSize: "0.72rem" }}>
+                        <div style={hubMarketFilterStyle}>
                             <select aria-label="Market source" className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "112px" }} value={hubFilterSource} onChange={(e) => setHubFilterSource(e.target.value as HubSourceFilter)}>
                                 <option value="all">{localizeText("All Sources", "全部来源", "全部來源")}</option>
                                 <option value="hubcenter">Hub / HubCenter</option>
@@ -3619,29 +3698,31 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
 
+                    {!hubSearching && !hubSearched && !hubError && !hubRecsLoading && hubRecommendations.length > 0 && (
+                        <div style={hubCatalogCaptionStyle}>
+                            <span>{localizeText("Popular Skills", "热门 Skill", "熱門 Skill")}</span>
+                            <span style={{ marginLeft: "auto", fontWeight: 500, color: colors.textMuted, fontVariantNumeric: "tabular-nums" }}>{hubRecommendations.length}</span>
+                        </div>
+                    )}
+
+                    <div ref={hubCatalogScrollRef} className="skills-tab-scroll" data-testid="hub-catalog-scroll" style={hubCatalogListStyle}>
                     {/* Hub error */}
                     {hubError && (
-                        <div style={remoteErrorStateStyle}>
+                        <div style={{ ...remoteErrorStateStyle, margin: "8px 10px" }}>
                             {hubError}
                         </div>
                     )}
 
                     {/* Loading state */}
                     {hubSearching && (
-                        <div style={{
-                            ...remoteLoadingStateStyle,
-                            minHeight: "120px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                        }}>
+                        <div style={hubCatalogNoteStyle}>
                             {localizeText("Searching Capability Market...", "正在搜索能力市场...", "正在搜尋能力市場...")}
                         </div>
                     )}
 
                     {/* Results */}
                     {!hubSearching && hubSearched && filteredHubResults.length === 0 && !hubError && (
-                        <div style={skillsEmptyStateStyle}>
+                        <div style={hubCatalogNoteStyle}>
                             {hubResults.length === 0
                                 ? localizeText("No results found", "无搜索结果", "無搜尋結果")
                                 : localizeText("No results match current filters", "当前筛选条件下无结果", "目前篩選條件下無結果")}
@@ -3649,81 +3730,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!hubSearching && filteredHubResults.length > 0 && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                            {filteredHubResults.map((skill) => (
-                                <div key={skill.id} style={hubCardStyle}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                                        <div style={{ flex: 1, minWidth: 0 }}>
-                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                                                <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
-                                                <SkillSourceBadge skill={skill} localizeText={localizeText} />
-                                                <SkillProductBadge skill={skill} localizeText={localizeText} />
-                                                {shouldShowTrustBadge(skill.trust_level) && (
-                                                    <span style={trustBadgeStyle(skill.trust_level!)}>
-                                                        {trustLevelLabel(skill.trust_level!, localizeText)}
-                                                    </span>
-                                                )}
-                                                {skill.version && (
-                                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
-                                                )}
-                                            </div>
-                                            {skill.source === "github" && (skill.repo_url || skill.file_path) && (
-                                                <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: "4px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                                    {skill.repo_url && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => OpenSystemUrl(skill.repo_url!)}
-                                                            style={{
-                                                                padding: 0,
-                                                                border: "none",
-                                                                background: "transparent",
-                                                                color: colors.link,
-                                                                cursor: "pointer",
-                                                                fontSize: "0.68rem",
-                                                                textDecoration: "underline",
-                                                            }}
-                                                            title={skill.repo_url}
-                                                        >
-                                                            {skill.repo_url}
-                                                        </button>
-                                                    )}
-                                                    {skill.file_path && <span>{skill.file_path}</span>}
-                                                </div>
-                                            )}
-                                            <div style={hubSkillDescriptionStyle} title={skill.description || undefined}>
-                                                {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
-                                            </div>
-                                            <MaclawAppMarketPreview skill={skill} localizeText={localizeText} />
-                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
-                                                {(skill.tags || []).map((tag, i) => (
-                                                    <span key={i} style={tagStyle}>{tag}</span>
-                                                ))}
-                                                <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                                                    {skill.author && (
-                                                        <span>{skill.author}</span>
-                                                    )}
-                                                    {skill.rating_count > 0 && (
-                                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                                                            <span style={{ color: colors.primary }}>{renderStars(skill.avg_rating)}</span>
-                                                            <span>({skill.rating_count})</span>
-                                                        </span>
-                                                    )}
-                                                    {skill.downloads > 0 && (
-                                                        <span>{formatDownloads(skill.downloads)}</span>
-                                                    )}
-                                                    {skill.price > 0 && (
-                                                        <span>{localizeText(`Price ${skill.price}`, `价格 ${skill.price}`, `價格 ${skill.price}`)}</span>
-                                                    )}
-                                                    {skill.created_at && (
-                                                        <span>{formatDate(skill.created_at)}</span>
-                                                    )}
-                                                </span>
-                                            </div>
-                                        </div>
-                                        {renderHubActionButton(skill)}
-                                    </div>
-                                </div>
-                            ))}
+                        <div data-testid="hub-result-catalog">
+                            {filteredHubResults.map((skill, index) => renderHubCatalogRow(skill, index))}
                         </div>
                     )}
 
@@ -3731,66 +3739,24 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {!hubSearching && !hubSearched && !hubError && (
                         <>
                             {hubRecsLoading && (
-                                <div style={{
-                                    ...remoteLoadingStateStyle,
-                                    minHeight: "80px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                }}>
+                                <div style={hubCatalogNoteStyle}>
                                     {localizeText("Loading recommendations...", "加载推荐中...", "載入推薦中...")}
                                 </div>
                             )}
                             {!hubRecsLoading && hubRecommendations.length > 0 && (
-                                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                                    <div style={{ fontSize: "0.78rem", color: colors.textSecondary, fontWeight: 500 }}>
-                                        {localizeText("Popular Skills", "热门 Skill", "熱門 Skill")}
-                                    </div>
-                                    {hubRecommendations.map((skill) => (
-                                        <div key={skill.id} style={hubCardStyle}>
-                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                                                <div style={{ flex: 1, minWidth: 0 }}>
-                                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                                                        <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
-                                                        <SkillSourceBadge skill={skill} localizeText={localizeText} />
-                                                        <SkillProductBadge skill={skill} localizeText={localizeText} />
-                                                        {shouldShowTrustBadge(skill.trust_level) && (
-                                                            <span style={trustBadgeStyle(skill.trust_level!)}>
-                                                                {trustLevelLabel(skill.trust_level!, localizeText)}
-                                                            </span>
-                                                        )}
-                                                        {skill.version && (
-                                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
-                                                        )}
-                                                    </div>
-                                                    <div style={hubSkillDescriptionStyle} title={skill.description || undefined}>
-                                                        {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
-                                                    </div>
-                                                    <MaclawAppMarketPreview skill={skill} localizeText={localizeText} />
-                                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "0.68rem", color: colors.textMuted }}>
-                                                        {skill.author && <span>{skill.author}</span>}
-                                                        {skill.downloads > 0 && <span>{formatDownloads(skill.downloads)}</span>}
-                                                        {skill.rating_count > 0 && (
-                                                            <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                                                                <span style={{ color: colors.primary }}>{renderStars(skill.avg_rating)}</span>
-                                                                <span>({skill.rating_count})</span>
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                {renderHubActionButton(skill)}
-                                            </div>
-                                        </div>
-                                    ))}
+                                <div data-testid="hub-recommendation-catalog">
+                                    {hubRecommendations.map((skill, index) => renderHubCatalogRow(skill, index))}
                                 </div>
                             )}
                             {!hubRecsLoading && hubRecommendations.length === 0 && (
-                                <div style={skillsEmptyStateStyle}>
+                                <div style={hubCatalogNoteStyle}>
                                     {localizeText("Enter keywords to search the Capability Market", "输入关键词搜索能力市场上的 Skill", "輸入關鍵詞搜尋能力市場上的 Skill")}
                                 </div>
                             )}
                         </>
                     )}
+                    </div>
+                    </div>
                 </>
             )}
 
@@ -3944,70 +3910,21 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {/* Loading */}
-                    {loading && (
+                    {loading && skills.length === 0 && (
                         <div style={remoteLoadingStateStyle}>{localizeText("Loading...", "加载中...", "載入中...")}</div>
                     )}
                 </>
             )}
 
-            {suiteSelection && (
-                <div role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-                    <div style={{ ...hubCardStyle, width: "min(420px, calc(100vw - 32px))", maxHeight: "80vh", overflow: "auto", padding: "16px" }}>
-                        <div style={{ fontWeight: 700, marginBottom: "4px" }}>{suiteSelection.name}</div>
-                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "10px" }}>{suiteSelection.description || localizeText("Select Suite members", "选择 Suite 成员", "選擇 Suite 成員")}</div>
-                        <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
-                            <button className="btn-secondary" type="button" onClick={() => setSuiteSelectedMembers(new Set((suiteSelection.members || []).map((m) => m.name || m.skill_id || m.skill_ref || "").filter(Boolean)))}>{localizeText("Select all", "全选", "全選")}</button>
-                            <button className="btn-secondary" type="button" onClick={() => setSuiteSelectedMembers(new Set((suiteSelection.members || []).filter((m) => m.required).map((m) => m.name || m.skill_id || m.skill_ref || "").filter(Boolean)))}>{localizeText("Required only", "仅必需成员", "僅必要成員")}</button>
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                            {(suiteSelection.members || []).map((member, index) => {
-                                const id = member.name || member.skill_id || member.skill_ref || `member-${index}`;
-                                const checked = suiteSelectedMembers.has(id);
-                                return <label key={`${id}-${index}`} style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "0.76rem" }}>
-                                    <input type="checkbox" checked={checked} disabled={!!member.required} onChange={() => setSuiteSelectedMembers((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; })} />
-                                    <span>{member.name || member.skill_id || member.skill_ref || "Skill"} {member.version ? `@ ${member.version}` : ""} {member.required ? "· required" : "· optional"}</span>
-                                </label>;
-                            })}
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
-                            <button className="btn-secondary" type="button" onClick={() => setSuiteSelection(null)}>{localizeText("Cancel", "取消", "取消")}</button>
-                            <button className="btn-primary" type="button" disabled={suiteSelectedMembers.size === 0} onClick={() => { void confirmInstallSuite(); }}>{localizeText("Install", "安装", "安裝")}</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* === Settings Tab === */}
-            {isSettingsTabActive && (
-                <>
-                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
-                        <button
-                            style={{ ...chipStyle, ...(activeTab === "evolution" ? chipActiveStyle : {}) }}
-                            onClick={() => setActiveTab("evolution")}
-                        >
-                            {localizeText("Evolution", "自进化", "自進化")}
-                        </button>
-                        <button
-                            style={{ ...chipStyle, ...(activeTab === "extdirs" ? chipActiveStyle : {}) }}
-                            onClick={() => setActiveTab("extdirs")}
-                        >
-                            {localizeText("External dirs", "外部目录", "外部目錄")}
-                        </button>
-                    </div>
-                </>
-            )}
-
             {activeTab === "evolution" && (
                 <>
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: evolutionHelpOpen ? 8 : 0 }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                {localizeText("Operator quick guide", "运维速查", "運維速查")}
-                            </div>
+                    <div style={consoleSectionStyle}>
+                        <div style={{ ...consoleSectionHeadStyle, borderBottom: evolutionHelpOpen ? undefined : "none" }}>
+                            <span>{localizeText("Operator quick guide", "运维速查", "運維速查")}</span>
                             <button
                                 type="button"
                                 className="btn-secondary"
-                                style={{ fontSize: "0.7rem", padding: "2px 8px", marginLeft: "auto" }}
+                                style={{ fontSize: "0.68rem", padding: "1px 8px", marginLeft: "auto" }}
                                 onClick={() => setEvolutionHelpOpen((v) => !v)}
                             >
                                 {evolutionHelpOpen
@@ -4016,7 +3933,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </button>
                         </div>
                         {evolutionHelpOpen && (
-                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary, lineHeight: 1.55 }}>
+                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary, lineHeight: 1.45, padding: "8px 10px" }}>
                                 <div style={{ marginBottom: 6 }}>
                                     {localizeText(
                                         "Read-only can run automatically; disk writes always need confirmation; bad YAML can be rolled back.",
@@ -4073,38 +3990,37 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     </div>
 
                     {(evolutionStatus?.env_disabled) ? (
-                        <div style={{
-                            ...remoteInfoPanelStyle,
-                            marginBottom: "12px",
-                            padding: "10px 12px",
-                            borderLeft: "3px solid var(--theme-warning, #b45309)",
-                        }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "4px" }}>
-                                {localizeText("Evolution disabled by environment", "自进化已被环境变量关闭", "自進化已被環境變數關閉")}
-                            </div>
-                            <div style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
-                                {localizeText(
+                        <div style={{ ...consoleSectionStyle, borderLeft: "3px solid var(--theme-warning, #b45309)" }}>
+                            <div style={{ ...consoleSectionHeadStyle, borderBottom: "none", background: "transparent" }}>
+                                <span title={localizeText(
                                     "MACLAW_DISABLE_SKILL_EVOLUTION is set. Automatic repair/optimize/promote after skill runs is suppressed. Manual Repair now / Optimize now still work.",
                                     "已设置环境变量 MACLAW_DISABLE_SKILL_EVOLUTION。技能执行后的自动修复/优化/发现会被跳过；详情页「立即修复/立即优化」仍可手动触发。",
                                     "已設定環境變數 MACLAW_DISABLE_SKILL_EVOLUTION。技能執行後的自動修復/優化/發現會被跳過；詳情頁「立即修復/立即優化」仍可手動觸發。",
-                                )}
+                                )}>{localizeText("Evolution disabled by environment", "自进化已被环境变量关闭", "自進化已被環境變數關閉")}</span>
+                                <span style={{ marginLeft: "auto", fontWeight: 500, color: colors.textMuted }}>MACLAW_DISABLE_SKILL_EVOLUTION</span>
                             </div>
                         </div>
                     ) : null}
 
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "6px" }}>
-                            {localizeText("Skill self-repair & evolution", "技能自修复与进化", "技能自修復與進化")}
+                    <div style={consoleSectionStyle} data-testid="skill-evolution-settings">
+                        <div style={consoleSectionHeadStyle}>
+                            <span title={localizeText(
+                                "After runs, Maclaw may auto-repair, optimize, or discover skills in the background. 0 cooldown hours means the default of 1 hour.",
+                                "技能执行后，系统可能在后台自动修复、优化或发现技能。冷却填 0 表示默认 1 小时。",
+                                "技能執行後，系統可能在背景自動修復、優化或發現技能。冷卻填 0 表示預設 1 小時。",
+                            )}>{localizeText("Skill self-repair & evolution", "技能自修复与进化", "技能自修復與進化")}</span>
+                            <button
+                                type="button"
+                                className="btn-secondary"
+                                style={{ fontSize: "0.68rem", padding: "1px 8px", marginLeft: "auto" }}
+                                onClick={() => { openSettingsTab('general'); }}
+                            >
+                                {localizeText("Open General Settings", "打开通用设置", "開啟通用設定")}
+                            </button>
                         </div>
-                        <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginBottom: "8px" }}>
-                            {localizeText(
-                                "After runs, Maclaw may auto-repair, optimize, or discover skills in the background. Configure the minimum hours between self-repair attempts for the same skill (0 = default 1 hour).",
-                                "技能执行后，系统可能在后台自动修复、优化或发现技能。可配置同一技能两次自动自修复的最短间隔（小时）。0 表示默认 1 小时。",
-                                "技能執行後，系統可能在背景自動修復、優化或發現技能。可設定同一技能兩次自動自修復的最短間隔（小時）。0 表示預設 1 小時。",
-                            )}
-                        </div>
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
-                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px", cursor: evolutionEnabledSaving || !!evolutionStatus?.env_disabled ? "default" : "pointer" }}>
+                        <label style={{ ...consolePropRowStyle, borderTop: "none", cursor: evolutionEnabledSaving || evolutionStatus?.env_disabled ? "default" : "pointer" }}>
+                            <span>{localizeText("Enable automatic evolution", "启用自动自进化", "啟用自動自進化")}</span>
+                            <span style={settingsControlStyle}>
                                 <input
                                     type="checkbox"
                                     checked={evolutionEnabled && !evolutionStatus?.env_disabled}
@@ -4112,14 +4028,16 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     onChange={(e) => { void saveEvolutionEnabled(e.target.checked); }}
                                     aria-label={localizeText("Enable automatic evolution", "启用自动自进化", "啟用自動自進化")}
                                 />
-                                {localizeText("Enable automatic evolution", "启用自动自进化", "啟用自動自進化")}
-                            </label>
-                            {evolutionEnabledSaving && (
-                                <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>...</span>
-                            )}
-                        </div>
-                        <div style={{ display: "flex", gap: "14px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
-                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px", cursor: observationSaving ? "default" : "pointer" }}>
+                                {evolutionEnabledSaving && <span style={{ color: colors.textMuted }}>...</span>}
+                            </span>
+                        </label>
+                        <label style={{ ...consolePropRowStyle, cursor: observationSaving ? "default" : "pointer" }} title={localizeText(
+                            "Observation is read-only evidence collection and can remain enabled while automatic evolution is paused.",
+                            "观察只采集只读证据；即使暂停自动自进化也可以保留。",
+                            "觀察只收集唯讀證據；即使暫停自動自進化也可以保留。",
+                        )}>
+                            <span>{localizeText("Record maintenance observations", "记录维护观察", "記錄維護觀察")}</span>
+                            <span style={settingsControlStyle}>
                                 <input
                                     type="checkbox"
                                     checked={observationEnabled}
@@ -4127,10 +4045,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     onChange={(e) => { void saveObservationEnabled(e.target.checked); }}
                                     aria-label={localizeText("Record maintenance observations", "记录维护观察", "記錄維護觀察")}
                                 />
-                                {localizeText("Record maintenance observations", "记录维护观察", "記錄維護觀察")}
-                            </label>
-                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px" }}>
-                                {localizeText("Concurrent workers", "并发工作数", "並發工作數")}
+                                {observationSaving && <span style={{ color: colors.textMuted }}>...</span>}
+                            </span>
+                        </label>
+                        <div style={consolePropRowStyle}>
+                            <span title={localizeText("Limited to 1–16. The same skill is always serialized.", "限制为 1–16。同一技能始终串行。", "限制為 1–16。同一技能始終串行。")}>{localizeText("Concurrent workers", "并发工作数", "並發工作數")}</span>
+                            <div style={settingsControlStyle}>
                                 <input
                                     className="form-input"
                                     type="number"
@@ -4138,20 +4058,18 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     max={16}
                                     value={maxConcurrentWorkers}
                                     onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value))}
-                                    style={{ width: "64px", fontSize: "0.78rem" }}
+                                    style={settingsNumberStyle}
                                     disabled={workersSaving}
+                                    aria-label={localizeText("Concurrent workers", "并发工作数", "並發工作數")}
                                 />
-                                <button
-                                    className="btn-secondary"
-                                    style={{ fontSize: "0.72rem", padding: "3px 9px" }}
-                                    disabled={workersSaving}
-                                    onClick={() => { void saveMaxConcurrentWorkers(); }}
-                                >
+                                <button className="btn-secondary" style={settingsSaveBtnStyle} disabled={workersSaving} onClick={() => { void saveMaxConcurrentWorkers(); }}>
                                     {workersSaving ? "..." : localizeText("Save", "保存", "儲存")}
                                 </button>
-                            </label>
-                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px" }}>
-                                {localizeText("Worker timeout (sec)", "Worker 超时（秒）", "Worker 逾時（秒）")}
+                            </div>
+                        </div>
+                        <div style={consolePropRowStyle}>
+                            <span>{localizeText("Worker timeout (sec)", "Worker 超时（秒）", "Worker 逾時（秒）")}</span>
+                            <div style={settingsControlStyle}>
                                 <input
                                     className="form-input"
                                     type="number"
@@ -4159,88 +4077,57 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     max={1800}
                                     value={workerTimeoutSeconds}
                                     onChange={(e) => setWorkerTimeoutSeconds(Number(e.target.value))}
-                                    style={{ width: "78px", fontSize: "0.78rem" }}
+                                    style={settingsNumberStyle}
                                     disabled={workerTimeoutSaving}
+                                    aria-label={localizeText("Worker timeout (sec)", "Worker 超时（秒）", "Worker 逾時（秒）")}
                                     title={localizeText("Background evolution worker timeout. Range: 30–1800 seconds.", "后台自进化 Worker 超时。范围：30–1800 秒。", "背景自進化 Worker 逾時。範圍：30–1800 秒。")}
                                 />
-                                <button
-                                    className="btn-secondary"
-                                    style={{ fontSize: "0.72rem", padding: "3px 9px" }}
-                                    disabled={workerTimeoutSaving}
-                                    onClick={() => { void saveWorkerTimeout(); }}
-                                >
+                                <button className="btn-secondary" style={settingsSaveBtnStyle} disabled={workerTimeoutSaving} onClick={() => { void saveWorkerTimeout(); }}>
                                     {workerTimeoutSaving ? "..." : localizeText("Save", "保存", "儲存")}
                                 </button>
-                            </label>
+                            </div>
                         </div>
-                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginBottom: "8px" }}>
-                            {localizeText(
-                                "Observation is read-only evidence collection and can remain enabled while automatic evolution is paused. Worker count is limited to 1–16, timeout to 30–1800 seconds; the same skill is always serialized.",
-                                "观察只采集只读证据；即使暂停自动自进化也可以保留。并发工作数限制为 1–16，Worker 超时限制为 30–1800 秒；同一技能始终串行。",
-                                "觀察只收集唯讀證據；即使暫停自動自進化也可以保留。並發工作數限制為 1–16，Worker 逾時限制為 30–1800 秒；同一技能始終串行。",
-                            )}
+                        <div style={consolePropRowStyle}>
+                            <span title={localizeText("Minimum hours between automatic self-repair of the same skill. 0 means the default of 1 hour.", "同一技能两次自动自修复的最短间隔（小时）。0 表示默认 1 小时。", "同一技能兩次自動自修復的最短間隔（小時）。0 表示預設 1 小時。")}>{localizeText("Repair cooldown (hours)", "自修复冷却（小时）", "自修復冷卻（小時）")}</span>
+                            <div style={settingsControlStyle}>
+                                <input
+                                    className="form-input"
+                                    type="number"
+                                    min={0}
+                                    max={720}
+                                    value={repairCooldownHours}
+                                    onChange={(e) => setRepairCooldownHours(Number(e.target.value))}
+                                    style={settingsNumberStyle}
+                                    disabled={repairCooldownSaving}
+                                    aria-label={localizeText("Repair cooldown (hours)", "自修复冷却（小时）", "自修復冷卻（小時）")}
+                                />
+                                <button className="btn-secondary" style={settingsSaveBtnStyle} disabled={repairCooldownSaving} onClick={() => { void saveRepairCooldown(); }}>
+                                    {repairCooldownSaving ? localizeText("Saving...", "保存中...", "儲存中...") : localizeText("Save", "保存", "儲存")}
+                                </button>
+                            </div>
                         </div>
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                            <label style={{ fontSize: "0.78rem" }}>
-                                {localizeText("Repair cooldown (hours)", "自修复冷却（小时）", "自修復冷卻（小時）")}
-                            </label>
-                            <input
-                                className="form-input"
-                                type="number"
-                                min={0}
-                                max={720}
-                                value={repairCooldownHours}
-                                onChange={(e) => setRepairCooldownHours(Number(e.target.value))}
-                                style={{ width: "88px", fontSize: "0.78rem" }}
-                                disabled={repairCooldownSaving}
-                            />
-                            <button
-                                className="btn-primary"
-                                style={{ fontSize: "0.78rem", padding: "4px 12px" }}
-                                disabled={repairCooldownSaving}
-                                onClick={saveRepairCooldown}
-                            >
-                                {repairCooldownSaving
-                                    ? localizeText("Saving...", "保存中...", "儲存中...")
-                                    : localizeText("Save", "保存", "儲存")}
-                            </button>
-                            {repairCooldownMsg && (
-                                <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>{repairCooldownMsg}</span>
-                            )}
-                        </div>
-                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginTop: "10px", lineHeight: 1.45 }}>
-                            {localizeText(
-                                "Tip: when a skill is repaired, optimized, or auto-discovered, a toast appears and this list refreshes automatically. Manual Repair/Optimize still work when automatic evolution is off.",
-                                "提示：技能被修复、优化或自动发现时，会弹出提示并自动刷新列表。关闭自动自进化后，手动「立即修复/立即优化」仍可用。",
-                                "提示：技能被修復、優化或自動發現時，會彈出提示並自動重新整理列表。關閉自動自進化後，手動「立即修復/立即優化」仍可用。",
-                            )}
-                        </div>
-                        <div style={{ marginTop: "8px" }}>
-                            <button
-                                type="button"
-                                className="btn-secondary"
-                                style={{ fontSize: "0.72rem", padding: "2px 10px" }}
-                                onClick={() => {
-                                    openSettingsTab('general');
-                                }}
-                            >
+                        <div style={settingsFootStyle}>
+                            {repairCooldownMsg && <div style={{ color: settingsNoticeError ? colors.danger : colors.text, marginBottom: 2 }}>{repairCooldownMsg}</div>}
+                            <span title={localizeText(
+                                "When a skill is repaired, optimized, or auto-discovered, a toast appears and this list refreshes. Manual Repair/Optimize still work when automatic evolution is off.",
+                                "技能被修复、优化或自动发现时，会弹出提示并自动刷新列表。关闭自动自进化后，手动「立即修复/立即优化」仍可用。",
+                                "技能被修復、優化或自動發現時，會彈出提示並自動重新整理列表。關閉自動自進化後，手動「立即修復/立即優化」仍可用。",
+                            )}>
                                 {localizeText(
-                                    "Open General Settings",
-                                    "打开通用设置",
-                                    "開啟通用設定",
+                                    "Observation stays read-only. Workers 1–16, timeout 30–1800s; the same skill always runs serially.",
+                                    "观察只采集只读证据。并发 1–16，超时 30–1800 秒；同一技能始终串行。",
+                                    "觀察只收集唯讀證據。並發 1–16，逾時 30–1800 秒；同一技能始終串行。",
                                 )}
-                            </button>
+                            </span>
                         </div>
                     </div>
 
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                {localizeText("Pipeline status", "管道状态", "管道狀態")}
-                            </div>
+                    <div style={consoleSectionStyle}>
+                        <div style={{ ...consoleSectionHeadStyle, borderBottom: "none" }}>
+                            <span>{localizeText("Pipeline status", "管道状态", "管道狀態")}</span>
                             <button
                                 className="btn-secondary"
-                                style={{ fontSize: "0.72rem", padding: "2px 8px", marginLeft: "auto" }}
+                                style={{ fontSize: "0.68rem", padding: "1px 8px", marginLeft: "auto" }}
                                 onClick={loadEvolutionSettings}
                                 disabled={evolutionStatusLoading}
                             >
@@ -4249,104 +4136,52 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                         {evolutionStatus ? (
                             <>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", fontSize: "0.76rem" }}>
-                                <div>
-                                    <strong>{localizeText("Started", "已启动", "已啟動")}</strong>
-                                    <div>{evolutionStatus.pipeline_started ? "OK" : "—"}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Pending", "排队", "排隊")}</strong>
-                                    <div>{evolutionStatus.pending_skills ?? 0}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Queue wait", "等待时间", "等待時間")}</strong>
-                                    <div>{Number(evolutionStatus.queue_wait_seconds ?? 0)}s</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Processed", "已处理", "已處理")}</strong>
-                                    <div>{evolutionStatus.processed_requests ?? 0}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Coalesced", "合并通知", "合併通知")}</strong>
-                                    <div>{Number(evolutionStatus.coalesced_notifications ?? 0)}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Repair", "自修复", "自修復")}</strong>
-                                    <div>{evolutionStatus.enable_repair ? (evolutionStatus.has_repair_hook ? "on" : "on*") : "off"}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Optimize", "优化", "優化")}</strong>
-                                    <div>{evolutionStatus.enable_optimizer && evolutionStatus.has_optimizer ? "on" : "off"}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Promote", "自动发现", "自動發現")}</strong>
-                                    <div>{evolutionStatus.enable_promoter && evolutionStatus.has_promoter ? "on" : "off"}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Cooldown", "冷却", "冷卻")}</strong>
-                                    <div>{evolutionStatus.repair_cooldown || "—"}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Workers", "并发工作数", "並發工作數")}</strong>
-                                    <div>{evolutionStatus.max_concurrent_workers ?? maxConcurrentWorkers}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Active jobs", "运行中任务", "執行中任務")}</strong>
-                                    <div>{evolutionStatus.active_skills ?? 0}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Cancelled", "已取消", "已取消")}</strong>
-                                    <div>{evolutionStatus.cancelled_requests ?? 0}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Timed out", "已超时", "已逾時")}</strong>
-                                    <div>{evolutionStatus.timed_out_requests ?? 0}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Recovery queue", "待恢复补偿", "待恢復補償")}</strong>
-                                    <div style={{ color: (evolutionStatus.pending_compensations ?? 0) > 0 ? colors.danger : colors.success }}>
-                                        {evolutionStatus.pending_compensations ?? 0}
-                                    </div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Observation", "观察", "觀察")}</strong>
-                                    <div>{evolutionStatus.observation_enabled === false ? "off" : "on"}</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Timeout", "超时", "逾時")}</strong>
-                                    <div>{Number(evolutionStatus.worker_timeout_seconds ?? 180)}s</div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Audit sink", "审计写入", "審計寫入")}</strong>
-                                    <div style={{ color: evolutionStatus.audit_available === false ? colors.danger : colors.success }}>
-                                        {evolutionStatus.audit_available === false
-                                            ? localizeText("unavailable", "不可用", "不可用")
-                                            : localizeText("healthy", "正常", "正常")}
-                                    </div>
-                                </div>
-                                <div>
-                                    <strong>{localizeText("Audit failures", "审计失败", "審計失敗")}</strong>
-                                    <div>{Number(evolutionStatus.audit_failure_count ?? 0)}</div>
-                                </div>
+                            <div style={consoleMetricGridStyle}>
+                                <ConsoleMetric label={localizeText("Started", "已启动", "已啟動")} value={evolutionStatus.pipeline_started ? localizeText("Running", "运行", "運行") : localizeText("Stopped", "停止", "停止")} tone={evolutionStatus.pipeline_started ? "ok" : "muted"} />
+                                <ConsoleMetric label={localizeText("Pending", "排队", "排隊")} value={metricCount(evolutionStatus.pending_skills)} />
+                                <ConsoleMetric label={localizeText("Queue wait", "等待时间", "等待時間")} value={`${metricCount(evolutionStatus.queue_wait_seconds)}s`} />
+                                <ConsoleMetric label={localizeText("Processed", "已处理", "已處理")} value={metricCount(evolutionStatus.processed_requests)} />
+                                <ConsoleMetric label={localizeText("Coalesced", "合并通知", "合併通知")} value={metricCount(evolutionStatus.coalesced_notifications)} />
+                                <ConsoleMetric label={localizeText("Repair", "自修复", "自修復")} value={evolutionStatus.enable_repair ? (evolutionStatus.has_repair_hook ? localizeText("On", "开", "開") : localizeText("On*", "开*", "開*")) : localizeText("Off", "关", "關")} tone={evolutionStatus.enable_repair ? (evolutionStatus.has_repair_hook ? "ok" : "bad") : "muted"} title={evolutionStatus.enable_repair && !evolutionStatus.has_repair_hook ? localizeText("Enabled, repair hook missing", "已启用，但修复钩子缺失", "已啟用，但修復鉤子缺失") : undefined} />
+                                <ConsoleMetric label={localizeText("Optimize", "优化", "優化")} value={evolutionStatus.enable_optimizer && evolutionStatus.has_optimizer ? localizeText("On", "开", "開") : localizeText("Off", "关", "關")} tone={evolutionStatus.enable_optimizer && evolutionStatus.has_optimizer ? "ok" : "muted"} />
+                                <ConsoleMetric label={localizeText("Promote", "自动发现", "自動發現")} value={evolutionStatus.enable_promoter && evolutionStatus.has_promoter ? localizeText("On", "开", "開") : localizeText("Off", "关", "關")} tone={evolutionStatus.enable_promoter && evolutionStatus.has_promoter ? "ok" : "muted"} />
+                                <ConsoleMetric label={localizeText("Cooldown", "冷却", "冷卻")} value={evolutionStatus.repair_cooldown || "—"} />
+                                <ConsoleMetric label={localizeText("Workers", "并发工作数", "並發工作數")} value={metricCount(evolutionStatus.max_concurrent_workers, maxConcurrentWorkers)} />
+                                <ConsoleMetric label={localizeText("Active jobs", "运行中任务", "執行中任務")} value={metricCount(evolutionStatus.active_skills)} tone={metricCount(evolutionStatus.active_skills) > 0 ? "ok" : undefined} />
+                                <ConsoleMetric label={localizeText("Cancelled", "已取消", "已取消")} value={metricCount(evolutionStatus.cancelled_requests)} />
+                                <ConsoleMetric label={localizeText("Timed out", "已超时", "已逾時")} value={metricCount(evolutionStatus.timed_out_requests)} tone={metricCount(evolutionStatus.timed_out_requests) > 0 ? "bad" : undefined} />
+                                <ConsoleMetric label={localizeText("Recovery queue", "待恢复补偿", "待恢復補償")} value={metricCount(evolutionStatus.pending_compensations)} tone={metricCount(evolutionStatus.pending_compensations) > 0 ? "bad" : undefined} />
+                                <ConsoleMetric label={localizeText("Observation", "观察", "觀察")} value={evolutionStatus.observation_enabled === false ? localizeText("Off", "关", "關") : localizeText("On", "开", "開")} tone={evolutionStatus.observation_enabled === false ? "muted" : "ok"} />
+                                <ConsoleMetric label={localizeText("Timeout", "超时", "逾時")} value={`${metricCount(evolutionStatus.worker_timeout_seconds, 180)}s`} />
+                                <ConsoleMetric label={localizeText("Audit sink", "审计写入", "審計寫入")} value={evolutionStatus.audit_available === false ? localizeText("unavailable", "不可用", "不可用") : localizeText("healthy", "正常", "正常")} tone={evolutionStatus.audit_available === false ? "bad" : "ok"} />
+                                <ConsoleMetric label={localizeText("Audit failures", "审计失败", "審計失敗")} value={metricCount(evolutionStatus.audit_failure_count)} tone={metricCount(evolutionStatus.audit_failure_count) > 0 ? "bad" : undefined} />
                             </div>
+                            {(Boolean(evolutionStatus.last_audit_error)
+                                || evolutionStatus.compensation_queue_healthy === false
+                                || Boolean(evolutionCompensationsError)
+                                || evolutionCompensationsLoading
+                                || evolutionCompensations.length > 0
+                                || (evolutionStatus.failure_summaries || []).length > 0
+                                || (evolutionStatus.requests || []).length > 0) && (
+                            <div style={{ padding: "6px 10px 8px", display: "flex", flexDirection: "column", gap: 6, borderTop: `1px solid ${colors.borderLight}` }}>
                             {evolutionStatus.last_audit_error && (
-                                <div style={{ color: colors.danger, fontSize: "0.72rem", marginTop: "8px", overflowWrap: "anywhere" }}>
+                                <div style={{ color: colors.danger, fontSize: "0.72rem", overflowWrap: "anywhere" }}>
                                     {localizeText("Last audit error", "最近审计错误", "最近審計錯誤")}: {evolutionStatus.last_audit_error}
                                 </div>
                             )}
                             {evolutionStatus.compensation_queue_healthy === false && (
-                                <div style={{ color: colors.danger, fontSize: "0.72rem", marginTop: "8px", overflowWrap: "anywhere" }}>
+                                <div style={{ color: colors.danger, fontSize: "0.72rem", overflowWrap: "anywhere" }}>
                                     {localizeText("Recovery queue unreadable", "补偿队列不可读，已按安全策略阻断", "補償佇列不可讀，已按安全策略阻斷")}
                                     {evolutionStatus.compensation_queue_error ? `: ${evolutionStatus.compensation_queue_error}` : ""}
                                 </div>
                             )}
                             {evolutionCompensationsError && evolutionStatus.compensation_queue_healthy !== false && (
-                                <div style={{ color: colors.danger, fontSize: "0.72rem", marginTop: "8px", overflowWrap: "anywhere" }}>
+                                <div style={{ color: colors.danger, fontSize: "0.72rem", overflowWrap: "anywhere" }}>
                                     {localizeText("Recovery queue unavailable", "补偿队列不可用，已按安全策略阻断", "補償佇列不可用，已按安全策略阻斷")}: {evolutionCompensationsError}
                                 </div>
                             )}
                             {(evolutionCompensationsLoading || evolutionCompensations.length > 0) && (
-                                <div style={{ marginTop: "10px", fontSize: "0.72rem" }}>
+                                <div style={{ fontSize: "0.72rem" }}>
                                     <strong>{localizeText("Pending compensation details", "待恢复补偿详情", "待恢復補償詳情")}</strong>
                                     {evolutionCompensationsLoading ? (
                                         <div style={{ color: colors.textSecondary, marginTop: "4px" }}>...</div>
@@ -4396,7 +4231,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </div>
                             )}
                             {(evolutionStatus.failure_summaries || []).length > 0 && (
-                                <div style={{ marginTop: "8px", fontSize: "0.72rem" }}>
+                                <div style={{ fontSize: "0.72rem" }}>
                                     <strong>{localizeText("Recent failures", "近期失败", "近期失敗")}</strong>
                                     <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "4px" }}>
                                         {(evolutionStatus.failure_summaries || []).slice(0, 5).map((f, i) => (
@@ -4418,7 +4253,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </div>
                             )}
                             {(evolutionStatus.requests || []).length > 0 && (
-                                <div style={{ marginTop: "8px", fontSize: "0.72rem" }}>
+                                <div style={{ fontSize: "0.72rem" }}>
                                     <strong>{localizeText("Evolution tasks", "进化任务", "進化任務")}</strong>
                                     <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "4px" }}>
                                         {(evolutionStatus.requests || []).map((request, i) => (
@@ -4445,9 +4280,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     </div>
                                 </div>
                             )}
+                            </div>
+                            )}
                             </>
                         ) : (
-                            <div style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
+                            <div style={{ fontSize: "0.74rem", color: colors.textSecondary, padding: "8px 10px", borderTop: `1px solid ${colors.borderLight}` }}>
                                 {evolutionStatusLoading
                                     ? localizeText("Loading...", "加载中...", "載入中...")
                                     : localizeText("Status unavailable", "状态不可用", "狀態不可用")}
@@ -4472,9 +4309,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     />
 
                     {/* Patch / merge review drafts (from maintenance dry-run) */}
-                    <div ref={evolutionDraftsPanelRef} style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                    <div ref={evolutionDraftsPanelRef} style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+                        <div style={consoleInsetHeadStyle}>
+                            <div style={{ minWidth: 0 }}>
                                 {localizeText("Draft review", "草案人审", "草案人審")}
                             </div>
                             {repairDraftSkills.length > 0 && (
@@ -4955,9 +4792,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     </div>
 
                     {/* Retired / archived by maintenance — one-click re-enable */}
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "6px", flexWrap: "wrap" }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                    <div style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+                        <div style={consoleInsetHeadStyle}>
+                            <div style={{ minWidth: 0 }}>
                                 {localizeText("Retired / archived", "已退役 / 已归档", "已退役 / 已封存")}
                                 {" "}({retiredSkills.length})
                             </div>
@@ -5032,9 +4869,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     </div>
 
                     {/* Review queue: needs_review skills waiting for human approval */}
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "6px", flexWrap: "wrap" }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                    <div style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+                        <div style={consoleInsetHeadStyle}>
+                            <div style={{ minWidth: 0 }}>
                                 {localizeText("Review queue", "待审核", "待審核")}
                                 {" "}({reviewQueue.length})
                             </div>
@@ -5110,9 +4947,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     </div>
 
                     {/* Session activity feed (in-memory; from evolution events) */}
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                    <div style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+                        <div style={consoleInsetHeadStyle}>
+                            <div style={{ minWidth: 0 }}>
                                 {localizeText("Recent activity", "最近活动", "最近活動")}
                                 {" "}({evolutionActivity.length})
                             </div>
@@ -5183,9 +5020,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     </div>
 
                     {/* Durable audit log (JSONL on disk) */}
-                    <div ref={evolutionAuditPanelRef} style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                    <div ref={evolutionAuditPanelRef} style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+                        <div style={consoleInsetHeadStyle}>
+                            <div style={{ minWidth: 0 }}>
                                 {localizeText("Audit history", "审计历史", "審計歷史")}
                                 {" "}(
                                 {(
@@ -5485,9 +5322,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Live batch progress for sequential repair/optimize */}
                     {batchProgress && (
-                        <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px", borderColor: batchProgress.cancelled ? colors.warning : colors.primary }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                                <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                        <div style={{ ...consoleSectionStyle, padding: "8px 10px", borderColor: batchProgress.cancelled ? colors.warning : colors.primary }}>
+                            <div style={consoleInsetHeadStyle}>
+                                <div style={{ minWidth: 0 }}>
                                     {batchProgress.kind === "repair"
                                         ? localizeText("Batch repair progress", "批量修复进度", "批量修復進度")
                                         : localizeText("Batch optimize progress", "批量优化进度", "批量優化進度")}
@@ -5555,8 +5392,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {/* Attention queues: skills that look repairable / optimizable */}
-                    <div style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
-                        <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "6px" }}>
+                    <div style={{ ...consoleSectionStyle, padding: "8px 10px" }}>
+                        <div style={consoleInsetHeadStyle}>
                             {localizeText("Attention", "待处理", "待處理")}
                         </div>
                         <div style={{ fontSize: "0.74rem", color: colors.textSecondary, marginBottom: "8px" }}>
@@ -5704,17 +5541,25 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             )}
 
             {activeTab === "extdirs" && (
-                <>
-                    <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginBottom: "4px" }}>
-                        {localizeText(
+                <div style={consoleSectionStyle}>
+                    <div style={consoleSectionHeadStyle}>
+                        <span title={localizeText(
                             "Add external directories that contain skill subdirectories (each with skill.md or skill.yaml).",
                             "添加包含技能子目录的外部目录（每个子目录需包含 skill.md 或 skill.yaml）。",
-                            "添加包含技能子目錄的外部目錄（每個子目錄需包含 skill.md 或 skill.yaml）。"
+                            "添加包含技能子目錄的外部目錄（每個子目錄需包含 skill.md 或 skill.yaml）。",
+                        )}>{localizeText("External directories", "外部技能目录", "外部技能目錄")}</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 10px" }}>
+                    <div style={{ fontSize: "0.7rem", color: colors.textMuted, lineHeight: 1.4 }}>
+                        {localizeText(
+                            "Each subdirectory needs skill.md or skill.yaml.",
+                            "每个子目录需包含 skill.md 或 skill.yaml。",
+                            "每個子目錄需包含 skill.md 或 skill.yaml。",
                         )}
                     </div>
 
                     {/* Add directory input */}
-                    <div style={{ display: "flex", gap: "6px" }}>
+                    <div style={{ display: "flex", gap: "6px", minWidth: 0 }}>
                         <input
                             className="form-input"
                             value={extDirInput}
@@ -5727,7 +5572,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             }}
                             placeholder={localizeText("Enter directory path...", "输入目录路径...", "輸入目錄路徑...")}
                             spellCheck={false}
-                            style={{ flex: 1, fontSize: "0.78rem" }}
+                            style={{ flex: "1 1 0%", width: 0, minWidth: 96, fontSize: "0.78rem" }}
                             disabled={extDirAdding}
                         />
                         <button
@@ -5779,16 +5624,25 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
 
-                    {/* Directory list */}
+                    {!extDirsLoading && extDirs.length === 0 && !extDirError && (
+                        <div style={{ ...skillsEmptyStateStyle, padding: "8px 0" }}>
+                            {localizeText(
+                                "No external skill directories configured. Add a directory above to scan for skills.",
+                                "暂无外部技能目录。在上方添加目录以扫描技能。",
+                                "暫無外部技能目錄。在上方添加目錄以掃描技能。"
+                            )}
+                        </div>
+                    )}
+                    </div>
+
                     {!extDirsLoading && extDirs.length > 0 && (
-                        <div style={remoteTableContainerStyle}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem", borderTop: `1px solid ${colors.borderLight}` }}>
                                 <thead>
                                     <tr style={{ background: colors.surfaceMuted }}>
-                                        <th style={thStyle}>{localizeText("Directory Path", "目录路径", "目錄路徑")}</th>
-                                        <th style={{ ...thStyle, width: "100px" }}>{localizeText("Skills Found", "技能数量", "技能數量")}</th>
-                                        <th style={{ ...thStyle, width: "120px" }}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "80px" }}>{localizeText("Actions", "操作", "操作")}</th>
+                                        <th style={extDirThStyle}>{localizeText("Directory Path", "目录路径", "目錄路徑")}</th>
+                                        <th style={{ ...extDirThStyle, width: "100px" }}>{localizeText("Skills Found", "技能数量", "技能數量")}</th>
+                                        <th style={{ ...extDirThStyle, width: "120px" }}>{localizeText("Status", "状态", "狀態")}</th>
+                                        <th style={{ ...extDirThStyle, width: "80px" }}>{localizeText("Actions", "操作", "操作")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -5825,21 +5679,38 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     ))}
                                 </tbody>
                             </table>
-                        </div>
                     )}
-
-                    {!extDirsLoading && extDirs.length === 0 && !extDirError && (
-                        <div style={skillsEmptyStateStyle}>
-                            {localizeText(
-                                "No external skill directories configured. Add a directory above to scan for skills.",
-                                "暂无外部技能目录。在上方添加目录以扫描技能。",
-                                "暫無外部技能目錄。在上方添加目錄以掃描技能。"
-                            )}
-                        </div>
-                    )}
-                </>
+                </div>
             )}
             </div>
+
+            {/* position:fixed is clipped by the scrollport. Keep this picker with the other modals. */}
+            {suiteSelection && (
+                <div role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+                    <div style={{ ...hubCardStyle, width: "min(420px, calc(100vw - 32px))", maxHeight: "80vh", overflow: "auto", padding: "16px" }}>
+                        <div style={{ fontWeight: 700, marginBottom: "4px" }}>{suiteSelection.name}</div>
+                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "10px" }}>{suiteSelection.description || localizeText("Select Suite members", "选择 Suite 成员", "選擇 Suite 成員")}</div>
+                        <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
+                            <button className="btn-secondary" type="button" onClick={() => setSuiteSelectedMembers(new Set((suiteSelection.members || []).map((m) => m.name || m.skill_id || m.skill_ref || "").filter(Boolean)))}>{localizeText("Select all", "全选", "全選")}</button>
+                            <button className="btn-secondary" type="button" onClick={() => setSuiteSelectedMembers(new Set((suiteSelection.members || []).filter((m) => m.required).map((m) => m.name || m.skill_id || m.skill_ref || "").filter(Boolean)))}>{localizeText("Required only", "仅必需成员", "僅必要成員")}</button>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            {(suiteSelection.members || []).map((member, index) => {
+                                const id = member.name || member.skill_id || member.skill_ref || `member-${index}`;
+                                const checked = suiteSelectedMembers.has(id);
+                                return <label key={`${id}-${index}`} style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "0.76rem" }}>
+                                    <input type="checkbox" checked={checked} disabled={!!member.required} onChange={() => setSuiteSelectedMembers((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; })} />
+                                    <span>{member.name || member.skill_id || member.skill_ref || "Skill"} {member.version ? `@ ${member.version}` : ""} {member.required ? "· required" : "· optional"}</span>
+                                </label>;
+                            })}
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
+                            <button className="btn-secondary" type="button" onClick={() => setSuiteSelection(null)}>{localizeText("Cancel", "取消", "取消")}</button>
+                            <button className="btn-primary" type="button" disabled={suiteSelectedMembers.size === 0} onClick={() => { void confirmInstallSuite(); }}>{localizeText("Install", "安装", "安裝")}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {detailSkill && (
                 <div className="modal-backdrop" onMouseDown={(e) => {
@@ -6127,6 +5998,11 @@ const thStyle: CSSProperties = {
     ...remoteTableHeaderCellStyle,
 };
 
+const extDirThStyle: CSSProperties = {
+    ...thStyle,
+    borderBottom: "none",
+};
+
 const tdStyle: CSSProperties = {
     ...remoteTableCellStyle,
 };
@@ -6148,29 +6024,16 @@ const localSkillsDescriptionPreviewStyle: CSSProperties = {
     color: colors.textSecondary,
 };
 
-const localSkillsDescriptionColStyle: CSSProperties = { width: LOCAL_SKILLS_DESCRIPTION_COL_PX, maxWidth: LOCAL_SKILLS_DESCRIPTION_COL_PX, overflow: "hidden" };
-const localSkillsClipCellStyle: CSSProperties = { overflow: "hidden" };
-const localSkillsTypeBadgeStyle: CSSProperties = { ...executionClassBadgeStyle, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" };
-
-const localSkillsNameCellStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "4px",
-    minWidth: 0,
-};
-
-const localSkillsNameLinkStyle: CSSProperties = {
-    cursor: "pointer",
-    color: colors.primary,
-    display: "block",
+const localSkillsTypeBadgeStyle: CSSProperties = {
+    ...executionClassBadgeStyle,
+    maxWidth: "100%",
     minWidth: 0,
     overflow: "hidden",
     textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
 };
 
 const localSkillsMetaTextStyle: CSSProperties = {
-    display: "block",
+    minWidth: 0,
     maxWidth: "100%",
     overflow: "hidden",
     textOverflow: "ellipsis",
@@ -6234,24 +6097,11 @@ const detailPreStyle: CSSProperties = {
 
 const auditWrapLineStyle: CSSProperties = { fontSize: "0.72rem", marginTop: "3px", lineHeight: 1.45, textAlign: "left", overflowWrap: "anywhere" };
 
-const hubSkillDescriptionStyle: CSSProperties = {
-    fontSize: "0.76rem",
-    color: colors.textSecondary,
-    marginTop: "4px",
-    lineHeight: 1.45,
-    display: "-webkit-box",
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: "vertical",
-    overflow: "hidden",
-    textAlign: "left",
-    overflowWrap: "anywhere",
-};
-
 const skillsPanelShellStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
     gap: "8px",
-    height: "100%",
+    flex: "1 1 auto",
     minHeight: 0,
     minWidth: 0,
     textAlign: "left",
@@ -6275,9 +6125,12 @@ const skillsTabContentStyle: CSSProperties = {
     flex: "1 1 auto",
     minHeight: 0,
     minWidth: 0,
-    overflowY: "auto",
+    overflowY: "scroll",
     overflowX: "hidden",
-    padding: "0 0 4px 0",
+    scrollbarWidth: "auto",
+    scrollbarColor: "auto",
+    scrollbarGutter: "stable",
+    padding: "0 0 12px 0",
     textAlign: "left",
 };
 
@@ -6307,30 +6160,119 @@ const skillsEmptyStateStyle: CSSProperties = {
     textAlign: "left",
     lineHeight: 1.5,
 };
-const localSkillsTableContainerStyle: CSSProperties = {
-    ...remoteTableContainerStyle,
-    boxSizing: "border-box",
-    flex: "1 1 auto",
-    minHeight: 0,
-    width: "100%",
-    overflowX: "hidden",
-    overflowY: "auto",
-};
-const localSkillsTableStyle: CSSProperties = {
-    width: "100%",
-    tableLayout: "fixed",
-    borderCollapse: "collapse",
-    fontSize: "0.76rem",
+const skillCardGridStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: `repeat(${SKILL_CARD_COLUMNS}, minmax(0, 1fr))`,
+    gap: "10px",
+    alignItems: "stretch",
 };
 
-const localSkillsRowActionsStyle: CSSProperties = {
+const skillCatalogCardStyle: CSSProperties = {
+    ...remoteCardStyle,
     display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
+    flexDirection: "column",
+    gap: 0,
+    minWidth: 0,
+    minHeight: "168px",
+    padding: "12px",
+    boxSizing: "border-box",
+};
+
+const skillCardCheckStyle: CSSProperties = {
+    flex: "0 0 auto",
+    margin: 0,
+};
+
+const skillCardReasonStyle: CSSProperties = {
+    marginTop: "3px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontSize: "0.7rem",
+    color: colors.textSecondary,
+};
+
+const skillCardBadgeRowStyle: CSSProperties = {
+    display: "flex",
     gap: "6px",
     flexWrap: "wrap",
-    width: "100%",
+    alignItems: "center",
+    marginTop: "6px",
     minWidth: 0,
+};
+
+const skillCardMetaRowStyle: CSSProperties = {
+    display: "flex",
+    gap: "8px",
+    marginTop: "8px",
+    flexWrap: "wrap",
+    alignItems: "center",
+    minWidth: 0,
+};
+
+const skillCardNameStyle: CSSProperties = {
+    flex: "1 1 auto",
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontWeight: 600,
+    fontSize: "0.84rem",
+    color: colors.text,
+    cursor: "pointer",
+    letterSpacing: "-0.01em",
+};
+
+const skillCardActionsStyle: CSSProperties = {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "4px",
+    marginTop: "auto",
+    paddingTop: "8px",
+    borderTop: `1px solid ${colors.borderLight}`,
+};
+
+const skillCardTextBtnStyle: CSSProperties = {
+    width: "auto",
+    height: "26px",
+    padding: "0 8px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flex: "0 0 auto",
+    fontSize: "0.72rem",
+    lineHeight: 1,
+    whiteSpace: "nowrap",
+    boxSizing: "border-box",
+};
+
+const skillCardIconBtnStyle: CSSProperties = {
+    ...deleteIconBtnStyle,
+    width: "26px",
+    height: "26px",
+    flex: "0 0 auto",
+    boxSizing: "border-box",
+};
+
+const skillCardPagerStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+    flexWrap: "wrap",
+    padding: "2px 2px 0",
+};
+
+const skillCardPagerMetaStyle: CSSProperties = {
+    fontSize: "0.74rem",
+    color: colors.textSecondary,
+    fontVariantNumeric: "tabular-nums",
+};
+
+const skillCardPageBtnStyle: CSSProperties = {
+    fontSize: "0.74rem",
+    padding: "3px 10px",
 };
 
 const tabBtnStyle: CSSProperties = {
@@ -6347,13 +6289,140 @@ const tabBtnStyle: CSSProperties = {
 
 const tabBtnActiveStyle: CSSProperties = {
     color: colors.primary,
-    borderBottomColor: colors.primary,
+    borderBottom: `2px solid ${colors.primary}`,
     fontWeight: 600,
 };
 
 const hubCardStyle: CSSProperties = {
     ...remoteCardStyle,
 };
+
+const hubMarketScrollerStyle: CSSProperties = {
+    ...skillsTabContentStyle,
+    // The catalog fills this pane and scrolls its rows. An always-on track
+    // here would sit beside the search field as a second scrollbar.
+    overflowY: "auto",
+    scrollbarGutter: "auto",
+};
+
+const hubCatalogStyle: CSSProperties = {
+    ...consoleSectionStyle,
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    // Longhands, not the flex shorthand: the shorthand would reset flexShrink.
+    // Basis 0 fills the pane. Basis auto is the row height, so the list never
+    // overflows and the card clips it with no thumb.
+    flexShrink: 1,
+    flexBasis: "0%",
+    // Keeps a usable list when skill suites are taller than the card.
+    minHeight: 180,
+    minWidth: 0,
+};
+
+const hubCatalogListStyle: CSSProperties = {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: "0%",
+    minHeight: 0,
+    minWidth: 0,
+    overflowY: "scroll",
+    overflowX: "hidden",
+    scrollbarWidth: "auto",
+    scrollbarColor: "auto",
+    scrollbarGutter: "stable",
+};
+
+const hubCatalogRowStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "5px 10px",
+    borderTop: `1px solid ${colors.borderLight}`,
+    minHeight: "36px",
+    minWidth: 0,
+};
+
+const hubSkillRowStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1.05fr) minmax(0, 1.7fr) max-content",
+    columnGap: "10px",
+    alignItems: "stretch",
+    padding: "6px 10px",
+    minHeight: "36px",
+    minWidth: 0,
+};
+
+const hubCatalogCaptionStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    flexShrink: 0,
+    gap: "8px",
+    minHeight: "26px",
+    padding: "2px 10px",
+    borderBottom: `1px solid ${colors.borderLight}`,
+    fontSize: "0.68rem",
+    fontWeight: 600,
+    color: colors.textSecondary,
+};
+
+const hubCatalogIdentityStyle: CSSProperties = {
+    flex: "0 1 280px",
+    minWidth: 0,
+};
+
+const hubCatalogNameLineStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "baseline",
+    gap: "6px",
+    minWidth: 0,
+};
+
+const hubCatalogNameStyle: CSSProperties = {
+    fontWeight: 600,
+    fontSize: "0.78rem",
+    color: colors.text,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+};
+
+const hubCatalogVersionStyle: CSSProperties = {
+    flex: "0 0 auto",
+    fontSize: "0.66rem",
+    color: colors.textMuted,
+    fontVariantNumeric: "tabular-nums",
+};
+
+const hubCatalogBadgeLineStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    marginTop: "2px",
+    minWidth: 0,
+    flexWrap: "wrap",
+};
+
+function metricCount(value: unknown, fallback = 0): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.round(n) : fallback;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+}
+
+function ConsoleMetric({ label, value, tone, title }: { label: string; value: string | number; tone?: "ok" | "bad" | "muted"; title?: string }) {
+    const color = tone === "ok" ? colors.success : tone === "bad" ? colors.danger : tone === "muted" ? colors.textMuted : colors.text;
+    return (
+        <div style={consoleMetricCellStyle} title={title || `${label}: ${value}`}>
+            <div style={consoleMetricLabelStyle}>{label}</div>
+            <div style={{ ...consoleMetricValueStyle, color }}>{value}</div>
+        </div>
+    );
+}
 
 const sourceTextStyle: CSSProperties = {
     fontSize: "0.72rem",
@@ -6382,11 +6451,6 @@ const chipActiveStyle: CSSProperties = {
     fontWeight: 600,
 };
 
-const skillCardStyle: CSSProperties = {
-    ...remoteCardStyle,
-    padding: "10px 12px",
-};
-
 const appBadgeStyle: CSSProperties = {
     fontSize: "0.66rem",
     padding: "1px 6px",
@@ -6397,19 +6461,13 @@ const appBadgeStyle: CSSProperties = {
 };
 
 const learnedBadgeStyle: CSSProperties = {
-    fontSize: "0.72rem",
-};
-
-const runBtnStyle: CSSProperties = {
-    width: "28px",
-    height: "28px",
-    padding: 0,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "0.72rem",
-    lineHeight: 1,
-    borderRadius: "50%",
+    fontSize: "0.66rem",
+    padding: "1px 6px",
+    borderRadius: "8px",
+    background: colors.surfaceMuted,
+    color: colors.textSecondary,
+    fontWeight: 500,
+    flex: "0 0 auto",
 };
 
 const skillNameLinkStyle: CSSProperties = {

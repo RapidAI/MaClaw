@@ -108,6 +108,9 @@ const LIST_LINE_HAS_MID_MARKER = /(?<=\S)[ \t]+\d+[.)]\s/;
 /** Cheap gate: skip mid-line work when the segment has no marker shape. */
 const HAS_ORDERED_LIST_MARKER_SHAPE = /\d[.)]/;
 
+/** Every rewrite needs a marker plus following whitespace ("1. item"). */
+const ORDERED_MARKER_THEN_SPACE = /\d[.)]\s/;
+
 const LATIN_LETTER = /[A-Za-z]/;
 
 function splitGluedMidLineOrderedMarkers(text: string): string {
@@ -203,6 +206,9 @@ function expandOrderedItemsOnLines(text: string): string {
  */
 export function splitMidLineOrderedListMarkers(text: string): string {
     if (!text || !HAS_ORDERED_LIST_MARKER_SHAPE.test(text)) return text;
+    // "node 18." and "8080." match the shape probe and must stay untouched.
+    // A following newline or CR still counts, so bare markers split by CR are normalized below.
+    if (!ORDERED_MARKER_THEN_SPACE.test(text)) return text;
     // Normalize real CRLF/CR so line-wise expand does not leave trailing \r on markers.
     // Lone CR between items ("1. a\r2. b") becomes a real newline. Pipeline always continues
     // from this LF form so a no-op expand still returns LF text, not the original CR bytes.

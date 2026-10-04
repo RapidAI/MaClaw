@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -768,14 +769,17 @@ func TestListGiftLinksFiltersByStatus(t *testing.T) {
 		t.Fatalf("RevokeGiftLink() error = %v", err)
 	}
 
-	active, err := repo.ListGiftLinks(ctx, "sender", TokenBankGiftStatusActive, 10)
+	active, err := repo.ListGiftLinks(ctx, "sender", TokenBankGiftStatusActive, 10, 0)
 	if err != nil {
 		t.Fatalf("ListGiftLinks(active) error = %v", err)
 	}
 	if len(active) != 1 || active[0].Code != "code-1" {
 		t.Fatalf("active links = %+v, want only code-1", active)
 	}
-	all, err := repo.ListGiftLinks(ctx, "sender", "", 10)
+	if active[0].RevokedBy != "" || active[0].RevokeReason != "" {
+		t.Fatalf("active link recorded a revoke actor %q/%q", active[0].RevokedBy, active[0].RevokeReason)
+	}
+	all, err := repo.ListGiftLinks(ctx, "sender", "", 10, 0)
 	if err != nil {
 		t.Fatalf("ListGiftLinks(all) error = %v", err)
 	}
@@ -784,6 +788,123 @@ func TestListGiftLinksFiltersByStatus(t *testing.T) {
 	}
 	if all[0].Code != "code-2" {
 		t.Fatalf("links should be newest first, got %q", all[0].Code)
+	}
+	// A sender cancel is its own explanation. A free-text note passed through
+	// the admin method must not stick to it.
+	if all[0].RevokedBy != TokenBankGiftRevokedBySender || all[0].RevokeReason != "" {
+		t.Fatalf("sender revoke actor = %q reason %q, want sender and empty", all[0].RevokedBy, all[0].RevokeReason)
+	}
+}
+
+func TestLegacyCreditShareLinksGainRevokeReasonColumns(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy-gifts.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE credit_share_links (
+		id TEXT PRIMARY KEY,
+		code TEXT NOT NULL,
+		sender_user_id TEXT NOT NULL,
+		sender_email TEXT NOT NULL DEFAULT '',
+		credits_micro INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'active',
+		claimed_by_user_id TEXT NOT NULL DEFAULT '',
+		claimed_by_email TEXT NOT NULL DEFAULT '',
+		origin_node_id TEXT NOT NULL DEFAULT '',
+		expires_at TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		claimed_at TEXT NOT NULL DEFAULT '',
+		revoked_at TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("create legacy gift table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO credit_share_links (id, code, sender_user_id, credits_micro, status, created_at, revoked_at)
+		VALUES ('link-old', 'OLDCODE', 'sender', 1000, 'revoked', '2026-10-03T08:00:00Z', '2026-10-03T09:00:00Z')`); err != nil {
+		t.Fatalf("insert legacy gift: %v", err)
+	}
+	if err := EnsureLLMTables(db); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+	var by, reason string
+	if err := db.QueryRow(`SELECT revoked_by, revoke_reason FROM credit_share_links WHERE id = 'link-old'`).Scan(&by, &reason); err != nil {
+		t.Fatalf("read migrated gift: %v", err)
+	}
+	if by != "" || reason != "" {
+		t.Fatalf("legacy freeze actor = %q reason %q, want both empty", by, reason)
+	}
+	if err := EnsureLLMTables(db); err != nil {
+		t.Fatalf("EnsureLLMTables() again error = %v", err)
+	}
+}
+
+func TestGiftAdminRevokeStoresTheReasonAndPages(t *testing.T) {
+	repo, _ := newGiftTestRepo(t, "tbk-gift-reason.db")
+	ctx := context.Background()
+	seedEarnedFor(t, repo, "sender", "req-1", 40_000_000)
+	for i := 0; i < 3; i++ {
+		code := "code-" + string(rune('a'+i))
+		if _, err := repo.CreateGiftLink(ctx, TokenBankGiftLink{
+			ID: "link-" + code, Code: code, SenderUserID: "sender", CreditsMicro: 1_000_000,
+		}, GiftLinkPolicy{}, time.Now().UTC().Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("CreateGiftLink(%s) error = %v", code, err)
+		}
+	}
+	if err := repo.RevokeGiftLinkWithReason(ctx, "link-code-b", "", "suspected duplicate", time.Now().UTC()); err != nil {
+		t.Fatalf("RevokeGiftLinkWithReason() error = %v", err)
+	}
+	// The sender method ignores a note, so this must not overwrite the admin one
+	// (the link is already revoked) and must not be how an admin note is written.
+	if err := repo.RevokeGiftLinkWithReason(ctx, "link-code-a", "sender", "should be dropped", time.Now().UTC()); err != nil {
+		t.Fatalf("sender RevokeGiftLinkWithReason() error = %v", err)
+	}
+
+	page, err := repo.ListGiftLinks(ctx, "sender", "", 2, 0)
+	if err != nil {
+		t.Fatalf("ListGiftLinks(page) error = %v", err)
+	}
+	if len(page) != 2 || page[0].Code != "code-c" || page[1].Code != "code-b" {
+		t.Fatalf("first page = %+v, want code-c then code-b", page)
+	}
+	if page[1].RevokedBy != TokenBankGiftRevokedByAdmin || page[1].RevokeReason != "suspected duplicate" {
+		t.Fatalf("admin freeze = %q/%q, want admin/suspected duplicate", page[1].RevokedBy, page[1].RevokeReason)
+	}
+	rest, err := repo.ListGiftLinks(ctx, "sender", "", 2, 2)
+	if err != nil {
+		t.Fatalf("ListGiftLinks(offset) error = %v", err)
+	}
+	if len(rest) != 1 || rest[0].Code != "code-a" || rest[0].RevokedBy != TokenBankGiftRevokedBySender || rest[0].RevokeReason != "" {
+		t.Fatalf("second page = %+v, want only the sender cancel code-a with no note", rest)
+	}
+}
+
+func TestListGiftLinksBreaksTimestampTiesByID(t *testing.T) {
+	repo, _ := newGiftTestRepo(t, "tbk-gift-tie.db")
+	ctx := context.Background()
+	seedEarnedFor(t, repo, "sender", "req-1", 40_000_000)
+	stamp := time.Date(2026, 10, 3, 8, 0, 0, 0, time.UTC)
+	// Same second, so created_at cannot order them. id DESC is what keeps
+	// page 2 from repeating a row that page 1 already showed.
+	for _, id := range []string{"link-m", "link-z"} {
+		if _, err := repo.CreateGiftLink(ctx, TokenBankGiftLink{
+			ID: id, Code: id, SenderUserID: "sender", CreditsMicro: 1_000_000,
+		}, GiftLinkPolicy{}, stamp); err != nil {
+			t.Fatalf("CreateGiftLink(%s) error = %v", id, err)
+		}
+	}
+	page, err := repo.ListGiftLinks(ctx, "sender", "", 1, 0)
+	if err != nil {
+		t.Fatalf("ListGiftLinks() error = %v", err)
+	}
+	if len(page) != 1 || page[0].ID != "link-z" {
+		t.Fatalf("first page = %+v, want link-z", page)
+	}
+	next, err := repo.ListGiftLinks(ctx, "sender", "", 1, 1)
+	if err != nil {
+		t.Fatalf("ListGiftLinks(offset) error = %v", err)
+	}
+	if len(next) != 1 || next[0].ID != "link-m" {
+		t.Fatalf("second page = %+v, want link-m", next)
 	}
 }
 

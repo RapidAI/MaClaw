@@ -5,6 +5,7 @@ import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
 import { DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeTask } from "../../../../wailsjs/go/main/App";
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT } from "../../../utils/fileLibraryNavigation";
+import { clearParkedCloudWorkspaceFileOpen, peekParkedCloudWorkspaceFileOpen } from "../cloudWorkspaceFileOpen";
 import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT } from "../../../utils/knowledgeSearchNavigation";
 import { OPEN_SETTINGS_EVENT } from "../../../utils/settingsNavigation";
 import { EVENT_OPEN_NEW_TASK_WIZARD } from "../../../constants/events";
@@ -68,6 +69,7 @@ afterEach(() => {
     vi.clearAllMocks();
     consumePendingFileLibraryOpen();
     consumePendingKnowledgeSearch();
+    clearParkedCloudWorkspaceFileOpen();
 });
 
 describe("ProjectSearchPanel", () => {
@@ -103,6 +105,80 @@ describe("ProjectSearchPanel", () => {
             expect.objectContaining({ autoSend: false }),
         ));
         expect(ResumeTask).not.toHaveBeenCalled();
+    });
+
+    it("opens a cloud workspace file into that workspace task", async () => {
+        const search = makeSearch([]);
+        search.cloudResults = [{
+            id: "cws_a/papers/brief.md",
+            workspaceId: "cws_a",
+            workspaceName: "经营材料",
+            projectPath: "D:/tasks/notes",
+            relativePath: "papers/brief.md",
+            title: "brief.md",
+            preview: "经营材料 · papers/brief.md",
+            match: "name",
+            tags: ["cloud_workspace:cws_a", "remote_coding_dev"],
+        }];
+        const onCreateProjectTab = vi.fn();
+
+        renderPanel(search, { onCreateProjectTab });
+        expect(screen.getByTestId("search-cloud-section").textContent).toContain("Cloud workspace");
+        fireEvent.click(screen.getByTestId("search-cloud-row"));
+
+        expect(search.close).toHaveBeenCalled();
+        expect(peekParkedCloudWorkspaceFileOpen()).toEqual({
+            projectPath: "D:/tasks/notes",
+            relativePath: "papers/brief.md",
+            workspaceId: "cws_a",
+            fileName: "brief.md",
+        });
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/tasks/notes",
+            "经营材料",
+            expect.objectContaining({
+                autoSend: false,
+                agentMode: "coding_dev",
+                tags: expect.arrayContaining(["cloud_workspace:cws_a"]),
+            }),
+        ));
+    });
+
+    it("opens a data directory workspace file into that task", async () => {
+        const search = makeSearch([]);
+        search.dataDirResults = [{
+            id: "notes-1/papers/brief.md",
+            taskName: "经营材料",
+            projectPath: "D:/data/tasks/notes-1",
+            relativePath: "papers/brief.md",
+            title: "brief.md",
+            preview: "经营材料 · 竞品分析",
+            match: "content",
+            tags: ["coding_dev", "task_management"],
+        }];
+        const onCreateProjectTab = vi.fn();
+
+        renderPanel(search, { onCreateProjectTab });
+        expect(screen.getByTestId("search-data-section").textContent).toContain("Data directory");
+        fireEvent.click(screen.getByTestId("search-data-row"));
+
+        expect(search.close).toHaveBeenCalled();
+        expect(peekParkedCloudWorkspaceFileOpen()).toEqual({
+            projectPath: "D:/data/tasks/notes-1",
+            relativePath: "papers/brief.md",
+            workspaceId: "",
+            fileName: "brief.md",
+            source: "data",
+        });
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/data/tasks/notes-1",
+            "经营材料",
+            expect.objectContaining({
+                autoSend: false,
+                agentMode: "coding_dev",
+                tags: expect.arrayContaining(["coding_dev"]),
+            }),
+        ));
     });
 
     it("opens pure coding tasks with coding agentMode from tags", async () => {

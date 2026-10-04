@@ -98,6 +98,9 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldGroupModels: 'Models (JSON)', modelNamePlaceholder: 'e.g. gpt-4, claude-3.5',
       fieldGroupKind: 'Kind', sgKindDynamic: 'Dynamic', sgKindStatic: 'Static',
       sgRouteHint: 'Exposed model alias with provider failover',
+      sgArrayDragHint: 'Drag an array to change its place in this group',
+      sgArrayOrderHint: 'List order applies when capability, resolution tier, multiplier, and priority match.',
+      sgMoveEarlier: 'Move earlier', sgMoveLater: 'Move later',
       sgRemoveRoute: 'Remove', sgExposedModel: 'Exposed Model', sgNoProviders: 'No providers assigned. Add a provider above.',
       sgAccessPolicy: 'Access Policy', sgPolicyFreeHint: 'no grant needed', sgPolicyGrantHint: 'needs card/grant',
       sgRoutes: 'Provider Routes', sgAddRoute: '+ Add Route',
@@ -298,6 +301,9 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldGroupModels: '\u6a21\u578b\u914d\u7f6e (JSON)', modelNamePlaceholder: '\u5982 gpt-4, claude-3.5',
       fieldGroupKind: '\u7c7b\u578b', sgKindDynamic: '\u52a8\u6001', sgKindStatic: '\u9759\u6001',
       sgRouteHint: '\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',
+      sgArrayDragHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u5728\u672c\u7ec4\u5185\u7684\u4f4d\u7f6e',
+      sgArrayOrderHint: '\u80fd\u529b\u3001\u5206\u8fa8\u7387\u6863\u3001\u500d\u7387\u548c\u4f18\u5148\u7ea7\u76f8\u540c\u65f6\uff0c\u6309\u5217\u8868\u987a\u5e8f\u3002',
+      sgMoveEarlier: '\u5411\u524d\u79fb\u4e00\u4f4d', sgMoveLater: '\u5411\u540e\u79fb\u4e00\u4f4d',
       sgRemoveRoute: '\u5220\u9664', sgExposedModel: '\u66b4\u9732\u6a21\u578b\u540d', sgNoProviders: '\u672a\u5206\u914d\u670d\u52a1\u5546\u3002\u8bf7\u5728\u4e0a\u65b9\u6dfb\u52a0\u3002',
       sgAccessPolicy: '\u8bbf\u95ee\u7b56\u7565', sgPolicyFreeHint: '\u65e0\u9700\u6388\u6743', sgPolicyGrantHint: '\u9700\u8981\u5361/\u6388\u6743',
       sgRoutes: '\u670d\u52a1\u5546\u8def\u7531', sgAddRoute: '+ \u6dfb\u52a0\u8def\u7531',
@@ -486,6 +492,9 @@ if (typeof I18N_ZH !== 'undefined') {
   var llmEmbeddingRuntimePollTimer = 0;
   var sgDraft = null, sgMode = 'create', sgProviderDraft = null, sgOpenKind = '';
   var sgSaveBusy = false, sgTrainBusy = false, sgHeadBusy = false;
+  var sgGroupReturn = null;
+  var sgPendingGroupScroll = '';
+  var sgGroupScrollMemory = {};
   var sgCapabilityOptions = ['reasoning','tools','document','vision','audio','code','search'];
   var sgPriorityOptions = [0,10,20,30,40,50,60,70,80,90,100];
   var sgResolutionOptions = [0,1,2,3,4,5];
@@ -3101,6 +3110,8 @@ if (typeof I18N_ZH !== 'undefined') {
       if (!serviceGroups.length) {
         defaultServiceGroupId = '';
         renderServiceGroups();
+      } else {
+        sgPendingGroupScroll = '';
       }
       return;
     }
@@ -3112,7 +3123,7 @@ if (typeof I18N_ZH !== 'undefined') {
     var el = document.getElementById('llmServiceGroupsList');
     if (!el) return;
     syncServiceGroupTrafficSwitch();
-    if (!serviceGroups.length) { el.innerHTML = '<div class="hint">' + esc(t('noGroups')) + '</div>'; return; }
+    if (!serviceGroups.length) { el.innerHTML = '<div class="hint">' + esc(t('noGroups')) + '</div>'; sgPendingGroupScroll = ''; return; }
     el.innerHTML = serviceGroups.map(function(g) {
       var modelNames = (g.models||[]).map(function(m){return m.name;}).join(', ');
       var policyBadge = g.access_policy === 'grant_required' ? '<span class="badge warn">'+esc(sgPolicyLabel('grant_required'))+'</span>' : '<span class="badge ok">'+esc(sgPolicyLabel('free'))+'</span>';
@@ -3125,7 +3136,7 @@ if (typeof I18N_ZH !== 'undefined') {
         + (isDefault ? '<span class="badge ok">' + esc(t('sgDefaultBadge')) + '</span>' : '')
         + (isDynamic ? '<span class="badge">' + esc(t('sgKindDynamic')) + '</span>' : '<span class="badge">' + esc(t('sgKindStatic')) + '</span>')
         + '</div>';
-      return '<div class="data-row llm-service-group-row"><div class="data-row-main"><strong>' + esc(g.name||g.id) + '</strong> ' + tags
+      return '<div class="data-row llm-service-group-row" tabindex="-1" data-sg-group-id="' + esc(g.id) + '"><div class="data-row-main"><strong>' + esc(g.name||g.id) + '</strong> ' + tags
         + '<span class="data-row-meta">' + esc(agentName) + ' \u00b7 ' + esc(g.description||'') + ' \u00b7 ' + esc(modelNames||'no models')
         + ' \u00b7 ' + (g.models||[]).length + ' route(s)</span></div>'
         + '<div class="data-row-actions">'
@@ -3138,6 +3149,55 @@ if (typeof I18N_ZH !== 'undefined') {
         + '<div class="service-group-traffic' + (serviceGroupTrafficReady ? '' : ' is-pending') + '" data-service-group-id="' + esc(g.id) + '"></div></div>';
     }).join('');
     patchServiceGroupTraffic();
+    if (sgPendingGroupScroll) {
+      var revealId = sgPendingGroupScroll;
+      sgPendingGroupScroll = '';
+      sgScrollServiceGroupRow(revealId);
+    }
+  }
+  function sgRememberSavedGroup(payload) {
+    if (!payload || !String(payload.id || '').trim()) return;
+    var saved = sgCloneGroup(payload);
+    var id = String(saved.id || '');
+    var i;
+    for (i = 0; i < serviceGroups.length; i++) {
+      if (String(serviceGroups[i] && serviceGroups[i].id || '') === id) {
+        serviceGroups[i] = saved;
+        return;
+      }
+    }
+    serviceGroups.push(saved);
+  }
+  function sgServiceGroupRow(id) {
+    var want = String(id || '');
+    if (!want) return null;
+    var rows = document.querySelectorAll('#llmServiceGroupsList .llm-service-group-row');
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-sg-group-id') === want) return rows[i];
+    }
+    return null;
+  }
+  function sgScrollServiceGroupRow(id) {
+    var want = String(id || '');
+    if (!want) return;
+    function go() {
+      var row = sgServiceGroupRow(want);
+      if (!row) return;
+      // content-visibility:auto can ignore scrollIntoView until the row is forced visible.
+      row.classList.add('sg-group-reveal');
+      var marked = document.querySelectorAll('#llmServiceGroupsList .sg-group-reveal');
+      var i;
+      for (i = 0; i < marked.length; i++) {
+        if (marked[i] !== row) marked[i].classList.remove('sg-group-reveal');
+      }
+      if (row.scrollIntoView) row.scrollIntoView({block:'nearest', inline:'nearest'});
+      var active = document.activeElement;
+      var list = document.getElementById('llmServiceGroupsList');
+      if (row.focus && (!active || active === document.body || active === document.documentElement || active === list)) row.focus({preventScroll:true});
+    }
+    go();
+    requestAnimationFrame(function(){ go(); requestAnimationFrame(go); });
   }
   window.setDefaultLLMServiceGroup = async function(id) {
     try {
@@ -3157,9 +3217,14 @@ if (typeof I18N_ZH !== 'undefined') {
   function agentNameByID(id){var a=agents.find(function(x){return x.id===id;});return a&&(a.name||a.id);}
   function sgPolicyLabel(policy){return policy==='grant_required'?(isZh()?'\u9700\u5151\u6362\u5361':'Card Required'):(isZh()?'\u514d\u8d39\u901a\u884c':'Free Access');}
   function sgProviderIDsFromModel(m) {
-    var ids = [];
-    (m && m.provider_ids || []).forEach(function(id){ if (id && ids.indexOf(id) < 0) ids.push(id); });
-    (m && m.provider_configs || []).forEach(function(c){ if (c && c.provider_id && ids.indexOf(c.provider_id) < 0) ids.push(c.provider_id); });
+    var ids=[], configs=m&&m.provider_configs||[], i, id;
+    for(i=0;i<configs.length;i++){
+      id=configs[i]&&String(configs[i].provider_id||'').trim();
+      if(id&&ids.indexOf(id)<0) ids.push(id);
+    }
+    if(ids.length) return ids;
+    var legacy=m&&m.provider_ids||[];
+    for(i=0;i<legacy.length;i++){ id=String(legacy[i]||'').trim(); if(id&&ids.indexOf(id)<0) ids.push(id); }
     return ids;
   }
   function sgProviderByID(id){return providers.find(function(x){return x.id===id;})||null;}
@@ -3396,6 +3461,139 @@ if (typeof I18N_ZH !== 'undefined') {
   function sgQualityLabel(q){ return q||''; }
   function sgSectionHead(title, hint){ return '<div class="sg-section-head"><div class="sg-section-copy"><div class="sg-section-title">'+esc(title)+'</div>'+(hint?'<div class="sg-section-hint">'+esc(hint)+'</div>':'')+'</div></div>'; }
 
+  var sgRouteDrag=null;
+  var sgRouteDropTo=null;
+  var sgRouteDragScrollAt=0;
+  function sgRouteInsertAt(list, clientY){
+    var cards=list?list.querySelectorAll('.sg-provider-card'):[];
+    for(var i=0;i<cards.length;i++){
+      var rect=cards[i].getBoundingClientRect();
+      if(clientY<rect.top+rect.height/2) return i;
+    }
+    return cards.length;
+  }
+  function sgRouteFinalIndex(from, insertAt, length){
+    if(insertAt>from) insertAt-=1;
+    if(insertAt<0) insertAt=0;
+    if(length<1) return 0;
+    if(insertAt>length-1) insertAt=length-1;
+    return insertAt;
+  }
+  function clearSgRouteDropMarks(root){
+    if(!root) return;
+    root.querySelectorAll('.sg-provider-card.is-drop-before, .sg-provider-card.is-drop-after').forEach(function(node){
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+    });
+  }
+  function clearSgRouteDragMarks(root){
+    if(!root) return;
+    root.querySelectorAll('.sg-provider-card.is-dragging').forEach(function(node){ node.classList.remove('is-dragging'); });
+    clearSgRouteDropMarks(root);
+  }
+  function sgRouteDragAutoScroll(event){
+    var now=Date.now();
+    if(now-sgRouteDragScrollAt<40) return;
+    var scroller=document.querySelector('#llmDialogContent .sg-dialog-body');
+    if(!scroller) return;
+    var rect=scroller.getBoundingClientRect();
+    var edge=18;
+    var dy=0;
+    if(event.clientY<rect.top+edge) dy=-Math.ceil((rect.top+edge-event.clientY)/2);
+    else if(event.clientY>rect.bottom-edge) dy=Math.ceil((event.clientY-(rect.bottom-edge))/2);
+    if(!dy) return;
+    if(dy>24) dy=24;
+    if(dy<-24) dy=-24;
+    sgRouteDragScrollAt=now;
+    scroller.scrollTop+=dy;
+  }
+  function sgRoutePressStartsDrag(node){
+    return !(node&&node.closest('button, a, input, select, textarea, label, .sg-provider-meta'));
+  }
+  function markSgRouteGap(list, insertAt){
+    if(!list) return;
+    list.querySelectorAll('.is-drop-before, .is-drop-after').forEach(function(node){
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+    });
+    var cards=list.querySelectorAll('.sg-provider-card');
+    if(!cards.length) return;
+    if(insertAt<=0) cards[0].classList.add('is-drop-before');
+    else if(insertAt>=cards.length) cards[cards.length-1].classList.add('is-drop-after');
+    else cards[insertAt].classList.add('is-drop-before');
+  }
+  function bindServiceGroupRouteDrag(){
+    var root=document.getElementById('llmDialogOverlay');
+    if(!root||root.getAttribute('data-sg-route-drag')==='1') return;
+    root.setAttribute('data-sg-route-drag','1');
+    var sgRouteIgnoreClickUntil=0;
+    document.addEventListener('pointerdown', function(){
+      sgRouteIgnoreClickUntil=0;
+    }, true);
+    document.addEventListener('click', function(event){
+      if(Date.now()>sgRouteIgnoreClickUntil) return;
+      sgRouteIgnoreClickUntil=0;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }, true);
+    root.addEventListener('pointerdown', function(event){
+      var node=dragEventNode(event);
+      var card=node&&node.closest('.sg-provider-card');
+      if(!card||!root.contains(card)||!card.classList.contains('is-draggable')) return;
+      card.setAttribute('draggable', sgRoutePressStartsDrag(node)?'true':'false');
+    }, true);
+    root.addEventListener('dragstart', function(event){
+      var node=dragEventNode(event);
+      var card=node&&node.closest('.sg-provider-card');
+      if(!card||!root.contains(card)) return;
+      if(!sgRoutePressStartsDrag(node)){ event.preventDefault(); return; }
+      if(card.getAttribute('draggable')!=='true'){ event.preventDefault(); return; }
+      var row=card.getAttribute('data-sg-row');
+      var index=Number(card.getAttribute('data-sg-index'));
+      if(row==null||!isFinite(index)){ event.preventDefault(); return; }
+      sgRouteDropTo=null;
+      sgRouteDragScrollAt=0;
+      sgRouteDrag={row:String(row), index:index};
+      card.classList.add('is-dragging');
+      if(!event.dataTransfer) return;
+      event.dataTransfer.effectAllowed='move';
+      try{ event.dataTransfer.setData('text/plain', row+':'+index); }catch(e){}
+    });
+    function allowSgRouteDrop(event){
+      if(!sgRouteDrag) return;
+      sgRouteDragAutoScroll(event);
+      var node=dragEventNode(event);
+      var list=node&&node.closest('.sg-provider-list');
+      if(!list||!root.contains(list)||list.getAttribute('data-sg-row')!==sgRouteDrag.row){
+        clearSgRouteDropMarks(root);
+        return;
+      }
+      event.preventDefault();
+      if(event.dataTransfer) event.dataTransfer.dropEffect='move';
+      markSgRouteGap(list, sgRouteInsertAt(list, event.clientY));
+    }
+    root.addEventListener('dragenter', allowSgRouteDrop);
+    root.addEventListener('dragover', allowSgRouteDrop);
+    root.addEventListener('drop', function(event){
+      if(!sgRouteDrag) return;
+      var node=dragEventNode(event);
+      var list=node&&node.closest('.sg-provider-list');
+      var same=!!(list&&root.contains(list)&&list.getAttribute('data-sg-row')===sgRouteDrag.row);
+      if(!same){ sgRouteDropTo=null; return; }
+      event.preventDefault();
+      sgRouteDropTo=sgRouteFinalIndex(sgRouteDrag.index, sgRouteInsertAt(list, event.clientY), list.querySelectorAll('.sg-provider-card').length);
+    });
+    root.addEventListener('dragend', function(){
+      var drag=sgRouteDrag;
+      var to=sgRouteDropTo;
+      sgRouteDrag=null;
+      sgRouteDropTo=null;
+      clearSgRouteDragMarks(root);
+      if(drag&&to!=null&&to!==drag.index) window.sgMoveProviderTo(Number(drag.row), drag.index, to);
+      if(drag) sgRouteIgnoreClickUntil=Date.now()+80;
+    });
+  }
   function sgRenderProviderCard(rowIndex,routeIndex,total){
     var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];
     var cfg=sgGetProviderConfig(model,routeIndex);
@@ -3406,17 +3604,21 @@ if (typeof I18N_ZH !== 'undefined') {
     var pricingMeta = pricingBrief ? ' \u00b7 '+esc(billingLabel)+' \u00b7 '+esc(pricingBrief) : ' \u00b7 '+esc(billingLabel);
     var array = providerArrayByID(cfg.provider_id);
     var memberMeta = array && array.members.length > 1 ? ' \u00b7 '+esc(array.members.map(function(member){ return member.name || member.id; }).join(', ')) : '';
-    return '<div class="sg-provider-card"><div class="sg-row-head"><strong>'+esc(sgProviderName(cfg.provider_id))+' #'+(routeIndex+1)+'</strong>'
+    var canDrag=total>1;
+    return '<div class="sg-provider-card'+(canDrag?' is-draggable':'')+'"'+(canDrag?' draggable="true"':'')+' data-sg-row="'+rowIndex+'" data-sg-index="'+routeIndex+'">'
+      +(canDrag?'<span class="sg-provider-grip" title="'+esc(t('sgArrayDragHint'))+'" aria-hidden="true"></span>':'')
+      +'<div class="sg-provider-body"><div class="sg-row-head"><strong>'+esc(sgProviderName(cfg.provider_id))+' #'+(routeIndex+1)+'</strong>'
       +'<div class="sg-actions"><button class="btn-ghost sg-tiny-btn" onclick="sgEditProviderConfig('+rowIndex+','+routeIndex+')">'+esc(t('editGroup'))+'</button>'
-      +(routeIndex>0?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)">\u2191</button>':'')
-      +(routeIndex<total-1?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)">\u2193</button>':'')
+      +(routeIndex>0?'<button type="button" class="btn-ghost sg-icon-btn" data-sg-move="-1" aria-label="'+esc(t('sgMoveEarlier'))+'" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)">\u2191</button>':'')
+      +(routeIndex<total-1?'<button type="button" class="btn-ghost sg-icon-btn" data-sg-move="1" aria-label="'+esc(t('sgMoveLater'))+'" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)">\u2193</button>':'')
       +'<button class="btn-danger-ghost sg-tiny-btn" onclick="sgRemoveProvider('+rowIndex+','+routeIndex+')">\u2715</button></div></div>'
-      +'<div class="sg-provider-meta">Upstream: '+esc((cfg&&cfg.model)||'-')+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+pricingMeta+memberMeta+'</div></div>';
+      +'<div class="sg-provider-meta">Upstream: '+esc((cfg&&cfg.model)||'-')+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+pricingMeta+memberMeta+'</div></div></div>';
   }
   function sgRenderRouteRow(model,rowIndex){
     model.provider_configs=sgProviderConfigsFromModel(model);
     var locked=sgDraft&&sgDraft.kind==='dynamic'&&sgIsLockedModelName(model.name);
-    var cards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,(model.provider_configs||[]).length);}).join('');
+    var total=(model.provider_configs||[]).length;
+    var cards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,total);}).join('');
     var routeArrays=providerArrayRecords().filter(function(array){ return array.members && array.members.length; });
     var providerOptions=!routeArrays.length?'<option value="">('+esc(t('noProviders'))+')</option>'
       :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+routeArrays.map(function(array){
@@ -3431,7 +3633,7 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<input class="sg-field-full" value="'+esc(model.name||'auto')+'"'+(locked?' disabled':'')+' oninput="sgSetRouteField('+rowIndex+',\'name\',this.value)"></div>'
       +'<div><label class="sg-label-sm">'+esc(t('sgFeeMultiplier'))+'</label><input class="sg-field-full" type="number" min="0.01" step="0.01" value="'+esc(String(fee))+'" oninput="sgSetRouteField('+rowIndex+',\'billing_multiplier\',this.value)"></div>'
       +'<div class="sg-provider-add"><select id="sgProviderAdd'+rowIndex+'">'+providerOptions+'</select><button class="btn-ghost" onclick="sgAddProviderToRoute('+rowIndex+')">+</button></div></div>'
-      +(cards||'<div class="sg-empty-provider">'+esc(t('sgNoProviders'))+'</div>')+'</div>';
+      +(cards?'<div class="sg-provider-list" data-sg-row="'+rowIndex+'">'+cards+'</div>':'<div class="sg-empty-provider">'+esc(t('sgNoProviders'))+'</div>')+'</div>';
   }
   function sgRenderWorkloadTable(d){
     var rows=(d.routes||sgDefaultDynamicRoutes()).map(function(r,i){
@@ -3451,12 +3653,17 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<option value="mid"'+(d.quality_floor==='mid'?' selected':'')+'>mid</option>'
       +'<option value="low"'+(d.quality_floor==='low'?' selected':'')+'>low</option></select></div></div></div>';
   }
-  function sgRenderGroupDialog(){
+  function sgRenderGroupDialog(opts){
     var d=sgDraft||sgEmptyGroup();
     if(d.kind==='dynamic') sgPrepareDynamicDraft(d);
     var title=sgMode==='edit'?t('groupDialogTitleEdit'):t('groupDialogTitleNew');
     var agentOptions = agents.map(function(a){return '<option value="'+esc(a.id)+'"'+(d.agent_id===a.id?' selected':'')+'>'+esc(a.name||a.id)+'</option>';}).join('');
-    var rows=(d.models||[]).map(function(m,i){return sgRenderRouteRow(m,i);}).join('');
+    var dragHint='';
+    var routeModels=d.models||[];
+    for(var ri=0;ri<routeModels.length;ri++){
+      if(sgProviderConfigsFromModel(routeModels[ri]).length>1){ dragHint=t('sgArrayOrderHint'); break; }
+    }
+    var rows=routeModels.map(function(m,i){return sgRenderRouteRow(m,i);}).join('');
     var body='<div class="sg-form-grid">'
       +'<div><label>'+esc(t('fieldGroupID'))+'</label><input id="sgFieldID" value="'+esc(d.id)+'"'+(sgMode==='edit'?' readonly class="sg-readonly"':'')+' oninput="sgSetField(\'id\',this.value)"></div>'
       +'<div><label>'+esc(t('fieldGroupName'))+'</label><input id="sgFieldName" value="'+esc(d.name)+'" oninput="sgSetField(\'name\',this.value)"></div></div>'
@@ -3465,16 +3672,71 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<div class="sg-block-xs"><label>'+esc(t('sgAccessPolicy'))+'</label><select id="sgFieldPolicy" onchange="sgSetField(\'access_policy\',this.value)"><option value="free"'+(d.access_policy!=='grant_required'?' selected':'')+'>'+esc(sgPolicyLabel('free'))+' ('+esc(t('sgPolicyFreeHint'))+')</option><option value="grant_required"'+(d.access_policy==='grant_required'?' selected':'')+'>'+esc(sgPolicyLabel('grant_required'))+' ('+esc(t('sgPolicyGrantHint'))+')</option></select></div>'
       +'<div class="sg-block-xs"><label>'+esc(t('fieldGroupKind'))+'</label><select id="sgFieldKind" onchange="sgSetKind(this.value)"><option value="dynamic"'+(d.kind==='dynamic'?' selected':'')+'>'+esc(t('sgKindDynamic'))+'</option><option value="static"'+(d.kind!=='dynamic'?' selected':'')+'>'+esc(t('sgKindStatic'))+'</option></select></div>'
       +(d.kind==='dynamic'?sgRenderWorkloadTable(d)+sgRenderCatalog(d):'')
-      +'<div class="sg-section">'+sgSectionHead(t('sgRoutes'), '')+'<div class="sg-flex-between"><span></span><button class="btn-ghost" onclick="sgAddRoute()">'+esc(t('sgAddRoute'))+'</button></div>'+rows+'</div>';
+      +'<div class="sg-section">'+sgSectionHead(t('sgRoutes'), dragHint)+'<div class="sg-flex-between"><span></span><button class="btn-ghost" onclick="sgAddRoute()">'+esc(t('sgAddRoute'))+'</button></div>'+rows+'</div>';
     sgOpenKind='group';
-    openDialog(sgDialogChrome(title, body, '<button class="btn-primary" onclick="sgSaveGroup()">'+esc(t('save'))+'</button><button class="btn-ghost" onclick="sgCloseCurrentDialog()">'+esc(t('cancel'))+'</button>'), 'sg-form-dialog');
+    var reveal=opts&&opts.revealRoute;
+    var keepScroll=!!(opts&&opts.keepScroll);
+    var scrollTop=0;
+    var prevBody=(keepScroll&&!reveal)?document.querySelector('#llmDialogContent .sg-dialog-body'):null;
+    if(prevBody) scrollTop=prevBody.scrollTop;
+    if(reveal&&isFinite(Number(reveal.top))) scrollTop=Number(reveal.top);
+    openDialog(sgDialogChrome(title, body, '<button class="btn-primary" onclick="sgSaveGroup()">'+esc(t('save'))+'</button><button class="btn-ghost" onclick="sgCloseCurrentDialog()">'+esc(t('cancel'))+'</button>'), 'sg-form-dialog', (keepScroll||reveal)?false:true);
+    bindServiceGroupRouteDrag();
+    if(!keepScroll&&!reveal) return;
+    var next=document.querySelector('#llmDialogContent .sg-dialog-body');
+    if(!next) return;
+    next.scrollTop=scrollTop;
+    var pinned=scrollTop;
+    var fm=opts&&opts.focusMove;
+    if(fm){
+      var moved=document.querySelector('#llmDialogContent .sg-provider-card[data-sg-row="'+Number(fm.row)+'"][data-sg-index="'+Number(fm.index)+'"]');
+      var again=moved&&moved.querySelector('[data-sg-move="'+(Number(fm.delta)<0?'-1':'1')+'"]');
+      if(again&&again.focus) again.focus({preventScroll:true});
+      else if(moved&&moved.focus){ moved.setAttribute('tabindex','-1'); moved.focus({preventScroll:true}); }
+    }
+    if(reveal&&isFinite(Number(reveal.row))&&isFinite(Number(reveal.index))){
+      var card=document.querySelector('#llmDialogContent .sg-provider-card[data-sg-row="'+Number(reveal.row)+'"][data-sg-index="'+Number(reveal.index)+'"]');
+      if(card){
+        var bodyRect=next.getBoundingClientRect();
+        var cardRect=card.getBoundingClientRect();
+        var pad=12;
+        var top=next.scrollTop;
+        if(cardRect.top<bodyRect.top+pad) top+=cardRect.top-bodyRect.top-pad;
+        else if(cardRect.bottom>bodyRect.bottom-pad) top+=cardRect.bottom-bodyRect.bottom+pad;
+        if(top<0) top=0;
+        next.scrollTop=top;
+        pinned=next.scrollTop;
+        if(!fm&&card.focus){ card.setAttribute('tabindex','-1'); card.focus({preventScroll:true}); }
+      }
+    }
+    if(reveal&&!fm){
+      var shell=document.getElementById('llmDialogContent');
+      var active=document.activeElement;
+      if(shell&&(!active||!shell.contains(active))&&shell.focus){
+        shell.setAttribute('tabindex','-1');
+        shell.focus({preventScroll:true});
+      }
+    }
+    requestAnimationFrame(function(){ if(next.isConnected) next.scrollTop=pinned; });
+  }
+  function sgCaptureEditingPlace(){
+    var body=document.querySelector('#llmDialogContent .sg-dialog-body');
+    return {top:body?body.scrollTop:0};
+  }
+  function sgReturnToGroupEditor(){
+    var back=sgGroupReturn;
+    sgGroupReturn=null;
+    sgProviderDraft=null;
+    sgOpenKind='group';
+    sgRenderGroupDialog(back?{revealRoute:back}:null);
   }
   window.showGroupDialog=function(mode,id){
     var g=mode==='edit'?serviceGroups.find(function(x){return x.id===id;}):null;
     sgMode=mode==='edit'?'edit':'create';
     sgDraft=g?sgCloneGroup(g):sgEmptyGroup();
     if(sgDraft.kind==='dynamic') sgPrepareDynamicDraft(sgDraft,{fillEmptyOfficial:true});
-    sgRenderGroupDialog();
+    var mem=sgMode==='edit'?sgGroupScrollMemory[String(sgDraft.id||'')]:null;
+    sgRenderGroupDialog(mem?{revealRoute:mem}:null);
   };
   window.editLLMServiceGroup=function(id){window.showGroupDialog('edit',id);};
   window.showLLMGroupEditor=function(){window.showGroupDialog('create');};
@@ -3496,7 +3758,24 @@ if (typeof I18N_ZH !== 'undefined') {
   window.sgAddRoute=function(){if(!sgDraft)sgDraft=sgEmptyGroup();sgDraft.models.push(sgEmptyModel('auto'));sgRenderGroupDialog();};
   window.sgRemoveRoute=function(i){var m=sgDraft&&sgDraft.models&&sgDraft.models[i]; if(m&&sgIsLockedModelName(m.name)){toast(t('sgProtectedModel'),'info');return;} if(sgDraft&&sgDraft.models){sgDraft.models.splice(i,1);sgRenderGroupDialog();}};
   window.sgAddProviderToRoute=function(i){var sel=document.getElementById('sgProviderAdd'+i);var id=sel&&sel.value;if(!id){toast(t('chooseProvider'),'info');return;}var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);if(sgRouteDuplicateIndex(m,{provider_id:id,model:''},-1)>=0){toast(sgDuplicateRouteMessage({provider_id:id,model:''}),'error');return;}m.provider_configs.push({provider_id:id,model:'',billing_mode:'',capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1,token_pricing:{}});m.provider_ids=sgProviderIDsFromModel(m);if(sgDraft.kind==='dynamic')sgFillEmptyOfficialBandsFromAuto(sgDraft);sgRenderGroupDialog();};
-  window.sgMoveProvider=function(i,routeIndex,delta){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);var to=routeIndex+delta;if(routeIndex<0||to<0||routeIndex>=m.provider_configs.length||to>=m.provider_configs.length)return;var item=m.provider_configs.splice(routeIndex,1)[0];m.provider_configs.splice(to,0,item);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
+  window.sgMoveProviderTo=function(rowIndex,fromIndex,toIndex,focusMove){
+    var m=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];
+    if(!m) return;
+    m.provider_configs=sgProviderConfigsFromModel(m);
+    var n=m.provider_configs.length;
+    fromIndex=Number(fromIndex);
+    toIndex=Number(toIndex);
+    if(!isFinite(fromIndex)||!isFinite(toIndex)) return;
+    if(fromIndex<0||toIndex<0||fromIndex>=n||toIndex>=n||fromIndex===toIndex) return;
+    var item=m.provider_configs.splice(fromIndex,1)[0];
+    m.provider_configs.splice(toIndex,0,item);
+    m.provider_ids=sgProviderIDsFromModel(m);
+    sgRenderGroupDialog({keepScroll:true, focusMove:focusMove||null});
+  };
+  window.sgMoveProvider=function(i,routeIndex,delta){
+    var to=Number(routeIndex)+Number(delta);
+    window.sgMoveProviderTo(i, routeIndex, to, {row:Number(i), index:to, delta:Number(delta)});
+  };
   window.sgRemoveProvider=function(i,routeIndex){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);m.provider_configs.splice(routeIndex,1);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
   function sgClonePricingForDraft(tp){
     var p=sgNormalizeTokenPricing(tp||{});
@@ -3504,7 +3783,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if(p.price_schedule) out.price_schedule=p.price_schedule;
     return out;
   }
-  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;sgOpenKind='provider-config';sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',billing_mode:String(cfg&&cfg.billing_mode||'').trim(),capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1,token_pricing_override:cfg&&cfg.token_pricing_override===true,token_pricing:sgClonePricingForDraft(cfg.token_pricing)}};sgRenderProviderDialog();};
+  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;var body=document.querySelector('#llmDialogContent .sg-dialog-body');sgGroupReturn={top:body?body.scrollTop:0,row:Number(rowIndex),index:Number(routeIndex)};sgOpenKind='provider-config';sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',billing_mode:String(cfg&&cfg.billing_mode||'').trim(),capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1,token_pricing_override:cfg&&cfg.token_pricing_override===true,token_pricing:sgClonePricingForDraft(cfg.token_pricing)}};sgRenderProviderDialog();};
   function sgRenderProviderDialog(){
     if(!sgProviderDraft)return;var d=sgProviderDraft.draft;
     var tp=d.token_pricing||{};
@@ -3570,8 +3849,8 @@ if (typeof I18N_ZH !== 'undefined') {
       // but preserve an explicit empty to avoid sending stray keys
     }
     cfg.token_pricing=cleaned;
-    sgProviderDraft=null;sgOpenKind='group';sgRenderGroupDialog();};
-  window.sgCancelProviderConfig=function(){sgProviderDraft=null;sgOpenKind='group';sgRenderGroupDialog();};
+    sgReturnToGroupEditor();};
+  window.sgCancelProviderConfig=function(){sgReturnToGroupEditor();};
   window.sgSaveGroup=async function(){
     if(sgSaveBusy||sgOpenKind!=='group')return;
     if(!sgDraft||!sgDraft.id||!sgDraft.name){toast(t('sgIDNameRequired'),'error');return;}
@@ -3598,7 +3877,15 @@ if (typeof I18N_ZH !== 'undefined') {
     try{
       if(sgMode==='edit'){await api('/api/admin/llm/service-groups/'+encodeURIComponent(payload.id),{method:'PUT',body:JSON.stringify(payload)});}
       else{await api('/api/admin/llm/service-groups',{method:'POST',body:JSON.stringify(payload)});}
-      sgCloseCurrentDialog();toast(t('saved'),'success');loadServiceGroups();
+      sgGroupScrollMemory[String(payload.id||'')]=sgCaptureEditingPlace();
+      sgRememberSavedGroup(payload);
+      sgCloseCurrentDialog();
+      sgPendingGroupScroll=String(payload.id||'');
+      renderServiceGroups();
+      sgPendingGroupScroll=String(payload.id||'');
+      sgScrollServiceGroupRow(payload.id);
+      toast(t('saved'),'success');
+      loadServiceGroups();
     }catch(e){toast(e.message,'error');}
     finally{sgSaveBusy=false;}
   };
@@ -4357,6 +4644,8 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!overlay || !overlay.classList.contains('show')) return;
     if (event.key === 'Escape') {
       if (sgSwallowEsc) { event.preventDefault(); sgSwallowEsc = false; return; }
+      // Escape cancels the in-progress drag. Leave the editor open.
+      if (sgRouteDrag) { sgRouteDropTo = null; return; }
       event.preventDefault();
       sgCloseCurrentDialog();
       return;
@@ -4368,7 +4657,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
-  function openDialog(html, extraClass) {
+  function openDialog(html, extraClass, focusFirst) {
     stopProviderBillingNowClock();
     var overlay = document.getElementById('llmDialogOverlay');
     if (!overlay) {
@@ -4390,16 +4679,40 @@ if (typeof I18N_ZH !== 'undefined') {
     content.innerHTML = html;
     overlay.classList.add('show');
     if (!extraClass || extraClass.indexOf('sg-form-dialog') < 0) sgOpenKind = '';
-    var focus = sgFocusable(content);
-    if (focus[0]) focus[0].focus();
+    if (focusFirst !== false) {
+      var focus = sgFocusable(content);
+      if (focus[0]) focus[0].focus();
+    }
   }
   function closeDialog() {
     stopProviderBillingNowClock();
     stopWorkBuddyLoginPoll();
+    sgRouteDrag = null;
+    sgRouteDropTo = null;
+    sgGroupReturn = null;
     var o = document.getElementById('llmDialogOverlay');
+    var active = document.activeElement;
+    var groupId = '';
+    if ((sgOpenKind === 'group' || sgOpenKind === 'provider-config') && sgDraft) groupId = String(sgDraft.id || '').trim();
+    var row = groupId ? sgServiceGroupRow(groupId) : null;
+    var parked = false;
+    if (row && row.focus) {
+      row.classList.add('sg-group-reveal');
+      row.focus({preventScroll:true});
+      parked = true;
+    } else if (groupId) {
+      var list = document.getElementById('llmServiceGroupsList');
+      if (list && list.focus) {
+        list.setAttribute('tabindex', '-1');
+        list.focus({preventScroll:true});
+        parked = true;
+      }
+    }
+    if (!parked && active && active.blur && o && o.contains(active)) active.blur();
     if (o) o.classList.remove('show');
     sgOpenKind = '';
     sgProviderDraft = null;
+    if (groupId) sgScrollServiceGroupRow(groupId);
   }
   function sgCloseCurrentDialog() { closeDialog(); }
   window.closeDialog = closeDialog;
