@@ -5203,16 +5203,26 @@ func enrichLLMBillingDenialRetry(reg *llmservice.Registry, userID, email string,
 		providerIDs = model.ProviderIDs
 	}
 	now := time.Now().UTC()
+	wantPeriod := llmDenialCodeIs(denial.Code, "LLM_SERVICE_PERIOD_LIMITED")
+	wantQueued := llmDenialCodeIs(denial.Code, "LLM_SERVICE_GRANT_QUEUED")
+	if !wantPeriod && !wantQueued {
+		return denial
+	}
 	for _, providerID := range providerIDs {
 		groups := llmservice.ChargedServiceGroupIDs(model, providerID)
-		retryAt := llmservice.PeriodLimitRetryAtForServiceGroupsForUserID(reg, userID, email, groups, now)
-		if retryAt != nil && !retryAt.IsZero() {
-			denial.RetryAfterAt = retryAt.UTC().Format(time.RFC3339)
-			denial.RetryAfterSeconds = int64(math.Ceil(time.Until(*retryAt).Seconds()))
-			if denial.RetryAfterSeconds < 1 {
-				denial.RetryAfterSeconds = 1
+		if wantPeriod {
+			retryAt := llmservice.PeriodLimitRetryAtForServiceGroupsForUserID(reg, userID, email, groups, now)
+			if retryAt != nil && !retryAt.IsZero() {
+				denial.RetryAfterAt = retryAt.UTC().Format(time.RFC3339)
+				denial.RetryAfterSeconds = int64(math.Ceil(time.Until(*retryAt).Seconds()))
+				if denial.RetryAfterSeconds < 1 {
+					denial.RetryAfterSeconds = 1
+				}
+				return denial
 			}
-			return denial
+		}
+		if !wantQueued {
+			continue
 		}
 		if startsAt := llmservice.GrantStartAtForServiceGroupsForUserID(reg, userID, email, groups, now); startsAt != nil && !startsAt.IsZero() {
 			denial.RetryAfterAt = startsAt.UTC().Format(time.RFC3339)

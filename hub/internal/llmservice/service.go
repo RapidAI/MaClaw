@@ -4032,10 +4032,14 @@ func billingEligibilityForGrantBackedServiceGroups(reg *Registry, owner userAcco
 			return true, AccessPolicyGrantRequired, "", "", 0, true, true
 		}
 		// A point card that still has balance, including balance held by an
-		// in-flight request, is not a period window. Reporting the window
-		// would make the client wait out the period instead of using the card.
-		if retryAt := periodLimitRetryAtForServiceGroups(reg, owner, serviceGroupIDs, now); retryAt != nil && SpendableCreditsForServiceGroupsForUserID(reg, owner.UserID, owner.Email, serviceGroupIDs, now) <= 0 {
-			return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
+		// in-flight request, is not a period window. Reporting the window,
+		// or a later queued grant, would make the client wait instead of
+		// using the card once the hold releases.
+		if retryAt := periodLimitRetryAtForServiceGroups(reg, owner, serviceGroupIDs, now); retryAt != nil {
+			if SpendableCreditsForServiceGroupsForUserID(reg, owner.UserID, owner.Email, serviceGroupIDs, now) <= 0 {
+				return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
+			}
+			return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model grant credits are exhausted", 0, true, true
 		}
 		if startsAt := grantStartAtForServiceGroups(reg, owner, serviceGroupIDs, now); startsAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, true, true
