@@ -244,14 +244,56 @@ func codingFollowUpIsQuestion(userText string) bool {
 	return false
 }
 
-func codingFollowUpShouldResumeImplementation(userText string) bool {
-	if codingRequestIsBareContinuation(userText) {
-		return true
-	}
-	if !codingFollowUpAsksForCodeChange(userText) {
+// codingFollowUpContinuationNamesEdit is "继续改" / "continue and fix the
+// header": a continuation prefix plus an edit stem. The stem is only read
+// after the prefix, so "看看改动" does not count.
+func codingFollowUpContinuationNamesEdit(userText string) bool {
+	rest, ok := codingFollowUpContinuationRemainder(userText)
+	if !ok || rest == "" {
 		return false
 	}
-	if codingFollowUpIsQuestion(userText) && !codingFollowUpIsDirectEditOrder(userText) {
+	for _, stem := range []string{"改", "修", "写", "寫"} {
+		if strings.Contains(rest, stem) {
+			return true
+		}
+	}
+	for _, word := range []string{"fix", "write", "change", "implement", "refactor", "rewrite"} {
+		if codingHasASCIIWord(rest, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingFollowUpContinuationRemainder(userText string) (string, bool) {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	for _, lead := range []string{"请", "請"} {
+		if strings.HasPrefix(text, lead) {
+			text = strings.TrimSpace(strings.TrimPrefix(text, lead))
+			break
+		}
+	}
+	for _, prefix := range []string{
+		"继续", "繼續", "接着做", "接著做", "接着", "接著",
+		"keep going", "carry on", "continue",
+	} {
+		if !strings.HasPrefix(text, prefix) {
+			continue
+		}
+		rest := strings.TrimLeft(text[len(prefix):], " \t\r\n。.!！?？~～,，、:：")
+		return rest, true
+	}
+	return "", false
+}
+
+func codingFollowUpShouldResumeImplementation(userText string) bool {
+	if codingRequestIsBareContinuation(userText) || codingFollowUpIsDirectEditOrder(userText) {
+		return true
+	}
+	if !codingFollowUpAsksForCodeChange(userText) && !codingFollowUpContinuationNamesEdit(userText) {
+		return false
+	}
+	if codingFollowUpIsQuestion(userText) {
 		return false
 	}
 	return true

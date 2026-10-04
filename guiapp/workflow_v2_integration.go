@@ -3072,6 +3072,18 @@ func setRemotePlanLastSummary(sessionMem *stickyCodingWorkbenchMemory, planned b
 	sessionMem.LastSummary = truncateRunesV2(sum, 800)
 }
 
+// applyRemoteCodingTurnFileAudit keeps every remote step's writes on the
+// turn result. Sticky memory is what the next "继续" uses to decide it is
+// still an implementation session; recording only the last step drops that
+// evidence when a later step only runs or reviews.
+func applyRemoteCodingTurnFileAudit(result *RemoteCodingSubAgentResult, modified, created []string) {
+	if result == nil {
+		return
+	}
+	result.FilesModified = uniqueSortedSubAgentStrings(modified)
+	result.FilesCreated = uniqueSortedSubAgentStrings(created)
+}
+
 // --- Helper: emit frontend event ---
 
 func emitWorkflowV2Event(a *App, eventName string, data interface{}) {
@@ -3993,6 +4005,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 
 	var result *RemoteCodingSubAgentResult
+	var turnFilesModified, turnFilesCreated []string
 	totalTools, totalIters := 0, 0
 	totalInTok, totalOutTok := 0, 0
 	totalCost := 0.0
@@ -4095,6 +4108,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 
 		if stepResult != nil {
 			result = stepResult
+			turnFilesModified = append(turnFilesModified, stepResult.FilesModified...)
+			turnFilesCreated = append(turnFilesCreated, stepResult.FilesCreated...)
 			totalTools += stepResult.ToolCalls
 			totalIters += stepResult.Iterations
 			totalInTok += stepResult.InputTokens
@@ -4194,6 +4209,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 	}
 
+	applyRemoteCodingTurnFileAudit(result, turnFilesModified, turnFilesCreated)
 	h.recordStickyRemoteCodingTurn(userID, recordUserText, result)
 	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)
 	if postTurn := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_turn"); postTurn.Report != "" {

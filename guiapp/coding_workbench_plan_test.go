@@ -66,13 +66,13 @@ func TestResolveCodingRequestDecisionPlansModerateRewrite(t *testing.T) {
 
 func TestBareContinuationResumesImplementationAfterFileWrites(t *testing.T) {
 	written := stickyCodingWorkbenchMemory{FilesModified: []string{"/home/prj8/src/ui.cpp"}, TurnCount: 4}
-	for _, text := range []string{"继续", "继续。", "Continue", "keep going", "继续改进进程列表", "能不能修一下顶栏？", "请修改顶栏折行", "fixed the header overflow", "优化进程 CPU 计算"} {
+	for _, text := range []string{"继续", "继续。", "Continue", "keep going", "继续改进进程列表", "继续改", "继续，把顶栏改好", "帮我改顶栏", "能不能修一下顶栏？", "请修改顶栏折行", "fixed the header overflow", "优化进程 CPU 计算"} {
 		got := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestInquiry}, text, written)
 		if got.Kind != codingRequestImplementation || got.NeedsPlan {
 			t.Fatalf("%q should resume read/write implementation without a new plan, got %#v", text, got)
 		}
 	}
-	for _, text := range []string{"这段 CPU% 为什么乘了核心数？", "为什么没实现分页？", "怎么优化这段", "如何修改顶栏", "how to fix the header", "看看 drawHeader", "what does the gap do", "谢谢", "编译并运行", "顶栏折行了", "列出源文件"} {
+	for _, text := range []string{"这段 CPU% 为什么乘了核心数？", "为什么没实现分页？", "怎么优化这段", "如何修改顶栏", "how to fix the header", "看看 drawHeader", "看看改动", "继续看看", "继续编译并运行", "what does the gap do", "谢谢", "编译并运行", "顶栏折行了", "列出源文件"} {
 		got := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestInquiry}, text, written)
 		if got.Kind != codingRequestInquiry {
 			t.Fatalf("%q should stay a read-only question, got %#v", text, got)
@@ -91,6 +91,21 @@ func TestBareContinuationResumesImplementationAfterFileWrites(t *testing.T) {
 	if operational.Kind != codingRequestOperational {
 		t.Fatalf("operational follow-up must not be rewritten, got %#v", operational)
 	}
+}
+
+func TestApplyRemoteCodingTurnFileAuditKeepsEarlierStepWrites(t *testing.T) {
+	result := &RemoteCodingSubAgentResult{FilesModified: []string{"/home/prj8/src/late.cpp"}}
+	applyRemoteCodingTurnFileAudit(result,
+		[]string{"/home/prj8/CMakeLists.txt", "  ", "/home/prj8/src/late.cpp"},
+		[]string{"/home/prj8/src/ui.cpp", "/home/prj8/src/ui.cpp"},
+	)
+	if strings.Join(result.FilesModified, ",") != "/home/prj8/CMakeLists.txt,/home/prj8/src/late.cpp" {
+		t.Fatalf("modified audit = %#v", result.FilesModified)
+	}
+	if strings.Join(result.FilesCreated, ",") != "/home/prj8/src/ui.cpp" {
+		t.Fatalf("created audit = %#v", result.FilesCreated)
+	}
+	applyRemoteCodingTurnFileAudit(nil, []string{"a"}, []string{"b"})
 }
 
 func TestApplyCodingRequestPlanFloorPromotesModerateImplementation(t *testing.T) {
