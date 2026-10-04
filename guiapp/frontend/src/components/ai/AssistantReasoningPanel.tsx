@@ -3,20 +3,17 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
-/** Recessed field surface. Longhands avoid the `border` shorthand resetting
- *  `borderLeft`. The rail is the assistant response accent so it stays visible
- *  when a scheme's quote border is nearly the same color as the field border. */
+/** Recessed field surface inside the assistant bubble. A uniform border keeps
+ *  the 8px corners even; the response accent is an inset rail so it is not
+ *  wiped out by the `border` shorthand. */
 export function reasoningPanelChrome(t: Pick<Theme, "textMuted" | "fieldBg" | "fieldBorder" | "responseBorderLeft">): React.CSSProperties {
-    const edge = `1px solid ${t.fieldBorder}`;
     return {
         margin: "5px 0 7px 0",
         fontSize: "12px",
         color: t.textMuted,
         background: t.fieldBg,
-        borderTop: edge,
-        borderRight: edge,
-        borderBottom: edge,
-        borderLeft: `2px solid ${t.responseBorderLeft}`,
+        border: `1px solid ${t.fieldBorder}`,
+        boxShadow: `inset 2px 0 0 ${t.responseBorderLeft}`,
         borderRadius: 8,
         boxSizing: "border-box",
     };

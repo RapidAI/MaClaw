@@ -1588,7 +1588,8 @@ export function renderMessage(
             if (collapseReasoningByDefault && !assistantMessageHasVisibleBody(msg)) {
                 return null;
             }
-            const liveForReasoning = isLastAssistant && (isStreaming || !!liveReasoningLabel);
+            const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!String(msg.content || "").trim()));
+            const liveForReasoning = isLastAssistant && (isStreaming || !!liveReasoningLabel) && !codingAnswerStarted;
             const cleanedReasoning = cleanReasoningTrailForBody(msg.reasoning || "");
             // After the stream ends, peel CoT out of a mixed body. Ordinary chat
             // may still lift a hidden non-monologue deliverable; coding workbench
@@ -1663,7 +1664,6 @@ export function renderMessage(
                             // Open while reasoning tokens are still arriving. Fold when that
                             // stream ends, or when a coding answer has already started.
                             // A live tool label with no stream stays folded.
-                            const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!summaryText.trim()));
                             const shouldOpen = isStreaming && isLastAssistant && !codingAnswerStarted;
                             const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning);
                             if (!displayReasoning.trim() && !live) return null;
