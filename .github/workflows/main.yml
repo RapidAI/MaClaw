@@ -1573,6 +1573,8 @@ jobs:
   # ============================================================
   build-linux:
     strategy:
+      # A single-brand smoke failure must not cancel the sibling builds.
+      fail-fast: false
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || inputs.BRAND == 'metastaff' && fromJSON('["metastaff"]') || fromJSON('["", "qianxin", "metastaff"]') }}
         os_version: [ubuntu-22.04, ubuntu-24.04]

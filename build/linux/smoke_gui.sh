@@ -45,7 +45,7 @@ if [ -z "$WORKDIR" ]; then
   # The GUI spawns long-lived children (coding CLI bootstrap, WebKitWebProcess)
   # that outlive the TERM kill and keep writing under the workdir, racing the
   # cleanup rm ("Directory not empty"). Cleanup must never mask the smoke result.
-  trap 'pkill -KILL -f "$WORKDIR" 2>/dev/null; rm -rf "$WORKDIR" 2>/dev/null || true' EXIT
+  trap 'pkill -KILL -f "$WORKDIR" 2>/dev/null || true; rm -rf "$WORKDIR" 2>/dev/null || true' EXIT
 fi
 mkdir -p "$WORKDIR"
 chmod +x "$APPIMAGE"
