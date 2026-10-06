@@ -155,6 +155,10 @@ func (q *Qwen3Embedder) hasPrefix(ids []int) bool {
 // computePrefix runs the prefix tokens through the network once and keeps
 // every layer's K/V rows.
 func (q *Qwen3Embedder) computePrefix(ids []int) (*qwen3PrefixKV, error) {
+	if !q.inflight.acquire() {
+		return nil, ErrEmbedderClosed
+	}
+	defer q.inflight.release()
 	p := &qwen3PrefixKV{
 		ids: append([]int(nil), ids...),
 		n:   len(ids),

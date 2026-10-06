@@ -81,6 +81,7 @@ type GemmaEmbedder struct {
 	modelName    string // identity from GGUF metadata; feeds ModelID
 	mu           sync.Mutex
 	mmap         *gguf.MmapFile // kept alive for the mmap backing
+	inflight     inflightGuard  // Close waits for in-flight calls (inflight_guard.go)
 	scratch      *gemmaScratch  // reusable inference buffers (lazily initialized)
 	tokenCache   *tokenEmbCache // cached float32 embeddings for hot tokens
 	earlyExit    int32          // 0 = disabled; >0 = exit after this many layers (atomic)
@@ -325,6 +326,9 @@ func enqueueMmapClose(mf *gguf.MmapFile) {
 }
 
 func (g *GemmaEmbedder) Close() {
+	// Wait for in-flight inference (incl. the lock-free EmbedConcurrent /
+	// EmbedBatch paths) and refuse new calls before the mmap goes away.
+	g.inflight.close()
 	g.mu.Lock()
 	mf := g.mmap
 	g.mmap = nil

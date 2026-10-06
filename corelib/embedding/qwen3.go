@@ -80,7 +80,8 @@ type Qwen3Embedder struct {
 	modelName  string
 	mu         sync.Mutex
 	mmap       *gguf.MmapFile
-	pools      [5]sync.Pool // scratch by bucket (16/64/256/512/other-unpooled)
+	inflight   inflightGuard // Close waits for in-flight calls (inflight_guard.go)
+	pools      [5]sync.Pool  // scratch by bucket (16/64/256/512/other-unpooled)
 	ropeMu     sync.Mutex
 	ropeCos    []float32 // [ropeLen*half], grown on demand, read-only once published
 	ropeSin    []float32
@@ -394,6 +395,10 @@ func (q *Qwen3Embedder) EmbedConcurrent(text string) ([]float32, error) {
 }
 
 func (q *Qwen3Embedder) embed(text string, maxWorkers int) ([]float32, error) {
+	if !q.inflight.acquire() {
+		return nil, ErrEmbedderClosed
+	}
+	defer q.inflight.release()
 	ids := q.Tokenize(text)
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("qwen3: empty token sequence")
@@ -463,8 +468,10 @@ func (q *Qwen3Embedder) Dim() int { return q.dim }
 // HParams returns the model hyperparameters.
 func (q *Qwen3Embedder) HParams() Qwen3HParams { return q.hp }
 
-// Close releases the mmap (after in-flight calls on the shared mutex finish).
+// Close waits for in-flight calls, makes later calls fail with
+// ErrEmbedderClosed, then releases the mmap.
 func (q *Qwen3Embedder) Close() {
+	q.inflight.close()
 	q.mu.Lock()
 	mf := q.mmap
 	q.mmap = nil

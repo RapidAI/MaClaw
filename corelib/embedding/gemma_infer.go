@@ -13,6 +13,10 @@ import (
 // Embed returns the embedding vector for a single text string.
 // Uses a shared scratch buffer protected by a mutex, suitable for sequential calls.
 func (g *GemmaEmbedder) Embed(text string) ([]float32, error) {
+	if !g.inflight.acquire() {
+		return nil, ErrEmbedderClosed
+	}
+	defer g.inflight.release()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -36,6 +40,10 @@ func (g *GemmaEmbedder) Embed(text string) ([]float32, error) {
 // Each row is the contextualized embedding for one token.
 // Used by TTS to provide per-phoneme BERT-like embeddings.
 func (g *GemmaEmbedder) EmbedTokenStates(text string) (states []float32, seq, dim int, err error) {
+	if !g.inflight.acquire() {
+		return nil, 0, 0, ErrEmbedderClosed
+	}
+	defer g.inflight.release()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -74,6 +82,10 @@ func (g *GemmaEmbedder) forwardTokenStates(tokenIDs []int, sc *gemmaScratch) ([]
 // can run inference in parallel without contending on the shared mutex.
 // Weights (mmap-backed, read-only) and tokenizer are safe to share.
 func (g *GemmaEmbedder) EmbedConcurrent(text string) ([]float32, error) {
+	if !g.inflight.acquire() {
+		return nil, ErrEmbedderClosed
+	}
+	defer g.inflight.release()
 	tokens := g.tokenizer.Encode(text)
 	if len(tokens) == 0 {
 		return nil, fmt.Errorf("gemma: empty token sequence")
