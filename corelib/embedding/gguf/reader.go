@@ -1,6 +1,7 @@
 package gguf
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -68,7 +69,11 @@ func (gf *File) ReadTensorF32(name string) ([]float32, error) {
 }
 
 func (gf *File) parseHeader() error {
-	r := io.NewSectionReader(gf.f, 0, 1<<62)
+	// Buffered: the tokenizer arrays are ~10^5 tiny strings, and an
+	// unbuffered SectionReader costs one pread syscall per field (~0.3 s for
+	// a 150k-token vocab). cr counts consumed bytes for the data offset.
+	cr := &countingReader{r: bufio.NewReaderSize(io.NewSectionReader(gf.f, 0, 1<<62), 1<<20)}
+	r := cr
 	var magic, version uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
 		return fmt.Errorf("gguf: read magic: %w", err)
@@ -113,11 +118,20 @@ func (gf *File) parseHeader() error {
 	}
 
 	// Data section starts at next 32-byte aligned offset
-	pos, _ := gf.f.Seek(0, io.SeekCurrent)
-	_ = pos // we used SectionReader, get position from r
-	curOff2, _ := r.Seek(0, io.SeekCurrent)
-	gf.dataOffset = align32(curOff2)
+	gf.dataOffset = align32(cr.n)
 	return nil
+}
+
+// countingReader tracks how many bytes the header parser consumed.
+type countingReader struct {
+	r *bufio.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func align32(offset int64) int64 {

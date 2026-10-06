@@ -60,6 +60,13 @@ type qwen3Layer struct {
 	attnNormW, qNormW, kNormW, ffNormW []float32
 	wq, wk, wv, wo                     tensor.Q8Tensor
 	wGate, wUp, wDown                  tensor.Q8Tensor
+	// wDown split along K (columns) into chunks the fast existing kernels
+	// cover: the K=3072 FFN-down shape otherwise falls through to the generic
+	// AVX2 fused loop, which profiled ~40× slower per MAC than the K=2048
+	// AVX-512 N64 kernel and the K=1024 dequant-once path. Pure block copies
+	// (no requantisation), summed after the matmuls.
+	downParts []tensor.Q8Tensor
+	downK0    []int
 }
 
 // Qwen3Embedder is a pure Go Qwen3 text embedding model.
@@ -226,11 +233,60 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 	}
 	for i := range q.layers {
 		l := &q.layers[i]
-		for _, t := range []*tensor.Q8Tensor{&l.wq, &l.wk, &l.wv, &l.wo, &l.wGate, &l.wUp, &l.wDown} {
+		l.downParts, l.downK0 = splitQ8Cols(&l.wDown, qwen3DownChunks(hp.FFDim))
+		ts := []*tensor.Q8Tensor{&l.wq, &l.wk, &l.wv, &l.wo, &l.wGate, &l.wUp}
+		if len(l.downParts) == 0 {
+			ts = append(ts, &l.wDown)
+		}
+		for _, t := range ts {
 			t.FaultIn()
 		}
 	}
 	return nil
+}
+
+// qwen3DownChunks returns the K split for the FFN-down matmul: 2048-wide
+// chunks (AVX-512 N64 kernel) plus a remainder, or nil when K needs no split.
+func qwen3DownChunks(k int) []int {
+	if k <= 2048 || k%32 != 0 {
+		return nil
+	}
+	var c []int
+	for k >= 2048 {
+		c = append(c, 2048)
+		k -= 2048
+	}
+	if k > 0 {
+		c = append(c, k)
+	}
+	return c
+}
+
+// splitQ8Cols copies Q8_0 blocks of t into column chunks (heap-owned, scales
+// prepared). Values are bit-identical to the source blocks.
+func splitQ8Cols(t *tensor.Q8Tensor, widths []int) ([]tensor.Q8Tensor, []int) {
+	if len(widths) < 2 {
+		return nil, nil
+	}
+	const bb = 34
+	srcBlocks := t.Cols / 32
+	parts := make([]tensor.Q8Tensor, len(widths))
+	k0s := make([]int, len(widths))
+	k0 := 0
+	for pi, w := range widths {
+		nb := w / 32
+		b0 := k0 / 32
+		data := make([]byte, t.Rows*nb*bb)
+		for r := 0; r < t.Rows; r++ {
+			src := t.Data[(r*srcBlocks+b0)*bb : (r*srcBlocks+b0+nb)*bb]
+			copy(data[r*nb*bb:(r+1)*nb*bb], src)
+		}
+		parts[pi] = tensor.Q8Tensor{Data: data, Rows: t.Rows, Cols: w}
+		parts[pi].PrepareScales()
+		k0s[pi] = k0
+		k0 += w
+	}
+	return parts, k0s
 }
 
 // ensureRoPE makes the shared cos/sin tables cover at least n positions.
@@ -448,8 +504,26 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 		tensor.MatMulQ8N(gate, normed, &l.wGate, seq, ffDim, dim, maxWorkers)
 		tensor.MatMulQ8N(up, normed, &l.wUp, seq, ffDim, dim, maxWorkers)
 		tensor.SiLUMul(gate, up)
-		tensor.MatMulQ8N(proj, gate, &l.wDown, seq, dim, ffDim, maxWorkers)
-		tensor.Add(x, x, proj)
+		if len(l.downParts) == 0 {
+			tensor.MatMulQ8N(proj, gate, &l.wDown, seq, dim, ffDim, maxWorkers)
+			tensor.Add(x, x, proj)
+			continue
+		}
+		// K-split down projection: copy each column chunk of gate into the
+		// (now free) up buffer, matmul against the matching weight chunk, and
+		// accumulate into the residual.
+		off := 0
+		for pi := range l.downParts {
+			w := l.downParts[pi].Cols
+			k0 := l.downK0[pi]
+			a := s.up[off : off+seq*w]
+			for r := 0; r < seq; r++ {
+				copy(a[r*w:(r+1)*w], gate[r*ffDim+k0:r*ffDim+k0+w])
+			}
+			off += seq * w
+			tensor.MatMulQ8N(proj, a, &l.downParts[pi], seq, dim, w, maxWorkers)
+			tensor.Add(x, x, proj)
+		}
 	}
 	last := x[(seq-1)*dim : seq*dim]
 	out := normed[:dim]
