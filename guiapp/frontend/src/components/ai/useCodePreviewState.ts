@@ -559,10 +559,14 @@ export function applyFileUpdate(
     }
 
     const shouldAutoOpen = file.forceOpen || (file.autoOpenPreview && !state.userClosed);
-    // Auto-select: always for create/modify, but for read only when panel
-    // is first opening (no active file yet). This prevents rapid tab-switching
-    // during the SubAgent's initial file exploration phase.
-    const shouldAutoSelect = file.opType !== 'read' || !state.activeFilePath;
+    // Auto-select: always for create/modify. A read selects when the backend
+    // surfaced it (force_open / auto_open_preview — "exploration populates the
+    // right-hand panel") or when nothing is selected yet. Unflagged reads
+    // (snapshot-restore batches, tool fills) must not yank the view.
+    const shouldAutoSelect = file.opType !== 'read'
+        || file.forceOpen === true
+        || file.autoOpenPreview === true
+        || !state.activeFilePath;
     const nextActive = shouldAutoSelect ? file.filePath : state.activeFilePath;
     const nextSessionID = file.sessionID || state.sessionID;
     const nextSessionActive = file.forceOpen && file.sessionID ? true : state.sessionActive;
@@ -1232,11 +1236,15 @@ export function useCodePreviewState(
             const expertWrite = taskResultTab && data.force_open === true && isTaskResultWrite(opType) && isExpertResultSession(data.session_id, expertId);
             // A write that actually lands in the preview is worth surfacing:
             // the host panel focuses the file body (content + diff) instead of
-            // leaving the directory tree selected. Reads never notify, and a
-            // probe against the last rendered state (same pure function the
-            // updater runs, so no drift) keeps session-blocked events and
-            // identical redeliveries from yanking the view.
-            if (opType !== 'read') {
+            // leaving the directory tree selected. A read surfaces only when
+            // the backend explicitly asked the pane to show it (force_open /
+            // auto_open_preview — pure-coding exploration relies on this);
+            // unflagged reads stay silent. A probe against the last rendered
+            // state (same pure function the updater runs, so no drift) keeps
+            // session-blocked events, identical re-reads of the selected file,
+            // and identical redeliveries from yanking the view.
+            const surfaces = opType !== 'read' || file.forceOpen === true || file.autoOpenPreview === true;
+            if (surfaces) {
                 const belongs = file.latexWorkbench || expertWrite
                     || codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);
                 // Probe only past the cheap ownership gate: applyFileUpdate

@@ -4137,10 +4137,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const treeFocusNonceRef = useRef(0);
     fileFocusNonceRef.current = fileFocusNonce;
     treeFocusNonceRef.current = treeFocusNonce;
-    // An agent create/modify event landed on a preview file (useCodePreviewState).
-    // Focus the file body — content plus its +N -M modification status — instead
-    // of leaving the directory tree selected, and let it win over an older tree
-    // focus so a freshly popped preview opens on the edited file.
+    // An agent create/modify event — or a read surfaced via force_open /
+    // auto_open_preview — landed on a preview file (useCodePreviewState).
+    // Focus the file body instead of leaving the directory tree selected, and
+    // let it win over an older tree focus so a fresh preview opens on that file.
     focusAgentFileWriteRef.current = () => {
         const next = Math.max(treeFocusNonceRef.current, fileFocusNonceRef.current) + 1;
         fileFocusNonceRef.current = next;

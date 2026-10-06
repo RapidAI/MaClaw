@@ -2,14 +2,16 @@
  * Agent writes must surface the edited file in the preview pane.
  *
  * useCodePreviewState notifies the host panel (scope.onAgentFileWrite) for
- * create/modify events that belong to the tab's preview project. The panel
- * bumps its file-focus nonce so the pane shows the file body — content plus
- * its +N -M modification status — instead of leaving the directory tree
- * selected. Events that would not actually land stay silent so they cannot
- * steal the view: reads (SubAgent exploration), foreign-project writes (an
- * owned expert result write is the one exception), writes blocked by the
- * active-session guard (except force-open takeovers), and identical
- * redeliveries.
+ * create/modify events that belong to the tab's preview project, and for read
+ * events the backend explicitly surfaced (force_open / auto_open_preview —
+ * pure-coding exploration relies on those to populate the right-hand pane).
+ * The panel bumps its file-focus nonce so the pane shows the file body —
+ * content plus its +N -M modification status — instead of leaving the
+ * directory tree selected. Events that would not actually land stay silent so
+ * they cannot steal the view: unflagged reads (snapshot-restore batches),
+ * foreign-project writes (an owned expert result write is the one exception),
+ * writes blocked by the active-session guard (except force-open takeovers),
+ * identical re-reads of the selected file, and identical redeliveries.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -65,13 +67,59 @@ describe('useCodePreviewState onAgentFileWrite', () => {
         expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'create' });
     });
 
-    it('stays silent for read events (SubAgent exploration must not steal the view)', () => {
+    it('stays silent for unflagged read events (snapshot restores must not steal the view)', () => {
         const onWrite = vi.fn();
         renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
 
         emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined }));
 
         expect(onWrite).not.toHaveBeenCalled();
+    });
+
+    it('notifies for a force-open read so exploration shows the file body', () => {
+        const onWrite = vi.fn();
+        const { result } = renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined, force_open: true }));
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'read' });
+        expect(result.current.state.activeFilePath).toBe('src/main.cpp');
+        expect(result.current.state.active).toBe(true);
+    });
+
+    it('notifies for an auto-open read even without force_open', () => {
+        const onWrite = vi.fn();
+        const { result } = renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined, auto_open_preview: true }));
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(result.current.state.activeFilePath).toBe('src/main.cpp');
+    });
+
+    it('a force-open read selects over another open file and notifies once per change', () => {
+        const onWrite = vi.fn();
+        const { result } = renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({
+            file_path: 'src/other.cpp',
+            content: '// other',
+            op_type: 'read',
+            original: undefined,
+            force_open: true,
+        }));
+        expect(result.current.state.activeFilePath).toBe('src/other.cpp');
+
+        // First read of snake.cpp changes the selection → notify.
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined, force_open: true }));
+        expect(onWrite).toHaveBeenCalledTimes(2);
+        expect(result.current.state.activeFilePath).toBe('src/main.cpp');
+
+        // Identical re-read of the selected file is a no-op → stays silent.
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined, force_open: true }));
+        expect(onWrite).toHaveBeenCalledTimes(2);
+        expect(result.current.state.activeFilePath).toBe('src/main.cpp');
     });
 
     it('stays silent for writes stamped with another task', () => {

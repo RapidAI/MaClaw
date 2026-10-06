@@ -45,11 +45,12 @@
 
 /* Real Wails sidebar shell alignment.
    The drag strip is pinned to the window top, while #App already reserves
-   --dwm-top-offset. The pane only keeps whatever part of the strip still
-   hangs below that inset, so the search is not pushed down a second time. */
+   --dwm-top-offset. The pane keeps no extra top inset: the decorative
+   tool divider owns that rhythm and the search field hugs it. The pane's
+   first rows still sit below the 10px drag strip, so clicks stay usable. */
 #App { --mc-sidebar-drag-strip: max(10px, var(--dwm-top-offset, 0px)); }
 .mc-sidebar-shell { width: 308px !important; height: 100%; min-height: 0; overflow: hidden; background: var(--theme-surface) !important; border-right: 0 !important; }
-.mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: max(0px, calc(var(--mc-sidebar-drag-strip, 10px) - var(--dwm-top-offset, 0px))) 14px 10px !important; min-height: 0; }
+.mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: 0 14px 10px !important; min-height: 0; }
 .mc-sidebar-shell [data-testid="sidebar-middle-pane-tasks"] { background: var(--theme-surface); min-height: 0; overflow: hidden; }
 .mc-sidebar-shell .mc-sidebar-middle-tabs { display: none !important; }
 @media (max-width: 1100px) { .mc-sidebar-shell { width: 280px !important; } }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialog } from '../CustomDialog';
 import { darkCodePreviewTheme, lightCodePreviewTheme } from '../ai/CodePreviewPanel';
@@ -7,6 +7,90 @@ import { FilePreviewHost } from '../preview/FilePreviewHost';
 import { filePreviewKindFromName, languageFromFileName, previewShouldMaterialize, rewriteMarkdownImageUrls } from '../preview/filePreviewKind';
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFileLibraryOpen, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
 import { classifyCloudDriveItem, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
+
+type ToolbarGlyphProps = { size?: number };
+
+// Toolbar glyphs for the cloud-drive preview actions. Drawn in the same
+// 24px/1.65-stroke style as WorkbenchIcons so the header reads as one product.
+// Stroke is always currentColor: each button variant owns its text color and
+// hover shifts, so the icon follows for free.
+function toolbarGlyph(size: number, children: ReactNode) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.65}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      style={{ display: 'block', flexShrink: 0 }}
+    >
+      {children}
+    </svg>
+  );
+}
+
+function GlyphCopy({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" />
+  </>);
+}
+
+function GlyphExternalOpen({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <path d="M14 4h6v6" />
+    <path d="M20 4l-8.5 8.5" />
+    <path d="M20 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3.5" />
+  </>);
+}
+
+function GlyphDownload({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <path d="M12 4v10" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M5 19h14" />
+  </>);
+}
+
+function GlyphTrash({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <path d="M4 7h16" />
+    <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    <path d="M6.5 7l.7 11.2A2 2 0 0 0 9.2 20h5.6a2 2 0 0 0 2-1.8L17.5 7" />
+    <path d="M10 11v5" />
+    <path d="M14 11v5" />
+  </>);
+}
+
+function GlyphExpand({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <path d="M14 4h6v6" />
+    <path d="M20 4l-6.5 6.5" />
+    <path d="M10 20H4v-6" />
+    <path d="M4 20l6.5-6.5" />
+  </>);
+}
+
+function GlyphShrink({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <path d="M20 10h-6V4" />
+    <path d="M13.5 9.5 20 4" />
+    <path d="M4 14h6v6" />
+    <path d="M10.5 14.5 4 20" />
+  </>);
+}
+
+function GlyphPhone({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <rect x="7" y="3" width="10" height="18" rx="2" />
+    <path d="M11 17.5h2" />
+  </>);
+}
 
 export type MobileDocumentDraftImage = {
   id: string;
@@ -1676,17 +1760,19 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
   const categoryLabel = (id: DocumentCategoryId) => t(DOCUMENT_CATEGORY_LABEL[id][0], DOCUMENT_CATEGORY_LABEL[id][1]);
 
   // Fullscreen toggle: shared by the document and audio preview headers.
+  // Rendered as a compact icon button in the toolbar; the accessible name
+  // stays 全屏/恢复 so tests and screen readers keep the same contract.
   const fullscreenToggle = (
     <button
-      className="mobile-documents-btn"
+      className="mobile-documents-btn mdoc-toolbar-btn"
       type="button"
-      style={styles.btn}
       onClick={() => setPreviewFullscreen((value) => !value)}
+      aria-label={previewFullscreen ? t('Restore', '恢复') : t('Fullscreen', '全屏')}
       title={previewFullscreen
         ? t('Restore the embedded preview', '恢复嵌入预览')
         : t('Expand the preview to fill the window', '全屏查看内容')}
     >
-      {previewFullscreen ? t('Restore', '恢复') : t('Fullscreen', '全屏')}
+      {previewFullscreen ? <GlyphShrink /> : <GlyphExpand />}
     </button>
   );
 
@@ -1705,59 +1791,78 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       <div
         className="mobile-documents-preview-header mdoc-preview-header"
       >
-        <div className="mobile-documents-preview-title mdoc-preview-title">
-          {selected ? selected.title || selected.id : t('Preview', '预览')}
+        <div className="mdoc-preview-heading">
+          <div className="mobile-documents-preview-title mdoc-preview-title">
+            {selected ? selected.title || selected.id : t('Preview', '预览')}
+          </div>
+          {selected && !isAudioItem(selected) && selected.has_original && selected.source_filename ? (
+            <div className="mdoc-preview-subtitle">
+              {t('Original file', '原件')} · {selected.source_filename}
+              {selected.source_size ? ` · ${formatLibraryFileSize(selected.source_size)}` : ''}
+            </div>
+          ) : null}
         </div>
         {selected ? (
           isAudioItem(selected) ? (
             <>
-              <button type="button" className="mobile-documents-btn mobile-documents-btn--primary" style={styles.btnPrimary} onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
-                {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
-              </button>
-              {selected.audio?.available ? <><button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
-              <button
-                className="mobile-documents-btn mobile-documents-btn--danger"
-                type="button"
-                 style={{ ...styles.btn, borderColor: 'color-mix(in srgb, var(--theme-danger, #c43d34) 45%, var(--theme-border, #d9e1ec))', color: 'var(--theme-danger, #c43d34)' }}
-                onClick={() => void deleteDraft(selected)}
-                disabled={uploading}
-              >
-                {libraryDeleteButtonCopy(selected, t).title}
-              </button>
-              {fullscreenToggle}
+              <div className="mdoc-toolbar-group">
+                <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--primary" onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
+                  {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
+                </button>
+                {selected.audio?.available ? <><button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
+              </div>
+              <div className="mdoc-toolbar-divider" aria-hidden="true" />
+              <div className="mdoc-toolbar-group">
+                <button
+                  className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--danger"
+                  type="button"
+                  onClick={() => void deleteDraft(selected)}
+                  disabled={uploading}
+                  title={libraryDeleteButtonCopy(selected, t).title}
+                  aria-label={libraryDeleteButtonCopy(selected, t).aria}
+                >
+                  <GlyphTrash />
+                </button>
+                <div className="mdoc-toolbar-divider" aria-hidden="true" />
+                {fullscreenToggle}
+              </div>
             </>
           ) : <>
-             <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview}>
-              {t('Copy', '复制')}
-            </button>
-            {selected.has_original ? (
-              <>
-                <button
-                  className="mobile-documents-btn"
-                  type="button"
-                  style={styles.btn}
-                  onClick={() => void openSelectedOriginal()}
-                  disabled={uploading}
-                  title={t('Open the original uploaded file', '用系统默认程序打开原件')}
-                >
-                  {t('Open original', '打开原件')}
-                </button>
-                <button
-                  className="mobile-documents-btn"
-                  type="button"
-                  style={styles.btn}
-                  onClick={() => void saveSelectedOriginal()}
-                  disabled={uploading}
-                  title={t('Save the original file to disk', '将原件另存到本地')}
-                >
-                  {t('Save original', '保存原件')}
-                </button>
-              </>
-            ) : null}
-             <button
-               className="mobile-documents-btn mobile-documents-btn--primary"
+            <div className="mdoc-toolbar-group">
+              <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview} title={t('Copy the text content', '复制正文内容')} aria-label={t('Copy', '复制')}>
+                <GlyphCopy />
+                <span>{t('Copy', '复制')}</span>
+              </button>
+              {selected.has_original ? (
+                <>
+                  <div className="mdoc-toolbar-divider" aria-hidden="true" />
+                  <button
+                    className="mobile-documents-btn mdoc-toolbar-btn"
+                    type="button"
+                    onClick={() => void openSelectedOriginal()}
+                    disabled={uploading}
+                    title={t('Open the original uploaded file', '用系统默认程序打开原件')}
+                  >
+                    <GlyphExternalOpen />
+                    <span>{t('Open original', '打开原件')}</span>
+                  </button>
+                  <button
+                    className="mobile-documents-btn mdoc-toolbar-btn"
+                    type="button"
+                    onClick={() => void saveSelectedOriginal()}
+                    disabled={uploading}
+                    title={t('Save the original file to disk', '将原件另存到本地')}
+                  >
+                    <GlyphDownload />
+                    <span>{t('Save original', '保存原件')}</span>
+                  </button>
+                </>
+              ) : null}
+            </div>
+            <div className="mdoc-toolbar-divider" aria-hidden="true" />
+            <button
+              className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--primary"
               type="button"
-              style={styles.btnPrimary}
               onClick={() => void shareSelectedAgain()}
               disabled={uploading}
               title={t(
@@ -1765,22 +1870,24 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                 '文件已在云盘中；仅确认共享，不会重复创建',
               )}
             >
-              {t('Already on Mobile', '已共享到手机')}
+              <GlyphPhone />
+              <span>{t('Already on Mobile', '已共享到手机')}</span>
             </button>
-             <button
-               className="mobile-documents-btn mobile-documents-btn--danger"
-              type="button"
-              style={{
-                ...styles.btn,
-                 borderColor: 'color-mix(in srgb, var(--theme-danger, #c43d34) 45%, var(--theme-border, #d9e1ec))',
-                 color: 'var(--theme-danger, #c43d34)',
-              }}
-              onClick={() => void deleteDraft(selected)}
-              disabled={uploading}
-            >
-              {libraryDeleteButtonCopy(selected, t).title}
-            </button>
-            {fullscreenToggle}
+            <div className="mdoc-toolbar-divider" aria-hidden="true" />
+            <div className="mdoc-toolbar-group">
+              <button
+                className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--danger"
+                type="button"
+                onClick={() => void deleteDraft(selected)}
+                disabled={uploading}
+                title={libraryDeleteButtonCopy(selected, t).title}
+                aria-label={libraryDeleteButtonCopy(selected, t).aria}
+              >
+                <GlyphTrash />
+              </button>
+              <div className="mdoc-toolbar-divider" aria-hidden="true" />
+              {fullscreenToggle}
+            </div>
           </>
         ) : null}
       </div>
@@ -1802,7 +1909,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             <div aria-live="polite" className="mdoc-audio-grid">
               <MeetingRecordingPlayer item={selected} t={t} />
               <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div className="mdoc-audio-message">{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div className="mdoc-audio-track"><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2f6fbc)', borderRadius: 3 }} /></div> : null}</div>
-              {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
+              {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--primary" onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
               {selected.retention_until ? <div className="mdoc-retention">{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
             </div>
           ) : <MobileDraftFilePreview key={selected.id} item={selected} lang={lang} />

@@ -118,6 +118,35 @@ describe('CodePreviewPanel workspace vs file tabs', () => {
         expect(screen.queryByTestId('code-preview-workspace-export-zip')).toBeNull();
     });
 
+    it('shows the read file body when a file focus nonce follows an agent read', async () => {
+        // The coding agent's read events carry force_open; the host bumps the
+        // file-focus nonce so the pane must leave the directory tree and show
+        // the "READ snake.cpp" body instead of a tab over a directory listing.
+        const file = snakeFile();
+        const view = renderLocalPreview(new Map([[file.filePath, file]]), file.filePath);
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                projectPath="F:/test-prog"
+                hideHeaderClose
+                fileFocusNonce={1}
+            />,
+        );
+
+        expect(await screen.findByTestId('code-preview-plain-view')).toBeTruthy();
+        expect(screen.getByTestId('code-preview-active-path').textContent).toContain('snake.cpp');
+        expect(screen.queryByTestId('code-preview-workspace')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-tab').getAttribute('aria-selected')).toBe('false');
+        expect(screen.getByTestId('file-tab').getAttribute('aria-selected')).toBe('true');
+    });
+
     it('exports a submission zip from the paper workspace', async () => {
         exportZip.mockClear();
         const file = snakeFile();

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ import (
 )
 
 type testLLMServiceSystemSettings struct {
+	// mu guards both maps: concurrent handler flows (daily check-in race
+	// regression) touch Set/Get from several goroutines at once.
+	mu        sync.Mutex
 	data      map[string]string
 	getCounts map[string]*atomic.Int32
 }
@@ -30,20 +34,28 @@ func newTestLLMServiceSystemSettings() *testLLMServiceSystemSettings {
 }
 
 func (s *testLLMServiceSystemSettings) Set(_ context.Context, key, valueJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.data[key] = valueJSON
 	return nil
 }
 
 func (s *testLLMServiceSystemSettings) Get(_ context.Context, key string) (string, error) {
-	s.counterForKey(key).Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counterForKeyLocked(key).Add(1)
 	return s.data[key], nil
 }
 
 func (s *testLLMServiceSystemSettings) GetCount(key string) int {
-	return int(s.counterForKey(key).Load())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int(s.counterForKeyLocked(key).Load())
 }
 
 func (s *testLLMServiceSystemSettings) ResetGetCounts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, counter := range s.getCounts {
 		if counter != nil {
 			counter.Store(0)
@@ -51,7 +63,7 @@ func (s *testLLMServiceSystemSettings) ResetGetCounts() {
 	}
 }
 
-func (s *testLLMServiceSystemSettings) counterForKey(key string) *atomic.Int32 {
+func (s *testLLMServiceSystemSettings) counterForKeyLocked(key string) *atomic.Int32 {
 	counter := s.getCounts[key]
 	if counter == nil {
 		counter = &atomic.Int32{}

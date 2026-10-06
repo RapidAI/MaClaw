@@ -31,7 +31,8 @@ func TestPostLLMServiceCheckinGrantsCreditsOncePerDay(t *testing.T) {
 	tenantSystem := scopedSystemSettingsForTenant("tenant_checkin", system)
 	enableTestCheckin(t, system, "tenant_checkin", 10)
 	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
-		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,8 @@ func TestGetLLMServiceStatusIncludesCheckinState(t *testing.T) {
 	enableTestCheckin(t, system, "tenant_checkin_status", 5)
 	now := time.Now().UTC()
 	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
-		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
 		Grants: []llmservice.Grant{{
 			ID: "g1", Email: "status@example.com", ServiceGroupID: "coding-basic", Source: "card",
 			StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreatedAt: now, CreditsTotal: 50,
@@ -183,7 +185,8 @@ func TestGetCheckinRecordsPeriodsPaginationAndStats(t *testing.T) {
 	tenantSystem := scopedSystemSettingsForTenant("tenant_checkin_records", system)
 	enableTestCheckin(t, system, "tenant_checkin_records", 3)
 	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
-		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -263,5 +266,79 @@ func TestGetCheckinRecordsPeriodsPaginationAndStats(t *testing.T) {
 	}
 	if records, ok := hugePage["records"].([]any); !ok || len(records) != 0 {
 		t.Fatalf("expected empty records for huge page, got %v", hugePage["records"])
+	}
+}
+
+// Concurrent same-day check-ins must grant exactly once: the process mutex
+// serializes the load-mark-grant-save sequence.
+func TestPostLLMServiceCheckinConcurrentGrantsOnce(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_checkin_race", "race@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_checkin_race", system)
+	enableTestCheckin(t, system, "tenant_checkin_race", 20)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const racers = 8
+	start := make(chan struct{})
+	done := make(chan *httptest.ResponseRecorder, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			<-start
+			req := httptest.NewRequest(http.MethodPost, "/api/llm/service/checkin", nil)
+			req.Header.Set("Authorization", "Bearer "+viewerToken)
+			rec := httptest.NewRecorder()
+			PostLLMServiceCheckinHandler(identity, system, nil).ServeHTTP(rec, req)
+			done <- rec
+		}()
+	}
+	close(start)
+	// The mutex must serialize every phase (including the marker write) so
+	// exactly one request awards and the rest see the idempotent reply.
+	totalAwarded := 0.0
+	winners := 0
+	for i := 0; i < racers; i++ {
+		rec := <-done
+		if rec.Code != http.StatusOK {
+			t.Fatalf("concurrent check-in status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var result hubCheckinResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if !result.Success {
+			t.Fatalf("unexpected unsuccessful response: %+v", result)
+		}
+		if result.CreditsAwarded != 0 {
+			winners++
+			if result.AlreadyCheckedIn {
+				t.Fatalf("awarding response flagged already_checked_in: %+v", result)
+			}
+		} else if !result.AlreadyCheckedIn {
+			t.Fatalf("zero-award response must be already_checked_in: %+v", result)
+		}
+		totalAwarded += result.CreditsAwarded
+	}
+	if winners != 1 || totalAwarded != 20 {
+		t.Fatalf("expected exactly 1 winner awarding 20 credits across %d concurrent check-ins, got %d winners totaling %v", racers, winners, totalAwarded)
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := 0
+	for _, grant := range reg.Grants {
+		if grant.Source == checkinGrantSource {
+			grants++
+		}
+	}
+	if grants != 1 {
+		t.Fatalf("expected exactly 1 check-in grant, got %d", grants)
 	}
 }

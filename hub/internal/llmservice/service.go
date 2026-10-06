@@ -1097,6 +1097,25 @@ func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc us
 	return effectiveServiceGroupIDsForOwner(ctx, reg, securitySvc, newUserAccountRef("", email), now)
 }
 
+// EffectiveServiceGroupIDsForUser returns the model service groups currently
+// effective for the account (user bindings, security-group chains, global or
+// default-new-user fallbacks, plus live grants). Transport flows that mint
+// wallet grants outside the billing engine — daily check-in rewards — use it
+// so credits land only on groups the account can already reach: granting to
+// other groups would widen model access as a side effect of the grant itself.
+func EffectiveServiceGroupIDsForUser(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, userID, email string) ([]string, error) {
+	if reg == nil {
+		reg = &Registry{}
+	}
+	reg.Normalize()
+	var resolver userGroupResolver
+	if securitySvc != nil {
+		resolver = securitySvc
+	}
+	ids, _, err := effectiveServiceGroupIDsForOwner(ctx, reg, resolver, newUserAccountRef(userID, email), time.Now().UTC())
+	return ids, err
+}
+
 func effectiveServiceGroupIDsForOwner(ctx context.Context, reg *Registry, securitySvc userGroupResolver, owner userAccountRef, now time.Time) ([]string, []Grant, error) {
 	serviceGroupIDs := make([]string, 0)
 	seen := map[string]struct{}{}

@@ -1,0 +1,231 @@
+diff --git a/node_modules/vite/dist/node/chunks/dep-3O3b9SCF.js b/node_modules/vite/dist/node/chunks/dep-3O3b9SCF.js
+index fc939d0..e228e28 100644
+--- a/node_modules/vite/dist/node/chunks/dep-3O3b9SCF.js
++++ b/node_modules/vite/dist/node/chunks/dep-3O3b9SCF.js
+@@ -9195,7 +9195,7 @@ function esbuildPlugin(config) {
+       server = _server;
+     },
+     async transform(code, id) {
+-      if (filter(id) || filter(cleanUrl(id))) {
++      if (filter(id) || filter(cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()))) {
+         const result = await transformWithEsbuild(
+           code,
+           id,
+@@ -10392,7 +10392,7 @@ function assetPlugin(config) {
+     },
+     resolveId: {
+       handler(id) {
+-        if (!config.assetsInclude(cleanUrl(id)) && !urlRE$1.test(id)) {
++        if (!config.assetsInclude(cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase())) && !urlRE$1.test(id)) {
+           return;
+         }
+         const publicFile = checkPublicFile(id, config);
+@@ -10407,13 +10407,13 @@ function assetPlugin(config) {
+           return;
+         }
+         if (rawRE$1.test(id)) {
+-          const file = checkPublicFile(id, config) || cleanUrl(id);
++          const file = checkPublicFile(id, config) || cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+           this.addWatchFile(file);
+           return `export default ${JSON.stringify(
+             await fsp.readFile(file, "utf-8")
+           )}`;
+         }
+-        if (!urlRE$1.test(id) && !config.assetsInclude(cleanUrl(id))) {
++        if (!urlRE$1.test(id) && !config.assetsInclude(cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()))) {
+           return;
+         }
+         id = removeUrlQuery(id);
+@@ -10490,11 +10490,11 @@ async function fileToDevUrl(environment, id, skipBase = false) {
+   const config = environment.getTopLevelConfig();
+   const publicFile = checkPublicFile(id, config);
+   if (inlineRE$3.test(id)) {
+-    const file = publicFile || cleanUrl(id);
++    const file = publicFile || cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+     const content = await fsp.readFile(file);
+     return assetToDataURL(environment, file, content);
+   }
+-  const cleanedId = cleanUrl(id);
++  const cleanedId = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+   if (svgExtRE.test(cleanedId)) {
+     const file = publicFile || cleanedId;
+     const content = await fsp.readFile(file);
+@@ -16023,7 +16023,7 @@ function tryCleanFsResolve(file, options, tryIndex = true, skipPackageJson = fal
+ function tryNodeResolve(id, importer, options, depsOptimizer, externalize) {
+   const { root, dedupe, isBuild, preserveSymlinks, packageCache } = options;
+   const deepMatch = deepImportRE.exec(id);
+-  const pkgId = deepMatch ? deepMatch[1] || deepMatch[2] : cleanUrl(id);
++  const pkgId = deepMatch ? deepMatch[1] || deepMatch[2] : cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+   let basedir;
+   if (dedupe.includes(pkgId)) {
+     basedir = root;
+@@ -16390,7 +16390,7 @@ function optimizedDepsPlugin() {
+       const depsOptimizer = environment.depsOptimizer;
+       if (depsOptimizer?.isOptimizedDepFile(id)) {
+         const metadata = depsOptimizer.metadata;
+-        const file = cleanUrl(id);
++        const file = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+         const versionMatch = DEP_VERSION_RE.exec(file);
+         const browserHash = versionMatch ? versionMatch[1].split("=")[1] : void 0;
+         const info = optimizedDepInfoFromFile(metadata, file);
+@@ -35986,7 +35986,7 @@ async function loadAndTransform(environment, id, url, options, timestamp, mod, r
+   const loadStart = debugLoad ? performance$1.now() : 0;
+   const loadResult = await pluginContainer.load(id);
+   if (loadResult == null) {
+-    const file = cleanUrl(id);
++    const file = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+     if (options.html && !id.endsWith(".html")) {
+       return null;
+     }
+@@ -36375,8 +36375,10 @@ function htmlInlineProxyPlugin(config) {
+         const proxyMatch = htmlProxyRE$1.exec(id);
+         if (proxyMatch) {
+           const index = Number(proxyMatch[1]);
+-          const file = cleanUrl(id);
+-          const url = file.replace(normalizePath$3(config.root), "");
++          const file = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
++          const _rN = normalizePath$3(config.root);
++          const _fN = normalizePath$3(file);
++          const url = _fN.toLowerCase().startsWith(_rN.toLowerCase()) ? _fN.slice(_rN.length) : _fN;
+           const result = htmlProxyMap.get(config).get(url)?.[index];
+           if (result) {
+             return { ...result, moduleSideEffects: true };
+@@ -36644,7 +36646,7 @@ import ${JSON.stringify(url)}`;
+                   } else if (node.childNodes.length) {
+                     const scriptNode = node.childNodes.pop();
+                     const contents = scriptNode.value;
+-                    const filePath = id.replace(normalizePath$3(config.root), "");
++                    const filePath = (() => { const _r = normalizePath$3(config.root); const _f = normalizePath$3(id); return _f.toLowerCase().startsWith(_r.toLowerCase()) ? _f.slice(_r.length) : _f; })();
+                     addToHTMLProxyCache(config, filePath, inlineModuleIndex, {
+                       code: contents
+                     });
+@@ -36740,11 +36742,11 @@ import ${JSON.stringify(url)}`;
+             if (inlineStyle) {
+               inlineModuleIndex++;
+               const code = inlineStyle.attr.value;
+-              const filePath = id.replace(normalizePath$3(config.root), "");
++              const filePath = (() => { const _r = normalizePath$3(config.root); const _f = normalizePath$3(id); return _f.toLowerCase().startsWith(_r.toLowerCase()) ? _f.slice(_r.length) : _f; })();
+               addToHTMLProxyCache(config, filePath, inlineModuleIndex, { code });
+               js += `
+ import "${id}?html-proxy&inline-css&style-attr&index=${inlineModuleIndex}.css"`;
+-              const hash = getHash(cleanUrl(id));
++              const hash = getHash(cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()));
+               overwriteAttrValue(
+                 s,
+                 inlineStyle.location,
+@@ -36753,14 +36755,14 @@ import "${id}?html-proxy&inline-css&style-attr&index=${inlineModuleIndex}.css"`;
+             }
+             if (node.nodeName === "style" && node.childNodes.length) {
+               const styleNode = node.childNodes.pop();
+-              const filePath = id.replace(normalizePath$3(config.root), "");
++              const filePath = (() => { const _r = normalizePath$3(config.root); const _f = normalizePath$3(id); return _f.toLowerCase().startsWith(_r.toLowerCase()) ? _f.slice(_r.length) : _f; })();
+               inlineModuleIndex++;
+               addToHTMLProxyCache(config, filePath, inlineModuleIndex, {
+                 code: styleNode.value
+               });
+               js += `
+ import "${id}?html-proxy&inline-css&index=${inlineModuleIndex}.css"`;
+-              const hash = getHash(cleanUrl(id));
++              const hash = getHash(cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()));
+               s.update(
+                 styleNode.sourceCodeLocation.startOffset,
+                 styleNode.sourceCodeLocation.endOffset,
+@@ -37605,7 +37607,7 @@ function transformMiddleware(server) {
+         const id = e.id;
+         let servingAccessResult = checkLoadingAccess(
+           server.config,
+-          cleanUrl(id)
++          cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase())
+         );
+         if (servingAccessResult === "allowed") {
+           servingAccessResult = checkLoadingAccess(server.config, id);
+@@ -40228,7 +40230,7 @@ function saveEmitWorkerAsset(config, asset) {
+   workerMap.assets.set(asset.fileName, asset);
+ }
+ async function bundleWorkerEntry(config, id) {
+-  const input = cleanUrl(id);
++  const input = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+   const newBundleChain = [...config.bundleChain, input];
+   if (config.bundleChain.includes(input)) {
+     throw new Error(
+@@ -40429,7 +40431,7 @@ function webWorkerPlugin(config) {
+         }`;
+         let urlCode;
+         if (isBuild) {
+-          if (isWorker && config.bundleChain.at(-1) === cleanUrl(id)) {
++          if (isWorker && config.bundleChain.at(-1) === cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase())) {
+             urlCode = "self.location.href";
+           } else if (inlineRE$1.test(id)) {
+             const chunk = await bundleWorkerEntry(config, id);
+@@ -40479,7 +40481,7 @@ function webWorkerPlugin(config) {
+             urlCode = JSON.stringify(await workerFileToUrl(config, id));
+           }
+         } else {
+-          let url = await fileToUrl$1(this, cleanUrl(id));
++          let url = await fileToUrl$1(this, cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()));
+           url = injectQuery(url, `${WORKER_FILE_ID}&type=${workerType}`);
+           urlCode = JSON.stringify(url);
+         }
+@@ -43398,7 +43400,7 @@ function cssPostPlugin(config) {
+             throw new Error(`HTML proxy index in "${id}" not found`);
+           }
+           addToHTMLProxyTransformResult(
+-            `${getHash(cleanUrl(id))}_${Number.parseInt(index)}`,
++            `${getHash(cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()))}_${Number.parseInt(index)}`,
+             css
+           );
+           return `export default ''`;
+@@ -43413,7 +43415,7 @@ function cssPostPlugin(config) {
+               if (sourcemap.mappings) {
+                 await injectSourcesContent(
+                   sourcemap,
+-                  cleanUrl(id),
++                  cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()),
+                   config.logger
+                 );
+               }
+@@ -43562,7 +43564,7 @@ function cssPostPlugin(config) {
+         while (match = cssUrlAssetRE.exec(code)) {
+           const [full, idHex] = match;
+           const id = Buffer.from(idHex, "hex").toString();
+-          const originalFileName = cleanUrl(id);
++          const originalFileName = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+           const cssAssetName = ensureFileExt(
+             path$c.basename(originalFileName),
+             ".css"
+@@ -43930,7 +43932,7 @@ async function compileCSSPreprocessors(environment, id, lang, code, workerContro
+     ...preprocessorOptions && preprocessorOptions[lang] || {},
+     alias: config.resolve.alias,
+     // important: set this for relative import resolving
+-    filename: cleanUrl(id),
++    filename: cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()),
+     enableSourcemap: devSourcemap ?? false
+   };
+   const preProcessor = workerController[lang];
+@@ -44019,7 +44021,7 @@ async function compileCSS(environment, id, code, workerController, urlResolver)
+   return {
+     ...transformResult,
+     map: config.css.devSourcemap ? combineSourcemapsIfExists(
+-      cleanUrl(id),
++      cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase()),
+       typeof transformResult.map === "string" ? JSON.parse(transformResult.map) : transformResult.map,
+       preprocessorMap
+     ) : { mappings: "" },
+@@ -44240,7 +44242,7 @@ ${generateCodeFrame(
+     // version property of rawPostcssMap is declared as string
+     // but actually it is a number
+     rawPostcssMap,
+-    cleanUrl(id)
++    cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase())
+   );
+   return {
+     code: postcssResult.css,
+@@ -46182,7 +46184,7 @@ function buildLoadFallbackPlugin() {
+     load: {
+       async handler(id) {
+         try {
+-          const cleanedId = cleanUrl(id);
++          const cleanedId = cleanUrl(id).replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+           const content = await fsp.readFile(cleanedId, "utf-8");
+           this.addWatchFile(cleanedId);
+           return content;

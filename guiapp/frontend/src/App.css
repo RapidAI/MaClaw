@@ -4307,10 +4307,11 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     flex-shrink: 0;
 }
 
-/* Migrated from inline styles in SidebarToolSelector. */
+/* Migrated from inline styles in SidebarToolSelector.  The bottom inset is
+   dropped so the task pane content sits right against the decorative line. */
 .sts-divider-wrap {
     flex-shrink: 0;
-    padding: 12px 16px;
+    padding: 12px 16px 0;
 }
 
 .sts-divider {
@@ -23355,9 +23356,39 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     background: var(--theme-primary);
     box-shadow: none;
 }
-/* Daily check-in rail button: amber highlight until claimed, gray afterwards. */
-.sidebar .left-nav-item.left-nav-item--checkin .checkin-nav-icon-badge {
-    position: static;
+/* Daily check-in rail entry: same vertical pill geometry as the Bot entry
+   (icon chip above the label) so it stops reading as a stray row, but with an
+   amber CTA treatment — tinted pill, filled gradient badge, pulse dot — until
+   today's reward is claimed, then it settles into the muted gray state.
+   The doubled --checkin class outranks the !important rail resets
+   (.left-nav-item:not(--bot) geometry and .mc-nav-rail .sidebar-item wash). */
+.sidebar .left-nav-item.left-nav-item--checkin.left-nav-item--checkin {
+    --mc-checkin-accent: #f59e0b;
+    --mc-checkin-ink: color-mix(in srgb, #f59e0b 76%, var(--theme-text-primary));
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: auto !important;
+    min-height: 62px !important;
+    margin: 4px 6px !important;
+    gap: 6px;
+    border-radius: 12px;
+    overflow: visible;
+    padding: 6px 0;
+    border: none;
+    text-align: center;
+    background: color-mix(in srgb, var(--mc-checkin-accent) 13%, var(--theme-surface)) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mc-checkin-accent) 42%, transparent) !important;
+}
+.sidebar .left-nav-item.left-nav-item--checkin.left-nav-item--checkin:not(:disabled):hover {
+    background: color-mix(in srgb, var(--mc-checkin-accent) 21%, var(--theme-surface)) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mc-checkin-accent) 58%, transparent), 0 6px 16px -6px color-mix(in srgb, var(--mc-checkin-accent) 55%, transparent) !important;
+    transform: translateY(-1px);
+}
+.sidebar .left-nav-item.left-nav-item--checkin.left-nav-item--checkin:not(:disabled):active { transform: translateY(0); }
+.sidebar .left-nav-item.left-nav-item--checkin .sidebar-icon { width: auto; height: auto; margin: 0; }
+.sidebar .left-nav-item.left-nav-item--checkin .sidebar-icon .checkin-nav-icon-badge {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -23366,27 +23397,53 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     border-radius: 12px;
     filter: none;
     opacity: 1;
-    color: var(--theme-warning, #d97706);
-    background: color-mix(in srgb, var(--theme-warning, #d97706) 16%, var(--theme-surface));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-warning, #d97706) 42%, transparent);
+    color: #fff;
+    background: linear-gradient(140deg, #fbbf24, #f59e0b 52%, #d97706);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 3px 9px -3px color-mix(in srgb, var(--mc-checkin-accent, #f59e0b) 60%, transparent);
+    transition: box-shadow var(--transition-fast), transform var(--transition-fast);
 }
-.sidebar .left-nav-item.left-nav-item--checkin:not(:disabled):hover .checkin-nav-icon-badge {
-    background: color-mix(in srgb, var(--theme-warning, #d97706) 28%, var(--theme-surface));
+.sidebar .left-nav-item.left-nav-item--checkin:not(:disabled):hover .sidebar-icon .checkin-nav-icon-badge {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 5px 13px -3px color-mix(in srgb, var(--mc-checkin-accent, #f59e0b) 68%, transparent);
+}
+/* Unclaimed-only attention dot; hidden once today's reward is claimed. */
+.sidebar .left-nav-item.left-nav-item--checkin:not(.checked-in):not(:disabled) .sidebar-icon .checkin-nav-icon-badge::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #ef4444;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .sidebar .left-nav-item.left-nav-item--checkin:not(.checked-in):not(:disabled) .sidebar-icon .checkin-nav-icon-badge::before {
+        animation: mc-checkin-dot-pulse 2.2s ease-out infinite;
+    }
+    @keyframes mc-checkin-dot-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, .5); }
+        70%, 100% { box-shadow: 0 0 0 7px rgba(239, 68, 68, 0); }
+    }
 }
 .sidebar .left-nav-item.left-nav-item--checkin > .bot-nav-label {
-    color: var(--theme-warning, #d97706);
+    color: var(--mc-checkin-ink, #b45309);
     font-size: 12px;
     line-height: 1.2;
     font-weight: 700;
 }
-.sidebar .left-nav-item.left-nav-item--checkin.checked-in .checkin-nav-icon-badge,
-.sidebar .left-nav-item.left-nav-item--checkin:disabled .checkin-nav-icon-badge {
-    color: var(--theme-text-muted);
-    background: color-mix(in srgb, var(--theme-text-muted) 12%, var(--theme-surface));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 26%, transparent);
+/* Claimed: muted gray pill, no dot, no glow. */
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in {
+    background: color-mix(in srgb, var(--theme-text-muted) 9%, var(--theme-surface)) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 24%, transparent) !important;
 }
-.sidebar .left-nav-item.left-nav-item--checkin.checked-in > .bot-nav-label,
-.sidebar .left-nav-item.left-nav-item--checkin:disabled > .bot-nav-label {
+/* Pending request (in flight, not yet claimed): keep the amber look, dim only. */
+.sidebar .left-nav-item.left-nav-item--checkin:disabled:not(.checked-in) { opacity: .72; }
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in .sidebar-icon .checkin-nav-icon-badge {
+    color: var(--theme-text-muted);
+    background: color-mix(in srgb, var(--theme-text-muted) 14%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 28%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in > .bot-nav-label {
     color: var(--theme-text-muted);
 }
 .sidebar .left-nav-item:not(.left-nav-item--bot) > span:last-child { font-size: 12px !important; line-height: 1.2 !important; font-weight: 600 !important; }
@@ -24065,11 +24122,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 
 /* Real Wails sidebar shell alignment.
    The drag strip is pinned to the window top, while #App already reserves
-   --dwm-top-offset. The pane only keeps whatever part of the strip still
-   hangs below that inset, so the search is not pushed down a second time. */
+   --dwm-top-offset. The pane keeps no extra top inset: the decorative
+   tool divider owns that rhythm and the search field hugs it. The pane's
+   first rows still sit below the 10px drag strip, so clicks stay usable. */
 #App { --mc-sidebar-drag-strip: max(10px, var(--dwm-top-offset, 0px)); }
 .mc-sidebar-shell { width: 308px !important; height: 100%; min-height: 0; overflow: hidden; background: var(--theme-surface) !important; border-right: 0 !important; }
-.mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: max(0px, calc(var(--mc-sidebar-drag-strip, 10px) - var(--dwm-top-offset, 0px))) 14px 10px !important; min-height: 0; }
+.mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: 0 14px 10px !important; min-height: 0; }
 .mc-sidebar-shell [data-testid="sidebar-middle-pane-tasks"] { background: var(--theme-surface); min-height: 0; overflow: hidden; }
 .mc-sidebar-shell .mc-sidebar-middle-tabs { display: none !important; }
 @media (max-width: 1100px) { .mc-sidebar-shell { width: 280px !important; } }

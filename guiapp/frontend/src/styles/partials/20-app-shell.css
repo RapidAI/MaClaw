@@ -2856,10 +2856,11 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     flex-shrink: 0;
 }
 
-/* Migrated from inline styles in SidebarToolSelector. */
+/* Migrated from inline styles in SidebarToolSelector.  The bottom inset is
+   dropped so the task pane content sits right against the decorative line. */
 .sts-divider-wrap {
     flex-shrink: 0;
-    padding: 12px 16px;
+    padding: 12px 16px 0;
 }
 
 .sts-divider {

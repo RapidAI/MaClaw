@@ -225,9 +225,9 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 		}
 		awarded := 0.0
 		if cfg.Credits > 0 {
-			groupIDs := validServiceGroupIDsForCheckin(reg)
+			groupIDs := checkinGrantGroupIDs(ctx, reg, securitySvc, principal.UserID, principal.Email)
 			if len(groupIDs) == 0 {
-				writeError(w, http.StatusBadRequest, "CHECKIN_NO_SERVICE_GROUPS", "No LLM service groups are configured for check-in rewards")
+				writeError(w, http.StatusBadRequest, "CHECKIN_NO_SERVICE_GROUPS", "No metered LLM service groups are available for check-in rewards")
 				return
 			}
 			creditsPerGroup := cfg.Credits / float64(len(groupIDs))
@@ -279,14 +279,25 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 	}
 }
 
-func validServiceGroupIDsForCheckin(reg *llmservice.Registry) []string {
-	if reg == nil {
+// checkinGrantGroupIDs picks the check-in reward targets: the account's
+// currently effective service groups whose access policy is grant_required.
+//
+// Free-policy groups (including the reserved system-free group and the builtin
+// no-permissions fallback, whose empty access policy normalizes to free) never
+// debit credits — rewards granted there would sit unspendable while inflating
+// the displayed wallet. Restricting to already-effective groups also keeps the
+// grant from widening the account's model access, matching the referral
+// reward flow which refuses non-metered service groups.
+func checkinGrantGroupIDs(ctx context.Context, reg *llmservice.Registry, securitySvc *security.SecurityService, userID, email string) []string {
+	effective, err := llmservice.EffectiveServiceGroupIDsForUser(ctx, reg, securitySvc, userID, email)
+	if err != nil {
+		log.Printf("[checkin] effective service group resolution failed user_id=%s err=%v", userID, err)
 		return nil
 	}
-	ids := make([]string, 0, len(reg.ModelServiceGroups))
-	for _, group := range reg.ModelServiceGroups {
-		id := strings.TrimSpace(group.ID)
-		if id == "" || reg.FindModelServiceGroup(id) == nil {
+	ids := make([]string, 0, len(effective))
+	for _, id := range effective {
+		group := reg.FindModelServiceGroup(id)
+		if group == nil || llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyGrantRequired {
 			continue
 		}
 		ids = append(ids, id)
