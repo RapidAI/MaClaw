@@ -43,15 +43,15 @@ func loadQwen3(t testing.TB) *Qwen3Embedder {
 
 func TestQwen3PreTokenize(t *testing.T) {
 	cases := map[string][]string{
-		"Hello world":            {"Hello", " world"},
-		"I'll go, won't I?":      {"I", "'ll", " go", ",", " won", "'t", " I", "?"},
-		"price 1234.5元":          {"price", " ", "1", "2", "3", "4", ".", "5", "元"},
-		"a  b":                   {"a", " ", " b"},
-		"x\n\n  y":               {"x", "\n\n", " ", " y"},
-		"end   ":                 {"end", "   "},
-		"打开报告.docx":              {"打开报告", ".docx"},
-		" ?!\n":                  {" ?!\n"},
-		"tab\there":              {"tab", "\there"},
+		"Hello world":       {"Hello", " world"},
+		"I'll go, won't I?": {"I", "'ll", " go", ",", " won", "'t", " I", "?"},
+		"price 1234.5元":     {"price", " ", "1", "2", "3", "4", ".", "5", "元"},
+		"a  b":              {"a", " ", " b"},
+		"x\n\n  y":          {"x", "\n\n", " ", " y"},
+		"end   ":            {"end", "   "},
+		"打开报告.docx":         {"打开报告", ".docx"},
+		" ?!\n":             {" ?!\n"},
+		"tab\there":         {"tab", "\there"},
 	}
 	for in, want := range cases {
 		got := qwen2PreTokenize(in)
