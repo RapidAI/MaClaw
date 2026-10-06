@@ -155,7 +155,7 @@ def main():
         row = [conf[(rl_, cl)] for cl in labs]
         n = rem_freq[rl_]
         other = n - sum(row)
-        print(f"{rl_:<{w}} | " + " ".join(f"{x:>6}" for x in row) + f" | {other:>5} {n:>3} {conf[(rl_, rl_)]/n:.2f}")
+        print(f"{rl_:<{w}} | " + " ".join(f"{x:>5}" for x in row) + f" | {other:>5} {n:>3} {conf[(rl_, rl_)]/n:.2f}")
     print("most frequent disagreements (remote → local):")
     for (rr, ll_), c in sorted(((p, c) for p, c in conf.items() if p[0] != p[1]), key=lambda x: -x[1])[:10]:
         print(f"  {rr} → {ll_}: {c}")
