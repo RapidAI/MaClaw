@@ -356,7 +356,7 @@ type shadowLogger struct {
 	sampledL2 atomic.Uint64
 
 	// testHook runs in the worker before each record (tests: block / panic).
-	testHook func()
+	testHook atomic.Pointer[func()]
 }
 
 var (
@@ -494,8 +494,8 @@ func (l *shadowLogger) process(job shadowJob) {
 			log.Printf("[IntentShadow] recovered panic while logging: %v", r)
 		}
 	}()
-	if l.testHook != nil {
-		l.testHook()
+	if hook := l.testHook.Load(); hook != nil {
+		(*hook)()
 	}
 	rec := l.buildRecord(job)
 	b, err := json.Marshal(rec)
