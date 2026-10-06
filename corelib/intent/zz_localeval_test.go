@@ -248,17 +248,21 @@ func TestZZLocalEval(t *testing.T) {
 			}
 			if probs[idx[0]] >= thrFor(hd.Labels[idx[0]]) {
 				var top []cand
-				for _, j := range idx[:3] {
-					if hd.Labels[j] == "unknown" {
-						continue
-					}
-					if len(top) > 0 && probs[j] < 0.10 {
-						break
-					}
-					top = append(top, cand{hd.Labels[j], probs[j], ""})
-				}
-				if len(top) == 0 { // head is confident it is chit-chat
+				if hd.Labels[idx[0]] == "unknown" {
+					// Head is confident it is chit-chat: say so instead of
+					// promoting the (near-zero) runner-up, which let a weak
+					// tree verdict keep an L2 capability label.
 					top = append(top, cand{"ambiguous", probs[idx[0]], ""})
+				} else {
+					for _, j := range idx[:3] {
+						if hd.Labels[j] == "unknown" {
+							continue
+						}
+						if len(top) > 0 && probs[j] < 0.10 {
+							break
+						}
+						top = append(top, cand{hd.Labels[j], probs[j], ""})
+					}
 				}
 				b, _ := json.Marshal(map[string]any{"top": top})
 				return string(b), nil
