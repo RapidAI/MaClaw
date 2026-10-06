@@ -11,10 +11,10 @@ import (
 
 // MmapFile holds a memory-mapped GGUF file.
 type MmapFile struct {
-	File                  // embedded parsed header
-	data   []byte         // mmap region covering the entire file
-	handle uintptr        // OS handle for cleanup (Windows: HANDLE from CreateFileMapping)
-	osFile *os.File       // kept open for the mapping lifetime
+	File            // embedded parsed header
+	data   []byte   // mmap region covering the entire file
+	handle uintptr  // OS handle for cleanup (Windows: HANDLE from CreateFileMapping)
+	osFile *os.File // kept open for the mapping lifetime
 }
 
 // OpenMmap opens a GGUF file using memory mapping.
@@ -114,4 +114,19 @@ func (mf *MmapFile) TensorF32(name string) ([]float32, error) {
 		return nil, fmt.Errorf("gguf: unsupported type %d for %q", ti.Type, name)
 	}
 	return out, nil
+}
+
+// Release hints that the mapped bytes b (a sub-slice of this file's mapping,
+// e.g. a tensor already copied elsewhere) are no longer needed in memory.
+// Content is unchanged; pages fault back in if read again.
+func (mf *MmapFile) Release(b []byte) {
+	if mf == nil || len(b) == 0 || len(mf.data) == 0 {
+		return
+	}
+	lo := uintptr(unsafe.Pointer(unsafe.SliceData(mf.data)))
+	p := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+	if p < lo || p+uintptr(len(b)) > lo+uintptr(len(mf.data)) {
+		return // not ours (heap copy)
+	}
+	releasePages(b)
 }

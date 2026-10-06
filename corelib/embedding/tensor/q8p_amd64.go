@@ -42,3 +42,17 @@ func quantizeQ8ActAsm(dst *Q8Act, a []float32, M, K int) bool {
 	q8pQuantizeAVX512(&dst.Q[0], &dst.S[0], &dst.C[0], &a[0], nb)
 	return true
 }
+
+//go:noescape
+func attnWSum128AVX512(out *float32, w *float32, v *float32, rows, strideBytes int, scale float32)
+
+func attnWSum128Asm(out, w, v []float32, rows, stride int, scale float32) bool {
+	if !hasAVX512 || rows <= 0 {
+		return false
+	}
+	_ = out[127]
+	_ = w[rows-1]
+	_ = v[(rows-1)*stride+127]
+	attnWSum128AVX512(&out[0], &w[0], &v[0], rows, stride*4, scale)
+	return true
+}

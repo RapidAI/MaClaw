@@ -24,6 +24,7 @@ package embedding
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,6 +68,10 @@ type qwen3Layer struct {
 	// (no requantisation), summed after the matmuls.
 	downParts []tensor.Q8Tensor
 	downK0    []int
+	// Q8P repacked weights (int8-activation VNNI GEMM, tensor/q8p.go); nil
+	// when the kernel is unavailable (non-amd64, no AVX-512 VNNI) or
+	// MACLAW_QWEN3_Q8P=0, in which case the float-activation path above runs.
+	pq, pk, pv, po, pg, pu, pd *tensor.Q8Packed
 }
 
 // Qwen3Embedder is a pure Go Qwen3 text embedding model.
@@ -91,6 +96,8 @@ type Qwen3Embedder struct {
 	prefixMu    sync.RWMutex
 	prefixes    []*qwen3PrefixKV // immutable once published; bounded by qwen3MaxPrefixes
 	prefixBuild sync.Mutex       // single-flight prefix computation
+
+	q8p bool // layers carry Q8P packed weights (forwardFrom uses MatMulQ8P)
 }
 
 type qwen3Scratch struct {
@@ -98,6 +105,8 @@ type qwen3Scratch struct {
 	x, normed, q, k, v, attn, proj []float32
 	gate, up                       []float32
 	scores                         []float32
+	act, act2                      tensor.Q8Act // Q8P quantized activations (reused per matmul input)
+	resid                          []float32    // Q8P two-pass residual scratch (lazily grown)
 }
 
 // NewQwen3Embedder loads a Qwen3 embedding GGUF. dim<=0 or dim>hidden keeps
@@ -237,6 +246,27 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 			*mw.dst = t
 		}
 	}
+	if qwen3UseQ8P(hp) {
+		for i := range q.layers {
+			l := &q.layers[i]
+			for _, pr := range []struct {
+				dst **tensor.Q8Packed
+				src *tensor.Q8Tensor
+			}{{&l.pq, &l.wq}, {&l.pk, &l.wk}, {&l.pv, &l.wv}, {&l.po, &l.wo}, {&l.pg, &l.wGate}, {&l.pu, &l.wUp}, {&l.pd, &l.wDown}} {
+				*pr.dst = tensor.PackQ8P(pr.src)
+				if *pr.dst == nil {
+					return fmt.Errorf("qwen3: Q8P pack failed for layer %d", i)
+				}
+				// The float path is never used by this instance: drop the
+				// per-block float scales and release the mmap'd source pages
+				// (the packed copy holds the same int8 values).
+				pr.src.Scales = nil
+				mf.Release(pr.src.Data)
+			}
+		}
+		q.q8p = true
+		return nil
+	}
 	for i := range q.layers {
 		l := &q.layers[i]
 		l.downParts, l.downK0 = splitQ8Cols(&l.wDown, qwen3DownChunks(hp.FFDim))
@@ -249,6 +279,45 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 		}
 	}
 	return nil
+}
+
+// qwen3Q8PTwoPass selects the matmul classes whose activations use two int8
+// terms (MACLAW_QWEN3_Q8P_2PASS = comma list of qkv,o,gu,down | all | none).
+var qwen3Q8PTwoPass = parseQwen3TwoPass(os.Getenv("MACLAW_QWEN3_Q8P_2PASS"))
+
+type qwen3TwoPass struct{ qkv, o, gu, down bool }
+
+func parseQwen3TwoPass(v string) qwen3TwoPass {
+	var t qwen3TwoPass
+	for _, f := range strings.Split(v, ",") {
+		switch strings.TrimSpace(f) {
+		case "qkv":
+			t.qkv = true
+		case "o":
+			t.o = true
+		case "gu":
+			t.gu = true
+		case "down":
+			t.down = true
+		case "all":
+			t = qwen3TwoPass{true, true, true, true}
+		}
+	}
+	return t
+}
+
+// qwen3UseQ8P reports whether the Q8P int8-activation kernel applies
+// (amd64 AVX-512 VNNI, supported shapes, MACLAW_QWEN3_Q8P != "0").
+func qwen3UseQ8P(hp *Qwen3HParams) bool {
+	if !tensor.Q8PAvailable() || os.Getenv("MACLAW_QWEN3_Q8P") == "0" {
+		return false
+	}
+	for _, nk := range [][2]int{{hp.QDim, hp.Dim}, {hp.KVDim, hp.Dim}, {hp.Dim, hp.QDim}, {hp.FFDim, hp.Dim}, {hp.Dim, hp.FFDim}} {
+		if !tensor.Q8PSupported(nk[0], nk[1]) {
+			return false
+		}
+	}
+	return true
 }
 
 // qwen3DownChunks returns the K split for the FFN-down matmul: 2048-wide
@@ -528,6 +597,70 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 	gate := s.gate[:seq*ffDim]
 	up := s.up[:seq*ffDim]
 	eps := hp.RMSNormEps
+	if q.q8p {
+		act := &s.act
+		// quant quantizes a[seq×K] into act and, when the matmul class is
+		// configured for two-pass activations, its residual into act2.
+		quant := func(a []float32, K int, two bool) *tensor.Q8Act {
+			tensor.QuantizeQ8Act(act, a, seq, K)
+			if !two {
+				return nil
+			}
+			if cap(s.resid) < seq*K {
+				s.resid = make([]float32, seq*K)
+			}
+			r := s.resid[:seq*K]
+			tensor.Q8ActResidual(r, a, act)
+			return tensor.QuantizeQ8Act(&s.act2, r, seq, K)
+		}
+		mm := func(out []float32, a2 *tensor.Q8Act, w *tensor.Q8Packed, accum bool) {
+			tensor.MatMulQ8P(out, act, w, accum, maxWorkers)
+			if a2 != nil {
+				tensor.MatMulQ8P(out, a2, w, true, maxWorkers)
+			}
+		}
+		tp := qwen3Q8PTwoPass
+		for li := range q.layers {
+			l := &q.layers[li]
+			tensor.RMSNormRows(normed, x, l.attnNormW, seq, dim, eps)
+			a2 := quant(normed, dim, tp.qkv)
+			if a2 == nil {
+				tensor.MatMulQ8PMulti([][]float32{qb, kb, vb}, act, []*tensor.Q8Packed{l.pq, l.pk, l.pv}, maxWorkers)
+			} else {
+				mm(qb, a2, l.pq, false)
+				mm(kb, a2, l.pk, false)
+				mm(vb, a2, l.pv, false)
+			}
+			tensor.RMSNormRoPESeq(qb, l.qNormW, cosT, sinT, seq, hp.NHeads, hp.HeadDim, eps)
+			tensor.RMSNormRoPESeq(kb, l.kNormW, cosT, sinT, seq, hp.NKVHeads, hp.HeadDim, eps)
+			if pre != nil {
+				copy(kAll[:P*kvDim], pre.k[li])
+				copy(vAll[:P*kvDim], pre.v[li])
+			}
+			if capture != nil {
+				capture.k[li] = append([]float32(nil), kb...)
+				capture.v[li] = append([]float32(nil), vb...)
+			}
+			qwen3CausalAttention(attn, qb, kAll, vAll, s.scores, seq, P, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
+			a2 = quant(attn, qDim, tp.o)
+			mm(x, a2, l.po, true) // x += attn·Wo
+			tensor.RMSNormRows(normed, x, l.ffNormW, seq, dim, eps)
+			a2 = quant(normed, dim, tp.gu)
+			if a2 == nil {
+				tensor.MatMulQ8PMulti([][]float32{gate, up}, act, []*tensor.Q8Packed{l.pg, l.pu}, maxWorkers)
+			} else {
+				mm(gate, a2, l.pg, false)
+				mm(up, a2, l.pu, false)
+			}
+			tensor.SiLUMul(gate, up)
+			a2 = quant(gate, ffDim, tp.down)
+			mm(x, a2, l.pd, true) // x += (silu(g)⊙u)·Wd
+		}
+		last := x[(seq-1)*dim : seq*dim]
+		out := normed[:dim]
+		tensor.RMSNorm(out, last, q.outputNorm, eps)
+		return out, nil
+	}
 	// MatMulQ8N has a slow generic path for 4 <= M < 8 rows (the dequant-
 	// once kernels need M >= 8); pad such sequences to 8 zero rows. Pad rows
 	// of every matmul input stay exactly zero and are never read back.
@@ -623,7 +756,7 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 			for s := 0; s < n; s++ {
 				sc[s] = tensor.Dot(qv, kb[s*kvStride+kOff:s*kvStride+kOff+headDim]) * scale
 			}
-			tensor.SoftmaxWeightedSumStrided(out[t*qStride+hOff:t*qStride+hOff+headDim], sc[:n], vBase, n, kvStride, headDim)
+			tensor.SoftmaxWeightedSum128(out[t*qStride+hOff:t*qStride+hOff+headDim], sc[:n], vBase, n, kvStride, headDim)
 		}
 	}
 	if maxWorkers == 1 || seq < 32 {

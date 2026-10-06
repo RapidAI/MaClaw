@@ -203,3 +203,89 @@ func MatMulQ8P(out []float32, act *Q8Act, w *Q8Packed, accum bool, maxWorkers in
 	}
 	parallelRangesWithWorkers(pairs, nw, run)
 }
+
+// Q8ActResidual writes a − dequant(act) into r (len ≥ act.M*act.K): the
+// rounding error of the int8 activation, which a second Q8P pass can add
+// back (two-term "int8+int8" activations ≈ 15-bit precision at 2× cost).
+func Q8ActResidual(r, a []float32, act *Q8Act) {
+	K, nb := act.K, act.NB
+	for i := 0; i < act.M*nb; i++ {
+		d := act.S[i]
+		x := a[i*32 : i*32+32 : i*32+32]
+		q := act.Q[i*32 : i*32+32 : i*32+32]
+		o := r[i*32 : i*32+32 : i*32+32]
+		for k := range x {
+			o[k] = x[k] - float32(q[k])*d
+		}
+	}
+	_ = K
+}
+
+// SoftmaxWeightedSum128 is SoftmaxWeightedSumStrided for dim == 128 with an
+// AVX-512 strided FMA accumulation (GQA V rows are strided by nKV·128, which
+// the existing dim-128 path only handles with scalar Go). Other dims and
+// non-AVX-512 CPUs use SoftmaxWeightedSumStrided unchanged.
+func SoftmaxWeightedSum128(out, scores, values []float32, rows, stride, dim int) {
+	if dim != 128 || rows <= 0 {
+		SoftmaxWeightedSumStrided(out, scores, values, rows, stride, dim)
+		return
+	}
+	scores = scores[:rows]
+	inv := softmaxInplaceInv(scores)
+	if inv == 0 {
+		clear(out[:dim])
+		return
+	}
+	if !attnWSum128Asm(out, scores, values, rows, stride, inv) {
+		weightedSumStridedScaled(out, scores, values, rows, stride, dim, inv)
+	}
+}
+
+// MatMulQ8PMulti runs several MatMulQ8P products that share one activation
+// (Q/K/V, gate/up) as a single parallel dispatch over all their column
+// pairs: one fork/join instead of len(ws). accum is false for all outputs.
+func MatMulQ8PMulti(outs [][]float32, act *Q8Act, ws []*Q8Packed, maxWorkers int) {
+	var starts [9]int
+	if len(ws) > 8 || len(ws) != len(outs) {
+		for i := range ws {
+			MatMulQ8P(outs[i], act, ws[i], false, maxWorkers)
+		}
+		return
+	}
+	total := 0
+	flops := 0
+	for i, w := range ws {
+		starts[i] = total
+		total += w.N / 32
+		flops += w.N
+	}
+	starts[len(ws)] = total
+	M := act.M
+	run := func(ps, pe int) {
+		var tile [128]float32
+		for gp := ps; gp < pe; gp++ {
+			i := 0
+			for gp >= starts[i+1] {
+				i++
+			}
+			w, out, p := ws[i], outs[i], gp-starts[i]
+			N := w.N
+			for m0 := 0; m0 < M; m0 += 4 {
+				q8pTile(&tile, act, w, m0, p)
+				rows := min(M-m0, 4)
+				for m := 0; m < rows; m++ {
+					copy(out[(m0+m)*N+p*32:(m0+m)*N+p*32+32], tile[m*32:m*32+32])
+				}
+			}
+		}
+	}
+	if maxWorkers == 1 || !shouldParallel(M, flops, ws[0].K) {
+		run(0, total)
+		return
+	}
+	nw := poolWorkers()
+	if maxWorkers > 1 && nw > maxWorkers {
+		nw = maxWorkers
+	}
+	parallelRangesWithWorkers(total, nw, run)
+}

@@ -191,3 +191,52 @@ func TestQ8PQuantizeAsmMatchesGo(t *testing.T) {
 		}
 	}
 }
+
+func TestSoftmaxWeightedSum128MatchesStrided(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	for _, rows := range []int{1, 7, 103, 300} {
+		stride := 1024
+		v := make([]float32, rows*stride)
+		for i := range v {
+			v[i] = float32(rng.NormFloat64())
+		}
+		sc := make([]float32, rows)
+		for i := range sc {
+			sc[i] = float32(rng.NormFloat64() * 3)
+		}
+		sc2 := append([]float32(nil), sc...)
+		a := make([]float32, 128)
+		b := make([]float32, 128)
+		SoftmaxWeightedSumStrided(a, sc, v[256:], rows, stride, 128)
+		SoftmaxWeightedSum128(b, sc2, v[256:], rows, stride, 128)
+		for i := range a {
+			if d := math.Abs(float64(a[i] - b[i])); d > 1e-5*(1+math.Abs(float64(a[i]))) {
+				t.Fatalf("rows=%d i=%d %g vs %g", rows, i, a[i], b[i])
+			}
+		}
+	}
+}
+
+func TestQ8PMultiMatchesSingle(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	M, K := 37, 1024
+	ws := []*Q8Packed{PackQ8P(q8pRandWeights(rng, 2048, K)), PackQ8P(q8pRandWeights(rng, 1024, K)), PackQ8P(q8pRandWeights(rng, 1024, K))}
+	a := make([]float32, M*K)
+	for i := range a {
+		a[i] = float32(rng.NormFloat64())
+	}
+	act := QuantizeQ8Act(nil, a, M, K)
+	for _, mw := range []int{0, 1} {
+		outs := [][]float32{make([]float32, M*2048), make([]float32, M*1024), make([]float32, M*1024)}
+		MatMulQ8PMulti(outs, act, ws, mw)
+		for i, w := range ws {
+			ref := make([]float32, M*w.N)
+			MatMulQ8P(ref, act, w, false, 1)
+			for j := range ref {
+				if ref[j] != outs[i][j] {
+					t.Fatalf("mw=%d w%d j=%d %g vs %g", mw, i, j, ref[j], outs[i][j])
+				}
+			}
+		}
+	}
+}
