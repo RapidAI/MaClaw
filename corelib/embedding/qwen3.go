@@ -489,23 +489,35 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 	gate := s.gate[:seq*ffDim]
 	up := s.up[:seq*ffDim]
 	eps := hp.RMSNormEps
+	// MatMulQ8N has a slow generic path for 4 <= M < 8 rows (the dequant-
+	// once kernels need M >= 8); pad such sequences to 8 zero rows. Pad rows
+	// of every matmul input stay exactly zero and are never read back.
+	mr := qwen3MatMulRows(seq)
+	if mr > seq {
+		clear(s.normed[seq*dim : mr*dim])
+		clear(s.attn[seq*qDim : mr*qDim])
+	}
+	normedM := s.normed[:mr*dim]
+	qbM, kbM, vbM := s.q[:mr*qDim], s.k[:mr*kvDim], s.v[:mr*kvDim]
+	attnM, projM := s.attn[:mr*qDim], s.proj[:mr*dim]
+	gateM, upM := s.gate[:mr*ffDim], s.up[:mr*ffDim]
 	for li := range q.layers {
 		l := &q.layers[li]
 		tensor.RMSNormRows(normed, x, l.attnNormW, seq, dim, eps)
-		tensor.MatMulQ8N(qb, normed, &l.wq, seq, qDim, dim, maxWorkers)
-		tensor.MatMulQ8N(kb, normed, &l.wk, seq, kvDim, dim, maxWorkers)
-		tensor.MatMulQ8N(vb, normed, &l.wv, seq, kvDim, dim, maxWorkers)
+		tensor.MatMulQ8N(qbM, normedM, &l.wq, mr, qDim, dim, maxWorkers)
+		tensor.MatMulQ8N(kbM, normedM, &l.wk, mr, kvDim, dim, maxWorkers)
+		tensor.MatMulQ8N(vbM, normedM, &l.wv, mr, kvDim, dim, maxWorkers)
 		tensor.RMSNormRoPESeq(qb, l.qNormW, cosT, sinT, seq, hp.NHeads, hp.HeadDim, eps)
 		tensor.RMSNormRoPESeq(kb, l.kNormW, cosT, sinT, seq, hp.NKVHeads, hp.HeadDim, eps)
 		qwen3CausalAttention(attn, qb, kb, vb, s.scores, seq, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
-		tensor.MatMulQ8N(proj, attn, &l.wo, seq, dim, qDim, maxWorkers)
+		tensor.MatMulQ8N(projM, attnM, &l.wo, mr, dim, qDim, maxWorkers)
 		tensor.Add(x, x, proj)
 		tensor.RMSNormRows(normed, x, l.ffNormW, seq, dim, eps)
-		tensor.MatMulQ8N(gate, normed, &l.wGate, seq, ffDim, dim, maxWorkers)
-		tensor.MatMulQ8N(up, normed, &l.wUp, seq, ffDim, dim, maxWorkers)
+		tensor.MatMulQ8N(gateM, normedM, &l.wGate, mr, ffDim, dim, maxWorkers)
+		tensor.MatMulQ8N(upM, normedM, &l.wUp, mr, ffDim, dim, maxWorkers)
 		tensor.SiLUMul(gate, up)
 		if len(l.downParts) == 0 {
-			tensor.MatMulQ8N(proj, gate, &l.wDown, seq, dim, ffDim, maxWorkers)
+			tensor.MatMulQ8N(projM, gateM, &l.wDown, mr, dim, ffDim, maxWorkers)
 			tensor.Add(x, x, proj)
 			continue
 		}
@@ -516,12 +528,13 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 		for pi := range l.downParts {
 			w := l.downParts[pi].Cols
 			k0 := l.downK0[pi]
-			a := s.up[off : off+seq*w]
+			a := s.up[off : off+mr*w]
 			for r := 0; r < seq; r++ {
 				copy(a[r*w:(r+1)*w], gate[r*ffDim+k0:r*ffDim+k0+w])
 			}
-			off += seq * w
-			tensor.MatMulQ8N(proj, a, &l.downParts[pi], seq, dim, w, maxWorkers)
+			clear(a[seq*w:])
+			off += mr * w
+			tensor.MatMulQ8N(projM, a, &l.downParts[pi], mr, dim, w, maxWorkers)
 			tensor.Add(x, x, proj)
 		}
 	}
@@ -529,6 +542,18 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 	out := normed[:dim]
 	tensor.RMSNorm(out, last, q.outputNorm, eps)
 	return out, nil
+}
+
+// qwen3PadRows enables the M padding below (tests flip it to compare).
+var qwen3PadRows = true
+
+// qwen3MatMulRows returns the row count to feed MatMulQ8N for a sequence of
+// seq tokens: 4..7 are padded to 8 so the fast dequant-once kernels apply.
+func qwen3MatMulRows(seq int) int {
+	if qwen3PadRows && seq >= 4 && seq < 8 {
+		return 8
+	}
+	return seq
 }
 
 // qwen3CausalAttention: out[t, h] = softmax_{s<=t}(q[t,h]·k[s,kvh]/√d) · v[s,kvh].

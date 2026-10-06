@@ -252,3 +252,29 @@ func TestQwen3SplitQ8ColsExact(t *testing.T) {
 		t.Fatalf("chunks = %v / %v", qwen3DownChunks(3072), qwen3DownChunks(2048))
 	}
 }
+
+// Padding 4..7-token sequences to 8 matmul rows must not change the output.
+func TestQwen3PaddedRowsMatchUnpadded(t *testing.T) {
+	e := loadQwen3(t)
+	for _, s := range []string{"打开计算器吧", "open the door now", "帮我截个图"} {
+		n := len(e.Tokenize(s))
+		if qwen3MatMulRows(n) == n {
+			t.Logf("%q has %d tokens (not padded)", s, n)
+		}
+		padded, err := e.EmbedConcurrent(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qwen3PadRows = false
+		plain, err := e.EmbedConcurrent(s)
+		qwen3PadRows = true
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range plain {
+			if d := plain[i] - padded[i]; d > 1e-5 || d < -1e-5 {
+				t.Fatalf("%q (%d tokens): dim %d padded=%g plain=%g", s, n, i, padded[i], plain[i])
+			}
+		}
+	}
+}
