@@ -9,7 +9,7 @@ func TestParseQwen3TwoPass(t *testing.T) {
 		in   string
 		want qwen3TwoPass
 	}{
-		{"", all},          // default: two-pass everywhere
+		{"", all}, // default: two-pass everywhere
 		{"   ", all},
 		{"all", all},
 		{"none", none},
