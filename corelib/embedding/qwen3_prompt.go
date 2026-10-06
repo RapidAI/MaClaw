@@ -61,6 +61,7 @@ func qwen3NeedsPrompt(role Role) bool {
 
 // EmbedWithRole embeds text with the Qwen3 instruct prefix for role.
 func (q *Qwen3Embedder) EmbedWithRole(text string, role Role) ([]float32, error) {
+	q.ensurePrefix(role)
 	return q.Embed(ApplyQwen3Prompt(text, role))
 }
 
@@ -72,6 +73,7 @@ func (q *Qwen3Embedder) EmbedBatchWithRole(texts []string, role Role) ([][]float
 	if !qwen3NeedsPrompt(role) {
 		return q.EmbedBatch(texts)
 	}
+	q.ensurePrefix(role)
 	prompted := make([]string, len(texts))
 	for i, t := range texts {
 		prompted[i] = ApplyQwen3Prompt(t, role)

@@ -204,7 +204,7 @@ func TestQwen3CausalAttentionMatchesNaive(t *testing.T) {
 		}
 		for _, mw := range []int{1, 0} {
 			got := make([]float32, seq*nH*hd)
-			qwen3CausalAttention(got, q, k, v, make([]float32, seq), seq, nH, nKV, hd, mw)
+			qwen3CausalAttention(got, q, k, v, make([]float32, seq), seq, 0, nH, nKV, hd, mw)
 			var maxErr float64
 			for i := range got {
 				maxErr = math.Max(maxErr, math.Abs(float64(got[i])-want[i]))

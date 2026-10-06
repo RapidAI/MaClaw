@@ -85,6 +85,11 @@ type Qwen3Embedder struct {
 	ropeCos    []float32 // [ropeLen*half], grown on demand, read-only once published
 	ropeSin    []float32
 	ropeLen    int
+
+	// Instruct-prefix KV cache (qwen3_prefix_kv.go).
+	prefixMu    sync.RWMutex
+	prefixes    []*qwen3PrefixKV // immutable once published; bounded by qwen3MaxPrefixes
+	prefixBuild sync.Mutex       // single-flight prefix computation
 }
 
 type qwen3Scratch struct {
@@ -393,9 +398,10 @@ func (q *Qwen3Embedder) embed(text string, maxWorkers int) ([]float32, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("qwen3: empty token sequence")
 	}
-	s := q.getScratch(len(ids))
+	pre := q.matchPrefix(ids)
+	s := q.getScratch(len(ids) + 8) // +8: room for the 8-row matmul padding after a prefix
 	defer q.putScratch(s)
-	h, err := q.forward(ids, s, maxWorkers)
+	h, err := q.forwardFrom(ids, pre, nil, s, maxWorkers)
 	if err != nil {
 		return nil, err
 	}
@@ -466,24 +472,50 @@ func (q *Qwen3Embedder) Close() {
 	enqueueMmapClose(mf)
 }
 
-// forward runs the transformer and returns the final-normed hidden state of
-// the last token (aliases scratch; caller copies).
+// forward runs the transformer over all of ids (no prefix cache) and returns
+// the final-normed hidden state of the last token (aliases scratch).
 func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]float32, error) {
+	return q.forwardFrom(ids, nil, nil, s, maxWorkers)
+}
+
+// forwardFrom runs the transformer over ids. With pre != nil, ids[:pre.n]
+// must equal pre.ids: those positions are not recomputed — every layer's
+// attention reads their cached (k_norm+RoPE'd) keys and values — and only the
+// suffix rows ids[pre.n:] go through the network. Because attention is causal,
+// prefix states never depend on later tokens, so this is the same function as
+// the full forward (up to float reassociation in the matmul kernels).
+// With capture != nil (and pre == nil), each layer's K/V rows are copied into
+// capture. Returns the final-normed hidden state of the last token (aliases
+// scratch; caller copies). s must hold len(ids)+8 rows.
+func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *qwen3Scratch, maxWorkers int) ([]float32, error) {
 	hp := q.hp
-	seq := len(ids)
+	P := 0
+	if pre != nil {
+		P = pre.n
+	}
+	total := len(ids)
+	seq := total - P // rows computed here
+	if seq <= 0 {
+		return nil, fmt.Errorf("qwen3: empty suffix after cached prefix")
+	}
 	dim, qDim, kvDim, ffDim := hp.Dim, hp.QDim, hp.KVDim, hp.FFDim
 	x := s.x[:seq*dim]
-	for i, id := range ids {
+	for i, id := range ids[P:] {
 		if id < 0 || id >= hp.VocabSize {
 			return nil, fmt.Errorf("qwen3: token id %d out of range [0,%d)", id, hp.VocabSize)
 		}
 		q.tokenEmb.DequantRow(id, x[i*dim:(i+1)*dim])
 	}
-	cosT, sinT := q.ensureRoPE(seq)
+	cosAll, sinAll := q.ensureRoPE(total)
+	half := hp.HeadDim / 2
+	cosT, sinT := cosAll[P*half:], sinAll[P*half:] // suffix row r sits at position P+r
 	normed := s.normed[:seq*dim]
 	qb := s.q[:seq*qDim]
-	kb := s.k[:seq*kvDim]
-	vb := s.v[:seq*kvDim]
+	// K/V hold all total positions: [0,P) from the cache, [P,total) computed.
+	kAll := s.k[:total*kvDim]
+	vAll := s.v[:total*kvDim]
+	kb := s.k[P*kvDim : total*kvDim]
+	vb := s.v[P*kvDim : total*kvDim]
 	attn := s.attn[:seq*qDim]
 	proj := s.proj[:seq*dim]
 	gate := s.gate[:seq*ffDim]
@@ -498,7 +530,8 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 		clear(s.attn[seq*qDim : mr*qDim])
 	}
 	normedM := s.normed[:mr*dim]
-	qbM, kbM, vbM := s.q[:mr*qDim], s.k[:mr*kvDim], s.v[:mr*kvDim]
+	qbM := s.q[:mr*qDim]
+	kbM, vbM := s.k[P*kvDim:(P+mr)*kvDim], s.v[P*kvDim:(P+mr)*kvDim]
 	attnM, projM := s.attn[:mr*qDim], s.proj[:mr*dim]
 	gateM, upM := s.gate[:mr*ffDim], s.up[:mr*ffDim]
 	for li := range q.layers {
@@ -509,7 +542,15 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 		tensor.MatMulQ8N(vbM, normedM, &l.wv, mr, kvDim, dim, maxWorkers)
 		tensor.RMSNormRoPESeq(qb, l.qNormW, cosT, sinT, seq, hp.NHeads, hp.HeadDim, eps)
 		tensor.RMSNormRoPESeq(kb, l.kNormW, cosT, sinT, seq, hp.NKVHeads, hp.HeadDim, eps)
-		qwen3CausalAttention(attn, qb, kb, vb, s.scores, seq, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
+		if pre != nil {
+			copy(kAll[:P*kvDim], pre.k[li])
+			copy(vAll[:P*kvDim], pre.v[li])
+		}
+		if capture != nil {
+			capture.k[li] = append([]float32(nil), kb...)
+			capture.v[li] = append([]float32(nil), vb...)
+		}
+		qwen3CausalAttention(attn, qb, kAll, vAll, s.scores, seq, P, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
 		tensor.MatMulQ8N(projM, attnM, &l.wo, mr, dim, qDim, maxWorkers)
 		tensor.Add(x, x, proj)
 		tensor.RMSNormRows(normed, x, l.ffNormW, seq, dim, eps)
@@ -556,9 +597,11 @@ func qwen3MatMulRows(seq int) int {
 	return seq
 }
 
-// qwen3CausalAttention: out[t, h] = softmax_{s<=t}(q[t,h]·k[s,kvh]/√d) · v[s,kvh].
-// scores is scratch of len >= seq (used by the serial path).
-func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, nHeads, nKV, headDim, maxWorkers int) {
+// qwen3CausalAttention: for the seq query rows at positions off..off+seq-1,
+// out[t, h] = softmax_{s<=off+t}(q[t,h]·k[s,kvh]/√d) · v[s,kvh], where kb/vb
+// hold all off+seq positions (off > 0 when a cached prefix precedes the rows).
+// scores is scratch of len >= off+seq (used by the serial path).
+func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, nKV, headDim, maxWorkers int) {
 	qStride := nHeads * headDim
 	kvStride := nKV * headDim
 	group := nHeads / nKV
@@ -569,7 +612,7 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, nHeads, nKV, h
 		vBase := vb[kOff:]
 		for t := 0; t < seq; t++ {
 			qv := qb[t*qStride+hOff : t*qStride+hOff+headDim]
-			n := t + 1
+			n := off + t + 1
 			for s := 0; s < n; s++ {
 				sc[s] = tensor.Dot(qv, kb[s*kvStride+kOff:s*kvStride+kOff+headDim]) * scale
 			}
@@ -587,7 +630,7 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, nHeads, nKV, h
 		wg.Add(1)
 		go func(h int) {
 			defer wg.Done()
-			head(h, make([]float32, seq))
+			head(h, make([]float32, off+seq))
 		}(h)
 	}
 	wg.Wait()
