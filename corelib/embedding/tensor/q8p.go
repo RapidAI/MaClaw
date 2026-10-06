@@ -29,11 +29,19 @@ import (
 
 // Q8Packed is a Q8_0 weight matrix [N rows (outputs) × K] repacked for
 // MatMulQ8P. N and K must be multiples of 32.
+//
+// On amd64, QB stores u8 = w+128 and the tile uses −128·Σq correction
+// (VPDPBUSD). On arm64, QB stores plain s8 (Signed=true) for SDOT; no
+// correction term. q8pTileGo handles both.
 type Q8Packed struct {
 	N, K, NB int
 	QB       []byte
 	SB       []float32
+	Signed   bool // true: QB is s8 (arm64 SDOT); false: u8=w+128 (amd64)
 }
+
+// q8pPackSigned is set by the arm64 build; amd64 keeps the u8 offset layout.
+var q8pPackSigned = false
 
 // Q8PSupported reports whether a [N×K] Q8_0 matrix can be packed.
 func Q8PSupported(N, K int) bool { return N > 0 && K > 0 && N%32 == 0 && K%32 == 0 }
@@ -54,7 +62,7 @@ func packQ8PTo(t *Q8Tensor, qb []byte, sb []float32) *Q8Packed {
 		return nil
 	}
 	nb := K / 32
-	p := &Q8Packed{N: N, K: K, NB: nb, QB: qb[:N*K], SB: sb[:N*nb]}
+	p := &Q8Packed{N: N, K: K, NB: nb, QB: qb[:N*K], SB: sb[:N*nb], Signed: q8pPackSigned}
 	for n := 0; n < N; n++ {
 		pair, nn := n/32, n%32
 		for b := 0; b < nb; b++ {
@@ -64,7 +72,11 @@ func packQ8PTo(t *Q8Tensor, qb []byte, sb []float32) *Q8Packed {
 			for j := 0; j < 8; j++ {
 				o := base + j*128 + nn*4
 				for e := 0; e < 4; e++ {
-					p.QB[o+e] = blk[2+j*4+e] + 128 // int8 → u8 offset (two's complement wrap)
+					if p.Signed {
+						p.QB[o+e] = blk[2+j*4+e] // plain s8 for SDOT
+					} else {
+						p.QB[o+e] = blk[2+j*4+e] + 128 // int8 → u8 offset
+					}
 				}
 			}
 		}
@@ -139,12 +151,14 @@ func quantizeQ8ActGo(q []int8, s []float32, c []int32, a []float32, M, K int) {
 
 // q8pTileGo computes the 4×32 tile out[m*32+n] = Σ_b sa[m,b]·sw[n,b]·Σ_k qa·qw
 // for rows m0..m0+3 of act and column pair p of w (portable reference).
+// Handles both u8-offset (amd64, uses C) and signed s8 (arm64, C ignored) layouts.
 func q8pTileGo(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
 	nb := w.NB
 	K := w.K
 	for i := range out {
 		out[i] = 0
 	}
+	signed := w.Signed
 	for b := 0; b < nb; b++ {
 		qb := w.QB[(p*nb+b)*1024 : (p*nb+b+1)*1024]
 		sb := w.SB[(p*nb+b)*32 : (p*nb+b+1)*32]
@@ -154,11 +168,18 @@ func q8pTileGo(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
 			sa := act.S[row*nb+b]
 			c := act.C[row*nb+b]
 			for n := 0; n < 32; n++ {
-				acc := c
+				var acc int32
+				if !signed {
+					acc = c
+				}
 				for j := 0; j < 8; j++ {
 					o := j*128 + n*4
 					for e := 0; e < 4; e++ {
-						acc += int32(qb[o+e]) * int32(aq[j*4+e])
+						if signed {
+							acc += int32(int8(qb[o+e])) * int32(aq[j*4+e])
+						} else {
+							acc += int32(qb[o+e]) * int32(aq[j*4+e])
+						}
 					}
 				}
 				out[m*32+n] += float32(acc) * (sa * sb[n])
@@ -298,4 +319,21 @@ func MatMulQ8PMulti(outs [][]float32, act *Q8Act, ws []*Q8Packed, maxWorkers int
 		nw = maxWorkers
 	}
 	parallelRangesWithWorkers(total, nw, run)
+}
+
+// Q8PSelfTestTile runs the 4×32 tile (asm if available, else Go) and the Go
+// reference, returning the max relative error. Used by cross-arch check tools.
+func Q8PSelfTestTile(w *Q8Packed, act *Q8Act, m0, p int) float64 {
+	var g, s [128]float32
+	q8pTileGo(&g, act, w, m0, p)
+	q8pTile(&s, act, w, m0, p)
+	var maxRel float64
+	for i := range g {
+		d := math.Abs(float64(g[i] - s[i]))
+		rel := d / (1 + math.Abs(float64(g[i])))
+		if rel > maxRel {
+			maxRel = rel
+		}
+	}
+	return maxRel
 }

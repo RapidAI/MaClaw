@@ -1,17 +1,15 @@
-//go:build !amd64
+//go:build !amd64 && !arm64
 
 package tensor
 
-// Q8PAvailable reports whether the assembly Q8P kernel is usable. Off on
-// non-amd64: the existing float Q8 kernels (NEON on arm64) are faster than
-// the portable int8 reference.
+// Q8PAvailable reports whether the assembly Q8P kernel is usable.
 func Q8PAvailable() bool { return false }
+
+// Q8PISAName is "off" when no Q8P asm is built.
+func Q8PISAName() string { return "off" }
 
 func q8pTileAsm(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) bool { return false }
 
 func quantizeQ8ActAsm(dst *Q8Act, a []float32, M, K int) bool { return false }
 
 func attnWSum128Asm(out, w, v []float32, rows, stride int, scale float32) bool { return false }
-
-// Q8PISAName is "off" on non-amd64.
-func Q8PISAName() string { return "off" }
