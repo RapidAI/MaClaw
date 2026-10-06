@@ -231,7 +231,7 @@ func TestZZLocalEval(t *testing.T) {
 		url := os.Getenv("ZZ_L3_URL")
 		cfg.LLMContextFunc = func(ctx, parent context.Context, sys, user string) (string, error) {
 			l3Calls++
-			v, err := emb.Embed(user)
+			v, err := zzHeadEmbed(emb, hd, user)
 			if err != nil {
 				return "", err
 			}
@@ -384,7 +384,7 @@ func TestZZLocalEval(t *testing.T) {
 		rec["cls_reason"] = res.Reason
 		if head != nil {
 			ta = time.Now()
-			v, _ := emb.Embed(r.Text)
+			v, _ := zzHeadEmbed(emb, head, r.Text)
 			embMs := float64(time.Since(ta).Microseconds()) / 1000
 			ta = time.Now()
 			probs := head.Predict(v)
@@ -424,6 +424,17 @@ type zzHead struct {
 	Tau         float64     `json:"tau"`
 	L2Norm      bool        `json:"l2norm"`
 	Sensitive   []string    `json:"sensitive"`
+	// EmbedRole "classification" = head trained on vectors embedded with the
+	// EmbeddingGemma classification prompt (same space as Layer 2).
+	EmbedRole string `json:"embed_role"`
+}
+
+// zzHeadEmbed embeds text in the vector space the head was trained on.
+func zzHeadEmbed(emb embedding.Embedder, hd *zzHead, text string) ([]float32, error) {
+	if hd != nil && hd.EmbedRole == "classification" {
+		return embedding.EmbedAs(emb, text, embedding.RoleClassification)
+	}
+	return emb.Embed(text)
 }
 
 func zzLoadHead(t *testing.T, p string) *zzHead {
