@@ -71,8 +71,8 @@ type qwen3Layer struct {
 	// Q8P repacked weights (int8-activation GEMM, tensor/q8p.go); nil when
 	// the kernel is unavailable (CPU ISA / MACLAW_Q8P_ISA / MACLAW_Q8P=0) or
 	// MACLAW_QWEN3_Q8P=0, in which case the float-activation path above runs.
-	// Activations default to two-pass (MACLAW_QWEN3_Q8P_2PASS unset); use
-	// MACLAW_QWEN3_Q8P_2PASS=none for single-pass.
+	// Activations: MACLAW_QWEN3_Q8P_2PASS unset → ISA-aware (avx512/avxvnni
+	// two-pass; avx2/sdot single-pass). Use =none or =all to override.
 	pq, pk, pv, po, pg, pu, pd *tensor.Q8Packed
 }
 
@@ -293,9 +293,10 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 }
 
 // qwen3Q8PTwoPass selects the matmul classes whose activations use two int8
-// terms (MACLAW_QWEN3_Q8P_2PASS). Default when unset: all matmuls (two-pass
-// ≈ float-path accuracy). Opt into single-pass with "none" or "0"; or list
-// qkv,o,gu,down / all for a subset.
+// terms (MACLAW_QWEN3_Q8P_2PASS). Default when unset is ISA-aware: two-pass
+// on avx512/avxvnni (≈ float accuracy, faster than float); single-pass on
+// avx2/arm64-sdot (where two-pass is slower than float). Opt into single-
+// pass with "none"/"0"; force two-pass with "all"; or list qkv,o,gu,down.
 var qwen3Q8PTwoPass = parseQwen3TwoPass(os.Getenv("MACLAW_QWEN3_Q8P_2PASS"))
 
 type qwen3TwoPass struct{ qkv, o, gu, down bool }
@@ -303,8 +304,16 @@ type qwen3TwoPass struct{ qkv, o, gu, down bool }
 func parseQwen3TwoPass(v string) qwen3TwoPass {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		// Default: two-pass everywhere (section 12 / 13 recommendation).
-		return qwen3TwoPass{true, true, true, true}
+		// ISA-aware default (section 13 / 15): two-pass where it is faster
+		// than float and matches float accuracy; single-pass on AVX2 / arm64
+		// SDOT where two-pass is slower than float. Override with
+		// MACLAW_QWEN3_Q8P_2PASS=all|none|qkv,o,gu,down.
+		switch tensor.Q8PISAName() {
+		case "avx2", "sdot":
+			return qwen3TwoPass{} // single-pass
+		default: // avx512, avxvnni, or off (unused)
+			return qwen3TwoPass{true, true, true, true}
+		}
 	}
 	if v == "none" || v == "0" {
 		return qwen3TwoPass{}

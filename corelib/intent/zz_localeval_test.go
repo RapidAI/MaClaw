@@ -218,6 +218,27 @@ func TestZZLocalEval(t *testing.T) {
 		// ZZ_STUB_5XX=0.02     fraction answering HTTP 503 (arms the skip window)
 		// ZZ_STUB_ERR=0.03     fraction failing with a non-endpoint error
 		cfg.LLMContextFunc = zzStubL3(t, &l3Calls, &l3Errs)
+	case "localhead":
+		// Production LocalHead + LocalTreeFunc (same behaviour as ZZ_L3=head,
+		// but goes through the shipped LoadLocalHead / LocalTreeFunc path).
+		h, err := LoadLocalHead(os.Getenv("ZZ_HEAD"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := os.Getenv("ZZ_TAU_S"); v != "" {
+			if ts, e := strconv.ParseFloat(v, 64); e == nil && ts > h.Tau {
+				h.TauS = ts
+			}
+		}
+		base := LocalTreeFunc(emb, h, nil)
+		cfg.LLMContextFunc = func(ctx, parent context.Context, sys, user string) (string, error) {
+			l3Calls++
+			out, err := base(ctx, parent, sys, user)
+			if err != nil {
+				l3Errs++
+			}
+			return out, err
+		}
 	case "head", "headllm":
 		// Local L3 = calibrated classification head on the SAME embedder,
 		// adapted to the tree protocol so every existing ClassifyContext guard
