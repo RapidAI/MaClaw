@@ -291,7 +291,7 @@ requireText('corelib/agentruntime/semantic_projections.go', 'func DocumentReadRe
 requireText('corelib/agentruntime/semantic_projections.go', 'func DeliveryInvocationArgs', 'shared delivery argument projection');
 requireText('corelib/agentruntime/semantic_pdf.go', 'func NormalizePDFInvocationArgs', 'shared PDF invocation normalization');
 requireText('corelib/agentruntime/semantic_pdf.go', 'func PDFArgsTooThin', 'shared PDF argument admission');
-requireText('corelib/agentruntime/semantic_pdf_text.go', 'func StripDeferredPDFPromise', 'shared PDF visible-text projection');
+requireText('corelib/agentruntime/semantic_pdf_text.go', 'func OmitHostPDFToolStatus', 'shared PDF visible-text projection');
 requireText('corelib/agentruntime/artifact_outcomes.go', 'func ResponseHasPDF', 'shared artifact type projection');
 requireText('corelib/agentruntime/artifact_outcomes.go', 'func KeepVisibleErrorAfterArtifactAttach', 'shared artifact error projection');
 requireText('corelib/agentruntime/collections.go', 'func AppendUniqueStrings', 'shared stable string projection');
@@ -626,7 +626,7 @@ requireText('corelib/agentservice/dynamic_semantic_execution.go', 'coretool.Sele
 requireText('guiapp/semantic_dynamic_providers.go', 'tool.SelectionRequiresExternalReceipt', 'GUI dynamic shared receipt policy adapter');
 requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.NormalizePDFInvocationArgs', 'GUI shared PDF invocation adapter');
 requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.PDFArgsTooThin', 'GUI shared PDF admission adapter');
-requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.StripDeferredPDFPromise', 'GUI shared PDF visible-text adapter');
+requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.ProjectHostPublishedPDFChat', 'GUI shared PDF visible-text adapter');
 requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.ResponseHasPDF', 'GUI shared artifact type adapter');
 requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.ShouldClearStaleErrorAfterArtifactAttach', 'GUI shared artifact error adapter');
 requireText('guiapp/im_agent_loop_shared.go', 'agentruntime.DocumentReadResultProjection', 'GUI document result projection adapter');

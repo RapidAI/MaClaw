@@ -70,7 +70,7 @@ func TestEnglishTranslationsAreASCII(t *testing.T) {
 
 func TestInstallerLogoMatchesGUIAsset(t *testing.T) {
 	installerLogoPath := filepath.Join("assets", "appicon.png")
-	guiLogoPath := filepath.Join("..", "gui", "build", "appicon.png")
+	guiLogoPath := filepath.Join("..", "guiapp", "build", "appicon.png")
 	installerLogo, err := os.ReadFile(installerLogoPath)
 	if err != nil {
 		t.Fatalf("read installer logo: %v", err)

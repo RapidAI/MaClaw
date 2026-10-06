@@ -167,7 +167,10 @@ jobs:
             [ "$i" = 60 ] && { echo "sqlserver did not become ready"; exit 1; }
             sleep 2
           done
-          docker exec "$MS" bash -c 'if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -Q "IF DB_ID(''dbtest'') IS NULL CREATE DATABASE dbtest"; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -Q "IF DB_ID(''dbtest'') IS NULL CREATE DATABASE dbtest"; fi'
+          # DB_ID must receive SQL-quoted 'dbtest': inside the single-quoted bash -c
+          # string that is '\''dbtest'\'', NOT dbtest (a bare word parses as a column
+          # name and the CREATE DATABASE silently never runs).
+          docker exec "$MS" bash -c 'if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -Q "IF DB_ID('\''dbtest'\'') IS NULL CREATE DATABASE dbtest"; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -Q "IF DB_ID('\''dbtest'\'') IS NULL CREATE DATABASE dbtest"; fi'
 
       - name: Run database integration tests
         env:

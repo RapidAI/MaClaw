@@ -3463,14 +3463,11 @@ func closedManagedSemanticDefinitionsKeeping(defs []map[string]interface{}, surf
 	if surface == nil {
 		return nil
 	}
-	closed := tool.ClosedManagedDefinitions(defs, surface.grants)
-	if !light {
-		return closed
-	}
-	filtered := tool.FilterLightPromptSafeDefinitions(closed, surface.plan, surface.grants)
+	filtered := tool.ClosedManagedDefinitionsForProfile(defs, surface.plan, surface.grants, light)
 	if keep == nil {
 		return filtered
 	}
+	closed := tool.ClosedManagedDefinitions(defs, surface.grants)
 	have := make(map[string]bool, len(filtered))
 	for _, def := range filtered {
 		have[extractToolName(def)] = true

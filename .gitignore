@@ -150,7 +150,9 @@ _tmptest/
 _tmp_*.py
 *.pptx
 TigerProxy.exe
-TigerProxy/
+TigerProxy/*.exe
+TigerProxy/TigerProxy
+TigerProxy/bin/
 $prof
 *.gguf
 asr_bench.exe
@@ -278,7 +280,10 @@ graphify-out/
 /guiapp/frontend/vite.config.d.ts
 /guiapp/frontend/apps-page-vitest-after.json
 /guiapp/frontend/.*.log
-/guiapp/build/
+# Embedded GUI resources must stay tracked (go:embed build/... in package guiapp);
+# only local build outputs are ignored here.
+/guiapp/build/bin/
+/guiapp/build/windows/*.exe
 /scripts/_*
 *.local-backup.bin
 .tmp-*

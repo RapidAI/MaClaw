@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $assetDir = Join-Path $root 'Ins-maclaw\assets'
-$sourceLogo = Join-Path $root 'gui\build\appicon.png'
+$sourceLogo = Join-Path $root 'guiapp\build\appicon.png'
 $targetLogo = Join-Path $assetDir 'appicon.png'
 $sourceIcon = Join-Path $root 'build\windows\icon.ico'
 $targetIcon = Join-Path $assetDir 'icon.ico'
