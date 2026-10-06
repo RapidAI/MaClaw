@@ -231,7 +231,7 @@ func TestZZLocalEval(t *testing.T) {
 		url := os.Getenv("ZZ_L3_URL")
 		cfg.LLMContextFunc = func(ctx, parent context.Context, sys, user string) (string, error) {
 			l3Calls++
-			v, err := zzHeadEmbed(emb, hd, user)
+			v, err := zzHeadEmbedCtx(ctx, emb, hd, user)
 			if err != nil {
 				return "", err
 			}
@@ -410,7 +410,7 @@ func TestZZLocalEval(t *testing.T) {
 			fmt.Fprintf(os.Stderr, "ZZ eval %d/%d rss=%.0fMB l3calls=%d errs=%d\n", i, len(ins), zzRSSMB(), l3Calls, l3Errs)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "ZZ done rss=%.0fMB l3calls=%d l3errs=%d\n", zzRSSMB(), l3Calls, l3Errs)
+	fmt.Fprintf(os.Stderr, "ZZ done rss=%.0fMB l3calls=%d l3errs=%d head_reused=%d head_reembedded=%d verify_ok=%d verify_bad=%d\n", zzRSSMB(), l3Calls, l3Errs, zzHeadReused, zzHeadReembedded, zzHeadVerifyOK, zzHeadVerifyBad)
 }
 
 // zzHead is the pure-Go inference side of the classification head:
@@ -434,6 +434,39 @@ type zzHead struct {
 }
 
 // zzHeadEmbed embeds text in the vector space the head was trained on.
+// zzHeadReused counts L3 head calls that reused the Layer 2 query vector.
+var zzHeadReused, zzHeadReembedded, zzHeadVerifyOK, zzHeadVerifyBad int
+
+// zzHeadEmbedCtx is the production-path local L3 embed: reuse the Layer 2
+// vector ClassifyContext attached (intent.IntentQueryEmbedding) unless
+// ZZ_HEAD_REUSE=0.
+func zzHeadEmbedCtx(ctx context.Context, emb embedding.Embedder, hd *zzHead, text string) ([]float32, error) {
+	if hd != nil && hd.EmbedRole == "classification" && os.Getenv("ZZ_HEAD_REUSE") != "0" {
+		v, reused, err := IntentQueryEmbedding(ctx, emb, text)
+		if reused {
+			zzHeadReused++
+			if os.Getenv("ZZ_HEAD_REUSE_VERIFY") == "1" {
+				// Bitwise check: the reused vector must equal a fresh embed.
+				fresh, _ := zzHeadEmbed(emb, hd, text)
+				same := len(fresh) == len(v)
+				for i := 0; same && i < len(v); i++ {
+					same = fresh[i] == v[i]
+				}
+				if same {
+					zzHeadVerifyOK++
+				} else {
+					zzHeadVerifyBad++
+				}
+			}
+		} else {
+			zzHeadReembedded++
+		}
+		return v, err
+	}
+	zzHeadReembedded++
+	return zzHeadEmbed(emb, hd, text)
+}
+
 func zzHeadEmbed(emb embedding.Embedder, hd *zzHead, text string) ([]float32, error) {
 	if hd != nil && hd.EmbedRole == "classification" {
 		return embedding.EmbedAs(emb, text, embedding.RoleClassification)

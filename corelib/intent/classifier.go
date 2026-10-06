@@ -368,10 +368,18 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 	var l2Result ClassificationResult
 	l2Ran := false
 	skipTree := false
+	// treeCtx carries the Layer 2 query vector to the Layer 3 callback so a
+	// local L3 on the same embedder need not embed the message again
+	// (IntentQueryEmbedding). Remote callbacks ignore it.
+	treeCtx := ctx
 	if canEmb {
 		var confident bool
-		l2Result, confident = classifyByEmbedding(emb, anchors, msg.Text)
+		var queryVec []float32
+		l2Result, confident, queryVec = classifyByEmbeddingVec(emb, anchors, msg.Text)
 		l2Ran = true
+		if len(queryVec) > 0 {
+			treeCtx = WithQueryEmbedding(ctx, newQueryEmbedding(emb, msg.Text, queryVec))
+		}
 		if confident {
 			NormalizeDeclaredComposite(&l2Result)
 			applyExecutionAffordances(msg.Text, &l2Result)
@@ -437,7 +445,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			treeSkippedSlowEndpoint = true
 			log.Printf("[UnifiedIntentClassifier] L3 skipped: recent tree endpoint failure within %s; using L2 fallback", treeEndpointFailureSkipWindow)
 		} else {
-			candidates, err := classifyByTreeWithTimeout(ctx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
+			candidates, err := classifyByTreeWithTimeout(treeCtx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
 			if err == nil && len(candidates) > 0 {
 				// A tree verdict inside the budget is positive endpoint health
 				// evidence: lift the fast-degrade memory immediately instead of
@@ -488,7 +496,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				// hint keeps the turn alive and the governed surface can still
 				// expand (petition) from there.
 				if l2Ran {
-					if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(msg.Text, top.Label); contradicted {
+					if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(treeCtx, msg.Text, top.Label); contradicted {
 						log.Printf("[UnifiedIntentClassifier] tree verdict contradicted by local cross-check: text_len=%d verdict=%s(tree %.3f, local %.3f) local_leader=%s(%.3f)",
 							utf8.RuneCountInString(msg.Text), top.Label, top.Score, verdictScore, leader, leaderScore)
 						result := lookupHintOrUnknownFromL2(l2Result, false)
@@ -1092,6 +1100,12 @@ func (u *UnifiedIntentClassifier) SetEmbedder(emb embedding.Embedder) {
 // DiagnoseScores returns all Layer 2 scores for debugging.
 // No side effects, no caching.
 func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]float64 {
+	return u.diagnoseScoresCtx(context.Background(), text)
+}
+
+// diagnoseScoresCtx is DiagnoseScores reusing the turn's Layer 2 query vector
+// when ctx carries a matching one (see query_embedding.go).
+func (u *UnifiedIntentClassifier) diagnoseScoresCtx(ctx context.Context, text string) map[IntentLabel]float64 {
 	scores := make(map[IntentLabel]float64)
 
 	u.mu.RLock()
@@ -1104,7 +1118,7 @@ func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]fl
 		return scores
 	}
 
-	queryVec, err := embedIntentQuery(emb, text)
+	queryVec, _, err := IntentQueryEmbedding(ctx, emb, text)
 	if err != nil || queryVec == nil {
 		return scores
 	}
@@ -1341,7 +1355,7 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 		NormalizeDeclaredComposite(&result)
 		applyExecutionAffordances(text, &result)
 		result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
-		if discarded, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(text, result.Primary); discarded {
+		if discarded, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(context.Background(), text, result.Primary); discarded {
 			// A single background LLM sample must not become durable routing
 			// knowledge when the local channel both strongly supports a
 			// different label and shows no support for the verdict. Caching it
@@ -1370,8 +1384,8 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 // wide margin (2026-08-25: coding 0.95 cached over a local office 0.855
 // leader, gap 0.198; 2026-08-26: browser 0.90 served live over the same
 // leader, gap 0.180, HostRejected as no_feasible_provider).
-func (u *UnifiedIntentClassifier) verdictContradictedByLocal(text string, verdict IntentLabel) (discarded bool, leader IntentLabel, leaderScore, verdictScore float64) {
-	scores := u.DiagnoseScores(text)
+func (u *UnifiedIntentClassifier) verdictContradictedByLocal(ctx context.Context, text string, verdict IntentLabel) (discarded bool, leader IntentLabel, leaderScore, verdictScore float64) {
+	scores := u.diagnoseScoresCtx(ctx, text)
 	if len(scores) == 0 {
 		return false, "", 0, 0
 	}
