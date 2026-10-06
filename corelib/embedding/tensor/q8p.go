@@ -1,0 +1,205 @@
+package tensor
+
+// q8p.go — Q8_0 × Q8_0 (int8 activation) GEMM for repacked weights.
+//
+// Activations are quantized per 32-wide block to int8 (Q8_0 style: d =
+// amax/127, q = round(x/d)); weights keep their Q8_0 int8 values but are
+// repacked at load time into a VNNI-friendly, column-interleaved layout
+// (32 output columns per panel, 4 consecutive K bytes per column, values
+// stored as u8 = w+128). One VPDPBUSD then computes 16 columns × 4 K for one
+// row; the +128 offset is removed by starting each block's int32 accumulator
+// at −128·Σq_a (precomputed per activation block). Each 32-K block's int32
+// dot is converted to float and scaled by d_a·d_w, so the arithmetic is the
+// same as llama.cpp's Q8_0×Q8_0 dot (only the activation rounding differs
+// from the float path).
+//
+// Layout (pair p = columns 32p..32p+31, block b, step j = K sub-group of 4):
+//
+//	QB[((p*NB+b)*8+j)*128 + n*4 + e] = uint8(W[32p+n][32b+4j+e] + 128)
+//	SB[(p*NB+b)*32 + n]              = d_w(32p+n, b)
+//
+// The register-blocked tile is 4 rows × 32 columns (AVX-512 VNNI assembly on
+// amd64; q8pTileGo is the portable reference used by tests and as fallback).
+
+import (
+	"math"
+)
+
+// Q8Packed is a Q8_0 weight matrix [N rows (outputs) × K] repacked for
+// MatMulQ8P. N and K must be multiples of 32.
+type Q8Packed struct {
+	N, K, NB int
+	QB       []byte
+	SB       []float32
+}
+
+// Q8PSupported reports whether a [N×K] Q8_0 matrix can be packed.
+func Q8PSupported(N, K int) bool { return N > 0 && K > 0 && N%32 == 0 && K%32 == 0 }
+
+// PackQ8P repacks a Q8_0 tensor (Rows=N outputs, Cols=K). Returns nil when
+// the shape is unsupported.
+func PackQ8P(t *Q8Tensor) *Q8Packed {
+	N, K := t.Rows, t.Cols
+	if !Q8PSupported(N, K) || len(t.Data) < N*K/32*q8BlockBytes {
+		return nil
+	}
+	nb := K / 32
+	p := &Q8Packed{N: N, K: K, NB: nb, QB: make([]byte, N*K), SB: make([]float32, N*nb)}
+	for n := 0; n < N; n++ {
+		pair, nn := n/32, n%32
+		for b := 0; b < nb; b++ {
+			blk := t.Data[(n*nb+b)*q8BlockBytes : (n*nb+b+1)*q8BlockBytes]
+			p.SB[(pair*nb+b)*32+nn] = float16to32(uint16(blk[0]) | uint16(blk[1])<<8)
+			base := (pair*nb + b) * 8 * 128
+			for j := 0; j < 8; j++ {
+				o := base + j*128 + nn*4
+				for e := 0; e < 4; e++ {
+					p.QB[o+e] = blk[2+j*4+e] + 128 // int8 → u8 offset (two's complement wrap)
+				}
+			}
+		}
+	}
+	return p
+}
+
+// Q8Act is a block-quantized activation matrix (rows padded to a multiple of
+// 4 with zeros so the 4-row tile never reads garbage).
+type Q8Act struct {
+	M, Mpad, K, NB int
+	Q              []int8
+	S              []float32 // [Mpad][NB] block scales
+	C              []int32   // [Mpad][NB] −128·Σq (VNNI u8 offset correction)
+}
+
+// QuantizeQ8Act quantizes a[M×K] into dst (grown as needed) and returns it.
+func QuantizeQ8Act(dst *Q8Act, a []float32, M, K int) *Q8Act {
+	if dst == nil {
+		dst = &Q8Act{}
+	}
+	nb := K / 32
+	mp := (M + 3) &^ 3
+	dst.M, dst.Mpad, dst.K, dst.NB = M, mp, K, nb
+	if cap(dst.Q) < mp*K {
+		dst.Q = make([]int8, mp*K)
+	}
+	dst.Q = dst.Q[:mp*K]
+	if cap(dst.S) < mp*nb {
+		dst.S = make([]float32, mp*nb)
+		dst.C = make([]int32, mp*nb)
+	}
+	dst.S = dst.S[:mp*nb]
+	dst.C = dst.C[:mp*nb]
+	if !quantizeQ8ActAsm(dst, a, M, K) {
+		quantizeQ8ActGo(dst.Q, dst.S, dst.C, a, M, K)
+	}
+	if mp > M {
+		clear(dst.Q[M*K:])
+		clear(dst.S[M*nb:])
+		clear(dst.C[M*nb:])
+	}
+	return dst
+}
+
+func quantizeQ8ActGo(q []int8, s []float32, c []int32, a []float32, M, K int) {
+	nb := K / 32
+	for i := 0; i < M*nb; i++ {
+		x := a[i*32 : i*32+32 : i*32+32]
+		var amax float32
+		for _, v := range x {
+			if v < 0 {
+				v = -v
+			}
+			if v > amax {
+				amax = v
+			}
+		}
+		d := amax / 127
+		id := 127 / max(amax, float32(1e-30)) // floor keeps 127/amax finite (matches asm)
+		qq := q[i*32 : i*32+32 : i*32+32]
+		var sum int32
+		for k, v := range x {
+			r := int32(math.RoundToEven(float64(v * id)))
+			qq[k] = int8(r)
+			sum += r
+		}
+		s[i] = d
+		c[i] = -128 * sum
+	}
+}
+
+// q8pTileGo computes the 4×32 tile out[m*32+n] = Σ_b sa[m,b]·sw[n,b]·Σ_k qa·qw
+// for rows m0..m0+3 of act and column pair p of w (portable reference).
+func q8pTileGo(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
+	nb := w.NB
+	K := w.K
+	for i := range out {
+		out[i] = 0
+	}
+	for b := 0; b < nb; b++ {
+		qb := w.QB[(p*nb+b)*1024 : (p*nb+b+1)*1024]
+		sb := w.SB[(p*nb+b)*32 : (p*nb+b+1)*32]
+		for m := 0; m < 4; m++ {
+			row := m0 + m
+			aq := act.Q[row*K+b*32 : row*K+b*32+32]
+			sa := act.S[row*nb+b]
+			c := act.C[row*nb+b]
+			for n := 0; n < 32; n++ {
+				acc := c
+				for j := 0; j < 8; j++ {
+					o := j*128 + n*4
+					for e := 0; e < 4; e++ {
+						acc += int32(qb[o+e]) * int32(aq[j*4+e])
+					}
+				}
+				out[m*32+n] += float32(acc) * (sa * sb[n])
+			}
+		}
+	}
+}
+
+func q8pTile(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
+	if q8pTileAsm(out, act, w, m0, p) {
+		return
+	}
+	q8pTileGo(out, act, w, m0, p)
+}
+
+// MatMulQ8P computes out[m*N+n] (=, or += when accum) Σ_k act[m,k]·W[n,k]
+// for the act.M real rows. maxWorkers==1 runs serially on the caller.
+func MatMulQ8P(out []float32, act *Q8Act, w *Q8Packed, accum bool, maxWorkers int) {
+	N := w.N
+	pairs := N / 32
+	M := act.M
+	run := func(ps, pe int) {
+		var tile [128]float32
+		for p := ps; p < pe; p++ {
+			for m0 := 0; m0 < M; m0 += 4 {
+				q8pTile(&tile, act, w, m0, p)
+				rows := M - m0
+				if rows > 4 {
+					rows = 4
+				}
+				for m := 0; m < rows; m++ {
+					dst := out[(m0+m)*N+p*32 : (m0+m)*N+p*32+32 : (m0+m)*N+p*32+32]
+					src := tile[m*32 : m*32+32 : m*32+32]
+					if accum {
+						for i := range dst {
+							dst[i] += src[i]
+						}
+					} else {
+						copy(dst, src)
+					}
+				}
+			}
+		}
+	}
+	if maxWorkers == 1 || !shouldParallel(M, N, w.K) {
+		run(0, pairs)
+		return
+	}
+	nw := poolWorkers()
+	if maxWorkers > 1 && nw > maxWorkers {
+		nw = maxWorkers
+	}
+	parallelRangesWithWorkers(pairs, nw, run)
+}

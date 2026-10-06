@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,6 +94,7 @@ func main() {
 	batch := flag.Int("batch", 64, "batch: texts per EmbedBatch call")
 	rounds := flag.Int("rounds", 3, "batch: rounds")
 	roleS := flag.String("role", "classification", "classification|query|document|none")
+	cpuProf := flag.String("cpuprofile", "", "write a CPU profile of the measured phase to this file")
 	flag.Parse()
 	role := map[string]embedding.Role{"classification": embedding.RoleClassification, "query": embedding.RoleQuery,
 		"document": embedding.RoleDocument, "none": embedding.RoleNone}[*roleS]
@@ -117,6 +119,25 @@ func main() {
 	var files []string
 	if *texts != "" {
 		files = strings.Split(*texts, ",")
+	}
+	if tk, ok := emb.(interface{ Tokenize(string) []int }); ok {
+		for _, fp := range files {
+			var toks []float64
+			for _, t := range readLines(fp) {
+				toks = append(toks, float64(len(tk.Tokenize(t))))
+			}
+			res["tokens:"+fp] = map[string]float64{"n": float64(len(toks)), "p50": pct(toks, 50), "p95": pct(toks, 95), "max": pct(toks, 100), "min": pct(toks, 0)}
+		}
+	}
+	if *cpuProf != "" {
+		f, err := os.Create(*cpuProf)
+		if err != nil {
+			panic(err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			panic(err)
+		}
+		defer f.Close()
 	}
 	switch *mode {
 	case "load":
@@ -220,6 +241,9 @@ func main() {
 		el := time.Since(st).Seconds()
 		res["conc"] = map[string]any{"workers": *workers, "seconds": el, "calls": done, "calls_per_s": float64(done) / el, "errors": errs,
 			"nondeterministic": mism, "lat": summary(lat), "max_rss_mb": maxRSS, "load_start": la, "load_end": loadavg()}
+	}
+	if *cpuProf != "" {
+		pprof.StopCPUProfile()
 	}
 	res["rss_end_mb"] = rssMB()
 	res["load_after"] = loadavg()
