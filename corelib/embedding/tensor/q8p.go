@@ -18,8 +18,10 @@ package tensor
 //	QB[((p*NB+b)*8+j)*128 + n*4 + e] = uint8(W[32p+n][32b+4j+e] + 128)
 //	SB[(p*NB+b)*32 + n]              = d_w(32p+n, b)
 //
-// The register-blocked tile is 4 rows × 32 columns (AVX-512 VNNI assembly on
-// amd64; q8pTileGo is the portable reference used by tests and as fallback).
+// The register-blocked tile is 4 rows × 32 columns. amd64 dispatch
+// (MACLAW_Q8P_ISA): AVX-512 VNNI > AVX-VNNI (VEX) > AVX2 (VPMADDUBSW sign-
+// trick) > off. q8pTileGo is the portable reference used by tests/fallback.
+// arm64 uses a signed s8 weight layout + SDOT (see q8p_arm64*).
 
 import (
 	"math"

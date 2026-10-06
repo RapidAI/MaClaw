@@ -12,3 +12,6 @@ func q8pTileAsm(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) bool { re
 func quantizeQ8ActAsm(dst *Q8Act, a []float32, M, K int) bool { return false }
 
 func attnWSum128Asm(out, w, v []float32, rows, stride int, scale float32) bool { return false }
+
+// Q8PISAName is "off" on non-amd64.
+func Q8PISAName() string { return "off" }
