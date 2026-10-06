@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // qwen3TestModel returns the Qwen3-Embedding GGUF path or skips.
@@ -153,5 +155,100 @@ func BenchmarkQwen3EmbedShortSerial(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = e.EmbedConcurrent(txt)
+	}
+}
+
+// TestQwen3CausalAttentionMatchesNaive checks the causal GQA kernel (serial
+// and per-head parallel paths) against a float64 reference.
+func TestQwen3CausalAttentionMatchesNaive(t *testing.T) {
+	const nH, nKV, hd = 4, 2, 128
+	for _, seq := range []int{1, 5, 40} {
+		q := make([]float32, seq*nH*hd)
+		k := make([]float32, seq*nKV*hd)
+		v := make([]float32, seq*nKV*hd)
+		x := uint32(12345)
+		rnd := func() float32 { x = x*1664525 + 1013904223; return float32(x>>8)/float32(1<<24) - 0.5 }
+		for i := range q {
+			q[i] = rnd()
+		}
+		for i := range k {
+			k[i], v[i] = rnd(), rnd()
+		}
+		want := make([]float64, seq*nH*hd)
+		for h := 0; h < nH; h++ {
+			kh := h / (nH / nKV)
+			for t0 := 0; t0 < seq; t0++ {
+				sc := make([]float64, t0+1)
+				mx := math.Inf(-1)
+				for s := 0; s <= t0; s++ {
+					var d float64
+					for i := 0; i < hd; i++ {
+						d += float64(q[t0*nH*hd+h*hd+i]) * float64(k[s*nKV*hd+kh*hd+i])
+					}
+					sc[s] = d / math.Sqrt(hd)
+					mx = math.Max(mx, sc[s])
+				}
+				var z float64
+				for s := range sc {
+					sc[s] = math.Exp(sc[s] - mx)
+					z += sc[s]
+				}
+				for i := 0; i < hd; i++ {
+					var o float64
+					for s := range sc {
+						o += sc[s] / z * float64(v[s*nKV*hd+kh*hd+i])
+					}
+					want[t0*nH*hd+h*hd+i] = o
+				}
+			}
+		}
+		for _, mw := range []int{1, 0} {
+			got := make([]float32, seq*nH*hd)
+			qwen3CausalAttention(got, q, k, v, make([]float32, seq), seq, nH, nKV, hd, mw)
+			var maxErr float64
+			for i := range got {
+				maxErr = math.Max(maxErr, math.Abs(float64(got[i])-want[i]))
+			}
+			// The shared softmax kernel uses a Schraudolph fast exp (a few % relative
+			// error per weight), so outputs differ from exact softmax by ~1e-2.
+			if maxErr > 2e-2 {
+				t.Fatalf("seq=%d workers=%d max abs err %.2e", seq, mw, maxErr)
+			}
+		}
+	}
+}
+
+// TestQwen3SplitQ8ColsExact: the K-split FFN-down weights must be a pure
+// block copy of the source tensor.
+func TestQwen3SplitQ8ColsExact(t *testing.T) {
+	rows, cols := 3, 96
+	src := make([]byte, rows*cols/32*34)
+	for i := range src {
+		src[i] = byte(i * 7)
+	}
+	full := tensor.Q8Tensor{Data: src, Rows: rows, Cols: cols}
+	parts, k0 := splitQ8Cols(&full, []int{64, 32})
+	if len(parts) != 2 || k0[1] != 64 {
+		t.Fatalf("parts=%d k0=%v", len(parts), k0)
+	}
+	a, b := make([]float32, cols), make([]float32, 64)
+	c := make([]float32, 32)
+	for r := 0; r < rows; r++ {
+		full.DequantRow(r, a)
+		parts[0].DequantRow(r, b)
+		parts[1].DequantRow(r, c)
+		for i := 0; i < 64; i++ {
+			if a[i] != b[i] {
+				t.Fatalf("row %d col %d: %v != %v", r, i, a[i], b[i])
+			}
+		}
+		for i := 0; i < 32; i++ {
+			if a[64+i] != c[i] {
+				t.Fatalf("row %d col %d: %v != %v", r, 64+i, a[64+i], c[i])
+			}
+		}
+	}
+	if qwen3DownChunks(3072)[0] != 2048 || qwen3DownChunks(3072)[1] != 1024 || qwen3DownChunks(2048) != nil {
+		t.Fatalf("chunks = %v / %v", qwen3DownChunks(3072), qwen3DownChunks(2048))
 	}
 }

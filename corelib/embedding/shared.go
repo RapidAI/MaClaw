@@ -60,7 +60,7 @@ func reloadSharedGemmaLocked(force bool) {
 	if sharedGemma != nil && !IsNoop(sharedGemma) {
 		return
 	}
-	path := DefaultModelPath()
+	path := resolveModelPath(DefaultModelPath())
 	if path == "" {
 		if sharedGemma == nil {
 			sharedGemma = NoopEmbedder{}
