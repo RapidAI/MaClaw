@@ -43,8 +43,16 @@ func PackQ8P(t *Q8Tensor) *Q8Packed {
 	if !Q8PSupported(N, K) || len(t.Data) < N*K/32*q8BlockBytes {
 		return nil
 	}
+	return packQ8PTo(t, make([]byte, N*K), make([]float32, N*(K/32)))
+}
+
+func packQ8PTo(t *Q8Tensor, qb []byte, sb []float32) *Q8Packed {
+	N, K := t.Rows, t.Cols
+	if len(t.Data) < N*K/32*q8BlockBytes {
+		return nil
+	}
 	nb := K / 32
-	p := &Q8Packed{N: N, K: K, NB: nb, QB: make([]byte, N*K), SB: make([]float32, N*nb)}
+	p := &Q8Packed{N: N, K: K, NB: nb, QB: qb[:N*K], SB: sb[:N*nb]}
 	for n := 0; n < N; n++ {
 		pair, nn := n/32, n%32
 		for b := 0; b < nb; b++ {

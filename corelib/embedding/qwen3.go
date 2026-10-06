@@ -97,7 +97,8 @@ type Qwen3Embedder struct {
 	prefixes    []*qwen3PrefixKV // immutable once published; bounded by qwen3MaxPrefixes
 	prefixBuild sync.Mutex       // single-flight prefix computation
 
-	q8p bool // layers carry Q8P packed weights (forwardFrom uses MatMulQ8P)
+	q8p      bool             // layers carry Q8P packed weights (forwardFrom uses MatMulQ8P)
+	q8pArena *tensor.Q8PArena // off-heap storage of the packed weights (freed by Close)
 }
 
 type qwen3Scratch struct {
@@ -247,13 +248,21 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 		}
 	}
 	if qwen3UseQ8P(hp) {
+		need := 0
+		for i := range q.layers {
+			l := &q.layers[i]
+			for _, t := range []*tensor.Q8Tensor{&l.wq, &l.wk, &l.wv, &l.wo, &l.wGate, &l.wUp, &l.wDown} {
+				need += tensor.Q8PPackedBytes(t.Rows, t.Cols)
+			}
+		}
+		q.q8pArena = tensor.NewQ8PArena(need)
 		for i := range q.layers {
 			l := &q.layers[i]
 			for _, pr := range []struct {
 				dst **tensor.Q8Packed
 				src *tensor.Q8Tensor
 			}{{&l.pq, &l.wq}, {&l.pk, &l.wk}, {&l.pv, &l.wv}, {&l.po, &l.wo}, {&l.pg, &l.wGate}, {&l.pu, &l.wUp}, {&l.pd, &l.wDown}} {
-				*pr.dst = tensor.PackQ8P(pr.src)
+				*pr.dst = tensor.PackQ8PInto(pr.src, q.q8pArena)
 				if *pr.dst == nil {
 					return fmt.Errorf("qwen3: Q8P pack failed for layer %d", i)
 				}
@@ -544,8 +553,13 @@ func (q *Qwen3Embedder) Close() {
 	q.mu.Lock()
 	mf := q.mmap
 	q.mmap = nil
+	arena := q.q8pArena
+	q.q8pArena = nil
 	q.mu.Unlock()
 	enqueueMmapClose(mf)
+	// In-flight calls have drained (inflight.close waits) and later calls
+	// fail before touching weights, so the packed weights can go now.
+	arena.Free()
 }
 
 // forward runs the transformer over all of ids (no prefix cache) and returns
