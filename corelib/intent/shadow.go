@@ -20,7 +20,9 @@ package intent
 // Environment (read once in New; Config.Shadow takes precedence):
 //
 //	MACLAW_INTENT_SHADOW=1                 enable
-//	MACLAW_INTENT_SHADOW_HEAD=<head.json>  local head (optional: without it only remote/L2 are logged)
+//	MACLAW_INTENT_SHADOW_HEAD=<head.json>[,<head2.json>…]  local head(s); per turn the first head whose
+//	                                       input dim matches the L2 vector runs (e.g. a Gemma 768-d and a
+//	                                       Qwen3 1024-d head). Optional: without it only remote/L2 are logged.
 //	MACLAW_INTENT_SHADOW_LOG=<file|dir>    default <maclaw data>/logs/intent-shadow/intent_shadow.jsonl
 //	MACLAW_INTENT_SHADOW_TEXT=hash|none|full   default hash (salted HMAC-SHA256; salt stays next to the log)
 //	MACLAW_INTENT_SHADOW_EMBED=1           also store the L2 query vector (float16, base64)
@@ -71,7 +73,7 @@ const ShadowSchemaVersion = 1
 // ShadowConfig configures shadow mode. The zero value is disabled.
 type ShadowConfig struct {
 	Enabled        bool
-	HeadPath       string     // loaded when Head is nil
+	HeadPath       string     // comma-separated head files, loaded when Head is nil
 	Head           *LocalHead // optional preloaded head
 	LogPath        string     // file, or directory (→ intent_shadow.jsonl inside)
 	TextMode       string     // hash (default) | none | full
@@ -336,7 +338,7 @@ type shadowJob struct {
 
 type shadowLogger struct {
 	cfg   ShadowConfig
-	head  *LocalHead
+	heads []*LocalHead
 	salt  []byte
 	nonce string
 
@@ -377,13 +379,21 @@ func acquireShadowLogger(cfg ShadowConfig) (*shadowLogger, error) {
 		l.refs++
 		return l, nil
 	}
-	head := cfg.Head
-	if head == nil && cfg.HeadPath != "" {
-		head, err = LoadLocalHead(cfg.HeadPath)
-		if err != nil {
-			// Still log remote/L2 verdicts; local fields carry the error.
-			log.Printf("[IntentShadow] local head unavailable (%v); logging remote/L2 only", err)
-			head = nil
+	var heads []*LocalHead
+	if cfg.Head != nil {
+		heads = append(heads, cfg.Head)
+	} else {
+		for _, p := range strings.Split(cfg.HeadPath, ",") {
+			if p = strings.TrimSpace(p); p == "" {
+				continue
+			}
+			h, herr := LoadLocalHead(p)
+			if herr != nil {
+				// Still log remote/L2 verdicts; local fields carry the error.
+				log.Printf("[IntentShadow] local head unavailable (%v)", herr)
+				continue
+			}
+			heads = append(heads, h)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.LogPath), 0o700); err != nil {
@@ -404,7 +414,7 @@ func acquireShadowLogger(cfg ShadowConfig) (*shadowLogger, error) {
 	_, _ = rand.Read(nb[:])
 	l := &shadowLogger{
 		cfg:   cfg,
-		head:  head,
+		heads: heads,
 		salt:  salt,
 		nonce: hex.EncodeToString(nb[:]),
 		queue: make(chan shadowJob, cfg.QueueSize),
@@ -414,9 +424,13 @@ func acquireShadowLogger(cfg ShadowConfig) (*shadowLogger, error) {
 	}
 	go l.run()
 	shadowRegistry[cfg.LogPath] = l
+	var ids []string
+	for _, h := range heads {
+		ids = append(ids, fmt.Sprintf("%s(dim %d)", h.ID, h.Dim()))
+	}
 	headID := "none"
-	if head != nil {
-		headID = head.ID
+	if len(ids) > 0 {
+		headID = strings.Join(ids, ",")
 	}
 	log.Printf("[IntentShadow] enabled: log=%s head=%s text=%s embed=%v l2_sample=%.3f", cfg.LogPath, headID, cfg.TextMode, cfg.StoreEmbedding, cfg.L2SampleRate)
 	return l, nil
@@ -520,8 +534,9 @@ func (l *shadowLogger) buildRecord(job shadowJob) shadowRecord {
 		Kind:    job.kind,
 		ModelID: st.modelID,
 	}
-	if l.head != nil {
-		rec.HeadID = l.head.ID
+	head := l.headFor(len(st.queryVec))
+	if head != nil {
+		rec.HeadID = head.ID
 	}
 	res := job.result
 	rec.Final = shadowFinal{Label: string(res.Primary), Conf: res.Confidence, Layer: res.Layer, Degraded: res.Degraded, Tools: res.ToolNames}
@@ -541,7 +556,7 @@ func (l *shadowLogger) buildRecord(job shadowJob) shadowRecord {
 	rec.Remote = l.remoteSection(st)
 
 	// Local head
-	rec.Local = l.localSection(st)
+	rec.Local = l.localSection(st, head)
 
 	// Agreement / sensitivity
 	if rec.Remote.Outcome == "ok" && rec.Local != nil && rec.Local.Label != "" {
@@ -549,12 +564,12 @@ func (l *shadowLogger) buildRecord(job shadowJob) shadowRecord {
 		ad := a && rec.Local.Decision == LocalHeadAccept
 		rec.Agree, rec.AgreeDec = &a, &ad
 	}
-	if l.head != nil {
+	if sens := l.sensitivityHead(head); sens != nil {
 		if rec.Local != nil && rec.Local.Label != "" {
-			rec.Sensitive.Local = l.head.IsSensitive(rec.Local.Label)
+			rec.Sensitive.Local = sens.IsSensitive(rec.Local.Label)
 		}
 		if rec.Remote.Label != "" {
-			rec.Sensitive.Remote = l.head.IsSensitive(rec.Remote.Label)
+			rec.Sensitive.Remote = sens.IsSensitive(rec.Remote.Label)
 		}
 	}
 
@@ -663,36 +678,57 @@ func shadowRemoteOutcome(turnCtx context.Context, cands []TreeCandidate, err err
 	return "error"
 }
 
-func (l *shadowLogger) localSection(st *shadowTurn) (out *shadowLocal) {
+// headFor returns the first head whose input dim matches (nil if none).
+func (l *shadowLogger) headFor(dim int) *LocalHead {
+	for _, h := range l.heads {
+		if h.Dim() == dim {
+			return h
+		}
+	}
+	return nil
+}
+
+// sensitivityHead supplies the sensitive-label set (all heads share the
+// taxonomy; the matched head is preferred).
+func (l *shadowLogger) sensitivityHead(matched *LocalHead) *LocalHead {
+	if matched != nil {
+		return matched
+	}
+	if len(l.heads) > 0 {
+		return l.heads[0]
+	}
+	return nil
+}
+
+func (l *shadowLogger) localSection(st *shadowTurn, head *LocalHead) (out *shadowLocal) {
 	out = &shadowLocal{}
-	if l.head == nil {
+	switch {
+	case len(l.heads) == 0:
 		out.Error = "no_head"
 		return out
-	}
-	out.Tau, out.TauS = l.head.Tau, l.head.TauS
-	if len(st.queryVec) == 0 {
+	case len(st.queryVec) == 0:
 		out.Error = "no_l2_vector"
 		return out
-	}
-	if len(st.queryVec) != l.head.Dim() {
+	case head == nil:
 		out.Error = "dim_mismatch"
 		return out
 	}
+	out.Tau, out.TauS = head.Tau, head.TauS
 	defer func() {
 		if r := recover(); r != nil {
 			l.errs.Add(1)
-			out = &shadowLocal{Tau: l.head.Tau, TauS: l.head.TauS, Error: "panic"}
+			out = &shadowLocal{Tau: head.Tau, TauS: head.TauS, Error: "panic"}
 		}
 	}()
 	t0 := time.Now()
-	probs, err := l.head.Predict(st.queryVec)
+	probs, err := head.Predict(st.queryVec)
 	if err != nil {
 		out.Error = "predict_error"
 		return out
 	}
-	label, p, dec, thr := l.head.Decide(probs)
+	label, p, dec, thr := head.Decide(probs)
 	out.LatencyUS = float64(time.Since(t0).Nanoseconds()) / 1000
-	out.TopK = l.head.TopK(probs, l.cfg.TopK)
+	out.TopK = head.TopK(probs, l.cfg.TopK)
 	out.Label, out.P, out.Decision, out.Threshold = label, p, dec, thr
 	return out
 }

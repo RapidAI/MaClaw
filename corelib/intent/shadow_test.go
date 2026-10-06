@@ -449,6 +449,35 @@ func TestShadowL2Sample(t *testing.T) {
 	}
 }
 
+func TestShadowMultiHeadPicksByDim(t *testing.T) {
+	dir := t.TempDir()
+	h16 := filepath.Join(dir, "h16.json")
+	h8 := filepath.Join(dir, "h8.json")
+	labels := []string{"office", "coding", "unknown"}
+	if err := os.WriteFile(h16, tinyHeadJSON(t, labels, 16, 4, 0.5, 0.9, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h8, tinyHeadJSON(t, labels, 8, 4, 0.5, 0.9, []string{"coding"}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "s.jsonl")
+	u := newShadowSpyClassifier(t, okOfficeLLM, &ShadowConfig{Enabled: true, HeadPath: h16 + ", " + filepath.Join(dir, "missing.json") + "," + h8, LogPath: p})
+	u.ClassifyContext(context.Background(), MessageContext{Text: "pick the matching head please"})
+	u.CloseShadow()
+	r := readShadowRecords(t, p)[0]
+	if id, _ := r["head_id"].(string); len(id) < 8 || id[:8] != "h8.json@" {
+		t.Fatalf("head_id %v", r["head_id"])
+	}
+	// Only a 16-d head: the 8-d vector is a recorded dim mismatch, not a crash.
+	p2 := filepath.Join(dir, "s2.jsonl")
+	u2 := newShadowSpyClassifier(t, okOfficeLLM, &ShadowConfig{Enabled: true, HeadPath: h16, LogPath: p2})
+	u2.ClassifyContext(context.Background(), MessageContext{Text: "pick the matching head please"})
+	u2.CloseShadow()
+	if r := readShadowRecords(t, p2)[0]; get(r, "local", "error") != "dim_mismatch" || get(r, "remote", "label") != "office" {
+		t.Fatalf("dim mismatch record %v", r)
+	}
+}
+
 func TestShadowRotation(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "s.jsonl")
