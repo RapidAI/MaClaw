@@ -50,6 +50,9 @@ type Config struct {
 	// channel when embedding is also available. 0 -> DefaultFusionTreeDeadline.
 	// Never exceeds LLMTimeout when both are set.
 	FusionTreeDeadline time.Duration
+	// Shadow enables intent shadow mode (shadow.go). nil → read the
+	// MACLAW_INTENT_SHADOW* environment once; disabled by default.
+	Shadow *ShadowConfig
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -136,6 +139,9 @@ type UnifiedIntentClassifier struct {
 	embeddingGeneration uint64
 	ready               bool         // set to true when the current anchor warmup completes
 	mu                  sync.RWMutex // protects ready, embeddingGeneration, and LLM callbacks
+
+	// shadow is the intent shadow-mode logger (nil = off, the default).
+	shadow atomic.Pointer[shadowLogger]
 }
 
 // New creates a UnifiedIntentClassifier. Starts background anchor warmup
@@ -185,6 +191,19 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		layers = append(layers, "none (semantic classifiers unavailable)")
 	}
 	log.Printf("[UnifiedIntentClassifier] available layers: %v", layers)
+
+	// Shadow mode is observation only; failing to open it never fails New.
+	shadowCfg, shadowOn := ShadowConfig{}, false
+	if cfg.Shadow != nil {
+		shadowCfg, shadowOn = *cfg.Shadow, cfg.Shadow.Enabled
+	} else {
+		shadowCfg, shadowOn = ShadowConfigFromEnv()
+	}
+	if shadowOn {
+		if err := u.EnableShadow(shadowCfg); err != nil {
+			log.Printf("[UnifiedIntentClassifier] intent shadow mode not enabled: %v", err)
+		}
+	}
 
 	// Start background anchor warmup if embedder is real.
 	if !isNoop {
@@ -326,6 +345,28 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 // belong to a replacement turn. The configured LLM timeout remains an upper
 // bound; the supplied context may only make that bound stricter.
 func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg MessageContext) ClassificationResult {
+	sh := u.shadow.Load()
+	if sh == nil {
+		return u.classifyContext(ctx, msg, nil)
+	}
+	// Shadow mode: observe the turn, then hand the final result to the
+	// shadow logger without blocking. The returned result is untouched.
+	st := &shadowTurn{}
+	result := u.classifyContext(ctx, msg, st)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[IntentShadow] recovered panic in finish: %v", r)
+			}
+		}()
+		sh.finish(st, msg.Text, result)
+	}()
+	return result
+}
+
+// classifyContext is ClassifyContext; st is non-nil only in shadow mode and
+// only records what the turn already computed.
+func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg MessageContext, st *shadowTurn) ClassificationResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -377,6 +418,10 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 		var queryVec []float32
 		l2Result, confident, queryVec = classifyByEmbeddingVec(emb, anchors, msg.Text)
 		l2Ran = true
+		if st != nil {
+			st.modelID = embedderModelID(emb)
+			st.noteL2(emb, anchors, l2Result, confident, queryVec)
+		}
 		if len(queryVec) > 0 {
 			treeCtx = WithQueryEmbedding(ctx, newQueryEmbedding(emb, msg.Text, queryVec))
 		}
@@ -391,8 +436,14 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			// Policy skip is stable whether or not an LLM is configured.
 			skipTree = true
 			canTree = false
+			if st != nil {
+				st.outcome = "skipped_short_lookup"
+			}
 			log.Printf("[UnifiedIntentClassifier] Layer 2 short lookup skipped tree: text_len=%d primary=%s conf=%.2f", utf8.RuneCountInString(msg.Text), l2Result.Primary, l2Result.Confidence)
 		} else if !canTree {
+			if st != nil {
+				st.noteRemoteSkipped("not_configured")
+			}
 			// Embedding-only and unconfirmed: keep a lookup (or ≥lookup-floor
 			// office) guess as an explicit hint. Affordances and affinity would
 			// attach generate/tools and make downstream treat the guess as a
@@ -443,9 +494,19 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 		// the resend-recovery path.
 		if l2Ran && u.skipTreeForRecentEndpointFailure(cacheKeyScope(cacheKey)) {
 			treeSkippedSlowEndpoint = true
+			if st != nil {
+				st.noteRemoteSkipped("skipped_endpoint_window")
+			}
 			log.Printf("[UnifiedIntentClassifier] L3 skipped: recent tree endpoint failure within %s; using L2 fallback", treeEndpointFailureSkipWindow)
 		} else {
+			var shadowT0 time.Time
+			if st != nil {
+				shadowT0 = time.Now()
+			}
 			candidates, err := classifyByTreeWithTimeout(treeCtx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
+			if st != nil {
+				st.noteRemote(ctx, candidates, err, time.Since(shadowT0))
+			}
 			if err == nil && len(candidates) > 0 {
 				// A tree verdict inside the budget is positive endpoint health
 				// evidence: lift the fast-degrade memory immediately instead of
