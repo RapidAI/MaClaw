@@ -42,7 +42,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "$WORKDIR" ]; then
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/maclaw-gui-smoke.XXXXXX")"
-  trap 'rm -rf "$WORKDIR"' EXIT
+  # The GUI spawns long-lived children (coding CLI bootstrap, WebKitWebProcess)
+  # that outlive the TERM kill and keep writing under the workdir, racing the
+  # cleanup rm ("Directory not empty"). Cleanup must never mask the smoke result.
+  trap 'pkill -KILL -f "$WORKDIR" 2>/dev/null; rm -rf "$WORKDIR" 2>/dev/null || true' EXIT
 fi
 mkdir -p "$WORKDIR"
 chmod +x "$APPIMAGE"
@@ -181,6 +184,11 @@ timeout --signal=TERM --kill-after=5 "${HOLD_SECONDS}" \
   xvfb-run -a --server-args='-screen 0 1280x720x24' \
   "$ROOT/AppRun" > "$WORKDIR/xvfb.out" 2>"$WORKDIR/xvfb.err"
 xvfb_rc=$?
+# Reap children the TERM did not reach (bootstrap npm/node, WebKitWebProcess)
+# so they cannot race the EXIT-trap cleanup or leak onto the runner.
+pkill -TERM -f "$WORKDIR" 2>/dev/null || true
+sleep 1
+pkill -KILL -f "$WORKDIR" 2>/dev/null || true
 set -e
 
 # timeout(1) returns 124 when the process was still running — that is success.
