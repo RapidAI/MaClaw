@@ -34,5 +34,18 @@ jobs:
           -run 'Test(ModuleRegistry|RuntimeExecutor|RuntimeSurfaceDigest|DescribeRuntimeCapabilities|RuntimeCapabilitiesEndpoint|RuntimeCallbacks|CoreAgentCallbacks|RegisterBuiltinModules|ResolveRole|AdaptiveRetry|HeadlessScreenshot|GUIAndSrv|SQLiteRunEventStoreConcurrent|RunEventsStream|OpenAPIDocument)'
           -count=1 -race
 
+      # guiapp's linux pet/floating files are cgo with pkg-config gtk+-3.0, and
+      # the wails v2 runtime needs webkit2gtk: install them (4.0 on 22.04, or
+      # 4.1 + build tag on 24.04/26.04) or the compile step dies on pkg-config.
+      - name: Install GTK for GUI host compile
+        run: |
+          sudo apt-get update
+          if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
+            echo "GUIHOST_TAGS=" >> $GITHUB_ENV
+          else
+            sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+            echo "GUIHOST_TAGS=webkit2_41" >> $GITHUB_ENV
+          fi
+
       - name: Compile GUI host contract tests
-        run: go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race

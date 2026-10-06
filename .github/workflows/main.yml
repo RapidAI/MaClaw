@@ -76,7 +76,7 @@ jobs:
           fi
 
       - name: Compile GUI host package
-        run: go test ${GUIHOST_TAGS:+-tags="$GUIHOST_TAGS"} ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
 
   verify-noembedding:
     runs-on: ubuntu-latest
@@ -1812,6 +1812,9 @@ jobs:
   # ============================================================
   build-linux-arm64:
     strategy:
+      # A single-brand smoke failure must not cancel the sibling builds:
+      # every arm64 job's log is needed to diagnose GUI startup on arm.
+      fail-fast: false
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || inputs.BRAND == 'metastaff' && fromJSON('["metastaff"]') || fromJSON('["", "qianxin", "metastaff"]') }}
         os_version: [ubuntu-22.04-arm, ubuntu-24.04-arm]

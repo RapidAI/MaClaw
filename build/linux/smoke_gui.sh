@@ -170,8 +170,14 @@ echo "--- xvfb start (hold ${HOLD_SECONDS}s) ---"
 export LIBGL_ALWAYS_SOFTWARE=1
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+# Isolated HOME: a remote host starts with no ~/.maclaw state, and the app
+# redirects its log output into that home (initLogFile), so a crash's only
+# evidence would otherwise be lost with the ephemeral runner home.
+SMOKE_HOME="$WORKDIR/home"
+mkdir -p "$SMOKE_HOME"
 set +e
 timeout --signal=TERM --kill-after=5 "${HOLD_SECONDS}" \
+  env HOME="$SMOKE_HOME" \
   xvfb-run -a --server-args='-screen 0 1280x720x24' \
   "$ROOT/AppRun" > "$WORKDIR/xvfb.out" 2>"$WORKDIR/xvfb.err"
 xvfb_rc=$?
@@ -187,6 +193,10 @@ if [ "$xvfb_rc" -eq 0 ]; then
   echo "FAIL: GUI exited 0 immediately instead of staying up" >&2
   cat "$WORKDIR/xvfb.out" >&2 || true
   cat "$WORKDIR/xvfb.err" >&2 || true
+  if [ -d "$SMOKE_HOME/.maclaw/logs" ]; then
+    echo "--- app log files ($SMOKE_HOME/.maclaw/logs) ---"
+    find "$SMOKE_HOME/.maclaw/logs" -type f -exec sh -c 'echo "=== $1 ==="; tail -n 100 "$1"' _ {} \; 2>/dev/null || true
+  fi
   exit 1
 fi
 
@@ -195,9 +205,15 @@ fi
 # WebKit already proved the linker/runtime. Keep this as a hard failure on
 # GitHub-hosted Linux (MACLAW_GUI_SMOKE_REQUIRE_XVFB=1, set by the workflow).
 echo "xvfb start exited $xvfb_rc (process did not stay up)"
-if [ -s "$WORKDIR/xvfb.err" ]; then
-  echo "--- xvfb stderr ---"
-  cat "$WORKDIR/xvfb.err"
+echo "--- xvfb stdout ---"
+cat "$WORKDIR/xvfb.out" || true
+echo "--- xvfb stderr ---"
+cat "$WORKDIR/xvfb.err" || true
+# The app redirects log.SetOutput into its home's logs dir; without this dump
+# an early log.Fatal (gtk/webkit init, asset server) is invisible on stderr.
+if [ -d "$SMOKE_HOME/.maclaw/logs" ]; then
+  echo "--- app log files ($SMOKE_HOME/.maclaw/logs) ---"
+  find "$SMOKE_HOME/.maclaw/logs" -type f -exec sh -c 'echo "=== $1 ==="; tail -n 100 "$1"' _ {} \; 2>/dev/null || true
 fi
 if [ "${MACLAW_GUI_SMOKE_REQUIRE_XVFB:-0}" = "1" ]; then
   echo "FAIL: xvfb window smoke is required in this environment" >&2
