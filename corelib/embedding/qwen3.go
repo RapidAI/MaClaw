@@ -68,9 +68,11 @@ type qwen3Layer struct {
 	// (no requantisation), summed after the matmuls.
 	downParts []tensor.Q8Tensor
 	downK0    []int
-	// Q8P repacked weights (int8-activation VNNI GEMM, tensor/q8p.go); nil
-	// when the kernel is unavailable (non-amd64, no AVX-512 VNNI) or
+	// Q8P repacked weights (int8-activation GEMM, tensor/q8p.go); nil when
+	// the kernel is unavailable (CPU ISA / MACLAW_Q8P_ISA / MACLAW_Q8P=0) or
 	// MACLAW_QWEN3_Q8P=0, in which case the float-activation path above runs.
+	// Activations default to two-pass (MACLAW_QWEN3_Q8P_2PASS unset); use
+	// MACLAW_QWEN3_Q8P_2PASS=none for single-pass.
 	pq, pk, pv, po, pg, pu, pd *tensor.Q8Packed
 }
 
@@ -291,12 +293,22 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 }
 
 // qwen3Q8PTwoPass selects the matmul classes whose activations use two int8
-// terms (MACLAW_QWEN3_Q8P_2PASS = comma list of qkv,o,gu,down | all | none).
+// terms (MACLAW_QWEN3_Q8P_2PASS). Default when unset: all matmuls (two-pass
+// ≈ float-path accuracy). Opt into single-pass with "none" or "0"; or list
+// qkv,o,gu,down / all for a subset.
 var qwen3Q8PTwoPass = parseQwen3TwoPass(os.Getenv("MACLAW_QWEN3_Q8P_2PASS"))
 
 type qwen3TwoPass struct{ qkv, o, gu, down bool }
 
 func parseQwen3TwoPass(v string) qwen3TwoPass {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		// Default: two-pass everywhere (section 12 / 13 recommendation).
+		return qwen3TwoPass{true, true, true, true}
+	}
+	if v == "none" || v == "0" {
+		return qwen3TwoPass{}
+	}
 	var t qwen3TwoPass
 	for _, f := range strings.Split(v, ",") {
 		switch strings.TrimSpace(f) {
@@ -310,6 +322,8 @@ func parseQwen3TwoPass(v string) qwen3TwoPass {
 			t.down = true
 		case "all":
 			t = qwen3TwoPass{true, true, true, true}
+		case "none", "0":
+			t = qwen3TwoPass{}
 		}
 	}
 	return t

@@ -8,8 +8,8 @@ import (
 
 // TestQwen3Q8PMatchesFloatPath: the int8-activation (Q8P) runner vs the
 // float-activation runner on the same model. Gate: cos ≥ 0.995 per text
-// (section 12 measured min 0.9964 over 2365 texts), and two-pass
-// activations (MACLAW_QWEN3_Q8P_2PASS=all) ≥ 0.99999.
+// for single-pass (section 12 measured min 0.9964 over 2365 texts), and
+// ≥ 0.99999 for two-pass (the default when MACLAW_QWEN3_Q8P_2PASS is unset).
 func TestQwen3Q8PMatchesFloatPath(t *testing.T) {
 	if !tensor.Q8PAvailable() {
 		t.Skip("Q8P kernel unavailable on this CPU")
