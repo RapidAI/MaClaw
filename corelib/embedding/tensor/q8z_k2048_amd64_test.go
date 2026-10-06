@@ -11,6 +11,9 @@ import (
 // per-block K=2048 FFN-down path against the exact row-dot reference.
 // A is non-negative (ReLU) as required by the u8 quantizer.
 func TestQ8ZK2048VNNI_AccumMatchesRowDots(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)

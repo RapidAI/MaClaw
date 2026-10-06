@@ -12,6 +12,9 @@ import (
 // YMM path (per-block A quant + exact Q8_0 B), so the same tolerance applies.
 
 func TestQ8ZK512VNNI_PlainMatchesRowDots(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)
@@ -43,6 +46,9 @@ func TestQ8ZK512VNNI_PlainMatchesRowDots(t *testing.T) {
 }
 
 func TestQ8ZK512VNNI_OutPlainN512(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)
@@ -69,6 +75,9 @@ func TestQ8ZK512VNNI_OutPlainN512(t *testing.T) {
 }
 
 func TestQ8ZK512VNNI_ReLUMatchesRowDots(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)
@@ -102,6 +111,9 @@ func TestQ8ZK512VNNI_ReLUMatchesRowDots(t *testing.T) {
 // TestQ8ZK512RowDualKernelMatchesDual8 asserts the 1-row tail kernel produces
 // the same values as the full dual8 kernel for the same panel row.
 func TestQ8ZK512RowDualKernelMatchesDual8(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	const N, K = 1536, 512
 	a, bData, bias := q8K512TestData(8, N, K)
 	b := QuantizeToQ8(bData, N, K)
