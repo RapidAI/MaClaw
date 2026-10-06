@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -84,6 +85,17 @@ func sqlDialAddr(p Profile) (string, string, error) {
 		return tunnelDialAddr(p)
 	}
 	return pinnedDialAddr(p.Host, p.Port)
+}
+
+// sqlServerConnectURL assembles the go-mssqldb connect URL. The database must
+// ride the query string: the URL path is the INSTANCE name, and a path-based
+// database silently falls back to the login default database (master).
+func sqlServerConnectURL(addr, username, secret, database string) *url.URL {
+	u := &url.URL{Scheme: "sqlserver", User: url.UserPassword(username, secret), Host: addr}
+	q := u.Query()
+	q.Set("database", database)
+	u.RawQuery = q.Encode()
+	return u
 }
 
 func tunnelDialAddr(p Profile) (string, string, error) {
