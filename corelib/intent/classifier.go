@@ -501,7 +501,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 							utf8.RuneCountInString(msg.Text), top.Label, top.Score, verdictScore, leader, leaderScore)
 						result := lookupHintOrUnknownFromL2(l2Result, false)
 						result.Reason = fmt.Sprintf("tree verdict %s(%.3f) contradicted by local leader %s(%.3f); keeping L2 hint", top.Label, top.Score, leader, leaderScore)
-						u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+						u.scheduleLateTreeVerdictWith(treeCtx, cacheKey, msg.Text)
 						u.cacheAndLog(cacheKey, msg.Text, &result)
 						return result
 					}
@@ -670,7 +670,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			// detached read of the same payload is adopted instead of re-sent,
 			// P0-3); the fusion path below schedules the same scope again, which
 			// the claim deduplicates.
-			u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+			u.scheduleLateTreeVerdictWith(treeCtx, cacheKey, msg.Text)
 		}
 	}
 
@@ -700,7 +700,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			// A slow-endpoint skip deliberately does NOT schedule one: no tree
 			// request is in flight to adopt, and a speculative background
 			// re-send would add load exactly when the endpoint is struggling.
-			u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+			u.scheduleLateTreeVerdictWith(treeCtx, cacheKey, msg.Text)
 		}
 		u.cacheAndLog(cacheKey, msg.Text, &result)
 		return result
@@ -1318,6 +1318,13 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 // configuration's classification even though the in-flight claim survives an
 // epoch bump.
 func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string) {
+	u.scheduleLateTreeVerdictWith(nil, cacheKey, text)
+}
+
+// scheduleLateTreeVerdictWith is scheduleLateTreeVerdict that forwards the
+// turn's Layer 2 query vector (if turnCtx carries one) to the detached tree
+// call, without inheriting turnCtx's cancellation.
+func (u *UnifiedIntentClassifier) scheduleLateTreeVerdictWith(turnCtx context.Context, cacheKey, text string) {
 	u.mu.RLock()
 	llmFn := u.llmFunc
 	llmContextFn := u.llmContextFunc
@@ -1336,7 +1343,11 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 	}
 	go func() {
 		defer u.lateTree.Delete(scope)
-		candidates, err := classifyByTreeWithTimeout(context.Background(), llmContextFn, llmFn, treeText, text, timeout)
+		base := context.Background()
+		if qe, ok := QueryEmbeddingFromContext(turnCtx); ok {
+			base = WithQueryEmbedding(base, qe)
+		}
+		candidates, err := classifyByTreeWithTimeout(base, llmContextFn, llmFn, treeText, text, timeout)
 		if err != nil || len(candidates) == 0 {
 			return
 		}
