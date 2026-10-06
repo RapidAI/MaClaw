@@ -15,14 +15,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -205,6 +208,16 @@ func TestZZLocalEval(t *testing.T) {
 			}
 			return r.Choices[0].Message.Content, nil
 		}
+	case "stub":
+		// Fake remote L3 for shadow-mode validation (never calls a network).
+		// Deterministic per text (FNV hash), so on/off runs see the same answers:
+		// ZZ_STUB_GOLD=<jsonl with text,intent>  answer source (gold label)
+		// ZZ_STUB_ACC=0.85     fraction answered with gold, else a wrong label
+		// ZZ_STUB_LAT_MS=20:300 uniform latency range
+		// ZZ_STUB_TIMEOUT=0.03 fraction that hang until the tree deadline
+		// ZZ_STUB_5XX=0.02     fraction answering HTTP 503 (arms the skip window)
+		// ZZ_STUB_ERR=0.03     fraction failing with a non-endpoint error
+		cfg.LLMContextFunc = zzStubL3(t, &l3Calls, &l3Errs)
 	case "head", "headllm":
 		// Local L3 = calibrated classification head on the SAME embedder,
 		// adapted to the tree protocol so every existing ClassifyContext guard
@@ -410,6 +423,11 @@ func TestZZLocalEval(t *testing.T) {
 			fmt.Fprintf(os.Stderr, "ZZ eval %d/%d rss=%.0fMB l3calls=%d errs=%d\n", i, len(ins), zzRSSMB(), l3Calls, l3Errs)
 		}
 	}
+	if s, ok := u.ShadowStats(); ok {
+		path := u.ShadowLogPath()
+		u.CloseShadow()
+		fmt.Fprintf(os.Stderr, "ZZ shadow log=%s enqueued=%d written=%d dropped=%d errors=%d sampled_l2=%d\n", path, s.Enqueued, s.Written, s.Dropped, s.Errors, s.SampledL2)
+	}
 	fmt.Fprintf(os.Stderr, "ZZ done rss=%.0fMB l3calls=%d l3errs=%d head_reused=%d head_reembedded=%d verify_ok=%d verify_bad=%d\n", zzRSSMB(), l3Calls, l3Errs, zzHeadReused, zzHeadReembedded, zzHeadVerifyOK, zzHeadVerifyBad)
 }
 
@@ -560,5 +578,83 @@ func zzTreeSchema() map[string]any {
 					"workflow_type": map[string]any{"type": "string"},
 				}},
 		}},
+	}
+}
+
+type zzStubHTTPError struct{ code int }
+
+func (e *zzStubHTTPError) Error() string       { return fmt.Sprintf("stub HTTP %d", e.code) }
+func (e *zzStubHTTPError) HTTPStatusCode() int { return e.code }
+
+func zzStubL3(t *testing.T, calls, errs *int) LLMClassifyContextFunc {
+	gold := map[string]string{}
+	if p := os.Getenv("ZZ_STUB_GOLD"); p != "" {
+		f, err := os.Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 1<<24)
+		for sc.Scan() {
+			var r struct{ Text, Intent string }
+			if json.Unmarshal(sc.Bytes(), &r) == nil && r.Text != "" {
+				gold[r.Text] = r.Intent
+			}
+		}
+		f.Close()
+	}
+	fl := func(k string, d float64) float64 {
+		if v, err := strconv.ParseFloat(os.Getenv(k), 64); err == nil {
+			return v
+		}
+		return d
+	}
+	acc, pTO, p5, pErr := fl("ZZ_STUB_ACC", 0.85), fl("ZZ_STUB_TIMEOUT", 0.03), fl("ZZ_STUB_5XX", 0.02), fl("ZZ_STUB_ERR", 0.03)
+	latLo, latHi := 20.0, 300.0
+	if v := os.Getenv("ZZ_STUB_LAT_MS"); v != "" {
+		if a, b, ok := strings.Cut(v, ":"); ok {
+			latLo, _ = strconv.ParseFloat(a, 64)
+			latHi, _ = strconv.ParseFloat(b, 64)
+		}
+	}
+	var labels []string
+	for _, d := range DefaultDefinitions() {
+		labels = append(labels, string(d.Label))
+	}
+	var mu sync.Mutex
+	return func(ctx, parent context.Context, sys, user string) (string, error) {
+		mu.Lock()
+		*calls++
+		mu.Unlock()
+		hf := fnv.New64a()
+		hf.Write([]byte(user))
+		r := rand.New(rand.NewSource(int64(hf.Sum64())))
+		u1, u2, u3 := r.Float64(), r.Float64(), r.Float64()
+		lat := time.Duration((latLo + (latHi-latLo)*u2) * float64(time.Millisecond))
+		bump := func() { mu.Lock(); *errs++; mu.Unlock() }
+		switch {
+		case u1 < pTO:
+			bump()
+			<-ctx.Done()
+			return "", ctx.Err()
+		case u1 < pTO+p5:
+			bump()
+			return "", &zzStubHTTPError{503}
+		case u1 < pTO+p5+pErr:
+			bump()
+			return "", errors.New("stub: connection reset by peer")
+		}
+		select {
+		case <-time.After(lat):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		label, ok := gold[user]
+		if !ok || label == "" || u3 >= acc {
+			label = labels[r.Intn(len(labels))]
+		}
+		score := 0.6 + 0.4*r.Float64()
+		b, _ := json.Marshal(map[string]any{"top": []map[string]any{{"skill": label, "score": score, "workflow_type": ""}}})
+		return string(b), nil
 	}
 }
