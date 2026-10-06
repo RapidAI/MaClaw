@@ -228,6 +228,18 @@ func readArray(r io.Reader) ([]string, error) {
 		}
 		return nil, nil
 	}
+	// Int32 arrays (e.g. tokenizer.ggml.token_type) — store for later retrieval
+	if elemType == 5 {
+		buf := make([]byte, count*4)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		lastI32Array = make([]int32, count)
+		for i := uint64(0); i < count; i++ {
+			lastI32Array[i] = int32(binary.LittleEndian.Uint32(buf[i*4:]))
+		}
+		return nil, nil
+	}
 	// Skip non-string arrays
 	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 	sz, ok := elemSizes[elemType]
@@ -237,6 +249,18 @@ func readArray(r io.Reader) ([]string, error) {
 	skip := make([]byte, int(count)*sz)
 	io.ReadFull(r, skip)
 	return nil, nil
+}
+
+// lastI32Array holds the most recently parsed int32 array (GGUF elem type 5).
+var lastI32Array []int32
+
+// LastI32Array returns and clears the last parsed int32 array.
+// GGUF tokenizers store tokenizer.ggml.token_type this way; it is the only
+// int32 array in the embedding models we load.
+func LastI32Array() []int32 {
+	arr := lastI32Array
+	lastI32Array = nil
+	return arr
 }
 
 // lastF32Array holds the most recently parsed float32 array.

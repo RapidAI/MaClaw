@@ -76,3 +76,28 @@ func GetMetaStrArr(meta map[string]MetaValue, key string) []string {
 	}
 	return nil
 }
+
+// GetMetaInt returns an integer metadata value of any integer width.
+func GetMetaInt(meta map[string]MetaValue, key string, def int) int {
+	v, ok := meta[key]
+	if !ok {
+		return def
+	}
+	switch v.Type {
+	case 1, 3, 5, 11:
+		return int(v.I32)
+	case 10:
+		return int(v.U64)
+	default:
+		return int(v.U32)
+	}
+}
+
+// GetMetaBool returns a bool metadata value with a default fallback.
+func GetMetaBool(meta map[string]MetaValue, key string, def bool) bool {
+	v, ok := meta[key]
+	if !ok {
+		return def
+	}
+	return v.U32 != 0
+}

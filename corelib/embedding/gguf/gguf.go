@@ -3,6 +3,9 @@
 package gguf
 
 import (
+	"bufio"
+	"encoding/binary"
+	"fmt"
 	"os"
 )
 
@@ -101,4 +104,48 @@ type File struct {
 
 	dataOffset int64 // absolute file offset where tensor data begins
 	f          *os.File
+}
+
+// PeekArchitecture returns general.architecture without parsing the whole
+// header (the tokenizer arrays make a full parse cost hundreds of ms). It
+// scans metadata keys in file order and stops at the first match; GGUF
+// writers emit general.architecture first, so this normally reads <100 bytes.
+func PeekArchitecture(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 64<<10)
+	var magic, version uint32
+	var nTensors, nMeta uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return "", err
+	}
+	if magic != Magic {
+		return "", fmt.Errorf("gguf: bad magic %08x", magic)
+	}
+	if err := binary.Read(r, binary.LittleEndian, &version); err != nil {
+		return "", err
+	}
+	if err := binary.Read(r, binary.LittleEndian, &nTensors); err != nil {
+		return "", err
+	}
+	if err := binary.Read(r, binary.LittleEndian, &nMeta); err != nil {
+		return "", err
+	}
+	for i := uint64(0); i < nMeta; i++ {
+		key, err := readString(r)
+		if err != nil {
+			return "", err
+		}
+		val, err := readMetaValue(r)
+		if err != nil {
+			return "", err
+		}
+		if key == "general.architecture" {
+			return val.Str, nil
+		}
+	}
+	return "", nil
 }
