@@ -55,6 +55,16 @@ type intentScoreCalibration struct {
 // DefaultEmbeddingDim changes.
 var classificationPromptScoreCalibration = intentScoreCalibration{Scale: 0.889, Shift: 0.098}
 
+// qwen3ClassificationScoreCalibration is the same label-free quantile map for
+// Qwen3-Embedding (pure-Go runner, Q8_0, "Instruct: Classify the intent of
+// this assistant user request\nQuery: " on both anchors and queries), fitted
+// against the raw EmbeddingGemma top-5 max-cos distribution on the synthetic
+// training sentences, so the unchanged Gemma-raw constants keep their meaning.
+// raw ≈ 0.6758·qwen3 + 0.2834 ⇒ prompt-space grant rule ≈ 0.735/0.148 (lookup
+// 0.617/0.074); measured selective accuracy 0.978 / 0.989 / 1.000 / 1.000 on
+// synthetic / in-house test / Gemini / Kimi (coverage 0.35 / 0.27 / 0.11 / 0.11).
+var qwen3ClassificationScoreCalibration = intentScoreCalibration{Scale: 0.6758, Shift: 0.2834}
+
 var identityScoreCalibration = intentScoreCalibration{Scale: 1, Shift: 0}
 
 // intentEmbeddingPrompted reports whether emb will actually apply the
@@ -70,6 +80,14 @@ func intentEmbeddingPrompted(emb embedding.Embedder) bool {
 // intentScoreCalibrationFor returns the score map matching the space emb
 // embeds Layer 2 text in.
 func intentScoreCalibrationFor(emb embedding.Embedder) intentScoreCalibration {
+	if _, ok := emb.(*embedding.Qwen3Embedder); ok {
+		// Qwen3 cosines live on a different scale than Gemma's in both the
+		// prompted and the raw regime; only the prompted map is calibrated.
+		if intentEmbeddingPrompted(emb) {
+			return qwen3ClassificationScoreCalibration
+		}
+		return identityScoreCalibration
+	}
 	if intentEmbeddingPrompted(emb) {
 		return classificationPromptScoreCalibration
 	}

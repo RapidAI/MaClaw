@@ -59,7 +59,7 @@ func zzReadIn(t *testing.T, path string) []zzIn {
 func zzEmbedder(t *testing.T) embedding.Embedder {
 	p := os.Getenv("ZZ_GGUF")
 	t0 := time.Now()
-	emb, err := embedding.NewGemmaEmbedder(p, embedding.DefaultEmbeddingDim)
+	emb, err := embedding.NewEmbedderFromFile(p, embedding.DefaultEmbeddingDim) // dispatches on GGUF arch (gemma / qwen3)
 	if err != nil {
 		t.Fatal(err)
 	}
