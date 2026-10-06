@@ -212,6 +212,18 @@ func TestZZLocalEval(t *testing.T) {
 		// synthesis, fail-closed L2 hint) still applies unchanged.
 		hd := zzLoadHead(t, os.Getenv("ZZ_HEAD"))
 		tau := hd.Tau
+		// Optional stricter threshold for sensitive labels (tau_s), e.g. ZZ_TAU_S=0.90.
+		tauS, _ := strconv.ParseFloat(os.Getenv("ZZ_TAU_S"), 64)
+		sensSet := map[string]bool{}
+		for _, l := range hd.Sensitive {
+			sensSet[l] = true
+		}
+		thrFor := func(label string) float64 {
+			if sensSet[label] && tauS > tau {
+				return tauS
+			}
+			return tau
+		}
 		treeByLabel := map[string]string{}
 		for _, d := range DefaultDefinitions() {
 			treeByLabel[string(d.Label)] = d.TreeText
@@ -234,7 +246,7 @@ func TestZZLocalEval(t *testing.T) {
 				Score float64 `json:"score"`
 				WF    string  `json:"workflow_type"`
 			}
-			if probs[idx[0]] >= tau {
+			if probs[idx[0]] >= thrFor(hd.Labels[idx[0]]) {
 				var top []cand
 				for _, j := range idx[:3] {
 					if hd.Labels[j] == "unknown" {
@@ -253,7 +265,7 @@ func TestZZLocalEval(t *testing.T) {
 			}
 			if l3 == "head" {
 				l3Errs++
-				return "", fmt.Errorf("local head uncertain: %s %.2f < %.2f", hd.Labels[idx[0]], probs[idx[0]], tau)
+				return "", fmt.Errorf("local head uncertain: %s %.2f < %.2f", hd.Labels[idx[0]], probs[idx[0]], thrFor(hd.Labels[idx[0]]))
 			}
 			// headllm: ask the small local LLM to choose among the head's top-5.
 			var opts []string
@@ -411,6 +423,7 @@ type zzHead struct {
 	Temperature float64     `json:"temperature"`
 	Tau         float64     `json:"tau"`
 	L2Norm      bool        `json:"l2norm"`
+	Sensitive   []string    `json:"sensitive"`
 }
 
 func zzLoadHead(t *testing.T, p string) *zzHead {
