@@ -12,37 +12,58 @@ import (
 )
 
 var (
-	contentXMLToolCallBlockRe        = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>\s*(.*?)\s*</tool_call>`)
-	contentAngleToolCallOpenRe       = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>`)
-	contentXMLToolCallOpenToEndRe    = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
-	contentCodexToolCallBlockRe      = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>(.*?)</turn>`)
-	contentCodexToolCallMarkerRe     = regexp.MustCompile(`(?is)<turn:\s*tool_call\b`)
-	contentPlainToolCallMarkerRe     = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*`)
-	contentCodexToolInvokeRe         = regexp.MustCompile(`(?s)<invoke\b([^>]*)>(.*?)</invoke>`)
-	contentCodexToolParameterRe      = regexp.MustCompile(`(?s)<parameter\b([^>]*)>(.*?)</parameter>`)
-	contentCodexToolAttributeRe      = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_:-]*)\s*=\s*"([^"]*)"`)
-	contentFunctionEqBlockRe         = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>(.*?)</function>`)
-	contentFunctionEqOpenRe          = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
-	contentGLMArgPairRe              = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
-	contentQwenParamEqRe             = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
-	contentLeadingToolNameRe         = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
-	contentSpecialTokenRe            = regexp.MustCompile(`<\|[^|<>\n]+\|>`)
-	dsmlSpacedFenceRe                = regexp.MustCompile(`(?i)\|\s*DSML\s*\|`)
-	dsmlLooseOpenRe                  = regexp.MustCompile(`(?i)<\s*\|DSML\|`)
-	dsmlLooseCloseRe                 = regexp.MustCompile(`(?i)</\s*\|DSML\|`)
-	dsmlTagSpaceRe                   = regexp.MustCompile(`(?i)(</?)\|DSML\|\s+`)
-	dsmlAltCloseRe                   = regexp.MustCompile(`(?i)<\|DSML\|/([A-Za-z_]+)>`)
-	dsmlCollapsePipeSpaceRe          = regexp.MustCompile(`\s*\|\s*`)
-	dsmlCollapseOpenSpaceRe          = regexp.MustCompile(`<\s+`)
-	dsmlParameterOpenRe              = regexp.MustCompile(`(?i)<\|DSML\|parameter`)
-	dsmlParameterCloseRe             = regexp.MustCompile(`(?i)</\|DSML\|parameter>`)
-	contentDSMLBlockRe               = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\s*>(.*?)</\|DSML\|(?:tool_calls|function_calls)>`)
-	contentDSMLBlockOpenRe           = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\b`)
-	contentDSMLInvokeRe              = regexp.MustCompile(`(?is)<\|DSML\|invoke\b([^>]*)>(.*?)</\|DSML\|invoke>`)
-	contentDSMLInvokeOpenRe          = regexp.MustCompile(`(?is)<\|DSML\|invoke\b`)
-	contentDSMLMarkerRe              = regexp.MustCompile(`(?i)<\s*[|\x{FF5C}]\s*DSML\s*[|\x{FF5C}]\s*(?:tool_calls|function_calls|invoke|parameter)\b`)
-	MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。"
+	contentXMLToolCallBlockRe     = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>\s*(.*?)\s*</tool_call>`)
+	contentAngleToolCallOpenRe    = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>`)
+	contentXMLToolCallOpenToEndRe = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
+	contentCodexToolCallBlockRe   = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>(.*?)</turn>`)
+	contentCodexToolCallMarkerRe  = regexp.MustCompile(`(?is)<turn:\s*tool_call\b`)
+	contentPlainToolCallMarkerRe  = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*`)
+	contentCodexToolInvokeRe      = regexp.MustCompile(`(?s)<invoke\b([^>]*)>(.*?)</invoke>`)
+	contentCodexToolParameterRe   = regexp.MustCompile(`(?s)<parameter\b([^>]*)>(.*?)</parameter>`)
+	contentCodexToolAttributeRe   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_:-]*)\s*=\s*"([^"]*)"`)
+	contentFunctionEqBlockRe      = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>(.*?)</function>`)
+	contentFunctionEqOpenRe       = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
+	contentGLMArgPairRe           = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
+	contentQwenParamEqRe          = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
+	contentLeadingToolNameRe      = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
+	contentSpecialTokenRe         = regexp.MustCompile(`<\|[^|<>\n]+\|>`)
+	// The DSML token is ｜DSML｜. A decoder that also writes the bar literally
+	// produces ｜｜DSML｜｜. A fence is rewritten only when a real tag follows,
+	// so "< | DSML | note" stays prose. tool_calls is listed before calls so
+	// the short block name cannot steal the tail of tool_calls.
+	dsmlTagFenceRe          = regexp.MustCompile(`(?i)(</?)\s*(?:` + dsmlBar + `\s*)+DSML(?:\s*` + dsmlBar + `)+\s*(/)?\s*(` + dsmlTagTail + `)`)
+	dsmlFenceRe             = regexp.MustCompile(`(?i)(?:\|\s*)+DSML(?:\s*\|)+`)
+	dsmlCollapsePipeSpaceRe = regexp.MustCompile(`\s*\|\s*`)
+	dsmlCollapseOpenSpaceRe = regexp.MustCompile(`<\s+`)
+	dsmlCollapsedTagSpaceRe = regexp.MustCompile(`^<\|dsml\|\s+`)
+	dsmlParameterOpenRe     = regexp.MustCompile(`(?i)<\|DSML\|parameter`)
+	dsmlParameterCloseRe    = regexp.MustCompile(`(?i)</\|DSML\|parameter>`)
+	contentDSMLBlockRe      = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlBlockTags + `)\s*>(.*?)</\|DSML\|(?:` + dsmlBlockTags + `)>`)
+	contentDSMLBlockOpenRe  = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlTagTail + `)`)
+	contentDSMLInvokeRe     = regexp.MustCompile(`(?is)<\|DSML\|invoke\b([^>]*)>(.*?)</\|DSML\|invoke>`)
+	contentDSMLInvokeOpenRe = regexp.MustCompile(`(?is)<\|DSML\|invoke(?:\s+name\s*=|\s*>)`)
+	contentDSMLMarkerRe     = regexp.MustCompile(`(?i)<\s*(?:[|\x{FF5C}]\s*)+DSML(?:\s*[|\x{FF5C}])+\s*(?:` + dsmlTagTail + `)`)
 )
+
+const (
+	// dsmlBlockTags are the wrappers around invoke elements. calls is the
+	// block tag left when this decoder writes the fence and drops "tool_".
+	dsmlBlockTags = "tool_calls|function_calls|calls"
+	// invoke and parameter are tags only with an attribute or a close.
+	// "parameter is a field" is a sentence. Block tags close with '>'.
+	dsmlTagTail = `(?:(?:invoke|parameter)(?:\s+name\s*=|\s*>)|(?:` + dsmlBlockTags + `)\s*>)`
+	dsmlBar     = `[|\x{FF5C}]`
+)
+
+var dsmlCollapsedMarkers = []string{
+	"<|dsml|tool_calls",
+	"<|dsml|function_calls",
+	"<|dsml|invoke",
+	"<|dsml|parameter",
+	"<|dsml|calls",
+}
+
+const MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。"
 
 // ParseContentToolCallsDetailed extracts tool calls emitted in assistant
 // content by OpenAI-compatible providers that fail to populate tool_calls.
@@ -711,16 +732,59 @@ func contentToolCallMarkerSuffixLen(s string) int {
 }
 
 func looksLikeDSMLContent(s string) bool {
-	if contentDSMLMarkerRe.MatchString(s) {
-		return true
+	if !hasDSMLWord(s) {
+		return false
 	}
-	return strings.Contains(collapseDSMLFence(s), "<|dsml|")
+	// A fence with no real tag is prose. The marker is the same tag tail the
+	// rewriter accepts, so a second collapse of the whole message cannot
+	// discover a call the marker missed.
+	return contentDSMLMarkerRe.MatchString(s)
+}
+
+func hasDSMLWord(s string) bool {
+	for i := 0; i+4 <= len(s); i++ {
+		if (s[i] == 'd' || s[i] == 'D') &&
+			(s[i+1] == 's' || s[i+1] == 'S') &&
+			(s[i+2] == 'm' || s[i+2] == 'M') &&
+			(s[i+3] == 'l' || s[i+3] == 'L') {
+			return true
+		}
+	}
+	return false
 }
 
 func collapseDSMLFence(s string) string {
 	s = strings.ToLower(strings.ReplaceAll(s, "\uFF5C", "|"))
 	s = dsmlCollapseOpenSpaceRe.ReplaceAllString(s, "<")
-	return dsmlCollapsePipeSpaceRe.ReplaceAllString(s, "|")
+	s = dsmlCollapsePipeSpaceRe.ReplaceAllString(s, "|")
+	s = dsmlFenceRe.ReplaceAllString(s, "|dsml|")
+	return collapseOpenDSMLBars(s)
+}
+
+// collapseOpenDSMLBars folds a repeated bar run after '<' into one bar when
+// that run is the fence prefix. '<||ds' is '<|ds'. '<||b' is left alone.
+func collapseOpenDSMLBars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] != '<' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(s) && s[j] == '|' {
+			j++
+		}
+		if j >= i+3 && (j == len(s) || s[j] == 'd') {
+			b.WriteString("<|")
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 func dsmlOpenSuffixLen(s string) int {
@@ -729,26 +793,80 @@ func dsmlOpenSuffixLen(s string) int {
 		return 0
 	}
 	tail := s[idx:]
+	if !dsmlTailMightBeFence(tail) {
+		return 0
+	}
 	if contentDSMLMarkerRe.MatchString(tail) {
 		return 0
 	}
-	collapsed := collapseDSMLFence(tail)
-	for _, marker := range []string{"<|dsml|tool_calls", "<|dsml|function_calls", "<|dsml|invoke", "<|dsml|parameter"} {
-		if len(collapsed) < len(marker) && strings.HasPrefix(marker, collapsed) {
+	collapsed := dsmlCollapsedTagSpaceRe.ReplaceAllString(collapseDSMLFence(tail), "<|dsml|")
+	for _, marker := range dsmlCollapsedMarkers {
+		if strings.HasPrefix(marker, collapsed) {
 			return len(s) - idx
 		}
 	}
 	return 0
 }
 
+// dsmlTailMightBeFence reports whether a '<' tail can still grow into the
+// DSML token. A '<div' or '<html' tail is not collapsed on every streamed byte.
+func dsmlTailMightBeFence(tail string) bool {
+	if len(tail) == 0 || tail[0] != '<' {
+		return false
+	}
+	i := 1
+	for n := 0; i < len(tail) && n < 16; n++ {
+		switch tail[i] {
+		case ' ', '\t', '\n', '\r':
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(tail) {
+		return true
+	}
+	return tail[i] == '|' || strings.HasPrefix(tail[i:], "\uFF5C")
+}
+
 func normalizeDSMLMarkup(s string) string {
-	s = strings.ReplaceAll(s, "\uFF5C", "|")
-	s = dsmlSpacedFenceRe.ReplaceAllString(s, "|DSML|")
-	s = dsmlLooseOpenRe.ReplaceAllString(s, "<|DSML|")
-	s = dsmlLooseCloseRe.ReplaceAllString(s, "</|DSML|")
-	s = strings.ReplaceAll(s, "|DSML| /", "|DSML|/")
-	s = dsmlTagSpaceRe.ReplaceAllString(s, "${1}|DSML|")
-	return dsmlAltCloseRe.ReplaceAllString(s, "</|DSML|$1>")
+	if !hasDSMLWord(s) {
+		return s
+	}
+	locs := dsmlTagFenceRe.FindAllStringSubmatchIndex(s, -1)
+	if len(locs) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prev := 0
+	for _, loc := range locs {
+		if len(loc) < 8 || loc[6] < 0 {
+			continue
+		}
+		b.WriteString(s[prev:loc[0]])
+		open := s[loc[2]:loc[3]]
+		if loc[4] >= 0 && s[loc[4]:loc[5]] == "/" {
+			open = "</"
+		}
+		b.WriteString(open)
+		b.WriteString("|DSML|")
+		b.WriteString(canonicalizeDSMLTagTail(s[loc[6]:loc[7]]))
+		prev = loc[1]
+	}
+	b.WriteString(s[prev:])
+	return b.String()
+}
+
+// canonicalizeDSMLTagTail drops whitespace the detector allowed before '>'.
+// The close patterns match parameter> and invoke>, so "calls >" has to
+// become "calls>" or the block is reported malformed and dropped.
+func canonicalizeDSMLTagTail(tail string) string {
+	i := strings.LastIndexByte(tail, '>')
+	if i < 0 {
+		return tail
+	}
+	return strings.TrimRight(tail[:i], " \t\r\n") + tail[i:]
 }
 
 // parenContentToolNames is the lookup set models narrate as a markdown-wrapped

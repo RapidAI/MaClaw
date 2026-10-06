@@ -7,7 +7,7 @@ package guiapp
 //
 // Tool set (5 SSH-wrapped tools):
 //   ssh_read_file   → cat remote file
-//   ssh_write_file  → write content to remote file (python pathlib)
+//   ssh_write_file  → create a remote file; overwrite only when one edit cannot hold the change
 //   ssh_edit_file   → python string replace in remote file
 //   ssh_bash        → execute command on remote server
 //   ssh_list_dir    → ls remote directory
@@ -79,6 +79,9 @@ type RemoteCodingSubAgent struct {
 	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
 	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
 	nestDepth int
+	// permissionOwnerID is the coding-task tab owner used to re-read 以后允许.
+	// Nested children do not copy LoopContext, so the owner is stored here.
+	permissionOwnerID string
 	// role specializes the SSH tool surface for nested agents (explorer/worker/reviewer).
 	// Empty means worker (full remote coding surface).
 	role codingSubAgentRole
@@ -166,7 +169,7 @@ func (r *RemoteCodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request
 	child.runtimeAttempt = &request.Attempt
 	child.executionCtx = ctx
 	child.prepareAdmittedReadOnlyChildSemanticState(request)
-	result := child.executeTask(request.Task.RequestedWork, codingSpawnRolePromptHint(child.role))
+	result := child.executeTask(request.Task.RequestedWork, remoteCodingSpawnRolePromptHint(child.role))
 	if result == nil {
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "remote read-only child returned no result"}
 	}
@@ -285,7 +288,35 @@ func (r *RemoteCodingSubAgent) SetCallbacks(onToken func(string), onProgress fun
 	r.onToken = onToken
 	r.onProgress = onProgress
 	if !r.highRiskApprovalExplicit && r.handler != nil && r.handler.app != nil {
-		r.setHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(r.handler, r.loopCtx, onProgress, r.maintenance), false, false, true)
+		r.setHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallbackOwned(r.handler, r.loopCtx, r.taskPermissionOwnerID(), onProgress, r.maintenance), false, false, true)
+		// Command auto-allow only. Path trust stays on the explicit full-control setup.
+		if r.loopUserCommandsAutoAllowed() && r.highRiskApproval != nil {
+			r.highRiskApproval.grantHighRiskFullAccess()
+		}
+	}
+}
+
+// loopUserCommandsAutoAllowed is true when this loop's task should run
+// commands without another prompt: input-box 完全控制, or 询问 plus 以后允许.
+func (r *RemoteCodingSubAgent) loopUserCommandsAutoAllowed() bool {
+	if r == nil || r.handler == nil {
+		return false
+	}
+	userID := r.taskPermissionOwnerID()
+	if userID == "" {
+		return false
+	}
+	return r.handler.taskCommandsAutoAllowed(userID)
+}
+
+// inheritRemoteTaskCommandAllowance lets a nested step of the same task skip
+// command prompts the parent already settled. It does not copy path trust.
+func inheritRemoteTaskCommandAllowance(parent, child *RemoteCodingSubAgent) {
+	if parent == nil || child == nil || child.highRiskApproval == nil || parent.highRiskApproval == nil {
+		return
+	}
+	if parent.highRiskApproval.highRiskApproved() {
+		child.highRiskApproval.grantHighRiskFullAccess()
 	}
 }
 
@@ -465,9 +496,16 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	}
 	var baselineErr error
 	if !readOnly {
-		if err := ensureGUIRemoteGitBaseline(ctx, r.handler, r.sessionID, r.projectDir, remoteTarget); err != nil {
+		effective, err := ensureGUIRemoteGitBaseline(ctx, r.handler, r.sessionID, r.projectDir, remoteTarget)
+		if err != nil {
 			baselineErr = err
 			log.Printf("[coding-runtime] GUI remote git baseline init failed for %s: %v", r.projectDir, err)
+		} else if adopted := r.adoptWritableRemoteProjectDir(effective); adopted {
+			execution.projectDir = r.projectDir
+			execution.workDir = r.workDir
+			remoteTarget = guiRemoteCodingTargetIdentity(r.handler, r.sessionID, r.projectDir)
+			taskContext = strings.TrimSpace(taskContext + "\nThe requested remote directory was not writable by the SSH login. Create and edit files only in " + r.projectDir + ".")
+			log.Printf("[coding-runtime] remote project was not writable by the SSH login; continuing in %s", r.projectDir)
 		}
 	}
 	var unregisterRuntimeCancellation func()
@@ -556,6 +594,29 @@ func remoteCodingLatestAttempt(attempts []*codingruntime.Attempt) *codingruntime
 		}
 	}
 	return nil
+}
+
+// adoptWritableRemoteProjectDir points this turn, and the sticky remote
+// session, at the directory the baseline script was able to create. The
+// declared path stays in place when it was already writable.
+func (r *RemoteCodingSubAgent) adoptWritableRemoteProjectDir(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if r == nil || dir == "" || dir == strings.TrimSpace(r.projectDir) {
+		return false
+	}
+	r.workDir = dir
+	r.projectDir = dir
+	if r.highRiskApproval != nil {
+		r.highRiskApproval.approveDir(dir)
+	}
+	if owner := r.taskPermissionOwnerID(); owner != "" && r.handler != nil {
+		r.handler.bindStickyRemoteCodingContext(owner, remoteCodingTemplateContext{
+			SessionID:  r.sessionID,
+			WorkDir:    dir,
+			ProjectDir: dir,
+		}, "", "", 0)
+	}
+	return true
 }
 
 // remoteCodingLedgerReadOnly is the frozen authority for this remote attempt.
@@ -2228,11 +2289,12 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	var prompt string
 	inspectionRole := nestDepth > 0 && (role == codingRoleExplorer || role == codingRoleReviewer)
 	if nestDepth > 0 {
-		prompt = "## Nested remote coding subagent\n" + codingSpawnRolePromptHint(role) + "\n\n"
+		prompt = "## Nested remote coding subagent\n"
 		if inspectionRole {
+			prompt += remoteCodingSpawnRolePromptHint(role) + "\n\n"
 			prompt += buildRemoteInspectionRoleSystemPrompt(projectDir, workDir, role, taskContext)
 		} else {
-			prompt += buildNestedFullCodingEnvironmentPromptPreamble()
+			prompt += buildRemoteNestedFullCodingEnvironmentPromptPreamble()
 			prompt += buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
 		}
 	} else if c != nil && c.agent != nil && c.agent.readOnlyInquiry {
@@ -2240,7 +2302,7 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	} else if c != nil && c.agent != nil && c.agent.operationalRequest {
 		prompt = buildRemoteOperationalSystemPrompt(projectDir, workDir, normalizeCodingOperationalAcceptance(c.agent.operationalAcceptance))
 	} else {
-		prompt = buildFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
+		prompt = buildRemoteFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
 	}
 	// In-agent plan/checklist (not workbench multi-task orchestration).
 	if !inspectionRole && !(c != nil && c.agent != nil && (c.agent.readOnlyInquiry || c.agent.operationalRequest)) {
@@ -2272,7 +2334,11 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 		}
 	}
 	if c != nil && c.agent != nil && c.agent.highRiskApproval != nil && c.agent.highRiskApproval.highRiskApproved() {
-		prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+		if c.agent.highRiskApproval.pathApproved() {
+			prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+		} else {
+			prompt += "\n当前任务已选择以后允许。本任务内高危命令将由宿主自动放行，不要再要求用户确认；仍须调用工具发起该命令。\n"
+		}
 	}
 	if c != nil && !c.remoteQualityGateEnabled() {
 		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
@@ -2382,7 +2448,7 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	if c == nil {
 		// Keep the callback contract nil-safe. This is used by lightweight
 		// prompt/tool-surface checks before a concrete remote agent is bound.
-		return cloneCodingSubAgentToolDefinitions(append(tools, buildCodingFullEnvExtraToolDefinitions()...))
+		return cloneCodingSubAgentToolDefinitions(append(tools, buildRemoteCodingFullEnvExtraToolDefinitions()...))
 	}
 	// Append knowledge search tools when stores are available.
 	if c != nil && c.agent != nil && c.agent.codingKB != nil {
@@ -2398,7 +2464,7 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 		return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingOperationalTools(tools)))
 	}
 	// Full workbench extras (local research helpers) available during remote coding too.
-	tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+	tools = append(tools, buildRemoteCodingFullEnvExtraToolDefinitions()...)
 	// Goal lifecycle is host/orchestrator-owned until a durable expected-version
 	// CAS contract exists. It is intentionally absent from the remote legacy
 	// model surface as well.
@@ -2413,7 +2479,7 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 		// BuildToolsForModelRequest, never cached with the remote tool surface.
 	// Codex-style nested subagents on pure remote coding workbench root.
 	if c != nil && c.agent != nil && c.agent.canSpawnRemoteCodingAgent() {
-		tools = append(tools, buildSpawnCodingAgentToolDefinition())
+		tools = append(tools, buildRemoteSpawnCodingAgentToolDefinition())
 	}
 	// In-agent requirement breakdown + step checklist (workers only).
 	if !inspectionRole {
@@ -2739,7 +2805,160 @@ func remoteCodingExecutionOutcome(name, result string) string {
 	if strings.EqualFold(strings.TrimSpace(name), codingSubAgentSpawnToolName) {
 		return remoteCodingSpawnToolOutcome(result)
 	}
+	if strings.EqualFold(strings.TrimSpace(name), "download_file") {
+		return remoteDownloadFileOutcome(result)
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "web_fetch") {
+		if codingWebFetchResultLooksFailed(result) {
+			return "failed"
+		}
+		return "success"
+	}
 	return remoteCodingToolOutcome(result)
+}
+
+// remoteHostDownloadSaved is the trailer toolWebFetch and the browser
+// downloader append only after a file has been written on the local host.
+func remoteHostDownloadSaved(result string) bool {
+	return strings.Contains(result, hostDownloadSavedTrailer)
+}
+
+// remoteWebFetchPageRetrieved matches the text header toolWebFetch writes
+// after a page is actually retrieved. A lone "标题:" or "URL:" line is not
+// enough; the body may still quote "error:".
+func remoteWebFetchPageRetrieved(result string) bool {
+	text := strings.TrimSpace(result)
+	if !strings.Contains(text, "已读取:") {
+		return false
+	}
+	return strings.HasPrefix(text, "标题:") || strings.HasPrefix(text, "URL:")
+}
+
+// remoteWebFetchHostFailure matches the host fetch envelopes. A fetched page
+// that merely mentions those words does not start with them.
+func remoteWebFetchHostFailure(result string) bool {
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, exact := range []string{
+		"缺少 url 参数",
+		"缺少 save_path",
+		"web_fetch unavailable",
+	} {
+		if text == exact || lower == exact {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"抓取失败:",
+		"抓取失败：",
+		"save_path 必须位于工作目录内:",
+		"save_path 必须位于工作目录内：",
+		"via_browser 需要配合 save_path 使用（",
+		"浏览器下载失败:",
+		"浏览器下载失败：",
+		"web_fetch failed:",
+		"web_fetch failed：",
+		"web_fetch unavailable:",
+		"web_fetch unavailable：",
+		"use_browser_cookies 失败:",
+		"use_browser_cookies 失败：",
+		"use_browser_cookies 仅支持 https URL（",
+		"参数解析失败:",
+		"参数解析失败：",
+	} {
+		if strings.HasPrefix(text, prefix) || strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteWebFetchToolEnvelopeFailed matches a one-block tool refusal.
+// A long sentence after the first one is an explanation of an error code.
+// A short second clause, or a stack under the refusal, stays a failure.
+func remoteWebFetchToolEnvelopeFailed(result string) bool {
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return false
+	}
+	first, restParagraphs := text, ""
+	if i := strings.Index(text, "\n\n"); i >= 0 {
+		first, restParagraphs = text[:i], text[i+2:]
+	} else if i := strings.Index(text, "\r\n\r\n"); i >= 0 {
+		first, restParagraphs = text[:i], text[i+4:]
+	}
+	first = strings.TrimSpace(first)
+	lower := strings.ToLower(first)
+	var rest string
+	switch {
+	case strings.HasPrefix(first, "错误:"):
+		rest = first[len("错误:"):]
+	case strings.HasPrefix(first, "错误："):
+		rest = first[len("错误："):]
+	case strings.HasPrefix(lower, "error:"):
+		rest = first[len("error:"):]
+	default:
+		return false
+	}
+	rest = strings.TrimSpace(rest)
+	if remoteWebFetchExplanationFollows(rest) {
+		return false
+	}
+	following := strings.TrimSpace(restParagraphs)
+	if remoteWebFetchNextParagraphExplains(rest, following) {
+		return false
+	}
+	return true
+}
+
+// remoteWebFetchNextParagraphExplains allows a titled error sentence followed
+// by prose. A refusal followed by dial/stack output stays a failure.
+func remoteWebFetchNextParagraphExplains(firstRest, following string) bool {
+	firstRest = strings.TrimSpace(firstRest)
+	following = strings.TrimSpace(following)
+	if following == "" {
+		return false
+	}
+	if !strings.HasSuffix(firstRest, "。") && !strings.HasSuffix(firstRest, ".") {
+		return false
+	}
+	if len([]rune(following)) < 40 {
+		return false
+	}
+	lower := strings.ToLower(following)
+	for _, prefix := range []string{"goroutine ", "panic:", "traceback", "dial tcp", "exit status"} {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// remoteWebFetchExplanationFollows reports whether text after an error label
+// continues into a real sentence rather than a short refusal or a stack frame.
+func remoteWebFetchExplanationFollows(rest string) bool {
+	for _, sep := range []string{"。", ". "} {
+		if i := strings.Index(rest, sep); i >= 0 {
+			tail := strings.TrimSpace(rest[i+len(sep):])
+			if len([]rune(tail)) >= 40 && !strings.HasPrefix(tail, "goroutine ") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// remoteDownloadFileOutcome accepts only that save trailer. A saved payload may
+// quote "error:"; refusals such as "download_file failed" or "缺少 url 参数"
+// do not carry the trailer.
+func remoteDownloadFileOutcome(result string) string {
+	if remoteHostDownloadSaved(result) {
+		return "success"
+	}
+	return "failed"
 }
 
 // remoteCodingSpawnToolOutcome classifies spawn_coding_agent from its header,
@@ -2975,6 +3194,13 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		}
 		result = "web_fetch unavailable"
 		c.trackRemoteSearch("web_fetch", remoteArgStr(args, "url"), "web", result, false, args)
+		return result
+	case "download_file":
+		if c.agent.handler != nil {
+			result = c.agent.handler.toolDownloadFile(args)
+			return result
+		}
+		result = "错误: download_file unavailable: host handler missing"
 		return result
 	case "current_datetime":
 		result = formatBtwCurrentDateTime()
@@ -3596,6 +3822,15 @@ func (s *remoteHighRiskApprovalState) highRiskApproved() bool {
 	return s.highRiskFullAccess
 }
 
+func (s *remoteHighRiskApprovalState) pathApproved() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pathFullAccess
+}
+
 // grantHighRiskFullAccess enables high-risk bash auto-allow without changing path trust.
 func (s *remoteHighRiskApprovalState) grantHighRiskFullAccess() {
 	if s == nil {
@@ -3603,6 +3838,15 @@ func (s *remoteHighRiskApprovalState) grantHighRiskFullAccess() {
 	}
 	s.mu.Lock()
 	s.highRiskFullAccess = true
+	s.mu.Unlock()
+}
+
+func (s *remoteHighRiskApprovalState) revokeHighRiskFullAccess() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.highRiskFullAccess = false
 	s.mu.Unlock()
 }
 
@@ -3616,14 +3860,11 @@ func (s *remoteHighRiskApprovalState) grantPathFullAccess() {
 	s.mu.Unlock()
 }
 
-func rememberRemoteScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopContext, req ScopeApprovalRequest, decision ScopeApprovalDecision) {
+func rememberRemoteScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopContext, stickyOwner string, req ScopeApprovalRequest, decision ScopeApprovalDecision) {
 	if handler == nil || decision != ScopeApprovalFullAccess {
 		return
 	}
-	userID := ""
-	if loopCtx != nil {
-		userID = strings.TrimSpace(loopCtx.UserID)
-	}
+	userID, nested := stickyDecisionUser(loopCtx, stickyOwner)
 	if userID == "" {
 		return
 	}
@@ -3632,17 +3873,23 @@ func rememberRemoteScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopC
 		// Session-scoped high-risk trust for pure coding multi-turn continuity.
 		handler.markStickyCodingSessionHighRiskAccess(userID)
 	default:
+		// A nested step must not turn its own workspace into the task tab's path trust.
+		if nested {
+			return
+		}
 		// Path/dir full access for remote path prompts → session path trust.
 		handler.markStickyCodingSessionFullAccess(userID, "remote", req.ProjectPath)
 		if dir := strings.TrimSpace(req.Directory); dir != "" {
 			handler.rememberStickyApprovedDir(userID, dir)
 		}
 	}
-	// If path + high-risk are both set, upgrade sticky mode so UI shows 完全控制.
-	handler.maybeUpgradeStickyPermissionModeToFull(userID)
 }
 
 func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string), maintenance bool) ScopeApprovalCallback {
+	return buildRemoteHighRiskApprovalCallbackOwned(handler, loopCtx, "", onProgress, maintenance)
+}
+
+func buildRemoteHighRiskApprovalCallbackOwned(handler *IMMessageHandler, loopCtx *LoopContext, stickyOwner string, onProgress func(string), maintenance bool) ScopeApprovalCallback {
 	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		req.Maintenance = maintenance
 		if loopCtx != nil && loopCtx.IsCancelled() {
@@ -3663,7 +3910,7 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 			select {
 			case decision := <-responseCh:
 				recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
-				rememberRemoteScopeStickyDecision(handler, loopCtx, req, decision)
+				rememberRemoteScopeStickyDecision(handler, loopCtx, stickyOwner, req, decision)
 				if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 					handler.app.persistSubAgentFullAccess()
 				}
@@ -3685,7 +3932,7 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 		select {
 		case decision := <-responseCh:
 			recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
-			rememberRemoteScopeStickyDecision(handler, loopCtx, req, decision)
+			rememberRemoteScopeStickyDecision(handler, loopCtx, stickyOwner, req, decision)
 			if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 				handler.app.persistSubAgentFullAccess()
 			}
@@ -3700,7 +3947,17 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 }
 
 func shouldPersistRemoteScopeFullAccess(req ScopeApprovalRequest, decision ScopeApprovalDecision) bool {
-	return decision == ScopeApprovalFullAccess && req.Kind != remoteHighRiskApprovalKind
+	if decision != ScopeApprovalFullAccess {
+		return false
+	}
+	// Command 以后允许 stays on the task tab. It must not flip the global
+	// full-access switch, including when a local command is confirmed here.
+	switch req.Kind {
+	case remoteHighRiskApprovalKind, localHighRiskApprovalKind:
+		return false
+	default:
+		return true
+	}
 }
 
 func remoteScopeApprovalProgressMessage(req ScopeApprovalRequest) string {
@@ -3781,6 +4038,46 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 	}
 }
 
+// taskPermissionOwnerID is the coding-task tab whose 以后允许 / 完全控制 grant
+// this agent must re-read. Nested children keep it separately because their
+// loop context is not the parent session.
+func (r *RemoteCodingSubAgent) taskPermissionOwnerID() string {
+	if r == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(r.permissionOwnerID); id != "" {
+		return id
+	}
+	if r.loopCtx != nil {
+		return strings.TrimSpace(r.loopCtx.UserID)
+	}
+	return ""
+}
+
+// refreshTaskCommandAllowance re-reads the task tab's 以后允许 / 完全控制 grant
+// so a child started before the user answered still skips later commands, and
+// a child already running asks again after the user returns to 请求授权.
+func (c *remoteCodingCallbacks) refreshTaskCommandAllowance() {
+	if c == nil || c.agent == nil || c.agent.highRiskApproval == nil || c.agent.handler == nil {
+		return
+	}
+	// No task tab to re-read. Keep an in-memory grant; an empty owner must not
+	// look like the user switched back to 请求授权.
+	owner := c.agent.taskPermissionOwnerID()
+	if owner == "" {
+		return
+	}
+	if c.agent.handler.taskCommandsAutoAllowed(owner) {
+		if !c.agent.highRiskApproval.highRiskApproved() {
+			c.agent.highRiskApproval.grantHighRiskFullAccess()
+		}
+		return
+	}
+	if c.agent.highRiskApproval.highRiskApproved() {
+		c.agent.highRiskApproval.revokeHighRiskFullAccess()
+	}
+}
+
 // guardRemoteShellCommand runs the ssh_bash guardrails for one command and
 // returns the rejection the caller must surface, or "" when the command may
 // execute. The ordering mirrors the local coding subagent: hard blocks come
@@ -3791,6 +4088,7 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 // a failed command. A high-risk refusal is deliberately left out: the user
 // already saw and answered it on the approval channel.
 func (c *remoteCodingCallbacks) guardRemoteShellCommand(command, workDir string) (rejection string, recordAsFailure bool) {
+	c.refreshTaskCommandAllowance()
 	// A read-only inquiry stays a hard block. Its run report states that the
 	// turn modified nothing purely from the request kind, so approving a
 	// command past this guardrail would make the report claim something untrue.
@@ -3831,15 +4129,21 @@ func (c *remoteCodingCallbacks) guardRemoteShellCommand(command, workDir string)
 }
 
 // checkTaskModeGuard asks before running a command that a task-mode guardrail
-// turned down. Unlike check it neither consults nor grants the sticky
-// high-risk allowance: answering "allow risky commands" is a statement about
-// danger, not about widening what a run/build turn is, so each widening stays
-// an explicit per-command decision the user actually sees.
+// turned down. 完全控制 and a prior 以后允许 skip the prompt the same way
+// check does. 本次放行 stays one command; 以后允许 covers the rest of this task.
 func (s *remoteHighRiskApprovalState) checkTaskModeGuard(command, workingDir, rejection string) string {
 	if s == nil {
 		return rejection
 	}
 	s.mu.Lock()
+	if s.highRiskFullAccess {
+		audit := s.auditApproval
+		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: remoteSSHBashToolName, Path: command, ProjectPath: workingDir, Directory: workingDir, Kind: remoteHighRiskApprovalKind}, ScopeApprovalFullAccess, "automatic")
+		}
+		return ""
+	}
 	callback := s.callback
 	s.mu.Unlock()
 	if callback == nil {
@@ -3854,7 +4158,10 @@ func (s *remoteHighRiskApprovalState) checkTaskModeGuard(command, workingDir, re
 		Message:     rejection,
 		AutoAllow:   false,
 	}) {
-	case ScopeApprovalAllowOnce, ScopeApprovalFullAccess:
+	case ScopeApprovalAllowOnce:
+		return ""
+	case ScopeApprovalFullAccess:
+		s.grantHighRiskFullAccess()
 		return ""
 	default:
 		return rejection
@@ -4108,9 +4415,9 @@ func remoteWriteFileResult(path string, contentLen int, commandResult string, ch
 	if remoteCodingToolResultLooksFailed(commandResult) || !remoteWriteFileResultHasOK(commandResult) {
 		return fmt.Sprintf("写入失败: %s", commandResult)
 	}
-	createdText := "created=false"
+	createdText := "created=false，覆盖了已有文件"
 	if remoteWriteFileResultCreated(commandResult) {
-		createdText = "created=true"
+		createdText = "created=true，新文件"
 	}
 	if chunked {
 		return fmt.Sprintf("已写入 %s (%d bytes, chunked, %s)", path, contentLen, createdText)
@@ -4344,9 +4651,28 @@ func buildRemoteCodingCodeFileEvent(sessionID, projectPath, path, content, origi
 
 func remoteEditFileResult(path string, commandResult string) string {
 	if remoteCodingToolResultLooksFailed(commandResult) || !remoteEditFileResultHasOK(commandResult) {
-		return fmt.Sprintf("编辑失败: %s", commandResult)
+		failure := fmt.Sprintf("编辑失败: %s", strings.TrimSpace(commandResult))
+		if hint := remoteEditFileRecoveryHint(commandResult); hint != "" {
+			return failure + "\n" + hint
+		}
+		return failure
 	}
 	return fmt.Sprintf("已编辑 %s", path)
+}
+
+func remoteEditFileRecoveryHint(commandResult string) string {
+	switch {
+	case strings.Contains(commandResult, "old_str not found"):
+		// A missed match is not the "one edit cannot hold the change" case.
+		// The overwrite contract stays in the preamble and tool schemas.
+		return "先 ssh_read_file 读取当前内容，再用当前文本重试 ssh_edit_file。"
+	case strings.Contains(commandResult, "must be unique"):
+		return "old_str 命中了多处。先 ssh_read_file，把 old_str 加长到唯一匹配后再重试 ssh_edit_file。不要改用 ssh_write_file。"
+	case strings.Contains(commandResult, "file not found"):
+		return "目标文件不存在。若路径写错，改正路径后重试 ssh_edit_file。新建用 ssh_write_file。"
+	default:
+		return ""
+	}
 }
 
 func remoteEditFileResultHasOK(commandResult string) bool {
@@ -4779,6 +5105,104 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 	return sb.String()
 }
 
+func buildRemoteSpawnCodingAgentToolDefinition() map[string]interface{} {
+	cloned := cloneCodingSubAgentToolDefinitions([]map[string]interface{}{buildSpawnCodingAgentToolDefinition()})
+	tool := cloned[0]
+	fn, _ := tool["function"].(map[string]interface{})
+	if fn == nil {
+		return tool
+	}
+	fn["description"] = "Spawn a nested coding subagent on this SSH session. " +
+		"explorer and reviewer are read-only: ssh_read_file and ssh_list_dir, and reviewer may use ssh_bash for find, rg, git status, and git diff. " +
+		"worker requires files[] and always runs sequentially in a remote git worktree isolate. " +
+		"The worker edits existing files with ssh_edit_file and creates files with ssh_write_file. " +
+		"Children cannot spawn further subagents. agents[] max 3; inspection-only batches may run in parallel."
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if agents, ok := props["agents"].(map[string]interface{}); ok {
+		agents["description"] = "Optional fan-out (max 3). Each item: {role, task, context?, files?}. Remote workers always run sequentially; inspection-only batches may run in parallel. Each worker edits with ssh_edit_file and creates files with ssh_write_file."
+	}
+	return tool
+}
+
+func buildRemoteCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
+	tools := buildCodingFullEnvExtraToolDefinitions()
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		if fn == nil {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		switch name {
+		case "web_fetch":
+			fn["description"] = "Fetch and extract text from a URL (docs, GitHub, RFCs). save_path writes on the local host, not the remote project. To place a file in the remote project, use ssh_write_file."
+			setRemoteToolPropertyDescription(fn, "save_path", "Optional path on the local host. This does not write the remote project.")
+		case "download_file":
+			fn["description"] = "Download an HTTP/HTTPS URL onto the local host. This does not write the remote project. To place a file on the remote server, use ssh_write_file."
+			setRemoteToolPropertyDescription(fn, "save_path", "Optional path on the local host. To place the file on the remote server, use ssh_write_file.")
+		}
+	}
+	return tools
+}
+
+func setRemoteToolPropertyDescription(fn map[string]interface{}, propName, desc string) {
+	if fn == nil {
+		return
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	if params == nil {
+		return
+	}
+	props, _ := params["properties"].(map[string]interface{})
+	if props == nil {
+		return
+	}
+	switch prop := props[propName].(type) {
+	case map[string]interface{}:
+		prop["description"] = desc
+	}
+}
+
+// remoteCodingMutatingFileContract is the single edit/write rule for remote
+// turns that can change files. Explorer and reviewer prompts do not use it.
+func remoteCodingMutatingFileContract() string {
+	return "已有文件默认用 ssh_edit_file。ssh_write_file 用于创建新文件；只有改动放不进一次 ssh_edit_file 时才覆盖已有文件。结果中的 created=false 表示覆盖的是已有文件。"
+}
+
+func remoteCodingSpawnRolePromptHint(role codingSubAgentRole) string {
+	switch role {
+	case codingRoleExplorer:
+		return "你是远程只读探索子代理（explorer）：只用 ssh_read_file、ssh_list_dir 和 code_navigation 阅读代码，禁止写文件或调用本地 read_file、ripgrep、git_diff。遇到陌生概念、精确报错、第三方依赖或版本兼容性问题时，必须用 web_search 核对官方来源。完成后给出关键路径、符号、外部来源和风险点。"
+	case codingRoleReviewer:
+		return "你是远程审查子代理（reviewer）：可读代码，并用 ssh_bash 做只读检查（find、rg、git status、git diff、测试）。禁止 ssh_write_file、ssh_edit_file，也不要调用名为 git_diff 的本地工具。涉及陌生或版本敏感的第三方事实时，必须用 web_search 核对。完成后给出问题清单、外部来源、验证结果与建议。"
+	default:
+		return "你是远程实现子代理（worker）：在已绑定的远程项目目录中完成指定实现或修复，只改声明过的 files。按系统说明使用 ssh_edit_file 和 ssh_write_file。你不能再派生子代理。"
+	}
+}
+
+func buildRemoteFullCodingEnvironmentPromptPreamble() string {
+	return `## 全功能远程编程环境
+你在远程服务器上改代码。只使用本轮列出的 SSH 工具，不要调用 read_file、write_file、edit_file、list_directory、Glob、ripgrep、git_diff 这些本地工具名。
+- 读文件用 ssh_read_file，列目录用 ssh_list_dir。搜索和查看改动用 ssh_bash（rg、find、git diff、git status）。
+- ` + remoteCodingMutatingFileContract() + `
+- 不得猜测 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。
+- 默认自主探索与实现。已有多步规划时按步骤推进；没有规划时先短计划再动手。
+- 子代理：复杂工作时用 spawn_coding_agent。explorer/reviewer 只读；远程 worker 顺序执行，并只改声明过的 files。
+- 最小必要改动。
+
+`
+}
+
+func buildRemoteNestedFullCodingEnvironmentPromptPreamble() string {
+	return `## 嵌套远程实现子代理
+你是远程编程工作台派发的实现子代理。只使用本轮列出的 SSH 工具，不要调用 read_file、write_file、edit_file、list_directory、Glob、ripgrep、git_diff。
+- 读文件用 ssh_read_file，列目录用 ssh_list_dir，搜索和 git diff 用 ssh_bash。
+- ` + remoteCodingMutatingFileContract() + `
+- 禁止再派生子代理。最小必要改动。
+
+`
+}
+
 func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) string {
 	var sb strings.Builder
 	sb.WriteString("# Remote Coding SubAgent\n\n")
@@ -4787,8 +5211,8 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 	sb.WriteString(`## 可用工具
 
 - ssh_read_file(path, offset?, limit?): 读取远程文件内容；默认读取前 200 行，大文件用 offset/limit 分片读取；也接受 start/start_line/startLine 和 lines/num_lines/line_count
-- ssh_write_file(path, content): 写入/创建远程文件（自动创建父目录）
-- ssh_edit_file(path, old_str, new_str): 精确替换远程文件中的文本（old_str 必须唯一匹配）
+- ssh_write_file(path, content): 创建远程新文件（自动创建父目录）
+- ssh_edit_file(path, old_str, new_str): 修改已有文件的默认方式，精确替换唯一匹配的文本（old_str 必须唯一匹配）
 - ssh_bash(command, working_dir?): 在远程服务器执行命令（长时间命令自动转后台任务，返回 task_id）
 - ssh_check_task(task_id, tail_lines?): 查询后台任务状态、exit_code 和日志尾部
 - ssh_list_dir(path?): 列出远程目录内容
@@ -4801,21 +5225,19 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 
 0a. Do not use "tree" as a verification dependency: it is often absent on minimal servers. For a portable project-structure display use "find . -maxdepth 3 -print | sort"; run build/syntax checks as separate commands so a display-tool absence cannot block them.
 
-以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告。唯一例外是第 5 步：当前多步骤计划明确把编译/build/test 交给后续独立步骤时，不要提前构建，但第 4、6 步仍为必做项。
-
 1. 修改文件前先 ssh_read_file 确认当前内容
-1a. 修复 bug 时先提取错误文本/堆栈/入口与期望-实际差异；优先调用 code_navigation（远端 .codegraph + codegraph，自动回退 rg/grep）定位定义、引用、调用者/被调用者。形成候选与反证，复现或说明无法复现的原因。对陌生/版本敏感/第三方事实必须调用本地 web_search（精确错误 + 组件/版本）并优先阅读官方来源；若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内逻辑则记录无需搜索的理由。随后调用 report_localization；被接受后即可在后续轮次修改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。
+1a. 修复 bug 时先 code_navigation 定位根因。陌生、版本敏感或第三方事实必须 web_search 核对官方来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转。然后调用 report_localization；被接受后才改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。
 2. 优先做最小、聚焦的修改；不要顺手重构无关代码
-3. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
-4. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
-	5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）。例外仅适用于：当前是多步骤计划的实现步骤，且计划后续明确有独立的编译/build/test 步骤时，不要提前执行完整构建；完成本步骤的修改后回读确认，后续步骤负责可执行验证。没有这一明确的后续步骤时，必须在本步骤验证。
-6. 修改后运行并查看只读自检命令（优先 git status --short 与 git diff --stat；不要附带 git log，除非任务明确要求）
+3. ssh_edit_file 失败时先 ssh_read_file 确认当前内容，再重试。
+4. 每个改过或新建的文件，都要在它最后一次修改或新建之后，再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
+5. 最后一次修改或新建后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）。验证命令不要加管道、|| 或重定向，也不要和 git status/diff 写在同一条命令里。验证跟在最后一次非文档修改之后。文档只算 Markdown（含 mdx）、README、changelog、rst；只改这些才不必跑，改了 go.mod、CMakeLists、package.json 或其他文件都要重跑。只有当前任务是带编号的计划步骤，且后面另有编号步骤写明编译、构建或测试时，实现、编写或新建步骤才不要提前完整构建；其他步骤必须在本步骤验证。
+6. 最后一次修改或新建后用一条 ssh_bash 运行 git status --short && git diff --stat。不要用分号、管道或 || 拆开，也不要附带 git log，除非任务明确要求
 7. git 自检命令不要使用 2>/dev/null、>/dev/null、&>/dev/null 等重定向；保留 fatal 原文。若不是 Git 仓库，在最终回复写明“非 Git 仓库，跳过 diff 自检”即可，不要反复重试
-8. ssh_bash 只用于探索、诊断、格式化和验证；文件改写必须使用 ssh_edit_file/ssh_write_file
+8. 文件改写必须使用 ssh_edit_file/ssh_write_file，不要用 ssh_bash 改写文件内容。任务原文明确要求清空或删除时，按下面的严禁行为调用 ssh_bash
 9. 路径可以是相对路径（相对于项目目录）或绝对路径
 10. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
 11. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
-12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或本任务放行。当前任务原文明确要求清空/删除项目目录内文件，或明确要求改写 Git 工作区时，必须调用 ssh_bash 发起该命令，不要只回复文字拒绝。
+12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或以后允许。以后允许后，当前任务内同类命令不再询问，直接放行；输入区已是完全控制时，宿主会直接放行，不要再提示用户去点确认。当前任务原文明确要求清空/删除项目目录内文件，或明确要求改写 Git 工作区时，必须调用 ssh_bash 发起该命令，不要只回复文字拒绝。
 13. 最终回复用工程师口吻：先给结果，再点名改过的路径和实际跑过的验证事实。不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题，没有真实风险时不要写 remaining risk。
 
 ## 严禁行为
@@ -4824,7 +5246,6 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 - 不要在未读取文件的情况下盲目覆盖
 - 不要擅自用 ssh_bash 执行 git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f 等会改写工作区或历史的命令
 - 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向写文件、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写。若当前任务原文明确要求清空或删除项目目录内文件，必须调用 ssh_bash（working_dir 限定在项目目录）；宿主会请求确认，或在完全控制下自动放行。禁止只回复文字拒绝。
-- 不要对 git status/diff/log 自检命令做 2>/dev/null 或 >/dev/null（会掩盖“不是 Git 仓库”等关键信息并触发质量门误判）
 `)
 	if taskContext != "" {
 		sb.WriteString("\n## 任务上下文\n\n")
@@ -4908,20 +5329,20 @@ func remoteCodingToolDefinitions() []map[string]interface{} {
 				"offset": map[string]interface{}{"type": "number", "description": "可选，1-based 起始行；也接受 start/start_line/startLine"},
 				"limit":  map[string]interface{}{"type": "number", "description": "可选，最多读取的行数；默认 200，也接受 lines/num_lines/line_count，最大 2000"},
 			}, []string{"path"}),
-		buildRemoteToolDef("ssh_write_file", "写入内容到远程文件（自动创建父目录）",
+		buildRemoteToolDef("ssh_write_file", "创建远程新文件（自动创建父目录）。"+remoteCodingMutatingFileContract(),
 			map[string]interface{}{
 				"path":    map[string]interface{}{"type": "string", "description": "文件路径（也接受 file/file_path/filename/target_path）"},
-				"content": map[string]interface{}{"type": "string", "description": "文件内容"},
+				"content": map[string]interface{}{"type": "string", "description": "新文件的完整内容。覆盖已有文件时这是替换后的全文，且仅当一次 ssh_edit_file 放不下该改动时使用。"},
 			}, []string{"path", "content"}),
-		buildRemoteToolDef("ssh_edit_file", "精确替换远程文件中的文本（old_str 必须在文件中唯一匹配；也接受 old_string/old_content/find/search 和 new_string/new_content/replace/replacement）",
+		buildRemoteToolDef("ssh_edit_file", "修改已有文件的默认方式。"+remoteCodingMutatingFileContract()+"精确替换远程文件中的文本（old_str 必须在文件中唯一匹配；也接受 old_string/old_content/find/search 和 new_string/new_content/replace/replacement）",
 			map[string]interface{}{
 				"path":    map[string]interface{}{"type": "string", "description": "文件路径（也接受 file/file_path/filename/target_path）"},
 				"old_str": map[string]interface{}{"type": "string", "description": "要被替换的原始文本（也接受 old_string/old_content/find/search）"},
 				"new_str": map[string]interface{}{"type": "string", "description": "替换后的新文本（也接受 new_string/new_content/replace/replacement）"},
 			}, []string{"path", "old_str", "new_str"}),
-		buildRemoteToolDef("ssh_bash", "在远程服务器上执行探索、诊断、格式化或验证命令（长时间命令自动转后台任务；拒绝 git 工作区改写、递归删除和通过 shell 直接改写文件）",
+		buildRemoteToolDef("ssh_bash", "在远程服务器上执行探索、诊断、格式化或验证命令（长时间命令自动转后台任务；默认拒绝 git 工作区改写、递归删除和通过 shell 直接改写文件。任务原文明确要求清空、删除或改写 Git 工作区时仍要调用，由宿主确认）",
 			map[string]interface{}{
-				"command":     map[string]interface{}{"type": "string", "description": "要执行的命令；用于探索/诊断/格式化/验证，不要用它改写文件或 Git 工作区"},
+				"command":     map[string]interface{}{"type": "string", "description": "要执行的命令；用于探索/诊断/格式化/验证，不要用它改写文件或 Git 工作区。任务原文明确要求时仍要调用，由宿主确认"},
 				"working_dir": map[string]interface{}{"type": "string", "description": "工作目录（默认项目目录；也接受 cwd/work_dir）"},
 			}, []string{"command"}),
 		buildRemoteToolDef("ssh_list_dir", "列出远程目录内容",

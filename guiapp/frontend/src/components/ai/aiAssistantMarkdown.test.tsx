@@ -1357,7 +1357,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到移动文稿库");
+        const uploadBtn = screen.getByLabelText("上传到云盘");
         fireEvent.click(uploadBtn);
         await waitFor(() => {
             expect(importMobileDocumentFromPathMock).toHaveBeenCalledWith(path);
@@ -1379,7 +1379,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到移动文稿库");
+        const uploadBtn = screen.getByLabelText("上传到云盘");
         fireEvent.click(uploadBtn);
         await waitFor(() => {
             expect(uploadBtn.textContent).toBe("✗");
@@ -1397,7 +1397,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        expect(screen.queryByLabelText("上传到移动文稿库")).toBeNull();
+        expect(screen.queryByLabelText("上传到云盘")).toBeNull();
     });
 
     it("retries the mobile library upload after a failure", async () => {
@@ -1412,7 +1412,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到移动文稿库");
+        const uploadBtn = screen.getByLabelText("上传到云盘");
         fireEvent.click(uploadBtn);
         await waitFor(() => {
             expect(uploadBtn.textContent).toBe("✗");
@@ -1440,7 +1440,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到移动文稿库") as HTMLButtonElement;
+        const uploadBtn = screen.getByLabelText("上传到云盘") as HTMLButtonElement;
         fireEvent.click(uploadBtn);
         fireEvent.click(uploadBtn);
         fireEvent.click(uploadBtn);

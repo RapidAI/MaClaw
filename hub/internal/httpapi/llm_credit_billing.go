@@ -738,7 +738,16 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 	groups := llmservice.ChargedServiceGroupIDs(model, providerID)
 	allowed, _, code, message, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(reg, userID, email, groups, now)
 	if !allowed {
-		return llmBillingDenial{Code: code, Message: message}, fmt.Errorf("%s", message)
+		denial := llmBillingDenial{Code: code, Message: message}
+		// Eligibility rejects a frozen card before a quote exists, and a zero
+		// floor then skips a withdraw the card can never fund. Price one output
+		// token so the bank is used only when that card cannot start the call.
+		if denialIsHeldBalance(denial) {
+			if floor, ok := localOneTokenFloorCredits(reg, providerReg, model, providerID, groups, body, now); ok && floor > 0 {
+				denial.NeedCredits = floor
+			}
+		}
+		return denial, fmt.Errorf("%s", message)
 	}
 	if llmservice.IsFreeBillingProviderRoute(model, providerID, billingUpstreamModel(model, providerID)) {
 		return llmBillingDenial{}, nil
@@ -809,6 +818,33 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 		rememberLLMPricingQuote(ctx, quote)
 	}
 	return llmBillingDenial{}, nil
+}
+
+// localOneTokenFloorCredits is the prompt-plus-one-output-token price for a
+// locally priced route. Official routes take their price from HubCenter later,
+// and a route with no directional price has no floor to withdraw against.
+func localOneTokenFloorCredits(reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, providerID string, groups []string, body map[string]any, now time.Time) (float64, bool) {
+	if model == nil || IsMaClawProviderRequest(providerID) || llmservice.IsFreeBillingProviderRoute(model, providerID, billingUpstreamModel(model, providerID)) {
+		return 0, false
+	}
+	upstream := billingUpstreamModel(model, providerID)
+	pricing, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, upstream, now)
+	if !ok {
+		pricing, ok = resolveLocalProviderTokenPricing(providerReg, providerID, now)
+	}
+	if !ok {
+		return 0, false
+	}
+	requestID := "held-card-floor"
+	quote, ok := llmpool.NewPricingQuoteSnapshot(requestID, requestID+":"+strings.TrimSpace(providerID), providerID, pricing, 1, llmservice.BillingGroupMultiplier(reg, groups), estimateLLMQuoteInputTokens(body), 1, now.Add(15*time.Minute))
+	if !ok {
+		return 0, false
+	}
+	one, oneOK := requoteAtOutputLimit(quote, quote.InputTokenEstimate, 1)
+	if !oneOK || one.ReservedMicrocredits <= 0 {
+		return 0, false
+	}
+	return llmpool.MicrocreditsToCredits(one.ReservedMicrocredits), true
 }
 
 // insufficientCreditsMessage builds the admission denial message. When
@@ -894,9 +930,7 @@ func prepareAndReserveLLMPricing(ctx context.Context, system store.SystemSetting
 		}
 		before := grossSpendableMicro(serviceReg, userID, email, groups)
 		pulled, pullErr := pullTokenBankForQuoteShortfall(ctx, serviceReg, userID, email, denial.Code, denial.NeedCredits, groups, model, puller)
-		if pullErr != nil {
-			log.Printf("[llm-billing] token bank auto withdraw for admission: %v", pullErr)
-		}
+		logTokenBankAdmissionPullErr(pullErr)
 		if !pulled {
 			break
 		}
@@ -945,9 +979,7 @@ func coverFilteredModelsFromTokenBank(ctx context.Context, system store.SystemSe
 				if errors.Is(pullErr, llmservice.ErrTokenBankGroupNotCharged) {
 					continue
 				}
-				if pullErr != nil {
-					log.Printf("[llm-billing] token bank auto withdraw for admission: %v", pullErr)
-				}
+				logTokenBankAdmissionPullErr(pullErr)
 				if !pulled {
 					return billable, denied, first, serviceReg
 				}
@@ -991,14 +1023,54 @@ func llmDenialCodeIs(code, want string) bool {
 // queued grant or an expired grant is not a bank problem. A period window
 // that has nothing else to spend is: the request switches to a point card,
 // and a token-bank balance is withdrawn into that card first. A point card
-// that can already pay does not withdraw. The card is its spendable balance
-// before holds. A floor that balance can pay waits for the holds instead of
-// withdrawing more.
+// that can already pay from credits free right now does not withdraw. A
+// balance that is only held by in-flight requests cannot reserve this call,
+// so a bank share is withdrawn onto the local card before the denial.
 func pullTokenBankForQuoteShortfall(ctx context.Context, reg *llmservice.Registry, userID, email, code string, needCredits float64, groups []string, model *llmservice.AuthorizedModel, puller tokenBankAdmissionPuller) (bool, error) {
 	if puller == nil || !quoteShortfallNeedsPull(ctx, reg, userID, email, code, needCredits, groups, model) {
 		return false, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// Same account, one pull at a time. The lock covers the HubCenter round
+	// trip so a second request reloads the grant instead of debiting another
+	// share. Other accounts use a different stripe and do not wait.
+	// Lock order: this stripe, then tokenBankGrantMu, then serviceRegistryMu.
+	mu := lockTokenBankAdmission(email)
+	defer mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	return puller.PullTokenBankForAdmissionShortfall(ctx, userID, email, groups, grossSpendableMicro(reg, userID, email, groups))
+}
+
+func logTokenBankAdmissionPullErr(err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	log.Printf("[llm-billing] token bank auto withdraw for admission: %v", err)
+}
+
+// tokenBankAdmissionLocks stripes admission pulls by account. One stripe is
+// held for the bank round trip, so a hang blocks only the accounts that hash
+// there, not every shortfall on the hub.
+var tokenBankAdmissionLocks [32]sync.Mutex
+
+func lockTokenBankAdmission(email string) *sync.Mutex {
+	mu := &tokenBankAdmissionLocks[tokenBankAdmissionStripe(email)]
+	mu.Lock()
+	return mu
+}
+
+func tokenBankAdmissionStripe(email string) uint32 {
+	email = strings.ToLower(strings.TrimSpace(email))
+	var h uint32 = 2166136261
+	for i := 0; i < len(email); i++ {
+		h ^= uint32(email[i])
+		h *= 16777619
+	}
+	return h % uint32(len(tokenBankAdmissionLocks))
 }
 
 func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, userID, email, code string, needCredits float64, groups []string, model *llmservice.AuthorizedModel) bool {
@@ -1031,37 +1103,35 @@ func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, user
 			floorMicro = quoted
 		}
 	}
-	gross := grossSpendableMicro(reg, userID, email, groups)
+	// available is the post-hold balance eligibility just measured. Reserve
+	// can only hold that slice, so a pre-hold card that could pay later is
+	// not a reason to fail this call.
+	availableMicro := creditsToMicrocredits(available)
 	if llmDenialCodeIs(eligibilityCode, "LLM_SERVICE_PERIOD_LIMITED") {
 		// The period grant itself is not spendable. Withdraw when no point
-		// card on these groups can start the request. A balance that covers
-		// the floor, including one hidden by a hold, waits.
+		// card on these groups has free credits that can start the request.
 		if floorMicro > 0 {
-			return floorMicro > gross
+			return floorMicro > availableMicro
 		}
-		return gross <= 0
+		return availableMicro <= 0
 	}
 	if floorMicro > 0 {
-		if floorMicro > gross {
+		if floorMicro > availableMicro {
 			return true
 		}
-		// The one-token price fits, but reserve holds the stored quote. The
-		// output ceiling is restored to that quote when the capped body cannot
-		// be priced, so the request still cannot start. Withdraw only when
-		// that priced hold is above the whole card and some balance is still
-		// free. A hold that clamps available credits to zero leaves the
-		// spendable card in place; releasing it can pay the floor, and
-		// draining the bank is not required.
+		// The one-token price fits what is free, but reserve holds the stored
+		// quote. A restored output ceiling can exceed that free slice while
+		// still sitting under the pre-hold card. Withdraw so this call can
+		// reserve, instead of waiting for the in-flight holds to release.
 		reserved, reservedOK := admissionPricedReservationMicro(ctx, model)
-		if reservedOK && reserved > gross && admissionAvailableMicro(reg, userID, email, groups) > 0 {
+		if reservedOK && reserved > availableMicro {
 			return true
 		}
 		return false
 	}
-	// No priced floor. Withdraw only when this card is empty before holds.
-	// A hold that clamps available credits to zero still leaves the balance
-	// on the card, and draining the bank would not be required to start.
-	return !allowed && gross <= 0
+	// No priced floor. Withdraw when nothing is free to spend now, including
+	// a card whose balance is entirely held by in-flight requests.
+	return !allowed && availableMicro <= 0
 }
 
 // grossSpendableMicro is the charged card before in-flight holds. Available

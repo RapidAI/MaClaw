@@ -79,6 +79,24 @@ describe('aiAssistantI18n', () => {
                 detail: '本次请求需要 56.003 Credits，当前可用 6.430 Credits，其中 993.570 被在途请求冻结。',
                 hint: '请兑换额度或切换模型提供方后重试。',
             });
+        expect(describeAIAssistantError('LLM call failed: insufficient credits for this request: need 20.000 credits, available 0.000 (20.000 held by in-flight requests)', 'en'))
+            .toEqual({
+                title: 'Insufficient credits',
+                detail: '20.000 credits are held by in-flight requests; none are free right now.',
+                hint: 'Please try again later.',
+            });
+        expect(describeAIAssistantError('LLM 调用失败：本次请求额度不足，需要 20.000 Credits，当前可用 0.000 Credits，其中 20.000 Credits 被在途请求冻结。', 'zh-Hans'))
+            .toEqual({
+                title: '额度不足',
+                detail: '其中 20.000 Credits 被在途请求冻结，当前没有可用额度。',
+                hint: '请稍后重试。',
+            });
+        expect(describeAIAssistantError('LLM call failed: insufficient credits for this request: need 0.500 credits, available 0.000 (20.000 held by in-flight requests)', 'en'))
+            .toEqual({
+                title: 'Insufficient credits',
+                detail: 'This request needs 0.500 credits, but only 0.000 are available (20.000 held by in-flight requests).',
+                hint: 'Please try again later.',
+            });
     });
 
     it('describes exhausted-credit and timeout errors with short titles', () => {

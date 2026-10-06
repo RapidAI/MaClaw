@@ -9157,6 +9157,7 @@ export namespace main {
 	    turn_count: number;
 	    session_full_access: boolean;
 	    session_high_risk_access: boolean;
+	    permission_mode?: string;
 	    session_plan?: string;
 	    execution_plan?: string;
 	    requirement_restatement?: string;
@@ -9214,6 +9215,7 @@ export namespace main {
 	        this.turn_count = source["turn_count"];
 	        this.session_full_access = source["session_full_access"];
 	        this.session_high_risk_access = source["session_high_risk_access"];
+	        this.permission_mode = source["permission_mode"];
 	        this.session_plan = source["session_plan"];
 	        this.execution_plan = source["execution_plan"];
 	        this.requirement_restatement = source["requirement_restatement"];
@@ -12265,6 +12267,41 @@ export namespace main {
 	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.id = source["id"]; this.expires_at = source["expires_at"]; this.redeemed_at = source["redeemed_at"]; }
 	}
 
+	export class HubLLMCheckinInfo {
+	    enabled: boolean;
+	    credits?: number;
+	    checked_in_today: boolean;
+	    static createFrom(source: any = {}) { return new HubLLMCheckinInfo(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.enabled = source["enabled"]; this.credits = source["credits"]; this.checked_in_today = source["checked_in_today"]; }
+	}
+
+	export class HubLLMCheckinResult {
+	    success: boolean;
+	    already_checked_in: boolean;
+	    credits_awarded?: number;
+	    checkin?: HubLLMCheckinInfo;
+	    service_status?: HubLLMServiceStatus;
+	    static createFrom(source: any = {}) { return new HubLLMCheckinResult(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.success = source["success"]; this.already_checked_in = source["already_checked_in"]; this.credits_awarded = source["credits_awarded"]; this.checkin = this.convertValues(source["checkin"], HubLLMCheckinInfo); this.service_status = this.convertValues(source["service_status"], HubLLMServiceStatus); }
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class HubLLMServiceStatus {
 	    active: boolean;
 	    skip_llm_config: boolean;
@@ -12286,7 +12323,8 @@ export namespace main {
 	    credits_available?: number;
 	    tokens_per_credit?: number;
 	    reset_vouchers?: HubLLMResetVoucher[];
-	
+	    checkin?: HubLLMCheckinInfo;
+
 	    static createFrom(source: any = {}) {
 	        return new HubLLMServiceStatus(source);
 	    }
@@ -12313,6 +12351,7 @@ export namespace main {
 	        this.credits_available = source["credits_available"];
 	        this.tokens_per_credit = source["tokens_per_credit"];
 	        this.reset_vouchers = this.convertValues(source["reset_vouchers"], HubLLMResetVoucher);
+	        this.checkin = this.convertValues(source["checkin"], HubLLMCheckinInfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +23,154 @@ func (p *admissionPullRecorder) PullTokenBankForAdmissionShortfall(_ context.Con
 	p.calls++
 	p.groups = append([]string(nil), chargedGroupIDs...)
 	return true, nil
+}
+
+type gatingAdmissionPuller struct {
+	mu       sync.Mutex
+	inflight int
+	max      int
+	once     sync.Once
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (p *gatingAdmissionPuller) PullTokenBankForAdmissionShortfall(context.Context, string, string, []string, int64) (bool, error) {
+	p.mu.Lock()
+	p.inflight++
+	if p.inflight > p.max {
+		p.max = p.inflight
+	}
+	p.mu.Unlock()
+	p.once.Do(func() { close(p.entered) })
+	<-p.release
+	p.mu.Lock()
+	p.inflight--
+	p.mu.Unlock()
+	return true, nil
+}
+
+func TestPullTokenBankForQuoteShortfallSerializesConcurrentPulls(t *testing.T) {
+	reg := paidCardRegistry(5.34)
+	reg.BillingReservations = []llmservice.BillingReservation{{
+		RequestID: "hold", UserID: "u1", Email: "user@example.com",
+		ServiceGroupIDs: []string{"paid"}, Credits: 10, ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}}
+	puller := &gatingAdmissionPuller{entered: make(chan struct{}), release: make(chan struct{})}
+	errCh := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_EXHAUSTED", 0, []string{"paid"}, nil, puller)
+			errCh <- err
+		}()
+	}
+	select {
+	case <-puller.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first admission pull")
+	}
+	time.Sleep(20 * time.Millisecond)
+	puller.mu.Lock()
+	max := puller.max
+	puller.mu.Unlock()
+	close(puller.release)
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if max != 1 {
+		t.Fatalf("max inflight=%d, want one admission pull at a time", max)
+	}
+}
+
+func TestPullTokenBankForQuoteShortfallSkipsACancelledRequest(t *testing.T) {
+	reg := paidCardRegistry(5.34)
+	reg.BillingReservations = []llmservice.BillingReservation{{
+		RequestID: "hold", UserID: "u1", Email: "user@example.com",
+		ServiceGroupIDs: []string{"paid"}, Credits: 10, ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	puller := &admissionPullRecorder{}
+	pulled, err := pullTokenBankForQuoteShortfall(ctx, reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_EXHAUSTED", 0, []string{"paid"}, nil, puller)
+	if pulled || puller.calls != 0 || err == nil {
+		t.Fatalf("pulled=%v calls=%d err=%v, want no bank call after the request is cancelled", pulled, puller.calls, err)
+	}
+}
+
+func TestPullTokenBankForQuoteShortfallSkipsACancelledWaiter(t *testing.T) {
+	reg := paidCardRegistry(5.34)
+	reg.BillingReservations = []llmservice.BillingReservation{{
+		RequestID: "hold", UserID: "u1", Email: "user@example.com",
+		ServiceGroupIDs: []string{"paid"}, Credits: 10, ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}}
+	mu := lockTokenBankAdmission("user@example.com")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	puller := &admissionPullRecorder{}
+	done := make(chan struct{})
+	var pulled bool
+	var err error
+	go func() {
+		pulled, err = pullTokenBankForQuoteShortfall(ctx, reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_EXHAUSTED", 0, []string{"paid"}, nil, puller)
+		close(done)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the cancelled waiter")
+	}
+	if pulled || puller.calls != 0 || err == nil {
+		t.Fatalf("pulled=%v calls=%d err=%v, want no bank call after the waiter is cancelled", pulled, puller.calls, err)
+	}
+}
+
+func TestPullTokenBankForQuoteShortfallLetsOtherAccountsPull(t *testing.T) {
+	reg := paidCardRegistry(5.34)
+	reg.BillingReservations = []llmservice.BillingReservation{{
+		RequestID: "hold", UserID: "u1", Email: "user@example.com",
+		ServiceGroupIDs: []string{"paid"}, Credits: 10, ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}}
+	const first = "user@example.com"
+	second := ""
+	for i := 0; i < 64 && second == ""; i++ {
+		candidate := "other" + strings.Repeat("x", i) + "@example.com"
+		if tokenBankAdmissionStripe(candidate) != tokenBankAdmissionStripe(first) {
+			second = candidate
+		}
+	}
+	if second == "" {
+		t.Fatal("no second account on another admission stripe")
+	}
+	puller := &gatingAdmissionPuller{entered: make(chan struct{}), release: make(chan struct{})}
+	errCh := make(chan error, 2)
+	for _, email := range []string{first, second} {
+		go func(email string) {
+			_, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", email, "LLM_SERVICE_CREDITS_EXHAUSTED", 0, []string{"paid"}, nil, puller)
+			errCh <- err
+		}(email)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		puller.mu.Lock()
+		max := puller.max
+		puller.mu.Unlock()
+		if max >= 2 {
+			close(puller.release)
+			for i := 0; i < 2; i++ {
+				if err := <-errCh; err != nil {
+					t.Fatal(err)
+				}
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(puller.release)
+	t.Fatal("timed out waiting for two accounts to pull at once")
 }
 
 func TestPullTokenBankForQuoteShortfallPullsWhenTheCardCannotCoverTheFloor(t *testing.T) {
@@ -80,7 +230,7 @@ func TestPullTokenBankForQuoteShortfallPullsWhenTheRestoredCeilingExceedsTheCard
 	}
 }
 
-func TestPullTokenBankForQuoteShortfallWaitsWhenAHoldHidesTheCardUnderARestoredCeiling(t *testing.T) {
+func TestPullTokenBankForQuoteShortfallPullsWhenAHoldClampsAvailableToZero(t *testing.T) {
 	now := time.Now().UTC()
 	quote, ok := llmpool.NewPricingQuoteSnapshot(
 		"req-held", "req-held:1", "maclaw",
@@ -110,8 +260,8 @@ func TestPullTokenBankForQuoteShortfallWaitsWhenAHoldHidesTheCardUnderARestoredC
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pulled || puller.calls != 0 {
-		t.Fatalf("pulled=%v calls=%d, want no pull when a hold clamps the 5.34 card and the floor %.3f still fits it", pulled, puller.calls, floor)
+	if !pulled || puller.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a pull when a hold clamps available to 0 even though the floor %.3f fits the pre-hold card", pulled, puller.calls, floor)
 	}
 }
 
@@ -250,6 +400,96 @@ func TestPullTokenBankForQuoteShortfallPullsWhenThePeriodWindowIsExhausted(t *te
 	}
 }
 
+func TestPullTokenBankForQuoteShortfallPullsWhenAHeldPointCardLeavesNothingFree(t *testing.T) {
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired,
+		}},
+		Grants: []llmservice.Grant{
+			{
+				ID: "period", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+				CreditsTotal: 100, CreditsUsed: 10, Permanent: true,
+				StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+				PeriodLimits: llmservice.CreditPeriodLimits{Daily: 10},
+				PeriodUsage:  llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+			},
+			paidGrant("point", "paid", 20),
+		},
+		BillingReservations: []llmservice.BillingReservation{{
+			RequestID: "hold", UserID: "u1", Email: "user@example.com",
+			ServiceGroupIDs: []string{"paid"}, Credits: 20, ExpiresAt: now.Add(time.Hour),
+		}},
+	}
+	puller := &admissionPullRecorder{}
+	pulled, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_PERIOD_LIMITED", 0, []string{"paid"}, nil, puller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || puller.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a pull when the point card is entirely held and this call has nothing free", pulled, puller.calls)
+	}
+}
+
+func TestPrepareLLMPricingQuotePricesAHeldCardThatCannotStartTheRequest(t *testing.T) {
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired,
+		}},
+		Grants: []llmservice.Grant{
+			{
+				ID: "period", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+				CreditsTotal: 100, CreditsUsed: 10, Permanent: true,
+				StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+				PeriodLimits: llmservice.CreditPeriodLimits{Daily: 10},
+				PeriodUsage:  llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+			},
+			paidGrant("point", "paid", 5),
+		},
+		BillingReservations: []llmservice.BillingReservation{{
+			RequestID: "hold", UserID: "u1", Email: "user@example.com",
+			ServiceGroupIDs: []string{"paid"}, Credits: 10, ExpiresAt: now.Add(time.Hour),
+		}},
+	}
+	model := &llmservice.AuthorizedModel{
+		Name:                  "held-floor",
+		ProviderIDs:           []string{"p1"},
+		ProviderServiceGroups: map[string][]string{"p1": {"paid"}},
+		ProviderBillingModes:  map[string]string{"p1": llmpool.BillingModePaid},
+		ProviderTokenPricing:  map[string]llmpool.TokenPricing{"p1": {InputCreditsPer10K: 100000, OutputCreditsPer10K: 100000}},
+	}
+	body := map[string]any{"max_tokens": 16}
+	denial, err := prepareLLMPricingQuote(context.Background(), reg, nil, "u1", "user@example.com", model, "p1", body, now)
+	if err == nil || denial.Code != "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST" || denial.NeedCredits <= 5 || !strings.Contains(denial.Message, "held by in-flight requests") {
+		t.Fatalf("denial=%#v err=%v, want a held-card denial priced above the 5 credit card", denial, err)
+	}
+	puller := &admissionPullRecorder{}
+	pulled, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", denial.Code, denial.NeedCredits, []string{"paid"}, model, puller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || puller.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a withdraw when the frozen card cannot pay the priced floor", pulled, puller.calls)
+	}
+
+	model.ProviderTokenPricing["p1"] = llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 1}
+	cheap, err := prepareLLMPricingQuote(context.Background(), reg, nil, "u1", "user@example.com", model, "p1", body, now)
+	if err == nil || cheap.NeedCredits <= 0 || cheap.NeedCredits >= 5 {
+		t.Fatalf("denial=%#v err=%v, want a priced floor the 5 credit card can pay after the hold releases", cheap, err)
+	}
+	idle := &admissionPullRecorder{}
+	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", cheap.Code, cheap.NeedCredits, []string{"paid"}, model, idle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || idle.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a withdraw when the hold leaves nothing free even though the pre-hold card could pay %.3f", pulled, idle.calls, cheap.NeedCredits)
+	}
+}
+
 func TestPullTokenBankForQuoteShortfallPullsWhenAHoldExceedsTheCard(t *testing.T) {
 	reg := paidCardRegistry(5.34)
 	reg.BillingReservations = []llmservice.BillingReservation{{
@@ -266,19 +506,66 @@ func TestPullTokenBankForQuoteShortfallPullsWhenAHoldExceedsTheCard(t *testing.T
 	}
 }
 
-func TestPullTokenBankForQuoteShortfallWaitsWhenSpendableCoversTheFloor(t *testing.T) {
+func TestPullTokenBankForQuoteShortfallUsesFreeCreditsNotThePreHoldCard(t *testing.T) {
 	reg := paidCardRegistry(5.34)
 	reg.BillingReservations = []llmservice.BillingReservation{{
 		RequestID: "hold", UserID: "u1", Email: "user@example.com",
 		ServiceGroupIDs: []string{"paid"}, Credits: 1.49, ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}}
-	puller := &admissionPullRecorder{}
-	pulled, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", 4, []string{"paid"}, nil, puller)
+	short := &admissionPullRecorder{}
+	pulled, err := pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", 4, []string{"paid"}, nil, short)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pulled || puller.calls != 0 {
-		t.Fatalf("pulled=%v calls=%d, want no pull when the 5.34 card can pay 4 after the hold releases", pulled, puller.calls)
+	if !pulled || short.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a pull when free credits are below 4 even though the 5.34 card could pay after the hold releases", pulled, short.calls)
+	}
+	covered := &admissionPullRecorder{}
+	pulled, err = pullTokenBankForQuoteShortfall(context.Background(), reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", 3, []string{"paid"}, nil, covered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulled || covered.calls != 0 {
+		t.Fatalf("pulled=%v calls=%d, want no pull when free credits still cover 3", pulled, covered.calls)
+	}
+}
+
+func TestPullTokenBankForQuoteShortfallPullsWhenReservationExceedsFreeCredits(t *testing.T) {
+	now := time.Now().UTC()
+	quote, ok := llmpool.NewPricingQuoteSnapshot(
+		"req-partial", "req-partial:1", "local",
+		llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K:  1,
+			OutputCreditsPer10K: 4.75,
+		}},
+		1, 1, 100, 9_000, now.Add(time.Minute),
+	)
+	if !ok {
+		t.Fatal("quote")
+	}
+	one, oneOK := requoteAtOutputLimit(quote, quote.InputTokenEstimate, 1)
+	if !oneOK {
+		t.Fatal("requote")
+	}
+	reg := paidCardRegistry(5.34)
+	reg.BillingReservations = []llmservice.BillingReservation{{
+		RequestID: "hold", UserID: "u1", Email: "user@example.com",
+		ServiceGroupIDs: []string{"paid"}, Credits: 1.49, ExpiresAt: now.Add(time.Hour),
+	}}
+	free := creditsToMicrocredits(llmservice.AvailableCreditsForServiceGroupsForUserID(reg, "u1", "user@example.com", []string{"paid"}, now))
+	gross := creditsToMicrocredits(llmservice.SpendableCreditsForServiceGroupsForUserID(reg, "u1", "user@example.com", []string{"paid"}, now))
+	if one.ReservedMicrocredits >= free || quote.ReservedMicrocredits <= free || quote.ReservedMicrocredits >= gross {
+		t.Fatalf("floor=%d reserved=%d free=%d gross=%d, want the one-token price under the free slice and the restored ceiling between free and pre-hold", one.ReservedMicrocredits, quote.ReservedMicrocredits, free, gross)
+	}
+	ctx := withLLMBillingState(context.Background(), now, "req-partial")
+	rememberLLMPricingQuote(ctx, quote)
+	puller := &admissionPullRecorder{}
+	pulled, err := pullTokenBankForQuoteShortfall(ctx, reg, "u1", "user@example.com", "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", llmpool.MicrocreditsToCredits(one.ReservedMicrocredits), []string{"paid"}, nil, puller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || puller.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a pull when the restored ceiling exceeds free credits and still fits the pre-hold card", pulled, puller.calls)
 	}
 }
 
@@ -322,7 +609,7 @@ func TestPullTokenBankForQuoteShortfallIgnoresAnUnrequotableReservation(t *testi
 	}
 }
 
-func TestPullTokenBankForQuoteShortfallWaitsWhenHoldsHideAnUnpricedCard(t *testing.T) {
+func TestPullTokenBankForQuoteShortfallPullsWhenHoldsHideAnUnpricedCard(t *testing.T) {
 	reg := paidCardRegistry(5.34)
 	reg.BillingReservations = []llmservice.BillingReservation{{
 		RequestID: "hold", UserID: "u1", Email: "user@example.com",
@@ -333,8 +620,8 @@ func TestPullTokenBankForQuoteShortfallWaitsWhenHoldsHideAnUnpricedCard(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pulled || puller.calls != 0 {
-		t.Fatalf("pulled=%v calls=%d, want no pull when holds hide a 5.34 card and the denial has no floor", pulled, puller.calls)
+	if !pulled || puller.calls != 1 {
+		t.Fatalf("pulled=%v calls=%d, want a pull when holds hide a 5.34 card and the denial has no floor", pulled, puller.calls)
 	}
 
 	empty := paidCardRegistry(1)
@@ -426,6 +713,20 @@ func TestPreferLLMBillingDenialKeepsThePointCardFloor(t *testing.T) {
 	)
 	if got.Code != "LLM_SERVICE_PERIOD_LIMITED" || got.NeedCredits != 15.042 || got.HeldCredits != 0 {
 		t.Fatalf("denial = %#v, want the period code, the point-card floor, and no borrowed hold", got)
+	}
+	held := preferLLMBillingDenial(
+		llmBillingDenial{Code: "LLM_SERVICE_PERIOD_LIMITED", Message: "current period credit limit is exhausted"},
+		llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", Message: "insufficient credits for this request: need 20.000 credits, available 0.000 (20.000 held by in-flight requests)"},
+	)
+	if !strings.Contains(held.Message, "held by in-flight requests") {
+		t.Fatalf("denial = %#v, want the held point card instead of the period window", held)
+	}
+	short := preferLLMBillingDenial(
+		llmBillingDenial{Code: "LLM_SERVICE_PERIOD_LIMITED", Message: "current period credit limit is exhausted", NeedCredits: 1},
+		llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", NeedCredits: 56.003, Message: "insufficient credits for this request: need 56.003 credits, available 6.430 (993.570 held by in-flight requests)"},
+	)
+	if short.Code != "LLM_SERVICE_PERIOD_LIMITED" || short.NeedCredits != 56.003 {
+		t.Fatalf("denial = %#v, want the period window to keep the priced shortfall floor", short)
 	}
 	smaller := preferLLMBillingDenial(
 		llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", NeedCredits: 3},

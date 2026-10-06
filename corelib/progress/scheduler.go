@@ -97,6 +97,13 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 		relLow = !domainMatch
 	}
 
+	// Confidence may only credit REAL high-relevance evidence. The domain-match
+	// proxy above is broad evidence for ROUTING when embeddings are unavailable
+	// — it must not inflate Confidence past the auto-cancel threshold (0.70):
+	// a misclassified intent label plus a negation word ("不要…") would then
+	// silently kill a long-running task that the user only meant to amend.
+	relHighEvidence := relHigh && !relUnknown
+
 	// --- Row 1: Negation structure → Replace ---
 	if s.HasNegation {
 		// Short negation with high relevance could be "不要红色" (modify, not cancel).
@@ -113,7 +120,7 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 		}
 		return ScheduleDecision{
 			Action:     ActionReplace,
-			Confidence: confidenceFromSignals(relLow, true, s),
+			Confidence: confidenceFromSignals(relHighEvidence, true, s),
 			Reason:     "negation structure detected",
 		}
 	}
@@ -183,7 +190,7 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 		// Medium or long + low relevance → new task, queue it.
 		return ScheduleDecision{
 			Action:     ActionQueue,
-			Confidence: confidenceFromSignals(relLow, false, s),
+			Confidence: confidenceFromSignals(relHighEvidence, false, s),
 			Reason:     "low relevance + different domain → new task",
 		}
 	}

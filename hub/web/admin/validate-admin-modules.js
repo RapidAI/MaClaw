@@ -26,6 +26,8 @@ const expectedScripts = [
 	'user-referrals-tab.js',
   'system-tab.js',
   'cloud-workspace-tab.js',
+  'bot-tab.js',
+  'desktop-tab.js',
   'compute-tab.js',
   'llm-provider-tab.js',
   'llm-service-tabs.js',
@@ -309,6 +311,25 @@ function assertTenantAdminUIHooks() {
   ['loadTenantDigitalAssetsSettings', 'toggleTenantDigitalAssetsEnabled', 'toggleTenantDigitalAssetsSync'].forEach(function(name) {
     const handler = extractNamedFunction(system, name);
     if (!handler.includes('if (!canManageTenantDigitalAssets()) return null;')) {
+      fail('system-tab.js must guard ' + name + ' to tenant admins.');
+    }
+  });
+  ['id="tenantCheckinSettingsCard"', 'tenantCheckinEnabledToggle', 'tenantCheckinCredits', 'id="checkinRecordsModalOverlay"', 'checkinRecordsGrid', 'openCheckinRecordsModal'].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing tenant check-in settings marker: ' + marker);
+    }
+  });
+  ['loadTenantCheckinSettings', 'saveTenantCheckinSettings', 'updateTenantCheckinEnabledHint', '/api/admin/settings/checkin', 'TENANT_CHECKIN_SETTINGS_I18N', '/api/admin/checkin/records', 'CHECKIN_RECORDS_PAGE_SIZE', 'loadCheckinRecords'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing tenant check-in settings marker: ' + marker);
+    }
+  });
+  if (!system.includes('function canManageTenantCheckin()')) {
+    fail('system-tab.js must define the tenant check-in scope guard.');
+  }
+  ['loadTenantCheckinSettings', 'saveTenantCheckinSettings'].forEach(function(name) {
+    const handler = extractNamedFunction(system, name);
+    if (!handler.includes('if (!canManageTenantCheckin()) return null;')) {
       fail('system-tab.js must guard ' + name + ' to tenant admins.');
     }
   });
@@ -1548,7 +1569,7 @@ assertUserReferralNavigationI18nLifecycle();
 // Legacy modules may still contain pre-existing localized source. Keep the
 // invitation module in the same ASCII-only contract as the other modern admin
 // modules (Chinese copy must be expressed with \u escapes).
-['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js'].forEach(assertAscii);
+['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js', 'bot-tab.js', 'desktop-tab.js'].forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();

@@ -198,6 +198,13 @@ func IsTransientServerError(err error) bool {
 		strings.Contains(s, "鏈嶅姟鏆傛椂") {
 		return true
 	}
+	// A 403 from our own gateway is usually a transient pre-dispatch
+	// authorization glitch (HA authorization-sync lag), not a real revocation:
+	// back off and retry unless the body names a permanent denial (content
+	// policy, region lock, or an explicit entitlement/permission error).
+	if strings.Contains(s, "http 403") && !llm.IsPermanentForbiddenError(err) {
+		return true
+	}
 	if strings.Contains(s, "http 408") || strings.Contains(s, "request timeout") {
 		return true
 	}

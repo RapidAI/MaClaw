@@ -11,6 +11,16 @@ import { hideBootSplash } from './components/startup/hideBootSplash'
 installWindowDragHandler()
 try { void fetch('/maclaw-boot/ping?stage=react'); } catch { /* WebView may not have fetch during tests */ }
 
+// Cancel the browser default for external file drags as early as possible.
+// WebView2 navigates the whole webview to the dropped file whenever a drop
+// lands outside a handler that calls preventDefault(); component dropzones
+// (cloud drive, AI composer, ...) handle their own drops, this guard only
+// protects the rest of the window. Listeners do NOT stopPropagation, so all
+// component-level drag handlers still run first.
+const maclawIsFileDrag = (e: DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files')
+window.addEventListener('dragover', (e) => { if (maclawIsFileDrag(e)) e.preventDefault() })
+window.addEventListener('drop', (e) => { if (maclawIsFileDrag(e)) e.preventDefault() })
+
 function getStartupLang() {
     const lang = document.documentElement.lang || navigator.language || 'en'
     if (lang === 'zh-Hans') return 'zh-Hans'

@@ -5,31 +5,54 @@
  * data-ai-theme attribute. Keep in sync with the #App dark theme block.
  */
 [data-ai-theme='dark'] {
-    --theme-primary: #7ea8e0;
-    --theme-primary-strong: #a5c4ee;
-    --theme-primary-soft: rgba(126, 168, 224, 0.14);
-    --theme-page-bg: #0f141b;
-    --theme-surface: #161c26;
-    --theme-surface-muted: #1b2230;
-    --theme-text-primary: #e3e9f1;
-    --theme-text-secondary: #b4c0cf;
-    --theme-text-muted: #7f8ea1;
-    --theme-border: #2b3444;
-    --theme-border-subtle: #232b39;
-    --theme-success: #3fb950;
-    --theme-success-bg: rgba(63, 185, 80, 0.13);
-    --theme-warning: #d0b36a;
-    --theme-warning-bg: rgba(208, 179, 106, 0.12);
-    --theme-danger: #f47067;
-    --theme-danger-bg: rgba(244, 112, 103, 0.12);
-    --theme-link-color: #7ea8e0;
-    --theme-info-bg: rgba(126, 168, 224, 0.10);
-    --theme-on-primary: #0f141b;
+    --theme-primary: #a8a8a8;
+    --theme-primary-strong: #c6c6c6;
+    --theme-primary-soft: rgba(255, 255, 255, 0.10);
+    --theme-page-bg: #050505;
+    --theme-surface: #101010;
+    --theme-surface-muted: #151515;
+    --theme-text-primary: #c9c9c9;
+    --theme-text-secondary: #9e9e9e;
+    --theme-text-muted: #7d7d7d;
+    --theme-border: #2e2e2e;
+    --theme-border-subtle: #232323;
+    --theme-success: #5c9e6e;
+    --theme-success-bg: rgba(92, 158, 110, 0.13);
+    --theme-warning: #c2a86a;
+    --theme-warning-bg: rgba(194, 168, 106, 0.12);
+    --theme-danger: #e07a72;
+    --theme-danger-bg: rgba(224, 122, 114, 0.12);
+    --theme-link-color: #b3b3b3;
+    --theme-info-bg: rgba(255, 255, 255, 0.08);
+    --theme-on-primary: #0a0a0a;
     /* UI polish: dark-mode shadow scale (black-based, mirrors :root polish tokens). */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
     --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40);
     --shadow-lg: 0 8px 28px -6px rgba(0, 0, 0, 0.55);
     --shadow-xl: 0 12px 40px -8px rgba(0, 0, 0, 0.60);
+}
+
+[data-ai-theme='dark'][data-ai-dark-scheme='onyx'] {
+    --theme-primary: #a8a8a8;
+    --theme-primary-strong: #c6c6c6;
+    --theme-primary-soft: rgba(255, 255, 255, 0.10);
+    --theme-page-bg: #050505;
+    --theme-surface: #101010;
+    --theme-surface-muted: #151515;
+    --theme-text-primary: #c9c9c9;
+    --theme-text-secondary: #9e9e9e;
+    --theme-text-muted: #7d7d7d;
+    --theme-border: #2e2e2e;
+    --theme-border-subtle: #232323;
+    --theme-success: #5c9e6e;
+    --theme-success-bg: rgba(92, 158, 110, 0.13);
+    --theme-warning: #c2a86a;
+    --theme-warning-bg: rgba(194, 168, 106, 0.12);
+    --theme-danger: #e07a72;
+    --theme-danger-bg: rgba(224, 122, 114, 0.12);
+    --theme-link-color: #b3b3b3;
+    --theme-info-bg: rgba(255, 255, 255, 0.08);
+    --theme-on-primary: #0a0a0a;
 }
 
 [data-ai-theme='dark'][data-ai-dark-scheme='graphite'] {
@@ -56,7 +79,7 @@
 }
 
 /* Classic Slate keeps the pre-2026-08 dark palette. The base dark blocks above
-   now hold the default (graphite) navy palette, so classic needs its own
+   now hold the default (onyx) black-gray palette, so classic needs its own
    override block to stay pixel-identical for users who selected it. */
 [data-ai-theme='dark'][data-ai-dark-scheme='classic'] {
     --theme-primary: #8fb4dc;

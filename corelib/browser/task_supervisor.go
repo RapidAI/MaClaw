@@ -151,6 +151,12 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		state.StepTraces = append(state.StepTraces, stepTrace)
 		s.emitProgress(spec.ID, fmt.Sprintf("step %d/%d: %s", i+1, len(spec.Steps), step.Action), i+1, len(spec.Steps))
 
+		if spec.PauseForPerson && batchSession != nil && personStepNeedsClearPage(step.Action) {
+			if line, ok := personPauseLine(batchSession); ok {
+				return pausedForPerson(s, state, spec.ID, i, line, false)
+			}
+		}
+
 		outcome := s.executeStepWithRetry(ctx, spec, step, i, state)
 		if outcome.isAskOrBlocked() {
 			state.Status = TaskStatusPaused
@@ -229,6 +235,11 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 				}
 			default:
 				// not paused, continue
+			}
+		}
+		if spec.PauseForPerson && batchSession != nil && personStepRecheck(step.Action) {
+			if line, ok := personPauseLine(batchSession); ok {
+				return pausedForPerson(s, state, spec.ID, i, line, true)
 			}
 		}
 	}
@@ -836,4 +847,58 @@ func (s *BrowserTaskSupervisor) log(format string, args ...interface{}) {
 	if s.logger != nil {
 		s.logger(fmt.Sprintf(format, args...))
 	}
+}
+
+func personStepNeedsClearPage(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "click", "type", "press", "scroll", "select", "hover":
+		return true
+	default:
+		return false
+	}
+}
+
+func personStepRecheck(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "navigate", "click":
+		return true
+	default:
+		return false
+	}
+}
+
+func personPauseLine(session *BrowserAgentSession) (string, bool) {
+	if session == nil {
+		return "", false
+	}
+	flags, err := session.peekPageFlags()
+	if err != nil {
+		return "", false
+	}
+	var names []string
+	if flags.LoginWall {
+		names = append(names, "login_wall")
+	}
+	if flags.MFA {
+		names = append(names, "mfa")
+	}
+	if flags.CaptchaWidget {
+		names = append(names, "captcha_widget")
+	}
+	if len(names) == 0 {
+		return "", false
+	}
+	return "page flags: " + strings.Join(names, ","), true
+}
+
+func pausedForPerson(s *BrowserTaskSupervisor, state *TaskState, id string, index int, line string, stepRan bool) (*TaskState, error) {
+	state.Status = TaskStatusPaused
+	state.Observation = line
+	if !stepRan && len(state.StepTraces) > 0 {
+		state.StepTraces[len(state.StepTraces)-1].Summary = "paused"
+		state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
+	}
+	s.log("browser task %s paused at step %d: %s", id, index+1, line)
+	s.emitProgress(id, "paused for person", index+1, state.TotalSteps)
+	return state, nil
 }

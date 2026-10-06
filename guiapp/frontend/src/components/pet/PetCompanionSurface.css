@@ -1,0 +1,51 @@
+.pet-companion-caption {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 40;
+    max-width: 280px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: rgba(20, 20, 20, 0.82);
+    color: #fff;
+    font-size: 14px;
+    line-height: 1.4;
+    pointer-events: none;
+}
+
+.pet-companion-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.28);
+}
+
+.pet-companion-sheet-card {
+    width: min(520px, calc(100vw - 48px));
+    max-height: min(70vh, 640px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 16px;
+    background: var(--ai-surface, #fff);
+    color: var(--ai-text, #111);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.pet-companion-sheet-card header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.pet-companion-sheet-card pre {
+    margin: 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    font: inherit;
+    line-height: 1.5;
+}

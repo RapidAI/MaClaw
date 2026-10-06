@@ -48,6 +48,8 @@ export function RemoteReconnectForm(props: RemoteReconnectFormProps) {
                                         {localizeText(lang, "Host", "主机", "主機")}
                                         <input
                                             data-testid="remote-reconnect-host"
+                                            name="maclaw-remote-ssh-host"
+                                            autoComplete="off"
                                             disabled={remoteReconnect.connecting}
                                             value={remoteReconnect.host}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, host: e.target.value, error: "" }))}
@@ -59,6 +61,8 @@ export function RemoteReconnectForm(props: RemoteReconnectFormProps) {
                                         {localizeText(lang, "User", "用户名", "使用者")}
                                         <input
                                             data-testid="remote-reconnect-user"
+                                            name="maclaw-remote-ssh-user"
+                                            autoComplete="off"
                                             disabled={remoteReconnect.connecting}
                                             value={remoteReconnect.user}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, user: e.target.value, error: "" }))}
@@ -82,9 +86,14 @@ export function RemoteReconnectForm(props: RemoteReconnectFormProps) {
                                         {localizeText(lang, "Password", "密码", "密碼")}
                                         <input
                                             data-testid="remote-reconnect-password"
+                                            name="maclaw-remote-ssh-secret"
                                             type="password"
                                             disabled={remoteReconnect.connecting}
-                                            autoComplete="current-password"
+                                            autoComplete="new-password"
+                                            autoCapitalize="off"
+                                            spellCheck={false}
+                                            data-1p-ignore="true"
+                                            data-lpignore="true"
                                             value={remoteReconnect.password}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, password: e.target.value }))}
                                             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onSubmit(); } }}
@@ -154,42 +163,30 @@ export interface RemoteReconnectSuccessToastProps {
     onDismiss: () => void;
 }
 
-/** Floating success toast after a remote SSH reconnect succeeds. */
+/** Status row after a remote SSH reconnect succeeds. Matches the main task surface, not a green alert. */
 export function RemoteReconnectSuccessToast(props: RemoteReconnectSuccessToastProps) {
     const { lang, theme: t, message, onDismiss } = props;
     return (
                     <div
+                        className="aap-reconnect-success"
                         data-testid="remote-coding-reconnect-success"
+                        data-surface="theme"
                         data-coding-float-ignore-outside=""
                         role="status"
                         style={{
-                            position: "absolute",
-                            // Below the coding chip's rest position (defaultTop 80 + chip height).
-                            top: 124,
-                            right: 10,
-                            // Above coding float root (zIndex 40) so dismiss stays clickable.
-                            zIndex: 45,
-                            maxWidth: "min(320px, calc(100% - 20px))",
-                            padding: "8px 12px",
-                            borderRadius: 8,
-                            border: `1px solid ${t.titleBarBorder}`,
-                            background: `color-mix(in srgb, var(--theme-success, #4f7f6f) 12%, ${t.bg || "var(--theme-surface, #fff)"})`,
+                            borderColor: t.titleBarBorder || "var(--theme-border)",
+                            background: t.bg || "var(--theme-surface, #fff)",
                             color: t.text,
-                            fontSize: 12,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 8,
-                            boxShadow: "0 8px 20px rgba(15,23,42,0.12)",
-                            pointerEvents: "auto",
                         }}
                     >
-                        <span>{message}</span>
+                        <span className="aap-reconnect-success__mark" aria-hidden="true">✓</span>
+                        <span className="aap-reconnect-success__text">{message}</span>
                         <button
                             type="button"
+                            className="aap-reconnect-success__dismiss"
                             data-testid="remote-coding-reconnect-success-dismiss"
                             onClick={onDismiss}
-                            style={{ border: "none", background: "transparent", color: t.textMuted, cursor: "pointer", fontSize: 11 }}
+                            style={{ color: t.textMuted || "var(--theme-text-secondary)" }}
                         >
                             {localizeText(lang, "Dismiss", "关闭", "關閉")}
                         </button>

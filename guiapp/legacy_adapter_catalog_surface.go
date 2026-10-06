@@ -38,7 +38,10 @@ func (h *IMMessageHandler) unmanagedLegacyHostDefinitions() (live, raw []map[str
 	if h == nil {
 		return nil, nil
 	}
-	raw = removeLegacyModelManageSkillGateway(removeLegacyModelMCPGateway(h.getTools()))
+	// manage_skill stays in the host catalog. Retrieval ranking still skips it
+	// (IsLegacyModelDynamicGateway); the execution baseline pins it onto full
+	// surfaces. Stripping it here made that pin unable to find a definition.
+	raw = removeLegacyModelMCPGateway(h.getTools())
 	live, _ = filterLegacyDefinitionsToLiveProvisions(raw)
 	return live, raw
 }
@@ -103,13 +106,14 @@ func filterLegacyDefinitionsToLiveProvisions(definitions []map[string]interface{
 // definition. Those callers retain snapshot admission until they gain a real
 // provider binding; they must not be papered over with a made-up provision.
 //
-// legacyRoutingMissFloorToolOrder is the parent-invariant-11 basic capability
-// floor: the desktop assistant must be able to run a command, read a file,
-// and change it, even on a degraded leftover turn. Order is stable for
-// pinning. Keeping these host_policy_required stops the closed plan's count
-// guard from pruning them as optional retrieval candidates when flat
-// retrieval scores rank them last (mirrors semantic_routing_miss.go).
-var legacyRoutingMissFloorToolOrder = []string{"bash", "read_file", "write_file", "edit_file"}
+// legacyRoutingMissFloorToolOrder is the execution baseline. A full assistant
+// surface must be able to run a command, read a file, change it, run a
+// one-off script, and invoke an installed skill, including when retrieval
+// ranking or a timed-out classifier never selected those names. Order is
+// stable for pinning. Keeping these host_policy_required stops the closed
+// plan's count guard from pruning them as optional retrieval candidates
+// when flat retrieval scores rank them last.
+var legacyRoutingMissFloorToolOrder = []string{"bash", "read_file", "write_file", "edit_file", "craft_tool", "manage_skill"}
 
 var legacyRoutingMissFloorToolNames = func() map[string]bool {
 	out := make(map[string]bool, len(legacyRoutingMissFloorToolOrder))

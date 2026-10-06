@@ -22,6 +22,9 @@ export interface SidebarTokenUsageStat {
     cached_requests?: number;
     local_cache_requests?: number;
     local_cache_hits?: number;
+    today_tokens?: number;
+    week_tokens?: number;
+    month_tokens?: number;
     InputTokens?: number;
     OutputTokens?: number;
     TotalTokens?: number;
@@ -31,6 +34,9 @@ export interface SidebarTokenUsageStat {
     CachedRequests?: number;
     LocalCacheRequests?: number;
     LocalCacheHits?: number;
+    TodayTokens?: number;
+    WeekTokens?: number;
+    MonthTokens?: number;
 }
 
 export interface SidebarCurrentProviderTokenUsage {
@@ -47,6 +53,9 @@ export interface SidebarCurrentProviderTokenUsage {
     cachedRequests?: number;
     localCacheRequests?: number;
     localCacheHits?: number;
+    today?: number;
+    week?: number;
+    month?: number;
 }
 
 export interface SidebarHubPeriodLimits {
@@ -149,6 +158,15 @@ export interface SidebarHubServiceStatus {
     EffectiveExpiresAt?: string;
     hub_llm_base_url?: string;
     HubLLMBaseURL?: string;
+    /** Raw Hub check-in payload (snake_case JSON from the backend). */
+    checkin?: { enabled?: boolean; credits?: number; checked_in_today?: boolean };
+}
+
+/** Tenant daily check-in policy advertised by the Hub. */
+export interface SidebarHubCheckin {
+    enabled: boolean;
+    credits: number;
+    checkedInToday: boolean;
 }
 
 export interface SidebarHubCredits {
@@ -171,6 +189,8 @@ export interface SidebarHubCredits {
     status: string;
     retryAfterSeconds: number;
     retryAfterAt: string;
+    /** Daily check-in policy; present only when the tenant enabled it. */
+    checkin?: SidebarHubCheckin;
     /** Independent new-user allowances. Limits are per service group, never a shared wallet balance. */
     newUserLimitCards?: Array<{
         serviceGroupID: string;

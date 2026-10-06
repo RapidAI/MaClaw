@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -51,22 +52,12 @@ func createRemoteCodingIsolate(h *IMMessageHandler, sessionID, projectDir string
 	}
 
 	isolateDir := fmt.Sprintf("/tmp/maclaw-coding-%s", id)
-	// Prefer cp -a; fall back to rsync if present.
-	cmd := fmt.Sprintf(
-		`set -e; SRC=%s; DST=%s; mkdir -p "$DST"; `+
-			`if command -v rsync >/dev/null 2>&1; then rsync -a --exclude .git/objects/pack "$SRC"/ "$DST"/ 2>/dev/null || cp -a "$SRC"/. "$DST"/; `+
-			`else cp -a "$SRC"/. "$DST"/; fi; `+
-			`echo "__MACLAW_ISO_OK__"`,
-		remoteShellQuote(projectDir),
-		remoteShellQuote(isolateDir),
-	)
-	out := h.sshExec(map[string]interface{}{
-		"session_id":   sessionID,
-		"command":      cmd,
-		"wait_seconds": float64(120),
-	})
-	if !strings.Contains(out, "__MACLAW_ISO_OK__") {
-		return nil, fmt.Errorf("remote isolate create failed: %s", truncateRunesForSubAgent(out, 400))
+	result, err := h.runRemoteSetupCommand(context.Background(), sessionID, remoteCodingCopyIsolateCommand(projectDir, isolateDir), 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("remote isolate create failed: %s", truncateRunesForSubAgent(formatRemoteSetupFailure(result), 400))
 	}
 	log.Printf("[remote-isolate] created step=%d dir=%s session=%s", stepIndex, isolateDir, sessionID)
 	return &remoteCodingIsolate{
@@ -83,28 +74,12 @@ func createRemoteCodingIsolate(h *IMMessageHandler, sessionID, projectDir string
 func tryCreateRemoteGitWorktree(h *IMMessageHandler, sessionID, projectDir string, stepIndex int, id string) (*remoteCodingIsolate, error) {
 	branch := fmt.Sprintf("maclaw/coding-%s", id)
 	isolateDir := fmt.Sprintf("/tmp/maclaw-wt-%s", id)
-	cmd := fmt.Sprintf(
-		`set -e; cd %s; `+
-			`git rev-parse --is-inside-work-tree >/dev/null 2>&1; `+
-			`git rev-parse --verify HEAD >/dev/null 2>&1; `+
-			`ROOT=$(git rev-parse --show-toplevel); `+
-			`git branch -D %s 2>/dev/null || true; `+
-			`rm -rf -- %s; `+
-			`git worktree add -b %s %s HEAD; `+
-			`echo "__MACLAW_WT_OK__:$ROOT"`,
-		remoteShellQuote(projectDir),
-		remoteShellQuote(branch),
-		remoteShellQuote(isolateDir),
-		remoteShellQuote(branch),
-		remoteShellQuote(isolateDir),
-	)
-	out := h.sshExec(map[string]interface{}{
-		"session_id":   sessionID,
-		"command":      cmd,
-		"wait_seconds": float64(90),
-	})
-	if !strings.Contains(out, "__MACLAW_WT_OK__") {
-		return nil, fmt.Errorf("remote git worktree failed: %s", truncateRunesForSubAgent(out, 300))
+	result, err := h.runRemoteSetupCommand(context.Background(), sessionID, remoteGitWorktreeAddCommand(projectDir, branch, isolateDir), 90*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("remote git worktree failed: %s", truncateRunesForSubAgent(formatRemoteSetupFailure(result), 300))
 	}
 	log.Printf("[remote-isolate] git worktree created step=%d branch=%s dir=%s", stepIndex, branch, isolateDir)
 	return &remoteCodingIsolate{
@@ -139,11 +114,12 @@ func (r *remoteCodingIsolate) mergeBack(h *IMMessageHandler, declaredWrites ...[
 	if err != nil {
 		return "", err
 	}
-	out := h.sshExec(map[string]interface{}{
-		"session_id": r.SessionID, "command": remoteGitWorktreeMergeCommand(r.IsolateDir, r.SourceDir, r.StepIndex, writes, start, end), "wait_seconds": float64(180),
-	})
-	if !remoteIsolateMergeFrameComplete(out, start, end) {
-		return "", fmt.Errorf("remote worktree merge failed or returned an incomplete result frame: %s", truncateRunesForSubAgent(out, 400))
+	result, err := h.runRemoteSetupCommand(context.Background(), r.SessionID, remoteGitWorktreeMergeCommand(r.IsolateDir, r.SourceDir, r.StepIndex, writes, start, end), 180*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if result.ExitCode != 0 || !remoteIsolateMergeFrameComplete(result.Stdout, start, end) {
+		return "", fmt.Errorf("remote worktree merge failed or returned an incomplete result frame: %s", truncateRunesForSubAgent(formatRemoteSetupFailure(result), 400))
 	}
 	return fmt.Sprintf("merged remote git worktree T%d via controlled cherry-pick (%s → %s)", r.StepIndex, r.IsolateDir, r.SourceDir), nil
 }
@@ -252,12 +228,28 @@ func remoteGitWorktreeMergeCommand(worktree, source string, stepIndex int, write
 	for _, write := range writes {
 		quotedWrites = append(quotedWrites, remoteShellQuote(strings.TrimSpace(strings.ReplaceAll(write, "\\", "/"))))
 	}
+	// A clean worktree is not an empty branch. Commits already on the isolate
+	// are part of the merge: the success path deletes that branch. Their
+	// paths join the uncommitted set before admission, and every commit since
+	// the fork is cherry-picked. Uncommitted paths are committed through a
+	// temporary index, so the worktree's own index is left untouched. git add
+	// lists only those paths.
+	// Git's per-file log goes to stderr. The exec channel keeps 1MB of stdout,
+	// and that stream has to stay the marker frame.
 	return fmt.Sprintf(
 		`set -eu; WT=%s; SRC=%s; set -- %s; cd "$WT"; `+
-			`test "$#" -gt 0; changes_file=$(mktemp); trap 'rm -f "$changes_file"' EXIT HUP INT TERM; `+
-			`{ git diff --name-only HEAD; git ls-files --others --exclude-standard; } | LC_ALL=C sort -u > "$changes_file"; while IFS= read -r path || [ -n "$path" ]; do allowed=0; for claim in "$@"; do case "$claim" in */) case "$path" in "$claim"*) allowed=1 ;; esac ;; *) [ "$path" = "$claim" ] && allowed=1 ;; esac; done; [ "$allowed" -eq 1 ] || { echo "undeclared isolate write: $path" >&2; exit 42; }; done < "$changes_file"; `+
-			`if [ -n "$(git status --porcelain)" ]; then git add -A; git commit -m "coding workbench T%d remote" --no-verify; commit=$(git rev-parse HEAD); else commit=""; fi; `+
-			`cd "$SRC"; test -z "$(git status --porcelain)"; if [ -n "$commit" ]; then if ! git cherry-pick --allow-empty "$commit"; then git cherry-pick --abort || true; exit 43; fi; fi; `+
+			`test "$#" -gt 0; pending_file=$(mktemp); changes_file=$(mktemp); sorted_file=$(mktemp); commits_file=$(mktemp); tmp_index=$(mktemp); rm -f "$tmp_index"; trap 'rm -f "$pending_file" "$changes_file" "$sorted_file" "$commits_file" "$tmp_index" "$tmp_index.lock"' EXIT HUP INT TERM; `+
+			`src_head=$(git -C "$SRC" rev-parse HEAD) || exit 1; base=$(git merge-base HEAD "$src_head") || exit 1; `+
+			`git rev-list --reverse "$base"..HEAD > "$commits_file" || exit 1; `+
+			`git -c core.quotePath=false diff --name-only HEAD > "$pending_file"; git -c core.quotePath=false ls-files --others --exclude-standard >> "$pending_file"; `+
+			`LC_ALL=C sort -u -o "$sorted_file" "$pending_file"; cp "$sorted_file" "$pending_file"; cp "$sorted_file" "$changes_file"; `+
+			`while IFS= read -r sha || [ -n "$sha" ]; do [ -n "$sha" ] || continue; git -c core.quotePath=false diff-tree --no-commit-id --name-only -r -m "$sha" >> "$changes_file" || exit 1; done < "$commits_file"; `+
+			`LC_ALL=C sort -u -o "$sorted_file" "$changes_file"; cp "$sorted_file" "$changes_file"; `+
+			`while IFS= read -r path || [ -n "$path" ]; do [ -n "$path" ] || continue; allowed=0; for claim in "$@"; do case "$claim" in */) case "$path" in "$claim"*) allowed=1 ;; esac ;; *) [ "$path" = "$claim" ] && allowed=1 ;; esac; done; [ "$allowed" -eq 1 ] || { echo "undeclared isolate write: $path" >&2; exit 42; }; done < "$changes_file"; `+
+			`porcelain=$(git status --porcelain) || exit 1; if [ -n "$porcelain" ]; then [ -s "$pending_file" ] || { echo 'status is dirty but no paths were admitted' >&2; exit 1; }; GIT_INDEX_FILE=$tmp_index git read-tree HEAD || exit 1; while IFS= read -r path || [ -n "$path" ]; do [ -n "$path" ] || continue; GIT_INDEX_FILE=$tmp_index git add -- "$path" || exit 1; done < "$pending_file"; GIT_INDEX_FILE=$tmp_index git -c user.name=MaClaw -c user.email=maclaw@localhost -c commit.gpgsign=false commit -m "coding workbench T%d remote" --no-verify >&2 || exit 1; fi; `+
+			`git rev-list --reverse "$base"..HEAD > "$commits_file" || exit 1; `+
+			`cd "$SRC"; now=$(git rev-parse HEAD) || exit 1; [ "$now" = "$src_head" ] || { echo 'primary HEAD changed during isolate merge' >&2; exit 1; }; src_porcelain=$(git status --porcelain) || exit 1; if [ -n "$src_porcelain" ]; then echo 'primary checkout is dirty' >&2; exit 1; fi; `+
+			`while IFS= read -r sha || [ -n "$sha" ]; do [ -n "$sha" ] || continue; if ! git -c user.name=MaClaw -c user.email=maclaw@localhost -c commit.gpgsign=false cherry-pick --allow-empty "$sha" >&2; then git cherry-pick --abort >&2 || true; git reset --hard "$src_head" >&2 || exit 1; exit 43; fi; done < "$commits_file"; `+
 			`printf '\n%%s\n%%s\n' %s %s`,
 		remoteShellQuote(worktree), remoteShellQuote(source), strings.Join(quotedWrites, " "), stepIndex, remoteShellQuote(markerStart), remoteShellQuote(markerEnd),
 	)
@@ -290,21 +282,11 @@ func (r *remoteCodingIsolate) hasChanges(h *IMMessageHandler) (dirty bool, ok bo
 	if r == nil || !r.created || h == nil || strings.TrimSpace(r.IsolateDir) == "" {
 		return false, false
 	}
-	out := h.sshExec(map[string]interface{}{
-		"session_id": r.SessionID,
-		"command": fmt.Sprintf(
-			`set -e; cd %s; if [ -n "$(git status --porcelain)" ]; then echo "__MACLAW_ISO_DIRTY__"; else echo "__MACLAW_ISO_CLEAN__"; fi`,
-			remoteShellQuote(r.IsolateDir),
-		),
-		"wait_seconds": float64(20),
-	})
-	if strings.Contains(out, "__MACLAW_ISO_DIRTY__") {
-		return true, true
+	result, err := h.runRemoteSetupCommand(context.Background(), r.SessionID, remoteIsolateDirtyCommand(r.IsolateDir), 20*time.Second)
+	if err != nil || result.ExitCode != 0 {
+		return false, false
 	}
-	if strings.Contains(out, "__MACLAW_ISO_CLEAN__") {
-		return false, true
-	}
-	return false, false
+	return strings.TrimSpace(result.Stdout) != "", true
 }
 
 func isolatedRemoteWorkerShouldKeepIsolate(iso *remoteCodingIsolate, h *IMMessageHandler, res *RemoteCodingSubAgentResult) bool {
@@ -329,24 +311,78 @@ func (r *remoteCodingIsolate) cleanup(h *IMMessageHandler) {
 	isWT := strings.Contains(r.IsolateDir, "maclaw-wt-")
 	var cmd string
 	if isWT {
-		cmd = fmt.Sprintf(
-			`set +e; SRC=%s; WT=%s; cd "$SRC" 2>/dev/null; `+
-				`BR=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null); `+
-				`git worktree remove --force "$WT" 2>/dev/null; rm -rf -- "$WT"; `+
-				`[ -n "$BR" ] && git branch -D "$BR" 2>/dev/null; git worktree prune 2>/dev/null; echo "__MACLAW_ISO_RM__"`,
-			remoteShellQuote(r.SourceDir),
-			remoteShellQuote(r.IsolateDir),
-		)
+		cmd = remoteWorktreeCleanupCommand(r.SourceDir, r.IsolateDir)
 	} else {
-		cmd = fmt.Sprintf(`rm -rf -- %s; echo "__MACLAW_ISO_RM__"`, remoteShellQuote(r.IsolateDir))
+		cmd = fmt.Sprintf(`rm -rf -- %s`, remoteShellQuote(r.IsolateDir))
 	}
-	_ = h.sshExec(map[string]interface{}{
-		"session_id":   r.SessionID,
-		"command":      cmd,
-		"wait_seconds": float64(30),
-	})
+	if result, err := h.runRemoteSetupCommand(context.Background(), r.SessionID, cmd, 30*time.Second); err != nil || result.ExitCode != 0 {
+		detail := formatRemoteSetupFailure(result)
+		if err != nil {
+			detail = err.Error()
+		}
+		log.Printf("[remote-isolate] cleanup command failed step=%d dir=%s: %s", r.StepIndex, r.IsolateDir, detail)
+	}
 	r.created = false
 	log.Printf("[remote-isolate] cleaned step=%d dir=%s", r.StepIndex, r.IsolateDir)
+}
+
+// remoteGitWorktreeAddCommand is an exec-channel script. Exit status 0 means
+// the worktree exists. It is not typed into the login shell, so set -e cannot
+// end the verified SSH session and the command text cannot be mistaken for
+// success.
+func remoteGitWorktreeAddCommand(projectDir, branch, isolateDir string) string {
+	repo := remoteShellQuote(projectDir)
+	branchQ := remoteShellQuote(branch)
+	isolateQ := remoteShellQuote(isolateDir)
+	// git -C keeps every step on the declared repository. A cd here would
+	// only affect this process, but a later relative command would follow it.
+	return fmt.Sprintf(
+		`set -e
+git -C %s rev-parse --is-inside-work-tree >/dev/null
+git -C %s rev-parse --verify HEAD >/dev/null
+git -C %s branch -D %s >/dev/null 2>&1 || true
+rm -rf -- %s
+git -C %s worktree add -b %s %s HEAD
+`, repo, repo, repo, branchQ, isolateQ, repo, branchQ, isolateQ)
+}
+
+// remoteCodingCopyIsolateCommand copies a project as its own process.
+// Exit status 0 means the copy exists.
+func remoteCodingCopyIsolateCommand(projectDir, isolateDir string) string {
+	return fmt.Sprintf(
+		`set -e
+SRC=%s
+DST=%s
+mkdir -p "$DST"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a "$SRC"/ "$DST"/ || cp -a "$SRC"/. "$DST"/
+else
+  cp -a "$SRC"/. "$DST"/
+fi
+`, remoteShellQuote(projectDir), remoteShellQuote(isolateDir))
+}
+
+// remoteWorktreeCleanupCommand removes one managed worktree. Exit status is
+// whether that directory is gone. worktree prune often exits 0 after a
+// failed remove, so it must not be the script's result.
+func remoteWorktreeCleanupCommand(sourceDir, isolateDir string) string {
+	return fmt.Sprintf(
+		`set +e
+SRC=%s
+WT=%s
+fail=0
+BR=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)
+git -C "$SRC" worktree remove --force "$WT" >/dev/null 2>&1
+rm -rf -- "$WT" || fail=1
+if [ -e "$WT" ]; then fail=1; fi
+if [ -n "$BR" ]; then git -C "$SRC" branch -D "$BR" >/dev/null 2>&1 || true; fi
+git -C "$SRC" worktree prune >/dev/null 2>&1 || true
+exit "$fail"
+`, remoteShellQuote(sourceDir), remoteShellQuote(isolateDir))
+}
+
+func remoteIsolateDirtyCommand(isolateDir string) string {
+	return fmt.Sprintf(`git -C %s status --porcelain`, remoteShellQuote(isolateDir))
 }
 
 // shouldUseRemoteCodingIsolate mirrors local worktree policy for remote hosts.

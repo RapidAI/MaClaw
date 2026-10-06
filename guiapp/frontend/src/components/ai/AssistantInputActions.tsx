@@ -17,6 +17,9 @@ import { AssistantInputIcon, getInputActionButtonStyle, type Theme } from "./aiA
 import { VoiceLevelVisualizer } from "./aiAssistantControls";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { AssistantPermissionModeMenu } from "./AssistantPermissionModeMenu";
+import { clampMenuPosition, focusMenuItem, MENU_MIN_INTERACTIVE_HEIGHT, MENU_MIN_WIDTH, menuItems } from "./assistantInputActionsMenu";
+
+export { clampMenuPosition } from "./assistantInputActionsMenu";
 
 interface AssistantInputActionsProps {
     /** Whether the retained assistant panel is visible in the app shell. */
@@ -36,6 +39,8 @@ interface AssistantInputActionsProps {
     inputLocked: boolean;
     inputValue: string;
     permissionMode?: AssistantPermissionMode;
+    /** Current task chose 以后允许; the mode button itself stays unchanged. */
+    taskCommandAllowed?: boolean;
     showPermissionMode?: boolean;
     showWorkspacePermissionOption?: boolean;
     isBusy: boolean;
@@ -58,52 +63,6 @@ interface AssistantInputActionsProps {
     voiceInput: UseVoiceInputResult;
 }
 
-const MENU_MIN_WIDTH = 176;
-const MENU_MAX_HEIGHT = 360;
-const MENU_MIN_INTERACTIVE_HEIGHT = 44;
-
-/** Place the menu on the roomier side and constrain it to the viewport. */
-export function clampMenuPosition(
-    triggerRect: { left: number; top: number; bottom: number; width: number },
-    viewport: { width: number; height: number } = typeof window !== "undefined"
-        ? { width: window.innerWidth, height: window.innerHeight }
-        : { width: 1280, height: 800 },
-): { left: number; top: number; openUp: boolean; maxHeight: number } {
-    const pad = 8;
-    const gap = 6;
-    const spaceAbove = Math.max(0, triggerRect.top - gap - pad);
-    const spaceBelow = Math.max(0, viewport.height - triggerRect.bottom - gap - pad);
-    const openUp = spaceAbove >= MENU_MAX_HEIGHT || spaceAbove >= spaceBelow;
-    const maxHeight = Math.min(MENU_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow);
-    // Keep the menu fully in view even on narrow viewports.
-    const maxLeft = Math.max(pad, viewport.width - MENU_MIN_WIDTH - pad);
-    const clampedLeft = Math.min(Math.max(pad, triggerRect.left), maxLeft);
-    if (openUp) {
-        // Anchor is the bottom edge of the menu (translateY(-100%)).
-        return { left: clampedLeft, top: triggerRect.top - gap, openUp: true, maxHeight };
-    }
-    // Anchor is the top edge of the menu, just below the trigger.
-    return {
-        left: clampedLeft,
-        top: Math.min(viewport.height - pad, triggerRect.bottom + gap),
-        openUp: false,
-        maxHeight,
-    };
-}
-
-function menuItems(menu: HTMLElement): HTMLButtonElement[] {
-    return Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"], [role="menuitemradio"]')).filter(
-        (item) => !item.disabled,
-    );
-}
-
-function focusMenuItem(menu: HTMLElement, index: number) {
-    const items = menuItems(menu);
-    if (items.length === 0) return;
-    const next = ((index % items.length) + items.length) % items.length;
-    items[next]?.focus();
-}
-
 export function AssistantInputActionsLeft({
     active = true,
     attachButtonTestId,
@@ -121,6 +80,7 @@ export function AssistantInputActionsLeft({
     themeMode,
     voiceInput,
     permissionMode = "request",
+    taskCommandAllowed = false,
     showPermissionMode = true,
     showWorkspacePermissionOption = false,
     showVoiceInput = true,
@@ -151,6 +111,7 @@ export function AssistantInputActionsLeft({
     | "handleVoicePointerLeave"
     | "finishVoicePointer"
     | "permissionMode"
+    | "taskCommandAllowed"
     | "showPermissionMode"
     | "showWorkspacePermissionOption"
 >) {
@@ -475,7 +436,7 @@ export function AssistantInputActionsLeft({
                 )}
             </button>}
             {showVoiceInput && voiceInput.error && <span style={{ color: t.errorText, fontSize: "11px", alignSelf: "center", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={voiceInput.error}>{voiceInput.error}</span>}
-            {showPermissionMode && onPermissionModeChange && <AssistantPermissionModeMenu active={active} lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} showWorkspaceOption={showWorkspacePermissionOption} />}
+            {showPermissionMode && onPermissionModeChange && <AssistantPermissionModeMenu active={active} lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} showWorkspaceOption={showWorkspacePermissionOption} taskCommandAllowed={taskCommandAllowed} />}
         </>
     );
 }

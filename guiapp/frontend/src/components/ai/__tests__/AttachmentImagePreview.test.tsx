@@ -197,7 +197,7 @@ describe("AttachmentImageThumbnail", () => {
         fireEvent.click(getByTestId("preview-file-action-upload"));
 
         await waitFor(() => expect(importToLibrary).toHaveBeenCalledWith(FILE_PATH));
-        await waitFor(() => expect(getByTestId("preview-file-actions-notice").textContent).toBe("已上传到文稿库"));
+        await waitFor(() => expect(getByTestId("preview-file-actions-notice").textContent).toBe("已上传到云盘"));
     });
 
     it("shares the saved file by copying its path to the clipboard", async () => {

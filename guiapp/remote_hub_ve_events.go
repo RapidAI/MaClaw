@@ -635,6 +635,11 @@ func (c *RemoteHubClient) handleVEWorkflowStatus(msg inboundHubEnvelope) {
 		if err := c.app.applyHubWorkflowStatusAttention(hubInstanceID, nodeID, workflowName, msgText, urgency, extras); err != nil {
 			log.Printf("[hub-client] handleVEWorkflowStatus apply failed: %v", err)
 		}
+		// N1-5: a workflow that needs a human also becomes a card on the paired
+		// terminals. The severity is derived from the Hub's own urgency
+		// classification, so a routine block stays on screen while a workflow
+		// that can no longer proceed may interrupt.
+		c.pushWorkflowStatusToDevices(payload)
 		maclawAppApprovalTrace("workflow_status_push", map[string]any{
 			"hub_instance_id": hubInstanceID, "hub_node_id": nodeID, "event": event, "status": status, "urgency": urgency,
 			"escalation_pending": extras["escalation_pending"],

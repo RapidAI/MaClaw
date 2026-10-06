@@ -4,6 +4,7 @@ import {
     buildCodingBannerChrome,
     CODING_BANNER_LOCAL_DARK_ACCENT,
     CODING_BANNER_LOCAL_DARK_ACCENT_STRONG,
+    codingStepGlyph,
     codingStepStatusColor,
     codingStepStatusLabel,
     CodingWorkbenchControlPanel,
@@ -22,6 +23,8 @@ const chrome = {
     iconWellBg: "rgba(47,95,152,0.08)",
     insetBg: "#fff",
     muted: "#64748b",
+    stepDoneFg: "color-mix(in srgb, #2f5f98 72%, #64748b)",
+    stepFailedFg: "#dc2626",
     btnPrimaryBg: "#2f5f98",
     btnPrimaryFg: "#fff",
 };
@@ -56,13 +59,18 @@ describe("buildCodingBannerChrome", () => {
         expect(c.border).toMatch(/16%/);
     });
 
-    it("keeps sky blue for dark remote and steel blue for light local", () => {
+    it("uses the main product accent for remote panels and the canvas color in light mode", () => {
         const remoteDark = buildCodingBannerChrome({ isDark: true, remote: true, theme: darkThemeStub });
-        expect(remoteDark.accent).toBe("#38bdf8");
+        expect(remoteDark.accent).toBe(darkThemeStub.btnColor);
+        expect(remoteDark.accent).not.toBe("#38bdf8");
         const localLight = buildCodingBannerChrome({ isDark: false, remote: false, theme: darkThemeStub });
-        // Light local accent uses product blue fallback when btnColor is a light accent swatch
         expect(localLight.accent).toBe(darkThemeStub.btnColor);
-        expect(localLight.surface).toBe(darkThemeStub.fieldBg);
+        expect(localLight.surface).toBe(darkThemeStub.bg);
+        const remoteLight = buildCodingBannerChrome({ isDark: false, remote: true, theme: darkThemeStub });
+        expect(remoteLight.accent).toBe(darkThemeStub.btnColor);
+        expect(remoteLight.accent).not.toBe("#0284c7");
+        expect(remoteLight.surface).toBe(darkThemeStub.bg);
+        expect(remoteLight.accentStrong).toBe(darkThemeStub.text);
     });
 
     it("uses sendBtnBg/sendBtnColor for primary filled CTAs (not light btnColor)", () => {
@@ -97,13 +105,33 @@ describe("buildCodingBannerChrome", () => {
 });
 
 describe("codingStepStatusColor", () => {
-    it("softens passed/failed on dark and keeps semantic contrast on light", () => {
-        expect(codingStepStatusColor("passed", true, chrome)).toBe(CODING_BANNER_LOCAL_DARK_ACCENT);
-        expect(codingStepStatusColor("failed", true, chrome)).toBe("#e07a72");
-        expect(codingStepStatusColor("passed", false, chrome)).toBe("#16a34a");
-        expect(codingStepStatusColor("failed", false, chrome)).toBe("#dc2626");
-        expect(codingStepStatusColor("running", true, chrome)).toBe(chrome.accentStrong);
-        expect(codingStepStatusColor("pending", true, chrome)).toBe(chrome.muted);
+    it("keeps finished steps on the shell accent instead of a standalone green", () => {
+        expect(codingStepStatusColor("passed", chrome)).toBe(chrome.stepDoneFg);
+        expect(codingStepStatusColor("completed", chrome)).toBe(chrome.stepDoneFg);
+        expect(codingStepStatusColor("passed", chrome)).not.toMatch(/#16a34a/i);
+        expect(codingStepStatusColor("failed", chrome)).toBe(chrome.stepFailedFg);
+        expect(codingStepStatusColor("running", chrome)).toBe(chrome.accentStrong);
+        expect(codingStepStatusColor("pending", chrome)).toBe(chrome.muted);
+    });
+
+    it("accepts every spelling of a step state", () => {
+        // Alternate spellings the backend also emits must not fall through to muted.
+        expect(codingStepStatusColor("completed", chrome)).toBe(chrome.stepDoneFg);
+        expect(codingStepStatusColor("verify_failed", chrome)).toBe(chrome.stepFailedFg);
+        expect(codingStepStatusColor("in_progress", chrome)).toBe(chrome.accentStrong);
+        expect(codingStepGlyph("completed")).toBe("☑");
+        expect(codingStepGlyph("error")).toBe("✗");
+        expect(codingStepGlyph("in_progress")).toBe("…");
+    });
+
+    it("derives the finished token from the panel accent and keeps danger AA-safe", () => {
+        const c = buildCodingBannerChrome({ isDark: false, remote: true, theme: { ...darkThemeStub, btnColor: "#2e75cb" } });
+        expect(c.stepDoneFg).toBe("color-mix(in srgb, #2e75cb 85%, #cbd5e1)");
+        expect(c.stepDoneFg).not.toMatch(/#16a34a/i);
+        // Theme.errorText (#e5484d) is only 3.9:1 on white — the AA-fixed
+        // --theme-danger token must win instead.
+        expect(c.stepFailedFg).toBe("var(--theme-danger, #dc2626)");
+        expect(c.stepFailedFg).not.toMatch(/#e5484d/i);
     });
 });
 
@@ -127,6 +155,12 @@ describe("deriveChipStatus", () => {
 
     it("shows running step when nothing failed", () => {
         expect(deriveChipStatus("en", [{ index: 3, status: "running" }], false)).toBe("T3…");
+    });
+
+    it("recognises the alternate spellings of failed/running/done", () => {
+        expect(deriveChipStatus("en", [{ index: 4, status: "verify_failed" }], false)).toBe("T4 ✗");
+        expect(deriveChipStatus("en", [{ index: 5, status: "in_progress" }], false)).toBe("T5…");
+        expect(deriveChipStatus("en", [{ index: 6, status: "completed" }], false)).toMatch(/Done|完成/i);
     });
 
     it("shows pending approval label when requested", () => {

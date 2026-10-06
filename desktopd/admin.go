@@ -1,0 +1,693 @@
+package desktopd
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	_ "embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+//go:embed admin.html
+var adminPage []byte
+
+// The admin UI is a small operator panel served from the desktopd process
+// itself. First use creates the admin account (setup), after which the panel
+// shows the API tokens Hub authenticates with and can add or remove extra
+// ones. It is meant for the Docker host's loopback interface or an SSH
+// tunnel — the deploy script keeps DESKTOPD_ADDR on 127.0.0.1 and the public
+// reverse proxy forwards only /v1/*.
+
+const (
+	adminSessionCookie = "desktopd_admin_session"
+	adminSessionTTL    = 24 * time.Hour
+	adminCSRFHeader    = "X-Desktopd-Admin"
+)
+
+type adminCredentials struct {
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	CreatedAt    string `json:"created_at"`
+}
+
+// AdminToken is one API key the /v1/* bearer check accepts. The token is
+// stored in clear text on purpose: the panel's job is to show it again, and
+// the primary DESKTOPD_TOKEN already lives in clear text in the .env file.
+type AdminToken struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Token     string `json:"token"`
+	CreatedAt string `json:"created_at"`
+}
+
+type adminTokenFile struct {
+	Tokens []AdminToken `json:"tokens"`
+}
+
+type adminSession struct {
+	expires time.Time
+}
+
+type adminServer struct {
+	svc      *Service
+	primary  string
+	stateDir string
+	page     []byte
+	mu       sync.Mutex
+	sessions map[string]time.Time
+	failures map[string]*failures
+	// writeMu serialises state-file mutations so two concurrent panel
+	// requests cannot lose each other's changes. It is taken *after* the
+	// session check, never while mu is held.
+	writeMu sync.Mutex
+	// tokens cache avoids re-reading api_tokens.json on every /v1 request;
+	// invalidated by size+mtime comparison.
+	cacheMu   sync.Mutex
+	cacheSize int64
+	cacheMod  time.Time
+	cacheTok  []AdminToken
+	// allowRemoteSetup relaxes setup's loopback-only rule, for operators who
+	// must run the one-time setup over the network. Default is local only so
+	// an exposed panel cannot be claimed by the first remote visitor.
+	allowRemoteSetup bool
+}
+
+type failures struct {
+	count    int
+	blocked  time.Time
+	lastFail time.Time
+}
+
+func newAdminServer(svc *Service, primary, stateDir string, page []byte) *adminServer {
+	return &adminServer{
+		svc:      svc,
+		primary:  primary,
+		stateDir: stateDir,
+		page:     page,
+		sessions: map[string]time.Time{},
+		failures: map[string]*failures{},
+		// First-run setup is local-only by default: an exposed panel must
+		// not be claimable by the first remote visitor. Operators who need
+		// one remote setup window enable DESKTOPD_ALLOW_REMOTE_SETUP.
+		allowRemoteSetup: strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_ALLOW_REMOTE_SETUP")), "1"),
+	}
+}
+
+// ServeHTTP routes /admin and /admin/*.
+func (a *adminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin")
+	switch {
+	case path == "" || path == "/" || path == "/index.html":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(a.page)
+	case path == "/api/state":
+		a.handleState(w, r)
+	case path == "/api/setup":
+		a.handleSetup(w, r)
+	case path == "/api/login":
+		a.handleLogin(w, r)
+	case path == "/api/logout":
+		a.handleLogout(w, r)
+	case path == "/api/overview":
+		a.withSession(w, r, a.handleOverview)
+	case path == "/api/tokens":
+		a.withSession(w, r, a.handleTokens)
+	case strings.HasPrefix(path, "/api/tokens/"):
+		a.withSession(w, r, a.handleTokenDelete)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// state helpers
+
+func (a *adminServer) credentials() (*adminCredentials, error) {
+	raw, err := os.ReadFile(filepath.Join(a.stateDir, "admin.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var creds adminCredentials
+	if err := json.Unmarshal(raw, &creds); err != nil {
+		return nil, err
+	}
+	if creds.Username == "" || creds.PasswordHash == "" {
+		return nil, nil
+	}
+	return &creds, nil
+}
+
+func (a *adminServer) saveCredentials(creds *adminCredentials) error {
+	raw, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return err
+	}
+	return a.writeStateFile("admin.json", raw)
+}
+
+func (a *adminServer) tokens() ([]AdminToken, error) {
+	path := filepath.Join(a.stateDir, "api_tokens.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	a.cacheMu.Lock()
+	if a.cacheTok != nil && a.cacheSize == info.Size() && a.cacheMod.Equal(info.ModTime()) {
+		tokens := a.cacheTok
+		a.cacheMu.Unlock()
+		return tokens, nil
+	}
+	a.cacheMu.Unlock()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var file adminTokenFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil, err
+	}
+	a.cacheMu.Lock()
+	a.cacheTok = file.Tokens
+	a.cacheSize = info.Size()
+	a.cacheMod = info.ModTime()
+	a.cacheMu.Unlock()
+	return file.Tokens, nil
+}
+
+func (a *adminServer) saveTokens(tokens []AdminToken) error {
+	if tokens == nil {
+		tokens = []AdminToken{}
+	}
+	raw, err := json.MarshalIndent(adminTokenFile{Tokens: tokens}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := a.writeStateFile("api_tokens.json", raw); err != nil {
+		return err
+	}
+	// Keep the cache exact rather than invalidating it: the next stat may
+	// still report the old mtime granularity on coarse filesystems.
+	a.cacheMu.Lock()
+	a.cacheTok = tokens
+	if info, err := os.Stat(filepath.Join(a.stateDir, "api_tokens.json")); err == nil {
+		a.cacheSize = info.Size()
+		a.cacheMod = info.ModTime()
+	}
+	a.cacheMu.Unlock()
+	return nil
+}
+
+func (a *adminServer) writeStateFile(name string, raw []byte) error {
+	if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(a.stateDir, name+".tmp")
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(a.stateDir, name))
+}
+
+// validTokenCharset restricts operator-issued keys to printable ASCII with no
+// whitespace. The token travels in an Authorization header, where control or
+// non-ASCII bytes would make Hub's request impossible to send.
+func validTokenCharset(token string) bool {
+	for _, ch := range token {
+		if ch < 0x21 || ch > 0x7e {
+			return false
+		}
+	}
+	return len(token) > 0
+}
+
+func randomHex(bytes int) (string, error) {
+	buf := make([]byte, bytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// ---------------------------------------------------------------------------
+// sessions
+
+func (a *adminServer) newSession(w http.ResponseWriter) {
+	token, err := randomHex(32)
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	a.sessions[token] = time.Now().Add(adminSessionTTL)
+	for key, expires := range a.sessions {
+		if time.Now().After(expires) {
+			delete(a.sessions, key)
+		}
+	}
+	a.mu.Unlock()
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookie,
+		Value:    token,
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(adminSessionTTL),
+	})
+}
+
+func (a *adminServer) sessionValid(r *http.Request) bool {
+	cookie, err := r.Cookie(adminSessionCookie)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	expires, ok := a.sessions[cookie.Value]
+	if !ok || time.Now().After(expires) {
+		delete(a.sessions, cookie.Value)
+		return false
+	}
+	return true
+}
+
+func (a *adminServer) endSession(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(adminSessionCookie); err == nil {
+		a.mu.Lock()
+		delete(a.sessions, cookie.Value)
+		a.mu.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: adminSessionCookie, Value: "", Path: "/admin", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
+}
+
+func (a *adminServer) withSession(w http.ResponseWriter, r *http.Request, next func(http.ResponseWriter, *http.Request)) {
+	if !a.sessionValid(r) {
+		writeErr(w, http.StatusUnauthorized, "admin login required")
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get(adminCSRFHeader) != "1" {
+		writeErr(w, http.StatusForbidden, "missing admin header")
+		return
+	}
+	next(w, r)
+}
+
+// ---------------------------------------------------------------------------
+// handlers
+
+func (a *adminServer) handleState(w http.ResponseWriter, r *http.Request) {
+	creds, err := a.credentials()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "admin state is unreadable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"needs_setup": creds == nil,
+		"logged_in":   a.sessionValid(r),
+	})
+}
+
+func (a *adminServer) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// First-run admin setup is local-only: the deploy story is loopback or
+	// an SSH tunnel, and the first visitor to an exposed panel must not be
+	// able to claim the account the operator still needs to create.
+	if !a.allowRemoteSetup && !isLoopbackRemote(r) {
+		writeErr(w, http.StatusForbidden, "admin setup is allowed from the server itself only; use loopback or an SSH tunnel")
+		return
+	}
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decodeMessage(w, r, "invalid setup request", &in) {
+		return
+	}
+	// Serialise the whole exists-check + write so two simultaneous first
+	// requests cannot both pass.
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	creds, err := a.credentials()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "admin state is unreadable")
+		return
+	}
+	if creds != nil {
+		writeErr(w, http.StatusConflict, "admin account already exists")
+		return
+	}
+	if len(in.Password) < 8 || len(in.Password) > 128 {
+		writeErr(w, http.StatusBadRequest, "password must be 8-128 characters")
+		return
+	}
+	hash, err := hashAdminPassword(in.Password)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "password hashing failed")
+		return
+	}
+	created := &adminCredentials{
+		Username:     strings.TrimSpace(in.Username),
+		PasswordHash: hash,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if created.Username == "" {
+		writeErr(w, http.StatusBadRequest, "username is required")
+		return
+	}
+	if err := a.saveCredentials(created); err != nil {
+		writeErr(w, http.StatusInternalServerError, "admin state is not writable")
+		return
+	}
+	a.newSession(w)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *adminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ip := clientIP(r)
+	if !a.allowLogin(ip) {
+		writeErr(w, http.StatusTooManyRequests, "too many failed logins; try again later")
+		return
+	}
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decodeMessage(w, r, "invalid login request", &in) {
+		return
+	}
+	creds, err := a.credentials()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "admin state is unreadable")
+		return
+	}
+	if creds == nil {
+		writeErr(w, http.StatusPreconditionRequired, "admin setup required")
+		return
+	}
+	// A real bcrypt comparison runs for every attempt against the stored
+	// hash, so the response time does not reveal which half failed.
+	hashErr := bcrypt.CompareHashAndPassword([]byte(creds.PasswordHash), []byte(in.Password))
+	userOK := subtle.ConstantTimeCompare([]byte(creds.Username), []byte(strings.TrimSpace(in.Username))) == 1
+	if hashErr != nil || !userOK {
+		a.recordFailure(ip)
+		// One real bcrypt comparison always ran, so the response time does
+		// not reveal which half failed.
+		writeErr(w, http.StatusUnauthorized, "wrong username or password")
+		return
+	}
+	a.newSession(w)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *adminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
+	a.endSession(w, r)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+type overviewDesktop struct {
+	Container string `json:"container"`
+	TenantID  string `json:"tenant_id"`
+	UserID    string `json:"user_id"`
+	Status    string `json:"status"`
+}
+
+func (a *adminServer) handleOverview(w http.ResponseWriter, r *http.Request) {
+	tokens, err := a.tokens()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "api tokens are unreadable")
+		return
+	}
+	out := map[string]any{
+		"advertise_host": a.svc.advertiseHostOrEmpty(),
+		"primary_token":  a.primary,
+		"image":          DefaultImage,
+		"memory":         DefaultMemory,
+		"cpus":           DefaultCPUs,
+		"shm_size":       DefaultShmSize,
+		"tokens":         tokens,
+		"desktops":       a.desktops(r),
+	}
+	out["docker_ok"], out["docker_version"] = a.dockerProbe(r)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *adminServer) handleTokens(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tokens, err := a.tokens()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "api tokens are unreadable")
+			return
+		}
+		if tokens == nil {
+			tokens = []AdminToken{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tokens": tokens})
+	case http.MethodPost:
+		var in struct {
+			Label string `json:"label"`
+			Token string `json:"token"`
+		}
+		if !decodeMessage(w, r, "invalid token request", &in) {
+			return
+		}
+		a.writeMu.Lock()
+		defer a.writeMu.Unlock()
+		label := strings.TrimSpace(in.Label)
+		if label == "" {
+			writeErr(w, http.StatusBadRequest, "label is required")
+			return
+		}
+		token := strings.TrimSpace(in.Token)
+		if token == "" {
+			generated, err := randomHex(24)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "token generation failed")
+				return
+			}
+			token = generated
+		}
+		if len(token) < 16 || len(token) > 128 || !validTokenCharset(token) {
+			writeErr(w, http.StatusBadRequest, "token must be 16-128 printable ASCII characters without whitespace")
+			return
+		}
+		existing, err := a.tokens()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "api tokens are unreadable")
+			return
+		}
+		for _, item := range existing {
+			if item.Token == token {
+				writeErr(w, http.StatusConflict, "this token already exists")
+				return
+			}
+		}
+		id, err := randomHex(8)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "token generation failed")
+			return
+		}
+		entry := AdminToken{ID: id, Label: label, Token: token, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+		if err := a.saveTokens(append(existing, entry)); err != nil {
+			writeErr(w, http.StatusInternalServerError, "api tokens are not writable")
+			return
+		}
+		writeJSON(w, http.StatusCreated, entry)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (a *adminServer) handleTokenDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/admin"), "/api/tokens/")
+	id = strings.Trim(id, "/")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "token id is required")
+		return
+	}
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	existing, err := a.tokens()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "api tokens are unreadable")
+		return
+	}
+	kept := existing[:0:0]
+	found := false
+	for _, item := range existing {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "token not found")
+		return
+	}
+	if err := a.saveTokens(kept); err != nil {
+		writeErr(w, http.StatusInternalServerError, "api tokens are not writable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// tokenAccepted reports whether a /v1/* bearer credential is the primary env
+// token or one issued through the admin panel.
+func (a *adminServer) tokenAccepted(token string) bool {
+	if token == "" {
+		return false
+	}
+	if a.primary != "" && subtle.ConstantTimeCompare([]byte(token), []byte(a.primary)) == 1 {
+		return true
+	}
+	tokens, err := a.tokens()
+	if err != nil {
+		return false
+	}
+	for _, item := range tokens {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(item.Token)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// docker introspection for the overview
+
+// dockerProbe shells out once and reports both availability and version.
+func (a *adminServer) dockerProbe(r *http.Request) (bool, string) {
+	version, err := a.svc.docker(r.Context(), "version", "--format", "{{.Server.Version}}")
+	return err == nil, strings.TrimSpace(version)
+}
+
+func (a *adminServer) desktops(r *http.Request) []overviewDesktop {
+	out, err := a.svc.docker(r.Context(), "ps", "--filter", "label=maclaw.tenant", "--format", "{{.Names}}\\t{{.Label \"maclaw.tenant\"}}\\t{{.Label \"maclaw.user\"}}\\t{{.Status}}")
+	if err != nil {
+		return []overviewDesktop{}
+	}
+	desktops := []overviewDesktop{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) != 4 {
+			continue
+		}
+		desktops = append(desktops, overviewDesktop{
+			Container: fields[0], TenantID: fields[1], UserID: fields[2], Status: fields[3],
+		})
+	}
+	return desktops
+}
+
+// ---------------------------------------------------------------------------
+// login throttling
+
+// clientIP extracts the peer host for login throttling. Bracketed IPv6 stays
+// intact so loopback covers ::1.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return host
+}
+
+// isLoopbackRemote reports whether the request reaches the server locally or
+// through an SSH tunnel (which presents the server's own loopback as the
+// peer). Used to gate first-run admin setup.
+func isLoopbackRemote(r *http.Request) bool {
+	host := clientIP(r)
+	if host == "" {
+		return false
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func (a *adminServer) allowLogin(ip string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	entry, ok := a.failures[ip]
+	if !ok {
+		return true
+	}
+	if time.Now().After(entry.blocked) && time.Since(entry.lastFail) > 5*time.Minute {
+		delete(a.failures, ip)
+		return true
+	}
+	if !entry.blocked.IsZero() && time.Now().Before(entry.blocked) {
+		return false
+	}
+	return entry.count < 10
+}
+
+func (a *adminServer) recordFailure(ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	entry, ok := a.failures[ip]
+	if !ok {
+		entry = &failures{}
+		a.failures[ip] = entry
+	}
+	entry.count++
+	entry.lastFail = time.Now()
+	if entry.count >= 10 {
+		entry.blocked = time.Now().Add(5 * time.Minute)
+		entry.count = 0
+	}
+}
+
+// ---------------------------------------------------------------------------
+// password hashing
+
+func hashAdminPassword(password string) (string, error) {
+	if len(password) < 8 {
+		return "", errors.New("password is too short")
+	}
+	if len(password) > 128 {
+		return "", errors.New("password is too long")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("hash password: %w", err)
+	}
+	return string(hash), nil
+}

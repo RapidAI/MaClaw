@@ -334,6 +334,19 @@ static esp_err_t poll_reply(void) {
                  esp_err_to_name(outbox_err));
         return outbox_err;
     }
+    /* A decision made on the terminal is delivered here, before the durable
+     * queues below: it is the only pending item with a deadline, and once the
+     * window closes the Hub adjudicates a late answer as a timeout, so an
+     * approval that waits behind a stuck queue silently becomes "nobody
+     * answered".  It never blocks the page read -- a failure is logged and the
+     * ack stays owed for the next poll. */
+    if (s_host.flush_event_ack) {
+        const esp_err_t event_ack_err = (esp_err_t)s_host.flush_event_ack();
+        if (event_ack_err != ESP_OK) {
+            ESP_LOGW(TAG, "pending approval ack could not be delivered: %s",
+                     esp_err_to_name(event_ack_err));
+        }
+    }
     if (s_host.flush_tool_result_outbox) {
         const esp_err_t tool_outbox_err =
             (esp_err_t)s_host.flush_tool_result_outbox();
@@ -488,6 +501,17 @@ static esp_err_t poll_reply(void) {
             gateway_message_capability_allowed(GATEWAY_CAPABILITY_AMBIENT_DISPLAY, type);
         bool ambient_permanently_invalid = ambient_update_present &&
             !ambient_capability_allowed;
+        /* A structured event is a reply type of its own (plan N1-1).  It is
+         * gated on the eventPush capability: the Hub already refuses to fan an
+         * event out to a device that did not declare it, but the device must
+         * not render one it never advertised either -- the two gates protect
+         * different halves of the same contract, and a future direct-LAN path
+         * (D4) has no Hub in front of it. */
+        bool event_message = type && !strcmp(type, "event");
+        bool event_handled = !event_message;
+        bool event_capability_allowed = !event_message ||
+            gateway_message_capability_allowed(GATEWAY_CAPABILITY_EVENT_PUSH, type);
+        bool event_permanently_invalid = event_message && !event_capability_allowed;
         bool welcome_audio = id && (!strncmp(id, "mc_welcome_", 11) || !strncmp(id, "hub_welcome_", 12));
 		bool preview_audio = cJSON_IsObject(extra) &&
 			cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(extra, "hardware_audio_preview"));
@@ -615,6 +639,15 @@ static esp_err_t poll_reply(void) {
             s_host.apply_glyphs(cJSON_GetObjectItemCaseSensitive(item, "glyphs"));
             s_host.apply_ambient(cJSON_GetObjectItemCaseSensitive(item, "ambient"));
             if (type && !strcmp(type, "ambient")) s_host.apply_ambient(item);
+        }
+        if (event_message && event_capability_allowed) {
+            /* The event object is nested under its own key, matching the
+             * `ambient` convention: the envelope stays type-agnostic.  The
+             * host owns admission and rendering and reports the outcome back,
+             * so an event that has to wait for the current turn stays pending
+             * instead of being dropped or overwriting what the user reads. */
+            s_host.apply_event(cJSON_GetObjectItemCaseSensitive(item, "event"),
+                               &event_handled, &event_permanently_invalid);
         }
         if (hardware_config_message &&
             (!hardware_config_capability_allowed ||
@@ -964,6 +997,7 @@ static esp_err_t poll_reply(void) {
 		bool ack_message = tool_handled &&
             (hardware_config_handled || hardware_config_permanently_invalid) &&
 			(pet_profile_handled || pet_profile_permanently_invalid) &&
+			(event_handled || event_permanently_invalid) &&
 			(!text_message || text_handled || cancelled_reply || text_permanently_invalid) &&
 			(!audio_message || audio_handled || cancelled_reply || audio_permanently_invalid) &&
 			(!image_message || image_handled || cancelled_reply || image_permanently_invalid);
@@ -983,6 +1017,7 @@ static esp_err_t poll_reply(void) {
 			bool permanently_failed = hardware_config_permanently_invalid ||
 				pet_profile_permanently_invalid ||
 				ambient_permanently_invalid ||
+				event_permanently_invalid ||
 				(text_message && text_permanently_invalid && !cancelled_reply) ||
 				(audio_message && audio_permanently_invalid && !audio_handled && !cancelled_reply) ||
 				(image_message && image_permanently_invalid && !image_handled && !cancelled_reply);

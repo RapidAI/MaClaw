@@ -605,6 +605,8 @@ export function GetAdaptiveWindowSize():Promise<Record<string, number>>;
 
 export function GetAllLLMTokenUsage():Promise<Record<string, corelib.TokenUsageStat>>;
 
+export function GetLLMTokenUsageByDay():Promise<Array<{date:string, provider:string, input_tokens:number, output_tokens:number, total_tokens:number}>>;
+
 export function GetAllLLMProfileTokenUsage():Promise<Record<string, corelib.TokenUsageStat>>;
 
 export function GetAllowedSkillSources():Promise<Array<string>>;
@@ -855,6 +857,8 @@ export function GetPetPackPreviewDataURL(arg1:string):Promise<string>;
 export function GetPetPackRuntimeInfo():Promise<main.PetPackRuntimeInfo>;
 
 export function GetPetPackStateFrameDataURL(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function GetPetCompanionTranscript():Promise<string>;
 
 export function GetPetPacksDir():Promise<string>;
 
@@ -1825,6 +1829,12 @@ export function PrepareLocalCodingEnvironment(arg1:string,arg2:string):Promise<v
 
 export function PrepareRemoteCodingEnvironment(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
 
+export function RememberRemoteSSHPassword(arg1:string,arg2:string,arg3:string,arg4:number):Promise<void>;
+
+export function RecallRemoteSSHPassword(arg1:string,arg2:string,arg3:number):Promise<string>;
+
+export function ForgetRemoteSSHPassword(arg1:string,arg2:string,arg3:number):Promise<void>;
+
 export function PrepareRemoteOpsDiagnosisEnvironment(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
 
 export function PrepareVSCodeACP():Promise<main.VSCodeACPLaunchResult>;
@@ -1921,6 +1931,7 @@ export function RecordMaclawAppRunHistory(arg1:main.maclawAppRunHistoryEntry):Pr
 export function RecoverCC():Promise<void>;
 
 export function RedeemHubLLMService(arg1:string):Promise<main.HubLLMServiceStatus>;
+export function CheckinHubLLMService():Promise<main.HubLLMCheckinResult>;
 export function RedeemHubLLMResetVoucher(arg1:string):Promise<main.HubLLMServiceStatus>;
 
 export function RedeemCreditsCard(arg1:string):Promise<Record<string, any>>;
@@ -2195,6 +2206,18 @@ export function SendAIAssistantMessage(arg1:main.AIAssistantSendRequest):Promise
 
 export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentResponse>;
 
+export function SendDesktopBotTask(arg1:string,arg2:string):Promise<main.IMAgentResponse>;
+
+export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
+
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string}>>;
+
+export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,title:string,description:string,instance_id:string}>;
+
+export function RenameDesktopBot(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function DeleteDesktopBot(arg1:string):Promise<void>;
+
 export function SendMessageForTab(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
 export function SendRemoteRegistrationContactCode(arg1:string,arg2:string):Promise<main.RemoteRegistrationContactResult>;
@@ -2248,6 +2271,8 @@ export function SetComputerUseLogPrunePolicy(arg1:number,arg2:number,arg3:number
 export function SetDataDir(arg1:string):Promise<string>;
 
 export function SetDefaultLaunchMode(arg1:string):Promise<void>;
+
+export function NotifyDesktopPetMicBusy(arg1:boolean):Promise<void>;
 
 export function SetDesktopPetState(arg1:string,arg2:number):Promise<void>;
 

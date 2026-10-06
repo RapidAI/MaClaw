@@ -1,4 +1,4 @@
-import type { SidebarHubCredits, SidebarHubServiceStatus } from '../types/appShell';
+import type { SidebarHubCheckin, SidebarHubCredits, SidebarHubServiceStatus } from '../types/appShell';
 import { grantCanContributeExpiry, latestExpiry, mergeHubCreditGrants, numeric, summarizeHubCreditTotals } from './hubCredits';
 
 type NewUserLimitCardSummary = NonNullable<SidebarHubCredits['newUserLimitCards']>[number];
@@ -7,7 +7,19 @@ function grantIsPermanent(grant: { permanent?: unknown; Permanent?: unknown }): 
     return Boolean(grant.permanent ?? grant.Permanent);
 }
 
+/** Normalize the Hub's raw check-in payload; undefined hides the sidebar button. */
+function normalizeSidebarCheckin(status?: SidebarHubServiceStatus | null): SidebarHubCheckin | undefined {
+    const raw = status?.checkin;
+    if (!raw || raw.enabled !== true) return undefined;
+    return {
+        enabled: true,
+        credits: numeric(raw.credits),
+        checkedInToday: raw.checked_in_today === true,
+    };
+}
+
 export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | null): SidebarHubCredits | null {
+    const checkin = normalizeSidebarCheckin(status);
     const active = status?.active ?? status?.Active ?? false;
     const creditGrants = status?.credit_grants ?? status?.CreditGrants ?? [];
     const activeGrants = status?.active_grants ?? status?.ActiveGrants ?? [];
@@ -100,6 +112,7 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
             status: '',
             retryAfterSeconds: 0,
             retryAfterAt: '',
+            checkin,
             newUserLimitCards,
         };
     }
@@ -158,6 +171,7 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
         status: grantStatus || (active ? 'active' : ''),
         retryAfterSeconds,
         retryAfterAt,
+        checkin,
         newUserLimitCards,
     };
 }

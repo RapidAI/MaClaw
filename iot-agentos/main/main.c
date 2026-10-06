@@ -62,6 +62,8 @@
 #include "services/gateway_transport.h"
 #include "services/gateway_tool_result_outbox_policy.h"
 #include "services/gateway_tool_result_service.h"
+#include "services/gateway_event_ack_service.h"
+#include "services/event_ingest.h"
 #include "services/latency_trace.h"
 #include "services/cellular_recovery_service.h"
 #include "services/wifi_runtime_configuration_service.h"
@@ -4835,6 +4837,165 @@ static void gateway_host_apply_ambient(const void *ambient_node) {
     ambient_service_apply_hub_ambient(ambient_node);
 }
 
+/* Session-scoped idempotency for structured events (plan section 4.1).  Bounded
+ * and deliberately not persisted: a persist=true event is meant to reappear
+ * after a reboot, so a ring that survived one would suppress exactly the replay
+ * the contract requires.  Cross-boot bookkeeping belongs with N1-6's snapshot
+ * lifecycle. */
+static event_ingest_dedupe_t s_event_dedupe;
+
+static bool event_json_bool(cJSON *node, const char *key) {
+    return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(node, key));
+}
+
+/* Extract the wire fields into the pure-value struct the ingest policy
+ * validates.  String pointers stay borrowed from the cJSON tree, which outlives
+ * this call.  Returns false on a structurally malformed payload (a non-array
+ * actions field, a non-object entry, more entries than the contract allows) so
+ * the caller can fail closed instead of silently reading a subset. */
+static bool event_extract_fields(cJSON *event, event_ingest_fields_t *out_fields,
+                                 event_ingest_action_t *out_actions, int max_actions) {
+    if (!cJSON_IsObject(event) || !out_fields || !out_actions || max_actions <= 0) {
+        return false;
+    }
+    memset(out_fields, 0, sizeof(*out_fields));
+    out_fields->event_id = json_string(event, "eventId");
+    out_fields->category = json_string(event, "category");
+    out_fields->severity = json_string(event, "severity");
+    out_fields->title = json_string(event, "title");
+    out_fields->summary = json_string(event, "summary");
+    out_fields->dedupe_key = json_string(event, "dedupeKey");
+    out_fields->requires_ack = event_json_bool(event, "requiresAck");
+    out_fields->persist = event_json_bool(event, "persist");
+    int ttl_sec = 0;
+    out_fields->ttl_sec = json_number(event, "ttlSec", &ttl_sec) ? (long)ttl_sec : 0;
+    out_fields->actions = out_actions;
+    out_fields->action_count = 0;
+
+    cJSON *actions = cJSON_GetObjectItemCaseSensitive(event, "actions");
+    if (actions) {
+        if (!cJSON_IsArray(actions) || cJSON_GetArraySize(actions) > max_actions) return false;
+        cJSON *action = NULL;
+        cJSON_ArrayForEach(action, actions) {
+            if (!cJSON_IsObject(action)) return false;
+            event_ingest_action_t *slot = &out_actions[out_fields->action_count];
+            slot->id = json_string(action, "id");
+            slot->label = json_string(action, "label");
+            slot->kind = json_string(action, "kind");
+            slot->risk = json_string(action, "risk");
+            out_fields->action_count += 1;
+        }
+    }
+    return true;
+}
+
+/* Present a pushed structured event (plan N1-2).  The admission decision itself
+ * lives in the host-tested event_ingest / event_presentation_policy modules;
+ * what stays here is the cJSON extraction and the composition-root rendering.
+ *
+ * Two outcomes are reported back to the dispatcher rather than swallowed:
+ *   - deferred (out_handled=false) when a soft event arrives mid-turn.  The
+ *     message stays pending and the next poll presents it once the turn ends,
+ *     instead of replacing what the user is reading;
+ *   - permanently invalid (out_permanently_invalid=true) for a payload the
+ *     device cannot render faithfully.  Retrying cannot repair it, so it must
+ *     not pin the shared page cursor. */
+static void gateway_host_apply_event(const void *event_node, bool *out_handled,
+                                     bool *out_permanently_invalid) {
+    if (out_handled) *out_handled = true;
+    if (out_permanently_invalid) *out_permanently_invalid = false;
+    if (!out_handled || !out_permanently_invalid) return;
+
+    event_ingest_fields_t fields;
+    event_ingest_action_t actions[EVENT_INGEST_MAX_ACTIONS];
+    if (!event_extract_fields((cJSON *)event_node, &fields, actions,
+                              EVENT_INGEST_MAX_ACTIONS)) {
+        *out_permanently_invalid = true;
+        ESP_LOGW(TAG, "discarded malformed event payload");
+        return;
+    }
+
+    event_device_state_flags_t state = {0};
+    event_presentation_current_flags(&state);
+    event_action_t action = EVENT_ACTION_COUNT;
+    if (!event_ingest_decide(&fields, &state, &action)) {
+        *out_permanently_invalid = true;
+        ESP_LOGW(TAG, "discarded invalid event: id=%s category=%s severity=%s",
+                 fields.event_id && fields.event_id[0] ? fields.event_id : "<none>",
+                 fields.category && fields.category[0] ? fields.category : "<none>",
+                 fields.severity && fields.severity[0] ? fields.severity : "<none>");
+        return;
+    }
+    ESP_LOGI(TAG, "event %s severity=%s state=%s action=%s",
+             fields.event_id, fields.severity,
+             event_device_state_name(event_device_state_dominant(&state)),
+             event_action_name(action));
+
+    /* The matrix decided not to show it (quiet hours, say).  That is a
+     * decision, so the message is consumed rather than retried. */
+    if (action == EVENT_ACTION_DROP) return;
+
+    /* A soft event must not replace the turn in progress.  Note the dedupe key
+     * is deliberately *not* recorded on this path: the retry has to be able to
+     * present the event once the turn is over. */
+    if (event_ingest_defers_while_busy(action, command_service_display_active())) {
+        *out_handled = false;
+        ESP_LOGI(TAG, "deferred event %s until the current turn ends", fields.event_id);
+        return;
+    }
+
+    /* A card that offers actions is a decision the user must be able to answer
+     * (plan N1-6).  Checked before the dedupe ring records the key: a card held
+     * back because an earlier answer has not reached the Hub yet must be able
+     * to present itself on the retry, and burning its dedupe key here would
+     * suppress exactly that retry. */
+    const bool answerable = gateway_event_ack_service_offers_decision(&fields);
+    if (answerable && !gateway_event_ack_service_slot_free()) {
+        *out_handled = false;
+        ESP_LOGI(TAG, "deferred event %s: an undelivered answer still holds the slot",
+                 fields.event_id);
+        return;
+    }
+
+    /* Now that the event will actually be presented, apply session
+     * idempotency: the same logical event is shown once (section 4.1).  A
+     * duplicate is a delivery artefact, not something to show twice. */
+    const char *dedupe_key = event_ingest_dedupe_key(&fields);
+    if (event_ingest_dedupe_seen(&s_event_dedupe, dedupe_key)) {
+        ESP_LOGI(TAG, "suppressed duplicate event: key=%s", dedupe_key);
+        return;
+    }
+
+    if (event_action_should_display(action)) {
+        if (answerable) {
+            /* The answerable card replaces the plain message card: it has to
+             * name the object of the decision, which the plain card does not.
+             * The slot was confirmed free above and this runs on the same task,
+             * so a failure here means the two predicates disagree. */
+            if (!gateway_event_ack_service_begin(&fields)) {
+                ESP_LOGE(TAG, "answerable card refused the slot: event=%s",
+                         fields.event_id);
+                *out_handled = false;
+                return;
+            }
+        } else {
+            scene_presenter_publish_message(event_ingest_display_title(&fields),
+                                            event_ingest_display_body(&fields));
+        }
+    }
+    if (event_action_should_buzz(action)) {
+        /* No haptic actuator is wired yet; the card is still shown.  N4-3 owns
+         * the physical presentation. */
+        ESP_LOGI(TAG, "event %s asked for a buzz (no actuator wired yet)", fields.event_id);
+    }
+    if (event_action_is_audible(action)) {
+        /* The device has no local TTS: audible delivery needs the server
+         * (N3-5).  The card is shown meanwhile so the event is never lost --
+         * "we cannot speak yet" must not become "we showed nothing". */
+        ESP_LOGI(TAG, "event %s would speak once N3-5 provides an audio path", fields.event_id);
+    }
+}
+
 static bool gateway_host_audio_url_allowed(const char *url) {
     return hardware_audio_url_allowed(url);
 }
@@ -4893,6 +5054,10 @@ static int32_t gateway_host_flush_tool_result_outbox(void) {
     return gateway_tool_result_service_flush_outbox();
 }
 
+static int32_t gateway_host_flush_event_ack(void) {
+    return gateway_event_ack_service_flush();
+}
+
 static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
     .cancel_poll_http = gateway_host_cancel_poll_http,
     .welcome_gate_active = gateway_host_welcome_gate_active,
@@ -4904,6 +5069,7 @@ static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
     .handle_hardware_config = gateway_host_handle_hardware_config,
     .apply_glyphs = gateway_host_apply_glyphs,
     .apply_ambient = gateway_host_apply_ambient,
+    .apply_event = gateway_host_apply_event,
     .audio_url_allowed = gateway_host_audio_url_allowed,
     .audio_mime_supported = gateway_host_audio_mime_supported,
     .audio_download_error_is_permanent = gateway_host_audio_download_error_is_permanent,
@@ -4917,6 +5083,7 @@ static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
     .take_startup_pet_retry_due = gateway_host_take_startup_pet_retry_due,
     .apply_deferred_startup_pet_asset = gateway_host_apply_deferred_startup_pet_asset,
     .flush_tool_result_outbox = gateway_host_flush_tool_result_outbox,
+    .flush_event_ack = gateway_host_flush_event_ack,
 };
 
 /* Interaction Service host seam: voice upload/submit/pairing are composed
@@ -5097,6 +5264,7 @@ void app_main(void) {
     }
     pet_asset_retry_service_init();
     gateway_tool_result_service_init();
+    gateway_event_ack_service_init();
     if (startup_pet_asset_state_service_init() != DEVICE_STATUS_OK) {
         goto startup_core_no_memory;
     }

@@ -35,6 +35,12 @@ const (
 // use, so code that only reads ExpiresAt still treats the grant as live.
 var tokenBankGrantExpiresAt = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
 
+// PermanentGrantExpiresAt exposes the far-future expiry sentinel to transport
+// handlers that mint their own never-expiring wallet grants (check-in rewards).
+func PermanentGrantExpiresAt() time.Time {
+	return tokenBankGrantExpiresAt
+}
+
 var (
 	// ErrTokenBankServiceGroupMissing means the hub has no such service group.
 	// Callers must return this before any HubCenter debit. A missing group is

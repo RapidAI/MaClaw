@@ -2,8 +2,24 @@ import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type R
 import { localizeText } from "./aiAssistantI18n";
 import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import { isFormFieldTarget, isVisibleCodingConflictPanelPresent } from "./codingUiGuards";
+import {
+    codingStepIsActive,
+    codingStepIsDone,
+    codingStepIsFailed,
+    codingStepIsSkipped,
+} from "./codingStepStatus";
 
 export { isFormFieldTarget } from "./codingUiGuards";
+// Step-state predicates live in their own leaf module so non-UI helpers
+// (e.g. assistantTaskExecutionChrome) can share the vocabulary without
+// importing this component. Re-exported to keep existing imports working.
+export {
+    codingStepIsActive,
+    codingStepIsDone,
+    codingStepIsFailed,
+    codingStepIsSettled,
+    codingStepIsSkipped,
+} from "./codingStepStatus";
 
 /** Chrome tokens for coding workbench floating control (light/dark + remote/local). */
 export type CodingBannerChrome = {
@@ -17,6 +33,11 @@ export type CodingBannerChrome = {
     iconWellBg: string;
     insetBg: string;
     muted: string;
+    /** Finished plan-step foreground — derived from the panel accent, never a
+     *  standalone green (a green checklist clashed with the blue app shell). */
+    stepDoneFg: string;
+    /** Failed plan-step foreground — mirrors the theme danger token. */
+    stepFailedFg: string;
     btnPrimaryBg: string;
     btnPrimaryFg: string;
 };
@@ -28,7 +49,7 @@ export const CODING_BANNER_LOCAL_DARK_ACCENT_STRONG = "#9db8a8";
 type BuildCodingBannerChromeOpts = {
     isDark: boolean;
     remote: boolean;
-    theme: Pick<Theme, "btnColor" | "sendBtnBg" | "sendBtnColor" | "titleBarBg" | "bg" | "titleBarBorder" | "fieldBorder" | "fieldBg" | "textMuted" | "promptColor" | "fieldLabel" | "text"> & Partial<Pick<Theme, "inputBarBg">>;
+    theme: Pick<Theme, "btnColor" | "sendBtnBg" | "sendBtnColor" | "titleBarBg" | "bg" | "titleBarBorder" | "fieldBorder" | "fieldBg" | "textMuted" | "promptColor" | "fieldLabel" | "text"> & Partial<Pick<Theme, "inputBarBg" | "titleText">>;
 };
 
 /**
@@ -41,26 +62,34 @@ type BuildCodingBannerChromeOpts = {
 export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodingBannerChromeOpts): CodingBannerChrome {
     const accentFallback = isDark ? "#5f89b8" : "#2e75cb";
     const productAccent = t.btnColor || accentFallback;
-    const accent = remote
-        ? (isDark ? "#38bdf8" : "#0284c7")
-        : (isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : productAccent);
-    const accentStrong = remote
-        ? (isDark ? "#7dd3fc" : "#0c4a6e")
-        : (isDark ? CODING_BANNER_LOCAL_DARK_ACCENT_STRONG : "#1e4a7a");
+    // Remote uses the same product accent as the main shell. A separate sky-blue
+    // palette made the float panel look like a different product.
+    const accent = !remote && isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : productAccent;
+    const accentStrong = !remote && isDark
+        ? CODING_BANNER_LOCAL_DARK_ACCENT_STRONG
+        : (t.titleText || t.text || (isDark ? "#dbe7f5" : "#17263c"));
     const surface = isDark
         ? `color-mix(in srgb, ${accent} 6%, ${t.titleBarBg || t.bg})`
-        : (t.fieldBg || t.bg);
+        : (t.bg || t.titleBarBg);
     const border = isDark
         ? `color-mix(in srgb, ${accent} 16%, ${t.titleBarBorder})`
         : (t.titleBarBorder || t.fieldBorder);
     const chipActiveBg = `color-mix(in srgb, ${accent} 14%, transparent)`;
-    const chipIdleBg = isDark ? "transparent" : (t.inputBarBg || t.bg);
+    const chipIdleBg = isDark ? "transparent" : (t.bg || t.inputBarBg || "#ffffff");
     // Stronger idle border on dark so chip outlines remain visible
     const chipIdleBorder = t.fieldBorder || (isDark ? "rgba(180,190,205,0.42)" : t.titleBarBorder);
     const iconWellBg = `color-mix(in srgb, ${accent} 14%, transparent)`;
-    const insetBg = isDark ? (t.fieldBg || "transparent") : "#ffffff";
+    const insetBg = isDark ? (t.fieldBg || "transparent") : (t.bg || "#ffffff");
     // Labels / secondary text: prefer fieldLabel, keep ≥ readable slate (not washed gray)
     const muted = t.fieldLabel || t.textMuted || t.promptColor || (isDark ? "#c4cdd8" : "#64748b");
+    // Checklist step colors. Finished steps ride the panel accent — softened so a
+    // long finished list recedes — instead of a standalone green that clashed with
+    // the blue shell; failures mirror the theme danger token.
+    const stepDoneFg = `color-mix(in srgb, ${accent} 85%, ${muted})`;
+    // --theme-danger is the scheme's WCAG-AA-fixed danger token (light #dc1f25,
+    // dark #f47067…). Theme.errorText is the undecorated brand red (#e5484d),
+    // which is only 3.9:1 on white — do not use it for step text.
+    const stepFailedFg = "var(--theme-danger, #dc2626)";
     // Filled CTA pair: sendBtn* with luminance-safe ink (graphite light fill → dark text)
     const filled = resolvePrimaryFilledColors(t);
     return {
@@ -74,6 +103,8 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
         iconWellBg,
         insetBg,
         muted,
+        stepDoneFg,
+        stepFailedFg,
         btnPrimaryBg: filled.bg,
         btnPrimaryFg: filled.fg,
     };
@@ -81,20 +112,23 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
 
 /** Codex-style checklist mark for a workbench / agent step. */
 export function codingStepGlyph(status: string): string {
-    const s = (status || "").toLowerCase();
-    if (s === "passed" || s === "completed") return "☑";
-    if (s === "failed" || s === "verify_failed") return "✗";
-    if (s === "running" || s === "in_progress") return "…";
-    if (s === "skipped" || s === "cancelled") return "–";
+    if (codingStepIsDone(status)) return "☑";
+    if (codingStepIsFailed(status)) return "✗";
+    if (codingStepIsActive(status)) return "…";
+    if (codingStepIsSkipped(status)) return "–";
     return "☐";
 }
 
-/** Step row color for the control-panel checklist (dark keeps sage/coral, not neon). */
-export function codingStepStatusColor(status: string, isDark: boolean, chrome: Pick<CodingBannerChrome, "accentStrong" | "muted">): string {
-    const s = (status || "").toLowerCase();
-    if (s === "passed") return isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : "#16a34a";
-    if (s === "failed" || s === "verify_failed") return isDark ? "#e07a72" : "#dc2626";
-    if (s === "running" || s === "in_progress") return chrome.accentStrong;
+/** Step row color for the control-panel checklist / plan panel.
+ *  Finished → panel accent (no standalone green: it fought the blue shell);
+ *  running → accentStrong; failed → theme danger; everything else → muted. */
+export function codingStepStatusColor(
+    status: string,
+    chrome: Pick<CodingBannerChrome, "accentStrong" | "muted" | "stepDoneFg" | "stepFailedFg">,
+): string {
+    if (codingStepIsDone(status)) return chrome.stepDoneFg;
+    if (codingStepIsFailed(status)) return chrome.stepFailedFg;
+    if (codingStepIsActive(status)) return chrome.accentStrong;
     return chrome.muted;
 }
 
@@ -103,19 +137,19 @@ export function codingStepStatusColor(status: string, isDark: boolean, chrome: P
  * the task reference cards. */
 export function codingStepStatusLabel(lang: string | undefined, status: string): string {
     const s = (status || "").toLowerCase();
-    if (s === "passed" || s === "completed" || s === "success" || s === "succeeded") {
+    if (codingStepIsDone(s)) {
         return localizeText(lang, "Completed", "已完成", "已完成");
     }
-    if (s === "running" || s === "in_progress" || s === "started") {
-        return localizeText(lang, "In progress", "进行中", "進行中");
-    }
-    if (s === "failed" || s === "verify_failed" || s === "error") {
+    if (codingStepIsFailed(s)) {
         return localizeText(lang, "Failed", "失败", "失敗");
+    }
+    if (codingStepIsActive(s)) {
+        return localizeText(lang, "In progress", "进行中", "進行中");
     }
     if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review" || s === "blocked") {
         return localizeText(lang, "Pending", "待确认", "待確認");
     }
-    if (s === "skipped" || s === "cancelled" || s === "canceled") {
+    if (codingStepIsSkipped(s)) {
         return localizeText(lang, "Skipped", "已跳过", "已跳過");
     }
     return status || localizeText(lang, "Pending", "待确认", "待確認");
@@ -168,11 +202,11 @@ export function deriveChipStatus(
     if (preparing && prepareMode === "new-agent") {
         return localizeText(lang, "Starting…", "启动中…", "啟動中…");
     }
-    const failed = steps.find((s) => s.status === "failed" || s.status === "verify_failed");
+    const failed = steps.find((s) => codingStepIsFailed(s.status));
     if (failed) {
         return `T${failed.index} ✗`;
     }
-    const running = steps.find((s) => s.status === "running");
+    const running = steps.find((s) => codingStepIsActive(s.status));
     if (running) {
         return `T${running.index}…`;
     }
@@ -184,7 +218,7 @@ export function deriveChipStatus(
     }
     if (steps.length > 0) {
         const last = steps[steps.length - 1];
-        if (last.status === "passed") {
+        if (codingStepIsDone(last.status)) {
             return localizeText(lang, "Done", "完成", "完成");
         }
         return `T${last.index}`;
@@ -192,7 +226,9 @@ export function deriveChipStatus(
     return localizeText(lang, "Ready", "就绪", "就緒");
 }
 
-const srOnlyStyle: CSSProperties = {
+/** Visually hidden but announced — shared with the plan checklist so step rows
+ *  expose their status to screen readers (color + glyph alone are not enough). */
+export const srOnlyStyle: CSSProperties = {
     position: "absolute",
     width: 1,
     height: 1,
@@ -441,7 +477,7 @@ export function CodingWorkbenchControlPanel({
         maxWidth: "min(320px, calc(100vw - 24px))",
         minHeight: 36,
         padding: "0 10px 0 6px",
-        borderRadius: 999,
+        borderRadius: 10,
         border: `1px solid ${expanded ? chrome.accent : chrome.border}`,
         background: chrome.surface,
         color: t.text,
@@ -467,13 +503,13 @@ export function CodingWorkbenchControlPanel({
         overflow: "auto",
         overscrollBehavior: "contain",
         padding: "10px 12px",
-        borderRadius: 10,
+        borderRadius: 14,
         border: `1px solid ${chrome.border}`,
         background: chrome.surface,
         color: t.text,
         boxShadow: t.isDark
             ? "0 16px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(148,163,184,0.12)"
-            : "0 14px 36px rgba(15,23,42,0.16), 0 0 0 1px rgba(15,23,42,0.04)",
+            : "0 12px 30px rgba(27, 56, 93, 0.12)",
         fontSize: 12,
         lineHeight: 1.4,
     }), [chrome.border, chrome.surface, t.text, t.isDark]);
@@ -604,7 +640,7 @@ export function CodingWorkbenchControlPanel({
                             paddingTop: 10,
                             paddingLeft: 12,
                             paddingRight: 12,
-                            background: chrome.surface,
+                            background: "var(--theme-surface)",
                             zIndex: 1,
                         }}
                     >
@@ -663,10 +699,9 @@ export function CodingControlSection({
         <div data-testid={testId} className="cwcp-section">
             <div
                 style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    letterSpacing: "0.04em",
-                    textTransform: "uppercase",
+                    fontSize: 12,
+                    fontWeight: 650,
+                    letterSpacing: "normal",
                     color: chrome.muted,
                     marginBottom: 6,
                 }}

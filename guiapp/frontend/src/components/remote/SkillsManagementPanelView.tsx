@@ -6,11 +6,12 @@ import { EVENT_CONFIG_CHANGED, EVENT_CONFIG_UPDATED, EVENT_MACLAW_CONFIG_CHANGED
 import { SkillInstallProgressPanel } from './SkillInstallProgressPanel';
 import { SkillRepairDraftsPanel } from './SkillRepairDraftsPanel';
 import { MaclawAppMarketPreview } from './MaclawAppMarketPreview';
+import { HubRecommendationCatalog } from './HubRecommendationCatalog';
 import { SkillProductBadge, isMaclawAppSearchResult } from './SkillProductBadge';
-import { SkillSourceBadge, getSkillSourceLabel } from './SkillSourceBadge';
+import { SkillSourceBadge } from './SkillSourceBadge';
 import { formatInstalledOpenPanelMessage, localizeMiniAppPack, miniAppLabels } from '../../i18n/maclawMiniAppLabels';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
-import { displayHubVersion, executionClassBadgeStyle, formatDownloads, hubCatalogActionStyle, hubCatalogDescStyle, hubCatalogDetailStyle, hubCatalogGithubStyle, hubCatalogLinkStyle, hubCatalogMetaLineStyle, hubCatalogNoteStyle, hubCatalogPathStyle, hubCatalogTrailStyle, hubMarketFilterStyle, hubMarketToolbarStyle, settingsControlStyle, settingsFootStyle, settingsNumberStyle, settingsSaveBtnStyle, settingsSegmentBtnActiveStyle, settingsSegmentBtnStyle, settingsSegmentStyle, shouldShowTrustBadge, statusDotStyle, trustBadgeStyle, trustLevelLabel, uploadBtnStyle } from './skillsManagementUtils';
+import { displayHubVersion, executionClassBadgeStyle, hasHubSourceBadges, hubCatalogActionStyle, hubCatalogDescStyle, hubCatalogDetailStyle, hubCatalogGithubStyle, hubCatalogLinkStyle, hubCatalogMetaLineStyle, hubCatalogNameLineStyle, hubCatalogNoteStyle, hubCatalogPathStyle, hubCatalogRowBits, hubCatalogTrailStyle, hubCatalogVersionStyle, hubMarketFilterStyle, hubMarketToolbarStyle, settingsControlStyle, settingsFootStyle, settingsNumberStyle, settingsSaveBtnStyle, SKILL_CARD_COLUMNS, SKILL_CARD_PAGE_SIZE, settingsSegmentBtnActiveStyle, settingsSegmentBtnStyle, settingsSegmentStyle, shouldShowTrustBadge, statusDotStyle, trustBadgeStyle, trustLevelLabel, uploadBtnStyle } from './skillsManagementUtils';
 import { colors, consoleInsetHeadStyle, consoleMetricCellStyle, consoleMetricGridStyle, consoleMetricLabelStyle, consoleMetricValueStyle, consolePropRowStyle, consoleSectionHeadStyle, consoleSectionStyle, remoteCardStyle, remoteCodeBlockStyle, remoteEmptyStateStyle, remoteErrorStateStyle, remoteInfoPanelStyle, remoteLoadingStateStyle, remoteStatusBadgeStyle, remoteTableCellStyle, remoteTableHeaderCellStyle, remoteTagStyle } from './styles';
 import { AddExternalSkillDir, ApplySkillMaintenanceAction, BatchSetNLSkillStatus, CancelSkillEvolution, CheckHubSkillUpdates, ClearSkillEvolutionCompensation, CreateNLSkill, DeleteNLSkill, DiagnoseSkillFiles, DownloadSkillSuiteZip, ExportLearnedSkillsZip, ExportTextFile, GetExperienceAuditHealth, GetHubRecommendations, GetSkillEvolutionStatus, ImportLearnedSkillsZip, ImportNLSkillZip, InstallMixedSkill, InstallSkillSuite, ListExperienceAudit, ListExternalSkillDirsDetailed, ListNLSkills, ListSkillEvolutionAudit, ListSkillEvolutionCompensations, ListSkillMaintenanceDrafts, ListSkillSuites, ListSkillYAMLBackups, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, PurchaseSkillSuite, RemoveExternalSkillDir, RenameNLSkill, ResolveCriticalConfirm, RestoreSkillYAMLBackup, RetrySkillEvolutionCompensation, SearchMixedSkills, SelectProjectDir, SetNLSkillStatus, TriggerSkillOptimize, TriggerSkillSelfRepair, UpdateHubSkill, UpdateNLSkill, UploadNLSkillToMarket, UploadSkillSuite, VerifyAndActivateNLSkillWithArgs } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
@@ -382,55 +383,6 @@ interface HubSkillUpdateInfo {
     hub_url: string;
 }
 
-interface MixedSkillSearchResult {
-    id: string;
-    name: string;
-    description: string;
-    tags: string[];
-    source: string;
-    source_label: string;
-    install_ref?: string;
-    file_path?: string;
-    version?: string;
-    author?: string;
-    permissions?: string[];
-    created_at?: string;
-    trust_level?: string;
-    avg_rating: number;
-    rating_count: number;
-    downloads: number;
-    score: number;
-    price: number;
-    repo_url?: string;
-    installed: boolean;
-    installed_name?: string;
-    can_update: boolean;
-    has_update: boolean;
-    product_kind?: string;
-    is_maclaw_app?: boolean;
-    maclaw_app_id?: string;
-    maclaw_app_name?: string;
-    maclaw_app_description?: string;
-    maclaw_app_category?: string;
-    maclaw_app_icon?: string;
-    maclaw_app_input_mode?: string;
-    maclaw_app_output_modes?: string[];
-    maclaw_app_definition_sha256?: string;
-    maclaw_app_test_evidence?: {
-        run_id?: string;
-        verified_at?: string;
-        definition_fingerprint?: string;
-        artifact_present?: boolean;
-        artifact_name?: string;
-        output_count?: number;
-        primary_result?: string;
-        result_payload?: Record<string, unknown>;
-    };
-    artifact_contract_required?: boolean;
-    artifact_contract_output_modes?: string[];
-    artifact_contract_presentation?: string;
-}
-
 interface SkillSuiteMarketItem {
     id: string;
     name: string;
@@ -695,9 +647,10 @@ function learnedSourceIcon(source: string): string {
 }
 
 const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
-/** Installed-skill catalog: four cards across, twenty cards on a page. */
-export const SKILL_CARD_COLUMNS = 4;
-export const SKILL_CARD_PAGE_SIZE = 20;
+// Card-catalog geometry now lives in skillsManagementUtils (shared with the
+// extracted HubRecommendationCatalog); re-exported for existing importers.
+export { SKILL_CARD_COLUMNS, SKILL_CARD_PAGE_SIZE } from "./skillsManagementUtils";
+import type { MixedSkillSearchResult } from "./skillsManagementUtils";
 
 function previewSkillDescription(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS, emptyText = "-"): { preview: string; tooltip?: string } {
     const normalized = description.trim().replace(/\s+/g, " ");
@@ -2365,26 +2318,24 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         );
     };
 
-    const renderHubCatalogRow = (skill: MixedSkillSearchResult, index: number) => {
-        const descTitle = [skill.description, ...(skill.tags || [])].filter(Boolean).join(" · ");
-        const priceLabel = skill.price > 0
-            ? localizeText(`Price ${skill.price}`, `价格 ${skill.price}`, `價格 ${skill.price}`)
-            : "";
-        const ratingValue = Number(skill.avg_rating);
-        const ratingLabel = skill.rating_count > 0 && Number.isFinite(ratingValue)
-            ? `${ratingValue.toFixed(1)} (${skill.rating_count})`
-            : "";
-        const metaParts = [
-            skill.author,
-            skill.downloads > 0 ? formatDownloads(skill.downloads) : "",
-            ratingLabel,
-            priceLabel,
-        ].filter(Boolean);
-        const showSourceBadges = Boolean(
-            getSkillSourceLabel(skill)
-            || isMaclawAppSearchResult(skill)
-            || shouldShowTrustBadge(skill.trust_level),
+    // Derived display bits shared by the catalog row and card renderers.
+    const renderHubCatalogBadges = (skill: MixedSkillSearchResult) => {
+        if (!hasHubSourceBadges(skill)) return null;
+        return (
+            <div style={hubCatalogBadgeLineStyle}>
+                <SkillSourceBadge skill={skill} localizeText={localizeText} />
+                <SkillProductBadge skill={skill} localizeText={localizeText} />
+                {shouldShowTrustBadge(skill.trust_level) && (
+                    <span style={trustBadgeStyle(skill.trust_level!)}>
+                        {trustLevelLabel(skill.trust_level!, localizeText)}
+                    </span>
+                )}
+            </div>
         );
+    };
+
+    const renderHubCatalogRow = (skill: MixedSkillSearchResult, index: number) => {
+        const { descTitle, metaParts, showSourceBadges } = hubCatalogRowBits(skill, localizeText);
         return (
             <div key={`${skill.source || "skill"}-${skill.id || skill.name}-${index}`} style={{ ...hubSkillRowStyle, borderTop: index > 0 ? `1px solid ${colors.borderLight}` : "none" }}>
                 <div style={hubCatalogIdentityStyle}>
@@ -2392,17 +2343,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         <span style={hubCatalogNameStyle}>{skill.name}</span>
                         {skill.version && <span style={hubCatalogVersionStyle}>v{skill.version}</span>}
                     </div>
-                    {showSourceBadges && (
-                        <div style={hubCatalogBadgeLineStyle}>
-                            <SkillSourceBadge skill={skill} localizeText={localizeText} />
-                            <SkillProductBadge skill={skill} localizeText={localizeText} />
-                            {shouldShowTrustBadge(skill.trust_level) && (
-                                <span style={trustBadgeStyle(skill.trust_level!)}>
-                                    {trustLevelLabel(skill.trust_level!, localizeText)}
-                                </span>
-                            )}
-                        </div>
-                    )}
+                    {showSourceBadges && renderHubCatalogBadges(skill)}
                 </div>
                 <div style={hubCatalogDetailStyle}>
                     <div style={hubCatalogDescStyle} title={descTitle || undefined}>
@@ -3744,9 +3685,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </div>
                             )}
                             {!hubRecsLoading && hubRecommendations.length > 0 && (
-                                <div data-testid="hub-recommendation-catalog">
-                                    {hubRecommendations.map((skill, index) => renderHubCatalogRow(skill, index))}
-                                </div>
+                                <HubRecommendationCatalog
+                                    skills={hubRecommendations}
+                                    localizeText={localizeText}
+                                    renderBadges={renderHubCatalogBadges}
+                                    renderAction={renderHubActionButton}
+                                />
                             )}
                             {!hubRecsLoading && hubRecommendations.length === 0 && (
                                 <div style={hubCatalogNoteStyle}>
@@ -6371,13 +6315,6 @@ const hubCatalogIdentityStyle: CSSProperties = {
     minWidth: 0,
 };
 
-const hubCatalogNameLineStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "baseline",
-    gap: "6px",
-    minWidth: 0,
-};
-
 const hubCatalogNameStyle: CSSProperties = {
     fontWeight: 600,
     fontSize: "0.78rem",
@@ -6385,13 +6322,6 @@ const hubCatalogNameStyle: CSSProperties = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-};
-
-const hubCatalogVersionStyle: CSSProperties = {
-    flex: "0 0 auto",
-    fontSize: "0.66rem",
-    color: colors.textMuted,
-    fontVariantNumeric: "tabular-nums",
 };
 
 const hubCatalogBadgeLineStyle: CSSProperties = {

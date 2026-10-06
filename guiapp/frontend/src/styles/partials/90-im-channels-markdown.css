@@ -1778,26 +1778,26 @@
 
 .sidebar[data-ai-theme='dark'] {
     color-scheme: dark;
-    --theme-primary: #7ea8e0;
-    --theme-primary-strong: #a5c4ee;
-    --theme-primary-soft: rgba(126, 168, 224, 0.14);
-    --theme-page-bg: #0f141b;
-    --theme-surface: #161c26;
-    --theme-surface-muted: #1b2230;
-    --theme-text-primary: #e3e9f1;
-    --theme-text-secondary: #b4c0cf;
-    --theme-text-muted: #7f8ea1;
-    --theme-border: #2b3444;
-    --theme-border-subtle: #232b39;
-    --theme-success: #3fb950;
-    --theme-success-bg: rgba(63, 185, 80, 0.13);
-    --theme-warning: #d0b36a;
-    --theme-warning-bg: rgba(208, 179, 106, 0.12);
-    --theme-danger: #f47067;
-    --theme-danger-bg: rgba(244, 112, 103, 0.12);
-    --theme-link-color: #7ea8e0;
-    --theme-info-bg: rgba(126, 168, 224, 0.10);
-    --theme-on-primary: #0f141b;
+    --theme-primary: #a8a8a8;
+    --theme-primary-strong: #c6c6c6;
+    --theme-primary-soft: rgba(255, 255, 255, 0.10);
+    --theme-page-bg: #050505;
+    --theme-surface: #101010;
+    --theme-surface-muted: #151515;
+    --theme-text-primary: #c9c9c9;
+    --theme-text-secondary: #9e9e9e;
+    --theme-text-muted: #7d7d7d;
+    --theme-border: #2e2e2e;
+    --theme-border-subtle: #232323;
+    --theme-success: #5c9e6e;
+    --theme-success-bg: rgba(92, 158, 110, 0.13);
+    --theme-warning: #c2a86a;
+    --theme-warning-bg: rgba(194, 168, 106, 0.12);
+    --theme-danger: #e07a72;
+    --theme-danger-bg: rgba(224, 122, 114, 0.12);
+    --theme-link-color: #b3b3b3;
+    --theme-info-bg: rgba(255, 255, 255, 0.08);
+    --theme-on-primary: #0a0a0a;
     /* UI polish: dark-mode shadow scale (sidebar rebinds the full palette locally,
        so it needs its own copy of the dark shadow overrides). */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -1909,26 +1909,26 @@
 :where([data-portal-theme])[data-ai-theme='dark'] {
     /* Align UA form/control chrome with the dark palette (buttons, selects, scrollbars). */
     color-scheme: dark;
-    --theme-primary: #7ea8e0;
-    --theme-primary-strong: #a5c4ee;
-    --theme-primary-soft: rgba(126, 168, 224, 0.14);
-    --theme-page-bg: #0f141b;
-    --theme-surface: #161c26;
-    --theme-surface-muted: #1b2230;
-    --theme-text-primary: #e3e9f1;
-    --theme-text-secondary: #b4c0cf;
-    --theme-text-muted: #7f8ea1;
-    --theme-border: #2b3444;
-    --theme-border-subtle: #232b39;
-    --theme-success: #3fb950;
-    --theme-success-bg: rgba(63, 185, 80, 0.13);
-    --theme-warning: #d0b36a;
-    --theme-warning-bg: rgba(208, 179, 106, 0.12);
-    --theme-danger: #f47067;
-    --theme-danger-bg: rgba(244, 112, 103, 0.12);
-    --theme-link-color: #7ea8e0;
-    --theme-info-bg: rgba(126, 168, 224, 0.10);
-    --theme-on-primary: #0f141b;
+    --theme-primary: #a8a8a8;
+    --theme-primary-strong: #c6c6c6;
+    --theme-primary-soft: rgba(255, 255, 255, 0.10);
+    --theme-page-bg: #050505;
+    --theme-surface: #101010;
+    --theme-surface-muted: #151515;
+    --theme-text-primary: #c9c9c9;
+    --theme-text-secondary: #9e9e9e;
+    --theme-text-muted: #7d7d7d;
+    --theme-border: #2e2e2e;
+    --theme-border-subtle: #232323;
+    --theme-success: #5c9e6e;
+    --theme-success-bg: rgba(92, 158, 110, 0.13);
+    --theme-warning: #c2a86a;
+    --theme-warning-bg: rgba(194, 168, 106, 0.12);
+    --theme-danger: #e07a72;
+    --theme-danger-bg: rgba(224, 122, 114, 0.12);
+    --theme-link-color: #b3b3b3;
+    --theme-info-bg: rgba(255, 255, 255, 0.08);
+    --theme-on-primary: #0a0a0a;
     /* UI polish: dark-mode shadow scale (black-based, mirrors :root polish tokens). */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
     --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40);
@@ -2604,36 +2604,36 @@
      * DialogProvider renders outside #App and cannot inherit its CSS variables.
      * Keep in sync with the #App dark theme block (~line 1620).
      */
-    --theme-primary: #7ea8e0;
-    --theme-primary-strong: #a5c4ee;
-    --theme-primary-soft: rgba(126, 168, 224, 0.14);
-    --theme-page-bg: #0f141b;
-    --theme-surface: #161c26;
-    --theme-surface-muted: #1b2230;
-    --theme-text-primary: #e3e9f1;
-    --theme-text-secondary: #b4c0cf;
-    --theme-text-muted: #7f8ea1;
-    --theme-border: #2b3444;
-    --theme-border-subtle: #232b39;
-    --theme-danger: #f47067;
-    --theme-danger-bg: rgba(244, 112, 103, 0.14);
-    --theme-on-primary: #0f141b;
+    --theme-primary: #a8a8a8;
+    --theme-primary-strong: #c6c6c6;
+    --theme-primary-soft: rgba(255, 255, 255, 0.10);
+    --theme-page-bg: #050505;
+    --theme-surface: #101010;
+    --theme-surface-muted: #151515;
+    --theme-text-primary: #c9c9c9;
+    --theme-text-secondary: #9e9e9e;
+    --theme-text-muted: #7d7d7d;
+    --theme-border: #2e2e2e;
+    --theme-border-subtle: #232323;
+    --theme-danger: #e07a72;
+    --theme-danger-bg: rgba(224, 122, 114, 0.14);
+    --theme-on-primary: #0a0a0a;
     --shadow-lg: 0 8px 28px -6px rgba(0, 0, 0, 0.55);
     --shadow-xl: 0 12px 40px -8px rgba(0, 0, 0, 0.60);
 }
 
 .sidebar[data-ai-theme='dark'] {
-    --theme-primary: #7ea8e0;
-    --theme-primary-strong: #a5c4ee;
-    --theme-primary-soft: rgba(126, 168, 224, 0.14);
-    --theme-page-bg: #0f141b;
-    --theme-surface: #161c26;
-    --theme-surface-muted: #1b2230;
-    --theme-text-primary: #e3e9f1;
-    --theme-text-secondary: #b4c0cf;
-    --theme-text-muted: #7f8ea1;
-    --theme-border: #2b3444;
-    --theme-border-subtle: #232b39;
+    --theme-primary: #a8a8a8;
+    --theme-primary-strong: #c6c6c6;
+    --theme-primary-soft: rgba(255, 255, 255, 0.10);
+    --theme-page-bg: #050505;
+    --theme-surface: #101010;
+    --theme-surface-muted: #151515;
+    --theme-text-primary: #c9c9c9;
+    --theme-text-secondary: #9e9e9e;
+    --theme-text-muted: #7d7d7d;
+    --theme-border: #2e2e2e;
+    --theme-border-subtle: #232323;
 }
 
 /* Inherit dark theme variables when the dialog is rendered outside #App */
@@ -3311,8 +3311,10 @@
 /* CodingAgentPlanChecklist.tsx */
 .capc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .capc-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.capc-glyph { width: 14px; flex-shrink: 0; }
-.capc-step-idx { flex-shrink: 0; opacity: 0.86; }
+.capc-glyph { width: 14px; flex-shrink: 0; text-align: center; }
+/* Fixed-width index column keeps T1…T99 titles on one vertical line
+   (24px covers two digits; spans still grow past it if needed). */
+.capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; }
 .capc-step-title { min-width: 0; flex: 1; }
 .capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 

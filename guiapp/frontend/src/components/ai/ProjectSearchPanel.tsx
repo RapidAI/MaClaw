@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArchiveProject, DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeTask } from "../../../wailsjs/go/main/App";
+import { GetArchivedExperience, GetProjectScene, ResumeTask } from "../../../wailsjs/go/main/App";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { openFileLibrary } from "../../utils/fileLibraryNavigation";
@@ -8,42 +8,19 @@ import { openNewTaskWizard } from "./task-config/openNewTaskWizard";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { isSearchDismissExemptTarget, searchSurfaceRootStyle } from "./projectSearchSurface";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
-import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { LibrarySearchRow, SearchSectionLabel } from "./ProjectSearchLibraryRows";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail } from "./ProjectSceneDetailPanel";
-import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isVisibleTaskRow, remoteHostFromTaskTags } from "./codingTaskMode";
-import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
-import { useDialog } from "../CustomDialog";
+import { agentModeFromTaskTags, isRemoteMaintenanceTaskTags, isVisibleTaskRow, remoteHostFromTaskTags } from "./codingTaskMode";
 import { useProjectSearch, type ProjectSearchItem } from "./useProjectSearch";
 import type { HeaderCloudWorkspaceHit } from "./cloudWorkspaceContentSearch";
 import type { HeaderDataDirectoryHit } from "./dataDirectoryWorkspaceSearch";
 import { clearParkedCloudWorkspaceFileOpen } from "./cloudWorkspaceFileOpen";
 import { openHeaderCloudSearchHit, openHeaderDataDirectorySearchHit } from "./openHeaderWorkspaceSearchHit";
-import { headerSearchPlaceholder, type HeaderExpertSearchHit, type HeaderFileSearchHit, type HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
+import type { HeaderExpertSearchHit, HeaderFileSearchHit, HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
+import { ProjectSearchContextMenu } from "./ProjectSearchContextMenu";
+import { ProjectSearchRow } from "./ProjectSearchRow";
 
 export { useProjectSearch } from "./useProjectSearch";
-
-function formatArtifactSummary(item: ProjectSearchItem, lang: string, includeSource = false): string {
-    const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
-    if (!artifact) return "";
-    const label = artifact.title || artifact.preview || artifact.source_url || "";
-    const prefix = localizeText(lang, "Latest artifact", "最近产物");
-    const hint = artifact.source_hint ? "; " + artifact.source_hint : "";
-    const source = includeSource && artifact.source_url ? " | " + artifact.source_url + hint : "";
-    return prefix + ": " + label + source;
-}
-
-function formatWorkflowType(type: string | undefined, lang: string): string {
-    if (!type) return "";
-    const labels: Record<string, { en: string; zh: string }> = {
-        coding: { en: "Coding", zh: "\u7f16\u7a0b" },
-        product_design: { en: "Product Design", zh: "\u4ea7\u54c1\u8bbe\u8ba1" },
-        research: { en: "Research", zh: "\u7814\u7a76" },
-        writing: { en: "Writing", zh: "\u5199\u4f5c" },
-    };
-    const hit = labels[type];
-    return hit ? (lang === "en" ? hit.en : hit.zh) : type.replace(/_/g, " ");
-}
 
 export function ProjectSearchPanel({ search, lang, theme: t, inline, active = true, onProjectSwitch, onCreateProjectTab, onCloseProjectTab, onForkCurrentChat, onTaskPrefsChanged }: {
     search: ReturnType<typeof useProjectSearch>;
@@ -66,8 +43,6 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     onForkCurrentChat?: (taskName: string) => void;
     onTaskPrefsChanged?: () => void;
 }) {
-    const inputRef = useRef<HTMLInputElement>(null);
-    const composingRef = useRef(false);
     const panelRef = useRef<HTMLDivElement>(null);
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; item: ProjectSearchItem } | null>(null);
     const [renamingPath, setRenamingPath] = useState<string | null>(null);
@@ -87,13 +62,31 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const dataDirResults = search.dataDirResults || [];
     const showSectionLabels = [visibleResults.length, cloudResults.length, dataDirResults.length, fileResults.length, knowledgeResults.length, expertResults.length].filter(count => count > 0).length > 1;
     const hasAnyResults = visibleResults.length > 0 || cloudResults.length > 0 || dataDirResults.length > 0 || fileResults.length > 0 || knowledgeResults.length > 0 || expertResults.length > 0;
+    const pendingText = (search.pendingQuery || "").trim();
+    const shownText = search.query.trim();
+    const searchingLabel = pendingText && pendingText !== shownText
+        ? localizeText(lang, `Searching “${pendingText}”...`, `正在搜索“${pendingText}”...`, `正在搜尋「${pendingText}」...`)
+        : localizeText(lang, "Searching...", "搜索中...", "搜尋中...");
 
     useEffect(() => {
         if (!search.open) return;
-        const active = document.activeElement;
-        if (active instanceof HTMLElement && active.closest(".mc-header-search-wrap, [data-testid='ai-titlebar-search']")) return;
-        inputRef.current?.focus();
-    }, [search.open]);
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") return;
+            event.stopPropagation();
+            if (event.isComposing) return;
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            const inTaskSearch = !!target?.closest(".mc-task-pane__search");
+            const inPanelEditor = !!target && !!panelRef.current?.contains(target)
+                && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable);
+            // The task field, rename box, and fork name already handle Escape.
+            // Swallow the key either way so it does not also leave maximized mode or close the window.
+            if (inTaskSearch || inPanelEditor || event.defaultPrevented) return;
+            event.preventDefault();
+            search.close();
+        };
+        document.addEventListener("keydown", onKey);
+        return () => document.removeEventListener("keydown", onKey);
+    }, [search.open, search.close]);
     useEffect(() => {
         if (active) return;
         search.close();
@@ -203,10 +196,28 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     if (archivedExperience) return <ProjectSearchArchivedPanel name={archivedExperience.name} content={archivedExperience.content} loading={archivedLoading} lang={lang} theme={t} panelRef={panelRef} onClose={() => setArchivedExperience(null)} />;
 
     return (
-        <div ref={panelRef} data-testid="project-search-panel" role="dialog" aria-modal="true" aria-label={localizeText(lang, "Search", "搜索")} style={searchSurfaceRootStyle(t)}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px", flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg }}>
-                <span style={{ color: t.textMuted, opacity: 0.8, flexShrink: 0 }}><ProjectSearchIcon name="search" /></span>
-                <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => { const value = event.target.value; if (composingRef.current) search.onQueryDraft?.(value); else search.onQueryChange(value); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; search.onQueryChange(event.currentTarget.value); }} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={headerSearchPlaceholder(lang)} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
+        <div ref={panelRef} id="project-search-panel" data-testid="project-search-panel" role="region" aria-label={localizeText(lang, "Search results", "搜索结果", "搜尋結果")} style={searchSurfaceRootStyle(t)} onKeyDown={event => {
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+            const rows = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(".psp-row, .pslr-row") || []);
+            if (!rows.length) return;
+            const current = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".psp-row, .pslr-row") : null;
+            const index = current ? rows.indexOf(current) : -1;
+            if (event.key === "ArrowUp" && index <= 0) {
+                event.preventDefault();
+                document.querySelector<HTMLElement>("[data-testid='task-pane-search']")?.focus();
+                return;
+            }
+            const nextIndex = event.key === "ArrowDown" ? Math.min(rows.length - 1, index + 1) : Math.max(0, index - 1);
+            if (nextIndex === index) return;
+            event.preventDefault();
+            const next = rows[nextIndex];
+            next?.focus();
+            next?.scrollIntoView?.({ block: "nearest" });
+        }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 12px", flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg }}>
+                <span style={{ color: t.text, fontSize: "13px", fontWeight: 650, flexShrink: 0 }}>{localizeText(lang, "Search results", "搜索结果", "搜尋結果")}</span>
+                <span style={{ flex: 1, minWidth: 0, color: t.textMuted, fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{search.query.trim()}</span>
                 {onForkCurrentChat && (
                     <button
                         type="button"
@@ -220,94 +231,26 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
                 <button {...(inline ? { onMouseDown: (event: React.MouseEvent) => { event.preventDefault(); event.stopPropagation(); search.close(); } } : { onClick: () => search.close() })} style={{ background: "none", border: "none", cursor: "pointer", color: t.text, opacity: 0.5, fontSize: "12px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 }} title={localizeText(lang, "Close", "\u5173\u95ed")}>{"x"}</button>
             </div>
             <ProjectSearchForkForm open={forkNameOpen} lang={lang} theme={t} onCancel={() => setForkNameOpen(false)} onSubmit={name => { setForkNameOpen(false); search.close(); onForkCurrentChat?.(name); }} />
-            <div data-testid="project-search-results" className="psp-results">
-                {search.loading && <div style={{ padding: hasAnyResults ? "6px 10px" : "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
-                {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query.trim() ? localizeText(lang, "No results found", "\u672a\u627e\u5230\u7ed3\u679c") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
-                {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" />}
-                {visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
-                {cloudResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Cloud workspace" zh="云端工作区" testId="search-cloud-section" />}
-                {cloudResults.map(item => <LibrarySearchRow key={`cloud-${item.id}`} kind={lang === "en" ? "CWS" : "云"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-cloud-row" onSelect={() => onSelectCloud(item)} />)}
-                {dataDirResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Data directory" zh="数据目录" testId="search-data-section" />}
-                {dataDirResults.map(item => <LibrarySearchRow key={`data-${item.id}`} kind={lang === "en" ? "DIR" : "目录"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-data-row" onSelect={() => onSelectDataDirectory(item)} />)}
-                {fileResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Files" zh="文件" testId="search-files-section" />}
-                {fileResults.map(item => <LibrarySearchRow key={`file-${item.id}`} kind={item.type === "audio" ? "AUDIO" : "FILE"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-file-row" onSelect={() => onSelectFile(item)} />)}
-                {knowledgeResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Knowledge" zh="知识库" testId="search-knowledge-section" />}
+            <div data-testid="project-search-results" className="psp-results" aria-busy={search.loading || undefined}>
+                {search.loading && <div style={{ padding: hasAnyResults ? "6px 10px" : "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{searchingLabel}</div>}
+                <div style={search.loading && hasAnyResults ? { opacity: 0.45 } : undefined}>
+                {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query.trim() ? localizeText(lang, "No results found", "未找到结果", "未找到結果") : localizeText(lang, "No tasks", "暂无任务", "暫無任務")}</div>}
+                {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" zhHant="任務" />}
+                {visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} formatTime={search.formatTime} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
+                {cloudResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Cloud workspace" zh="云端工作区" zhHant="雲端工作區" testId="search-cloud-section" />}
+                {cloudResults.map(item => <LibrarySearchRow key={`cloud-${item.id}`} kind={localizeText(lang, "CWS", "云", "雲")} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-cloud-row" onSelect={() => onSelectCloud(item)} />)}
+                {dataDirResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Data directory" zh="数据目录" zhHant="資料目錄" testId="search-data-section" />}
+                {dataDirResults.map(item => <LibrarySearchRow key={`data-${item.id}`} kind={localizeText(lang, "DIR", "目录", "目錄")} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-data-row" onSelect={() => onSelectDataDirectory(item)} />)}
+                {fileResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Cloud drive" zh="云盘" zhHant="雲端硬碟" testId="search-files-section" />}
+                {fileResults.map(item => <LibrarySearchRow key={`file-${item.id}`} kind={item.type === "audio" ? localizeText(lang, "AUDIO", "音频", "音訊") : localizeText(lang, "FILE", "文件", "檔案")} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-file-row" onSelect={() => onSelectFile(item)} />)}
+                {knowledgeResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Knowledge" zh="知识库" zhHant="知識庫" testId="search-knowledge-section" />}
                 {knowledgeResults.map(item => <LibrarySearchRow key={`knowledge-${item.id}`} kind="KNOW" title={item.title} preview={item.preview || item.sourceTitle} lang={lang} theme={t} testId="search-knowledge-row" onSelect={() => onSelectKnowledge(item)} />)}
-                {expertResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Experts" zh="AI专家" testId="search-experts-section" />}
+                {expertResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Experts" zh="AI专家" zhHant="AI專家" testId="search-experts-section" />}
                 {expertResults.map(item => <LibrarySearchRow key={`expert-${item.id}`} kind="AI" title={item.title} preview={item.preview} mark={item.icon || "🤖"} lang={lang} theme={t} testId="search-expert-row" onSelect={() => onSelectExpert(item)} />)}
+                </div>
             </div>
             {(sceneLoadingPath || sceneDetail) && <ProjectSceneDetailPanel detail={sceneDetail} loading={!!sceneLoadingPath} lang={lang} theme={t} formatTime={search.formatTime} onClose={() => setSceneDetail(null)} />}
             {ctxMenu && <ProjectSearchContextMenu ctxMenu={ctxMenu} lang={lang} theme={t} refreshResults={refreshResults} setCtxMenu={setCtxMenu} setRenamingPath={setRenamingPath} setRenameVal={setRenameVal} onCloseProjectTab={onCloseProjectTab} />}
         </div>
     );
-}
-
-function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVal, setRenameVal, setRenamingPath, onSelect, onShowSceneDetail, sceneLoading, refreshResults, setCtxMenu }: {
-    item: ProjectSearchItem; lang: string; theme: Theme; search: ReturnType<typeof useProjectSearch>; renamingPath: string | null; renameVal: string; setRenameVal: (value: string) => void; setRenamingPath: (path: string | null) => void; onSelect: (item: ProjectSearchItem) => void | Promise<void>; onShowSceneDetail: (item: ProjectSearchItem) => void | Promise<void>; sceneLoading: boolean; refreshResults: () => void; setCtxMenu: (menu: { x: number; y: number; item: ProjectSearchItem } | null) => void;
-}) {
-    const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
-    const artifactSummary = formatArtifactSummary(item, lang);
-    const artifactTooltip = formatArtifactSummary(item, lang, true);
-    const pureCoding = isPureCodingTaskTags(item.tags);
-    const remoteCoding = agentModeFromTaskTags(item.tags) === "remote_coding_dev";
-    const remoteMaintenance = remoteCoding && isRemoteMaintenanceTaskTags(item.tags);
-    const remoteHost = remoteHostFromTaskTags(item.tags);
-    const fromCodingWorkflow = isCodingWorkflowSourceTags(item.tags);
-    const kindLabel = item.archived
-        ? "ARC"
-        : remoteMaintenance
-            ? "OPS"
-            : remoteCoding
-            ? "SSH"
-            : pureCoding
-                ? "CODE"
-                : item.pinned
-                    ? "PIN"
-                    : "TASK";
-    return <div data-pure-coding={pureCoding ? "true" : "false"} onClick={() => void onSelect(item)} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); void onSelect(item); } }} onContextMenu={event => { event.preventDefault(); setCtxMenu({ x: event.clientX, y: event.clientY, item }); }} role="button" tabIndex={0} aria-label={item.name || item.project_path} className="psp-row" onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}>
-        <div className="psp-row-head">
-            <span style={{ minWidth: "26px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: pureCoding ? (remoteCoding ? "var(--theme-primary-strong)" : "var(--theme-success)") : t.textMuted, border: pureCoding ? `1px solid ${remoteCoding ? "color-mix(in srgb, var(--theme-primary) 48%, transparent)" : "color-mix(in srgb, var(--theme-success) 48%, transparent)"}` : `1px solid ${t.titleBarBorder}`, borderRadius: "4px", padding: "1px 4px", flexShrink: 0 }} title={pureCoding ? (remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : remoteCoding ? localizeText(lang, "Remote pure coding", "远程纯编程") : localizeText(lang, "Local pure coding", "本地纯编程")) : undefined}>{kindLabel}</span>
-            {renamingPath === item.project_path ? <input autoFocus value={renameVal} onChange={event => setRenameVal(event.target.value)} onBlur={async () => { const trimmed = renameVal.trim(); if (trimmed && trimmed !== item.name) { await RenameTask(item.project_path, trimmed); refreshResults(); } setRenamingPath(null); }} onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenamingPath(null); }} onClick={event => event.stopPropagation()} style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: t.text, background: t.codeBlockBg, border: `1px solid ${t.headingColor}`, borderRadius: "3px", padding: "2px 6px", outline: "none", minWidth: 0, fontFamily: "inherit" }} /> : <span style={{ fontSize: "13px", fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.name || item.project_path}</span>}
-            {pureCoding && <span data-testid={remoteCoding ? "search-remote-coding-badge" : "search-coding-badge"} style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: remoteCoding ? "color-mix(in srgb, var(--theme-primary) 12%, transparent)" : "color-mix(in srgb, var(--theme-success) 12%, transparent)", color: remoteCoding ? "var(--theme-primary-strong)" : "var(--theme-success)", border: remoteCoding ? "1px solid color-mix(in srgb, var(--theme-primary) 48%, transparent)" : "1px solid color-mix(in srgb, var(--theme-success) 48%, transparent)", flexShrink: 0, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{remoteCoding ? (remoteHost ? `${remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : localizeText(lang, "Remote coding", "远程编程")} · ${remoteHost}` : (remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : localizeText(lang, "Remote coding", "远程编程"))) : localizeText(lang, "Pure coding", "纯编程")}</span>}
-            {fromCodingWorkflow && <span data-testid="search-coding-workflow-source-badge" className="psp-wf-badge" title={localizeText(lang, "Created from coding workflow", "由编程工作流创建")}>{localizeText(lang, "Workflow", "工作流")}</span>}
-            {item.workflow_type && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(47,111,188,0.10)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{formatWorkflowType(item.workflow_type, lang)}</span>}
-            {item.archived && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(100,116,139,0.10)", color: t.textMuted, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{localizeText(lang, "Archived", "\u5df2\u5f52\u6863")}</span>}
-            <button type="button" onClick={event => { event.stopPropagation(); void onShowSceneDetail(item); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: sceneLoading ? 0.35 : 0.7, width: "20px", height: "20px", cursor: sceneLoading ? "default" : "pointer", flexShrink: 0, fontSize: "12px" }} disabled={sceneLoading} title={localizeText(lang, "Scene details", "任务证据详情")}>{sceneLoading ? "..." : <ProjectSearchIcon name="info" />}</button>
-            <button type="button" onClick={event => { event.stopPropagation(); void onSelect(item); }} style={{ border: "none", background: item.archived ? "rgba(100,116,139,0.10)" : "rgba(47,111,188,0.10)", color: item.archived ? t.textMuted : t.headingColor, borderRadius: "999px", width: "22px", height: "22px", cursor: "pointer", flexShrink: 0 }} title={item.archived ? localizeText(lang, "View experience", "\u67e5\u770b\u7ecf\u9a8c") : localizeText(lang, "Resume task", "\u7ee7\u7eed\u4efb\u52a1")}><ProjectSearchIcon name="arrowRight" /></button>
-        </div>
-        <div style={{ fontSize: "11px", color: t.text, opacity: 0.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: "21px" }}>{item.project_path}</div>
-        {item.preview && <div style={{ fontSize: "11px", color: t.text, opacity: 0.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: "21px", marginTop: "1px" }}>{item.preview}</div>}
-        {artifactSummary && <div title={artifactTooltip} className="psp-artifact"><span style={{ fontSize: "10px", color: t.headingColor, opacity: 0.58, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{artifactSummary}</span>{artifact?.source_url && <button type="button" onClick={event => { event.stopPropagation(); void OpenFileOrShowInFolder(artifact.source_url || ""); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: 0.7, cursor: "pointer", fontSize: "11px", lineHeight: 1, padding: "1px 2px", flexShrink: 0 }} title={localizeText(lang, "Open artifact source", "打开产物来源")}><ProjectSearchIcon name="externalLink" /></button>}</div>}
-        {item.last_activity && <div style={{ fontSize: "10px", color: t.text, opacity: 0.32, paddingLeft: "21px", marginTop: "1px" }}>{search.formatTime(item.last_activity)}</div>}
-    </div>;
-}
-
-
-function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResults, setCtxMenu, setRenamingPath, setRenameVal, onCloseProjectTab }: {
-    ctxMenu: { x: number; y: number; item: ProjectSearchItem }; lang: string; theme: Theme; refreshResults: () => void; setCtxMenu: (menu: null) => void; setRenamingPath: (path: string | null) => void; setRenameVal: (value: string) => void; onCloseProjectTab?: (projectPath: string) => void;
-}) {
-    const { showConfirm } = useDialog();
-    const removeTask = async () => {
-        console.info("[ProjectSearch] deleting task", { projectPath: ctxMenu.item.project_path });
-        try {
-            await DeleteTask(ctxMenu.item.project_path);
-            purgeDeletedProjectTabLocalCache(ctxMenu.item.project_path);
-            const expertID = expertIDFromTaskTags(ctxMenu.item.tags);
-            if (expertID) purgeDeletedExpertTabLocalCache(expertID);
-            // The backend emits project-task:closed after deletion. Keep this
-            // direct close for hosts where runtime events are unavailable.
-            onCloseProjectTab?.(ctxMenu.item.project_path);
-            refreshResults();
-            setCtxMenu(null);
-        } catch (error) {
-            console.error("[ProjectSearch] DeleteTask failed:", error);
-        }
-    };
-    const actions = [
-        { label: localizeText(lang, "Rename", "\u91cd\u547d\u540d"), icon: "edit", action: () => { setRenamingPath(ctxMenu.item.project_path); setRenameVal(ctxMenu.item.name || ""); setCtxMenu(null); } },
-        { label: ctxMenu.item.pinned ? localizeText(lang, "Unpin", "\u53d6\u6d88\u7f6e\u9876") : localizeText(lang, "Pin", "\u7f6e\u9876"), icon: "pin", action: async () => { await PinTask(ctxMenu.item.project_path, !ctxMenu.item.pinned); refreshResults(); setCtxMenu(null); } },
-        { label: localizeText(lang, "Remove", "\u79fb\u9664"), icon: "x", action: removeTask },
-        { label: localizeText(lang, "Archive", "\u5f52\u6863"), icon: "ARC", action: async () => { setCtxMenu(null); const confirmed = await showConfirm(localizeText(lang, "After archiving, you will not be able to continue this task, but the experience will be preserved. Confirm archive?", "\u5f52\u6863\u540e\u5c06\u65e0\u6cd5\u7ee7\u7eed\u6b64\u4efb\u52a1\uff0c\u4f46\u7ecf\u9a8c\u4f1a\u88ab\u4fdd\u7559\u3002\u786e\u8ba4\u5f52\u6863\uff1f"), localizeText(lang, "Archive task", "\u5f52\u6863\u4efb\u52a1"), { confirmText: localizeText(lang, "Archive", "\u5f52\u6863"), cancelText: localizeText(lang, "Cancel", "\u53d6\u6d88") }); if (!confirmed) return; try { console.info("[ProjectSearch] archiving task", { projectPath: ctxMenu.item.project_path }); await ArchiveProject(ctxMenu.item.project_path); onCloseProjectTab?.(ctxMenu.item.project_path); refreshResults(); } catch (error) { console.error("[ProjectSearch] ArchiveProject failed:", error); } } },
-    ];
-    return <><div className="psp-ctx-backdrop" onClick={() => setCtxMenu(null)} /><div style={{ position: "fixed", left: ctxMenu.x, top: ctxMenu.y, zIndex: 9999, background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: "6px", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", padding: "4px 0", minWidth: "120px" }}>{actions.map(item => <div key={item.label} onClick={item.action} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "12px", color: t.text, transition: "background 0.1s" }} onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}><span className="psp-ctx-icon">{item.icon}</span><span>{item.label}</span></div>)}</div></>;
 }

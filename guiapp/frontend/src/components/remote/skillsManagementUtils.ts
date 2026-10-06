@@ -1,5 +1,7 @@
 import type { CSSProperties } from "react";
 import { colors } from "./styles";
+import { getSkillSourceLabel } from "./SkillSourceBadge";
+import { isMaclawAppSearchResult } from "./SkillProductBadge";
 
 export const executionClassBadgeStyle: CSSProperties = {
     display: "inline-block",
@@ -179,6 +181,20 @@ export const hubCatalogMetaLineStyle: CSSProperties = {
     fontVariantNumeric: "tabular-nums",
 };
 
+export const hubCatalogNameLineStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "baseline",
+    gap: "6px",
+    minWidth: 0,
+};
+
+export const hubCatalogVersionStyle: CSSProperties = {
+    flex: "0 0 auto",
+    fontSize: "0.66rem",
+    color: colors.textMuted,
+    fontVariantNumeric: "tabular-nums",
+};
+
 export const hubCatalogActionStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 10px",
@@ -260,3 +276,92 @@ export const settingsFootStyle: CSSProperties = {
     color: colors.textMuted,
     lineHeight: 1.4,
 };
+
+// ===== Shared capability-market catalog bits (row + card renderers) =====
+
+/** Card-catalog geometry: four cards across, twenty cards on a page. */
+export const SKILL_CARD_COLUMNS = 4;
+export const SKILL_CARD_PAGE_SIZE = 20;
+
+export interface MixedSkillSearchResult {
+    id: string;
+    name: string;
+    description: string;
+    tags: string[];
+    source: string;
+    source_label: string;
+    install_ref?: string;
+    file_path?: string;
+    version?: string;
+    author?: string;
+    permissions?: string[];
+    created_at?: string;
+    trust_level?: string;
+    avg_rating: number;
+    rating_count: number;
+    downloads: number;
+    score: number;
+    price: number;
+    repo_url?: string;
+    installed: boolean;
+    installed_name?: string;
+    can_update: boolean;
+    has_update: boolean;
+    product_kind?: string;
+    is_maclaw_app?: boolean;
+    maclaw_app_id?: string;
+    maclaw_app_name?: string;
+    maclaw_app_description?: string;
+    maclaw_app_category?: string;
+    maclaw_app_icon?: string;
+    maclaw_app_input_mode?: string;
+    maclaw_app_output_modes?: string[];
+    maclaw_app_definition_sha256?: string;
+    maclaw_app_test_evidence?: {
+        run_id?: string;
+        verified_at?: string;
+        definition_fingerprint?: string;
+        artifact_present?: boolean;
+        artifact_name?: string;
+        output_count?: number;
+        primary_result?: string;
+        result_payload?: Record<string, unknown>;
+    };
+    artifact_contract_required?: boolean;
+    artifact_contract_output_modes?: string[];
+    artifact_contract_presentation?: string;
+}
+
+type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
+
+/** Single source of truth for the source/product/trust badge visibility. */
+export function hasHubSourceBadges(skill: MixedSkillSearchResult): boolean {
+    return Boolean(
+        getSkillSourceLabel(skill)
+        || isMaclawAppSearchResult(skill)
+        || shouldShowTrustBadge(skill.trust_level),
+    );
+}
+
+/** Derived display bits shared by the catalog row and card renderers. */
+export function hubCatalogRowBits(skill: MixedSkillSearchResult, localizeText: LocalizeText): {
+    descTitle: string;
+    metaParts: string[];
+    showSourceBadges: boolean;
+} {
+    const descTitle = [skill.description, ...(skill.tags || [])].filter(Boolean).join(" · ");
+    const priceLabel = skill.price > 0
+        ? localizeText(`Price ${skill.price}`, `价格 ${skill.price}`, `價格 ${skill.price}`)
+        : "";
+    const ratingValue = Number(skill.avg_rating);
+    const ratingLabel = skill.rating_count > 0 && Number.isFinite(ratingValue)
+        ? ratingValue.toFixed(1) + " (" + skill.rating_count + ")"
+        : "";
+    const metaParts = [
+        skill.author,
+        skill.downloads > 0 ? formatDownloads(skill.downloads) : "",
+        ratingLabel,
+        priceLabel,
+    ].filter((part): part is string => Boolean(part));
+    return { descTitle, metaParts, showSourceBadges: hasHubSourceBadges(skill) };
+}

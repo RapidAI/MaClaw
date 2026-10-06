@@ -29,6 +29,12 @@ type agentLoopToolSet struct {
 
 func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *LoopContext, phase agentLoopPhase) agentLoopToolSet {
 	startedAt := time.Now()
+	if petCompanionToolsDisabled(userID) {
+		if ctx != nil {
+			ctx.setExposedToolNames(nil)
+		}
+		return agentLoopToolSet{PreparationTime: time.Since(startedAt)}
+	}
 	if loopContextBlocksLegacyToolRouter(ctx) {
 		requestID := ""
 		if ctx != nil {
@@ -204,13 +210,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// it is not a legacy model capability.
 	tools = removeLegacyModelMCPGateway(tools)
 	baseTools = removeLegacyModelMCPGateway(baseTools)
-	// manage_skill is likewise a merged dynamic gateway. Legacy model turns
-	// cannot bind a Skill, package, Hub, or run record through its arguments;
-	// retain no definition here and leave the narrow list-only compatibility
-	// action as execution defense for stale responses. Installed skills are
-	// rendered only by the managed dynamic semantic catalog.
-	tools = removeLegacyModelManageSkillGateway(tools)
-	baseTools = removeLegacyModelManageSkillGateway(baseTools)
+	// manage_skill is the local skill runtime. Retrieval ranking skips it so
+	// it does not spend a slot; the execution baseline below pins it onto
+	// full surfaces. call_mcp_tool stays removed: its arguments select the
+	// provider.
 	// Keep the local-file fence last: client-declared tools and future pipeline
 	// stages above must not be able to reintroduce computer_* after routing has
 	// correctly selected local document handling.
@@ -251,24 +254,23 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		}
 		routerRankedNames = rankContinuationTools(routerRankedNames, carried, tools)
 	}
-	// A light classifier-timeout leftover is a narrow web lookup. A full
-	// assistant turn skips the name router on timeout, so the floor has to
-	// be pinned from the catalog: bash, read_file, write_file, edit_file.
-	// A short continuation already decided to keep the parent execution
-	// tools; narrowing afterwards is what removes them again. The seal
-	// restores workflow, skill-search, expert, and group limits the pin
-	// would otherwise undo.
-	if loopContextHasClassifierTimeoutLookup(ctx) && !operationalExecutionProfile(profile) {
-		if executionSurfaceIsFull(profile) {
-			tools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, tools, lookupCatalog)
-			baseTools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, baseTools, lookupCatalog)
-			directMode := h.mainLoopInDirectMode(userID, ctx)
-			tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, nil)
-			baseTools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, baseTools, phase, directMode, nil)
-		} else {
-			tools = keepClassifierTimeoutLookupTools(tools)
-			baseTools = keepClassifierTimeoutLookupTools(baseTools)
-		}
+	// A light classifier-timeout leftover is a narrow web lookup. Every other
+	// full assistant surface pins the execution baseline from the catalog:
+	// bash, read_file, write_file, edit_file, craft_tool, manage_skill. A
+	// short continuation already decided to keep the parent execution tools;
+	// narrowing afterwards is what removes them again. The seal restores
+	// workflow, skill-search, expert, and group limits the pin would
+	// otherwise undo.
+	fullSurface := executionSurfaceIsFull(profile) && !operationalExecutionProfile(profile)
+	if loopContextHasClassifierTimeoutLookup(ctx) && !operationalExecutionProfile(profile) && !fullSurface {
+		tools = keepClassifierTimeoutLookupTools(tools)
+		baseTools = keepClassifierTimeoutLookupTools(baseTools)
+	} else if fullSurface {
+		tools = h.pinExecutionBaseline(userID, ctx, tools, lookupCatalog)
+		baseTools = h.pinExecutionBaseline(userID, ctx, baseTools, lookupCatalog)
+		directMode := h.mainLoopInDirectMode(userID, ctx)
+		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, nil)
+		baseTools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, baseTools, phase, directMode, nil)
 	} else {
 		// Workflow ensure runs above and can put bash back onto a
 		// skill-search round. The timeout seal does this itself.
@@ -421,20 +423,6 @@ func removeLegacyModelMCPGateway(tools []map[string]interface{}) []map[string]in
 	filtered := make([]map[string]interface{}, 0, len(tools))
 	for _, definition := range tools {
 		if strings.TrimSpace(extractToolName(definition)) == "call_mcp_tool" {
-			continue
-		}
-		filtered = append(filtered, definition)
-	}
-	return filtered
-}
-
-func removeLegacyModelManageSkillGateway(tools []map[string]interface{}) []map[string]interface{} {
-	if len(tools) == 0 {
-		return tools
-	}
-	filtered := make([]map[string]interface{}, 0, len(tools))
-	for _, definition := range tools {
-		if strings.TrimSpace(extractToolName(definition)) == "manage_skill" {
 			continue
 		}
 		filtered = append(filtered, definition)

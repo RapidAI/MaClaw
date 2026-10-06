@@ -1793,8 +1793,12 @@ func quoteTUIRunValueForShell(input string) string {
 
 func quoteTUIRunValueForStep(step corelib.NLSkillStep) func(string) string {
 	preferred, _ := step.Params["preferred_shell"].(string)
+	command, _ := step.Params["command"].(string)
+	// Quote for the interpreter that will actually run the step. An empty
+	// preferred_shell used to imply PowerShell here while exec used cmd.
+	shell, _ := skill.ResolveStepShell(command, preferred, runtime.GOOS)
 	return func(input string) string {
-		return quoteTUIRunValueForPreferredShell(input, preferred)
+		return skill.QuoteForShellPreference(input, shell)
 	}
 }
 
@@ -1869,8 +1873,9 @@ func execStepWithContext(parentCtx context.Context, step corelib.NLSkillStep, di
 	var sh string
 	var sa []string
 	if runtime.GOOS == "windows" {
-		switch normalizeTUIShellPreference(sval(step.Params, "preferred_shell")) {
-		case "bash":
+		resolved, _ := skill.ResolveStepShell(cmd, sval(step.Params, "preferred_shell"), runtime.GOOS)
+		switch resolved {
+		case skill.StepShellBash:
 			var err error
 			sh, err = exec.LookPath("bash.exe")
 			if err != nil {
@@ -1880,7 +1885,7 @@ func execStepWithContext(parentCtx context.Context, step corelib.NLSkillStep, di
 				return "", fmt.Errorf("bash shell not found for TUI skill step; install Git for Windows or set preferred_shell: powershell")
 			}
 			sa = []string{"-lc", cmd}
-		case "cmd":
+		case skill.StepShellCmd:
 			sh = os.Getenv("ComSpec")
 			if sh == "" {
 				sh = "cmd.exe"

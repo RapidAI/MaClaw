@@ -3,12 +3,44 @@ package browser
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+func TestDiscoverTargetsUsesTheDesktopBrowser(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"login","type":"page","url":"https://mail.example/inbox","webSocketDebuggerUrl":"ws://127.0.0.1:18020/devtools/page/login"}]`))
+	}))
+	defer ts.Close()
+
+	targets, err := DiscoverTargets(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets=%d", len(targets))
+	}
+	want := "ws" + strings.TrimPrefix(ts.URL, "http") + "/devtools/page/login"
+	if targets[0].WebSocketDebugURL != want {
+		t.Fatalf("websocket=%q want %q", targets[0].WebSocketDebugURL, want)
+	}
+	version := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"ws://127.0.0.1:18020/devtools/browser/login"}`))
+	}))
+	defer version.Close()
+	got, err := browserWebSocketURL(version.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "ws" + strings.TrimPrefix(version.URL, "http") + "/devtools/browser/login"
+	if got != want {
+		t.Fatalf("browser websocket=%q want %q", got, want)
+	}
+}
 
 func TestDiscoverTargetsIncludesHTTPStatusAndBodyLength(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -145,5 +177,63 @@ func TestCDPClientClosedSnapshot(t *testing.T) {
 	}
 	if closed.IsAlive() {
 		t.Fatal("closed client should not be alive")
+	}
+}
+
+func TestCdpSocketOnEndpointCarriesGateToken(t *testing.T) {
+	endpoint := "http://desktop:abc123@192.0.2.7:19020"
+	got := cdpSocketOnEndpoint(endpoint, "ws://127.0.0.1:9222/devtools/browser/x")
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "ws" || parsed.Host != "192.0.2.7:19020" {
+		t.Fatalf("unexpected rewrite: %s", got)
+	}
+	if parsed.User == nil {
+		t.Fatalf("gate token was dropped: %s", got)
+	}
+	password, _ := parsed.User.Password()
+	if password != "abc123" {
+		t.Fatalf("unexpected token %q", password)
+	}
+	if got := bearerFromEndpoint(endpoint); got != "abc123" {
+		t.Fatalf("bearer extraction got %q", got)
+	}
+	if got := bearerFromEndpoint("http://192.0.2.7:19020"); got != "" {
+		t.Fatalf("tokenless endpoint returned %q", got)
+	}
+}
+
+func TestDiscoverTargetsSendsGateToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`[{"id":"p1","type":"page","webSocketDebuggerUrl":"ws://127.0.0.1/devtools/page/1"}]`))
+	}))
+	defer srv.Close()
+	srvURL := strings.Replace(srv.URL, "http://", "http://desktop:tok123@", 1)
+	targets, err := DiscoverTargets(srvURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer tok123" {
+		t.Fatalf("gate token header missing: %q", gotAuth)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("unexpected targets: %+v", targets)
+	}
+}
+
+func TestRedactUserInfoHidesGateToken(t *testing.T) {
+	got := redactUserInfo("http://desktop:secret-token@192.0.2.7:19020")
+	if strings.Contains(got, "secret-token") {
+		t.Fatalf("token leaked into log output: %s", got)
+	}
+	if !strings.Contains(got, "192.0.2.7:19020") {
+		t.Fatalf("host lost: %s", got)
+	}
+	if redactUserInfo("http://192.0.2.7:19020") != "http://192.0.2.7:19020" {
+		t.Fatal("tokenless endpoint changed")
 	}
 }

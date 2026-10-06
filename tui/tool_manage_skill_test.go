@@ -708,6 +708,33 @@ func TestQuoteTUIRunValueForShellQuotesSpaces(t *testing.T) {
 	}
 }
 
+func TestQuoteTUIRunValueForStepMatchesResolvedShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("shell resolution differs by host")
+	}
+	copyQuote := quoteTUIRunValueForStep(corelib.NLSkillStep{
+		Params: map[string]interface{}{"command": `copy {{path}}`},
+	})("a'b")
+	if copyQuote != `"a'b"` {
+		t.Fatalf("copy step quote = %q, want cmd quotes", copyQuote)
+	}
+	psQuote := quoteTUIRunValueForStep(corelib.NLSkillStep{
+		Params: map[string]interface{}{"command": `Get-ChildItem {{path}}`},
+	})("a'b")
+	if psQuote != `'a''b'` {
+		t.Fatalf("cmdlet step quote = %q, want powershell quotes", psQuote)
+	}
+	forced := quoteTUIRunValueForStep(corelib.NLSkillStep{
+		Params: map[string]interface{}{
+			"command":         `Get-ChildItem {{path}}`,
+			"preferred_shell": "cmd",
+		},
+	})("a'b")
+	if forced != `"a'b"` {
+		t.Fatalf("preferred cmd quote = %q, want cmd quotes", forced)
+	}
+}
+
 func TestQuoteTUIRunValueForPreferredShell(t *testing.T) {
 	if got := quoteTUIRunValueForPreferredShell("a'b", "powershell"); got != "'a''b'" {
 		t.Fatalf("powershell quote = %q, want doubled single quote", got)

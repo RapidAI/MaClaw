@@ -45,7 +45,7 @@ function renderGrowingThought(
     return nodes;
 }
 
-/** One reasoning node in a coding turn. `expanded` is only the in-progress thought. */
+/** One reasoning node in a coding turn. The newest thought of the current turn stays open. */
 export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentThinkingTimelineItem({
     item,
     theme: t,
@@ -61,7 +61,7 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     step?: number;
     liveLabel?: string;
     liveObject?: string;
-    /** Open while this thought is still the thinking step. Tool activity stays folded. */
+    /** Open for the newest thought of the current turn. Earlier thoughts stay folded. */
     expanded?: boolean;
 }) {
     const displayReasoning = React.useMemo(() => cleanReasoningTrailForBody(item.content || ""), [item.content]);

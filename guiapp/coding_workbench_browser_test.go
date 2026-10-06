@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -672,6 +673,80 @@ func TestSanitizeCodingWorkbenchDownloadName(t *testing.T) {
 	}
 }
 
+func TestCompactRemoteSSHErrorDropsReadDumpAndShellPrompt(t *testing.T) {
+	raw := strings.Join([]string{
+		"[ssh_znsoft@spark] 状态: running",
+		"$ python3 -c \"$(printf 'abc' | base64 -d)\"",
+		"16\t*.out",
+		"17\tsysinfo",
+		"18\t",
+		"19\t# Editor / IDE",
+		"20\t.vscode/",
+		"21\t.idea/",
+		"22\t*.swp",
+		"znsoft@spark-3b9f:~/prj$",
+	}, "\n")
+	if got := compactRemoteSSHError(raw); got != "remote SSH command failed" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCompactRemoteSSHErrorKeepsDirectoryDiagnostic(t *testing.T) {
+	raw := "path is not a directory\nznsoft@spark-3b9f:~/prj$\n"
+	if got := compactRemoteSSHError(raw); got != "path is not a directory" {
+		t.Fatalf("got %q", got)
+	}
+	glued := "16 *.out 17 sysinfo 18 19 # Editor / IDE 20 .vscode/ 21 .idea/ 22 *.swp znsoft@spark-3b9f:~/prj$"
+	if got := compactRemoteSSHError(glued); got != "remote SSH command failed" {
+		t.Fatalf("glued prompt = %q", got)
+	}
+	kept := "ls: cannot access 'prj8': No such file or directory\n404 Not Found\n连接状态: 失败\nwrite failed for user@host"
+	if got := compactRemoteSSHError(kept); got != kept {
+		t.Fatalf("diagnostic = %q", got)
+	}
+	mention := "the file says \"truncated\" but this is not a listing"
+	if _, _, saw := parseCodingWorkbenchRemoteDirectoryRecords(mention, ""); saw {
+		t.Fatal("the word truncated without the JSON record must not count as a listing")
+	}
+}
+
+func TestRemoteWorkbenchFilePreviewCommandIsOneProcess(t *testing.T) {
+	cmd := remoteWorkbenchFilePreviewCommand("/home/znsoft/prj8", "/home/znsoft/prj8/CMakeLists.txt")
+	if strings.Contains(cmd, "&&") || strings.Contains(cmd, "CMakeLists.txt") {
+		t.Fatalf("preview command chains processes or leaks the path: %s", cmd)
+	}
+	const marker = "printf '%s' '"
+	start := strings.Index(cmd, marker)
+	if start < 0 {
+		t.Fatalf("missing payload: %s", cmd)
+	}
+	rest := cmd[start+len(marker):]
+	end := strings.Index(rest, "'")
+	if end < 0 {
+		t.Fatalf("missing payload end: %s", cmd)
+	}
+	raw, err := base64.StdEncoding.DecodeString(rest[:end])
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	for _, want := range []string{
+		"path outside remote work_dir",
+		"path is not a file",
+		"os.path.lexists(fd_path)",
+		"/proc/self/fd/",
+		"[remote read_file truncated:",
+		"[remote read_file binary/non-UTF8:",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "@@") {
+		t.Fatalf("placeholder left in script:\n%s", script)
+	}
+}
+
 func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(t *testing.T) {
 	raw := strings.Join([]string{
 		"$ python3 -c '<hidden>'",
@@ -680,8 +755,8 @@ func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(
 		`{"name":"main.go","is_dir":false}`,
 		"---EXIT_CODE:0---",
 	}, "\n")
-	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
-	if !truncated || len(entries) != 2 {
+	entries, truncated, sawMarker := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
+	if !sawMarker || !truncated || len(entries) != 2 {
 		t.Fatalf("truncated=%v entries=%v, want true and two entries", truncated, entries)
 	}
 	if entries[0].Name != "src" || !entries[0].IsDir || entries[1].Path != "main.go" {
@@ -697,8 +772,8 @@ func TestParseCodingWorkbenchRemoteDirectoryRecordsSkipsHiddenNames(t *testing.T
 		`{"name":"hello.cpp","is_dir":false}`,
 		`{"name":"build","is_dir":true}`,
 	}, "\n")
-	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
-	if truncated || len(entries) != 2 {
+	entries, truncated, sawMarker := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
+	if !sawMarker || truncated || len(entries) != 2 {
 		t.Fatalf("truncated=%v entries=%v, want visible items only", truncated, entries)
 	}
 	if entries[0].Name != "build" || entries[1].Name != "hello.cpp" {

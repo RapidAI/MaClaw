@@ -8,6 +8,17 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
+func TestInFlightRecoveryRunIDIsUniquePerTurn(t *testing.T) {
+	first := newInFlightRecoveryRunID()
+	second := newInFlightRecoveryRunID()
+	if first == "" || second == "" || first == second {
+		t.Fatalf("recovery run ids collided or were empty: %q %q", first, second)
+	}
+	if first == "chat" || second == "chat" {
+		t.Fatalf("recovery run id reused the loop kind: %q %q", first, second)
+	}
+}
+
 func TestInFlightLifecycleUsesProjectTabPathFromUserID(t *testing.T) {
 	memory := agent.NewConversationMemory()
 	t.Cleanup(memory.Stop)
@@ -22,6 +33,7 @@ func TestInFlightLifecycleUsesProjectTabPathFromUserID(t *testing.T) {
 	userID := desktopUserID + ":" + projectPath
 
 	lifecycle := h.newInFlightLifecycle(userID, "成都天气")
+	t.Cleanup(lifecycle.Cleanup)
 	lifecycle.SetOnce()
 
 	task, gotProjectPath := memory.ConsumeInFlightTask(userID)
@@ -54,6 +66,7 @@ func TestInFlightLifecycleDoesNotInventProjectPathForLocalUser(t *testing.T) {
 	corelib.SetWorkspaceDir(workDir)
 
 	lifecycle := h.newInFlightLifecycle(desktopUserID, "本地任务")
+	t.Cleanup(lifecycle.Cleanup)
 	lifecycle.SetOnce()
 
 	_, gotProjectPath := memory.ConsumeInFlightTask(desktopUserID)

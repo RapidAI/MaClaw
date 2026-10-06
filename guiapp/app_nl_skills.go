@@ -2765,6 +2765,7 @@ func (e *SkillExecutor) recordSkillExecution(matches func(corelib.NLSkillEntry) 
 			} else {
 				skills[i].FailureCount++
 				skills[i].LastError = formatExecErrorForStorage(execErr)
+				maybeQuarantineLearnedSkill(&skills[i], execErr)
 			}
 			if err := e.saveSkills(skills); err != nil {
 				log.Printf("[skill-execution] persist usage stats for %s failed: %v", s.Name, err)
@@ -2949,6 +2950,7 @@ func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest
 		} else {
 			skills[i].FailureCount++
 			skills[i].LastError = formatExecErrorForStorage(execErr)
+			maybeQuarantineLearnedSkill(&skills[i], execErr)
 		}
 		if err := e.saveSkills(skills); err != nil {
 			log.Printf("[skill-execution] persist bound usage stats for %s failed: %v", name, err)

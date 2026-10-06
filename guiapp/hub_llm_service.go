@@ -282,6 +282,15 @@ type HubLLMPeriodUsage struct {
 	Monthly  HubLLMPeriodUsageWindow `json:"monthly,omitempty"`
 }
 
+// HubLLMCheckinInfo mirrors the tenant daily check-in policy surfaced by the
+// Hub in the LLM service status responses. Zero value (nil pointer) means the
+// Hub did not advertise check-in — the button stays hidden.
+type HubLLMCheckinInfo struct {
+	Enabled        bool    `json:"enabled"`
+	Credits        float64 `json:"credits"`
+	CheckedInToday bool    `json:"checked_in_today"`
+}
+
 type HubLLMServiceStatus struct {
 	Active             bool                    `json:"active"`
 	SkipLLMConfig      bool                    `json:"skip_llm_config"`
@@ -303,6 +312,7 @@ type HubLLMServiceStatus struct {
 	CreditsAvailable   float64                 `json:"credits_available,omitempty"`
 	TokensPerCredit    int                     `json:"tokens_per_credit,omitempty"`
 	ResetVouchers      []HubLLMResetVoucher    `json:"reset_vouchers,omitempty"`
+	Checkin            *HubLLMCheckinInfo      `json:"checkin,omitempty"`
 }
 
 type HubLLMResetVoucher struct {
@@ -319,6 +329,18 @@ type hubLLMServiceRedeemResponse struct {
 type hubLLMServiceAccountResponse struct {
 	Status        HubLLMServiceStatus `json:"status"`
 	ServiceStatus HubLLMServiceStatus `json:"service_status"`
+	Checkin       *HubLLMCheckinInfo  `json:"checkin,omitempty"`
+}
+
+// HubLLMCheckinResult is the outcome of a daily check-in POST. CreditsAwarded
+// drives the "已奖励 N 积分" toast; AlreadyCheckedIn marks the idempotent
+// repeat-check-in reply from the Hub.
+type HubLLMCheckinResult struct {
+	Success          bool                `json:"success"`
+	AlreadyCheckedIn bool                `json:"already_checked_in"`
+	CreditsAwarded   float64             `json:"credits_awarded"`
+	Checkin          *HubLLMCheckinInfo  `json:"checkin,omitempty"`
+	ServiceStatus    HubLLMServiceStatus `json:"service_status"`
 }
 
 func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
@@ -505,6 +527,55 @@ func (a *App) RedeemHubLLMResetVoucher(voucherID string) (HubLLMServiceStatus, e
 	return status, err
 }
 
+// CheckinHubLLMService performs the daily check-in against the Hub and returns
+// the reward outcome. The refreshed entitlement snapshot is stored in the
+// local cache so the sidebar reflects the granted credits immediately.
+func (a *App) CheckinHubLLMService() (HubLLMCheckinResult, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubLLMCheckinResult{}, err
+	}
+	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return HubLLMCheckinResult{}, fmt.Errorf("hub URL is not configured")
+	}
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMCheckinResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/checkin"), nil)
+	if err != nil {
+		return HubLLMCheckinResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return HubLLMCheckinResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var failure map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&failure); err == nil {
+			if msg, _ := failure["message"].(string); strings.TrimSpace(msg) != "" {
+				return HubLLMCheckinResult{}, fmt.Errorf("%s", msg)
+			}
+		}
+		return HubLLMCheckinResult{}, fmt.Errorf("check-in failed: %s", resp.Status)
+	}
+	var result HubLLMCheckinResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return HubLLMCheckinResult{}, err
+	}
+	// Refresh through the regular status path so caches, config sync and the
+	// sidebar credit surfaces all pick up the newly granted credits.
+	if refreshed, refreshErr := a.RefreshHubLLMServiceStatus(); refreshErr == nil {
+		result.ServiceStatus = refreshed
+	}
+	return result, nil
+}
+
 func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 	if cfg == nil {
 		return
@@ -675,6 +746,9 @@ func mergeHubLLMServiceRouteDetails(accountStatus, routeStatus HubLLMServiceStat
 	if strings.TrimSpace(merged.HubLLMBaseURL) == "" {
 		merged.HubLLMBaseURL = routeStatus.HubLLMBaseURL
 	}
+	if merged.Checkin == nil {
+		merged.Checkin = routeStatus.Checkin
+	}
 	if strings.TrimSpace(merged.DefaultModel) == "" {
 		merged.DefaultModel = routeStatus.DefaultModel
 	}
@@ -733,9 +807,11 @@ func decodeHubLLMServiceAccountStatus(raw json.RawMessage) (HubLLMServiceStatus,
 		return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: decode response: %w", err)
 	}
 	if !hubLLMServiceStatusEmpty(result.Status) {
+		result.Status.Checkin = result.Checkin
 		return result.Status, nil
 	}
 	if !hubLLMServiceStatusEmpty(result.ServiceStatus) {
+		result.ServiceStatus.Checkin = result.Checkin
 		return result.ServiceStatus, nil
 	}
 	var status HubLLMServiceStatus

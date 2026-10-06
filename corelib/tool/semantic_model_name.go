@@ -140,4 +140,8 @@ var semanticModelFunctionNames = map[string]string{
 	"semantic_deliver_current_voice":        "send_voice",
 	"semantic_deliver_specified_target":     "send_to_im",
 	"host_artifact_deliver_specified":       "send_to_im",
+	// These GUI tools already use the prompt spelling as their adapter name,
+	// so only the srv host adapter needs an entry.
+	"host_document_generate_file": "generate_pdf",
+	"host_visual_capture_desktop": "screenshot",
 }

@@ -394,6 +394,16 @@ static gboolean on_timer(gpointer data) {
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
+static void on_menu_open_main(GtkMenuItem *item, gpointer data) {
+	(void)item; (void)data;
+	maclawLinuxPetMenu(4);
+}
+
+static void on_menu_open_pet(GtkMenuItem *item, gpointer data) {
+	(void)item; (void)data;
+	maclawLinuxPetMenu(5);
+}
+
 static void on_menu_settings(GtkMenuItem *item, gpointer data) {
 	(void)item; (void)data;
 	maclawLinuxPetMenu(1);
@@ -411,12 +421,18 @@ static void on_menu_quit(GtkMenuItem *item, gpointer data) {
 
 static void popup_pet_menu(GdkEventButton *e) {
 	GtkWidget *menu = gtk_menu_new();
+	GtkWidget *openMain = gtk_menu_item_new_with_label("打开主窗口");
+	GtkWidget *openPet = gtk_menu_item_new_with_label("打开宠物对话");
 	GtkWidget *settings = gtk_menu_item_new_with_label("设置");
 	GtkWidget *hide = gtk_menu_item_new_with_label("隐藏");
 	GtkWidget *quit = gtk_menu_item_new_with_label("退出");
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), openMain);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), openPet);
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), settings);
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), hide);
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
+	g_signal_connect(openMain, "activate", G_CALLBACK(on_menu_open_main), NULL);
+	g_signal_connect(openPet, "activate", G_CALLBACK(on_menu_open_pet), NULL);
 	g_signal_connect(settings, "activate", G_CALLBACK(on_menu_settings), NULL);
 	g_signal_connect(hide, "activate", G_CALLBACK(on_menu_hide), NULL);
 	g_signal_connect(quit, "activate", G_CALLBACK(on_menu_quit), NULL);
@@ -871,5 +887,9 @@ func maclawLinuxPetMenu(action C.int) {
 		go w.app.DisablePetFromMenu()
 	case 3:
 		go w.app.QuitApp()
+	case 4:
+		go w.app.showMainWindowFromPet()
+	case 5:
+		go w.app.openPetConversationFromMenu()
 	}
 }

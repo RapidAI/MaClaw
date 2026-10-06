@@ -2,104 +2,139 @@ package im
 
 import (
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
-// Device event push contract (plan N1-1, spec in plan section 4.1).
+// Device event push validation.
 //
-// An `event` reply is a *structured* message. Unlike `text` it carries a
-// category, a severity that decides how loudly the device presents it, and an
-// optional set of decisions the user can take without touching a computer.
+// The wire contract itself -- the closed-set values, the field bounds and the
+// wire shape -- lives in corelib/im/device_event.go, because the desktop
+// producers have to spell those values correctly too. What stays here is the
+// *validator*: this package is the authority that decides whether an untrusted
+// payload is deliverable at all.
 //
-// Downstream tasks all depend on this one wire shape:
-//
-//	N1-2 renders it (severity -> silent / soft / interrupt)
-//	N1-3 fans it out to every online device under a machine and replays
-//	     persist=true events from the handshake snapshot
-//	N1-4 delivers scheduler reminders through it
-//	N1-5 wires the first producers (approval / task_done / ve)
-//	N1-6 turns `approval` into an auditable decision loop via `event-ack`
-//
-// so this file is the single place where that shape is defined.
-//
-// Wire shape (payload nested under the reply's own key, matching the existing
-// `ambient` convention rather than plan section 4.1's flat sketch -- the
-// envelope `ThirdPartyOutgoingMessage` is type-agnostic and must not grow
-// event-only fields):
-//
-//	{
-//	  "type": "event",
-//	  "conversationId": "system",
-//	  "event": {
-//	    "eventId": "evt_01H...",
-//	    "category": "approval",
-//	    "severity": "interrupt",
-//	    "title": "需要你确认",
-//	    "summary": "要删除 ~/Downloads/report-final-v2.xlsx 吗？",
-//	    "ttlSec": 300,
-//	    "dedupeKey": "approval:inst-123:step-2",
-//	    "actions": [
-//	      {"id": "approve", "label": "同意", "kind": "primary", "risk": "high"},
-//	      {"id": "reject",  "label": "拒绝", "kind": "secondary"}
-//	    ],
-//	    "requiresAck": true,
-//	    "persist": true
-//	  }
-//	}
-//
-// There is deliberately no separate `speak` field: plan section 4.1's own
-// example writes `summary` as the spoken question, so the device speaks
-// `summary` and falls back to `title`. Two text fields that must stay in sync
-// would drift.
-const (
-	DeviceEventCategoryApproval = "approval"
-	DeviceEventCategoryTaskDone = "task_done"
-	DeviceEventCategorySchedule = "schedule"
-	DeviceEventCategoryVE       = "ve"
-	DeviceEventCategorySystem   = "system"
+// Persist TTL is Hub policy rather than wire contract: it bounds how long a
+// persist=true event that declared no ttlSec of its own stays replayable from
+// the handshake snapshot. Only approvals are required to carry a ttl, but
+// "survive a reboot" without any deadline would let a days-old task_done card
+// reappear on every handshake.
+const deviceEventPersistTTLSec = 3600
 
-	// Severity is the only thing that decides how the device interrupts the
-	// user, so it is a closed set: firmware switches on it exhaustively and
-	// cannot invent a rendering for an unknown level. The准入 matrix in plan
-	// section 4.2 is keyed on exactly these three values.
-	DeviceEventSeveritySilent    = "silent"
-	DeviceEventSeveritySoft      = "soft"
-	DeviceEventSeverityInterrupt = "interrupt"
+// storedDeviceEvent is the durable snapshot entry for one machine's most recent
+// persist=true event.
+//
+// The wire event and its absolute expiry are deliberately kept apart. ttlSec is
+// a *relative* duration, so replaying it verbatim after a reboot would hand a
+// three-hour-old approval a fresh five-minute window -- contradicting "timed
+// out means not approved" (plan section 4.1, finding C34). expiresAtUnixMs is
+// therefore stamped once at dispatch time and never crosses the wire: the
+// device always receives a recomputed ttlSec.
+type storedDeviceEvent struct {
+	Event           map[string]any `json:"event"`
+	ExpiresAtUnixMs int64          `json:"expiresAtUnixMs,omitempty"`
+}
 
-	// Kind is presentation emphasis; risk is the consequence of taking the
-	// action. They are separate on purpose: D5-A gates the whole approval flow
-	// on risk=high, so risk must carry meaning rather than be inferred from a
-	// button's colour.
-	DeviceEventActionKindPrimary   = "primary"
-	DeviceEventActionKindSecondary = "secondary"
+// deviceEventPush is the outcome of validating one raw event for delivery: the
+// wire form, plus the snapshot entry to keep when persist=true.
+type deviceEventPush struct {
+	Event   map[string]any
+	Persist bool
+	Stored  storedDeviceEvent
+}
 
-	DeviceEventActionRiskLow    = "low"
-	DeviceEventActionRiskMedium = "medium"
-	DeviceEventActionRiskHigh   = "high"
-)
+// prepareDeviceEventPush validates a raw event and stamps the absolute expiry
+// that lets a later replay stay honest about how much of the original window is
+// left. Events without persist=true are never snapshotted, so they need no
+// expiry and Stored is left zero.
+//
+// The normalized event is treated as immutable from here on, which is why the
+// wire form and the snapshot entry may share one map: the queued message and
+// the snapshot are both read-only, and every write to durable storage goes
+// through cloneStoredDeviceEvent first.
+func prepareDeviceEventPush(raw any, now time.Time) (deviceEventPush, bool) {
+	normalized, ok := normalizeDeviceEventPush(raw)
+	if !ok {
+		return deviceEventPush{}, false
+	}
+	push := deviceEventPush{Event: normalized}
+	if persist, _ := normalized["persist"].(bool); !persist {
+		return push, true
+	}
+	windowSec := int64(deviceEventPersistTTLSec)
+	if ttl, ok := normalized["ttlSec"].(int64); ok && ttl > 0 {
+		windowSec = ttl
+	}
+	push.Persist = true
+	push.Stored = storedDeviceEvent{
+		Event:           normalized,
+		ExpiresAtUnixMs: now.Add(time.Duration(windowSec) * time.Second).UnixMilli(),
+	}
+	return push, true
+}
 
-// Bounds are protocol-level, not display-level. The device's own text budget is
-// applied separately by the caller, so a device that declares a small budget
-// never receives more text than it said it could draw.
-const (
-	deviceEventMaxIDLen            = 64
-	deviceEventMaxDedupeKeyLen     = 128
-	deviceEventMaxActionIDLen      = 32
-	deviceEventMaxActionLabelRunes = 24
-	deviceEventMaxActions          = 4
-	deviceEventMaxTitleRunes       = 120
-	deviceEventMaxSummaryRunes     = 400
-	// ttlSec is bounded so a producer cannot pin a decision prompt on the
-	// device forever. Plan section 4.1 requires an approval to expire.
-	deviceEventMinTTLSec = 1
-	deviceEventMaxTTLSec = 3600
-)
+// replayDeviceEventPush rebuilds the device-facing event from a snapshot entry.
+//
+// It returns false when the window has already closed. A stale approval must be
+// dropped rather than delivered with a refreshed deadline, so the recomputed
+// ttlSec can only shrink. It is also clamped to the protocol maximum, so a
+// hand-edited snapshot claiming a far-future expiry cannot pin a card on the
+// device forever.
+func replayDeviceEventPush(stored storedDeviceEvent, now time.Time) (map[string]any, bool) {
+	if stored.Event == nil {
+		return nil, false
+	}
+	normalized, ok := normalizeDeviceEventPush(stored.Event)
+	if !ok {
+		return nil, false
+	}
+	if stored.ExpiresAtUnixMs <= 0 {
+		if _, hasWindow := normalized["ttlSec"].(int64); hasWindow {
+			// An event that declared a window must have had its absolute expiry
+			// recorded alongside it. Without one there is no way to tell whether
+			// the window is still open, and guessing would refresh a stale
+			// decision prompt.
+			return nil, false
+		}
+		return normalized, true
+	}
+	remainingMs := stored.ExpiresAtUnixMs - now.UnixMilli()
+	if remainingMs <= 0 {
+		return nil, false
+	}
+	ttlSec := (remainingMs + 999) / 1000
+	if ttlSec > coreim.DeviceEventMaxTTLSec {
+		ttlSec = coreim.DeviceEventMaxTTLSec
+	}
+	if ttlSec < coreim.DeviceEventMinTTLSec {
+		ttlSec = coreim.DeviceEventMinTTLSec
+	}
+	normalized["ttlSec"] = ttlSec
+	return normalized, true
+}
+
+// cloneStoredDeviceEvent validates and copies a snapshot entry before it crosses
+// an ownership boundary (persistence, recovery or a handshake response). It
+// reuses the protocol validator so an old, corrupt or hand-edited snapshot
+// cannot reintroduce an event the wire contract would have rejected.
+func cloneStoredDeviceEvent(stored storedDeviceEvent) (storedDeviceEvent, bool) {
+	normalized, ok := normalizeDeviceEventPush(stored.Event)
+	if !ok {
+		return storedDeviceEvent{}, false
+	}
+	copy := storedDeviceEvent{Event: normalized}
+	if stored.ExpiresAtUnixMs > 0 {
+		copy.ExpiresAtUnixMs = stored.ExpiresAtUnixMs
+	}
+	return copy, true
+}
 
 func knownDeviceEventCategory(value string) bool {
 	switch value {
-	case DeviceEventCategoryApproval, DeviceEventCategoryTaskDone, DeviceEventCategorySchedule,
-		DeviceEventCategoryVE, DeviceEventCategorySystem:
+	case coreim.DeviceEventCategoryApproval, coreim.DeviceEventCategoryTaskDone, coreim.DeviceEventCategorySchedule,
+		coreim.DeviceEventCategoryVE, coreim.DeviceEventCategorySystem:
 		return true
 	default:
 		return false
@@ -108,7 +143,7 @@ func knownDeviceEventCategory(value string) bool {
 
 func knownDeviceEventSeverity(value string) bool {
 	switch value {
-	case DeviceEventSeveritySilent, DeviceEventSeveritySoft, DeviceEventSeverityInterrupt:
+	case coreim.DeviceEventSeveritySilent, coreim.DeviceEventSeveritySoft, coreim.DeviceEventSeverityInterrupt:
 		return true
 	default:
 		return false
@@ -117,7 +152,7 @@ func knownDeviceEventSeverity(value string) bool {
 
 func knownDeviceEventActionKind(value string) bool {
 	switch value {
-	case DeviceEventActionKindPrimary, DeviceEventActionKindSecondary:
+	case coreim.DeviceEventActionKindPrimary, coreim.DeviceEventActionKindSecondary:
 		return true
 	default:
 		return false
@@ -126,7 +161,7 @@ func knownDeviceEventActionKind(value string) bool {
 
 func knownDeviceEventActionRisk(value string) bool {
 	switch value {
-	case DeviceEventActionRiskLow, DeviceEventActionRiskMedium, DeviceEventActionRiskHigh:
+	case coreim.DeviceEventActionRiskLow, coreim.DeviceEventActionRiskMedium, coreim.DeviceEventActionRiskHigh:
 		return true
 	default:
 		return false
@@ -164,7 +199,7 @@ func normalizeDeviceEventPush(raw any) (map[string]any, bool) {
 	}
 
 	eventID := deviceReplyString(payload, "eventId", "event_id")
-	if eventID == "" || len(eventID) > deviceEventMaxIDLen {
+	if eventID == "" || len(eventID) > coreim.DeviceEventMaxIDLen {
 		return nil, false
 	}
 
@@ -184,7 +219,7 @@ func normalizeDeviceEventPush(raw any) (map[string]any, bool) {
 	}
 
 	dedupeKey := deviceReplyString(payload, "dedupeKey", "dedupe_key")
-	if len(dedupeKey) > deviceEventMaxDedupeKeyLen {
+	if len(dedupeKey) > coreim.DeviceEventMaxDedupeKeyLen {
 		return nil, false
 	}
 	if dedupeKey == "" {
@@ -194,7 +229,7 @@ func normalizeDeviceEventPush(raw any) (map[string]any, bool) {
 	}
 
 	ttlSec := deviceReplyInt64(payload, "ttlSec", "ttl_sec")
-	if ttlSec < 0 || (ttlSec > 0 && (ttlSec < deviceEventMinTTLSec || ttlSec > deviceEventMaxTTLSec)) {
+	if ttlSec < 0 || (ttlSec > 0 && (ttlSec < coreim.DeviceEventMinTTLSec || ttlSec > coreim.DeviceEventMaxTTLSec)) {
 		return nil, false
 	}
 
@@ -213,7 +248,7 @@ func normalizeDeviceEventPush(raw any) (map[string]any, bool) {
 	// a pending high-risk decision, and without a ttl the prompt hangs forever.
 	// All three failures are invisible in production, which is exactly why they
 	// must not be optional here.
-	if category == DeviceEventCategoryApproval {
+	if category == coreim.DeviceEventCategoryApproval {
 		if ttlSec <= 0 || !requiresAck || !persist {
 			return nil, false
 		}
@@ -223,13 +258,13 @@ func normalizeDeviceEventPush(raw any) (map[string]any, bool) {
 		"eventId":     eventID,
 		"category":    category,
 		"severity":    severity,
-		"title":       truncateDeviceEventRunes(title, deviceEventMaxTitleRunes),
+		"title":       truncateDeviceEventRunes(title, coreim.DeviceEventMaxTitleRunes),
 		"dedupeKey":   dedupeKey,
 		"requiresAck": requiresAck,
 		"persist":     persist,
 	}
 	if summary := deviceReplyString(payload, "summary"); summary != "" {
-		normalized["summary"] = truncateDeviceEventRunes(summary, deviceEventMaxSummaryRunes)
+		normalized["summary"] = truncateDeviceEventRunes(summary, coreim.DeviceEventMaxSummaryRunes)
 	}
 	if ttlSec > 0 {
 		normalized["ttlSec"] = ttlSec
@@ -250,14 +285,23 @@ func normalizeDeviceEventActions(raw any) ([]map[string]any, bool) {
 	}
 	items, ok := raw.([]any)
 	if !ok {
-		// A single action object is accepted for hand-written payloads.
-		if single, singleOK := raw.(map[string]any); singleOK {
-			items = []any{single}
-		} else {
+		// The same payload has three shapes depending on where it came from: a
+		// freshly decoded JSON body yields []any, an already-normalized event
+		// carries []map[string]any, and hand-written payloads may send a single
+		// object. All three describe the same list of actions.
+		switch typed := raw.(type) {
+		case []map[string]any:
+			items = make([]any, 0, len(typed))
+			for _, item := range typed {
+				items = append(items, item)
+			}
+		case map[string]any:
+			items = []any{typed}
+		default:
 			return nil, false
 		}
 	}
-	if len(items) > deviceEventMaxActions {
+	if len(items) > coreim.DeviceEventMaxActions {
 		return nil, false
 	}
 	out := make([]map[string]any, 0, len(items))
@@ -268,7 +312,7 @@ func normalizeDeviceEventActions(raw any) ([]map[string]any, bool) {
 			return nil, false
 		}
 		id := deviceReplyString(entry, "id", "actionId", "action_id")
-		if id == "" || len(id) > deviceEventMaxActionIDLen || seen[id] {
+		if id == "" || len(id) > coreim.DeviceEventMaxActionIDLen || seen[id] {
 			return nil, false
 		}
 		label := deviceReplyString(entry, "label", "text")
@@ -277,7 +321,7 @@ func normalizeDeviceEventActions(raw any) ([]map[string]any, bool) {
 		}
 		kind := strings.ToLower(deviceReplyString(entry, "kind"))
 		if kind == "" {
-			kind = DeviceEventActionKindSecondary
+			kind = coreim.DeviceEventActionKindSecondary
 		}
 		if !knownDeviceEventActionKind(kind) {
 			return nil, false
@@ -289,7 +333,7 @@ func normalizeDeviceEventActions(raw any) ([]map[string]any, bool) {
 		seen[id] = true
 		action := map[string]any{
 			"id":    id,
-			"label": truncateDeviceEventRunes(label, deviceEventMaxActionLabelRunes),
+			"label": truncateDeviceEventRunes(label, coreim.DeviceEventMaxActionLabelRunes),
 			"kind":  kind,
 		}
 		// An absent risk means "not declared as risky", which is different from

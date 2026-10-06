@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
     GetAllLLMTokenUsage,
+    GetLLMTokenUsageByDay,
     ResetLLMTokenUsage,
     GetMaclawLLMProviders,
 } from "../../../wailsjs/go/main/App";
-import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
+import { EventsOn } from "../../../wailsjs/runtime";
+import { TokenUsageTrend } from "./TokenUsageTrend";
+import type { TokenUsageDayPoint } from "./tokenUsageSeries";
 
 interface TokenUsageStat {
     input_tokens?: number;
@@ -33,6 +36,8 @@ interface TokenUsageStat {
     CachedRequests?: number;
 }
 
+const tokenUsageRefreshMs = 2000;
+
 const providerAliases: Record<string, string[]> = {
     "智谱龙芯": ["智谱", "GLM(智谱)", "GLM (智谱)"],
     "智谱": ["智谱龙芯", "GLM(智谱)", "GLM (智谱)"],
@@ -49,7 +54,7 @@ type ProviderState = {
     Current?: string;
 } | null;
 
-const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost_rmb: 0, cached_input_tokens: 0, cache_write_tokens: 0, requests: 0, cached_requests: 0 };
+const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost_rmb: 0, input_cost_rmb: 0, output_cost_rmb: 0, cache_read_cost_rmb: 0, cache_write_cost_rmb: 0, cached_input_tokens: 0, cache_write_tokens: 0, requests: 0, cached_requests: 0 };
 
 const normalizeProviderState = (data?: ProviderState) => {
     const providers = (data?.providers ?? data?.Providers ?? [])
@@ -79,15 +84,40 @@ const normalizeUsage = (stat?: TokenUsageStat | null) => {
     return { input_tokens: input, output_tokens: output, total_tokens: total, total_cost_rmb: cost, input_cost_rmb: Number(inputCost ?? 0), output_cost_rmb: Number(outputCost ?? 0), cache_read_cost_rmb: Number(cacheReadCost ?? 0), cache_write_cost_rmb: Number(cacheWriteCost ?? 0), cached_input_tokens: cached, cache_write_tokens: cacheWrite, requests, cached_requests: cachedRequests };
 };
 
+const usageKeysForProvider = (provider: string) => {
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    for (const key of [provider, ...(providerAliases[provider] || [])]) {
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        keys.push(key);
+    }
+    return keys;
+};
+
+const addUsage = (sum: ReturnType<typeof normalizeUsage>, stat: ReturnType<typeof normalizeUsage>) => ({
+    input_tokens: sum.input_tokens + stat.input_tokens,
+    output_tokens: sum.output_tokens + stat.output_tokens,
+    total_tokens: sum.total_tokens + stat.total_tokens,
+    total_cost_rmb: sum.total_cost_rmb + stat.total_cost_rmb,
+    input_cost_rmb: sum.input_cost_rmb + stat.input_cost_rmb,
+    output_cost_rmb: sum.output_cost_rmb + stat.output_cost_rmb,
+    cache_read_cost_rmb: sum.cache_read_cost_rmb + stat.cache_read_cost_rmb,
+    cache_write_cost_rmb: sum.cache_write_cost_rmb + stat.cache_write_cost_rmb,
+    cached_input_tokens: sum.cached_input_tokens + stat.cached_input_tokens,
+    cache_write_tokens: sum.cache_write_tokens + stat.cache_write_tokens,
+    requests: sum.requests + stat.requests,
+    cached_requests: sum.cached_requests + stat.cached_requests,
+});
+
 const getUsageForProvider = (usageMap: Record<string, TokenUsageStat>, provider: string) => {
     if (!provider) return emptyUsage;
-    const direct = usageMap[provider];
-    if (direct) return normalizeUsage(direct);
-    for (const alias of providerAliases[provider] || []) {
-        const stat = usageMap[alias];
-        if (stat) return normalizeUsage(stat);
-    }
-    return emptyUsage;
+    const stats = usageKeysForProvider(provider)
+        .map((key) => usageMap[key])
+        .filter((stat): stat is TokenUsageStat => !!stat)
+        .map((stat) => normalizeUsage(stat));
+    if (stats.length === 0) return emptyUsage;
+    return stats.reduce(addUsage);
 };
 
 const hasUsage = (usageMap: Record<string, TokenUsageStat>, provider: string) => {
@@ -111,15 +141,20 @@ export function TokenUsagePanel({ lang }: Props) {
     const [selectedProvider, setSelectedProvider] = useState("");
     const [usage, setUsage] = useState<typeof emptyUsage | null>(null);
     const [allUsage, setAllUsage] = useState<Record<string, TokenUsageStat>>({});
+    const [dayPoints, setDayPoints] = useState<TokenUsageDayPoint[]>([]);
     const [loading, setLoading] = useState(false);
+    const loadSeq = useRef(0);
 
-    const loadData = useCallback(async () => {
-        setLoading(true);
+    const loadData = useCallback(async (quiet = false) => {
+        const seq = ++loadSeq.current;
+        if (!quiet) setLoading(true);
         try {
-            const [providerState, usageMap] = await Promise.all([
+            const [providerState, usageMap, daySeries] = await Promise.all([
                 GetMaclawLLMProviders() as Promise<ProviderState>,
                 GetAllLLMTokenUsage() as Promise<Record<string, TokenUsageStat> | null>,
+                GetLLMTokenUsageByDay().catch(() => []) as Promise<TokenUsageDayPoint[] | null>,
             ]);
+            if (seq !== loadSeq.current) return;
             const normalizedProviderState = normalizeProviderState(providerState);
             const normalizedUsageMap = usageMap || {};
             const nextProviders = normalizedProviderState.providers;
@@ -134,13 +169,16 @@ export function TokenUsagePanel({ lang }: Props) {
                 return preferredProvider;
             });
             setAllUsage(normalizedUsageMap);
+            setDayPoints(Array.isArray(daySeries) ? daySeries : []);
         } catch {
+            if (seq !== loadSeq.current) return;
             setProviders([]);
             setCurrentProvider("");
             setSelectedProvider("");
             setAllUsage({});
+            setDayPoints([]);
         } finally {
-            setLoading(false);
+            if (seq === loadSeq.current) setLoading(false);
         }
     }, []);
 
@@ -149,12 +187,17 @@ export function TokenUsagePanel({ lang }: Props) {
     }, [loadData]);
 
     useEffect(() => {
+        let timer = 0;
         const onTokenUsageChanged = () => {
-            void loadData();
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+                void loadData(true);
+            }, tokenUsageRefreshMs);
         };
-        EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        const unsubscribe = EventsOn("llm-token-usage-changed", onTokenUsageChanged);
         return () => {
-            EventsOff("llm-token-usage-changed");
+            window.clearTimeout(timer);
+            if (typeof unsubscribe === "function") unsubscribe();
         };
     }, [loadData]);
 
@@ -168,7 +211,10 @@ export function TokenUsagePanel({ lang }: Props) {
 
     const handleReset = async (provider: string) => {
         try {
-            await ResetLLMTokenUsage(provider);
+            const keys = provider ? usageKeysForProvider(provider) : [""];
+            for (const key of keys) {
+                await ResetLLMTokenUsage(key);
+            }
             await loadData();
         } catch { /* ignore */ }
     };
@@ -221,22 +267,24 @@ export function TokenUsagePanel({ lang }: Props) {
                         <span>Output Tokens</span>
                         <strong className="is-primary-strong">{formatTokens(usage.output_tokens)}</strong>
                     </div>
-                    {(usage.cached_input_tokens > 0 || usage.cache_write_tokens > 0) && (
-                        <>
-                            <div className="token-usage-panel__stat-row">
-                                <span>{t("Cache Read", "缓存读取", "快取讀取")}</span>
-                                <strong className="is-success">{formatTokens(usage.cached_input_tokens)}</strong>
-                            </div>
-                            <div className="token-usage-panel__stat-row">
-                                <span>{t("Cache Write", "缓存写入", "快取寫入")}</span>
-                                <strong>{formatTokens(usage.cache_write_tokens)}</strong>
-                            </div>
-                        </>
+                    {usage.cached_input_tokens > 0 && (
+                        <div className="token-usage-panel__stat-row">
+                            <span>{t("Cache Read", "缓存读取", "快取讀取")}</span>
+                            <strong className="is-success">{formatTokens(usage.cached_input_tokens)}</strong>
+                        </div>
+                    )}
+                    {/* Cache write is only meaningful once a provider reports it; most report
+                        reads alone, so an always-zero row would read as a real measurement. */}
+                    {usage.cache_write_tokens > 0 && (
+                        <div className="token-usage-panel__stat-row">
+                            <span>{t("Cache Write", "缓存写入", "快取寫入")}</span>
+                            <strong>{formatTokens(usage.cache_write_tokens)}</strong>
+                        </div>
                     )}
                     {usage.requests > 0 && (
                         <div className="token-usage-panel__stat-row">
                             <span>{t("Cache Hit Rate", "缓存命中率", "快取命中率")}</span>
-                            <strong>{Math.round((usage.cached_requests / usage.requests) * 100)}%</strong>
+                            <strong>{Math.min(100, Math.round((usage.cached_requests / usage.requests) * 100))}%</strong>
                         </div>
                     )}
                     <div className="token-usage-panel__stat-row token-usage-panel__stat-row--total">
@@ -249,6 +297,14 @@ export function TokenUsagePanel({ lang }: Props) {
                     </div>
                 </div>
             )}
+
+            <TokenUsageTrend
+                lang={lang}
+                provider={selectedProvider}
+                points={dayPoints}
+                aliases={providerAliases}
+                formatTokens={formatTokens}
+            />
 
             <div className="token-usage-panel__actions">
                 <button onClick={() => handleReset(selectedProvider)} className="token-usage-panel__danger-button">

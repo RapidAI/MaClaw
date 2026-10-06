@@ -8,11 +8,28 @@ import (
 	"strings"
 )
 
+// placeholderKeyPattern matches keys containing at least one letter or
+// underscore ([set]*[letter][set]* is the RE2-safe form of that assertion —
+// Go's regexp has no lookahead). Keys made purely of digits are never
+// placeholders: "{0}"/"{1}" are PowerShell/.NET format items and "${1}" is a
+// shell positional argument — all host-language syntax that must survive
+// substitution verbatim. This is the root-cause guard against learned skills
+// misreading such syntax as template parameters (e.g. a recorded PowerShell
+// command turning {0} into a bogus required parameter).
+// Shared by placeholderRe and the unresolved-placeholder strip patterns so
+// both stay in lockstep.
+const placeholderKeyPattern = `[A-Za-z0-9_. -]*[A-Za-z_][A-Za-z0-9_. -]*`
+
 // placeholderRe matches {{key}}, ${key}, and {key} placeholders in command strings.
 // Used by SubstituteVariables and SynthesizePlaceholders.
-var placeholderRe = regexp.MustCompile(`\{\{([A-Za-z0-9_. -]+)\}\}|\$\{([A-Za-z0-9_. -]+)\}|\{([A-Za-z0-9_. -]+)\}`)
+var placeholderRe = regexp.MustCompile(
+	`\{\{(` + placeholderKeyPattern + `)\}\}` +
+		`|\$\{(` + placeholderKeyPattern + `)\}` +
+		`|\{(` + placeholderKeyPattern + `)\}`)
 
-const unresolvedPlaceholderValuePattern = `(?:\{\{[A-Za-z0-9_. -]+\}\}|\$\{[A-Za-z0-9_. -]+\}|\{[A-Za-z0-9_. -]+\})`
+const unresolvedPlaceholderValuePattern = `(?:\{\{` + placeholderKeyPattern + `\}\}` +
+	`|\$\{` + placeholderKeyPattern + `\}` +
+	`|\{` + placeholderKeyPattern + `\})`
 
 var optionalCLIPlaceholderArgRe = regexp.MustCompile(
 	`(^|\s+)-{1,2}[A-Za-z0-9][A-Za-z0-9_.-]*(?:(?:=|:|\s+)(?:"` + unresolvedPlaceholderValuePattern + `"|'` + unresolvedPlaceholderValuePattern + `'|` + unresolvedPlaceholderValuePattern + `))`,
@@ -99,16 +116,51 @@ func StripUnresolvedPlaceholders(command string) string {
 // command string. Used by SynthesizeParams to auto-generate parameter
 // schemas from command templates.
 func ExtractPlaceholderKeys(command string) []string {
+	keys := []string{}
+	for _, pk := range ExtractPlaceholderKeysWithForm(command) {
+		keys = append(keys, pk.Key)
+	}
+	return keys
+}
+
+// PlaceholderKey is one placeholder occurrence with the syntactic form it was
+// written in.
+type PlaceholderKey struct {
+	Key string
+	// Explicit is true for the {{key}} authoring grammar. {{key}} is an
+	// unambiguous parameter declaration by the skill author; the {key} and
+	// ${key} forms are ambiguous with host-language syntax (PowerShell format
+	// items, shell variables) and callers must treat them with suspicion when
+	// inferring contracts.
+	Explicit bool
+}
+
+// ExtractPlaceholderKeysWithForm returns all unique placeholder keys with the
+// form each was written in. See PlaceholderKey. Explicitness is sticky: a key
+// declared anywhere via the {{key}} grammar is Explicit even if the same key
+// also appears in an ambiguous form elsewhere in the command.
+func ExtractPlaceholderKeysWithForm(command string) []PlaceholderKey {
 	matches := placeholderRe.FindAllStringSubmatch(command, -1)
-	seen := make(map[string]bool)
-	var keys []string
+	explicit := make(map[string]bool)
+	var order []string
 	for _, m := range matches {
 		// m[1] = {{key}}, m[2] = ${key}, m[3] = {key}
 		key := placeholderFirstNonEmpty(m[1], m[2], m[3])
-		if key != "" && !seen[key] && !isBaseDirPlaceholder(key) {
-			seen[key] = true
-			keys = append(keys, key)
+		if key == "" || isBaseDirPlaceholder(key) {
+			continue
 		}
+		if _, ok := explicit[key]; !ok {
+			order = append(order, key)
+		}
+		if m[1] != "" {
+			explicit[key] = true
+		} else if _, ok := explicit[key]; !ok {
+			explicit[key] = false
+		}
+	}
+	keys := make([]PlaceholderKey, 0, len(order))
+	for _, key := range order {
+		keys = append(keys, PlaceholderKey{Key: key, Explicit: explicit[key]})
 	}
 	return keys
 }

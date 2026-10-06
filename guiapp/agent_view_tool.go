@@ -113,7 +113,13 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 	principal := trustedAuditPrincipalFromSecurityContext(ctx, policyOwnerID)
 	approval := storeRegisteredToolPendingApprovalForPrincipal(name, args, sessionID, policyOwnerID, principal, risk)
 	h.firewall.recordAudit(name, args, risk, security.PolicyAsk, "agent_view_approval_pending", sessionID, principal)
-	return h.app.emitAgentView(buildRegisteredToolApprovalAgentView(approval))
+	opened := h.app.emitAgentView(buildRegisteredToolApprovalAgentView(approval))
+	if opened {
+		// D5-A: a high-risk approval also becomes a card on the paired
+		// terminals, so the user can answer without walking back to the desk.
+		h.pushToolApprovalToDevices(approval)
+	}
+	return opened
 }
 
 func (h *IMMessageHandler) emitDatabaseMutationApprovalIfNeeded(ctx context.Context, args map[string]interface{}) (string, bool) {
@@ -147,6 +153,7 @@ func (h *IMMessageHandler) emitDatabaseMutationApproval(args map[string]interfac
 	}
 	opened := h.app.emitAgentView(buildRegisteredToolApprovalAgentView(approval))
 	if opened {
+		h.pushToolApprovalToDevices(approval)
 		return true
 	}
 	if _, recorded := h.app.agentViewOpenRecord("tool:approval"); recorded {
@@ -194,7 +201,11 @@ func (h *IMMessageHandler) emitArchiveExternalApprovalIfNeeded(args map[string]i
 	if !ok {
 		return false
 	}
-	return h.app.emitAgentView(buildRegisteredToolApprovalAgentView(pending))
+	opened := h.app.emitAgentView(buildRegisteredToolApprovalAgentView(pending))
+	if opened {
+		h.pushToolApprovalToDevices(pending)
+	}
+	return opened
 }
 
 func isArchiveExternalExtraction(args map[string]interface{}) bool {
@@ -405,6 +416,10 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 
 func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[string]interface{}) *IMAgentResponse {
 	parameters, _ := data["parameters"].(map[string]interface{})
+	// Present only when the answer came from a paired terminal (plan N1-6), and
+	// threaded straight into the audit entry's Source so "who approved, when,
+	// and how" is answerable from one record.
+	auditSource := nonEmptyStringFromAny(data[registeredToolApprovalDeviceSourceField])
 	approvalID := nonEmptyStringFromAny(data[registeredToolApprovalIDField])
 	if approvalID == "" {
 		approvalID = nonEmptyStringFromAny(parameters[registeredToolApprovalIDField])
@@ -419,7 +434,7 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 	if !boolFromAny(data["approved"]) {
 		deleteRegisteredToolPendingApproval(approvalID)
 		if h != nil && h.firewall != nil {
-			h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyAsk, "agent_view_approval_rejected", approval.SessionID, approval.trustedAuditPrincipal())
+			h.firewall.recordAuditFromSource(approval.ToolName, approval.Args, approval.Risk, security.PolicyAsk, "agent_view_approval_rejected", approval.SessionID, approval.trustedAuditPrincipal(), auditSource)
 		}
 		return &IMAgentResponse{Text: "Tool execution was rejected.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
@@ -429,7 +444,7 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 	}
 	if h != nil && h.firewall != nil && approval.SessionID != "" {
 		h.firewall.ApproveForSession(approval.SessionID, approval.ToolName)
-		h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyUserOverride, "agent_view_approval_approved", approval.SessionID, approval.trustedAuditPrincipal())
+		h.firewall.recordAuditFromSource(approval.ToolName, approval.Args, approval.Risk, security.PolicyUserOverride, "agent_view_approval_approved", approval.SessionID, approval.trustedAuditPrincipal(), auditSource)
 	}
 	// Keep the action-scoped archive token alive just long enough for the
 	// immediately following execution gateway to consume it.  Rejected and

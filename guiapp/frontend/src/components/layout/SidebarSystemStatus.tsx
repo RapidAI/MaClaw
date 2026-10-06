@@ -94,6 +94,41 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     profileSavePending?: boolean;
 };
 
+type WorkbenchTokenPeriod = 'total' | 'today' | 'week' | 'month';
+
+const workbenchTokenPeriodOrder: WorkbenchTokenPeriod[] = ['total', 'today', 'week', 'month'];
+
+function nextWorkbenchTokenPeriod(current: WorkbenchTokenPeriod): WorkbenchTokenPeriod {
+    const index = workbenchTokenPeriodOrder.indexOf(current);
+    return workbenchTokenPeriodOrder[(index + 1) % workbenchTokenPeriodOrder.length];
+}
+
+function workbenchTokenPeriodText(period: WorkbenchTokenPeriod, lang: string): string {
+    switch (period) {
+        case 'today':
+            return localizeText(lang, "Today's tokens", '本日 Token', '本日 Token');
+        case 'week':
+            return localizeText(lang, "This week's tokens", '本周 Token', '本週 Token');
+        case 'month':
+            return localizeText(lang, "This month's tokens", '本月 Token', '本月 Token');
+        default:
+            return localizeText(lang, 'Cumulative tokens', '累计 Token', '累計 Token');
+    }
+}
+
+function workbenchTokenAmount(period: WorkbenchTokenPeriod, usage: SidebarCurrentProviderTokenUsage): number {
+    switch (period) {
+        case 'today':
+            return Number(usage.today || 0);
+        case 'week':
+            return Number(usage.week || 0);
+        case 'month':
+            return Number(usage.month || 0);
+        default:
+            return Number(usage.total || 0);
+    }
+}
+
 const STATUS_DOT = String.fromCharCode(0x25cf);
 const CREDIT_SEPARATOR = ` ${String.fromCharCode(0x00b7)} `;
 /** Check mark (✓) for selected provider / council rows — not the literal "OK". */
@@ -306,6 +341,7 @@ export const SidebarSystemStatus = ({
 
     // ── Provider switch dropdown state ──
     const [dropdownOpen, setDropdownOpen] = useState(false);
+    const [tokenPeriod, setTokenPeriod] = useState<WorkbenchTokenPeriod>('total');
     // Imperative mirror for unmount cleanup. The staged provider belongs to
     // App, so it must not outlive the sidebar that exposed the picker.
     const dropdownOpenRef = useRef(false);
@@ -692,7 +728,28 @@ export const SidebarSystemStatus = ({
         ? `${workbenchProviderLabel}：${configuredModelLabel}`
         : textForLang(lang, 'Not configured', '未配置', '未設定');
     const openModelSettingsLabel = textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定');
-    const workbenchTokenLabel = formatSidebarTokens(Number(sidebarCurrentProviderTokenUsage.total || 0));
+    const workbenchTokenValue = workbenchTokenAmount(tokenPeriod, sidebarCurrentProviderTokenUsage);
+    const workbenchTokenPeriodLabel = workbenchTokenPeriodText(tokenPeriod, lang);
+    const workbenchTokenLabel = formatSidebarTokens(workbenchTokenValue);
+    const workbenchTokenHint = textForLang(
+        lang,
+        'Click to switch: today, this week, this month, cumulative',
+        '点击切换：本日、本周、本月、累计',
+        '點擊切換：本日、本週、本月、累計',
+    );
+    const tokenWindowsEmpty = Number(sidebarCurrentProviderTokenUsage.today || 0) <= 0
+        && Number(sidebarCurrentProviderTokenUsage.week || 0) <= 0
+        && Number(sidebarCurrentProviderTokenUsage.month || 0) <= 0
+        && Number(sidebarCurrentProviderTokenUsage.total || 0) > 0;
+    const workbenchTokenEmptyWindow = tokenPeriod !== 'total' && tokenWindowsEmpty
+        ? textForLang(
+            lang,
+            'Per-day totals start with this update. Earlier usage stays under Cumulative tokens.',
+            '按日统计从本次更新后开始，更早的用量仍在累计 Token',
+            '按日統計從本次更新後開始，更早的用量仍在累計 Token',
+        )
+        : '';
+    const workbenchTokenTitle = [workbenchTokenPeriodLabel + ' ' + workbenchTokenLabel, workbenchTokenEmptyWindow, workbenchTokenHint].filter(Boolean).join(CREDIT_SEPARATOR);
     const workbenchOnline = profileSummaries ? activeProfileOnline : maclawLLMOnline;
     // Keep the redesigned card and the retained legacy status panel mounted for
     // compatibility, but avoid exposing duplicate exact credit text to assistive
@@ -741,10 +798,18 @@ export const SidebarSystemStatus = ({
                         </span>
                     </strong>
                 </button>
-                <div className="mc-workbench-status-card__row" title={workbenchTokenLabel}>
-                    <span>{textForLang(lang, 'Cumulative tokens', '累计 Token', '累計 Token')}</span>
+                <button
+                    type="button"
+                    className="mc-workbench-status-card__row"
+                    data-testid="workbench-token-period"
+                    data-token-period={tokenPeriod}
+                    title={workbenchTokenTitle}
+                    aria-label={`${workbenchTokenPeriodLabel} ${workbenchTokenLabel}. ${workbenchTokenEmptyWindow || workbenchTokenHint}`}
+                    onClick={() => setTokenPeriod((current) => nextWorkbenchTokenPeriod(current))}
+                >
+                    <span>{workbenchTokenPeriodLabel}</span>
                     <strong>{workbenchTokenLabel}</strong>
-                </div>
+                </button>
                 {isOfficialProvider && (
                     <button type="button" className="mc-workbench-status-card__row" onClick={openHubCardStorePage ?? openHubCreditAction} disabled={!showHubCreditAction && !openHubCardStorePage}>
                         <span>{textForLang(lang, 'Card balance', '点卡余额', '點卡餘額')}</span>

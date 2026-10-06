@@ -172,6 +172,8 @@ func CanonicalDeliveryChannel(channel string) string {
 		return DeliveryChannelTelegram
 	case "QQ", "qq", "qq机器人":
 		return DeliveryChannelQQ
+	case "设备", "码卡龙", "小卡", "硬件设备", "终端":
+		return DeliveryChannelDevice
 	}
 	c := strings.ToLower(compact)
 	switch c {
@@ -183,6 +185,8 @@ func CanonicalDeliveryChannel(channel string) string {
 		return DeliveryChannelTelegram
 	case DeliveryChannelQQ, "qqlocal", "qqbot", "qqbotlocal":
 		return DeliveryChannelQQ
+	case DeliveryChannelDevice, "devicelocal", "hardware", "hardwarelocal", "esp32", "companion", "maclawdevice":
+		return DeliveryChannelDevice
 	default:
 		// Unknown: keep lowercased original trim (not compact) for forward-compat channels.
 		return strings.ToLower(raw)

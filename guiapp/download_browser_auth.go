@@ -111,5 +111,5 @@ func (h *IMMessageHandler) downloadViaBrowserTool(rawURL, absPath string, args m
 	if err != nil {
 		return fmt.Sprintf("浏览器下载失败: %v", err)
 	}
-	return fmt.Sprintf("文件已保存到 %s (%d 字节)\nsaved_path: %s\n下载过程日志: ~/.maclaw/logs/download.log", res.SavedTo, res.Bytes, res.SavedTo)
+	return fmt.Sprintf("文件已保存到 %s (%d 字节)\nsaved_path: %s\n%s", res.SavedTo, res.Bytes, res.SavedTo, hostDownloadSavedTrailer)
 }

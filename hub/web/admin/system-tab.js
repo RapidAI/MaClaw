@@ -386,6 +386,65 @@ const TENANT_DIGITAL_ASSETS_SETTINGS_I18N = {
   }
 };
 const tdax = (key, vars = {}) => ((TENANT_DIGITAL_ASSETS_SETTINGS_I18N[currentLang] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en)[key] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const TENANT_CHECKIN_SETTINGS_I18N = {
+  en: {
+    title: 'Daily Check-in',
+    desc: 'Reward users with credits for signing in to the MaClaw desktop app once per day.',
+    reload: 'Reload',
+    enabledLabel: 'Enable check-in',
+    enabledHintOn: 'Enabled - users see the check-in button in the MaClaw sidebar.',
+    enabledHintOff: 'Disabled - the check-in button stays hidden.',
+    creditsLabel: 'Credits per check-in',
+    hint: 'Each user can check in once per local day and receives the credits once. Range: 1 to 1000000.',
+    save: 'Save',
+    saving: 'Saving...',
+    saved: 'Check-in settings saved.',
+    loadFailed: 'Load check-in settings failed: {error}',
+    saveFailed: 'Save check-in settings failed: {error}',
+    invalid: 'Credits must be an integer from 1 to 1000000.',
+    viewBtn: 'View check-ins',
+    recordsTitle: 'Check-in records',
+    periodDay: 'Day',
+    periodWeek: 'Week',
+    periodMonth: 'Month',
+    statsUsers: 'Check-in users: {n}',
+    statsCredits: 'Total credits: {n}',
+    recordsEmpty: 'No check-in records in this period.',
+    prevPage: 'Previous',
+    nextPage: 'Next',
+    pageInfo: 'Page {page} of {pages} ({total})',
+    recordsLoadFailed: 'Load check-in records failed: {error}'
+  },
+  zh: {
+    title: '\u7b7e\u5230',
+    desc: '\u7528\u6237\u6bcf\u65e5\u5728 MaClaw \u684c\u9762\u7aef\u7b7e\u5230\u5373\u53ef\u83b7\u5f97\u79ef\u5206\u5956\u52b1\u3002',
+    reload: '\u5237\u65b0',
+    enabledLabel: '\u542f\u7528\u7b7e\u5230',
+    enabledHintOn: '\u5df2\u542f\u7528 \u2014 \u7528\u6237\u53ef\u5728 MaClaw \u4fa7\u8fb9\u680f\u770b\u5230\u7b7e\u5230\u6309\u94ae\u3002',
+    enabledHintOff: '\u5df2\u5173\u95ed \u2014 \u4fa7\u8fb9\u680f\u4e0d\u663e\u793a\u7b7e\u5230\u6309\u94ae\u3002',
+    creditsLabel: '\u6bcf\u6b21\u7b7e\u5230\u5956\u52b1\u79ef\u5206',
+    hint: '\u6bcf\u4e2a\u7528\u6237\u6bcf\u4e2a\u81ea\u7136\u65e5\u53ef\u7b7e\u5230\u4e00\u6b21\uff0c\u5956\u52b1 1 \u5230 1000000 \u79ef\u5206\u3002',
+    save: '\u4fdd\u5b58',
+    saving: '\u4fdd\u5b58\u4e2d...',
+    saved: '\u7b7e\u5230\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002',
+    loadFailed: '\u52a0\u8f7d\u7b7e\u5230\u8bbe\u7f6e\u5931\u8d25\uff1a{error}',
+    saveFailed: '\u4fdd\u5b58\u7b7e\u5230\u8bbe\u7f6e\u5931\u8d25\uff1a{error}',
+    invalid: '\u79ef\u5206\u6570\u91cf\u5fc5\u987b\u662f 1 \u5230 1000000 \u4e4b\u95f4\u7684\u6574\u6570\u3002',
+    viewBtn: '\u67e5\u770b\u7b7e\u5230',
+    recordsTitle: '\u7b7e\u5230\u8bb0\u5f55',
+    periodDay: '\u65e5',
+    periodWeek: '\u5468',
+    periodMonth: '\u6708',
+    statsUsers: '\u7b7e\u5230\u7528\u6237\u6570\uff1a{n}',
+    statsCredits: '\u603b\u79ef\u5206\uff1a{n}',
+    recordsEmpty: '\u8be5\u5468\u671f\u5185\u6682\u65e0\u7b7e\u5230\u8bb0\u5f55\u3002',
+    prevPage: '\u4e0a\u4e00\u9875',
+    nextPage: '\u4e0b\u4e00\u9875',
+    pageInfo: '\u7b2c {page} / {pages} \u9875\uff08\u5171 {total} \u6761\uff09',
+    recordsLoadFailed: '\u52a0\u8f7d\u7b7e\u5230\u8bb0\u5f55\u5931\u8d25\uff1a{error}'
+  }
+};
+const tcix = (key, vars = {}) => ((TENANT_CHECKIN_SETTINGS_I18N[currentLang] || TENANT_CHECKIN_SETTINGS_I18N.en)[key] || TENANT_CHECKIN_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
   en: {
     title: 'System Free LLM (system-free)',
@@ -540,6 +599,171 @@ function clearTenantSystemFreeState() {
 function canManageTenantDigitalAssets() {
   const profile = typeof window !== 'undefined' && typeof window.adminProfile === 'function' ? window.adminProfile() : null;
   return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
+}
+function canManageTenantCheckin() {
+  const profile = typeof window !== 'undefined' && typeof window.adminProfile === 'function' ? window.adminProfile() : null;
+  return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
+}
+function applyTenantCheckinSettingsI18n() {
+  _s('tenantCheckinSettingsTitle', 'textContent', tcix('title'));
+  _s('tenantCheckinSettingsDesc', 'textContent', tcix('desc'));
+  _s('tenantCheckinSettingsReloadBtn', 'textContent', tcix('reload'));
+  _s('tenantCheckinEnabledLabel', 'textContent', tcix('enabledLabel'));
+  _s('tenantCheckinCreditsLabel', 'textContent', tcix('creditsLabel'));
+  _s('tenantCheckinSettingsHint', 'textContent', tcix('hint'));
+  _s('tenantCheckinSettingsSaveBtn', 'textContent', tcix('save'));
+  updateTenantCheckinEnabledHint();
+}
+function updateTenantCheckinEnabledHint() {
+  const enabledToggle = document.getElementById('tenantCheckinEnabledToggle');
+  _s('tenantCheckinEnabledHint', 'textContent', enabledToggle && enabledToggle.checked ? tcix('enabledHintOn') : tcix('enabledHintOff'));
+}
+async function loadTenantCheckinSettings() {
+  if (!canManageTenantCheckin()) return null;
+  applyTenantCheckinSettingsI18n();
+  try {
+    const data = await api('/api/admin/settings/checkin');
+    const enabledToggle = document.getElementById('tenantCheckinEnabledToggle');
+    const creditsInput = document.getElementById('tenantCheckinCredits');
+    if (enabledToggle) enabledToggle.checked = !!(data && data.enabled);
+    if (creditsInput) {
+      // Render the stored value verbatim: a falsy 0 must not fall back to 10.
+      const credits = Number(data && data.credits);
+      creditsInput.value = String(Number.isFinite(credits) ? credits : 10);
+    }
+    updateTenantCheckinEnabledHint();
+    return data || {};
+  } catch (err) {
+    const msg = tcix('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function saveTenantCheckinSettings() {
+  if (!canManageTenantCheckin()) return null;
+  const enabled = !!(document.getElementById('tenantCheckinEnabledToggle') && document.getElementById('tenantCheckinEnabledToggle').checked);
+  const credits = Math.trunc(Number((document.getElementById('tenantCheckinCredits') && document.getElementById('tenantCheckinCredits').value || '0').trim()));
+  if (!Number.isFinite(credits) || credits < 1 || credits > 1000000) {
+    const msg = tcix('invalid');
+    setOutput(msg);
+    showToast(msg, 'error');
+    return;
+  }
+  const btn = document.getElementById('tenantCheckinSettingsSaveBtn');
+  const previousLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = tcix('saving'); }
+  try {
+    const data = await api('/api/admin/settings/checkin', { method: 'PUT', body: JSON.stringify({ enabled: enabled, credits: credits }) });
+    updateTenantCheckinEnabledHint();
+    const msg = tcix('saved');
+    setOutput(msg);
+    showToast(msg, 'success');
+    return data || {};
+  } catch (err) {
+    const msg = tcix('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+    throw err;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = previousLabel || tcix('save'); }
+  }
+}
+
+// ── Check-in records viewer (查看签到) ──
+// 5 cards per row, 50 records per page, day/week/month stats.
+const CHECKIN_RECORDS_PAGE_SIZE = 50;
+let checkinRecordsState = { period: 'day', page: 1, total: 0, pages: 1, loading: false };
+function applyTenantCheckinRecordsI18n() {
+  _s('tenantCheckinViewBtn', 'textContent', tcix('viewBtn'));
+  _s('checkinRecordsTitle', 'textContent', tcix('recordsTitle'));
+  _s('checkinPeriodDay', 'textContent', tcix('periodDay'));
+  _s('checkinPeriodWeek', 'textContent', tcix('periodWeek'));
+  _s('checkinPeriodMonth', 'textContent', tcix('periodMonth'));
+  _s('checkinRecordsPrevBtn', 'textContent', tcix('prevPage'));
+  _s('checkinRecordsNextBtn', 'textContent', tcix('nextPage'));
+}
+function openCheckinRecordsModal() {
+  if (!canManageTenantCheckin()) return;
+  applyTenantCheckinRecordsI18n();
+  const overlay = document.getElementById('checkinRecordsModalOverlay');
+  if (overlay) overlay.classList.add('show');
+  showCheckinRecords('day');
+}
+function closeCheckinRecordsModal() {
+  const overlay = document.getElementById('checkinRecordsModalOverlay');
+  if (overlay) overlay.classList.remove('show');
+}
+function showCheckinRecords(period) {
+  if (period !== 'day' && period !== 'week' && period !== 'month') period = 'day';
+  checkinRecordsState = { period: period, page: 1, total: 0, pages: 1, loading: checkinRecordsState.loading };
+  ['day', 'week', 'month'].forEach(function(name) {
+    const btn = document.getElementById('checkinPeriod' + name.charAt(0).toUpperCase() + name.slice(1));
+    if (btn) btn.classList.toggle('active', name === period);
+  });
+  void loadCheckinRecords();
+}
+function changeCheckinRecordsPage(delta) {
+  const next = checkinRecordsState.page + delta;
+  if (next < 1 || next > checkinRecordsState.pages || checkinRecordsState.loading) return;
+  checkinRecordsState.page = next;
+  void loadCheckinRecords();
+}
+async function loadCheckinRecords() {
+  if (!canManageTenantCheckin()) return;
+  const state = checkinRecordsState;
+  const grid = document.getElementById('checkinRecordsGrid');
+  const meta = document.getElementById('checkinRecordsPagerMeta');
+  try {
+    state.loading = true;
+    const data = await api('/api/admin/checkin/records?period=' + encodeURIComponent(state.period) + '&page=' + state.page);
+    if (checkinRecordsState !== state) return;
+    state.total = Number(data && data.total) || 0;
+    state.pages = Math.max(1, Math.ceil(state.total / (Number(data && data.page_size) || CHECKIN_RECORDS_PAGE_SIZE)));
+    state.page = Number(data && data.page) || state.page;
+    const stats = (data && data.stats) || {};
+    _s('checkinStatsUsers', 'textContent', tcix('statsUsers', { n: Number(stats.users) || 0 }));
+    _s('checkinStatsCredits', 'textContent', tcix('statsCredits', { n: stats.credits }));
+    if (meta) meta.textContent = tcix('pageInfo', { page: state.page, pages: state.pages, total: state.total });
+    const prevBtn = document.getElementById('checkinRecordsPrevBtn');
+    const nextBtn = document.getElementById('checkinRecordsNextBtn');
+    if (prevBtn) prevBtn.disabled = state.page <= 1;
+    if (nextBtn) nextBtn.disabled = state.page >= state.pages;
+    if (grid) {
+      const records = Array.isArray(data && data.records) ? data.records : [];
+      // Cards are built via DOM APIs so record fields are never interpolated
+      // into HTML (identity fields come from user-controlled enrollment data).
+      grid.textContent = '';
+      if (!records.length) {
+        const empty = document.createElement('div');
+        empty.className = 'checkin-records-empty';
+        empty.textContent = tcix('recordsEmpty');
+        grid.appendChild(empty);
+      } else {
+        records.forEach(function(record) {
+          const card = document.createElement('div');
+          card.className = 'checkin-records-card';
+          const name = document.createElement('strong');
+          name.textContent = String(record.email || record.user_id || '-');
+          name.title = name.textContent;
+          const time = document.createElement('time');
+          time.textContent = record.at ? new Date(record.at).toLocaleString() : '';
+          const credits = document.createElement('span');
+          credits.className = 'checkin-credits';
+          credits.textContent = '+' + (Math.round((Number(record.credits) || 0) * 100) / 100);
+          card.appendChild(name);
+          card.appendChild(time);
+          card.appendChild(credits);
+          grid.appendChild(card);
+        });
+      }
+    }
+  } catch (err) {
+    const msg = tcix('recordsLoadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  } finally {
+    state.loading = false;
+  }
 }
 function updateRegistrationAuthModeState() {
   const phoneEnabled = registrationAuthUsesPhone();
@@ -745,6 +969,8 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     applyTenantMailSenderI18n();
     applyTenantMigrationSettingsI18n();
     applyTenantDigitalAssetsSettingsI18n();
+    applyTenantCheckinSettingsI18n();
+    applyTenantCheckinRecordsI18n();
     applyTenantSystemLLMDefaultsI18n();
   });
 }
@@ -755,6 +981,8 @@ applyUserReferralSystemI18n();
 applyTenantMailSenderI18n();
 applyTenantMigrationSettingsI18n();
 applyTenantDigitalAssetsSettingsI18n();
+applyTenantCheckinSettingsI18n();
+applyTenantCheckinRecordsI18n();
 applyTenantSystemLLMDefaultsI18n();
 function findMailPreset(provider) { return MAIL_PRESETS[provider] || MAIL_PRESETS.custom; }
 function detectMailProvider(cfg) { const host = String(cfg?.smtp_host || '').trim().toLowerCase(); const port = Number(cfg?.smtp_port || 0); const encryption = String(cfg?.smtp_encryption || '').trim().toLowerCase(); for (const [provider, preset] of Object.entries(MAIL_PRESETS)) { if (provider === 'custom') continue; if (host === preset.smtp_host && (!port || port === preset.smtp_port) && (!encryption || encryption === preset.smtp_encryption)) return provider; } return String(cfg?.provider || '').trim() || 'custom'; }
@@ -1083,6 +1311,13 @@ if (typeof window !== 'undefined') {
   window.loadTenantDigitalAssetsSettings = loadTenantDigitalAssetsSettings;
   window.toggleTenantDigitalAssetsEnabled = toggleTenantDigitalAssetsEnabled;
   window.toggleTenantDigitalAssetsSync = toggleTenantDigitalAssetsSync;
+  window.loadTenantCheckinSettings = loadTenantCheckinSettings;
+  window.saveTenantCheckinSettings = saveTenantCheckinSettings;
+  window.updateTenantCheckinEnabledHint = updateTenantCheckinEnabledHint;
+  window.openCheckinRecordsModal = openCheckinRecordsModal;
+  window.closeCheckinRecordsModal = closeCheckinRecordsModal;
+  window.showCheckinRecords = showCheckinRecords;
+  window.changeCheckinRecordsPage = changeCheckinRecordsPage;
 }
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }

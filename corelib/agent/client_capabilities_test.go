@@ -43,7 +43,7 @@ func TestBuildClientCapabilityPromptMentionsEventPushOnlyWhenDeclared(t *testing
 	withEvents := base
 	withEvents.Features.EventPush = true
 	prompt := BuildClientCapabilityPrompt(&withEvents)
-	for _, want := range []string{"Events:", "silent, notice, interrupt"} {
+	for _, want := range []string{"Events:", "silent, soft, interrupt"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}

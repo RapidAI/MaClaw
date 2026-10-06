@@ -4589,6 +4589,7 @@ func (a *App) flushPendingTokenUsage() {
 		if cfg.LLMProfileTokenUsage == nil {
 			cfg.LLMProfileTokenUsage = make(map[string]*corelib.TokenUsageStat)
 		}
+		usageDay := time.Now()
 		for providerName, delta := range pending {
 			if delta == nil {
 				continue
@@ -4617,6 +4618,7 @@ func (a *App) flushPendingTokenUsage() {
 				profileStat.CacheReadPricePerMTokensRMB = cacheReadPrice
 				profileStat.CacheWritePricePerMTokensRMB = cacheWritePrice
 				profileStat.InputCostRMB, profileStat.OutputCostRMB, profileStat.CacheReadCostRMB, profileStat.CacheWriteCostRMB, profileStat.TotalCostRMB = corelib.CalculateLLMCostRMBWithCache(profileStat.InputTokens, profileStat.OutputTokens, profileStat.CachedInputTokens, profileStat.CacheWriteTokens, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice)
+				recordTokenUsageDay(cfg, usageDay, providerName, delta)
 				continue
 			}
 			stat, ok := cfg.LLMTokenUsage[providerName]
@@ -4639,7 +4641,9 @@ func (a *App) flushPendingTokenUsage() {
 			stat.CacheReadPricePerMTokensRMB = cacheReadPrice
 			stat.CacheWritePricePerMTokensRMB = cacheWritePrice
 			stat.InputCostRMB, stat.OutputCostRMB, stat.CacheReadCostRMB, stat.CacheWriteCostRMB, stat.TotalCostRMB = corelib.CalculateLLMCostRMBWithCache(stat.InputTokens, stat.OutputTokens, stat.CachedInputTokens, stat.CacheWriteTokens, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice)
+			recordTokenUsageDay(cfg, usageDay, providerName, delta)
 		}
+		pruneTokenUsageByDay(cfg.LLMTokenUsageByDay, usageDay)
 	}); err != nil {
 		log.Printf("[LLM] flushPendingTokenUsage: save config: %v", err)
 		// Re-queue failed deltas so usage is not permanently lost.
@@ -4705,8 +4709,9 @@ func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {
 			stat.CacheWritePricePerMTokensRMB = stat.InputPricePerMTokensRMB
 		}
 	}
-	a.mergePendingTokenUsageInto(provider, stat)
+	pending := map[string]int64{provider: a.mergePendingTokenUsageInto(provider, stat)}
 	recalculateLLMTokenUsageCosts(stat)
+	applyTokenUsageWindows(map[string]*corelib.TokenUsageStat{provider: stat}, cfg.LLMTokenUsageByDay, pending, time.Now())
 	return stat
 }
 
@@ -4728,10 +4733,14 @@ func (a *App) GetAllLLMTokenUsage() map[string]*corelib.TokenUsageStat {
 			out[k] = &cp
 		}
 	}
+	pendingWindows := map[string]int64{}
 	a.tokenUsageMu.Lock()
 	for name, delta := range a.tokenUsagePending {
-		if delta == nil || isRemoteToolTokenUsageProvider(name) {
+		if delta == nil || delta.IsProfile || isRemoteToolTokenUsageProvider(name) {
 			continue
+		}
+		if n := delta.InputTokens + delta.OutputTokens; n != 0 {
+			pendingWindows[name] = n
 		}
 		stat := out[name]
 		if stat == nil {
@@ -4751,9 +4760,11 @@ func (a *App) GetAllLLMTokenUsage() map[string]*corelib.TokenUsageStat {
 		applyPendingTokenDelta(stat, delta)
 	}
 	a.tokenUsageMu.Unlock()
-	for _, stat := range out {
+	for key, stat := range out {
+		backfillLLMUsagePrices(&cfg, key, stat)
 		recalculateLLMTokenUsageCosts(stat)
 	}
+	applyTokenUsageWindows(out, cfg.LLMTokenUsageByDay, pendingWindows, time.Now())
 	return out
 }
 
@@ -4773,10 +4784,14 @@ func (a *App) GetAllLLMProfileTokenUsage() map[string]*corelib.TokenUsageStat {
 		cp := *stat
 		out[key] = &cp
 	}
+	pendingWindows := map[string]int64{}
 	a.tokenUsageMu.Lock()
 	for key, delta := range a.tokenUsagePending {
 		if delta == nil || !delta.IsProfile {
 			continue
+		}
+		if n := delta.InputTokens + delta.OutputTokens; n != 0 {
+			pendingWindows[key] = n
 		}
 		stat := out[key]
 		if stat == nil {
@@ -4799,10 +4814,120 @@ func (a *App) GetAllLLMProfileTokenUsage() map[string]*corelib.TokenUsageStat {
 		applyPendingTokenDelta(stat, delta)
 	}
 	a.tokenUsageMu.Unlock()
-	for _, stat := range out {
+	for key, stat := range out {
+		// Profile keys are opaque composites; price lookup needs the display name.
+		backfillLLMUsagePrices(&cfg, firstNonEmpty(stat.ProviderDisplayName, key), stat)
 		recalculateLLMTokenUsageCosts(stat)
 	}
+	applyTokenUsageWindows(out, cfg.LLMTokenUsageByDay, pendingWindows, time.Now())
 	return out
+}
+
+// LLMTokenUsageDayPoint is one local calendar day of provider token usage.
+// Profile rows are omitted; the settings chart follows the provider list.
+type LLMTokenUsageDayPoint struct {
+	Date         string `json:"date"`
+	Provider     string `json:"provider"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalTokens  int64  `json:"total_tokens"`
+}
+
+// GetLLMTokenUsageByDay returns per-day provider totals inside the retention
+// window, including today's unflushed delta. Remote-tool diagnostics and
+// profile-scoped rows are left out so the chart matches the provider picker.
+func (a *App) GetLLMTokenUsageByDay() []LLMTokenUsageDayPoint {
+	if a == nil {
+		return []LLMTokenUsageDayPoint{}
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return []LLMTokenUsageDayPoint{}
+	}
+	type dayAcc struct {
+		input  int64
+		output int64
+	}
+	totals := map[string]map[string]*dayAcc{}
+	add := func(date, provider string, input, output int64) {
+		if !validTokenUsageDay(date) || provider == "" || (input == 0 && output == 0) {
+			return
+		}
+		if strings.HasPrefix(provider, "profile:") || isRemoteToolTokenUsageProvider(provider) {
+			return
+		}
+		rows := totals[date]
+		if rows == nil {
+			rows = map[string]*dayAcc{}
+			totals[date] = rows
+		}
+		row := rows[provider]
+		if row == nil {
+			row = &dayAcc{}
+			rows[provider] = row
+		}
+		row.input += input
+		row.output += output
+	}
+	for date, rows := range cfg.LLMTokenUsageByDay {
+		for provider, stat := range rows {
+			if stat == nil {
+				continue
+			}
+			input, output := stat.InputTokens, stat.OutputTokens
+			if input == 0 && output == 0 {
+				input = stat.TotalTokens
+			}
+			add(date, provider, input, output)
+		}
+	}
+	today := time.Now().Format("2006-01-02")
+	a.tokenUsageMu.Lock()
+	for provider, delta := range a.tokenUsagePending {
+		if delta == nil || delta.IsProfile {
+			continue
+		}
+		add(today, provider, delta.InputTokens, delta.OutputTokens)
+	}
+	a.tokenUsageMu.Unlock()
+	out := make([]LLMTokenUsageDayPoint, 0)
+	for date, rows := range totals {
+		for provider, row := range rows {
+			out = append(out, LLMTokenUsageDayPoint{
+				Date: date, Provider: provider,
+				InputTokens: row.input, OutputTokens: row.output, TotalTokens: row.input + row.output,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Date != out[j].Date {
+			return out[i].Date < out[j].Date
+		}
+		return out[i].Provider < out[j].Provider
+	})
+	return out
+}
+
+// backfillLLMUsagePrices fills in unit prices for rows persisted before the
+// price fields existed (or written while a provider had none configured). Those
+// rows round-trip through omitempty as zeroes, which made
+// recalculateLLMTokenUsageCosts report a zero cost for real usage. Only missing
+// prices are filled: a stored non-zero price stays authoritative so custom
+// provider pricing is never overwritten.
+func backfillLLMUsagePrices(cfg *corelib.AppConfig, provider string, stat *corelib.TokenUsageStat) {
+	if stat == nil {
+		return
+	}
+	if stat.InputPricePerMTokensRMB == 0 && stat.OutputPricePerMTokensRMB == 0 {
+		stat.InputPricePerMTokensRMB, stat.OutputPricePerMTokensRMB, stat.CacheReadPricePerMTokensRMB, stat.CacheWritePricePerMTokensRMB = maclawLLMUsagePricesWithCacheFromConfig(cfg, provider)
+		return
+	}
+	if stat.CacheReadPricePerMTokensRMB == 0 {
+		stat.CacheReadPricePerMTokensRMB = stat.InputPricePerMTokensRMB / 10
+	}
+	if stat.CacheWritePricePerMTokensRMB == 0 {
+		stat.CacheWritePricePerMTokensRMB = stat.InputPricePerMTokensRMB
+	}
 }
 
 func recalculateLLMTokenUsageCosts(stat *corelib.TokenUsageStat) {
@@ -4819,17 +4944,19 @@ func recalculateLLMTokenUsageCosts(stat *corelib.TokenUsageStat) {
 	)
 }
 
-func (a *App) mergePendingTokenUsageInto(provider string, stat *corelib.TokenUsageStat) {
+func (a *App) mergePendingTokenUsageInto(provider string, stat *corelib.TokenUsageStat) int64 {
 	if a == nil || stat == nil {
-		return
+		return 0
 	}
 	provider = strings.TrimSpace(provider)
 	a.tokenUsageMu.Lock()
+	defer a.tokenUsageMu.Unlock()
 	delta := a.tokenUsagePending[provider]
-	if delta != nil {
-		applyPendingTokenDelta(stat, delta)
+	if delta == nil {
+		return 0
 	}
-	a.tokenUsageMu.Unlock()
+	applyPendingTokenDelta(stat, delta)
+	return delta.InputTokens + delta.OutputTokens
 }
 
 func applyPendingTokenDelta(stat *corelib.TokenUsageStat, delta *pendingLLMTokenDelta) {
@@ -4856,6 +4983,144 @@ func isRemoteToolTokenUsageProvider(provider string) bool {
 	return corelib.IsRemoteCodingToolTokenUsageProvider(provider)
 }
 
+// tokenUsageDayRetention keeps enough calendar days for "this month" plus a
+// short overlap, then drops older rows so config.json stays bounded.
+const tokenUsageDayRetention = 62
+
+func recordTokenUsageDay(cfg *corelib.AppConfig, now time.Time, key string, delta *pendingLLMTokenDelta) {
+	if cfg == nil || delta == nil || key == "" || (delta.InputTokens == 0 && delta.OutputTokens == 0) {
+		return
+	}
+	date := now.Format("2006-01-02")
+	if cfg.LLMTokenUsageByDay == nil {
+		cfg.LLMTokenUsageByDay = map[string]map[string]*corelib.TokenUsageStat{}
+	}
+	rows := cfg.LLMTokenUsageByDay[date]
+	if rows == nil {
+		rows = map[string]*corelib.TokenUsageStat{}
+		cfg.LLMTokenUsageByDay[date] = rows
+	}
+	stat := rows[key]
+	if stat == nil {
+		stat = &corelib.TokenUsageStat{}
+		rows[key] = stat
+	}
+	stat.InputTokens += delta.InputTokens
+	stat.OutputTokens += delta.OutputTokens
+	stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+}
+
+func validTokenUsageDay(date string) bool {
+	if len(date) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", date)
+	return err == nil
+}
+
+func pruneTokenUsageByDay(byDay map[string]map[string]*corelib.TokenUsageStat, now time.Time) {
+	if len(byDay) == 0 {
+		return
+	}
+	cutoff := now.AddDate(0, 0, -tokenUsageDayRetention).Format("2006-01-02")
+	for date, rows := range byDay {
+		if !validTokenUsageDay(date) || date < cutoff || len(rows) == 0 {
+			delete(byDay, date)
+		}
+	}
+}
+
+func clearTokenUsageDayKeys(cfg *corelib.AppConfig, provider string) {
+	if cfg == nil || len(cfg.LLMTokenUsageByDay) == 0 {
+		return
+	}
+	for date, rows := range cfg.LLMTokenUsageByDay {
+		if provider == "" {
+			for key := range rows {
+				if !strings.HasPrefix(key, "profile:") {
+					delete(rows, key)
+				}
+			}
+		} else {
+			delete(rows, provider)
+		}
+		if len(rows) == 0 {
+			delete(cfg.LLMTokenUsageByDay, date)
+		}
+	}
+}
+
+// tokenUsageWindowStarts returns local calendar bounds. The week starts Monday.
+func tokenUsageWindowStarts(now time.Time) (today, weekStart, monthStart string) {
+	local := now.In(now.Location())
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, local.Location())
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	week := day.AddDate(0, 0, -(weekday - 1))
+	month := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, local.Location())
+	return day.Format("2006-01-02"), week.Format("2006-01-02"), month.Format("2006-01-02")
+}
+
+func tokenUsageCounterTotal(stat *corelib.TokenUsageStat) int64 {
+	if stat == nil {
+		return 0
+	}
+	if stat.InputTokens != 0 || stat.OutputTokens != 0 {
+		return stat.InputTokens + stat.OutputTokens
+	}
+	return stat.TotalTokens
+}
+
+func applyTokenUsageWindows(out map[string]*corelib.TokenUsageStat, byDay map[string]map[string]*corelib.TokenUsageStat, pending map[string]int64, now time.Time) {
+	today, weekStart, monthStart := tokenUsageWindowStarts(now)
+	todayN := make(map[string]int64, len(out))
+	weekN := make(map[string]int64, len(out))
+	monthN := make(map[string]int64, len(out))
+	for date, rows := range byDay {
+		if !validTokenUsageDay(date) || date > today {
+			continue
+		}
+		countToday := date == today
+		countWeek := date >= weekStart
+		countMonth := date >= monthStart
+		if !countToday && !countWeek && !countMonth {
+			continue
+		}
+		for key, row := range rows {
+			if out[key] == nil {
+				continue
+			}
+			total := tokenUsageCounterTotal(row)
+			if total == 0 {
+				continue
+			}
+			if countToday {
+				todayN[key] += total
+			}
+			if countWeek {
+				weekN[key] += total
+			}
+			if countMonth {
+				monthN[key] += total
+			}
+		}
+	}
+	for key, stat := range out {
+		if stat == nil {
+			continue
+		}
+		// pending is the unflushed delta captured with the lifetime total.
+		// Day buckets do not contain it yet, so adding it once keeps the
+		// window aligned with that total.
+		add := pending[key]
+		stat.TodayTokens = todayN[key] + add
+		stat.WeekTokens = weekN[key] + add
+		stat.MonthTokens = monthN[key] + add
+	}
+}
+
 // ResetLLMTokenUsage resets the token usage stats for a specific provider.
 // If provider is empty, resets all providers.
 func (a *App) ResetLLMTokenUsage(provider string) error {
@@ -4876,14 +5141,17 @@ func (a *App) ResetLLMTokenUsage(provider string) error {
 	a.tokenUsageMu.Unlock()
 
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
-		if cfg.LLMTokenUsage == nil {
-			return
-		}
 		if provider == "" {
-			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+			if cfg.LLMTokenUsage != nil {
+				cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+			}
+			clearTokenUsageDayKeys(cfg, "")
 			return
 		}
-		delete(cfg.LLMTokenUsage, provider)
+		if cfg.LLMTokenUsage != nil {
+			delete(cfg.LLMTokenUsage, provider)
+		}
+		clearTokenUsageDayKeys(cfg, provider)
 	})
 }
 

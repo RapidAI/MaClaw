@@ -190,6 +190,40 @@ func TestReviewedHostScheduleUsesTrustedPrincipalAndStore(t *testing.T) {
 	}
 }
 
+func TestReviewedHostScheduleIsolatesSameUserInstances(t *testing.T) {
+	store, err := scheduler.NewManager(filepath.Join(t.TempDir(), "schedules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := Principal{TenantID: "tenant", UserID: "alice"}
+	first := &coreAgentCallbacks{principal: principal, schedules: store, instance: Instance{ID: "bot-1"}}
+	second := &coreAgentCallbacks{principal: principal, schedules: store, instance: Instance{ID: "bot-2"}}
+	created, err := first.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		Name: "standup", TaskAction: "remind standup", Hour: 9, HasHour: true,
+	})
+	if err != nil || !strings.Contains(created, "standup") {
+		t.Fatalf("create=%q err=%v", created, err)
+	}
+	tasks := store.List()
+	if len(tasks) != 1 || tasks[0].InstanceID != "bot-1" || tasks[0].OwnerUserID != "alice" {
+		t.Fatalf("stored task = %#v", tasks)
+	}
+	listed, err := second.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{})
+	if err != nil || strings.Contains(listed, "standup") {
+		t.Fatalf("other instance list=%q err=%v", listed, err)
+	}
+	if _, err := second.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{ID: tasks[0].ID}); err == nil {
+		t.Fatal("other instance deleted the task")
+	}
+	if len(store.List()) != 1 {
+		t.Fatal("cross-instance delete removed the task")
+	}
+	ownerList, err := first.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{})
+	if err != nil || !strings.Contains(ownerList, "standup") {
+		t.Fatalf("owner list=%q err=%v", ownerList, err)
+	}
+}
+
 func TestScheduleManagerForDataDirRequiresPersistPathAndDoesNotStart(t *testing.T) {
 	e := &CoreAgentExecutor{}
 	if e.scheduleManagerForDataDir("") != nil {

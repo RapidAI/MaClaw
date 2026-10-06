@@ -11,6 +11,9 @@ export const emptySidebarTokenUsage = () => ({
     cachedRequests: 0,
     localCacheRequests: 0,
     localCacheHits: 0,
+    today: 0,
+    week: 0,
+    month: 0,
 });
 
 export const normalizeSidebarTokenUsage = (stat?: SidebarTokenUsageStat | null) => {
@@ -23,7 +26,10 @@ export const normalizeSidebarTokenUsage = (stat?: SidebarTokenUsageStat | null) 
     const cachedRequests = stat?.cached_requests ?? stat?.CachedRequests ?? 0;
     const localCacheRequests = stat?.local_cache_requests ?? stat?.LocalCacheRequests ?? 0;
     const localCacheHits = stat?.local_cache_hits ?? stat?.LocalCacheHits ?? 0;
-    return { input, output, total, cachedInput, cacheWrite, requests, cachedRequests, localCacheRequests, localCacheHits };
+    const today = stat?.today_tokens ?? stat?.TodayTokens ?? 0;
+    const week = stat?.week_tokens ?? stat?.WeekTokens ?? 0;
+    const month = stat?.month_tokens ?? stat?.MonthTokens ?? 0;
+    return { input, output, total, cachedInput, cacheWrite, requests, cachedRequests, localCacheRequests, localCacheHits, today, week, month };
 };
 
 export const getSidebarUsageForProvider = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {

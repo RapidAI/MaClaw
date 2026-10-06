@@ -373,7 +373,94 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if got := active["/opt/app"]; got != string(TaskBlocked) {
 		t.Fatalf("blocked ref status=%q", got)
 	}
+	invisible, err := store.CreateTask(Task{TaskID: "invisible-edit", ProjectRef: "/home/prj8", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invisibleAttempt, err := store.StartAttempt(invisible.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: "/home/prj8", Mode: "remote"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendEvent(invisibleAttempt.AttemptID, "worker", "remote_file_activity", "sha256:edited-untracked", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(invisibleAttempt.AttemptID, "worker", FinishInput{Status: TaskBlocked, SideEffectState: SideEffectObserved, ErrorCode: "final_workspace_unchanged", ErrorSummary: "porcelain unchanged"}, now); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active["/home/prj8"]; got != string(TaskCompleted) {
+		t.Fatalf("untracked content edit status=%q, want completed", got)
+	}
 	if _, ok := active[`F:\test-prog`]; ok {
 		t.Fatalf("terminal ref surfaced: %v", active)
+	}
+}
+
+func TestSQLiteStoreListActiveTaskStatusesPreferNewestOutcome(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	older := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+
+	finishBlocked := func(taskID, ref string, at time.Time, errorCode, eventType string) {
+		t.Helper()
+		task, err := store.CreateTask(Task{TaskID: taskID, ProjectRef: ref, Mode: "remote", CreatedAt: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempt, err := store.StartAttempt(task.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: ref, Mode: "remote"}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eventType != "" {
+			if _, err := store.AppendEvent(attempt.AttemptID, "worker", eventType, "sha256:edited-untracked", at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskBlocked, SideEffectState: SideEffectObserved, ErrorCode: errorCode, ErrorSummary: errorCode}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	finishBlocked("old-probe", "/home/mix", older, "workspace_before_probe_failed", "")
+	finishBlocked("new-edit", "/home/mix", newer, "final_workspace_unchanged", "remote_file_activity")
+	finishBlocked("old-edit", "/home/fresh", older, "final_workspace_unchanged", "remote_file_activity")
+	finishBlocked("new-probe", "/home/fresh", newer, "final_workspace_probe_failed", "")
+
+	live, err := store.CreateTask(Task{TaskID: "live-run", ProjectRef: "/home/live", Mode: "remote", CreatedAt: older})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(live.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: "/home/live", Mode: "remote"}, older); err != nil {
+		t.Fatal(err)
+	}
+	finishBlocked("later-edit", "/home/live", newer, "final_workspace_unchanged", "remote_file_activity")
+
+	if _, err := store.CreateTask(Task{TaskID: "stale-queue", ProjectRef: "/home/queue", Mode: "remote", CreatedAt: older}); err != nil {
+		t.Fatal(err)
+	}
+	finishBlocked("queue-later-edit", "/home/queue", newer, "final_workspace_unchanged", "remote_file_activity")
+
+	active, err := store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active["/home/mix"]; got != string(TaskCompleted) {
+		t.Fatalf("newer untracked edit status=%q, want completed", got)
+	}
+	if got := active["/home/fresh"]; got != string(TaskBlocked) {
+		t.Fatalf("newer probe failure status=%q, want blocked", got)
+	}
+	if got := active["/home/live"]; got != string(TaskRunning) {
+		t.Fatalf("live run status=%q, want running", got)
+	}
+	if got := active["/home/queue"]; got != string(TaskCompleted) {
+		t.Fatalf("stale queue status=%q, want completed", got)
 	}
 }

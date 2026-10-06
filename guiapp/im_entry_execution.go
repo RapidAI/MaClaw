@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -364,6 +365,25 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		}
 	}
 
+	// Pure remote coding has no desktop execution environment. Refuse before
+	// the desktop system prompt is built: that prompt stamps this process as
+	// "current system" and lists remembered SSH hosts. Workflow turns still
+	// build that prompt because the builder is what consumes the stashed
+	// phase prompt, then their execution phase speaks SSH itself. The local
+	// SubAgent orchestrator does not: it would implement the task here.
+	unarmedRemote := false
+	if !opts.WorkflowDocPhase {
+		if _, blocked := h.unarmedRemoteCodingDesktopTurn(msg.UserID); blocked {
+			if !opts.WorkflowAgentLoop {
+				if resp, blocked := h.finishUnarmedRemoteCodingTurn(msg, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume); blocked {
+					return resp
+				}
+			} else {
+				unarmedRemote = true
+			}
+		}
+	}
+
 	promptStart := time.Now()
 	if opts.OnProgress != nil && !codingWorkbench {
 		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
@@ -371,7 +391,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
 	promptElapsed := time.Since(promptStart)
 
-	if !codingWorkbench || opts.WorkflowAgentLoop {
+	if !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {
 		if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
 			if updatedHistory != nil {
 				history = updatedHistory
@@ -427,6 +447,14 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 			}
 			log.Printf("[workflow-v2] SubAgent execution returned nil, falling back to agent loop")
+		}
+	}
+
+	// Workflow execution already had its chance above. An unarmed remote
+	// workbench still must not enter the desktop agent loop.
+	if !opts.WorkflowDocPhase {
+		if resp, blocked := h.finishUnarmedRemoteCodingTurn(msg, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume); blocked {
+			return resp
 		}
 	}
 
@@ -570,6 +598,165 @@ func (h *IMMessageHandler) codingSessionIsRemote(userID string, mem stickyCoding
 	}
 	identity := projectPathFromSessionOwnerID(userID)
 	return identity != "" && h.app.projectPathIsCodingWorkbench(identity) && !h.app.projectPathIsLocalCodingWorkbench(identity)
+}
+
+// unarmedRemoteCodingDesktopTurn is the ingress guard for a remote coding
+// workbench whose SSH engine is not armed. Task records live under ~/.maclaw
+// on the controller; that directory is not the execution machine. The turn
+// stays on the bound host, or waits for that host's session.
+func (h *IMMessageHandler) unarmedRemoteCodingDesktopTurn(userID string) (string, bool) {
+	if h == nil {
+		return "", false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || !h.isPureCodingWorkbenchSession(userID) {
+		return "", false
+	}
+	// Only a pending remote template is the SSH engine. A leftover local
+	// project path still counts as "pending" for the workbench, and treating
+	// that as armed lets the desktop orchestrator implement the task here.
+	if h.remoteCodingSSHEnginePending(userID) {
+		return "", false
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if !h.codingSessionIsRemote(userID, mem) {
+		return "", false
+	}
+	return remoteCodingReconnectRequiredText(h.remoteCodingReconnectMemory(userID, mem)), true
+}
+
+func (h *IMMessageHandler) finishUnarmedRemoteCodingTurn(msg IMUserMessage, clearUIAfterContextSwitch, confirmedResume bool) (*IMAgentResponse, bool) {
+	text, blocked := h.unarmedRemoteCodingDesktopTurn(msg.UserID)
+	if !blocked {
+		return nil, false
+	}
+	log.Printf("[coding-env] remote workbench has no SSH session; not running the desktop agent user=%s", msg.UserID)
+	runtime := runtimeContextFromIMMessage(msg)
+	reconnect := &IMAgentResponse{
+		Text:            text,
+		RequestID:       imRequestID(msg),
+		SessionKey:      runtime.Conversation.SessionKey,
+		ResponseSource:  "remote_coding_reconnect",
+		ClearUI:         clearUIAfterContextSwitch,
+		ConfirmedResume: confirmedResume,
+	}
+	h.rememberUnarmedRemoteCodingTurn(msg, text, reconnect)
+	return reconnect, true
+}
+
+// rememberUnarmedRemoteCodingTurn keeps the user's request in the session.
+// The desktop agent loop is what normally appends the turn; this path returns
+// before that loop, so without this write the task text disappears and the
+// user has to send it again after SSH reconnects.
+func (h *IMMessageHandler) rememberUnarmedRemoteCodingTurn(msg IMUserMessage, text string, resp *IMAgentResponse) {
+	if h == nil || strings.TrimSpace(msg.UserID) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	userText := strings.TrimSpace(msg.Text)
+	if userText == "" {
+		return
+	}
+	// RemoteCodingSubAgent reads sticky SessionPlan / LastUserText, not the
+	// shared transcript. Keep the request there so reconnect can continue it.
+	// LastSummary is the previous coding result. The reconnect sentence is not
+	// a result; storing it makes the next connected turn repeat it.
+	h.noteUnexecutedRemoteCodingRequest(msg.UserID, userText)
+	if h.memory == nil {
+		return
+	}
+	history := append([]agent.ConversationEntry(nil), h.memory.Load(msg.UserID)...)
+	history = append(history,
+		agent.ConversationEntry{Role: "user", Content: userText},
+		agent.ConversationEntry{Role: "assistant", Content: text},
+	)
+	h.saveConversationHistoryTimed(msg.UserID, history, resp)
+}
+
+// remoteCodingSSHEnginePending is true when this turn is already routed to
+// RemoteCodingSubAgent. That engine reports a dead session itself and can
+// rebuild one from stored coordinates. A local pending path is not this.
+func (h *IMMessageHandler) remoteCodingSSHEnginePending(userID string) bool {
+	if h == nil {
+		return false
+	}
+	if _, pending := h.pendingV2SubAgentExecution.Load(userID); !pending {
+		return false
+	}
+	_, ok := h.pendingTemplateRemoteCoding.Load(userID)
+	return ok
+}
+
+// noteUnexecutedRemoteCodingRequest stores a request that never reached the
+// remote engine. RemoteCodingSubAgent continues from SessionPlan and
+// LastUserText, not from the shared transcript.
+func (h *IMMessageHandler) noteUnexecutedRemoteCodingRequest(userID, userText string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	userText = strings.TrimSpace(userText)
+	if userID == "" || userText == "" {
+		return
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.LastUserText = userText
+		stickyRememberSessionPlan(mem, userText)
+	})
+}
+
+// remoteCodingReconnectMemory fills a sticky remote binding from the task
+// record when reopen dropped host or directory. Tags are the durable copy.
+func (h *IMMessageHandler) remoteCodingReconnectMemory(userID string, mem stickyCodingWorkbenchMemory) stickyCodingWorkbenchMemory {
+	if h == nil || h.app == nil {
+		return mem
+	}
+	projectPath := projectPathFromSessionOwnerID(userID)
+	if projectPath == "" {
+		return mem
+	}
+	host, user, dir, port := h.app.remoteCodingMetaFromTaskTags(projectPath)
+	if strings.TrimSpace(mem.RemoteHost) == "" {
+		mem.RemoteHost = host
+	}
+	if strings.TrimSpace(mem.RemoteUser) == "" {
+		mem.RemoteUser = user
+	}
+	if strings.TrimSpace(mem.RemoteWorkDir) == "" && strings.TrimSpace(mem.RemoteProjectDir) == "" {
+		mem.RemoteWorkDir = dir
+	}
+	if mem.RemotePort <= 0 {
+		mem.RemotePort = port
+	}
+	return mem
+}
+
+func remoteCodingReconnectRequiredText(mem stickyCodingWorkbenchMemory) string {
+	host := strings.TrimSpace(mem.RemoteHost)
+	user := strings.TrimSpace(mem.RemoteUser)
+	dir := strings.TrimSpace(mem.RemoteWorkDir)
+	if dir == "" {
+		dir = strings.TrimSpace(mem.RemoteProjectDir)
+	}
+	endpoint := host
+	if user != "" && host != "" {
+		endpoint = user + "@" + host
+	}
+	if mem.RemotePort > 0 && mem.RemotePort != 22 && endpoint != "" {
+		endpoint = fmt.Sprintf("%s:%d", endpoint, mem.RemotePort)
+	}
+	where := ""
+	switch {
+	case endpoint != "" && dir != "":
+		where = fmt.Sprintf("%s 的 %s", endpoint, dir)
+	case endpoint != "":
+		where = endpoint
+	case dir != "":
+		where = dir
+	}
+	if where == "" {
+		return "这个任务的执行环境是已绑定的远程主机。SSH 会话还没有连上，请在远程连接面板重新连接后再继续。"
+	}
+	return fmt.Sprintf("这个任务的执行环境是 %s。SSH 会话还没有连上，请在远程连接面板重新连接后再继续。", where)
 }
 
 // codingSessionWorkRoot is the directory slash commands and checkpoints use.

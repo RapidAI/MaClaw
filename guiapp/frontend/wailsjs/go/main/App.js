@@ -1191,6 +1191,10 @@ export function GetAllLLMTokenUsage() {
   return window['go']['main']['App']['GetAllLLMTokenUsage']();
 }
 
+export function GetLLMTokenUsageByDay() {
+  return window['go']['main']['App']['GetLLMTokenUsageByDay']();
+}
+
 export function GetAllLLMProfileTokenUsage() {
   return window['go']['main']['App']['GetAllLLMProfileTokenUsage']();
 }
@@ -1689,6 +1693,10 @@ export function GetPetPackRuntimeInfo() {
 
 export function GetPetPackStateFrameDataURL(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetPetPackStateFrameDataURL'](arg1, arg2, arg3);
+}
+
+export function GetPetCompanionTranscript() {
+  return window['go']['main']['App']['GetPetCompanionTranscript']();
 }
 
 export function GetPetPacksDir() {
@@ -3636,6 +3644,18 @@ export function PrepareRemoteCodingEnvironment(arg1, arg2, arg3, arg4, arg5, arg
   return window['go']['main']['App']['PrepareRemoteCodingEnvironment'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function RememberRemoteSSHPassword(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['RememberRemoteSSHPassword'](arg1, arg2, arg3, arg4);
+}
+
+export function RecallRemoteSSHPassword(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RecallRemoteSSHPassword'](arg1, arg2, arg3);
+}
+
+export function ForgetRemoteSSHPassword(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ForgetRemoteSSHPassword'](arg1, arg2, arg3);
+}
+
 export function PrepareRemoteOpsDiagnosisEnvironment(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['PrepareRemoteOpsDiagnosisEnvironment'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -3830,6 +3850,9 @@ export function RecoverCC() {
 
 export function RedeemHubLLMService(arg1) {
   return window['go']['main']['App']['RedeemHubLLMService'](arg1);
+}
+export function CheckinHubLLMService() {
+  return window['go']['main']['App']['CheckinHubLLMService']();
 }
 export function RedeemHubLLMResetVoucher(arg1) {
   return window['go']['main']['App']['RedeemHubLLMResetVoucher'](arg1);
@@ -4379,6 +4402,30 @@ export function SendBtwQuery(arg1, arg2) {
   return window['go']['main']['App']['SendBtwQuery'](arg1, arg2);
 }
 
+export function SendDesktopBotTask(arg1, arg2) {
+  return window['go']['main']['App']['SendDesktopBotTask'](arg1, arg2);
+}
+
+export function DesktopBotAccess() {
+  return window['go']['main']['App']['DesktopBotAccess']();
+}
+
+export function ListDesktopBots() {
+  return window['go']['main']['App']['ListDesktopBots']();
+}
+
+export function CreateDesktopBot(arg1, arg2) {
+  return window['go']['main']['App']['CreateDesktopBot'](arg1, arg2);
+}
+
+export function RenameDesktopBot(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RenameDesktopBot'](arg1, arg2, arg3);
+}
+
+export function DeleteDesktopBot(arg1) {
+  return window['go']['main']['App']['DeleteDesktopBot'](arg1);
+}
+
 export function SendMessageForTab(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendMessageForTab'](arg1, arg2, arg3);
 }
@@ -4485,6 +4532,10 @@ export function SetDataDir(arg1) {
 
 export function SetDefaultLaunchMode(arg1) {
   return window['go']['main']['App']['SetDefaultLaunchMode'](arg1);
+}
+
+export function NotifyDesktopPetMicBusy(arg1) {
+  return window['go']['main']['App']['NotifyDesktopPetMicBusy'](arg1);
 }
 
 export function SetDesktopPetState(arg1, arg2) {

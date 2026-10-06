@@ -92,32 +92,76 @@ func classifyManageSkillAction(action string) manageSkillAction {
 	}
 }
 
-// legacyModelManageSkillActionAllowed identifies the deliberately tiny
-// compatibility subset of the merged manage_skill gateway. The merged schema
-// is not a static capability: most actions let model arguments select an
-// installed Skill, a Hub package, or a mutable Skill directory. Those choices
-// need the dynamic semantic catalog's reviewed binding, not a legacy function
-// name plus a top-level argument allow-list.
-//
-// Listing is the sole read-only inventory operation retained for legacy turns.
-// It does not accept a provider, package, Skill, or run identity from the
-// model. status is intentionally excluded: an arbitrary run_id is an
-// unbound, cross-run resource reference and can also cause a long poll.
-func legacyModelManageSkillActionAllowed(argumentsJSON string) bool {
+// legacyModelManageSkillActionAllowed identifies the compatibility subset of
+// the merged manage_skill gateway. Listing does not take a skill identity.
+// run is allowed only when skillInstalled reports that the named skill is
+// already in the local registry: the desktop runner binds that name, and the
+// model is not selecting a Hub package or a remote provider. Install, search,
+// upload, mutation, and status stay closed. status is an arbitrary run_id,
+// which is an unbound cross-run reference and can also cause a long poll.
+func legacyModelManageSkillActionAllowed(argumentsJSON string, skillInstalled func(string) bool) bool {
 	args := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(normalizeAgentLoopToolArgumentsJSON(argumentsJSON)), &args); err != nil {
 		return false
 	}
 	action, ok := args["action"].(string)
-	return ok && classifyManageSkillAction(action) == manageSkillActionList
+	if !ok {
+		return false
+	}
+	switch classifyManageSkillAction(action) {
+	case manageSkillActionList:
+		return true
+	case manageSkillActionInfo, manageSkillActionRun:
+		name, _ := args["name"].(string)
+		name = strings.TrimSpace(name)
+		return name != "" && skillInstalled != nil && skillInstalled(name)
+	default:
+		return false
+	}
 }
 
-func isLegacyModelManageSkillGateway(name, argumentsJSON string) bool {
-	return strings.TrimSpace(name) == "manage_skill" && !legacyModelManageSkillActionAllowed(argumentsJSON)
+func (h *IMMessageHandler) legacyManageSkillInstalled(name string) bool {
+	if h == nil || h.app == nil {
+		return false
+	}
+	return h.app.findSkillForAgentView(name) != nil
+}
+
+func legacyModelManageSkillCallDenied(h *IMMessageHandler, name, argumentsJSON string) bool {
+	if strings.TrimSpace(name) != "manage_skill" {
+		return false
+	}
+	return !legacyModelManageSkillActionAllowed(argumentsJSON, h.legacyManageSkillInstalled)
 }
 
 func legacyModelManageSkillGatewayDeniedText() string {
-	return "[system rejected] dynamic_skill_requires_managed_surface: legacy model calls may only list Skill inventory. Running, inspecting, installing, searching, mutating, uploading, or querying a Skill run requires a managed semantic binding. Request a managed semantic replan."
+	return "[system rejected] dynamic_skill_requires_managed_surface: legacy model calls may list Skill inventory, or inspect and run a Skill that is already installed locally. Installing, searching, mutating, uploading, or querying a Skill run requires a managed semantic binding. Request a managed semantic replan."
+}
+
+// legacyManageSkillSurfaceDescription is the only contract a full unmanaged
+// surface advertises. The registry entry still lists install, search, and
+// governance actions for the host UI; publishing those names makes the model
+// call them and spend the turn on a rejection.
+const legacyManageSkillSurfaceDescription = "运行本机已经安装的 Skill。action 只能是 list、info、run。list 列出已安装 Skill，不需要 name。info 查看某个已安装 Skill 的参数，name 必填。run 执行它，name 必填，参数放在 args。name 必须来自 list 的结果。"
+
+func narrowLegacyManageSkillSurface(tools []map[string]interface{}) []map[string]interface{} {
+	for i, def := range tools {
+		if extractToolName(def) != "manage_skill" {
+			continue
+		}
+		tools[i] = toolDef("manage_skill", legacyManageSkillSurfaceDescription, map[string]interface{}{
+			"action":       map[string]interface{}{"type": "string", "description": "list、info 或 run"},
+			"name":         map[string]interface{}{"type": "string", "description": "已安装 Skill 的名称。info 和 run 必填，必须来自 list 的结果。"},
+			"args":         map[string]interface{}{"type": "object", "description": "run 的参数。"},
+			"operation":    map[string]interface{}{"type": "string", "description": "run 时可选的 operation。"},
+			"input":        map[string]interface{}{"type": "string", "description": "run 时可选的输入。"},
+			"output":       map[string]interface{}{"type": "string", "description": "run 时可选的输出路径。"},
+			"user_prompt":  map[string]interface{}{"type": "string", "description": "run 时可选的用户原话。"},
+			"env":          map[string]interface{}{"type": "object", "description": "run 时注入子进程的环境变量。"},
+			"wait_seconds": map[string]interface{}{"type": "number", "description": "run 后等待状态快照的秒数。"},
+		}, []string{"action"})
+	}
+	return tools
 }
 
 // toolManageSkill dispatches the merged manage_skill tool to individual handlers.

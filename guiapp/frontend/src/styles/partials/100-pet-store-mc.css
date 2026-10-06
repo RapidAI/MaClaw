@@ -311,7 +311,7 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: 1
 .sidebar ::-webkit-scrollbar-thumb:hover, .modal-content ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--office-accent) 58%, transparent); }
 .sidebar-task-row [data-tone='success'],
 .sidebar-task-row [data-status='completed'],
-.sidebar-task-row [data-state='completed'] { color: var(--theme-success) !important; background: var(--theme-success-bg) !important; }
+.sidebar-task-row [data-state='completed'] { color: var(--mc-done, #64748b) !important; background: var(--mc-done-bg, color-mix(in srgb, #64748b 10%, transparent)) !important; }
 .sidebar-task-row [data-tone='warning'],
 .sidebar-task-row [data-status='pending'],
 .sidebar-task-row [data-state='review'] { color: var(--theme-warning) !important; background: var(--theme-warning-bg) !important; }
@@ -320,7 +320,7 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: 1
 .sidebar-task-row [data-state='error'] { color: var(--theme-danger) !important; background: var(--theme-danger-bg) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='success'],
 [data-ai-theme='dark'] .sidebar-task-row [data-status='completed'],
-[data-ai-theme='dark'] .sidebar-task-row [data-state='completed'] { color: #8de1b0 !important; background: rgba(35,160,91,.18) !important; }
+[data-ai-theme='dark'] .sidebar-task-row [data-state='completed'] { color: var(--mc-done, #a9bbd2) !important; background: color-mix(in srgb, var(--mc-done, #a9bbd2) 14%, var(--theme-surface)) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='warning'],
 [data-ai-theme='dark'] .sidebar-task-row [data-status='pending'],
 [data-ai-theme='dark'] .sidebar-task-row [data-state='review'] { color: #ffd18a !important; background: rgba(200,130,20,.18) !important; }
@@ -810,7 +810,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   border-bottom: 1px solid var(--theme-border-subtle);
 }
 [data-testid^='coding-step-']:last-child { border-bottom: 0; }
-[data-testid^='coding-step-'][data-status='completed'] { color: var(--theme-success) !important; }
+[data-testid^='coding-step-'][data-status='completed'] { color: var(--mc-done, #64748b) !important; }
 [data-testid^='coding-step-'][data-status='running'] { color: var(--theme-warning) !important; }
 
 /* Floating composer from reference design */
@@ -913,12 +913,86 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-nav-rail .sidebar-header--maclaw { display: none !important; }
 
 /* Reference primary navigation rhythm */
-.sidebar .left-nav-item { width: calc(100% - 20px) !important; min-height: 62px !important; margin: 4px 10px !important; gap: 6px !important; border-radius: 12px !important; }
+.sidebar .left-nav-item:not(.left-nav-item--bot) { width: calc(100% - 20px) !important; min-height: 62px !important; margin: 4px 10px !important; gap: 6px !important; border-radius: 12px !important; }
 .sidebar .left-nav-item .sidebar-icon { width: 24px; height: 24px; justify-content: center; }
 /* The workbench entry wraps a 32px badge chip in .sidebar-icon; clamping the
    wrapper to 24px makes the badge overflow and paint over the label. */
 .sidebar .left-nav-item--ai .sidebar-icon { width: auto; height: auto; }
-.sidebar .left-nav-item > span:last-child { font-size: 12px !important; line-height: 1.2 !important; font-weight: 600 !important; }
+.sidebar .left-nav-item--bot .sidebar-icon { width: auto; height: auto; }
+.sidebar .left-nav-item.left-nav-item--bot {
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: auto;
+    min-height: 62px;
+    margin: 4px 6px;
+    gap: 6px;
+    border-radius: 12px;
+    overflow: visible;
+    padding: 6px 0;
+    border: none;
+    text-align: center;
+}
+.sidebar .left-nav-item.left-nav-item--bot .bot-nav-icon-badge {
+    position: static;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    filter: none;
+    opacity: 1;
+    color: var(--theme-primary-strong, var(--theme-primary));
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 34%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--bot.active .bot-nav-icon-badge {
+    color: var(--theme-on-primary, #fff);
+    background: var(--theme-primary);
+    box-shadow: none;
+}
+/* Daily check-in rail button: amber highlight until claimed, gray afterwards. */
+.sidebar .left-nav-item.left-nav-item--checkin .checkin-nav-icon-badge {
+    position: static;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    filter: none;
+    opacity: 1;
+    color: var(--theme-warning, #d97706);
+    background: color-mix(in srgb, var(--theme-warning, #d97706) 16%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-warning, #d97706) 42%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--checkin:not(:disabled):hover .checkin-nav-icon-badge {
+    background: color-mix(in srgb, var(--theme-warning, #d97706) 28%, var(--theme-surface));
+}
+.sidebar .left-nav-item.left-nav-item--checkin > .bot-nav-label {
+    color: var(--theme-warning, #d97706);
+    font-size: 12px;
+    line-height: 1.2;
+    font-weight: 700;
+}
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in .checkin-nav-icon-badge,
+.sidebar .left-nav-item.left-nav-item--checkin:disabled .checkin-nav-icon-badge {
+    color: var(--theme-text-muted);
+    background: color-mix(in srgb, var(--theme-text-muted) 12%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 26%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in > .bot-nav-label,
+.sidebar .left-nav-item.left-nav-item--checkin:disabled > .bot-nav-label {
+    color: var(--theme-text-muted);
+}
+.sidebar .left-nav-item:not(.left-nav-item--bot) > span:last-child { font-size: 12px !important; line-height: 1.2 !important; font-weight: 600 !important; }
+.sidebar .left-nav-item.left-nav-item--bot > .bot-nav-label {
+    color: var(--theme-primary-strong, var(--theme-primary));
+    font-size: 12px;
+    line-height: 1.2;
+    font-weight: 700;
+}
 
 /* Reference dashboard quick and recent task areas */
 .mc-welcome [data-testid='welcome-quick-access'] { width: min(100%, 820px) !important; margin-top: 8px; }
@@ -969,7 +1043,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane [data-status='running'],
 .mc-task-pane [data-tone='info'] { color: var(--mc-accent, #2f6fbc) !important; }
 .mc-task-pane [data-status='completed'],
-.mc-task-pane [data-tone='success'] { color: var(--theme-success) !important; }
+.mc-task-pane [data-tone='success'] { color: var(--mc-done, #64748b) !important; }
 .mc-task-pane [data-status='pending'],
 .mc-task-pane [data-status='review'],
 .mc-task-pane [data-tone='warning'] { color: var(--theme-warning) !important; }
@@ -1139,7 +1213,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution [data-testid^='coding-step-'][data-status='running'] { background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc); }
 .mc-task-execution-status[data-status='completed'],
 .mc-execution-step[data-status='completed'],
-.mc-task-execution [data-testid^='coding-step-'][data-status='completed'] { background: var(--theme-success-bg); color: var(--theme-success); }
+.mc-task-execution [data-testid^='coding-step-'][data-status='completed'] { background: var(--mc-done-bg, color-mix(in srgb, #64748b 10%, transparent)); color: var(--mc-done, #64748b); }
 .mc-task-execution-status[data-status='pending'],
 .mc-execution-step[data-status='pending'],
 .mc-task-execution [data-testid^='coding-step-'][data-status='pending'] { background: var(--theme-warning-bg); color: var(--theme-warning); }
@@ -1172,7 +1246,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: var(--mc-accent, #2f6fbc);
 }
 .mc-task-pane .sidebar-task-row.is-active::before { background: var(--mc-accent, #2f6fbc); }
-.mc-task-pane .sidebar-task-row[data-status='completed']::before { background: var(--theme-success); }
+.mc-task-pane .sidebar-task-row[data-status='completed']::before { background: var(--mc-done, #64748b); }
 .mc-task-pane .sidebar-task-row[data-status='pending']::before { background: var(--theme-warning); }
 
 /* Reference task pane separators and hover states */
@@ -1318,7 +1392,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .apmm-risk-text { min-width: 0; }
 .apmm-ack { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; cursor: pointer; user-select: none; }
 .apmm-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
-.apmm-root { position: relative; flex-shrink: 0; }
+.apmm-root { position: relative; flex-shrink: 0; display: inline-flex; align-items: center; }
 .apmm-item-label { display: inline-flex; align-items: center; gap: 7px; }
 .apmm-item-hint { font-size: 10px; opacity: 0.78; padding-left: 21px; line-height: 1.25; }
 .vecv-reconnect-status { margin-left: auto; font-size: 11px; opacity: 0.7; }
@@ -1446,11 +1520,69 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .aap-panel-main { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .aap-panel-row { display: flex; flex-direction: row; flex: 1; min-height: 0; min-width: 0; overflow: hidden; position: relative; }
 .aap-panel-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; box-sizing: border-box; overflow: hidden; position: relative; }
-.aap-scope-backdrop { position: fixed; inset: 0; z-index: 50001; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.35); padding: 16px; }
-.aap-scope-title { margin: 0; font-size: 14px; font-weight: 700; color: var(--theme-warning, #d97706); }
-.aap-scope-body { padding: 12px 14px; font-size: 13px; line-height: 1.6; }
-.aap-scope-gap { margin-bottom: 8px; }
-.aap-scope-approve { padding: 5px 14px; border-radius: 4px; border: none; background: var(--theme-warning, #d97706); color: var(--theme-on-primary, #fff); font-size: 12px; font-weight: 600; cursor: pointer; }
+/* Scope approval sits inside the assistant, which can be above ordinary modals. */
+.aap-scope-backdrop { z-index: 50001; }
+#App[data-ai-theme='dark'] .aap-scope-backdrop { background: rgba(0, 0, 0, 0.58); }
+.aap-scope-dialog .custom-dialog__footer { flex-wrap: wrap; }
+.modal-content.custom-dialog.aap-scope-dialog { width: min(520px, calc(100vw - 40px)); }
+.aap-scope-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+}
+.aap-scope-fact {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+}
+.aap-scope-fact-k {
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+    font-weight: 650;
+    line-height: 1.45;
+    white-space: nowrap;
+}
+.aap-scope-fact-v {
+    color: var(--theme-text-primary);
+    font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+.custom-dialog__footer .btn-secondary.aap-scope-always,
+#App[data-ai-theme='dark'] .aap-scope-dialog .custom-dialog__footer .btn-secondary.aap-scope-always {
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+    border-color: color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border));
+}
+.custom-dialog__footer .btn-secondary.aap-scope-always:hover,
+#App[data-ai-theme='dark'] .aap-scope-dialog .custom-dialog__footer .btn-secondary.aap-scope-always:hover {
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+    border-color: var(--theme-primary);
+}
+/* Match the main confirm dialog: solid brand blue, including inside dark #App. */
+.aap-scope-dialog .custom-dialog__footer .btn-primary,
+#App[data-ai-theme='dark'] .aap-scope-dialog .custom-dialog__footer .btn-primary {
+    background: #2f6fbc;
+    color: #fff;
+    border-color: transparent;
+    box-shadow: none;
+    font-variant-numeric: tabular-nums;
+}
+.aap-scope-dialog .custom-dialog__footer .btn-primary:hover,
+#App[data-ai-theme='dark'] .aap-scope-dialog .custom-dialog__footer .btn-primary:hover {
+    background: #235a9e;
+    color: #fff;
+    border-color: transparent;
+    box-shadow: none;
+}
 .aap-save-backdrop { position: fixed; inset: 0; z-index: 50000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.28); padding: 16px; }
 .aap-save-body { display: flex; flex-direction: column; gap: 8px; padding: 14px; }
 .aap-chat-column { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
@@ -1463,7 +1595,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .aap-plan-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .aap-chip-row { margin-top: 4px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
 .aap-pending-approval { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.aap-step-icon { width: 14px; flex-shrink: 0; }
+.aap-step-icon { width: 14px; flex-shrink: 0; text-align: center; }
 .aap-strong { font-weight: 600; }
 .aap-step-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: normal; }
 .aap-step-status { opacity: 0.8; flex-shrink: 0; }

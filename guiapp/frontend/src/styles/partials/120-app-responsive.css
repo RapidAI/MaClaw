@@ -1278,6 +1278,15 @@
     min-height: 0;
 }
 
+/* Wails' native file-drop channel (OnFileDrop useDropTarget=true) adds this
+   class to the shell while an external file drag hovers it. The whole shell
+   is the drop target, so give feedback beyond the small dropzone box.
+   (Shell background is set inline in JSX — outline is the reliable signal.) */
+.mobile-documents-shell.wails-drop-target-active {
+    outline: 2px dashed color-mix(in srgb, var(--theme-primary, #2f6fbc) 62%, transparent);
+    outline-offset: -2px;
+}
+
 .mobile-documents-icon {
     color: var(--theme-primary, #2f6fbc);
     box-shadow: 0 8px 18px color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, transparent);
@@ -1305,7 +1314,8 @@
 .mobile-documents-btn:focus-visible,
 .mobile-documents-search:focus-visible,
 .mobile-documents-list-item:focus-visible,
-.mobile-documents-list-delete:focus-visible {
+.mobile-documents-list-delete:focus-visible,
+.mdoc-folder-toggle:focus-visible {
     outline: 3px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, transparent);
     outline-offset: 2px;
 }
@@ -1550,6 +1560,12 @@
   --mc-line-subtle: var(--theme-border-subtle);
   --mc-accent: var(--theme-primary);
   --mc-accent-strong: var(--theme-primary-strong);
+  /* Neutral blue-gray for settled task states (completed / passed). The old
+     standalone green fought the blue shell; a desaturated primary-tinted
+     slate reads as "done" while staying inside the surface language. */
+  --mc-done: color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary));
+  --mc-done-bg: color-mix(in srgb, var(--theme-primary) 7%, var(--mc-muted-surface));
+  --mc-done-border: color-mix(in srgb, var(--theme-primary) 26%, var(--mc-line));
 }
 
 #App .sidebar,
@@ -1853,7 +1869,7 @@
 #App .mc-task-execution [data-testid^='assistant-chat-progress-'] {
   color: var(--mc-muted) !important;
 }
-#App .mc-execution-step[data-status='passed'] { background: color-mix(in srgb, var(--theme-success) 8%, var(--mc-surface)) !important; }
+#App .mc-execution-step[data-status='passed'] { background: color-mix(in srgb, var(--mc-done) 8%, var(--mc-surface)) !important; }
 #App .mc-execution-step[data-status='running'] { background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important; }
 #App .mc-execution-step[data-status='failed'],
 #App .mc-execution-step[data-status='verify_failed'] { background: color-mix(in srgb, var(--theme-danger) 8%, var(--mc-surface)) !important; }
@@ -1884,7 +1900,7 @@
 #App .mc-task-pane [data-status='running'],
 #App .mc-task-pane [data-tone='info'] { color: var(--mc-accent-strong) !important; }
 #App .mc-task-pane [data-status='completed'],
-#App .mc-task-pane [data-tone='success'] { color: var(--theme-success) !important; }
+#App .mc-task-pane [data-tone='success'] { color: var(--mc-done) !important; }
 #App .mc-task-pane [data-status='pending'],
 #App .mc-task-pane [data-status='review'],
 #App .mc-task-pane [data-tone='warning'] { color: var(--theme-warning) !important; }
@@ -1902,9 +1918,9 @@
 }
 #App .mc-task-execution-status[data-status='completed'],
 #App .mc-execution-step[data-status='completed'] {
-  background: color-mix(in srgb, var(--theme-success) 10%, var(--mc-surface)) !important;
-  border-color: color-mix(in srgb, var(--theme-success) 34%, var(--mc-line)) !important;
-  color: var(--theme-success) !important;
+  background: color-mix(in srgb, var(--mc-done) 10%, var(--mc-surface)) !important;
+  border-color: color-mix(in srgb, var(--mc-done) 30%, var(--mc-line)) !important;
+  color: var(--mc-done) !important;
 }
 #App .mc-task-execution-status[data-status='pending'],
 #App .mc-execution-step[data-status='pending'] {

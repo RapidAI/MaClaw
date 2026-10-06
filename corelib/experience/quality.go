@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 const minPatternQualityScore = defaultMinPatternQualityScore
@@ -56,14 +58,30 @@ func EvaluatePatternQuality(p Pattern) QualityReport {
 		report.add(1, "single non-trivial operation")
 	}
 
-	if len(ExtractRequiredArgs(p)) > 0 {
+	sane, implausible := classifyTemplateArgs(p)
+	if sane > 0 && implausible == 0 {
 		report.add(2, "contains template parameters")
+	} else if implausible > 0 {
+		// Single-letter {{args}} are almost always shell loop variables or
+		// format items misread from recorded commands — treating them as
+		// template parameters used to be rewarded, which let broken learned
+		// skills through the gate.
+		report.add(-2, "template arguments look like misread shell syntax")
 	}
 	if hasRecoveryPolicy(p) {
 		report.add(1, "has explicit error policy")
 	}
-	if containsOneOffPath(p) {
-		report.add(-3, "contains one-off absolute paths")
+	if n := countOneOffPaths(p); n > 0 {
+		penalty := -3 * n
+		if penalty < -12 {
+			penalty = -12
+		}
+		report.add(penalty, fmt.Sprintf("contains %d distinct one-off absolute paths", n))
+		if n >= 3 {
+			// Many distinct unreplaced absolute paths means the pattern is a
+			// verbatim recording of one session, not a reusable workflow.
+			report.add(-4, "looks like a session snapshot (multiple unreplaced paths)")
+		}
 	}
 	if containsRedactionMarker(p) {
 		report.add(-5, "contains redacted secret material")
@@ -202,6 +220,72 @@ func valueContainsOneOffPath(value interface{}) bool {
 
 func containsOneOffPathText(text string) bool {
 	return windowsAbsPathPattern.MatchString(text) || unixAbsPathPattern.MatchString(text)
+}
+
+// classifyTemplateArgs splits ExtractRequiredArgs results into plausible
+// parameter names and implausible ones. A canonical key shorter than two
+// characters cannot be a meaningful user-facing parameter.
+func classifyTemplateArgs(p Pattern) (sane, implausible int) {
+	for _, arg := range ExtractRequiredArgs(p) {
+		if len([]rune(coreskill.CanonicalRunVarKey(arg))) >= 2 {
+			sane++
+		} else {
+			implausible++
+		}
+	}
+	return sane, implausible
+}
+
+// countOneOffPaths returns the number of distinct one-off absolute paths in a
+// pattern. A single incidental path is common; several distinct paths from the
+// source session indicate a verbatim recording rather than a reusable skill.
+func countOneOffPaths(p Pattern) int {
+	seen := map[string]bool{}
+	collect := func(text string) {
+		for _, m := range windowsAbsPathPattern.FindAllString(text, -1) {
+			seen[strings.ToLower(m)] = true
+		}
+		for _, m := range unixAbsPathPattern.FindAllString(text, -1) {
+			seen[m] = true
+		}
+	}
+	collect(p.Name)
+	collect(p.Description)
+	for _, trigger := range p.Triggers {
+		collect(trigger)
+	}
+	for _, step := range p.Steps {
+		collect(step.Action)
+		collect(step.OnError)
+		collectOneOffPathsFromValue(step.Params, seen)
+	}
+	return len(seen)
+}
+
+func collectOneOffPathsFromValue(value interface{}, seen map[string]bool) {
+	switch v := value.(type) {
+	case string:
+		for _, m := range windowsAbsPathPattern.FindAllString(v, -1) {
+			seen[strings.ToLower(m)] = true
+		}
+		for _, m := range unixAbsPathPattern.FindAllString(v, -1) {
+			seen[m] = true
+		}
+	case []interface{}:
+		for _, item := range v {
+			collectOneOffPathsFromValue(item, seen)
+		}
+	case map[string]interface{}:
+		for key, item := range v {
+			for _, m := range windowsAbsPathPattern.FindAllString(key, -1) {
+				seen[strings.ToLower(m)] = true
+			}
+			for _, m := range unixAbsPathPattern.FindAllString(key, -1) {
+				seen[m] = true
+			}
+			collectOneOffPathsFromValue(item, seen)
+		}
+	}
 }
 
 func isTrivialSingleCommand(step Step) bool {

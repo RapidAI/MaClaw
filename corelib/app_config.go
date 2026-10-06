@@ -410,6 +410,11 @@ type AppConfig struct {
 	// final request model. LLMTokenUsage remains untouched as a read-only
 	// legacy/provider aggregate for older clients and historical data.
 	LLMProfileTokenUsage map[string]*TokenUsageStat `json:"llm_profile_token_usage,omitempty"`
+	// LLMTokenUsageByDay keeps calendar-day counters so the sidebar can show
+	// today, this week, and this month. The outer key is a local YYYY-MM-DD.
+	// Inner keys match LLMTokenUsage, or LLMProfileTokenUsage when prefixed
+	// with "profile:". Rows older than the retention window are dropped.
+	LLMTokenUsageByDay map[string]map[string]*TokenUsageStat `json:"llm_token_usage_by_day,omitempty"`
 	// Onboarding completion flag. Must NOT use omitempty — a false value must
 	// be explicitly serialized so that full-config SaveConfig writes do not
 	// accidentally drop the field, causing the wizard to reappear on restart.

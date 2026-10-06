@@ -1,10 +1,13 @@
 package im
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 // eventPushCapabilities is the contract a companion terminal declares once it
@@ -17,6 +20,28 @@ func eventPushCapabilities(maxChars int) agent.ClientCapabilities {
 		},
 		Features: agent.ClientFeatureCapabilities{EventPush: true},
 	})
+}
+
+// textOnlyCapabilities is a device that draws text but never declared event
+// support. It is the case the fan-out must not silently downgrade a card into.
+func textOnlyCapabilities(maxChars int) agent.ClientCapabilities {
+	return agent.NormalizeClientCapabilities(&agent.ClientCapabilities{
+		Output: agent.ClientOutputCapabilities{
+			Modalities: []string{"text"},
+			Text:       &agent.ClientTextCapabilities{MaxChars: maxChars},
+		},
+	})
+}
+
+// bindEventPushDevice registers a paired device under a machine. The fan-out
+// resolves its targets from the token table and reads capabilities off the
+// client state, so both must be present for a device to count as reachable.
+func bindEventPushDevice(t *testing.T, gateway *DeviceGateway, clientID, machineID string, capabilities agent.ClientCapabilities) {
+	t.Helper()
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	gateway.tokens["tok-"+clientID] = devicePrincipal{ClientID: clientID, MachineID: machineID}
+	gateway.clientLocked(clientID).capabilities = capabilities
 }
 
 func newEventPushGateway(t *testing.T, clientID string, capabilities agent.ClientCapabilities) *DeviceGateway {
@@ -57,15 +82,15 @@ func queuedEvent(t *testing.T, gateway *DeviceGateway, clientID string) map[stri
 func fullEventReply(overrides map[string]any) map[string]any {
 	event := map[string]any{
 		"eventId":   "evt_01H8ZK",
-		"category":  DeviceEventCategoryApproval,
-		"severity":  DeviceEventSeverityInterrupt,
+		"category":  coreim.DeviceEventCategoryApproval,
+		"severity":  coreim.DeviceEventSeverityInterrupt,
 		"title":     "需要你确认",
 		"summary":   "要删除 ~/Downloads/report-final-v2.xlsx 吗？",
 		"ttlSec":    int64(300),
 		"dedupeKey": "approval:inst-123:step-2",
 		"actions": []any{
-			map[string]any{"id": "approve", "label": "同意", "kind": DeviceEventActionKindPrimary, "risk": DeviceEventActionRiskHigh},
-			map[string]any{"id": "reject", "label": "拒绝", "kind": DeviceEventActionKindSecondary},
+			map[string]any{"id": "approve", "label": "同意", "kind": coreim.DeviceEventActionKindPrimary, "risk": coreim.DeviceEventActionRiskHigh},
+			map[string]any{"id": "reject", "label": "拒绝", "kind": coreim.DeviceEventActionKindSecondary},
 		},
 		"requiresAck": true,
 		"persist":     true,
@@ -85,10 +110,10 @@ func TestDeviceGatewayEventPushDeliversStructuredEvent(t *testing.T) {
 	gateway.EnqueueReply("pet-events", "system", fullEventReply(nil))
 
 	event := queuedEvent(t, gateway, "pet-events")
-	if event["eventId"] != "evt_01H8ZK" || event["category"] != DeviceEventCategoryApproval {
+	if event["eventId"] != "evt_01H8ZK" || event["category"] != coreim.DeviceEventCategoryApproval {
 		t.Fatalf("identity fields=%#v", event)
 	}
-	if event["severity"] != DeviceEventSeverityInterrupt {
+	if event["severity"] != coreim.DeviceEventSeverityInterrupt {
 		t.Fatalf("severity=%#v", event["severity"])
 	}
 	if event["title"] != "需要你确认" {
@@ -110,7 +135,7 @@ func TestDeviceGatewayEventPushDeliversStructuredEvent(t *testing.T) {
 	if !ok || len(actions) != 2 {
 		t.Fatalf("actions=%#v", event["actions"])
 	}
-	if actions[0]["kind"] != DeviceEventActionKindPrimary || actions[0]["risk"] != DeviceEventActionRiskHigh {
+	if actions[0]["kind"] != coreim.DeviceEventActionKindPrimary || actions[0]["risk"] != coreim.DeviceEventActionRiskHigh {
 		t.Fatalf("approve action=%#v", actions[0])
 	}
 	// An action that never declared a risk must not be silently upgraded to
@@ -118,7 +143,7 @@ func TestDeviceGatewayEventPushDeliversStructuredEvent(t *testing.T) {
 	if _, present := actions[1]["risk"]; present {
 		t.Fatalf("undeclared risk must stay absent: %#v", actions[1])
 	}
-	if actions[1]["kind"] != DeviceEventActionKindSecondary {
+	if actions[1]["kind"] != coreim.DeviceEventActionKindSecondary {
 		t.Fatalf("reject action=%#v", actions[1])
 	}
 }
@@ -126,12 +151,7 @@ func TestDeviceGatewayEventPushDeliversStructuredEvent(t *testing.T) {
 func TestDeviceGatewayEventPushRequiresDeclaredCapability(t *testing.T) {
 	// A client that accepts text but never declared event support must not
 	// receive an actionable card it has no way to present.
-	textOnly := agent.NormalizeClientCapabilities(&agent.ClientCapabilities{
-		Output: agent.ClientOutputCapabilities{
-			Modalities: []string{"text"},
-			Text:       &agent.ClientTextCapabilities{MaxChars: 240},
-		},
-	})
+	textOnly := textOnlyCapabilities(240)
 	gateway := newEventPushGateway(t, "pet-text-only", textOnly)
 	gateway.EnqueueReply("pet-text-only", "system", fullEventReply(nil))
 	if messages := queuedGatewayMessages(t, gateway, "pet-text-only"); len(messages) != 0 {
@@ -161,8 +181,8 @@ func TestDeviceGatewayEventPushRejectsMalformedClassification(t *testing.T) {
 		{"blank title", map[string]any{"title": "\t"}},
 		{"zero ttl", map[string]any{"ttlSec": int64(0)}},
 		{"negative ttl", map[string]any{"ttlSec": int64(-1)}},
-		{"ttl beyond the bound", map[string]any{"ttlSec": int64(deviceEventMaxTTLSec + 1)}},
-		{"oversized dedupe key", map[string]any{"dedupeKey": string(make([]byte, deviceEventMaxDedupeKeyLen+1))}},
+		{"ttl beyond the bound", map[string]any{"ttlSec": int64(coreim.DeviceEventMaxTTLSec + 1)}},
+		{"oversized dedupe key", map[string]any{"dedupeKey": string(make([]byte, coreim.DeviceEventMaxDedupeKeyLen+1))}},
 		{"unknown action kind", map[string]any{"actions": []any{map[string]any{"id": "a", "label": "A", "kind": "ghost"}}}},
 		{"unknown action risk", map[string]any{"actions": []any{map[string]any{"id": "a", "label": "A", "risk": "apocalyptic"}}}},
 		{"action without id", map[string]any{"actions": []any{map[string]any{"label": "A"}}}},
@@ -211,8 +231,8 @@ func TestDeviceGatewayEventPushApprovalRequiresAuditFlags(t *testing.T) {
 	clientID := "pet-ephemeral"
 	gateway := newEventPushGateway(t, clientID, eventPushCapabilities(240))
 	gateway.EnqueueReply(clientID, "system", map[string]any{"type": "event", "event": map[string]any{
-		"eventId": "evt-typing", "category": DeviceEventCategorySystem,
-		"severity": DeviceEventSeveritySilent, "title": "正在输入",
+		"eventId": "evt-typing", "category": coreim.DeviceEventCategorySystem,
+		"severity": coreim.DeviceEventSeveritySilent, "title": "正在输入",
 	}})
 	event := queuedEvent(t, gateway, clientID)
 	if event["requiresAck"] != false || event["persist"] != false {
@@ -243,11 +263,11 @@ func TestDeviceGatewayEventPushRejectsOversizedIdentityFields(t *testing.T) {
 	// Identity fields are rejected rather than truncated: a shortened event id
 	// or dedupe key would silently break event-ack correlation and the
 	// "same dedupeKey is presented once" guarantee.
-	longID := make([]byte, deviceEventMaxIDLen+1)
+	longID := make([]byte, coreim.DeviceEventMaxIDLen+1)
 	for index := range longID {
 		longID[index] = 'a'
 	}
-	longActionID := make([]byte, deviceEventMaxActionIDLen+1)
+	longActionID := make([]byte, coreim.DeviceEventMaxActionIDLen+1)
 	for index := range longActionID {
 		longActionID[index] = 'b'
 	}
@@ -278,15 +298,15 @@ func TestDeviceGatewayEventPushTruncatesFreeTextOnly(t *testing.T) {
 	// TestDeviceGatewayEventPushEffectiveCapIsTheSmallerOfTheTwo.
 	gateway := newEventPushGateway(t, clientID, eventPushCapabilities(0))
 
-	longTitle := make([]rune, deviceEventMaxTitleRunes+20)
+	longTitle := make([]rune, coreim.DeviceEventMaxTitleRunes+20)
 	for index := range longTitle {
 		longTitle[index] = '题'
 	}
-	longSummary := make([]rune, deviceEventMaxSummaryRunes+20)
+	longSummary := make([]rune, coreim.DeviceEventMaxSummaryRunes+20)
 	for index := range longSummary {
 		longSummary[index] = '要'
 	}
-	longLabel := make([]rune, deviceEventMaxActionLabelRunes+10)
+	longLabel := make([]rune, coreim.DeviceEventMaxActionLabelRunes+10)
 	for index := range longLabel {
 		longLabel[index] = '按'
 	}
@@ -302,8 +322,8 @@ func TestDeviceGatewayEventPushTruncatesFreeTextOnly(t *testing.T) {
 		field string
 		want  int
 	}{
-		{"title", deviceEventMaxTitleRunes},
-		{"summary", deviceEventMaxSummaryRunes},
+		{"title", coreim.DeviceEventMaxTitleRunes},
+		{"summary", coreim.DeviceEventMaxSummaryRunes},
 	}
 	for _, check := range checks {
 		value, ok := event[check.field].(string)
@@ -318,7 +338,7 @@ func TestDeviceGatewayEventPushTruncatesFreeTextOnly(t *testing.T) {
 		}
 	}
 	actions := event["actions"].([]map[string]any)
-	if label := actions[0]["label"].(string); len([]rune(label)) != deviceEventMaxActionLabelRunes {
+	if label := actions[0]["label"].(string); len([]rune(label)) != coreim.DeviceEventMaxActionLabelRunes {
 		t.Fatalf("action label rune count=%d", len([]rune(label)))
 	}
 	// Identity and timing survived untouched.
@@ -347,7 +367,7 @@ func TestDeviceGatewayEventPushHonoursDeclaredTextBudget(t *testing.T) {
 			t.Fatalf("%s exceeded the declared budget: %q (%d runes)", field, value, len(runes))
 		}
 	}
-	if event["eventId"] != "evt_01H8ZK" || event["category"] != DeviceEventCategoryApproval {
+	if event["eventId"] != "evt_01H8ZK" || event["category"] != coreim.DeviceEventCategoryApproval {
 		t.Fatalf("clamping must not touch identity fields: %#v", event)
 	}
 	actions := event["actions"].([]map[string]any)
@@ -360,11 +380,11 @@ func TestDeviceGatewayEventPushHonoursDeclaredTextBudget(t *testing.T) {
 // interaction between the protocol bound and the declared display budget: the
 // device must never receive more text than either allows.
 func TestDeviceGatewayEventPushEffectiveCapIsTheSmallerOfTheTwo(t *testing.T) {
-	longTitle := make([]rune, deviceEventMaxTitleRunes+50)
+	longTitle := make([]rune, coreim.DeviceEventMaxTitleRunes+50)
 	for index := range longTitle {
 		longTitle[index] = '题'
 	}
-	longSummary := make([]rune, deviceEventMaxSummaryRunes+50)
+	longSummary := make([]rune, coreim.DeviceEventMaxSummaryRunes+50)
 	for index := range longSummary {
 		longSummary[index] = '要'
 	}
@@ -376,9 +396,9 @@ func TestDeviceGatewayEventPushEffectiveCapIsTheSmallerOfTheTwo(t *testing.T) {
 		wantSummary   int
 	}{
 		// Budget below the protocol cap: the budget wins.
-		{"tight budget wins", 240, deviceEventMaxTitleRunes, 240},
+		{"tight budget wins", 240, coreim.DeviceEventMaxTitleRunes, 240},
 		// Budget above the protocol cap: the protocol cap wins.
-		{"protocol cap wins", 1000, deviceEventMaxTitleRunes, deviceEventMaxSummaryRunes},
+		{"protocol cap wins", 1000, coreim.DeviceEventMaxTitleRunes, coreim.DeviceEventMaxSummaryRunes},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -402,8 +422,8 @@ func TestDeviceGatewayEventPushEffectiveCapIsTheSmallerOfTheTwo(t *testing.T) {
 func TestDeviceGatewayEventPushCapsActionCount(t *testing.T) {
 	clientID := "pet-many-actions"
 	gateway := newEventPushGateway(t, clientID, eventPushCapabilities(240))
-	actions := make([]any, 0, deviceEventMaxActions+1)
-	for index := 0; index <= deviceEventMaxActions; index++ {
+	actions := make([]any, 0, coreim.DeviceEventMaxActions+1)
+	for index := 0; index <= coreim.DeviceEventMaxActions; index++ {
 		actions = append(actions, map[string]any{
 			"id":    string(rune('a' + index)),
 			"label": string(rune('A' + index)),
@@ -415,8 +435,8 @@ func TestDeviceGatewayEventPushCapsActionCount(t *testing.T) {
 	}
 
 	// Exactly the cap is still accepted.
-	gateway.EnqueueReply(clientID, "system", fullEventReply(map[string]any{"actions": actions[:deviceEventMaxActions]}))
-	if event := queuedEvent(t, gateway, clientID); len(event["actions"].([]map[string]any)) != deviceEventMaxActions {
+	gateway.EnqueueReply(clientID, "system", fullEventReply(map[string]any{"actions": actions[:coreim.DeviceEventMaxActions]}))
+	if event := queuedEvent(t, gateway, clientID); len(event["actions"].([]map[string]any)) != coreim.DeviceEventMaxActions {
 		t.Fatalf("actions at the cap must be delivered: %#v", event["actions"])
 	}
 }
@@ -448,7 +468,7 @@ func TestDeviceGatewayEventPushAcceptsSingleActionObject(t *testing.T) {
 	if !ok || len(actions) != 1 || actions[0]["id"] != "ack" {
 		t.Fatalf("single action object=%#v", event["actions"])
 	}
-	if actions[0]["kind"] != DeviceEventActionKindSecondary {
+	if actions[0]["kind"] != coreim.DeviceEventActionKindSecondary {
 		t.Fatalf("kind default=%#v", actions[0]["kind"])
 	}
 }
@@ -530,10 +550,10 @@ func TestNormalizeDeviceEventPushTrimsAndLowercasesClassification(t *testing.T) 
 	if !ok {
 		t.Fatal("a trimmed, case-insensitive payload must normalize")
 	}
-	if normalized["eventId"] != "evt-1" || normalized["category"] != DeviceEventCategoryTaskDone {
+	if normalized["eventId"] != "evt-1" || normalized["category"] != coreim.DeviceEventCategoryTaskDone {
 		t.Fatalf("normalized=%#v", normalized)
 	}
-	if normalized["severity"] != DeviceEventSeveritySoft || normalized["title"] != "跑完了" {
+	if normalized["severity"] != coreim.DeviceEventSeveritySoft || normalized["title"] != "跑完了" {
 		t.Fatalf("normalized=%#v", normalized)
 	}
 }
@@ -559,4 +579,423 @@ func TestClampDeviceEventTextIgnoresNonPositiveBudget(t *testing.T) {
 	// Nil maps and absent action lists must not panic.
 	clampDeviceEventText(nil, 10)
 	clampDeviceEventText(map[string]any{"title": "abc"}, 10)
+}
+
+// ---------------------------------------------------------------------------
+// N1-3 UpdateMachineEvent fan-out and the handshake replay snapshot.
+// ---------------------------------------------------------------------------
+
+// deviceEventPushTestNow is a fixed clock, so expiry arithmetic is asserted
+// exactly instead of within a tolerance.
+func deviceEventPushTestNow() time.Time {
+	return time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+}
+
+// silentSystemEvent is the fire-and-forget shape: a notification with no
+// decision to make and no window to respect.
+func silentSystemEvent(overrides map[string]any) map[string]any {
+	event := map[string]any{
+		"eventId":  "evt_sys_01H8ZK",
+		"category": coreim.DeviceEventCategorySystem,
+		"severity": coreim.DeviceEventSeveritySilent,
+		"title":    "正在输入",
+	}
+	for key, value := range overrides {
+		if value == nil {
+			delete(event, key)
+			continue
+		}
+		event[key] = value
+	}
+	return event
+}
+
+func TestUpdateMachineEventFansOutToEveryCapableDeviceUnderTheMachine(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	bindEventPushDevice(t, gateway, "pet-a", "machine-1", eventPushCapabilities(240))
+	bindEventPushDevice(t, gateway, "pet-b", "machine-1", eventPushCapabilities(240))
+	bindEventPushDevice(t, gateway, "pet-c", "machine-1", eventPushCapabilities(240))
+	// A device of a different GUI must never see this machine's events.
+	bindEventPushDevice(t, gateway, "stranger", "machine-2", eventPushCapabilities(240))
+
+	gateway.UpdateMachineEvent("machine-1", fullEventReply(nil)["event"].(map[string]any))
+
+	for _, clientID := range []string{"pet-a", "pet-b", "pet-c"} {
+		event := queuedEvent(t, gateway, clientID)
+		if event["eventId"] != "evt_01H8ZK" {
+			t.Fatalf("%s received %#v", clientID, event)
+		}
+		if event["category"] != coreim.DeviceEventCategoryApproval {
+			t.Fatalf("%s category=%#v", clientID, event["category"])
+		}
+	}
+	if messages := queuedGatewayMessages(t, gateway, "stranger"); len(messages) != 0 {
+		t.Fatalf("another machine must not receive the event: %#v", messages)
+	}
+}
+
+func TestUpdateMachineEventSkipsDevicesThatCannotRenderEvents(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	bindEventPushDevice(t, gateway, "capable", "machine-1", eventPushCapabilities(240))
+	bindEventPushDevice(t, gateway, "text-only", "machine-1", textOnlyCapabilities(240))
+
+	gateway.UpdateMachineEvent("machine-1", fullEventReply(nil)["event"].(map[string]any))
+
+	if event := queuedEvent(t, gateway, "capable"); event["eventId"] != "evt_01H8ZK" {
+		t.Fatalf("capable device=%#v", event)
+	}
+	// The fan-out builds its message directly and never passes through
+	// adaptDeviceGatewayReply, so this skip is the only thing protecting a
+	// text-only device from a card it would have to drop.
+	if messages := queuedGatewayMessages(t, gateway, "text-only"); len(messages) != 0 {
+		t.Fatalf("a text-only device must not receive a card: %#v", messages)
+	}
+	// The snapshot is kept regardless, so a device that later reconnects with
+	// eventPush still learns about the pending event.
+	gateway.mu.Lock()
+	_, snapshotted := gateway.eventsByMachine["machine-1"]
+	gateway.mu.Unlock()
+	if !snapshotted {
+		t.Fatal("a persist event must be snapshotted even with no capable device online")
+	}
+}
+
+func TestUpdateMachineEventDoesNotSnapshotNonPersistEvent(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	bindEventPushDevice(t, gateway, "pet-a", "machine-1", eventPushCapabilities(240))
+
+	gateway.UpdateMachineEvent("machine-1", silentSystemEvent(nil))
+
+	if event := queuedEvent(t, gateway, "pet-a"); event["category"] != coreim.DeviceEventCategorySystem {
+		t.Fatalf("event=%#v", event)
+	}
+	gateway.mu.Lock()
+	_, snapshotted := gateway.eventsByMachine["machine-1"]
+	gateway.mu.Unlock()
+	if snapshotted {
+		t.Fatal("persist=false must not be snapshotted: it would replay forever")
+	}
+}
+
+func TestUpdateMachineEventDropsMalformedEvent(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	bindEventPushDevice(t, gateway, "pet-a", "machine-1", eventPushCapabilities(240))
+
+	gateway.UpdateMachineEvent("machine-1", map[string]any{
+		"eventId": "evt_bad", "category": "not_a_category",
+		"severity": coreim.DeviceEventSeveritySoft, "title": "x",
+	})
+
+	if messages := queuedGatewayMessages(t, gateway, "pet-a"); len(messages) != 0 {
+		t.Fatalf("a malformed event must not be delivered: %#v", messages)
+	}
+	gateway.mu.Lock()
+	_, snapshotted := gateway.eventsByMachine["machine-1"]
+	gateway.mu.Unlock()
+	if snapshotted {
+		t.Fatal("a rejected event must not enter the snapshot")
+	}
+}
+
+func TestPrepareDeviceEventPushStampsAbsoluteExpiryForPersistEvents(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the section 4.1 approval fixture must validate")
+	}
+	if !push.Persist {
+		t.Fatal("persist=true must be reported so the caller snapshots it")
+	}
+	if want := now.Add(300 * time.Second).UnixMilli(); push.Stored.ExpiresAtUnixMs != want {
+		t.Fatalf("expiresAtUnixMs=%d want %d", push.Stored.ExpiresAtUnixMs, want)
+	}
+	// The absolute expiry is Hub bookkeeping. Sending it would be an undeclared
+	// wire field, and the device is told the remaining window via ttlSec.
+	if _, leaked := push.Event["expiresAtUnixMs"]; leaked {
+		t.Fatal("the absolute expiry must not cross the wire")
+	}
+	if push.Event["ttlSec"] != int64(300) {
+		t.Fatalf("ttlSec=%#v", push.Event["ttlSec"])
+	}
+}
+
+func TestPrepareDeviceEventPushAppliesPersistCeilingWithoutDeclaredTTL(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(silentSystemEvent(map[string]any{"persist": true}), now)
+	if !ok {
+		t.Fatal("a silent system event with persist must validate")
+	}
+	if !push.Persist {
+		t.Fatal("persist=true must be reported")
+	}
+	// Only approvals are required to declare a ttl, but "survive a reboot"
+	// without any deadline would replay a days-old card forever.
+	want := now.Add(deviceEventPersistTTLSec * time.Second).UnixMilli()
+	if push.Stored.ExpiresAtUnixMs != want {
+		t.Fatalf("expiresAtUnixMs=%d want %d", push.Stored.ExpiresAtUnixMs, want)
+	}
+	if _, declared := push.Event["ttlSec"]; declared {
+		t.Fatal("the ceiling must not be written into the wire event")
+	}
+}
+
+func TestReplayDeviceEventPushNeverRefreshesTheWindow(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	// Four minutes into a five-minute window: replaying ttlSec=300 verbatim
+	// would hand a stale approval a brand-new five minutes (finding C34).
+	replayed, ok := replayDeviceEventPush(push.Stored, now.Add(240*time.Second))
+	if !ok {
+		t.Fatal("the window is still open")
+	}
+	if replayed["ttlSec"] != int64(60) {
+		t.Fatalf("ttlSec=%#v want 60", replayed["ttlSec"])
+	}
+	if replayed["eventId"] != "evt_01H8ZK" || replayed["category"] != coreim.DeviceEventCategoryApproval {
+		t.Fatalf("replayed=%#v", replayed)
+	}
+	actions, ok := replayed["actions"].([]map[string]any)
+	if !ok || len(actions) != 2 {
+		t.Fatalf("actions=%#v", replayed["actions"])
+	}
+}
+
+func TestReplayDeviceEventPushDropsClosedWindow(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	// Exactly at the deadline and well past it: a timed-out approval means
+	// "not approved", so it must not be delivered at all.
+	for _, elapsed := range []time.Duration{300 * time.Second, time.Hour} {
+		if _, ok := replayDeviceEventPush(push.Stored, now.Add(elapsed)); ok {
+			t.Fatalf("elapsed=%s must not replay", elapsed)
+		}
+	}
+}
+
+func TestReplayDeviceEventPushClampsFarFutureExpiry(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	tampered := push.Stored
+	tampered.ExpiresAtUnixMs = now.Add(365 * 24 * time.Hour).UnixMilli()
+	replayed, ok := replayDeviceEventPush(tampered, now)
+	if !ok {
+		t.Fatal("a far-future expiry is still replayable")
+	}
+	if replayed["ttlSec"] != int64(coreim.DeviceEventMaxTTLSec) {
+		t.Fatalf("ttlSec=%#v want %d", replayed["ttlSec"], coreim.DeviceEventMaxTTLSec)
+	}
+}
+
+func TestReplayDeviceEventPushDropsWindowWithoutAbsoluteExpiry(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	// A snapshot that kept ttlSec but lost the absolute expiry cannot be judged:
+	// replaying it would refresh the window, so it is dropped instead.
+	stripped := storedDeviceEvent{Event: push.Stored.Event}
+	if _, ok := replayDeviceEventPush(stripped, now); ok {
+		t.Fatal("a windowed event without a recorded expiry must be dropped")
+	}
+}
+
+func TestReplayDeviceEventPushPassesThroughEventWithoutWindow(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(silentSystemEvent(map[string]any{"persist": true}), now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	// Nothing declared a window, so there is nothing to expire.
+	stripped := storedDeviceEvent{Event: push.Stored.Event}
+	replayed, ok := replayDeviceEventPush(stripped, now.Add(10*time.Hour))
+	if !ok {
+		t.Fatal("an event without a window has no deadline to miss")
+	}
+	if _, declared := replayed["ttlSec"]; declared {
+		t.Fatalf("no window must be invented: %#v", replayed)
+	}
+	if replayed["title"] != "正在输入" {
+		t.Fatalf("replayed=%#v", replayed)
+	}
+}
+
+func TestCloneStoredDeviceEventAcceptsNormalizedShapeAndDeepCopies(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	// Precondition for the shape tolerance added to normalizeDeviceEventActions:
+	// an in-memory normalized event carries []map[string]any, while a JSON
+	// round-trip yields []any. Re-validating must accept both.
+	if _, isTyped := push.Event["actions"].([]map[string]any); !isTyped {
+		t.Fatalf("precondition failed: actions is %T", push.Event["actions"])
+	}
+	copied, ok := cloneStoredDeviceEvent(push.Stored)
+	if !ok {
+		t.Fatal("re-validating the normalized shape must succeed")
+	}
+	if copied.ExpiresAtUnixMs != push.Stored.ExpiresAtUnixMs {
+		t.Fatalf("expiresAtUnixMs=%d want %d", copied.ExpiresAtUnixMs, push.Stored.ExpiresAtUnixMs)
+	}
+	copied.Event["title"] = "mutated"
+	actions, _ := copied.Event["actions"].([]map[string]any)
+	actions[0]["label"] = "mutated"
+	if push.Stored.Event["title"] == "mutated" {
+		t.Fatal("the copy must not alias the source event map")
+	}
+	original, _ := push.Stored.Event["actions"].([]map[string]any)
+	if original[0]["label"] == "mutated" {
+		t.Fatal("the copy must not alias the source action maps")
+	}
+}
+
+func TestCloneStoredDeviceEventRejectsInvalidSnapshot(t *testing.T) {
+	if _, ok := cloneStoredDeviceEvent(storedDeviceEvent{}); ok {
+		t.Fatal("a nil event must be rejected")
+	}
+	incomplete := storedDeviceEvent{Event: map[string]any{"eventId": "evt_x"}}
+	if _, ok := cloneStoredDeviceEvent(incomplete); ok {
+		t.Fatal("an incomplete event must be rejected")
+	}
+}
+
+func TestStoredDeviceEventSurvivesJSONRoundTrip(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	raw, err := json.Marshal(persistedDeviceCredentials{
+		EventsByMachine: map[string]storedDeviceEvent{"machine-1": push.Stored},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded persistedDeviceCredentials
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	copied, ok := cloneStoredDeviceEvent(decoded.EventsByMachine["machine-1"])
+	if !ok {
+		t.Fatal("a snapshot that survived JSON must still validate")
+	}
+	if copied.ExpiresAtUnixMs != push.Stored.ExpiresAtUnixMs {
+		t.Fatalf("expiresAtUnixMs=%d want %d", copied.ExpiresAtUnixMs, push.Stored.ExpiresAtUnixMs)
+	}
+	replayed, ok := replayDeviceEventPush(copied, now.Add(60*time.Second))
+	if !ok {
+		t.Fatal("the window is still open")
+	}
+	if replayed["ttlSec"] != int64(240) {
+		t.Fatalf("ttlSec=%#v want 240", replayed["ttlSec"])
+	}
+	actions, ok := replayed["actions"].([]map[string]any)
+	if !ok || len(actions) != 2 {
+		t.Fatalf("actions=%#v", replayed["actions"])
+	}
+}
+
+func TestMachineEventSnapshotSurvivesHubRestart(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	bindEventPushDevice(t, gateway, "pet-a", "machine-1", eventPushCapabilities(240))
+	gateway.UpdateMachineEvent("machine-1", fullEventReply(nil)["event"].(map[string]any))
+
+	gateway.mu.Lock()
+	raw, err := gateway.marshalPersistedCredentialsLocked()
+	gateway.mu.Unlock()
+	if err != nil {
+		t.Fatalf("marshal persisted credentials: %v", err)
+	}
+
+	restarted := NewDeviceGateway(nil)
+	if err := restarted.RestorePersistedCredentials(raw); err != nil {
+		t.Fatalf("RestorePersistedCredentials: %v", err)
+	}
+	restarted.mu.Lock()
+	stored, ok := restarted.eventsByMachine["machine-1"]
+	restarted.mu.Unlock()
+	if !ok {
+		t.Fatal("a pending persist event must survive a Hub restart")
+	}
+	if stored.ExpiresAtUnixMs <= 0 {
+		t.Fatal("the absolute expiry must survive too, or the replay would refresh it")
+	}
+	if _, leaked := stored.Event["expiresAtUnixMs"]; leaked {
+		t.Fatal("bookkeeping must not leak into the wire event")
+	}
+	// One minute left of the original window, counted from the restart.
+	replayed, ok := replayDeviceEventPush(stored, time.UnixMilli(stored.ExpiresAtUnixMs).Add(-60*time.Second))
+	if !ok {
+		t.Fatal("the window is still open")
+	}
+	if replayed["ttlSec"] != int64(60) {
+		t.Fatalf("ttlSec=%#v want 60", replayed["ttlSec"])
+	}
+}
+
+func TestMachineEventSnapshotDropsUnreadableEntryWithoutFailingRestore(t *testing.T) {
+	// A corrupt event cache must not cost the operator every device pairing.
+	raw, err := json.Marshal(persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{"tok-a": {ClientID: "pet-a", MachineID: "machine-1"}},
+		EventsByMachine: map[string]storedDeviceEvent{
+			"machine-1": {Event: map[string]any{"eventId": "evt_x"}, ExpiresAtUnixMs: 1},
+			"machine-2": {Event: nil},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RestorePersistedCredentials(string(raw)); err != nil {
+		t.Fatalf("RestorePersistedCredentials: %v", err)
+	}
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	if len(gateway.eventsByMachine) != 0 {
+		t.Fatalf("unreadable entries must be dropped: %#v", gateway.eventsByMachine)
+	}
+	if len(gateway.tokens) != 1 {
+		t.Fatalf("the pairing must survive: %#v", gateway.tokens)
+	}
+}
+
+func TestLatestDeviceEventForMachineRecomputesTTL(t *testing.T) {
+	now := deviceEventPushTestNow()
+	push, ok := prepareDeviceEventPush(fullEventReply(nil)["event"], now)
+	if !ok {
+		t.Fatal("the fixture must validate")
+	}
+	gateway := NewDeviceGateway(nil)
+	gateway.mu.Lock()
+	gateway.eventsByMachine["machine-1"] = push.Stored
+	event, ok := gateway.latestDeviceEventForMachineLocked("machine-1", now.Add(240*time.Second))
+	gateway.mu.Unlock()
+	if !ok {
+		t.Fatal("the window is still open")
+	}
+	if event["ttlSec"] != int64(60) {
+		t.Fatalf("ttlSec=%#v want 60", event["ttlSec"])
+	}
+
+	gateway.mu.Lock()
+	_, stillPending := gateway.latestDeviceEventForMachineLocked("machine-1", now.Add(time.Hour))
+	_, unknownMachine := gateway.latestDeviceEventForMachineLocked("machine-9", now)
+	gateway.mu.Unlock()
+	if stillPending {
+		t.Fatal("a stale approval must not be handed to a reconnecting device")
+	}
+	if unknownMachine {
+		t.Fatal("a machine with no snapshot has nothing to replay")
+	}
 }

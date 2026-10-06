@@ -23,6 +23,17 @@ describe('getHeaderTitle', () => {
         expect(getHeaderTitle('latex-templates', 'en', t)).toBe('LaTeX Templates');
     });
 
+    it('names the bot workspace', () => {
+        expect(getHeaderTitle('bots', 'zh-Hans', t)).toBe('Bot 管理');
+        expect(getHeaderTitle('bots', 'en', t)).toBe('Bot management');
+    });
+
+    it('names the cloud drive on the files tab', () => {
+        expect(getHeaderTitle('files', 'zh-Hans', t)).toBe('云盘');
+        expect(getHeaderTitle('files', 'zh-Hant', t)).toBe('雲端硬碟');
+        expect(getHeaderTitle('files', 'en', t)).toBe('Cloud drive');
+    });
+
     it('keeps the global settings title for other settings tabs', () => {
         expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'general')).toBe('globalSettings');
         expect(getHeaderTitle('settings', 'zh-Hans', t)).toBe('globalSettings');

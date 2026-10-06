@@ -41,13 +41,17 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), h.routingMissFloorDefinitions(), ctx)
 	lookupCatalog := h.filterPolicyRejectedSurfaceTools(catalog)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
-	tools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, tools, lookupCatalog)
-	// Workflow ensure and the timeout floor pin both run above and can put
-	// bash back. Re-apply the filters that must stick. The timeout path
-	// seals with the host catalog because render follows. An ordinary
-	// recover must not run that ensure a second time.
-	if loopContextHasClassifierTimeoutLookup(ctx) && executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
-		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directModeToolsFiltered, nil)
+	tools = h.pinExecutionBaseline(userID, ctx, tools, lookupCatalog)
+	// The baseline pin can put bash back onto a phase that already filtered.
+	// A timeout recover had no router result, so its seal may ensure from the
+	// host catalog. An ordinary recover already holds its surface: narrow it,
+	// do not pull a second copy of the host catalog.
+	if executionSurfaceIsFull(executionProfileFromLoop(ctx)) && !operationalExecutionProfile(executionProfileFromLoop(ctx)) {
+		var bound []map[string]interface{}
+		if !loopContextHasClassifierTimeoutLookup(ctx) {
+			bound = boundFloorCatalog(tools)
+		}
+		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directModeToolsFiltered, bound)
 	} else {
 		tools = h.filterToolsForExpertUser(userID, tools)
 		if directModeToolsFiltered {

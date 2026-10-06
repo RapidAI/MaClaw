@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type React from 'react';
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
+    DesktopBotAccess: vi.fn().mockResolvedValue({ enabled: false }),
     GetHubUserInvitationStatus: vi.fn().mockResolvedValue({ enabled: false }),
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
 }));
@@ -16,7 +17,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { SidebarNavRail } from '../SidebarNavRail';
-import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../../wailsjs/go/main/App';
+import { publishBotAccess } from '../../bots/botOpenGate';
+import { DesktopBotAccess, GetHubUserInvitationStatus, GetHubUserRanking } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
@@ -35,6 +37,8 @@ const rankingResult = (overrides: { token_rank?: number; duration_rank?: number;
 
 beforeEach(() => {
     vi.mocked(BrowserOpenURL).mockClear();
+    vi.mocked(DesktopBotAccess).mockReset();
+    vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
     vi.mocked(GetHubUserInvitationStatus).mockReset();
     vi.mocked(GetHubUserInvitationStatus).mockResolvedValue(invitationStatus(false));
     vi.mocked(GetHubUserRanking).mockReset();
@@ -450,7 +454,7 @@ describe('SidebarNavRail favorite employees', () => {
         renderRail({ showAppEntry: false });
 
         expect(screen.queryByTitle(miniAppLabels.short.en)).toBeNull();
-        expect(screen.getByTestId('fav-ve-ve-1')).toBeTruthy();
+        expect(screen.queryByTestId('fav-ve-ve-1')).toBeNull();
     });
 
     it('shows the apps entry when enabled', () => {
@@ -489,13 +493,109 @@ describe('SidebarNavRail favorite employees', () => {
         expect(aiEntry.getAttribute('style')).toBeNull();
     });
 
-    it('switches to AI before opening a favorite digital employee conversation', () => {
-        const props = renderRail({ showAppEntry: true });
+    it('hides the bot entry and its denial notice when Bot is off', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false, message: '服务器没有开通bot功能' });
+        renderRail({ lang: 'zh-Hans', remoteActivationStatus: { activated: true } });
 
-        fireEvent.click(screen.getByTestId('fav-ve-ve-1'));
+        await waitFor(() => expect(DesktopBotAccess).toHaveBeenCalled());
+        await act(async () => {});
 
+        expect(screen.queryByTestId('sidebar-bot-nav')).toBeNull();
+        expect(screen.queryByTestId('sidebar-bot-disabled')).toBeNull();
+    });
+
+    it('hides the bot entry without polling when the app is not activated on a Hub', async () => {
+        renderRail({ remoteActivationStatus: { activated: false } });
+        await act(async () => {});
+
+        expect(screen.queryByTestId('sidebar-bot-nav')).toBeNull();
+        expect(DesktopBotAccess).not.toHaveBeenCalled();
+    });
+
+    it('opens bot management from the bottom-left bot entry', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: true });
+        const props = renderRail({ lang: 'zh-Hans', showAppEntry: true, remoteActivationStatus: { activated: true } });
+        const bot = await screen.findByTestId('sidebar-bot-nav');
+        await waitFor(() => expect(DesktopBotAccess).toHaveBeenCalled());
+        await act(async () => {});
+        const employees = screen.getByTestId('sidebar-digital-employees-nav');
+
+        expect(bot.classList.contains('left-nav-item--bot')).toBe(true);
+        expect(bot.querySelector('[data-testid="sidebar-bot-icon"]')?.getAttribute('width')).toBe('22');
+        const badge = bot.querySelector('.bot-nav-icon-badge');
+        expect(badge).toBeTruthy();
+        expect(badge?.classList.contains('left-nav-item__badge')).toBe(false);
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        expect(css).toContain('.left-nav-item:not(.left-nav-item--ai):not(.left-nav-item--bot) .sidebar-icon');
+        expect(css).toMatch(/\.sidebar \.left-nav-item\.left-nav-item--bot \{[^}]*overflow:\s*visible/);
+        expect(bot.textContent).toContain('Bot');
+        expect(bot.compareDocumentPosition(screen.getByTestId('system-menu-trigger')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(employees.textContent).toContain('数字员工');
+        expect(screen.queryByTestId('fav-ve-ve-1')).toBeNull();
+
+        fireEvent.click(employees);
         expect(props.switchTool).toHaveBeenCalledWith('ai');
-        expect(props.onStartVEConversation).toHaveBeenCalledWith('ve-1');
+
+        fireEvent.click(bot);
+
+        expect(props.switchTool).toHaveBeenCalledWith('bots');
+        expect(props.onStartVEConversation).not.toHaveBeenCalled();
+    });
+
+    it('keeps the bot entry through a Hub blip, hides it and leaves the page when Hub stays down', async () => {
+        vi.useFakeTimers();
+        vi.mocked(DesktopBotAccess)
+            .mockResolvedValueOnce({ enabled: true })
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockRejectedValueOnce(new Error('offline'));
+        const props = renderRail({ navTab: 'bots', remoteActivationStatus: { activated: true } });
+
+        await act(async () => { await Promise.resolve(); });
+        expect(screen.getByTestId('sidebar-bot-nav')).toBeTruthy();
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(screen.getByTestId('sidebar-bot-nav')).toBeTruthy();
+        expect(props.switchTool).not.toHaveBeenCalledWith('ai');
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(screen.queryByTestId('sidebar-bot-nav')).toBeNull();
+        expect(props.switchTool).toHaveBeenCalledWith('ai');
+    });
+
+    it('keeps the bot entry hidden when a newer denial arrives before an older poll', async () => {
+        let resolveAccess: (value: { enabled: boolean }) => void = () => {};
+        vi.mocked(DesktopBotAccess).mockReturnValue(new Promise(resolve => {
+            resolveAccess = resolve;
+        }));
+        renderRail({ remoteActivationStatus: { activated: true } });
+
+        act(() => { publishBotAccess(false); });
+        await act(async () => { resolveAccess({ enabled: true }); });
+
+        expect(screen.queryByTestId('sidebar-bot-nav')).toBeNull();
+        expect(screen.queryByTestId('sidebar-bot-disabled')).toBeNull();
+    });
+
+    it('hides the bot entry when the grant is gone', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: true });
+        const props = renderRail({ remoteActivationStatus: { activated: true } });
+        await screen.findByTestId('sidebar-bot-nav');
+        await waitFor(() => expect(DesktopBotAccess).toHaveBeenCalled());
+        await act(async () => {});
+
+        act(() => { publishBotAccess(false); });
+
+        expect(props.switchTool).not.toHaveBeenCalledWith('bots');
+        expect(screen.queryByTestId('sidebar-bot-nav')).toBeNull();
+        expect(screen.queryByTestId('sidebar-bot-disabled')).toBeNull();
+    });
+
+    it('leaves the bot page and hides the entry when the tenant switch no longer includes this user', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
+        const props = renderRail({ navTab: 'bots', remoteActivationStatus: { activated: true } });
+
+        await waitFor(() => expect(props.switchTool).toHaveBeenCalledWith('ai'));
+        expect(screen.queryByTestId('sidebar-bot-nav')).toBeNull();
     });
     it('opens the extensions menu from the 扩展 rail entry and opens Skills', () => {
         const props = renderRail({ lang: 'zh-Hans' });
@@ -737,6 +837,7 @@ describe('SidebarNavRail library menu', () => {
         expect(libraryEntry.getAttribute('aria-expanded')).toBe('true');
         expect(libraryEntry.getAttribute('aria-haspopup')).toBe('menu');
 
+        expect(screen.getByTestId('library-menu-documents').textContent).toContain('云盘');
         fireEvent.click(screen.getByTestId('library-menu-documents'));
 
         expect(props.switchTool).toHaveBeenCalledWith('files');

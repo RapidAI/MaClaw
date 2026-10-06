@@ -151,16 +151,19 @@ func sortCodingWorkbenchDirectoryEntries(entries []CodingWorkbenchDirectoryEntry
 	})
 }
 
-func parseCodingWorkbenchRemoteDirectoryRecords(raw, relativePath string) ([]CodingWorkbenchDirectoryEntry, bool) {
+func parseCodingWorkbenchRemoteDirectoryRecords(raw, relativePath string) ([]CodingWorkbenchDirectoryEntry, bool, bool) {
 	entries := make([]CodingWorkbenchDirectoryEntry, 0)
 	truncated := false
+	sawMarker := false
 	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimRight(line, "\r")
 		var item codingWorkbenchRemoteDirectoryRecord
 		if json.Unmarshal([]byte(line), &item) != nil {
 			continue
 		}
 		if item.Truncated != nil {
 			truncated = *item.Truncated
+			sawMarker = true
 			continue
 		}
 		if item.Name == "" || isCodingWorkbenchHiddenBrowserName(item.Name) {
@@ -175,7 +178,7 @@ func parseCodingWorkbenchRemoteDirectoryRecords(raw, relativePath string) ([]Cod
 		})
 	}
 	sortCodingWorkbenchDirectoryEntries(entries)
-	return entries, truncated
+	return entries, truncated, sawMarker
 }
 
 func codingWorkbenchDirectoryEntryLess(left, right CodingWorkbenchDirectoryEntry) bool {
@@ -429,37 +432,106 @@ func (a *App) getRemoteCodingWorkbenchDirectory(projectPath, relativePath string
 	if !remotePathWithinDir(absPath, root) {
 		return CodingWorkbenchDirectoryResponse{}, fmt.Errorf("path outside remote work_dir")
 	}
-	hub := a.ensureHubClient()
-	if hub == nil || hub.ensureIMHandler() == nil {
-		return CodingWorkbenchDirectoryResponse{}, fmt.Errorf("AI assistant not initialized")
-	}
 	// Resolve the requested directory remotely before listing it. The lexical
 	// client-side check above is not sufficient for a symlink inside work_dir
 	// pointing outside it.
-	script := fmt.Sprintf(`import json,os,sys; root=os.path.realpath(sys.argv[1]); target=os.path.realpath(sys.argv[2]); ok=(root==os.sep or target==root or target.startswith(root+os.sep));
-if not ok: raise SystemExit("path outside remote work_dir")
-if not os.path.isdir(target): raise SystemExit("path is not a directory")
-limit=%d; xs=[]
-with os.scandir(target) as scan:
- for e in scan:
-  if e.name.strip().startswith('.'): continue
-  xs.append(e)
-  if len(xs)>limit: break
-truncated=len(xs)>limit; xs=xs[:limit]; print(json.dumps({"truncated":truncated})); [print(json.dumps({"name":e.name,"is_dir":e.is_dir(follow_symlinks=False)})) for e in xs]`, codingWorkbenchBrowserMaxEntries)
-	raw := hub.ensureIMHandler().sshExec(map[string]interface{}{
-		"session_id": sessionID,
-		// Use the shared base64-backed launcher: raw multi-line `python -c`
-		// commands can be normalized by the SSH/PTTY transport.
-		"command":      fmt.Sprintf("%s %s %s", remotePythonCommand(script), remoteShellQuote(root), remoteShellQuote(absPath)),
-		"wait_seconds": float64(15),
-	})
-	if remoteCodingToolOutcome(raw) != "success" {
-		return CodingWorkbenchDirectoryResponse{}, fmt.Errorf("%s", compactRemoteSSHError(raw))
+	script := fmt.Sprintf(`import json, os, stat, sys
+root = os.path.realpath(sys.argv[1])
+target = os.path.realpath(sys.argv[2])
+if not (root == os.sep or target == root or target.startswith(root + os.sep)):
+    raise SystemExit("path outside remote work_dir")
+try:
+    info = os.stat(target)
+except OSError as exc:
+    raise SystemExit(str(exc))
+if not stat.S_ISDIR(info.st_mode):
+    raise SystemExit("path is not a directory")
+limit = %d
+rows = []
+scan_budget = limit * 4
+scanned = 0
+try:
+    with os.scandir(target) as scan:
+        for entry in scan:
+            scanned += 1
+            if scanned > scan_budget:
+                break
+            if entry.name.strip().startswith("."):
+                continue
+            is_dir = False
+            try:
+                is_dir = bool(entry.is_dir(follow_symlinks=False))
+            except OSError:
+                is_dir = False
+            rows.append((entry.name, is_dir))
+            if len(rows) > limit:
+                break
+except OSError as exc:
+    raise SystemExit(str(exc))
+truncated = len(rows) > limit
+print(json.dumps({"truncated": truncated}))
+for name, is_dir in rows[:limit]:
+    try:
+        print(json.dumps({"name": name, "is_dir": is_dir}, ensure_ascii=True))
+    except (TypeError, ValueError, UnicodeError):
+        continue
+`, codingWorkbenchBrowserMaxEntries)
+	// Dedicated exec channel: the login PTY is shared with the coding agent.
+	// Listing through it captured the agent's ssh_read_file dump and the next
+	// shell prompt, which the preview then showed as the directory error.
+	raw, err := a.codingWorkbenchRemoteExec(sessionID, fmt.Sprintf("%s %s %s", remotePythonCommand(script), remoteShellQuote(root), remoteShellQuote(absPath)), 15*time.Second)
+	if err != nil {
+		return CodingWorkbenchDirectoryResponse{}, err
 	}
-	// JSON output does not match the `ls -l` envelope heuristic. Parse the raw
-	// SSH transcript directly so a normal successful response is not discarded.
-	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, relativePath)
+	// A real listing always prints {"truncated": ...}, including an empty
+	// directory. A substring match is not enough: file text can contain the
+	// word. Without the JSON record, showing an empty folder repeats the bug.
+	entries, truncated, sawMarker := parseCodingWorkbenchRemoteDirectoryRecords(raw, relativePath)
+	if !sawMarker {
+		detail := compactRemoteSSHError(raw)
+		log.Printf("[coding-workbench] remote directory listing had no marker session=%s detail=%q", sessionID, truncateRunesV2(detail, 240))
+		return CodingWorkbenchDirectoryResponse{}, fmt.Errorf("%s", detail)
+	}
 	return CodingWorkbenchDirectoryResponse{Root: root, Path: relativePath, Entries: entries, Truncated: truncated}, nil
+}
+
+// codingWorkbenchRemoteExec runs one preview command on its own SSH channel.
+// Stdout is the command's own output. A non-zero exit becomes a short error;
+// PTY prompts and numbered file dumps are not forwarded to the preview.
+func (a *App) codingWorkbenchRemoteExec(sessionID, command string, timeout time.Duration) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	hub := a.ensureHubClient()
+	if hub == nil || hub.ensureIMHandler() == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	result, err := hub.ensureIMHandler().runRemoteSetupCommand(context.Background(), sessionID, command, timeout)
+	if err != nil {
+		log.Printf("[coding-workbench] remote exec failed session=%s err=%v", sessionID, err)
+		return "", fmt.Errorf("%s", compactRemoteSSHError(err.Error()))
+	}
+	if result.ExitCode != 0 {
+		detail := compactRemoteSSHError(codingWorkbenchRemoteExecDetail(result.Stdout, result.Stderr))
+		log.Printf("[coding-workbench] remote exec exit=%d session=%s detail=%q", result.ExitCode, sessionID, truncateRunesV2(detail, 240))
+		return "", fmt.Errorf("%s", detail)
+	}
+	return result.Stdout, nil
+}
+
+func codingWorkbenchRemoteExecDetail(stdout, stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	stdout = strings.TrimSpace(stdout)
+	if stderr == "" {
+		return stdout
+	}
+	if stdout == "" {
+		return stderr
+	}
+	return stderr + "\n" + stdout
 }
 
 // codingWorkbenchBrowserRemotePath resolves a browser path within root. An
@@ -1111,20 +1183,21 @@ func (a *App) getRemoteCodingWorkbenchEntryProperties(projectPath, relativePath 
 	if !remotePathWithinDir(absPath, root) {
 		return CodingWorkbenchEntryProperties{}, fmt.Errorf("path outside remote work_dir")
 	}
-	hub := a.ensureHubClient()
-	if hub == nil || hub.ensureIMHandler() == nil {
-		return CodingWorkbenchEntryProperties{}, fmt.Errorf("AI assistant not initialized")
-	}
-	script := `import json,os,stat,sys; root=os.path.realpath(sys.argv[1]); target=os.path.realpath(sys.argv[2]); ok=(root==os.sep or target==root or target.startswith(root+os.sep));
-if not ok: raise SystemExit("path outside remote work_dir")
-s=os.stat(target); isdir=stat.S_ISDIR(s.st_mode); name=os.path.basename(target.rstrip(os.sep)) or target; print(json.dumps({"name":name,"abs_path":target,"is_dir":isdir,"size":s.st_size,"size_known":not isdir,"modified_at":int(s.st_mtime),"mode":format(stat.S_IMODE(s.st_mode),"04o")}))`
-	raw := hub.ensureIMHandler().sshExec(map[string]interface{}{
-		"session_id":   sessionID,
-		"command":      fmt.Sprintf("%s %s %s", remotePythonCommand(script), remoteShellQuote(root), remoteShellQuote(absPath)),
-		"wait_seconds": float64(15),
-	})
-	if remoteCodingToolOutcome(raw) != "success" {
-		return CodingWorkbenchEntryProperties{}, fmt.Errorf("%s", compactRemoteSSHError(raw))
+	script := `import json, os, stat, sys
+root = os.path.realpath(sys.argv[1])
+target = os.path.realpath(sys.argv[2])
+if not (root == os.sep or target == root or target.startswith(root + os.sep)):
+    raise SystemExit("path outside remote work_dir")
+try:
+    info = os.stat(target)
+except OSError as exc:
+    raise SystemExit(str(exc))
+is_dir = stat.S_ISDIR(info.st_mode)
+name = os.path.basename(target.rstrip(os.sep)) or target
+print(json.dumps({"name": name, "abs_path": target, "is_dir": is_dir, "size": info.st_size, "size_known": (not is_dir), "modified_at": int(info.st_mtime), "mode": format(stat.S_IMODE(info.st_mode), "04o")}, ensure_ascii=True))`
+	raw, err := a.codingWorkbenchRemoteExec(sessionID, fmt.Sprintf("%s %s %s", remotePythonCommand(script), remoteShellQuote(root), remoteShellQuote(absPath)), 15*time.Second)
+	if err != nil {
+		return CodingWorkbenchEntryProperties{}, err
 	}
 	var result CodingWorkbenchEntryProperties
 	for _, line := range strings.Split(raw, "\n") {
@@ -1139,6 +1212,60 @@ s=os.stat(target); isdir=stat.S_ISDIR(s.st_mode); name=os.path.basename(target.r
 	return CodingWorkbenchEntryProperties{}, fmt.Errorf("remote properties response invalid")
 }
 
+func remoteWorkbenchFilePreviewCommand(root, path string) string {
+	script := strings.NewReplacer(
+		"@@ROOT@@", base64EncodeString(root),
+		"@@PATH@@", base64EncodeString(path),
+	).Replace(`import base64, os, pathlib, stat, sys
+root = os.path.realpath(base64.b64decode('@@ROOT@@').decode('utf-8'))
+requested = base64.b64decode('@@PATH@@').decode('utf-8')
+target = os.path.realpath(requested)
+def inside(path):
+    return root == os.sep or path == root or path.startswith(root + os.sep)
+if not inside(target):
+    raise SystemExit("path outside remote work_dir")
+try:
+    info = os.stat(target)
+except OSError as exc:
+    raise SystemExit(str(exc))
+if not stat.S_ISREG(info.st_mode):
+    raise SystemExit("path is not a file")
+p = pathlib.Path(target)
+start = 1
+limit = 2000
+shown = 0
+last_lineno = 0
+try:
+    with p.open('r', encoding='utf-8', errors='strict') as handle:
+        live = target
+        fd_path = '/proc/self/fd/' + str(handle.fileno())
+        # lexists does not follow the link. exists() stats the target and
+        # returns false when that stat is denied, which would skip this check.
+        if os.path.lexists(fd_path):
+            try:
+                live = os.path.realpath(fd_path)
+            except OSError:
+                live = target
+        if not inside(live):
+            raise SystemExit("path outside remote work_dir")
+        for lineno, line in enumerate(handle, start=1):
+            last_lineno = lineno
+            if lineno < start:
+                continue
+            if shown >= limit:
+                sys.stdout.write('\n[remote read_file truncated: showing lines %d-%d; call again with offset=%d]\n' % (start, lineno - 1, lineno))
+                break
+            sys.stdout.write(f'{lineno}\t{line}')
+            shown += 1
+except UnicodeDecodeError:
+    sys.stdout.write('[remote read_file binary/non-UTF8: %d bytes; text line range unavailable for offset=%d limit=%d]\n' % (info.st_size, start, limit))
+    sys.exit(0)
+if shown == 0 and start > last_lineno:
+    sys.stdout.write('[remote read_file EOF: offset %d is beyond scanned file length %d]\n' % (start, last_lineno))
+`)
+	return remotePythonCommand(script)
+}
+
 func (a *App) getRemoteCodingWorkbenchFilePreview(projectPath, relativePath string) (CodingWorkbenchFilePreview, error) {
 	sessionID, root, err := a.acpRemoteSSHSession(projectPath)
 	if err != nil {
@@ -1148,33 +1275,19 @@ func (a *App) getRemoteCodingWorkbenchFilePreview(projectPath, relativePath stri
 	if !remotePathWithinDir(absPath, root) {
 		return CodingWorkbenchFilePreview{}, fmt.Errorf("path outside remote work_dir")
 	}
-	hub := a.ensureHubClient()
-	if hub == nil || hub.ensureIMHandler() == nil {
-		return CodingWorkbenchFilePreview{}, fmt.Errorf("AI assistant not initialized")
-	}
-	// Verify the real path before delegating the bounded read to the shared
-	// helper. Without this check a symlink under work_dir could expose a file
-	// outside the workspace.
-	verifyScript := `import os,sys; root=os.path.realpath(sys.argv[1]); target=os.path.realpath(sys.argv[2]); ok=(root==os.sep or target==root or target.startswith(root+os.sep));
-if not ok: raise SystemExit("path outside remote work_dir")
-if not os.path.isfile(target): raise SystemExit("path is not a file")`
-	verify := hub.ensureIMHandler().sshExec(map[string]interface{}{
-		"session_id":   sessionID,
-		"command":      fmt.Sprintf("%s %s %s", remotePythonCommand(verifyScript), remoteShellQuote(root), remoteShellQuote(absPath)),
-		"wait_seconds": float64(15),
-	})
-	if remoteCodingToolOutcome(verify) != "success" {
-		return CodingWorkbenchFilePreview{}, fmt.Errorf("%s", compactRemoteSSHError(verify))
-	}
-	raw := hub.ensureIMHandler().sshExec(map[string]interface{}{
-		"session_id":   sessionID,
-		"command":      remoteReadFileRangePythonCommand(absPath, 1, 2000),
-		"wait_seconds": float64(20),
-	})
-	if remoteCodingToolOutcome(raw) != "success" {
-		return CodingWorkbenchFilePreview{}, fmt.Errorf("%s", compactRemoteSSHError(raw))
+	// One Python process resolves the path, confirms the opened file is still
+	// inside work_dir, and reads it. Two processes joined by && could follow
+	// a symlink that was swapped in between them.
+	raw, err := a.codingWorkbenchRemoteExec(sessionID, remoteWorkbenchFilePreviewCommand(root, absPath), 20*time.Second)
+	if err != nil {
+		return CodingWorkbenchFilePreview{}, err
 	}
 	content := extractRemoteReadPreviewContent(raw)
+	// The marker is also a legal string inside a text file. Treat it as binary
+	// only when the read produced no numbered source lines.
+	if strings.TrimSpace(content) == "" && strings.Contains(raw, "[remote read_file binary/non-UTF8:") {
+		return CodingWorkbenchFilePreview{}, fmt.Errorf("binary files cannot be previewed")
+	}
 	// Only protocol markers indicate truncation. A source file may legitimately
 	// contain the word "truncated" and must not receive a misleading preview
 	// warning just because of its contents.

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WelcomePromptParamDialog } from "../WelcomePromptParamDialog";
 import { lightTheme } from "../aiAssistantPanelTheme";
 import {
@@ -11,6 +11,7 @@ import {
 describe("WelcomePromptParamDialog", () => {
     beforeEach(() => {
         localStorage.clear();
+        delete (globalThis as { go?: unknown }).go;
     });
 
     it("renders labeled fields and inserts filled prompt", () => {
@@ -157,6 +158,28 @@ describe("WelcomePromptParamDialog", () => {
         expect(localStorage.getItem(WELCOME_CODING_ENV_KEY)).toBeNull();
     });
 
+    it("does not prefill a remembered development password for diagnosis", () => {
+        localStorage.setItem(WELCOME_CODING_ENV_KEY, JSON.stringify({
+            remote: { host: "10.0.0.8", port: 22, user: "ubuntu", workDir: "/srv/app", password: "remembered-secret" },
+        }));
+        render(
+            <WelcomePromptParamDialog
+                open
+                onClose={() => {}}
+                lang="zh"
+                theme={lightTheme}
+                title="排查服务器磁盘占满"
+                template={"症状：[磁盘告警]"}
+                submitMode="remote_coding_dev"
+                remoteSafety="diagnosis"
+                onSubmit={() => {}}
+            />,
+        );
+        expect((screen.getByTestId("welcome-remote-host") as HTMLInputElement).value).toBe("10.0.0.8");
+        expect((screen.getByTestId("welcome-remote-user") as HTMLInputElement).value).toBe("ubuntu");
+        expect((screen.getByTestId("welcome-remote-password") as HTMLInputElement).value).toBe("");
+    });
+
     it("applies suggestion chips to the field value", () => {
         const onSubmit = vi.fn();
         render(
@@ -289,6 +312,75 @@ describe("WelcomePromptParamDialog", () => {
         expect((screen.getByTestId("welcome-remote-user") as HTMLInputElement).value).toBe("ubuntu");
         expect((screen.getByTestId("welcome-remote-workdir") as HTMLInputElement).value).toBe("/home/ubuntu/app");
         expect((screen.getByTestId("welcome-remote-password") as HTMLInputElement).value).toBe("secret");
+    });
+
+    it("fills an empty remote password from the keyring once and keeps a later clear", async () => {
+        const recall = vi.fn().mockResolvedValue("from-keyring");
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        render(
+            <WelcomePromptParamDialog
+                open
+                onClose={() => {}}
+                lang="zh"
+                theme={lightTheme}
+                title="远程任务"
+                template={"现象：[用户看到什么]"}
+                submitMode="remote_coding_dev"
+                onSubmit={() => {}}
+            />,
+        );
+        fireEvent.change(screen.getByTestId("welcome-remote-host"), { target: { value: "home.rapidai.tech" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-user"), { target: { value: "root" } });
+        await waitFor(() => expect((screen.getByTestId("welcome-remote-password") as HTMLInputElement).value).toBe("from-keyring"));
+        expect(recall).toHaveBeenCalledTimes(1);
+        fireEvent.change(screen.getByTestId("welcome-remote-password"), { target: { value: "" } });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect((screen.getByTestId("welcome-remote-password") as HTMLInputElement).value).toBe("");
+        expect(recall).toHaveBeenCalledTimes(1);
+    });
+
+    it("replaces a stale remembered password with the keyring password", async () => {
+        const recall = vi.fn().mockResolvedValue("keyring-secret");
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        localStorage.setItem(WELCOME_CODING_ENV_KEY, JSON.stringify({
+            remote: {
+                host: "home.rapidai.tech",
+                port: 22,
+                user: "root",
+                workDir: "/home",
+                password: "stale-secret",
+            },
+        }));
+        render(
+            <WelcomePromptParamDialog
+                open
+                onClose={() => {}}
+                lang="zh"
+                theme={lightTheme}
+                title="远程任务"
+                template={"现象：[用户看到什么]"}
+                submitMode="remote_coding_dev"
+                onSubmit={() => {}}
+            />,
+        );
+        await waitFor(() => expect((screen.getByTestId("welcome-remote-password") as HTMLInputElement).value).toBe("keyring-secret"));
+        expect(recall).toHaveBeenCalledTimes(1);
     });
 
     it("prefills local workdir from remembered coding env", () => {

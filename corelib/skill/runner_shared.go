@@ -54,9 +54,18 @@ func detectImplicitRequiredArgs(steps []corelib.NLSkillStep, vars map[string]str
 			if context == "" {
 				continue
 			}
-			for _, rawKey := range ExtractPlaceholderKeys(context) {
-				key := canonicalRunVarKey(rawKey)
+			for _, pk := range ExtractPlaceholderKeysWithForm(context) {
+				key := canonicalRunVarKey(pk.Key)
 				if key == "" || seen[key] {
+					continue
+				}
+				// Ambiguous {key}/${key} forms that fail the parameter-shape
+				// filter are host-language syntax (shell loop variables like
+				// ${i}, format items), not template variables — demanding
+				// them from the LLM is the retry-burning failure mode this
+				// package guards against. Explicit {{key}} declarations are
+				// always kept, even single-letter ones.
+				if !pk.Explicit && !isSynthesizableParamKey(key) {
 					continue
 				}
 				if provided(key, vars) {
@@ -725,8 +734,8 @@ func RequiredArgsForRunnerPrecheck(required []string, precheckSteps []corelib.NL
 	used := map[string]bool{}
 	captured := map[string]bool{}
 	for _, step := range precheckSteps {
-		extractPlaceholdersFromParams(step.Params, func(key string) {
-			if key = canonicalRunVarKey(key); key != "" {
+		extractPlaceholdersFromParams(step.Params, func(pk PlaceholderKey) {
+			if key := canonicalRunVarKey(pk.Key); key != "" {
 				if captured[key] {
 					return
 				}

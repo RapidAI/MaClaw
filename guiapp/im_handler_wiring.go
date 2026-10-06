@@ -1389,8 +1389,8 @@ func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
 var classifierTimeoutWebLookupToolNames = []string{"web_search", "web_fetch"}
 
 // keepClassifierTimeoutLookupTools is only for a light lookup whose tree
-// timed out. A full assistant surface uses pinClassifierTimeoutExecutionFloor
-// instead, so the command and file floor is not replaced by web tools.
+// timed out. A full assistant surface uses pinExecutionBaseline instead, so
+// the command and file floor is not replaced by web tools.
 func keepClassifierTimeoutLookupTools(tools []map[string]interface{}) []map[string]interface{} {
 	if len(tools) == 0 {
 		return tools
@@ -1427,26 +1427,31 @@ func (h *IMMessageHandler) pinClassifierTimeoutWebLookup(userID string, ctx *Loo
 	return tools
 }
 
-// pinClassifierTimeoutExecutionFloor guarantees the invariant-11 floor on a
-// full turn whose classifier timed out. That turn skips the name router, so
-// the floor is not a ranker miss: without this pin the surface is only the
-// web pair. Expert and group allow-lists still win. Callers that already
+// pinExecutionBaseline guarantees the execution baseline on a full assistant
+// surface. A timed-out classifier skips the name router, and a ranked full
+// turn can still leave bash, craft_tool, and manage_skill off the slice;
+// either way the model can write a file and then have no way to run it.
+// A short or lookup continuation keeps the parent carry and does not pin
+// again. Expert and group allow-lists still win. Callers that already
 // applied a narrower policy (workflow phase, direct mode, skill search)
 // must seal again; this pin only re-checks expert and group.
-func (h *IMMessageHandler) pinClassifierTimeoutExecutionFloor(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}) []map[string]interface{} {
-	if !loopContextHasClassifierTimeoutLookup(ctx) || !executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
+func (h *IMMessageHandler) pinExecutionBaseline(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}) []map[string]interface{} {
+	profile := executionProfileFromLoop(ctx)
+	if !executionSurfaceIsFull(profile) || operationalExecutionProfile(profile) {
 		return tools
 	}
 	before := namedToolPresence(tools, legacyRoutingMissFloorToolOrder)
 	tools = ensureNamedToolsPresent(tools, catalog, legacyRoutingMissFloorToolOrder)
-	if !namedToolsGained(before, namedToolPresence(tools, legacyRoutingMissFloorToolOrder), legacyRoutingMissFloorToolOrder) {
-		return tools
+	if namedToolsGained(before, namedToolPresence(tools, legacyRoutingMissFloorToolOrder), legacyRoutingMissFloorToolOrder) {
+		tools = h.filterToolsForExpertUser(userID, tools)
+		if ctx != nil && ctx.LansengerGroupPermissions != nil {
+			tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+		}
 	}
-	tools = h.filterToolsForExpertUser(userID, tools)
-	if ctx != nil && ctx.LansengerGroupPermissions != nil {
-		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
-	}
-	return tools
+	// The registry schema advertises install and governance actions. Those
+	// calls are rejected on this surface, so the published definition only
+	// names list, info, and run.
+	return narrowLegacyManageSkillSurface(tools)
 }
 
 // sealClassifierTimeoutExecutionFloor puts back the policies that run before
@@ -1455,10 +1460,10 @@ func (h *IMMessageHandler) pinClassifierTimeoutExecutionFloor(userID string, ctx
 // Workflow ensure pulls required names from the host catalog, so every
 // narrower filter runs after that ensure: expert and group allow-lists,
 // skill search, direct mode, truncation, and Hub name-level rejection.
-// boundCatalog nil uses the unmanaged host catalog (prepare, injection,
-// and skill recover render afterwards). A non-nil catalog, including an
-// empty one, is the loop's already-held surface: a floor unlock must not
-// pull a raw definition the turn never had.
+// boundCatalog nil uses the unmanaged host catalog (the first full prepare,
+// and a timeout injection or recover that had no router result). A non-nil
+// catalog, including an empty one, is the loop's already-held surface: an
+// ordinary recover must not pull a raw definition the turn never had.
 func (h *IMMessageHandler) sealClassifierTimeoutExecutionFloor(userID string, ctx *LoopContext, tools []map[string]interface{}, phase agentLoopPhase, directMode bool, boundCatalog []map[string]interface{}) []map[string]interface{} {
 	if ownerID, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx); apply {
 		if policy == v2.ToolFilterNone {

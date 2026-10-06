@@ -168,6 +168,9 @@ func TestDoSimpleLLMRequestContextWithOptionsSendsStrictIntentContract(t *testin
 			if err != nil || response.Content == "" {
 				t.Fatalf("response=%#v err=%v", response, err)
 			}
+			if stream, _ := gotBody["stream"].(bool); stream {
+				t.Fatal("structured intent request must be a single JSON body")
+			}
 			if tc.wireAPI == "responses" {
 				text, _ := gotBody["text"].(map[string]interface{})
 				format, _ := text["format"].(map[string]interface{})
@@ -389,6 +392,34 @@ func TestShouldRetrySimpleLLMError_SkipsTerminalHubDenials(t *testing.T) {
 	}
 	if shouldRetrySimpleLLMError(errors.New("MaClaw 官方周期限流：当前周期额度已用尽")) {
 		t.Fatal("user-facing period-limit text must not be retried")
+	}
+}
+
+func TestShouldRetrySimpleLLMError_ForbiddenBackoff(t *testing.T) {
+	// Hub gateway pre-dispatch authorization glitch: in an HA deployment this
+	// is usually a transient authorization-sync gap, so it must get the same
+	// exponential backoff as 5xx instead of killing the whole round.
+	transient := &llm.HTTPStatusError{
+		StatusCode: http.StatusForbidden,
+		Body:       []byte(`{"error":"authorization denied: no active authorization for hub=h tenant=t group=g"}`),
+	}
+	if !shouldRetrySimpleLLMError(transient) {
+		t.Fatal("transient gateway 403 should be retried with backoff")
+	}
+	if !shouldRetrySimpleLLMError(&llm.HTTPStatusError{StatusCode: http.StatusForbidden}) {
+		t.Fatal("body-free 403 should be retried with backoff")
+	}
+	if !shouldRetrySimpleLLMError(fmt.Errorf("stream: %w", transient)) {
+		t.Fatal("wrapped transient 403 should be retried with backoff")
+	}
+	for _, body := range []string{
+		`{"error":{"type":"content_policy_violation","message":"blocked by content policy"}}`,
+		`{"error":{"type":"RegionError","message":"model is not supported in your region"}}`,
+		`{"code":"LLM_MODEL_FORBIDDEN","message":"no active model service entitlement"}`,
+	} {
+		if shouldRetrySimpleLLMError(&llm.HTTPStatusError{StatusCode: http.StatusForbidden, Body: []byte(body)}) {
+			t.Fatalf("permanent 403 body must not be retried: %s", body)
+		}
 	}
 }
 

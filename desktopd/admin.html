@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>desktopd 管理控制台</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c2430; }
+header { background: #16222f; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+header .spacer { flex: 1; }
+main { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+.card { background: #fff; border: 1px solid #d9dee5; border-radius: 10px; padding: 18px 20px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+.card h2 { font-size: 15px; margin: 0 0 12px; color: #16222f; }
+label { display: block; font-size: 13px; color: #4a5568; margin: 10px 0 4px; }
+input[type=text], input[type=password] { width: 100%; max-width: 420px; padding: 8px 10px; border: 1px solid #c6cdd6; border-radius: 6px; font-size: 14px; }
+button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+button.ghost { background: #eef1f5; color: #1c2430; border: 1px solid #c6cdd6; }
+button.danger { background: #d1242f; }
+button:disabled { opacity: .5; cursor: default; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e6e9ee; vertical-align: top; word-break: break-all; }
+th { color: #4a5568; font-weight: 600; background: #f8f9fb; }
+code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 14px; font-size: 13.5px; }
+.kv dt { color: #4a5568; }
+.kv dd { margin: 0; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+.ok { background: #dcf5e2; color: #11692f; }
+.bad { background: #fbe1e3; color: #8c1119; }
+.muted { color: #7a8694; }
+.row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.row > div { flex: 1; min-width: 160px; }
+.err { color: #b42318; font-size: 13px; margin-top: 8px; min-height: 16px; }
+.toast { position: fixed; bottom: 20px; right: 20px; background: #16222f; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: .95; }
+.hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>desktopd 管理控制台</h1>
+  <div class="spacer"></div>
+  <button id="logoutBtn" class="ghost hidden">退出登录</button>
+</header>
+<main>
+  <section id="setupView" class="card hidden">
+    <h2>首次设置 — 创建管理员账号</h2>
+    <p class="muted" style="font-size:13px">该账号仅用于本管理面板，与 Hub / MaClawSrv 的 API token 无关。</p>
+    <form id="setupForm">
+      <label for="suUser">用户名</label>
+      <input type="text" id="suUser" autocomplete="username" required>
+      <label for="suPass">密码（至少 8 位）</label>
+      <input type="password" id="suPass" autocomplete="new-password" required>
+      <label for="suPass2">确认密码</label>
+      <input type="password" id="suPass2" autocomplete="new-password" required>
+      <p class="err" id="setupErr"></p>
+      <button type="submit">创建并登录</button>
+    </form>
+  </section>
+
+  <section id="loginView" class="card hidden">
+    <h2>登录</h2>
+    <form id="loginForm">
+      <label for="liUser">用户名</label>
+      <input type="text" id="liUser" autocomplete="username" required>
+      <label for="liPass">密码</label>
+      <input type="password" id="liPass" autocomplete="current-password" required>
+      <p class="err" id="loginErr"></p>
+      <button type="submit">登录</button>
+    </form>
+  </section>
+
+  <section id="dashView" class="hidden">
+    <div class="card">
+      <h2>服务信息</h2>
+      <dl class="kv" id="serviceInfo"></dl>
+    </div>
+
+    <div class="card">
+      <h2>API Key（Hub 接入凭据）</h2>
+      <p class="muted" style="font-size:13px">Hub 桌面服务配置中的 access token 使用以下任意一个即可。主 key 来自 DESKTOPD_TOKEN 环境变量，不可在此删除。</p>
+      <table>
+        <thead><tr><th>名称</th><th>Token</th><th>创建时间</th><th></th></tr></thead>
+        <tbody id="tokenRows"></tbody>
+      </table>
+      <form id="tokenForm" style="margin-top:14px">
+        <div class="row">
+          <div><label for="tkLabel">名称（例如：Hub-生产）</label><input type="text" id="tkLabel" required></div>
+          <div><label for="tkToken">自定义 token（留空自动生成）</label><input type="text" id="tkToken" class="mono" placeholder="可选"></div>
+          <div style="flex:0"><button type="submit">添加</button></div>
+        </div>
+      </form>
+      <p class="err" id="tokenErr"></p>
+    </div>
+
+    <div class="card">
+      <h2>桌面容器</h2>
+      <table>
+        <thead><tr><th>容器</th><th>租户</th><th>用户</th><th>状态</th></tr></thead>
+        <tbody id="desktopRows"></tbody>
+      </table>
+      <p class="muted" id="desktopEmpty" style="font-size:13px"></p>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const CSRF = { 'X-Desktopd-Admin': '1' };
+const $ = (id) => document.getElementById(id);
+
+function show(view) {
+  for (const id of ['setupView', 'loginView', 'dashView']) $(id).classList.add('hidden');
+  $(view).classList.remove('hidden');
+  $('logoutBtn').classList.toggle('hidden', view !== 'dashView');
+}
+
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch('/admin/api/' + path, {
+    headers: { 'Content-Type': 'application/json', ...CSRF, ...(opts.headers || {}) },
+    method: opts.method || 'GET',
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.message || ('HTTP ' + res.status));
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+async function loadDash() {
+  const o = await api('overview');
+  const docker = o.docker_ok
+    ? '<span class="badge ok">Docker ' + esc(o.docker_version || 'ok') + '</span>'
+    : '<span class="badge bad">Docker 不可用</span>';
+  $('serviceInfo').innerHTML =
+    '<dt>对外主机</dt><dd class="mono">' + (esc(o.advertise_host) || '<span class="muted">未设置 DESKTOPD_ADVERTISE_HOST</span>') + '</dd>' +
+    '<dt>Docker</dt><dd>' + docker + '</dd>' +
+    '<dt>默认镜像</dt><dd class="mono">' + esc(o.image) + '</dd>' +
+    '<dt>默认资源</dt><dd class="mono">' + esc(o.memory) + ' / ' + esc(o.cpus) + ' CPU / shm ' + esc(o.shm_size) + '</dd>';
+
+  const rows = [];
+  rows.push('<tr><td>主 key（DESKTOPD_TOKEN）</td><td class="mono">' + esc(o.primary_token || '(未设置)') + '</td><td class="muted">环境变量</td><td></td></tr>');
+  for (const t of (o.tokens || [])) {
+    rows.push(
+      '<tr><td>' + esc(t.label) + '</td>' +
+      '<td class="mono">' + esc(t.token) + '</td>' +
+      '<td class="muted">' + esc(t.created_at || '') + '</td>' +
+      '<td><button type="button" class="danger" data-del="' + esc(t.id) + '">删除</button></td></tr>');
+  }
+  $('tokenRows').innerHTML = rows.join('');
+  document.querySelectorAll('[data-del]').forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm('确定删除该 API key？使用它的 Hub 将立即无法访问。')) return;
+      try {
+        await api('tokens/' + btn.dataset.del, { method: 'DELETE' });
+        toast('已删除');
+        loadDash();
+      } catch (err) { $('tokenErr').textContent = err.message; }
+    };
+  });
+
+  const rows2 = (o.desktops || []).map((d) =>
+    '<tr><td class="mono">' + esc(d.container) + '</td><td class="mono">' + esc(d.tenant_id) + '</td><td class="mono">' + esc(d.user_id) + '</td><td>' + esc(d.status) + '</td></tr>');
+  $('desktopRows').innerHTML = rows2.join('');
+  $('desktopEmpty').textContent = rows2.length ? '' : '当前没有运行中的桌面容器。';
+}
+
+$('setupForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('setupErr').textContent = '';
+  if ($('suPass').value !== $('suPass2').value) { $('setupErr').textContent = '两次输入的密码不一致'; return; }
+  try {
+    await api('setup', { method: 'POST', body: { username: $('suUser').value.trim(), password: $('suPass').value } });
+    show('dashView'); loadDash();
+  } catch (err) { $('setupErr').textContent = err.message; }
+};
+
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('loginErr').textContent = '';
+  try {
+    await api('login', { method: 'POST', body: { username: $('liUser').value.trim(), password: $('liPass').value } });
+    show('dashView'); loadDash();
+  } catch (err) { $('loginErr').textContent = err.message; }
+};
+
+$('logoutBtn').onclick = async () => {
+  await api('logout', { method: 'POST' }).catch(() => {});
+  show('loginView');
+};
+
+$('tokenForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('tokenErr').textContent = '';
+  try {
+    await api('tokens', { method: 'POST', body: { label: $('tkLabel').value.trim(), token: $('tkToken').value.trim() } });
+    $('tkLabel').value = ''; $('tkToken').value = '';
+    toast('API key 已添加');
+    loadDash();
+  } catch (err) { $('tokenErr').textContent = err.message; }
+};
+
+(async function init() {
+  try {
+    const state = await api('state');
+    if (state.logged_in) { show('dashView'); loadDash(); }
+    else if (state.needs_setup) show('setupView');
+    else show('loginView');
+  } catch (err) {
+    show('loginView');
+  }
+})();
+</script>
+</body>
+</html>

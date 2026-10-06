@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFormatCodingRequestUnderstandingTextIsPlainProse(t *testing.T) {
@@ -361,6 +362,58 @@ func TestFallbackRewriteUsesRewriteWordBoundary(t *testing.T) {
 	}
 	if _, ok := fallbackRewriteRestatement("rewrite the parser", ""); !ok {
 		t.Fatal("rewrite as a word must still match")
+	}
+}
+
+func TestUnderstandingPromptCarriesWrittenSessionRecord(t *testing.T) {
+	with := buildCodingUnderstandingUserPrompt("继续", stickyCodingWorkbenchMemory{
+		FilesModified: []string{"/home/prj8/src/ui.cpp"},
+		LastSummary:   "本环境为只读",
+	})
+	if !strings.Contains(with, "/home/prj8/src/ui.cpp") || !strings.Contains(with, "not read-only") {
+		t.Fatalf("understanding prompt missing the written-session record: %s", with)
+	}
+	if strings.Index(with, "not read-only") < strings.Index(with, "本环境为只读") {
+		t.Fatal("session record must come after the previous summary")
+	}
+	without := buildCodingUnderstandingUserPrompt("继续", stickyCodingWorkbenchMemory{})
+	if strings.Contains(without, "not read-only") {
+		t.Fatal("a session with no written files must not claim a write record")
+	}
+}
+
+func TestRunOnlyRestatementIsNotReplaced(t *testing.T) {
+	written := stickyCodingWorkbenchMemory{FilesModified: []string{"/home/prj8/src/ui.cpp"}}
+	if !codingRequestUnderstandingKeepsHostFallback("编译并运行", written) {
+		t.Fatal("a run/build follow-up must keep the host restatement")
+	}
+	if codingRequestUnderstandingKeepsHostFallback("怎么运行", written) {
+		t.Fatal("a how-to question must still be open to restatement")
+	}
+	writtenPlan := stickyCodingWorkbenchMemory{
+		FilesModified: []string{"/home/prj8/src/ui.cpp"},
+		SessionPlan:   "系统信息查看",
+	}
+	if !codingRequestUnderstandingKeepsHostFallback("继续", writtenPlan) {
+		t.Fatal("a short follow-up in a session that already wrote files must keep the host restatement")
+	}
+	long := strings.Repeat("继续完善当前进程列表的展示 ", 6)
+	if utf8.RuneCountInString(long) <= 48 {
+		t.Fatalf("fixture is not a long request: %d", utf8.RuneCountInString(long))
+	}
+	if codingRequestUnderstandingKeepsHostFallback(long, writtenPlan) {
+		t.Fatal("a longer change request must still be open to restatement")
+	}
+}
+
+func TestWrittenSessionRestatementDoesNotAnnounceReadOnly(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		SessionPlan:   "系统信息查看",
+		FilesModified: []string{"/home/prj8/src/ui.cpp"},
+	}
+	got := fallbackCodingRequestRestatement("这段 CPU% 为什么乘了核心数？", mem)
+	if strings.Contains(got, "不改文件") {
+		t.Fatalf("a session that already wrote files must not be restated as read-only: %q", got)
 	}
 }
 

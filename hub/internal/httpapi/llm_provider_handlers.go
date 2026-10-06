@@ -108,6 +108,7 @@ type llmServiceAccountResponse struct {
 	TenantID string                    `json:"tenant_id,omitempty"`
 	Status   *llmservice.ServiceStatus `json:"status,omitempty"`
 	Usage    llmUsageCounters          `json:"usage"`
+	Checkin  *hubCheckinInfo           `json:"checkin,omitempty"`
 }
 
 type llmProviderTestKeyRequest struct {
@@ -1123,7 +1124,10 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			status.InactiveReasons = explainFilteredServiceStatusIssues(status, filtered, providerReg)
 			llmservice.PublishStatusCapabilityBands(status, serviceReg)
 		}
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusOK, struct {
+			*llmservice.ServiceStatus
+			Checkin *hubCheckinInfo `json:"checkin,omitempty"`
+		}{ServiceStatus: status, Checkin: checkinInfoForUser(ctx, system, serviceReg, principal.UserID, principal.Email)})
 	}
 }
 
@@ -1161,7 +1165,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_USAGE_REPORT_LOAD_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, llmServiceAccountResponse{Email: principal.Email, TenantID: principal.TenantID, Status: status, Usage: usage})
+		writeJSON(w, http.StatusOK, llmServiceAccountResponse{Email: principal.Email, TenantID: principal.TenantID, Status: status, Usage: usage, Checkin: checkinInfoForUser(ctx, system, serviceReg, principal.UserID, principal.Email)})
 	}
 }
 
@@ -5060,8 +5064,8 @@ type llmBillingDenial struct {
 	// period window remaining.
 	HeldCredits float64
 	// NeedCredits is the prompt-plus-one-token floor. A token-bank pull is
-	// warranted only when this exceeds the card before holds are subtracted.
-	// Zero means the denial did not price a floor.
+	// warranted when credits free right now cannot cover it. Zero means the
+	// denial did not price a floor; a card with nothing free still withdraws.
 	NeedCredits float64
 }
 
@@ -5161,10 +5165,24 @@ func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmserv
 }
 
 // preferLLMBillingDenial keeps the denial the caller should see, and the
-// larger priced floor. A period window outranks an insufficient point card,
-// but the withdraw still needs that card's floor. Held credits stay on the
-// denial they belong to: another wallet's hold does not explain this one.
+// larger priced floor. A point card frozen by an in-flight request outranks a
+// period window, so the reset time does not hide a balance that is only
+// reserved. Held credits stay on the denial they belong to.
 func preferLLMBillingDenial(current, next llmBillingDenial) llmBillingDenial {
+	currentHeld := denialIsHeldBalance(current)
+	nextHeld := denialIsHeldBalance(next)
+	if nextHeld && !currentHeld {
+		if current.NeedCredits > next.NeedCredits {
+			next.NeedCredits = current.NeedCredits
+		}
+		return next
+	}
+	if currentHeld && !nextHeld {
+		if next.NeedCredits > current.NeedCredits {
+			current.NeedCredits = next.NeedCredits
+		}
+		return current
+	}
 	if strings.TrimSpace(current.Code) == "" || llmBillingDenialRank(next.Code) < llmBillingDenialRank(current.Code) {
 		if current.NeedCredits > next.NeedCredits {
 			next.NeedCredits = current.NeedCredits
@@ -5175,6 +5193,30 @@ func preferLLMBillingDenial(current, next llmBillingDenial) llmBillingDenial {
 		current.NeedCredits = next.NeedCredits
 	}
 	return current
+}
+
+func denialIsHeldBalance(denial llmBillingDenial) bool {
+	msg := strings.ToLower(denial.Message)
+	if !strings.Contains(msg, "held by in-flight requests") {
+		return false
+	}
+	// A quote that still has a free balance is a shortfall. Only available 0
+	// means the card itself is frozen and this call has nothing left to reserve.
+	const key = "available "
+	i := strings.Index(msg, key)
+	if i < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(msg[i+len(key):])
+	end := 0
+	for end < len(rest) && (rest[end] == '.' || (rest[end] >= '0' && rest[end] <= '9')) {
+		end++
+	}
+	if end == 0 {
+		return false
+	}
+	value, err := strconv.ParseFloat(rest[:end], 64)
+	return err == nil && value == 0
 }
 
 func llmBillingDenialRank(code string) int {

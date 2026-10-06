@@ -1,0 +1,951 @@
+package botmgmt
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
+)
+
+const (
+	ScopeGlobal     = "global"
+	ScopeDepartment = "department"
+	ScopeUser       = "user"
+
+	// DisabledMessage is what the Maclaw GUI shows when the bot feature is off.
+	DisabledMessage = "服务器没有开通bot功能"
+)
+
+// Grant turns the bot feature on for everyone, one department, or one user.
+// No grants means the feature is off.
+type Grant struct {
+	ID       string `json:"id"`
+	Scope    string `json:"scope"`
+	TargetID string `json:"target_id,omitempty"`
+}
+
+// Directory resolves a user's department chain. Nil skips department grants.
+type Directory interface {
+	Email(ctx context.Context, userID string) (string, error)
+	GroupID(ctx context.Context, email string) (string, error)
+	ParentID(ctx context.Context, groupID string) (string, error)
+}
+
+// DesktopControl starts and stops the cloud desktop for one user.
+type DesktopControl interface {
+	Open(ctx context.Context, tenantID, userID string) (novncURL string, err error)
+	Stop(ctx context.Context, tenantID, userID string) error
+}
+
+// Reply is the text from one MaClawSrv instance, plus a desktop handoff URL
+// when that instance paused for a login or captcha.
+type Reply struct {
+	Text     string `json:"text"`
+	NovncURL string `json:"novnc_url,omitempty"`
+	Handoff  bool   `json:"handoff,omitempty"`
+}
+
+func (s *Service) Enabled(ctx context.Context, tenantID, userID string) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return grantMatches(rec.Grants, userID, s.departmentChain(ctx, userID)), nil
+}
+
+func (s *Service) CreateGrant(ctx context.Context, tenantID string, in Grant) (Grant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return Grant{}, err
+	}
+	item, err := normalizeGrant(in, rec.Grants)
+	if err != nil {
+		return Grant{}, err
+	}
+	item.ID = newBotID()
+	rec.Grants = append(rec.Grants, item)
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return Grant{}, err
+	}
+	return item, nil
+}
+
+func (s *Service) DeleteGrant(ctx context.Context, tenantID, grantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	grantID = strings.TrimSpace(grantID)
+	next := rec.Grants[:0]
+	found := false
+	for _, item := range rec.Grants {
+		if item.ID == grantID {
+			found = true
+			continue
+		}
+		next = append(next, item)
+	}
+	if !found {
+		return ErrNotFound
+	}
+	if next == nil {
+		next = []Grant{}
+	}
+	rec.Grants = next
+	return s.save(ctx, tenantID, rec)
+}
+
+func (s *Service) BotsForUser(ctx context.Context, tenantID, userID string) ([]Bot, error) {
+	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
+		if err != nil {
+			return nil, err
+		}
+		return nil, ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Bot, 0)
+	for _, bot := range rec.Bots {
+		if bot.OwnerUserID == userID {
+			out = append(out, bot)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) CreateBotForUser(ctx context.Context, tenantID, userID, name, description string) (Bot, error) {
+	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
+		if err != nil {
+			return Bot{}, err
+		}
+		return Bot{}, ErrDisabled
+	}
+	return s.createBot(ctx, tenantID, userID, name, description, true)
+}
+
+func (s *Service) UpdateBotForUser(ctx context.Context, tenantID, userID, botID, name, description string) (Bot, error) {
+	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
+		if err != nil {
+			return Bot{}, err
+		}
+		return Bot{}, ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return Bot{}, err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != userID {
+		return Bot{}, ErrNotFound
+	}
+	return s.UpdateBot(ctx, tenantID, botID, name, description)
+}
+
+func (s *Service) DeleteBotForUser(ctx context.Context, tenantID, userID, botID string) error {
+	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
+		if err != nil {
+			return err
+		}
+		return ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != userID {
+		return ErrNotFound
+	}
+	return s.DeleteBot(ctx, tenantID, botID)
+}
+
+// PostMessage sends one command to that user's MaClawSrv instance.
+// It opens the user's cloud desktop first. MaClawSrv stops the desktop when
+// this user has no run left. A transport failure here also stops it, because
+// MaClawSrv never saw the command.
+func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, content string) (Reply, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return Reply{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
+	}
+	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
+		if err != nil {
+			return Reply{}, err
+		}
+		return Reply{}, ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return Reply{}, err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != userID {
+		return Reply{}, ErrNotFound
+	}
+	if err := configured(rec); err != nil {
+		return Reply{}, err
+	}
+	// The person finished logging in and sent the next command. The agent
+	// uses the same browser now. The keyboard is returned only after this
+	// command is counted, so a stop cannot shut the browser in between.
+	instanceID := rec.Bots[index].InstanceID
+	novnc, opened, err := s.openDesktop(ctx, tenantID, userID, instanceID, botID)
+	if err != nil {
+		// The desktop did not change hands. If this bot was already waiting
+		// for a login, the person still needs the keyboard on that browser.
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		return Reply{}, err
+	}
+	var payload struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		DesktopHandoff bool   `json:"desktop_handoff"`
+		Error          string `json:"error"`
+	}
+	s.mu.Lock()
+	fresh, tokenErr := s.load(ctx, tenantID)
+	var token string
+	if tokenErr == nil {
+		token, tokenErr = s.ensureOwnerToken(ctx, tenantID, &fresh, userID)
+	}
+	s.mu.Unlock()
+	if tokenErr != nil {
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		return Reply{}, tokenErr
+	}
+	instancePath := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID)
+	// Keep the rest of this instance and rewrite only the desktop owner.
+	// Replacing the whole metadata map would drop the settings this bot
+	// already has, and the next command would not be the same instance.
+	// If those settings cannot be read, skip the write. A partial map would
+	// replace them and the next command would not be this same bot.
+	metadata, metaErr := s.desktopIdentityMetadata(ctx, fresh, token, instancePath, userID, tenantID)
+	if metaErr != nil {
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		return Reply{}, metaErr
+	}
+	if err := s.doAuth(ctx, fresh, token, http.MethodPatch, instancePath, map[string]any{
+		"metadata": metadata,
+	}, nil); err != nil {
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		return Reply{}, err
+	}
+	path := instancePath + "/messages"
+	callErr := s.doAuth(ctx, fresh, token, http.MethodPost, path, map[string]any{
+		"content":            content,
+		"client_session_key": rec.Bots[index].ID,
+	}, &payload)
+	if callErr != nil {
+		// The instance may already be waiting for a login. Stopping here
+		// would close that browser before the person can use it. A failed
+		// continuation did not take the keyboard, so the person keeps it.
+		if !desktopCallTimedOut(callErr) {
+			s.restoreDesktopKeyboard(tenantID, userID, botID)
+			s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		} else {
+			// The browser is still open. Keep it so the website login stays
+			// in this desktop. The keyboard comes back only when this bot
+			// had already handed the page to the person. A slow task must
+			// not be treated as a login.
+			if s.desktopViewURL(tenantID, userID) != "" {
+				if s.desktopHeldByPerson(tenantID, userID) {
+					s.restoreDesktopKeyboard(tenantID, userID, botID)
+				} else {
+					s.keepDesktopWithoutKeyboard(tenantID, userID, botID)
+				}
+			}
+			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
+		}
+		return Reply{}, callErr
+	}
+	text := strings.TrimSpace(payload.Message.Content)
+	if text == "" && strings.TrimSpace(payload.Error) != "" {
+		text = strings.TrimSpace(payload.Error)
+	}
+	if text == "" && payload.DesktopHandoff {
+		text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
+	}
+	if text == "" {
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		return Reply{}, fmt.Errorf("%w: instance returned no result", ErrSrv)
+	}
+	reply := Reply{Text: text}
+	if payload.DesktopHandoff {
+		// The login is already decided. This open may not have returned a
+		// picture yet; a later session can still publish one. Clearing the
+		// hold here would let the next failure close the browser before the
+		// person can sign in, and the website login would be gone.
+		s.noteDesktopHeld(tenantID, userID, botID)
+		reply.Handoff = true
+		reply.NovncURL = s.desktopViewURL(tenantID, userID)
+		if reply.NovncURL == "" && novnc != "" {
+			reply.NovncURL = s.gateDesktopHandoff(novnc)
+		}
+	} else {
+		s.clearDesktopHeld(tenantID, userID, botID)
+	}
+	s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
+	return reply, nil
+}
+
+// desktopIdentityMetadata is this Hub user on the instance, plus any
+// metadata the instance already had. The desktop key is the Hub user.
+// Other fields stay so this bot remains the same instance.
+func (s *Service) desktopIdentityMetadata(ctx context.Context, rec record, token, instancePath, userID, tenantID string) (map[string]string, error) {
+	var existing struct {
+		ID       string            `json:"id"`
+		Metadata map[string]string `json:"metadata"`
+	}
+	if err := s.doAuth(ctx, rec, token, http.MethodGet, instancePath, nil, &existing); err != nil {
+		return nil, err
+	}
+	// An empty reply is not an instance with no settings. Writing over it
+	// would drop the configuration this bot already has.
+	if strings.TrimSpace(existing.ID) == "" {
+		return nil, fmt.Errorf("%w: instance settings were not read", ErrSrv)
+	}
+	metadata := map[string]string{}
+	for key, value := range existing.Metadata {
+		metadata[key] = value
+	}
+	metadata["hub_bot"] = "1"
+	metadata["hub_user_id"] = userID
+	metadata["hub_tenant_id"] = tenantID
+	return metadata, nil
+}
+
+func (s *Service) beginDesktopUse(tenantID, userID, instanceID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.desktopOpening == nil {
+		s.desktopOpening = map[string]int{}
+	}
+	key := desktopViewKey(tenantID, userID)
+	s.desktopOpening[key]++
+	s.trackDesktopInstanceLocked(key, instanceID, 1)
+}
+
+func (s *Service) endDesktopUse(tenantID, userID, instanceID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.dropDesktopUseLocked(desktopViewKey(tenantID, userID), instanceID)
+	s.mu.Unlock()
+}
+
+func (s *Service) dropDesktopUseLocked(key, instanceID string) int {
+	s.trackDesktopInstanceLocked(key, instanceID, -1)
+	left := 0
+	if s.desktopOpening != nil {
+		left = s.desktopOpening[key]
+		if left > 0 {
+			left--
+			if left == 0 {
+				delete(s.desktopOpening, key)
+			} else {
+				s.desktopOpening[key] = left
+			}
+		}
+	}
+	return left
+}
+
+func (s *Service) trackDesktopInstanceLocked(key, instanceID string, delta int) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" || delta == 0 {
+		return
+	}
+	if s.desktopOpenInstance == nil {
+		s.desktopOpenInstance = map[string]map[string]int{}
+	}
+	if s.desktopOpenInstance[key] == nil {
+		s.desktopOpenInstance[key] = map[string]int{}
+	}
+	next := s.desktopOpenInstance[key][instanceID] + delta
+	if next <= 0 {
+		delete(s.desktopOpenInstance[key], instanceID)
+		if len(s.desktopOpenInstance[key]) == 0 {
+			delete(s.desktopOpenInstance, key)
+		}
+		return
+	}
+	s.desktopOpenInstance[key][instanceID] = next
+}
+
+func (s *Service) otherInstanceHasDesktop(tenantID, userID, instanceID string) bool {
+	instanceID = strings.TrimSpace(instanceID)
+	if s == nil || instanceID == "" {
+		return false
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	defer s.mu.Unlock()
+	open := s.desktopOpenInstance[desktopViewKey(tenantID, userID)]
+	for id, count := range open {
+		if count > 0 && id != instanceID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) desktopUserGate(tenantID, userID string) *sync.Mutex {
+	key := desktopViewKey(tenantID, userID)
+	gate, _ := s.desktopGates.LoadOrStore(key, &sync.Mutex{})
+	return gate.(*sync.Mutex)
+}
+
+func (s *Service) finishDesktopOpen(tenantID, userID, instanceID string, opened, stop bool) {
+	if s == nil || !opened {
+		return
+	}
+	s.mu.Lock()
+	key := desktopViewKey(tenantID, userID)
+	left := s.dropDesktopUseLocked(key, instanceID)
+	_, held := s.desktopHeld[key]
+	s.mu.Unlock()
+	if !stop || left > 0 || held {
+		return
+	}
+	if s.beforeDesktopStop != nil {
+		s.beforeDesktopStop()
+	}
+	// Open raises the count before it returns and holds this gate until then.
+	// Recheck under the gate so this stop cannot land on the desktop the next
+	// command of the same user has already started.
+	gate := s.desktopUserGate(tenantID, userID)
+	gate.Lock()
+	s.mu.Lock()
+	if s.desktopOpening != nil {
+		left = s.desktopOpening[key]
+	} else {
+		left = 0
+	}
+	_, held = s.desktopHeld[key]
+	s.mu.Unlock()
+	if left == 0 && !held {
+		_ = s.stopDesktop(context.Background(), tenantID, userID)
+	}
+	gate.Unlock()
+}
+
+func (s *Service) desktopHeldByPerson(tenantID, userID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	defer s.mu.Unlock()
+	_, ok := s.desktopHeld[desktopViewKey(tenantID, userID)]
+	return ok
+}
+
+func (s *Service) desktopKeyboardForBot(tenantID, userID, botID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	defer s.mu.Unlock()
+	key := desktopViewKey(tenantID, userID)
+	holder, ok := s.desktopHeld[key]
+	return ok && holder == strings.TrimSpace(botID) && s.desktopAwaiting[key]
+}
+
+// HoldDesktop marks this user's desktop as waiting for a person as soon as
+// MaClawSrv decides to hand it over. The message reply can still be on the
+// way. Another bot's failure must not stop the browser before that reply
+// arrives, or the website login is lost.
+func (s *Service) HoldDesktop(ctx context.Context, tenantID, userID, instanceID string) error {
+	userID = strings.TrimSpace(userID)
+	instanceID = strings.TrimSpace(instanceID)
+	if userID == "" || instanceID == "" {
+		return fmt.Errorf("%w: instance is required", ErrInvalidInput)
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	for _, bot := range rec.Bots {
+		if bot.InstanceID == instanceID && bot.OwnerUserID == userID {
+			s.noteDesktopHeld(tenantID, userID, bot.ID)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// keepDesktopWithoutKeyboard stops a later failure from closing this
+// user's browser. The person does not get the keyboard; that only happens
+// for a login handoff.
+func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	if holder, ok := s.desktopHeld[key]; ok && holder != "" && holder != botID {
+		return // another bot owns this pin
+	}
+	if s.desktopHeld[key] == botID && !s.desktopAwaiting[key] {
+		return // already pinned without the keyboard — skip the disk write
+	}
+	if s.desktopHeld == nil {
+		s.desktopHeld = map[string]string{}
+	}
+	if s.desktopAwaiting == nil {
+		s.desktopAwaiting = map[string]bool{}
+	}
+	s.desktopHeld[key] = botID
+	s.desktopAwaiting[key] = false
+	s.persistDesktopState(tenantID)
+}
+
+// ReleaseDesktopIfIdle drops a timeout pin so the desktop can stop.
+// It returns false while the person still has the keyboard, or while another
+// command of this user already has the desktop open. The caller must leave
+// that browser up so the website login stays there.
+func (s *Service) ReleaseDesktopIfIdle(tenantID, userID string) bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	defer s.mu.Unlock()
+	key := desktopViewKey(tenantID, userID)
+	if s.desktopAwaiting[key] {
+		return false
+	}
+	// The command that is stopping still counts as one open. A second open
+	// means the next command is already on this browser.
+	if s.desktopOpening != nil && s.desktopOpening[key] > 1 {
+		return false
+	}
+	if _, held := s.desktopHeld[key]; held {
+		delete(s.desktopHeld, key)
+		delete(s.desktopAwaiting, key)
+		delete(s.desktopKeyboardTaken, key)
+		s.persistDesktopState(tenantID)
+	}
+	return true
+}
+
+// StopDesktopIfIdle stops this user's desktop after the last command.
+// The stop holds the same gate as open, so it cannot land on a browser the
+// next command of this user has just started. The website login stays in
+// that browser.
+func (s *Service) StopDesktopIfIdle(ctx context.Context, tenantID, userID, instanceID string) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	gate := s.desktopUserGate(tenantID, userID)
+	gate.Lock()
+	defer gate.Unlock()
+	// This stop belongs to one instance. Another instance still has the
+	// desktop open, so the website login stays in that browser.
+	if s.otherInstanceHasDesktop(tenantID, userID, instanceID) {
+		return false, nil
+	}
+	if !s.ReleaseDesktopIfIdle(tenantID, userID) {
+		return false, nil
+	}
+	if err := s.stopDesktop(ctx, tenantID, userID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Service) noteDesktopHeld(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	if s.desktopHeld == nil {
+		s.desktopHeld = map[string]string{}
+	}
+	if s.desktopAwaiting == nil {
+		s.desktopAwaiting = map[string]bool{}
+	}
+	key := desktopViewKey(tenantID, userID)
+	if s.desktopHeld[key] == botID && s.desktopAwaiting[key] && s.desktopKeyboardTaken[key] == "" {
+		return // already pinned exactly like this — skip the disk write
+	}
+	s.desktopHeld[key] = botID
+	s.desktopAwaiting[key] = true
+	delete(s.desktopKeyboardTaken, key)
+	s.persistDesktopState(tenantID)
+}
+
+func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	holder, ok := s.desktopHeld[key]
+	botID = strings.TrimSpace(botID)
+	if !ok || holder != botID || !s.desktopAwaiting[key] {
+		s.mu.Unlock()
+		return
+	}
+	s.desktopAwaiting[key] = false
+	if s.desktopKeyboardTaken == nil {
+		s.desktopKeyboardTaken = map[string]string{}
+	}
+	s.desktopKeyboardTaken[key] = botID
+	s.persistDesktopState(tenantID)
+	s.mu.Unlock()
+}
+
+func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	botID = strings.TrimSpace(botID)
+	taken := s.desktopKeyboardTaken[key]
+	delete(s.desktopKeyboardTaken, key)
+	if taken != botID {
+		// The delete above may have cleared a stale pin; keep disk in step.
+		if taken != "" {
+			s.persistDesktopState(tenantID)
+		}
+		s.mu.Unlock()
+		return
+	}
+	holder, ok := s.desktopHeld[key]
+	if !ok || holder != botID {
+		if taken != "" {
+			s.persistDesktopState(tenantID)
+		}
+		s.mu.Unlock()
+		return
+	}
+	if s.desktopAwaiting == nil {
+		s.desktopAwaiting = map[string]bool{}
+	}
+	s.desktopAwaiting[key] = true
+	s.persistDesktopState(tenantID)
+	s.mu.Unlock()
+}
+
+func (s *Service) clearDesktopHeld(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	holder, hadHolder := s.desktopHeld[key]
+	_, hadAwaiting := s.desktopAwaiting[key]
+	_, hadKeyboard := s.desktopKeyboardTaken[key]
+	if !hadHolder || holder == strings.TrimSpace(botID) {
+		delete(s.desktopHeld, key)
+		delete(s.desktopAwaiting, key)
+		delete(s.desktopKeyboardTaken, key)
+		if hadHolder || hadAwaiting || hadKeyboard {
+			s.persistDesktopState(tenantID)
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, description string, requireOwner bool) (Bot, error) {
+	name = strings.TrimSpace(name)
+	description = strings.TrimSpace(description)
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if name == "" || len([]rune(name)) > 80 {
+		return Bot{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if len([]rune(description)) > 200 {
+		return Bot{}, fmt.Errorf("%w: description is too long", ErrInvalidInput)
+	}
+	if requireOwner && !desktop.ValidUserID(ownerUserID) {
+		return Bot{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return Bot{}, err
+	}
+	if err := configured(rec); err != nil {
+		return Bot{}, err
+	}
+	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, ownerUserID)
+	if err != nil {
+		return Bot{}, err
+	}
+	meta := map[string]string{"hub_bot": "1"}
+	if ownerUserID != "" {
+		meta["hub_user_id"] = ownerUserID
+		meta["hub_tenant_id"] = tenantID
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	body := map[string]any{
+		"name":                 name,
+		"description":          description,
+		"allow_invalid_config": true,
+		"metadata":             meta,
+	}
+	if err := s.doAuth(ctx, rec, token, http.MethodPost, "/api/v1/instances", body, &created); err != nil {
+		return Bot{}, err
+	}
+	if strings.TrimSpace(created.ID) == "" {
+		return Bot{}, fmt.Errorf("%w: instance id missing", ErrSrv)
+	}
+	bot := Bot{
+		ID:          newBotID(),
+		Name:        name,
+		Description: description,
+		InstanceID:  strings.TrimSpace(created.ID),
+		OwnerUserID: ownerUserID,
+		CreatedAt:   s.now().UTC().Format(time.RFC3339),
+	}
+	rec.Bots = append(rec.Bots, bot)
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return Bot{}, err
+	}
+	return bot, nil
+}
+
+func (s *Service) openDesktop(ctx context.Context, tenantID, userID, instanceID, botID string) (string, bool, error) {
+	if s == nil || s.Desktop == nil {
+		return "", false, nil
+	}
+	// Count this open before Open returns, and hold the user gate across the
+	// call. A command that already decided to stop waits here, then sees the
+	// count and leaves the logged-in browser up. The keyboard goes back to
+	// the agent only after that count, or the stop sees nobody using the
+	// desktop and closes the browser the person just signed into.
+	gate := s.desktopUserGate(tenantID, userID)
+	gate.Lock()
+	s.beginDesktopUse(tenantID, userID, instanceID)
+	s.releaseDesktopKeyboard(tenantID, userID, botID)
+	novnc, err := s.Desktop.Open(ctx, tenantID, userID)
+	if err != nil {
+		s.endDesktopUse(tenantID, userID, instanceID)
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		gate.Unlock()
+		return "", false, fmt.Errorf("%w: %s", ErrSrv, err.Error())
+	}
+	novnc = strings.TrimSpace(novnc)
+	if novnc != "" {
+		s.rememberDesktopView(tenantID, userID, novnc)
+	}
+	gate.Unlock()
+	return novnc, true, nil
+}
+
+func (s *Service) stopDesktop(ctx context.Context, tenantID, userID string) error {
+	if s == nil {
+		return nil
+	}
+	s.ForgetDesktopView(tenantID, userID)
+	if s.Desktop == nil {
+		return nil
+	}
+	return s.Desktop.Stop(ctx, tenantID, userID)
+}
+
+// NoteDesktopView points the chat at the desktop MaClawSrv just opened.
+// A later session can publish a different port; the picture has to follow it.
+func (s *Service) NoteDesktopView(tenantID, userID, raw string) {
+	s.rememberDesktopView(tenantID, userID, raw)
+}
+
+// ForgetDesktopView drops the chat picture after MaClawSrv stops the desktop.
+// The stop call does not go through the bot message path, so the picture has
+// to be cleared here or the next task shows a desktop that is already gone.
+func (s *Service) ForgetDesktopView(tenantID, userID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	if _, ok := s.desktopView[key]; ok {
+		delete(s.desktopView, key)
+		s.persistDesktopState(tenantID)
+	}
+	s.mu.Unlock()
+}
+
+// DesktopWatch is the Hub noVNC path for this user's desktop while a bot is
+// working. It is empty when that desktop is not running. The keyboard is
+// returned only to the bot that handed the desktop over for login.
+func (s *Service) DesktopWatch(ctx context.Context, tenantID, userID, botID string) (string, bool, error) {
+	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
+		if err != nil {
+			return "", false, err
+		}
+		return "", false, ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return "", false, err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != userID {
+		return "", false, ErrNotFound
+	}
+	novnc := s.desktopViewURL(tenantID, userID)
+	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+}
+
+func desktopViewKey(tenantID, userID string) string {
+	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(userID)
+}
+
+func (s *Service) rememberDesktopView(tenantID, userID, raw string) {
+	if s == nil {
+		return
+	}
+	raw = strings.TrimSpace(raw)
+	key := desktopViewKey(tenantID, userID)
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	current := s.desktopView[key]
+	s.mu.Unlock()
+	if current.raw == raw && current.gated != "" {
+		return
+	}
+	gated := s.gateDesktopHandoff(raw)
+	if gated == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.desktopView == nil {
+		s.desktopView = map[string]desktopWatch{}
+	}
+	if existing := s.desktopView[key]; existing.raw == raw && existing.gated != "" {
+		return
+	}
+	s.desktopView[key] = desktopWatch{raw: raw, gated: gated}
+	s.persistDesktopState(tenantID)
+}
+
+func (s *Service) desktopViewURL(tenantID, userID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	defer s.mu.Unlock()
+	return s.desktopView[desktopViewKey(tenantID, userID)].gated
+}
+
+func (s *Service) departmentChain(ctx context.Context, userID string) []string {
+	if s == nil || s.Directory == nil {
+		return nil
+	}
+	email, err := s.Directory.Email(ctx, userID)
+	if err != nil || strings.TrimSpace(email) == "" {
+		return nil
+	}
+	groupID, err := s.Directory.GroupID(ctx, email)
+	if err != nil {
+		return nil
+	}
+	var chain []string
+	seen := map[string]bool{}
+	for groupID != "" && len(chain) < 32 && !seen[groupID] {
+		seen[groupID] = true
+		chain = append(chain, groupID)
+		parent, err := s.Directory.ParentID(ctx, groupID)
+		if err != nil {
+			break
+		}
+		groupID = strings.TrimSpace(parent)
+	}
+	return chain
+}
+
+func grantMatches(grants []Grant, userID string, departments []string) bool {
+	for _, item := range grants {
+		if item.Scope == ScopeUser && item.TargetID == userID {
+			return true
+		}
+	}
+	for _, groupID := range departments {
+		for _, item := range grants {
+			if item.Scope == ScopeDepartment && item.TargetID == groupID {
+				return true
+			}
+		}
+	}
+	for _, item := range grants {
+		if item.Scope == ScopeGlobal {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeGrant(in Grant, existing []Grant) (Grant, error) {
+	in.Scope = strings.TrimSpace(in.Scope)
+	in.TargetID = strings.TrimSpace(in.TargetID)
+	switch in.Scope {
+	case ScopeGlobal:
+		in.TargetID = ""
+		for _, item := range existing {
+			if item.Scope == ScopeGlobal {
+				return Grant{}, fmt.Errorf("%w: global grant already exists", ErrInvalidInput)
+			}
+		}
+	case ScopeDepartment, ScopeUser:
+		if !desktop.ValidUserID(in.TargetID) {
+			return Grant{}, fmt.Errorf("%w: target is required", ErrInvalidInput)
+		}
+		for _, item := range existing {
+			if item.Scope == in.Scope && item.TargetID == in.TargetID {
+				return Grant{}, fmt.Errorf("%w: grant already exists", ErrInvalidInput)
+			}
+		}
+	default:
+		return Grant{}, fmt.Errorf("%w: scope must be global, department, or user", ErrInvalidInput)
+	}
+	return in, nil
+}

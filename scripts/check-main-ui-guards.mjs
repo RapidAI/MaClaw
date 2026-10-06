@@ -461,6 +461,7 @@ requireFile('guiapp/frontend/src/components/settings/imSettingsShared.ts');
 requireFile('guiapp/frontend/src/components/layout/AppSidebarShell.tsx');
 requireFile('guiapp/frontend/src/components/layout/sidebarLayout.ts');
 requireFile('guiapp/frontend/src/components/layout/SidebarNavRail.tsx');
+requireFile('guiapp/frontend/src/components/layout/useSidebarHubAccess.ts');
 requireFile('guiapp/frontend/src/components/layout/SidebarAiPane.tsx');
 requireFile('guiapp/frontend/src/components/layout/SidebarToolSelector.tsx');
 requireFile('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx');
@@ -501,6 +502,11 @@ requireFile('guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantI18n.ts');
 requireFile('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx');
 requireFile('guiapp/frontend/src/components/ai/useProjectSearch.ts');
+requireFile('guiapp/frontend/src/components/ai/projectSearchTypes.ts');
+requireFile('guiapp/frontend/src/components/ai/projectSearchCaches.ts');
+requireFile('guiapp/frontend/src/components/ai/projectSearchFormat.ts');
+requireFile('guiapp/frontend/src/components/ai/ProjectSearchRow.tsx');
+requireFile('guiapp/frontend/src/components/ai/ProjectSearchContextMenu.tsx');
 requireFile('guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts');
 requireFile('guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantControls.tsx');
@@ -528,6 +534,12 @@ requireFile('guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggesti
 requireFile('guiapp/frontend/src/components/ai/AssistantInputComposer.tsx');
 requireFile('guiapp/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx');
 requireFile('guiapp/frontend/src/components/ai/useAssistantPreviewResize.ts');
+requireFile('guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts');
+requireFile('guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts');
+requireFile('guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts');
+requireFile('guiapp/frontend/src/components/ai/useAssistantExternalChatEvents.ts');
+requireFile('guiapp/frontend/src/components/ai/useWorkflowStartingLabel.ts');
+requireFile('guiapp/frontend/src/components/ai/shareAssistantTask.ts');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantStatusLabels.ts');
 
 if (lines > 6800) failures.push(`${appRel} has ${lines} lines; keep it under 6800 and extract UI instead of growing it`);
@@ -535,6 +547,7 @@ if (lines > 6800) failures.push(`${appRel} has ${lines} lines; keep it under 680
 const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 500],
   ['guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 380],
+  ['guiapp/frontend/src/components/layout/useSidebarHubAccess.ts', 130],
   ['guiapp/frontend/src/components/layout/SidebarAiPane.tsx', 360],
   ['guiapp/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['guiapp/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
@@ -569,12 +582,23 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
   ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6800],
+  ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
+  ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
+  ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
+  ['guiapp/frontend/src/components/ai/useAssistantExternalChatEvents.ts', 40],
+  ['guiapp/frontend/src/components/ai/useWorkflowStartingLabel.ts', 50],
+  ['guiapp/frontend/src/components/ai/shareAssistantTask.ts', 30],
   ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2000],
   ['guiapp/frontend/src/components/ai/AssistantReplyCopyButton.tsx', 180],
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['guiapp/frontend/src/components/ai/aiAssistantI18n.ts', 240],
   ['guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 320],
   ['guiapp/frontend/src/components/ai/useProjectSearch.ts', 140],
+  ['guiapp/frontend/src/components/ai/projectSearchTypes.ts', 30],
+  ['guiapp/frontend/src/components/ai/projectSearchCaches.ts', 100],
+  ['guiapp/frontend/src/components/ai/projectSearchFormat.ts', 40],
+  ['guiapp/frontend/src/components/ai/ProjectSearchRow.tsx', 60],
+  ['guiapp/frontend/src/components/ai/ProjectSearchContextMenu.tsx', 50],
   ['guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts', 260],
   ['guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantControls.tsx', 120],
@@ -812,6 +836,12 @@ requireIncludes('guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'const initStatusLabels', 'inline AI init status labels; use components/ai/aiAssistantStatusLabels.ts');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'document.body.style.cursor = "col-resize"', 'inline AI preview resize hook; use components/ai/useAssistantPreviewResize.ts');
 requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantPreviewResize"', 'AI preview resize hook import');
+requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useCloudTreeRefresh"', 'AI cloud tree refresh hook import');
+requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useCloudWorkspacePreviewEvents"', 'AI cloud workspace preview events import');
+requireIncludes('guiapp/frontend/src/components/ai/AssistantInputActions.tsx', 'from "./assistantInputActionsMenu"', 'AI input actions menu helper import');
+requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantExternalChatEvents"', 'AI external chat events import');
+requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useWorkflowStartingLabel"', 'AI workflow starting label hook import');
+requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./shareAssistantTask"', 'AI share current task helper import');
 requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./aiAssistantStatusLabels"', 'AI init status labels import');
 requireIncludes('guiapp/frontend/src/components/ai/useAssistantPreviewResize.ts', 'setSplitRatio(nextRatio)', 'AI preview resize ratio update');
 requireIncludes('guiapp/frontend/src/components/ai/aiAssistantStatusLabels.ts', 'getAssistantInitLabel', 'AI init status label helper');
@@ -972,6 +1002,7 @@ for (const color of ['#555', '#888', '#ddd', '#6366f1', '#eef2ff', '#dcfce7', '#
 requireIncludes('guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 'export const AppSidebarShell', 'left sidebar shell export');
 requireIncludes('guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 'SidebarNavRail', 'left sidebar nav rail wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'export const SidebarNavRail', 'sidebar nav rail export');
+requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', "from './useSidebarHubAccess'", 'sidebar hub access hook import');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'left-nav-item--ai', 'AI nav rail button');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'runningTaskCount', 'monitor running task badge');
 {

@@ -22,9 +22,11 @@ const IMAGE_EXT = new Set([
 ]);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v']);
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.oga']);
-/** Legacy Office containers that stay a text extract. .docx has its own page renderer. */
+/** Legacy Office containers that stay a text extract. .docx / .pptx have their own page renderers. */
 const OFFICE_EXT = new Set([
-    '.doc', '.xls', '.xlsx', '.xlsm', '.ppt', '.odt', '.ods', '.odp', '.rtf',
+    '.doc', '.docm', '.dot', '.dotx', '.wps', '.wpt', '.rtf', '.odt',
+    '.xls', '.xlsx', '.xlsm', '.xlsb', '.et', '.ett', '.ods',
+    '.ppt', '.pptm', '.pps', '.ppsx', '.dps', '.dpt', '.odp',
 ]);
 
 /** First path/name that has an extension; used so a title without a suffix cannot hide a .pptx original. */

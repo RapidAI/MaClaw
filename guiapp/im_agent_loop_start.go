@@ -132,7 +132,10 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	var semanticSurface *semanticCallSurface
 	var hostReject *IMAgentResponse
 	semanticHandled := false
-	if loopContextTurnAnswerOnly(ctx) {
+	if petCompanionToolsDisabled(opts.UserID) {
+		semanticHandled = true
+		log.Printf("[pet-companion] chat turn without tools user=%q", opts.UserID)
+	} else if loopContextTurnAnswerOnly(ctx) {
 		semanticHandled = true
 		tools = nil
 		baseTools = nil
@@ -223,7 +226,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			log.Printf("[semantic-routing] shadow plan=%q user=%q outcome=%s", diagnostic.PlanID, opts.UserID, diagnostic.Reason)
 		}
 	}
-	if !loopContextTurnAnswerOnly(ctx) {
+	if !loopContextTurnAnswerOnly(ctx) && !petCompanionToolsDisabled(opts.UserID) {
 		if attached := h.attachVisionFallthroughExecutionTools(ctx, tools, hostReject, opts.UserID, userText, opts.History); len(attached) > 0 && len(tools) == 0 {
 			tools = attached
 			baseTools = attached

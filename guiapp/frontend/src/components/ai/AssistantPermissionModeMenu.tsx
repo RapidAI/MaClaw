@@ -14,6 +14,8 @@ interface AssistantPermissionModeMenuProps {
     themeMode: "light" | "dark";
     /** When true, offer session-scoped "Workspace" trust (pure coding workbench). */
     showWorkspaceOption?: boolean;
+    /** Current task already chose 以后允许. Hidden while the mode itself is full control. */
+    taskCommandAllowed?: boolean;
 }
 
 interface FullControlConfirmDialogProps {
@@ -147,7 +149,7 @@ function FullControlConfirmDialog({ lang, onCancel, onConfirm, theme, themeMode,
     );
 }
 
-export function AssistantPermissionModeMenu({ active: panelActive = true, lang, mode, onChange, theme, themeMode, showWorkspaceOption = false }: AssistantPermissionModeMenuProps) {
+export function AssistantPermissionModeMenu({ active: panelActive = true, lang, mode, onChange, theme, themeMode, showWorkspaceOption = false, taskCommandAllowed = false }: AssistantPermissionModeMenuProps) {
     const [open, setOpen] = useState(false);
     const [confirmFullOpen, setConfirmFullOpen] = useState(false);
     const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
@@ -268,6 +270,7 @@ export function AssistantPermissionModeMenu({ active: panelActive = true, lang, 
                 <AssistantInputIcon name={active.icon} size={13} />
                 <span>{active.label}</span>
             </button>
+            {taskCommandAllowed && mode !== "full" && <span data-testid="ai-task-command-allowed" style={{ marginLeft: 6, fontSize: "11px", color: theme.textMuted, whiteSpace: "nowrap" }}>{localizeText(lang, "This task allows later commands", "本任务已以后允许", "本任務已以後允許")}</span>}
             {open && menuPosition && typeof document !== "undefined" && createPortal(<div ref={menuRef} id={menuId} role="menu" aria-label={localizeText(lang, "权限模式", "权限模式", "權限模式")} data-testid="ai-permission-mode-menu" style={{ position: "fixed", left: menuPosition.left, top: menuPosition.top, transform: menuPosition.openUp ? "translateY(-100%)" : undefined, zIndex: 40000, minWidth: "156px", maxHeight: `${menuPosition.maxHeight}px`, overflowY: "auto", padding: "4px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, background: theme.bg, boxShadow: "0 4px 8px rgba(15, 23, 42, 0.14)" }}>
                 {options.map((option) => {
                     const dangerous = option.value === "full";

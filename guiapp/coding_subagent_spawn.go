@@ -52,7 +52,7 @@ var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 		// Reviewer-only: shell validation under the read-only whitelist in
 		// codingagent.reviewerShellInvocationAllowed (ToolPolicy.IsToolCallAllowed).
 		// The explorer map stays shell-free by design.
-		"bash": true,
+		"bash":       true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true,
 	},
@@ -996,6 +996,7 @@ func (parent *CodingSubAgent) newReadOnlyNestedCodingAgent(spec codingSpawnSpec,
 	// durable attempt mapping, otherwise a stale parent identity could cross an
 	// explicit child/review boundary.
 	child.nestDepth, child.role = parent.nestDepth+1, spec.Role
+	child.permissionOwnerID = parent.taskPermissionOwnerID()
 	// The detached child receives its own Attempt in ExecuteReadOnlyChild; the
 	// shared Store is only for observing that fresh Attempt's cancellation.
 	child.runtimeStore = parent.runtimeStore
@@ -1034,6 +1035,23 @@ func (c *codingSubAgentCallbacks) mergeSpawnedFileAudit(modified, created []stri
 	}
 }
 
+// installNestedLocalCommandApproval gives a synchronous nested step a command
+// prompt that stores 以后允许 on the task tab. Inspection steps get the same
+// command grant without a worker isolate. Path prompts stay closed.
+func installNestedLocalCommandApproval(child *CodingSubAgent, onProgress func(string)) {
+	if child == nil {
+		return
+	}
+	callback := nestedTaskCommandApprovalCallback(child.handler, child.loopCtx, child.taskPermissionOwnerID(), onProgress, false, false)
+	if child.role == codingRoleWorker {
+		child.setNestedWorkerScopeApproval(callback)
+		return
+	}
+	if child.scopeApproval == nil {
+		child.scopeApproval = newScopeApprovalState(callback, false)
+	}
+}
+
 func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentCB *codingSubAgentCallbacks, onProgress func(string)) *CodingSubAgentResult {
 	if parent == nil {
 		return &CodingSubAgentResult{Status: TaskExecFailed, Error: "parent coding subagent is nil"}
@@ -1063,6 +1081,7 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	// child has its own ledger Attempt and anchor registration.
 	child.nestDepth = parent.nestDepth + 1
 	child.role = spec.Role
+	child.permissionOwnerID = parent.taskPermissionOwnerID()
 	// The spawn itself was admitted under the parent's boundary, so the child
 	// inherits only the host provenance fact — never the parent's identity,
 	// relation handle, surface, or grants. A child with its own ledger attempt
@@ -1070,7 +1089,6 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	child.correlatedLocalExecution = parent.correlatedLocalExecution
 	if spec.Role == codingRoleWorker {
 		child.SetFullEnvironment(true)
-		child.setNestedWorkerScopeApproval(nil)
 	}
 	// Inspection children stay lean and role-filtered. Workers write only inside
 	// an isolated worktree supplied by the parent spawn path.
@@ -1079,7 +1097,9 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	if onProgress == nil {
 		onProgress = parent.onProgress
 	}
+	installNestedLocalCommandApproval(child, onProgress)
 	child.SetCallbacks(nil, onProgress)
+	inheritLocalTaskCommandAllowance(parent, child)
 	child.codingKB = parent.codingKB
 	child.generalKB = parent.generalKB
 

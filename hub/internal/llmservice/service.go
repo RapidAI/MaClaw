@@ -4031,13 +4031,24 @@ func billingEligibilityForGrantBackedServiceGroups(reg *Registry, owner userAcco
 		if hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) && !hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
 			return true, AccessPolicyGrantRequired, "", "", 0, true, true
 		}
-		// A point card that still has balance, including balance held by an
-		// in-flight request, is not a period window. Reporting the window,
-		// or a later queued grant, would make the client wait instead of
-		// using the card once the hold releases.
+		// A point card that still has balance is not a period window. A hold on
+		// that balance is not an empty card either: say the credits are
+		// frozen, and do not point the client at the period reset or a later
+		// queued grant.
 		if retryAt := periodLimitRetryAtForServiceGroups(reg, owner, serviceGroupIDs, now); retryAt != nil {
-			if SpendableCreditsForServiceGroupsForUserID(reg, owner.UserID, owner.Email, serviceGroupIDs, now) <= 0 {
+			spendable := SpendableCreditsForServiceGroupsForUserID(reg, owner.UserID, owner.Email, serviceGroupIDs, now)
+			if spendable <= 0 {
 				return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
+			}
+			held := reservedBillingCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
+			if held > 0 {
+				// The reservation can be larger than the card. The frozen amount
+				// the caller can get back is the card, not that over-hold.
+				shown := spendable
+				if held < shown {
+					shown = held
+				}
+				return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", fmt.Sprintf("insufficient credits for this request: need %.3f credits, available 0.000 (%.3f held by in-flight requests)", shown, shown), 0, true, true
 			}
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model grant credits are exhausted", 0, true, true
 		}

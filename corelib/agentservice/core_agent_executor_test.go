@@ -25,6 +25,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -1058,10 +1059,10 @@ func TestRemoteCodingRecoveryRequiresSamePinnedConfiguredLiveTarget(t *testing.T
 
 func TestServiceEnsureRemoteGitBaselineRejectsIncompleteBinding(t *testing.T) {
 	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
-	if err := serviceEnsureRemoteGitBaseline(context.Background(), nil, remoteCodingRuntimeBinding{Target: target, SessionID: "ssh-1"}); err == nil {
+	if _, err := serviceEnsureRemoteGitBaseline(context.Background(), nil, remoteCodingRuntimeBinding{Target: target, SessionID: "ssh-1"}); err == nil {
 		t.Fatal("nil resources should fail")
 	}
-	if err := serviceEnsureRemoteGitBaseline(context.Background(), &coreAgentSSHResources{}, remoteCodingRuntimeBinding{Target: target}); err == nil {
+	if _, err := serviceEnsureRemoteGitBaseline(context.Background(), &coreAgentSSHResources{}, remoteCodingRuntimeBinding{Target: target}); err == nil {
 		t.Fatal("empty session should fail")
 	}
 }
@@ -4099,5 +4100,168 @@ func writeAgentServiceMinimalDOCX(t *testing.T, path, text string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("close docx: %v", err)
+	}
+}
+
+func TestLightTurnKeepsTheCloudDesktopTool(t *testing.T) {
+	withDesktop := &coreAgentCallbacks{runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}}}
+	if !withDesktop.IsToolAllowedForPromptProfile("desktop", agent.PromptProfileLight) {
+		t.Fatal("light bot turn hid the cloud desktop")
+	}
+	if withDesktop.IsToolAllowedForPromptProfile("bash", agent.PromptProfileLight) {
+		t.Fatal("light turn allowed bash")
+	}
+	withoutDesktop := &coreAgentCallbacks{}
+	if withoutDesktop.IsToolAllowedForPromptProfile("desktop", agent.PromptProfileLight) {
+		t.Fatal("desktop is not a light tool unless the runtime module provides it")
+	}
+	blocked := &coreAgentCallbacks{
+		dynamicSemanticManaged: true,
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			plan: coretool.ToolPlan{Selections: []coretool.PlannedSelection{{
+				ID:      "sel-desktop",
+				Effects: []coretool.EffectClass{coretool.EffectLocalMutation},
+			}}},
+			grants: map[string]coretool.InvocationGrant{
+				"desktop": {SelectionID: "sel-desktop"},
+			},
+		},
+		runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}},
+	}
+	if !blocked.IsToolAllowedForPromptProfile("desktop", agent.PromptProfileLight) {
+		t.Fatal("a semantic grant hid the cloud desktop on a short bot command")
+	}
+	if blocked.IsToolAllowedForPromptProfile("bash", agent.PromptProfileLight) {
+		t.Fatal("light turn allowed bash")
+	}
+}
+
+type stubRuntimeInvoker struct{}
+
+func (stubRuntimeInvoker) InvokeRuntimeTool(context.Context, string, map[string]any) (string, bool, error) {
+	return "", true, nil
+}
+
+func TestHubBotUsesTheLoggedInDesktopBrowser(t *testing.T) {
+	hubBot := &coreAgentCallbacks{
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		urlLauncher:        &fakeHostURLOpener{},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+	}
+	seen := map[string]bool{}
+	for _, tool := range hubBot.BuildTools("继续操作刚才登录的网站") {
+		seen[tooldef.Name(tool)] = true
+	}
+	if !seen["desktop"] {
+		t.Fatal("hub bot lost the desktop browser")
+	}
+	if seen["web_fetch"] || seen["web_search"] || seen["download_file"] || seen["open"] {
+		t.Fatalf("hub bot can leave the logged-in browser: %#v", seen)
+	}
+	if allowed, _ := hubBot.IsToolCallAllowed("web_fetch", `{"url":"https://example.com"}`); allowed {
+		t.Fatal("web_fetch was allowed on a hub bot")
+	}
+	other := &coreAgentCallbacks{
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+	}
+	seen = map[string]bool{}
+	for _, tool := range other.BuildTools("搜索天气") {
+		seen[tooldef.Name(tool)] = true
+	}
+	if !seen["web_search"] || !seen["web_fetch"] {
+		t.Fatalf("non-bot turn lost web tools: %#v", seen)
+	}
+}
+
+func TestHubBotContinuationUsesTheLoggedInDesktop(t *testing.T) {
+	hubBot := &coreAgentCallbacks{
+		runtimeTools:  []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		runtimePrompt: "The person and this agent share that desktop's browser window, so a login or verification finished by the person stays in this browser.",
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+	}
+	prompt := hubBot.BuildSystemPrompt("登录完成，继续", false)
+	if strings.Contains(prompt, "Prompt profile: light") {
+		t.Fatal("the continuation was treated as a chat that should not touch the desktop")
+	}
+	if !strings.Contains(prompt, "stays in this browser") {
+		t.Fatal("the continuation lost the logged-in browser instruction")
+	}
+	if hubBot.CurrentPromptProfile().IsLight() {
+		t.Fatal("the continuation stayed on the light profile")
+	}
+	chat := &coreAgentCallbacks{}
+	chatPrompt := chat.BuildSystemPrompt("你好", false)
+	if !strings.Contains(chatPrompt, "Prompt profile: light") {
+		t.Fatal("an ordinary short message was no longer a light turn")
+	}
+}
+
+func TestHubBotDropsASemanticWebGrant(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			grants: map[string]coretool.InvocationGrant{
+				"invoke_web_search": {AdapterName: "web_search", SelectionID: "sel-web"},
+				"invoke_open":       {AdapterName: "open", SelectionID: "sel-open"},
+			},
+		},
+	}
+	kept := map[string]bool{}
+	for _, tool := range cb.finishToolSurface([]map[string]interface{}{
+		functionToolDefinition("invoke_web_search", "search the web", nil),
+		functionToolDefinition("invoke_open", "open a url", nil),
+		functionToolDefinition("desktop", "cloud desktop", nil),
+	}) {
+		kept[tooldef.Name(tool)] = true
+	}
+	if kept["invoke_web_search"] || kept["invoke_open"] || !kept["desktop"] {
+		t.Fatalf("semantic web grant stayed on the hub bot: %#v", kept)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("invoke_web_search", `{}`); allowed {
+		t.Fatal("semantic web grant was allowed on a hub bot")
+	}
+	if allowed, _ := cb.IsToolCallAllowed("open", `{"target":"https://example.com"}`); allowed {
+		t.Fatal("host open was allowed on a hub bot")
+	}
+}
+
+func TestHubBotCannotUseAnotherBrowser(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			grants: map[string]coretool.InvocationGrant{
+				"invoke_host_search":  {AdapterName: "host_information_search_web", SelectionID: "sel-host"},
+				"invoke_host_browser": {AdapterName: "host_browser_control_web", SelectionID: "sel-browser"},
+			},
+		},
+	}
+	kept := map[string]bool{}
+	for _, tool := range cb.finishToolSurface([]map[string]interface{}{
+		functionToolDefinition("invoke_host_search", "search the web", nil),
+		functionToolDefinition("invoke_host_browser", "control a browser", nil),
+		functionToolDefinition("desktop", "cloud desktop", nil),
+	}) {
+		kept[tooldef.Name(tool)] = true
+	}
+	if kept["invoke_host_search"] || kept["invoke_host_browser"] || !kept["desktop"] {
+		t.Fatalf("another browser stayed on the hub bot: %#v", kept)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("invoke_host_search", `{}`); allowed {
+		t.Fatal("host web search was allowed on a hub bot")
+	}
+	if allowed, _ := cb.IsToolCallAllowed("host_information_fetch_web", `{"url":"https://example.com"}`); allowed {
+		t.Fatal("host web fetch was allowed on a hub bot")
 	}
 }

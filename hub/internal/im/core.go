@@ -547,7 +547,10 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 
-	log.Printf("[IM Adapter] command check: text=%q len=%d bytes=[% x]", text, len(text), []byte(text))
+	// Log message size only — the raw body is user content and must not go to
+	// server logs. Unknown slash commands are logged with their command word
+	// in the unknown-command branch below.
+	log.Printf("[IM Adapter] command check: text_len=%d is_command=%t", len(text), strings.HasPrefix(text, "/"))
 
 	// /startmenu is a short-lived, per-user wizard. Its final confirmed prompt
 	// intentionally falls through to the normal routing path so task execution
@@ -1002,6 +1005,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if idx := strings.IndexByte(text, ' '); idx > 0 {
 			cmd = text[:idx]
 		}
+		log.Printf("[IM Adapter] unknown command %q from user=%s platform=%s", cmd, unifiedID, msg.PlatformName)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 400,
 			StatusIcon: "info",

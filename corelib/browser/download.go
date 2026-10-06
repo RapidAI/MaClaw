@@ -253,7 +253,7 @@ func browserWebSocketURLCtx(ctx context.Context, cdpHTTP string) (string, error)
 	if err := json.Unmarshal(body, &v); err != nil || v.WebSocketDebuggerURL == "" {
 		return "", fmt.Errorf("parse /json/version: %v body_len=%d", err, len(body))
 	}
-	return v.WebSocketDebuggerURL, nil
+	return cdpSocketOnEndpoint(cdpHTTP, v.WebSocketDebuggerURL), nil
 }
 
 // pageWSURLForTarget polls /json until the page target appears and returns

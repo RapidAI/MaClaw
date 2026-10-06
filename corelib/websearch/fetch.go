@@ -687,13 +687,11 @@ func applyContentWindow(result *FetchResult, offset, maxChars int) {
 	} else {
 		result.Content = string(runes)
 	}
-	result.Truncated = offset > 0 || end < total
+	result.Truncated = end < total
 	result.HasMore = end < total
-	if result.HasMore {
-		result.NextOffset = end
-	} else {
-		result.NextOffset = 0
-	}
+	// A finished read ends at total. next_offset stays on that cursor so a
+	// completed page is distinguishable from a missing range.
+	result.NextOffset = end
 }
 
 // ---------------------------------------------------------------------------

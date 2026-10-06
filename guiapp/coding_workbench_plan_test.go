@@ -1,8 +1,10 @@
 package guiapp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -64,32 +66,39 @@ func TestResolveCodingRequestDecisionPlansModerateRewrite(t *testing.T) {
 	}
 }
 
-func TestBareContinuationResumesImplementationAfterFileWrites(t *testing.T) {
+func TestImplementationSessionKeepsWriteContract(t *testing.T) {
 	written := stickyCodingWorkbenchMemory{FilesModified: []string{"/home/prj8/src/ui.cpp"}, TurnCount: 4}
-	for _, text := range []string{"继续", "继续。", "Continue", "keep going", "继续改进进程列表", "继续改", "继续，把顶栏改好", "帮我改顶栏", "能不能修一下顶栏？", "请修改顶栏折行", "fixed the header overflow", "优化进程 CPU 计算"} {
-		got := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestInquiry}, text, written)
-		if got.Kind != codingRequestImplementation || got.NeedsPlan {
-			t.Fatalf("%q should resume read/write implementation without a new plan, got %#v", text, got)
-		}
+	got := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry, NeedsPlan: true, Acceptance: codingOperationalAcceptanceLaunch}, written)
+	if got.Kind != codingRequestImplementation || got.NeedsPlan || got.Acceptance != "" {
+		t.Fatalf("a session that already wrote files must keep the implementation contract, got %#v", got)
 	}
-	for _, text := range []string{"这段 CPU% 为什么乘了核心数？", "为什么没实现分页？", "怎么优化这段", "如何修改顶栏", "how to fix the header", "看看 drawHeader", "看看改动", "继续看看", "继续编译并运行", "what does the gap do", "谢谢", "编译并运行", "顶栏折行了", "列出源文件"} {
-		got := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestInquiry}, text, written)
-		if got.Kind != codingRequestInquiry {
-			t.Fatalf("%q should stay a read-only question, got %#v", text, got)
-		}
+	created := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry}, stickyCodingWorkbenchMemory{FilesCreated: []string{"/home/prj8/src/ui.h"}})
+	if created.Kind != codingRequestImplementation {
+		t.Fatalf("created files are an implementation trajectory, got %#v", created)
 	}
-	// No project writes yet: "继续" can still be "continue the explanation".
-	blank := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestInquiry}, "继续", stickyCodingWorkbenchMemory{FilesModified: []string{"  "}})
+	blank := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry}, stickyCodingWorkbenchMemory{FilesModified: []string{"  "}})
 	if blank.Kind != codingRequestInquiry {
 		t.Fatalf("blank file records must not count as an implementation trajectory, got %#v", blank)
 	}
-	fresh := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestInquiry}, "继续", stickyCodingWorkbenchMemory{TurnCount: 1, SessionPlan: "开发一套系统信息查看软件"})
+	fresh := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry}, stickyCodingWorkbenchMemory{TurnCount: 1, SessionPlan: "开发一套系统信息查看软件"})
 	if fresh.Kind != codingRequestInquiry {
-		t.Fatalf("continuation without written files must stay inquiry, got %#v", fresh)
+		t.Fatalf("a plan without written files must stay inquiry, got %#v", fresh)
 	}
-	operational := applyCodingSessionContinuationFloor(codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceLaunch}, "继续", written)
-	if operational.Kind != codingRequestOperational {
+	operational := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceLaunch}, written)
+	if operational.Kind != codingRequestOperational || operational.Acceptance != codingOperationalAcceptanceLaunch {
 		t.Fatalf("operational follow-up must not be rewritten, got %#v", operational)
+	}
+	if note := codingSessionWriteContractContext(codingRequestImplementation, written); !strings.Contains(note, "ssh_write_file") || !strings.Contains(note, "ssh_bash") {
+		t.Fatalf("an implementation turn in a session that already wrote files must carry the write contract, got %q", note)
+	}
+	if note := codingSessionWriteContractContext(codingRequestOperational, written); note != "" {
+		t.Fatalf("a run/build turn must not be told to edit source, got %q", note)
+	}
+	if note := codingSessionWriteContractContext(codingRequestInquiry, written); note != "" {
+		t.Fatalf("inquiry without the session upgrade must not carry the write contract, got %q", note)
+	}
+	if note := codingSessionWriteContractContext(codingRequestImplementation, stickyCodingWorkbenchMemory{}); note != "" {
+		t.Fatalf("a session with no written files has no write contract to carry, got %q", note)
 	}
 }
 
@@ -1339,18 +1348,45 @@ func TestGuardRemoteShellCommandMirrorsTheLocalGuardOrdering(t *testing.T) {
 	}
 }
 
-func TestRemoteTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
+func TestRemoteTaskModeGuardHonorsFullControl(t *testing.T) {
 	prompts := 0
 	state := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
 		prompts++
 		return ScopeApprovalDeny
 	}, true)
 
-	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg == "" {
-		t.Fatal("a sticky full-access grant must not silently satisfy a mode guardrail")
+	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg != "" {
+		t.Fatalf("full control must auto-allow a task-mode command, got %q", msg)
 	}
-	if prompts != 1 {
-		t.Fatalf("prompts = %d, want the user to be asked despite full access", prompts)
+	if prompts != 0 {
+		t.Fatalf("prompts = %d, full control must not ask", prompts)
+	}
+}
+
+func TestRemoteTaskModeGuardAlwaysAllowSkipsLaterPrompts(t *testing.T) {
+	prompts := 0
+	state := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		prompts++
+		return ScopeApprovalFullAccess
+	}, false)
+
+	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg != "" {
+		t.Fatalf("an allowed command should run, got %q", msg)
+	}
+	if msg := state.checkTaskModeGuard("npm install left-pad", "/srv/repo", "guarded"); msg != "" || prompts != 1 {
+		t.Fatalf("总是放行 must cover the next command, msg=%q prompts=%d", msg, prompts)
+	}
+
+	oncePrompts := 0
+	once := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		oncePrompts++
+		return ScopeApprovalAllowOnce
+	}, false)
+	if msg := once.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg != "" {
+		t.Fatalf("allow once should run this command, got %q", msg)
+	}
+	if msg := once.checkTaskModeGuard("npm install left-pad", "/srv/repo", "guarded"); msg != "" || oncePrompts != 2 {
+		t.Fatalf("allow once must ask again, msg=%q prompts=%d", msg, oncePrompts)
 	}
 }
 
@@ -1368,10 +1404,7 @@ func TestRecursiveDeleteStillRequiresHighRiskApproval(t *testing.T) {
 	}
 }
 
-func TestTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
-	// A sticky "allow risky commands" answer is about danger, not about turning
-	// a run/build turn into something wider, so it must not silently widen the
-	// task mode without the user ever seeing a prompt.
+func TestTaskModeGuardHonorsStickyHighRiskGrant(t *testing.T) {
 	prompts := 0
 	state := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
 		prompts++
@@ -1385,14 +1418,31 @@ func TestTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
 	if msg := state.checkHighRisk("bash", "git clean -fd", `D:\repo`, `D:\repo`, "high risk"); msg != "" || prompts != 1 {
 		t.Fatalf("sticky high-risk grant = %q after %d prompts", msg, prompts)
 	}
-	if msg := state.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" {
-		t.Fatalf("the user allowed it at the prompt, got %q", msg)
-	}
-	if prompts != 2 {
-		t.Fatalf("a task-mode guard must still prompt, prompts = %d", prompts)
+	if msg := state.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" || prompts != 1 {
+		t.Fatalf("a high-risk 总是放行 must also skip the task-mode prompt, msg=%q prompts=%d", msg, prompts)
 	}
 
-	// And a mode guard never installs a sticky grant of its own.
+	// 总是放行 on the task-mode prompt itself covers the next command.
+	guardPrompts := 0
+	guard := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		guardPrompts++
+		return ScopeApprovalFullAccess
+	}, false)
+	if msg := guard.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" || guardPrompts != 1 {
+		t.Fatalf("first task-mode allow = %q after %d prompts", msg, guardPrompts)
+	}
+	if msg := guard.checkTaskModeGuard("bash", "npm test", `D:\repo`, `D:\repo`, "guarded"); msg != "" || guardPrompts != 1 {
+		t.Fatalf("总是放行 must cover the next task-mode command, msg=%q prompts=%d", msg, guardPrompts)
+	}
+
+	full := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		t.Fatal("full control must not open a task-mode prompt")
+		return ScopeApprovalDeny
+	}, true)
+	if msg := full.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" {
+		t.Fatalf("full control must auto-allow a task-mode command, got %q", msg)
+	}
+
 	silent := newScopeApprovalState(nil, false)
 	if msg := silent.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "guarded" {
 		t.Fatalf("no approval channel must keep the guardrail, got %q", msg)
@@ -2020,6 +2070,211 @@ func TestClearStickyCodingExecutionPlanOnSimpleTurn(t *testing.T) {
 	}
 	if mem := h.getStickyCodingWorkbenchMemory(userID); mem.ExecutionPlan != "" {
 		t.Fatalf("stale execution plan should clear: %q", mem.ExecutionPlan)
+	}
+}
+
+func TestContinueResumesIncompleteCodingPlan(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	goal := "开发一个系统信息查看软件，c++版本"
+	full := []*v2.TaskItem{
+		{Index: 1, Title: "读取 OS 信息", Description: "用 uname 读取内核与发行版"},
+		{Index: 2, Title: "解析 CLI", Description: "实现 section 参数"},
+		{Index: 3, Title: "实现输出", Description: "按 OS CPU Memory Disk 输出"},
+		{Index: 4, Title: "编写 main.cpp", Description: "覆盖 scaffold 并调用 sysinfo"},
+		{Index: 5, Title: "验证构建", Description: "g++ 语法检查", DependsOn: []int{4}},
+	}
+	md := formatCodingWorkbenchPlanMarkdown(goal, full)
+	mem := stickyCodingWorkbenchMemory{
+		TurnCount:     1,
+		SessionPlan:   goal,
+		ExecutionPlan: md,
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "读取 OS 信息", Status: codingStepPassed},
+			{Index: 2, Title: "解析 CLI", Status: codingStepPassed},
+			{Index: 3, Title: "实现输出", Status: codingStepPassed},
+			{Index: 4, Title: "编写 main.cpp", Status: codingStepPassed},
+			{Index: 5, Title: "验证构建", Status: codingStepFailed, Summary: "insufficient credits"},
+		},
+	}
+	tasks, plan, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !planned || plan == "" {
+		t.Fatalf("continue should keep the plan, planned=%v plan=%q", planned, plan)
+	}
+	if len(tasks) != 1 || tasks[0].Index != 5 || tasks[0].Title != "验证构建" {
+		t.Fatalf("should rerun only the failed step, got %#v", tasks)
+	}
+	if strings.Contains(tasks[0].Description, "继续") || !strings.Contains(tasks[0].Description, "g++") {
+		t.Fatalf("resumed step lost its original brief: %q", tasks[0].Description)
+	}
+	if len(tasks[0].DependsOn) != 0 {
+		t.Fatalf("passed dependency must not block the resumed step: %v", tasks[0].DependsOn)
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID)
+	if !strings.Contains(stored.ExecutionPlan, "读取 OS 信息") || !strings.Contains(stored.ExecutionPlan, "验证构建") {
+		t.Fatalf("stored plan was replaced: %q", stored.ExecutionPlan)
+	}
+	if len(stored.StepStatuses) != 5 {
+		t.Fatalf("step checklist collapsed to %d", len(stored.StepStatuses))
+	}
+	if stored.StepStatuses[0].Status != codingStepPassed || stored.StepStatuses[4].Status != codingStepPending {
+		t.Fatalf("passed steps must stay passed and the failed step reopens, got %+v", stored.StepStatuses)
+	}
+	outline, total := codingPlanOutlineForPrompt(stored, tasks)
+	if total != 5 || len(outline) != 5 {
+		t.Fatalf("prompt outline total=%d steps=%d", total, len(outline))
+	}
+	prompt := buildRemoteCodingPlanStepText(tasks[0], 5, total, true, codingPlanResumeGoal("继续", mem), outline, 1, goal, "", nil, nil)
+	if !strings.Contains(prompt, "[Plan step T5/5]") || !strings.Contains(prompt, goal) || strings.Contains(prompt, "User request:\n继续") {
+		t.Fatalf("resumed prompt should stay on T5 of the original plan:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "读取 OS 信息 (already done)") || strings.Contains(prompt, "验证构建 (already done)") {
+		t.Fatalf("passed steps must be marked done and the current step must not:\n%s", prompt)
+	}
+}
+
+func TestContinueAfterFinishedPlanStartsFresh(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.setStickyCodingExecutionPlan(userID, "### T1: done\n### T2: also done")
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "done", Status: codingStepPassed},
+		{Index: 2, Title: "also done", Status: codingStepPassed},
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	mem.TurnCount = 2
+	if codingWorkbenchShouldResumeIncompletePlan("继续", mem) {
+		t.Fatal("a finished plan has nothing to resume")
+	}
+	_, _, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if planned {
+		t.Fatal("finished plan must not be re-executed by a bare continue")
+	}
+	if got := h.getStickyCodingWorkbenchMemory(userID).ExecutionPlan; got != "" {
+		t.Fatalf("finished plan should clear on a new turn: %q", got)
+	}
+}
+
+func TestResumePromptDropsFinishedClaim(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		TurnCount:     2,
+		SessionPlan:   "开发一个系统信息查看软件",
+		ExecutionPlan: "### T1: 读取\n描述: uname\n### T2: 验证\n描述: g++",
+		LastSummary:   "全部完成，系统信息工具已经可用",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepPassed, Title: "读取"},
+			{Index: 2, Status: codingStepFailed, Title: "验证"},
+		},
+	}
+	mem.LastUserText = "继续"
+	mem.RequirementRestatement = "在已有工作（系统信息查看）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。"
+	prompt := codingPlanResumePromptMemory(mem)
+	joined := strings.Join(prompt.prevOutputs(), "\n")
+	if strings.Contains(joined, "全部完成") || strings.Contains(joined, "### T1") || strings.Contains(joined, "继续") {
+		t.Fatalf("resume prompt replayed the finished claim, the full plan, or the continue cue:\n%s", joined)
+	}
+	if !strings.Contains(joined, "unfinished step") {
+		t.Fatalf("stop note missing:\n%s", joined)
+	}
+	if codingPlanResumeGoal("继续", mem) != mem.SessionPlan {
+		t.Fatal("goal must stay on the original memory")
+	}
+	if mem.ExecutionPlan == "" || !strings.Contains(mem.LastSummary, "全部完成") {
+		t.Fatal("prompt copy must not clear the stored plan")
+	}
+	if !strings.Contains(mem.RequirementRestatement, "上继续你这次提出的改动") {
+		t.Fatal("prompt copy must not clear the stored restatement")
+	}
+	dup := mem
+	dup.LastUserText = dup.SessionPlan
+	dup.RequirementRestatement = dup.SessionPlan
+	dupJoined := strings.Join(codingPlanResumePromptMemory(dup).prevOutputs(), "\n")
+	if strings.Count(dupJoined, dup.SessionPlan) != 1 {
+		t.Fatalf("goal repeated in resume prompt:\n%s", dupJoined)
+	}
+}
+
+func TestExecutionPlanPersistKeepsTheLastStep(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	var b strings.Builder
+	for i := 1; i <= codingWorkbenchPlanMaxTasks; i++ {
+		fmt.Fprintf(&b, "### T%d: step\n描述: %s\n\n", i, strings.Repeat("验", 320))
+	}
+	b.WriteString("TAIL-STEP-MARKER")
+	md := b.String()
+	if n := utf8.RuneCountInString(md); n <= 2000 {
+		t.Fatalf("fixture should exceed the old 2000-rune cap, got %d", n)
+	}
+	h.persistCodingWorkbenchPlans(userID, md, "")
+	got := h.getStickyCodingWorkbenchMemory(userID).ExecutionPlan
+	if !strings.Contains(got, "TAIL-STEP-MARKER") {
+		t.Fatalf("last step was truncated, stored runes=%d", utf8.RuneCountInString(got))
+	}
+}
+
+func TestResumeIncludesSkippedTailWithoutTheBillingError(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 5, Title: "验证构建", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+			{Index: 1, Title: "读取 OS 信息", Status: codingStepPassed},
+			{Index: 4, Title: "编写 main.cpp", Status: codingStepFailed, Summary: "LLM call failed: insufficient credits"},
+		},
+	}
+	tasks, ok := selectIncompleteCodingPlanTasks("继续", mem)
+	if !ok || len(tasks) != 2 {
+		t.Fatalf("tasks=%#v ok=%v", tasks, ok)
+	}
+	if tasks[0].Index != 4 || tasks[1].Index != 5 {
+		t.Fatalf("resume order = %d then %d", tasks[0].Index, tasks[1].Index)
+	}
+	for _, task := range tasks {
+		if strings.Contains(task.Description, "insufficient credits") || strings.Contains(task.Description, "skipped:") {
+			t.Fatalf("failure note leaked into the step brief: %q", task.Description)
+		}
+	}
+	_, total := codingPlanOutlineForPrompt(mem, tasks)
+	if total != 3 {
+		t.Fatalf("outline should keep the passed step, total=%d", total)
+	}
+	if got := codingPlanReportedStepTotal(true, len(tasks), total); got != 3 {
+		t.Fatalf("reported total=%d, want the original checklist", got)
+	}
+	if got := codingPlanReportedStepTotal(false, 1, 5); got != 1 {
+		t.Fatalf("a new single task must not inherit the old checklist length, got %d", got)
+	}
+}
+
+func TestContinueCueDoesNotMatchANewRequest(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		ExecutionPlan: "### T1: a\n描述: a\n### T2: b\n描述: b\n",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepPassed},
+			{Index: 2, Status: codingStepFailed},
+		},
+	}
+	if codingWorkbenchShouldResumeIncompletePlan("继续完善，加入图形界面", mem) {
+		t.Fatal("a new feature request must not resume the old plan")
+	}
+	if !codingWorkbenchShouldResumeIncompletePlan("继续执行", mem) {
+		t.Fatal("继续执行 should resume the unfinished plan")
+	}
+	if codingWorkbenchShouldResumeIncompletePlan("继续", stickyCodingWorkbenchMemory{
+		ExecutionPlan: mem.ExecutionPlan,
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepPending},
+			{Index: 2, Status: codingStepPending},
+		},
+	}) {
+		t.Fatal("an unstarted approval must not be treated as a stopped run")
 	}
 }
 

@@ -2,8 +2,8 @@ package guiapp
 
 // clearPerUserSessionState resets all per-user ephemeral state that
 // accumulates during a conversation. This is the single source of truth
-// for session cleanup — every code path that resets a conversation
-// (/new, /exit, StartNewTask, topic switch, auto-clear) MUST call this
+// for session cleanup — every code path that destroys a conversation
+// (/new, /exit, StartNewTask, delete task, recall) MUST call this
 // method instead of manually deleting individual sync.Map entries.
 //
 // This prevents the "forgot to add .Delete for the new field" class of
@@ -17,7 +17,30 @@ package guiapp
 //   - Reset workflow adapter state (only /exit does this)
 //
 // Those are caller-specific side effects that vary by reset path.
+//
+// A pure coding workbench is not conversation residue. SSH session, work
+// directory, and the armed coding turn are the project execution
+// environment. Explicit destruction (this method) tears that down.
+// A conversation boundary that is not destruction — the first message has
+// no transcript yet — must use resetConversationResidue instead.
 func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
+	h.clearPerUserSessionStateOpts(userID, false)
+}
+
+// resetConversationResidue ends chat-scoped state when a turn is classified
+// as a new conversation (empty history, cancelled previous turn, topic
+// switch). The workbench stays when the visible row is a coding task, or
+// when that row is not visible yet and a template or sticky kind is already
+// armed for the project owner. A visible ordinary row does not keep a
+// leftover arm.
+func (h *IMMessageHandler) resetConversationResidue(userID string) {
+	if h == nil {
+		return
+	}
+	h.clearPerUserSessionStateOpts(userID, h.codingWorkbenchSurvivesConversationBoundary(userID))
+}
+
+func (h *IMMessageHandler) clearPerUserSessionStateOpts(userID string, keepCodingWorkbench bool) {
 	h.clearTaskIdentityAnchor(userID)
 
 	// Cancel any active workflow and understanding session. Without this,
@@ -56,18 +79,23 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.sessionDriftReplanCount.Delete(userID)
 	h.sessionDriftTool.Delete(userID)
 
-	// Workflow ephemeral markers (LoadAndDelete-consumed, but clean up
-	// in case the consumer never ran — e.g. user /new before next message).
-	h.workflowAgentLoopMarker.Delete(userID)
+	// Workflow prompts and choice UI are chat residue (the consumer may
+	// never have run, e.g. /new before the next message). The coding arm
+	// — marker, template pending, sticky SSH binding — is the workbench
+	// and survives a conversation boundary. Explicit destruction still
+	// drops it.
 	h.workflowReviewExperienceContext.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
 	h.workflowOriginalRequest.Delete(userID)
 	h.pendingCancelExecuteRequest.Delete(userID)
-	h.pendingV2SubAgentExecution.Delete(userID)
 	h.pendingWorkflowChoice.Delete(userID)
-	h.pendingTemplateCodingProjectPath.Delete(userID)
-	h.pendingTemplateRemoteCoding.Delete(userID)
-	h.clearStickyCodingWorkbenchMemory(userID)
+	if !keepCodingWorkbench {
+		h.workflowAgentLoopMarker.Delete(userID)
+		h.pendingV2SubAgentExecution.Delete(userID)
+		h.pendingTemplateCodingProjectPath.Delete(userID)
+		h.pendingTemplateRemoteCoding.Delete(userID)
+		h.clearStickyCodingWorkbenchMemory(userID)
+	}
 	if h.confirmationStore != nil {
 		h.confirmationStore.clear(userID)
 	}

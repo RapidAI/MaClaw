@@ -41,6 +41,13 @@ type Session struct {
 	activeFrameID string
 	recentNetwork []string
 	recentErrors  []string
+	// stayOnCurrentPage keeps navigation on the tab the person is looking at.
+	// The cloud desktop's website login lives in that tab.
+	stayOnCurrentPage bool
+	// stayOnLoggedInDocument keeps the person and the agent on the site
+	// that was just signed into. Another site would leave that login behind.
+	// Another page of the same site stays in this tab, so the agent can continue.
+	stayOnLoggedInDocument bool
 
 	netMu         sync.Mutex
 	inflight      map[string]struct{}
@@ -169,11 +176,24 @@ func installGlobalSession(session *Session) *Session {
 	return session
 }
 
+// redactUserInfo strips the password part of a CDP endpoint's URL userinfo
+// for logging. The desktop gate token rides as userinfo; it must not leak
+// into server logs.
+func redactUserInfo(addr string) string {
+	addr = strings.TrimSpace(addr)
+	parsed, err := url.Parse(addr)
+	if err != nil || parsed.User == nil {
+		return addr
+	}
+	parsed.User = url.User(parsed.User.Username())
+	return parsed.String()
+}
+
 // connectToAddr establishes a new CDP session to the given HTTP address.
 func connectToAddr(addr string) (*Session, error) {
 	targets, err := DiscoverTargets(addr)
 	if err != nil {
-		return nil, fmt.Errorf("get browser targets (%s): %w", addr, err)
+		return nil, fmt.Errorf("get browser targets (%s): %w", redactUserInfo(addr), err)
 	}
 
 	// Find the first "page" target.
@@ -279,8 +299,11 @@ func (s *Session) Navigate(url string) (string, error) {
 	if err := validateNavigationPolicy(BrowserPolicy{AllowCrossOriginNavigation: true}, url, ""); err != nil {
 		return "", err
 	}
-	if reused := s.switchToReusableNavigationTarget(url); reused != "" {
+	if reused := s.reuseExistingPage(url); reused != "" {
 		return reused, nil
+	}
+	if s.onLoggedInPage(url) || s.keepsLoggedInPage(url) || s.blocksLeavingLoggedInDocument(url) {
+		return "", nil
 	}
 	s.mu.Lock()
 	client := s.client
@@ -309,6 +332,169 @@ func (s *Session) Navigate(url string) (string, error) {
 	}
 
 	return string(result), nil
+}
+
+func (s *Session) reuseExistingPage(rawURL string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	stay := s.stayOnCurrentPage
+	s.mu.Unlock()
+	if stay {
+		return ""
+	}
+	return s.switchToReusableNavigationTarget(rawURL)
+}
+
+func (s *Session) onLoggedInPage(rawURL string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	stay := s.stayOnCurrentPage
+	s.mu.Unlock()
+	if !stay {
+		return false
+	}
+	href, err := s.currentHref()
+	if err != nil {
+		return false
+	}
+	return desktopPageAlreadyOpen(href, rawURL)
+}
+
+func (s *Session) currentHref() (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    "location.href",
+		"returnByValue": true,
+	}, 2*time.Second)
+	if err != nil {
+		return "", err
+	}
+	return extractStringValue(result), nil
+}
+
+// blocksLeavingLoggedInDocument is true when a navigation would leave the
+// site the person just signed into. The same site stays in this tab, so the
+// website login is still there when the agent continues.
+func (s *Session) blocksLeavingLoggedInDocument(rawURL string) bool {
+	href, ok := s.loggedInDocumentURL()
+	if !ok {
+		return false
+	}
+	if desktopPageAlreadyOpen(href, rawURL) || sameLoggedInSite(href, rawURL) {
+		return false
+	}
+	return true
+}
+
+// followLoggedInPopupPage reports whether the agent should move into a
+// window this site just opened. A blank window is not followed: switching
+// there would leave the logged-in page before this site has opened it.
+// A window from another site is left alone.
+func followLoggedInPopupPage(currentURL, popupURL string) bool {
+	if !sharedDesktopRealPage(popupURL) || !sharedDesktopRealPage(currentURL) {
+		return false
+	}
+	return sameLoggedInSite(currentURL, popupURL)
+}
+
+func sameLoggedInSite(current, target string) bool {
+	left := loggedInSiteHost(current)
+	right := loggedInSiteHost(target)
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	// A login often finishes on accounts.example.com and continues on
+	// app.example.com. The cookie belongs to the site, not one hostname.
+	// An IP is one host; a neighboring address is not the same site.
+	if net.ParseIP(left) != nil || net.ParseIP(right) != nil {
+		return false
+	}
+	root := loggedInSiteRoot(left)
+	return root != "" && root == loggedInSiteRoot(right)
+}
+
+func loggedInSiteHost(raw string) string {
+	parsed, err := url.Parse(normalizeReusableNavigationURL(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func loggedInSiteRoot(host string) string {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return ""
+	}
+	if len(labels) >= 3 && loggedInMultiPartSuffix(labels[len(labels)-2]+"."+labels[len(labels)-1]) {
+		return strings.Join(labels[len(labels)-3:], ".")
+	}
+	return strings.Join(labels[len(labels)-2:], ".")
+}
+
+func loggedInMultiPartSuffix(suffix string) bool {
+	switch suffix {
+	case "co.uk", "org.uk", "ac.uk", "com.cn", "net.cn", "org.cn", "com.au", "co.jp", "com.hk", "com.tw", "com.br", "co.kr", "com.sg":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) loggedInDocumentURL() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	keep := s.stayOnLoggedInDocument
+	s.mu.Unlock()
+	if !keep {
+		return "", false
+	}
+	href, err := s.currentHref()
+	if err != nil || !sharedDesktopRealPage(href) {
+		return "", false
+	}
+	return href, true
+}
+
+func desktopPageAlreadyOpen(current, target string) bool {
+	current = normalizeReusableNavigationURL(current)
+	target = normalizeReusableNavigationURL(target)
+	if current == "" || current == "about:blank" || strings.HasPrefix(current, "chrome://") {
+		return false
+	}
+	return current == target
+}
+
+func (s *Session) keepsLoggedInPage(rawURL string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	stay := s.stayOnCurrentPage
+	s.mu.Unlock()
+	if !stay {
+		return false
+	}
+	target := normalizeReusableNavigationURL(rawURL)
+	return target == "" || target == "about:blank" || strings.HasPrefix(target, "chrome://") || strings.HasPrefix(target, "chrome-untrusted://")
 }
 
 func (s *Session) switchToReusableNavigationTarget(rawURL string) string {
@@ -1359,7 +1545,7 @@ func (s *Session) PruneDuplicatePages() int {
 			break
 		}
 	}
-	log.Printf("[browser] prune duplicate pages scan addr=%s active_tab=%s active_url=%q page_count=%d", addr, activeTabID, activeURL, len(pages))
+	log.Printf("[browser] prune duplicate pages scan addr=%s active_tab=%s active_url=%q page_count=%d", redactUserInfo(addr), activeTabID, activeURL, len(pages))
 	seen := map[string]string{}
 	if activeURL != "" {
 		seen[activeURL] = activeTabID
@@ -1704,7 +1890,7 @@ func (s *Session) SwitchPage(targetID string) error {
 	addr := s.addr
 	from := s.activeTabID
 	s.mu.Unlock()
-	log.Printf("[browser] switch page requested addr=%s from=%s to=%s", addr, from, targetID)
+	log.Printf("[browser] switch page requested addr=%s from=%s to=%s", redactUserInfo(addr), from, targetID)
 
 	client, err := connectPageTarget(addr, from, targetID)
 	if err != nil {
@@ -1719,17 +1905,17 @@ func (s *Session) SwitchPage(targetID string) error {
 	s.activeFrameID = "main"
 	s.mu.Unlock()
 	if old != nil && old != client {
-		log.Printf("[browser] switch page closing old CDP client addr=%s old=%s new=%s", addr, oldTabID, targetID)
+		log.Printf("[browser] switch page closing old CDP client addr=%s old=%s new=%s", redactUserInfo(addr), oldTabID, targetID)
 		old.Close()
 	}
-	log.Printf("[browser] switch page complete addr=%s from=%s to=%s", addr, oldTabID, targetID)
+	log.Printf("[browser] switch page complete addr=%s from=%s to=%s", redactUserInfo(addr), oldTabID, targetID)
 	return nil
 }
 
 func connectPageTarget(addr, from, targetID string) (*CDPClient, error) {
 	targets, err := DiscoverTargets(addr)
 	if err != nil {
-		log.Printf("[browser] switch page discover failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
+		log.Printf("[browser] switch page discover failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
 		return nil, err
 	}
 	var wsURL string
@@ -1740,25 +1926,36 @@ func connectPageTarget(addr, from, targetID string) (*CDPClient, error) {
 		}
 	}
 	if wsURL == "" {
-		log.Printf("[browser] switch page target not found addr=%s from=%s to=%s targets=%d", addr, from, targetID, len(targets))
+		log.Printf("[browser] switch page target not found addr=%s from=%s to=%s targets=%d", redactUserInfo(addr), from, targetID, len(targets))
 		return nil, fmt.Errorf("target %s not found", targetID)
 	}
 
 	client, err := ConnectCDP(wsURL)
 	if err != nil {
-		log.Printf("[browser] switch page CDP connect failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
+		log.Printf("[browser] switch page CDP connect failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
 		return nil, fmt.Errorf("switch page CDP connection failed: %w", err)
 	}
 	if _, err := client.Send("Page.enable", nil, 5*time.Second); err != nil {
-		log.Printf("[browser] switch page Page.enable failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
+		log.Printf("[browser] switch page Page.enable failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
 		client.Close()
 		return nil, fmt.Errorf("switch page Page.enable failed: %w", err)
 	}
 	if _, err := client.Send("Runtime.enable", nil, 5*time.Second); err != nil {
-		log.Printf("[browser] switch page Runtime.enable failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
+		log.Printf("[browser] switch page Runtime.enable failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
 		client.Close()
 		return nil, fmt.Errorf("switch page Runtime.enable failed: %w", err)
 	}
+	// The logged-in page is a new connection. Without these, a verification
+	// window opened from that page never reaches the desktop session.
+	_, _ = client.Send("Network.enable", nil, 5*time.Second)
+	_, _ = client.Send("Log.enable", nil, 5*time.Second)
+	_, _ = client.Send("Accessibility.enable", nil, 5*time.Second)
+	_, _ = client.Send("Target.setAutoAttach", map[string]interface{}{
+		"autoAttach":             true,
+		"waitForDebuggerOnStart": false,
+		"flatten":                true,
+	}, 5*time.Second)
+	_, _ = client.Send("Target.setDiscoverTargets", map[string]interface{}{"discover": true}, 5*time.Second)
 	return client, nil
 }
 

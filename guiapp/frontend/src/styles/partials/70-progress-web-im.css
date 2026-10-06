@@ -1116,6 +1116,119 @@
     font-size: 0.82rem;
 }
 
+.token-usage-trend {
+    margin: 4px 0 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--theme-border);
+}
+
+.token-usage-trend__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.token-usage-trend__grains {
+    display: flex;
+    gap: 4px;
+}
+
+.token-usage-trend__grain {
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font-size: 0.72rem;
+}
+
+.token-usage-trend__grain.is-active {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+    color: var(--theme-on-primary);
+}
+
+.token-usage-trend__sum,
+.token-usage-trend__note {
+    color: var(--theme-text-muted);
+    font-size: 0.68rem;
+}
+
+.token-usage-trend__note {
+    margin: 4px 0 0;
+}
+
+.token-usage-trend__chart {
+    display: block;
+    width: 100%;
+    height: 96px;
+    overflow: visible;
+}
+
+.token-usage-trend__axis {
+    stroke: var(--theme-border);
+    stroke-width: 1;
+    shape-rendering: crispEdges;
+    vector-effect: non-scaling-stroke;
+}
+
+.token-usage-trend__gap {
+    stroke: var(--theme-text-muted);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    opacity: 0.55;
+    vector-effect: non-scaling-stroke;
+}
+
+.token-usage-trend__area {
+    fill: var(--theme-primary);
+    opacity: 0.16;
+    stroke: none;
+}
+
+.token-usage-trend__line,
+.token-usage-trend__dot {
+    fill: none;
+    stroke: var(--theme-primary);
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+}
+
+.token-usage-trend__dot {
+    fill: var(--theme-primary);
+}
+
+.token-usage-trend__labels {
+    position: relative;
+    height: 0.9rem;
+    margin-top: 2px;
+    color: var(--theme-text-muted);
+    font-size: 0.66rem;
+}
+
+.token-usage-trend__labels span {
+    position: absolute;
+    top: 0;
+    white-space: nowrap;
+}
+
+.token-usage-trend__labels .is-start {
+    left: 0;
+}
+
+.token-usage-trend__labels .is-mid {
+    transform: translateX(-50%);
+}
+
+.token-usage-trend__labels .is-end {
+    right: 0;
+}
+
 .token-usage-panel__actions {
     display: flex;
     justify-content: flex-end;

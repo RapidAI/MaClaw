@@ -475,6 +475,45 @@ func TestPreflightBatchRefsFailsBeforeAction(t *testing.T) {
 	}
 }
 
+func TestFastBatchStopsBeforeTypingOnALoginPage(t *testing.T) {
+	peeked := 0
+	s := &BrowserAgentSession{ID: "login", peekFlags: func() (BrowserPageFlags, error) {
+		peeked++
+		return BrowserPageFlags{LoginWall: true}, nil
+	}}
+	supervisor := NewBrowserTaskSupervisor(nil, nil, nil, func() (*Session, error) { return nil, nil }, nil)
+	supervisor.agentSessionFn = func() (*BrowserAgentSession, error) { return s, nil }
+	state, err := supervisor.Execute(TaskSpec{
+		FastBatch:      true,
+		PauseForPerson: true,
+		Steps: []StepSpec{
+			{Action: "type", Params: map[string]string{"text": "secret", "ref": "e1"}},
+			{Action: "press", Params: map[string]string{"key": "Enter"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != TaskStatusPaused || state.CurrentStep != 1 || !strings.Contains(state.Observation, "page flags: login_wall") {
+		t.Fatalf("state=%#v", state)
+	}
+	if peeked == 0 {
+		t.Fatal("login page was not checked")
+	}
+	plain := &BrowserAgentSession{ID: "plain", peekFlags: func() (BrowserPageFlags, error) {
+		t.Fatal("local batch must not stop for a login page")
+		return BrowserPageFlags{}, nil
+	}}
+	supervisor.agentSessionFn = func() (*BrowserAgentSession, error) { return plain, nil }
+	skipped, err := supervisor.Execute(TaskSpec{
+		FastBatch: true,
+		Steps:     []StepSpec{{Action: "type", Params: map[string]string{"text": "secret", "ref": "e1"}}},
+	})
+	if err == nil || skipped == nil || skipped.Status == TaskStatusPaused {
+		t.Fatalf("local batch paused: err=%v state=%#v", err, skipped)
+	}
+}
+
 func TestFastBatchCaptchaStillAsks(t *testing.T) {
 	s := widgetSession("http://127.0.0.1/fixture/captcha")
 	supervisor := NewBrowserTaskSupervisor(nil, nil, nil, func() (*Session, error) { return nil, nil }, nil)

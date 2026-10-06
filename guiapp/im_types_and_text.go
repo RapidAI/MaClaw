@@ -85,6 +85,10 @@ type IMAgentResponse struct {
 	RequestID       string `json:"request_id,omitempty"`
 	SessionKey      string `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
 	EventScopeID    string `json:"event_scope_id,omitempty"`
+	// DesktopHandoffURL is the noVNC page for this user's cloud desktop.
+	DesktopHandoffURL string `json:"desktop_handoff_url,omitempty"`
+	// DesktopUserControl is true when the bot paused and the person operates the desktop.
+	DesktopUserControl bool `json:"desktop_user_control,omitempty"`
 	// CodingRuntimeTaskID / CodingRuntimeAttemptID are opaque ledger references
 	// for hosts such as ACP. They are projection metadata only: clients cannot
 	// use them to replay a prior model or tool invocation.

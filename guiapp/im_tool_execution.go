@@ -88,6 +88,14 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if opts.RecordToolCall != nil {
 		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 	}
+	if petCompanionToolsDisabled(opts.UserID) {
+		name := strings.TrimSpace(tc.Function.Name)
+		return toolExecutionResult{Text: "这一轮是闲聊，不能使用工具。", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if petCompanionOutboundBlocked(opts.UserID, tc.Function.Name, tc.Function.Arguments, opts.UserText) {
+		name := strings.TrimSpace(tc.Function.Name)
+		return toolExecutionResult{Text: "文稿先留在本机。先问用户发给聊天，还是放进移动文稿库。", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.Allows(tc.Function.Name) {
 		name := strings.TrimSpace(tc.Function.Name)
 		text := legacyToolSurfaceDeniedText(name)
@@ -100,7 +108,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: legacyModelMCPGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
-	if isLegacyModelManageSkillGateway(tc.Function.Name, tc.Function.Arguments) {
+	if legacyModelManageSkillCallDenied(h, tc.Function.Name, tc.Function.Arguments) {
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: legacyModelManageSkillGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}

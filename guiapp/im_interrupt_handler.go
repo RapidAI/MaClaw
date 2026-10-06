@@ -104,12 +104,32 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	if ih.handler == nil {
 		return progress.InterruptResult{}
 	}
+	// Strip host-injected attachment sections BEFORE any decision-making —
+	// control commands included — so injected content can neither trigger
+	// nor block classification. The desktop file picker appends a
+	// "[用户选择的本地文件路径]" block (path list + English tool-routing
+	// boilerplate containing "do not re-capture"); IM image notes carry
+	// OCR'd text and document notes carry extracted bodies, all of which is
+	// host content, not user intent. Feeding that into DetectNegation made
+	// "改进界面风格，现在太厚重了" + screenshot classify as cancel-and-replace
+	// and kill the running coding task (2026-10-06 incident). Stripped first,
+	// "/stop" sent together with an attachment still cancels, while an
+	// OCR'd "/exit" inside a screenshot can never hijack the session.
+	// The stripped text is used for DECISIONS only; Merge still injects the
+	// full messageText so the LLM keeps the attachment paths.
+	analysisText := stripHostAttachmentSections(messageText)
+	if analysisText == "" {
+		// Attachment drop without commentary: nothing to schedule on. The
+		// message falls through to normal serialization (queues behind the
+		// active loop) instead of being judged on injected boilerplate.
+		return progress.InterruptResult{}
+	}
 	// Control commands must never enter the relevance scheduler. In particular,
 	// a short "/stop" otherwise looks unrelated and can be queued behind the
 	// very task it is meant to interrupt. This check intentionally happens
 	// before the active LoopContext guard: /btw and /loop are long-running
 	// commands protected by the gateway lock, but do not create that context.
-	switch classifyImmediateIMCommand(messageText) {
+	switch classifyImmediateIMCommand(analysisText) {
 	case imCommandCancel:
 		resp := ih.handler.cancelCurrentTaskForUser(userID, ih.handler.imCommandResponseLang(""))
 		return progress.InterruptResult{
@@ -146,8 +166,9 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		tracker = v.(*progress.AgentProgressTracker)
 	}
 
-	// Compute scheduling signals.
-	structure := progress.AnalyzeStructure(messageText)
+	// Compute scheduling signals on the user-authored text only (analysisText
+	// was stripped of host-injected attachment sections above).
+	structure := progress.AnalyzeStructure(analysisText)
 
 	// Relevance: compute embedding cosine similarity between the new message
 	// and the current task description. When embedder is unavailable or task
@@ -168,7 +189,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 				}
 			}
 			if len(taskEmbed) > 0 {
-				if msgEmbed, err := emb.Embed(messageText); err == nil && len(msgEmbed) > 0 {
+				if msgEmbed, err := emb.Embed(analysisText); err == nil && len(msgEmbed) > 0 {
 					relevance = progress.CosineSimilarity(taskEmbed, msgEmbed)
 				}
 			}
@@ -182,7 +203,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		taskIntent := tracker.Buffer().TaskIntent()
 		if taskIntent != "" {
 			// Classify the new message's intent through the semantic intent path.
-			newMsgResult := classifyTaskIntent(messageText)
+			newMsgResult := classifyTaskIntent(analysisText)
 			newMsgIntent := string(newMsgResult.Intent)
 			// Same intent label = same domain.
 			domainMatch = newMsgIntent == taskIntent
@@ -211,10 +232,13 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	//   - Very short messages (< 6 runes) are skipped (insufficient signal)
 	var correctionDetected bool
 	if tracker != nil {
-		originalText := tracker.Buffer().TaskDesc()
-		origRunes := []rune(strings.TrimSpace(originalText))
-		msgRunes := []rune(messageText)
-		if len(origRunes) >= 6 && len(msgRunes) >= 6 && originalText != messageText {
+		// Compare user-authored text on both sides: the original task message
+		// may carry the same injected attachment section as the new one.
+		originalText := stripHostAttachmentSections(tracker.Buffer().TaskDesc())
+		originalText = strings.TrimSpace(originalText)
+		origRunes := []rune(originalText)
+		msgRunes := []rune(analysisText)
+		if len(origRunes) >= 6 && len(msgRunes) >= 6 && originalText != analysisText {
 			// Length ratio guard: if one message is more than 2x the other,
 			// it's an expansion/supplement, not a correction.
 			lenRatio := float64(len(origRunes)) / float64(len(msgRunes))
@@ -222,7 +246,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 				lenRatio = 1.0 / lenRatio
 			}
 			if lenRatio <= 2.0 {
-				ratio := progress.CharOverlapRatio(originalText, messageText)
+				ratio := progress.CharOverlapRatio(originalText, analysisText)
 				// A correction has high overlap but is NOT identical.
 				// ratio == 1.0 means the messages are the same after whitespace
 				// normalization — not a correction, likely a duplicate send.
@@ -254,8 +278,8 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		}
 	}
 
-	log.Printf("[interrupt] user=%s msg_len=%d action=%s conf=%.2f domain=%v reason=%s",
-		userID, len([]rune(messageText)), decision.Action, decision.Confidence, domainMatch, decision.Reason)
+	log.Printf("[interrupt] user=%s msg_len=%d analysis_len=%d action=%s conf=%.2f domain=%v reason=%s",
+		userID, len([]rune(messageText)), len([]rune(analysisText)), decision.Action, decision.Confidence, domainMatch, decision.Reason)
 
 	switch decision.Action {
 	case progress.ActionReplace:

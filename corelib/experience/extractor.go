@@ -443,6 +443,11 @@ Return a JSON array. Each pattern must have:
 - "triggers": list of 3-5 keywords or phrases that would trigger this pattern
 - "steps": list of steps, each with "action" (call_mcp_tool/bash/skill_md), "params" (key-value map), and optional "on_error" ("stop" or "continue")
 
+Placeholder grammar for step params (the runner replaces {{name}} at run time):
+- Replace session-specific values (absolute paths, file names, URLs, ids) with {{snake_case_name}} placeholders named after their ROLE, e.g. {{input_file}}, {{output_pdf}}. Names must be at least 2 characters.
+- Never present PowerShell format items ({0}, {1}), shell variables ($i, ${i}, $args), or literal document/content tokens as parameters — copy such syntax verbatim.
+- Do not hardcode absolute paths from the source session in steps; either templatize them or drop the step. A pattern full of unreplaced paths is a session snapshot, not a reusable skill.
+
 Do not emit external coding-session actions. Coding work is handled by the internal CodingSubAgent, not persisted learned skills.
 
 Return only a JSON array. If no genuinely reusable patterns are found, return [].

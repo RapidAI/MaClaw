@@ -33,6 +33,12 @@ func TestSemanticModelFunctionNameIsStableAndIgnoresGrantTokens(t *testing.T) {
 	if got := RenderedSemanticFunctionName("host_information_search_web", "invoke_token"); got != "web_search" {
 		t.Fatalf("srv search render=%q", got)
 	}
+	if got := RenderedSemanticFunctionName("host_document_generate_file", "invoke_token"); got != "generate_pdf" {
+		t.Fatalf("srv pdf render=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("host_visual_capture_desktop", "invoke_token"); got != "screenshot" {
+		t.Fatalf("srv screenshot render=%q", got)
+	}
 }
 
 func TestSemanticModelFunctionNamesShareOnlyAcrossHostCatalogs(t *testing.T) {

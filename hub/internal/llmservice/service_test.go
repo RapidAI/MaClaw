@@ -3982,15 +3982,15 @@ func TestBillingEligibilityDoesNotReportPeriodLimitWhenPointCardBalanceIsHeld(t 
 			RequestID:       "hold",
 			Email:           "user@example.com",
 			ServiceGroupIDs: []string{"grant-group"},
-			Credits:         20,
+			Credits:         993.57,
 			ExpiresAt:       now.Add(time.Hour),
 		}},
 	}
 	reg.Normalize()
 
-	allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
-	if allowed || code != "LLM_SERVICE_CREDITS_EXHAUSTED" {
-		t.Fatalf("allowed=%v code=%q, want the held point card, not the period window or the later grant", allowed, code)
+	allowed, _, code, message, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || code != "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST" || !strings.Contains(message, "20.000 held by in-flight requests") || strings.Contains(message, "993") {
+		t.Fatalf("allowed=%v code=%q message=%q, want the point-card balance frozen, not the period window or the oversized hold", allowed, code, message)
 	}
 }
 

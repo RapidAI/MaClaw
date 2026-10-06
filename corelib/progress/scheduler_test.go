@@ -321,3 +321,71 @@ func TestCharOverlapRatio(t *testing.T) {
 		})
 	}
 }
+
+// TestSchedule_NegationConfidenceBelowAutoCancelThreshold pins the confidence
+// semantics that guard against silently killing a running task: the
+// auto-cancel threshold in the interrupt handler is 0.70, and an ambiguous
+// negation ("不要…" on a long message) WITHOUT real high-relevance evidence
+// must stay below it so the user gets a confirmation instead of a silent
+// cancel. Regression: confidenceFromSignals used to receive relLow as its
+// "strongRelevance" argument, and the relUnknown domain-match routing proxy
+// used to count as strong evidence — together they inflated an ambiguous
+// negation to 0.85 and auto-cancelled a 13-minute coding task (2026-10-06).
+func TestSchedule_NegationConfidenceBelowAutoCancelThreshold(t *testing.T) {
+	const autoCancelThreshold = 0.70
+
+	tests := []struct {
+		name       string
+		input      ScheduleInput
+		maxConf    float64
+		wantAction ScheduleAction
+	}{
+		{
+			name: "low relevance + long negation → below threshold (confirm, not auto-cancel)",
+			input: ScheduleInput{
+				Relevance:   0.10,
+				DomainMatch: false,
+				Structure:   StructureSignal{Length: 30, IsLong: true, HasNegation: true},
+			},
+			maxConf:    autoCancelThreshold - 0.01,
+			wantAction: ActionReplace,
+		},
+		{
+			// Unknown relevance degrades relHigh to the domain-match proxy, and
+			// the negation branch then reads "same domain + non-short" as a
+			// modification → Merge. That is the safe outcome (no cancel); the
+			// cap still guards the confidence model.
+			name: "unknown relevance + domain proxy + long negation → merge as modification",
+			input: ScheduleInput{
+				Relevance:   -1,
+				DomainMatch: true,
+				Structure:   StructureSignal{Length: 30, IsLong: true, HasNegation: true},
+			},
+			maxConf:    autoCancelThreshold - 0.01,
+			wantAction: ActionMerge,
+		},
+		{
+			name: "real high relevance + short negation → explicit cancel at/above threshold",
+			input: ScheduleInput{
+				Relevance:   0.75,
+				DomainMatch: true,
+				Structure:   StructureSignal{Length: 3, IsShort: true, HasNegation: true},
+			},
+			maxConf:    1.0,
+			wantAction: ActionReplace,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := Schedule(tt.input)
+			if decision.Action != tt.wantAction {
+				t.Fatalf("action = %s, want %s (reason: %s)", decision.Action, tt.wantAction, decision.Reason)
+			}
+			if decision.Confidence > tt.maxConf {
+				t.Fatalf("confidence = %.2f exceeds max %.2f — ambiguous negation would auto-cancel without confirmation",
+					decision.Confidence, tt.maxConf)
+			}
+		})
+	}
+}

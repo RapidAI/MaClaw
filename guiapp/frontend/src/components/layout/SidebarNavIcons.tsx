@@ -100,6 +100,18 @@ export const MCPIcon = () => (
     </svg>
 );
 
+/** Bot - 天线圆头，和数字员工的人形图标区分开。 */
+export const BotRailIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-bot-icon">
+        <path d="M12 7V4" />
+        <circle cx="12" cy="3.2" r="1" fill="currentColor" stroke="none" />
+        <rect x="5" y="7" width="14" height="12" rx="4" />
+        <circle cx="9.5" cy="13" r="1" fill="currentColor" stroke="none" />
+        <circle cx="14.5" cy="13" r="1" fill="currentColor" stroke="none" />
+        <path d="M9 16.5h6" />
+    </svg>
+);
+
 /** 八卦/社区 - 双人 */
 export const GossipIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -119,14 +131,10 @@ export const RankingIcon = () => (
     </svg>
 );
 
-/** 移动文稿库 - 手机上的文稿 */
+/** 云盘 */
 export const MobileDocsIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="6" y="2.5" width="12" height="19" rx="2" />
-        <line x1="9.5" y1="7" x2="14.5" y2="7" />
-        <line x1="9.5" y1="10.5" x2="14.5" y2="10.5" />
-        <line x1="9.5" y1="14" x2="12.5" y2="14" />
-        <line x1="10.5" y1="18.5" x2="13.5" y2="18.5" />
+        <path d="M6.5 17.5h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 17.5Z" />
     </svg>
 );
 
@@ -148,4 +156,13 @@ export const LatexTemplateIcon = () => (
         <path d="M16 12.5h2.5M16 15.5h2.5" />
     </svg>
 );
+
+export function InviteGiftIcon() {
+    return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"/><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"/></svg>;
+}
+
+/** 签到 - 日历加对勾，区分于邀请礼盒。 */
+export function CheckinRailIcon() {
+    return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M8 2.5v4"/><path d="M16 2.5v4"/><path d="M3 9.5h18"/><path d="M9 15l2.2 2.2L15.5 13"/></svg>;
+}
 

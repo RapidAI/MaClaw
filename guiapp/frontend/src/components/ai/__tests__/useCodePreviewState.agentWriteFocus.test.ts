@@ -1,0 +1,236 @@
+/**
+ * Agent writes must surface the edited file in the preview pane.
+ *
+ * useCodePreviewState notifies the host panel (scope.onAgentFileWrite) for
+ * create/modify events that belong to the tab's preview project. The panel
+ * bumps its file-focus nonce so the pane shows the file body — content plus
+ * its +N -M modification status — instead of leaving the directory tree
+ * selected. Events that would not actually land stay silent so they cannot
+ * steal the view: reads (SubAgent exploration), foreign-project writes (an
+ * owned expert result write is the one exception), writes blocked by the
+ * active-session guard (except force-open takeovers), and identical
+ * redeliveries.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+
+const eventHandlers = new Map<string, (data: any) => void>();
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: (name: string, cb: (data: any) => void) => {
+        eventHandlers.set(name, cb);
+        return () => { eventHandlers.delete(name); };
+    },
+    EventsOff: vi.fn(),
+}));
+
+import { applyFileUpdate, useCodePreviewState } from '../useCodePreviewState';
+
+function emitFileUpdate(data: any) {
+    const handler = eventHandlers.get('code:file_update');
+    expect(handler).toBeTruthy();
+    act(() => { handler?.(data); });
+}
+
+function modifyEvent(overrides: Record<string, unknown> = {}) {
+    return {
+        file_path: 'src/main.cpp',
+        content: 'int main() { return 0; }',
+        original: '// old',
+        op_type: 'modify',
+        project_path: 'D:/tasks/linux-sysinfo',
+        session_id: 'session-1',
+        ...overrides,
+    };
+}
+
+describe('useCodePreviewState onAgentFileWrite', () => {
+    it('notifies for a modify event belonging to the tab project', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent());
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'modify' });
+    });
+
+    it('notifies for create events too', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({ op_type: 'create', original: undefined }));
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'create' });
+    });
+
+    it('stays silent for read events (SubAgent exploration must not steal the view)', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined }));
+
+        expect(onWrite).not.toHaveBeenCalled();
+    });
+
+    it('stays silent for writes stamped with another task', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({ project_path: 'D:/tasks/other-task' }));
+
+        expect(onWrite).not.toHaveBeenCalled();
+    });
+
+    it('stays silent for a write blocked by the active-session guard', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        act(() => { eventHandlers.get('code:session_start')?.({ session_id: 'session-1', project_path: 'D:/tasks/linux-sysinfo' }); });
+        emitFileUpdate(modifyEvent({ session_id: 'session-2' }));
+
+        expect(onWrite).not.toHaveBeenCalled();
+
+        // Control: the owning session's write still notifies.
+        emitFileUpdate(modifyEvent({ session_id: 'session-1' }));
+        expect(onWrite).toHaveBeenCalledTimes(1);
+    });
+
+    it('notifies once for an identical redelivery, not twice', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        const event = modifyEvent();
+        emitFileUpdate(event);
+        emitFileUpdate({ ...event });
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+    });
+
+    it('notifies for a force-open takeover from another session', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        act(() => { eventHandlers.get('code:session_start')?.({ session_id: 'session-1', project_path: 'D:/tasks/linux-sysinfo' }); });
+        emitFileUpdate(modifyEvent({ session_id: 'session-2', force_open: true }));
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'modify' });
+    });
+
+    it('notifies for an owned expert write even when the file is stamped with another project', () => {
+        // Expert result sessions own their writes regardless of the stamped
+        // project: the expert tab writes into the tool workspace while the tab
+        // is bound to the task directory. The expertWrite bypass — not the
+        // project-belonging check — is what lets this notify.
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, {
+            taskResultTab: true,
+            expertId: 'paper-1',
+            onAgentFileWrite: onWrite,
+        }));
+
+        emitFileUpdate(modifyEvent({
+            project_path: 'D:/tasks/other-task',
+            session_id: 'local-tools:desktop-user:expert:paper-1',
+            force_open: true,
+        }));
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'modify' });
+    });
+
+    it('notifies for a latex result write on a latex result tab', () => {
+        const onWrite = vi.fn();
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, {
+            latexResultTab: true,
+            onAgentFileWrite: onWrite,
+        }));
+
+        emitFileUpdate({
+            file_path: 'workspace/paper.tex',
+            content: '\\documentclass{article}',
+            op_type: 'modify',
+            project_path: 'D:/tasks/linux-sysinfo',
+            session_id: 'session-1',
+        });
+
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'workspace/paper.tex', latexWorkbench: true, language: 'latex' });
+    });
+
+    it('keeps working when no callback is provided', () => {
+        renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true));
+
+        expect(() => emitFileUpdate(modifyEvent())).not.toThrow();
+    });
+});
+
+describe('applyFileUpdate purity guard', () => {
+    // The write-focus probe runs applyFileUpdate against the last rendered
+    // state BEFORE the setState updater runs it again. If applyFileUpdate ever
+    // mutates its inputs, the probe corrupts the very state the updater starts
+    // from — silently. Frozen inputs make any mutation throw in strict mode.
+    function frozenState() {
+        const state = {
+            sessionID: '',
+            sessionActive: false,
+            active: true,
+            userClosed: false,
+            activeFilePath: 'src/other.cpp',
+            files: new Map([[
+                'src/other.cpp',
+                { filePath: 'src/other.cpp', fileName: 'other.cpp', content: 'x', opType: 'read', language: 'cpp', updatedAt: 1 },
+            ]]),
+            mruOrder: ['src/other.cpp'],
+            pinnedPaths: [] as string[],
+        };
+        Object.freeze(state);
+        Object.freeze(state.mruOrder);
+        Object.freeze(state.pinnedPaths);
+        for (const f of state.files.values()) Object.freeze(f);
+        return state;
+    }
+
+    function frozenWriteFile() {
+        const file = {
+            sessionID: 'session-1',
+            filePath: 'src/main.cpp',
+            fileName: 'main.cpp',
+            content: 'int main() { return 0; }',
+            original: '// old',
+            opType: 'modify',
+            language: 'cpp',
+            updatedAt: Date.now(),
+            forceOpen: false,
+            autoOpenPreview: false,
+            previewTruncated: false,
+            projectPath: 'D:/tasks/linux-sysinfo',
+        };
+        return Object.freeze(file);
+    }
+
+    it('never mutates its inputs when applying a write', () => {
+        const state = frozenState();
+        const file = frozenWriteFile();
+
+        const next = applyFileUpdate(state as any, file as any);
+
+        expect(next).not.toBe(state); // the write actually applied
+        expect(state.activeFilePath).toBe('src/other.cpp');
+        expect(state.mruOrder).toEqual(['src/other.cpp']);
+        expect(state.files.get('src/main.cpp')).toBeUndefined();
+        expect(file.opType).toBe('modify');
+    });
+
+    it('is deterministic across repeated runs from the same state (probe + updater)', () => {
+        const state = frozenState();
+        const file = frozenWriteFile();
+
+        const first = applyFileUpdate(state as any, file as any);
+        const second = applyFileUpdate(state as any, file as any);
+
+        expect(second).toEqual(first);
+    });
+});

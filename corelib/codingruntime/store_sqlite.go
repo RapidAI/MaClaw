@@ -113,8 +113,8 @@ func (s *SQLiteStore) GetTask(taskID string) (*Task, error) {
 	return s.getTask(s.db, taskID)
 }
 
-// activeCodingRuntimeStatusPriority ranks non-terminal statuses so a ref with
-// several live runs surfaces under its strongest state.
+// activeCodingRuntimeStatusPriority ranks live statuses so a ref with several
+// in-flight runs surfaces under its strongest state.
 func activeCodingRuntimeStatusPriority(status TaskStatus) int {
 	switch status {
 	case TaskRunning:
@@ -130,39 +130,97 @@ func activeCodingRuntimeStatusPriority(status TaskStatus) int {
 	}
 }
 
-// ListActiveTaskStatusesByProjectRef returns the strongest non-terminal
-// coding runtime status per project_ref. Pure agent loop coding runs (local
-// and remote) never create a workflow snapshot, so the task list merges this
-// ledger status into its status stats; refs whose runs all reached a terminal
-// state are omitted. Running-adjacent statuses (queued, waiting on children)
-// surface as "running"; approval/blocked runs surface under their own status
-// so the UI can file them as pending instead of completed.
+// activeCodingRuntimeStatusIsLive is a run the user can still see moving or
+// still has to decide. Those outrank an older or newer finished outcome.
+// Queued is not live: a row that never started must not keep a later write
+// looking in progress.
+func activeCodingRuntimeStatusIsLive(status TaskStatus) bool {
+	switch status {
+	case TaskRunning, TaskWaitingChild, TaskWaitingApproval:
+		return true
+	default:
+		return false
+	}
+}
+
+type activeCodingRuntimeRefChoice struct {
+	status    string
+	updatedAt int64
+	live      bool
+}
+
+// preferActiveCodingRuntimeStatus keeps a live run ahead of any finished
+// outcome. Two finished outcomes follow the newer ledger row, so an old probe
+// failure does not hide a later write that already completed.
+func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next activeCodingRuntimeRefChoice) bool {
+	if next.live != cur.live {
+		return next.live
+	}
+	if next.live {
+		nextRank := activeCodingRuntimeStatusPriority(TaskStatus(next.status))
+		curRank := activeCodingRuntimeStatusPriority(TaskStatus(cur.status))
+		if nextRank != curRank {
+			return nextRank > curRank
+		}
+	}
+	if next.updatedAt != cur.updatedAt {
+		return next.updatedAt > cur.updatedAt
+	}
+	return activeCodingRuntimeStatusPriority(TaskStatus(next.status)) > activeCodingRuntimeStatusPriority(TaskStatus(cur.status))
+}
+
+// ListActiveTaskStatusesByProjectRef returns one coding runtime status per
+// project_ref. Pure agent loop coding runs (local and remote) never create a
+// workflow snapshot, so the task list merges this ledger status into its
+// status stats; refs whose runs all reached a terminal state are omitted.
+// A live run or an approval still needs the user and outranks a finished
+// sibling. Otherwise the newest row wins. A gate block is a failure, except
+// a final_workspace_unchanged row that already recorded host file activity:
+// that write is complete and is reported as completed.
 func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.Query(`SELECT project_ref, status FROM coding_runtime_tasks WHERE status NOT IN (?, ?, ?)`,
+	rows, err := s.db.Query(`SELECT t.project_ref, t.status, t.updated_at,
+		COALESCE(a.error_code, ''),
+		EXISTS(SELECT 1 FROM coding_runtime_events e WHERE e.attempt_id = a.attempt_id AND e.type IN ('file_activity', 'remote_file_activity'))
+		FROM coding_runtime_tasks t
+		LEFT JOIN coding_runtime_attempts a ON a.task_id = t.task_id
+			AND a.attempt_no = (SELECT MAX(attempt_no) FROM coding_runtime_attempts WHERE task_id = t.task_id)
+		WHERE t.status NOT IN (?, ?, ?)`,
 		TaskCompleted, TaskFailed, TaskCancelled)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	byRef := map[string]string{}
+	choices := map[string]activeCodingRuntimeRefChoice{}
 	for rows.Next() {
-		var ref, status string
-		if err := rows.Scan(&ref, &status); err != nil {
+		var ref, status, errorCode string
+		var updatedAt int64
+		var hasFileActivity int
+		if err := rows.Scan(&ref, &status, &updatedAt, &errorCode, &hasFileActivity); err != nil {
 			return nil, err
 		}
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
 			continue
 		}
-		if cur, ok := byRef[ref]; !ok || activeCodingRuntimeStatusPriority(TaskStatus(status)) > activeCodingRuntimeStatusPriority(TaskStatus(cur)) {
-			byRef[ref] = status
+		// Only the latest attempt counts. An earlier write must not turn a later
+		// unchanged-workspace block into a completed run.
+		if TaskStatus(status) == TaskBlocked && errorCode == "final_workspace_unchanged" && hasFileActivity != 0 {
+			status = string(TaskCompleted)
+		}
+		next := activeCodingRuntimeRefChoice{status: status, updatedAt: updatedAt, live: activeCodingRuntimeStatusIsLive(TaskStatus(status))}
+		if cur, ok := choices[ref]; !ok || preferActiveCodingRuntimeStatus(cur, next) {
+			choices[ref] = next
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	byRef := make(map[string]string, len(choices))
+	for ref, choice := range choices {
+		byRef[ref] = choice.status
 	}
 	return byRef, nil
 }

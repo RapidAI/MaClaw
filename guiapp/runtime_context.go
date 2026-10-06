@@ -145,6 +145,8 @@ func runtimeSourceFromIMMessage(msg IMUserMessage) RuntimeSourceRef {
 		if provider == "local" || provider == "desktop" {
 			provider = "scheduler"
 		}
+	case isPetCompanionUser(msg.UserID) || provider == petCompanionPlatform:
+		channel = petCompanionChannel
 	case provider == "desktop" || strings.HasPrefix(strings.TrimSpace(msg.UserID), desktopUserID):
 		channel = "desktop"
 	case strings.HasPrefix(provider, "thirdparty") || strings.HasPrefix(strings.TrimSpace(msg.UserID), "thirdparty:"):
@@ -163,6 +165,9 @@ func runtimeActorFromIMMessage(msg IMUserMessage) RuntimeActorRef {
 	}
 	if strings.HasPrefix(strings.TrimSpace(msg.UserID), "ve-group-executor:") {
 		return RuntimeActorRef{ActorID: "digital-employee", ActorType: "digital_employee"}
+	}
+	if isPetCompanionUser(msg.UserID) || strings.EqualFold(strings.TrimSpace(msg.Platform), petCompanionPlatform) {
+		return RuntimeActorRef{ActorID: petCompanionActorID, ActorType: petCompanionActorType}
 	}
 	return RuntimeActorRef{ActorID: "main-ai", ActorType: "main_ai"}
 }

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -137,6 +139,96 @@ func TestSrvManageScheduleCreateIntervalWithoutHour(t *testing.T) {
 	tasks := mgr.List()
 	if len(tasks) != 1 || tasks[0].IntervalMinutes != 30 {
 		t.Fatalf("interval task = %#v", tasks)
+	}
+}
+
+func TestSameUserInstancesKeepIndependentScheduledTasks(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := scheduler.NewManager(filepath.Join(dir, "tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := srvScheduleCaller{InstanceID: "bot-1", TenantID: "tenant", UserID: "alice"}
+	other := srvScheduleCaller{InstanceID: "bot-2", TenantID: "tenant", UserID: "alice"}
+	first := newSrvManageScheduleHandlerForCaller(nil, mgr, alice)
+	second := newSrvManageScheduleHandlerForCaller(nil, mgr, other)
+
+	created := first(map[string]interface{}{
+		"action": "create", "name": "standup", "task_action": "remind standup", "hour": 9,
+		"instance_id": "bot-2", "owner_user_id": "mallory",
+	})
+	if !strings.Contains(created, "已创建") {
+		t.Fatalf("create: %s", created)
+	}
+	tasks := mgr.List()
+	if len(tasks) != 1 || tasks[0].InstanceID != "bot-1" || tasks[0].OwnerUserID != "alice" {
+		t.Fatalf("task must stay on the calling instance: %#v", tasks)
+	}
+	if list := second(map[string]interface{}{"action": "list"}); strings.Contains(list, "standup") {
+		t.Fatalf("other instance listed the task: %s", list)
+	}
+	if list := first(map[string]interface{}{"action": "list"}); !strings.Contains(list, "standup") {
+		t.Fatalf("owner instance list: %s", list)
+	}
+	if updated := second(map[string]interface{}{"action": "update", "id": tasks[0].ID, "hour": 10}); !strings.Contains(updated, "not found") {
+		t.Fatalf("other instance update: %s", updated)
+	}
+	if deleted := second(map[string]interface{}{"action": "delete", "name": "standup"}); !strings.Contains(deleted, "not found") {
+		t.Fatalf("other instance delete: %s", deleted)
+	}
+	if got := mgr.Get(tasks[0].ID); got == nil || got.Hour != 9 {
+		t.Fatalf("task changed by the other instance: %#v", got)
+	}
+	if deleted := first(map[string]interface{}{"action": "delete", "id": tasks[0].ID}); !strings.Contains(deleted, "已删除") {
+		t.Fatalf("owner delete: %s", deleted)
+	}
+}
+
+func TestScheduledTaskRunsOnItsBoundInstance(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "01234567890123456789012345678901",
+	}, agentservice.NewMemoryStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	first, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Bot 1", AllowInvalidConfig: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Bot 2", AllowInvalidConfig: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotPrincipal, instanceID, err := srvScheduledTaskRunTarget(context.Background(), svc, nil, agentservice.Principal{TenantID: "system", UserID: "scheduler"}, &scheduler.ScheduledTask{
+		InstanceID: first.ID, OwnerTenantID: principal.TenantID, OwnerUserID: principal.UserID, Name: "standup",
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instanceID != first.ID || gotPrincipal.UserID != principal.UserID {
+		t.Fatalf("target instance=%s user=%s, want %s %s", instanceID, gotPrincipal.UserID, first.ID, principal.UserID)
+	}
+	_, otherID, err := srvScheduledTaskRunTarget(context.Background(), svc, nil, agentservice.Principal{}, &scheduler.ScheduledTask{
+		InstanceID: second.ID, OwnerTenantID: principal.TenantID, OwnerUserID: principal.UserID,
+	}, nil, nil)
+	if err != nil || otherID != second.ID || otherID == instanceID {
+		t.Fatalf("second target=%s err=%v", otherID, err)
+	}
+	if _, _, err := srvScheduledTaskRunTarget(context.Background(), svc, nil, agentservice.Principal{}, &scheduler.ScheduledTask{
+		InstanceID: "missing", OwnerTenantID: principal.TenantID, OwnerUserID: principal.UserID,
+	}, nil, nil); err == nil {
+		t.Fatal("missing instance must not fall back to a shared scheduler instance")
 	}
 }
 

@@ -10,11 +10,31 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
+// srvScheduleCaller is the agent instance that is managing tasks. An empty
+// InstanceID is the legacy unscoped caller used by tests and admin tools.
+type srvScheduleCaller struct {
+	InstanceID string
+	TenantID   string
+	UserID     string
+}
+
 // newSrvManageScheduleHandler builds manage_schedule for CoreAgentExecutor.
 func newSrvManageScheduleHandler(svc *agentservice.Service, mgr *scheduler.Manager) func(args map[string]interface{}) string {
+	return newSrvManageScheduleHandlerForCaller(svc, mgr, srvScheduleCaller{})
+}
+
+func newSrvManageScheduleHandlerForCaller(svc *agentservice.Service, mgr *scheduler.Manager, caller srvScheduleCaller) func(args map[string]interface{}) string {
+	caller.InstanceID = strings.TrimSpace(caller.InstanceID)
+	caller.TenantID = strings.TrimSpace(caller.TenantID)
+	caller.UserID = strings.TrimSpace(caller.UserID)
 	return func(args map[string]interface{}) string {
 		if mgr == nil {
 			return "定时任务管理器未初始化"
+		}
+		if args != nil {
+			delete(args, "instance_id")
+			delete(args, "owner_tenant_id")
+			delete(args, "owner_user_id")
 		}
 		actionText := stringArg(args, "action")
 		if ta := stringArg(args, "task_action"); ta != "" {
@@ -26,13 +46,13 @@ func newSrvManageScheduleHandler(svc *agentservice.Service, mgr *scheduler.Manag
 		}
 		switch normalizeSrvScheduleAction(actionText) {
 		case "create":
-			return srvToolCreateScheduledTask(svc, mgr, args)
+			return srvToolCreateScheduledTask(svc, mgr, caller, args)
 		case "list":
-			return srvToolListScheduledTasks(mgr)
+			return srvToolListScheduledTasks(mgr, caller)
 		case "delete":
-			return srvToolDeleteScheduledTask(mgr, args)
+			return srvToolDeleteScheduledTask(mgr, caller, args)
 		case "update":
-			return srvToolUpdateScheduledTask(svc, mgr, args)
+			return srvToolUpdateScheduledTask(svc, mgr, caller, args)
 		case "list_targets":
 			return srvToolListScheduleDeliveryTargets(svc, args)
 		default:
@@ -249,7 +269,7 @@ func parseAndResolveSrvDelivery(svc *agentservice.Service, args map[string]inter
 	return d, nil
 }
 
-func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manager, args map[string]interface{}) string {
+func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manager, caller srvScheduleCaller, args map[string]interface{}) string {
 	name := stringArg(args, "name")
 	taskAction := stringArg(args, "task_action")
 	if taskAction == "" {
@@ -290,6 +310,9 @@ func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 		StartDate:       stringArg(args, "start_date"),
 		EndDate:         stringArg(args, "end_date"),
 		TaskType:        stringArg(args, "task_type"),
+		InstanceID:      caller.InstanceID,
+		OwnerTenantID:   caller.TenantID,
+		OwnerUserID:     caller.UserID,
 	}
 	if d, err := parseAndResolveSrvDelivery(svc, args); err != nil {
 		return err.Error()
@@ -315,8 +338,33 @@ func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
 }
 
-func srvToolListScheduledTasks(mgr *scheduler.Manager) string {
-	tasks := mgr.List()
+func srvScheduleTasksForCaller(tasks []scheduler.ScheduledTask, instanceID string) []scheduler.ScheduledTask {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return tasks
+	}
+	out := make([]scheduler.ScheduledTask, 0, len(tasks))
+	for _, task := range tasks {
+		if task.InstanceID == instanceID {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+func srvScheduleTaskVisible(task *scheduler.ScheduledTask, instanceID string) bool {
+	if task == nil {
+		return false
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return true
+	}
+	return task.InstanceID == instanceID
+}
+
+func srvToolListScheduledTasks(mgr *scheduler.Manager, caller srvScheduleCaller) string {
+	tasks := srvScheduleTasksForCaller(mgr.List(), caller.InstanceID)
 	if len(tasks) == 0 {
 		return "当前没有定时任务"
 	}
@@ -340,7 +388,7 @@ func srvToolListScheduledTasks(mgr *scheduler.Manager) string {
 	return b.String()
 }
 
-func srvToolDeleteScheduledTask(mgr *scheduler.Manager, args map[string]interface{}) string {
+func srvToolDeleteScheduledTask(mgr *scheduler.Manager, caller srvScheduleCaller, args map[string]interface{}) string {
 	id := stringArg(args, "id")
 	name := stringArg(args, "name")
 	if id == "" && name == "" {
@@ -348,9 +396,12 @@ func srvToolDeleteScheduledTask(mgr *scheduler.Manager, args map[string]interfac
 	}
 	var err error
 	if id != "" {
+		if !srvScheduleTaskVisible(mgr.Get(id), caller.InstanceID) {
+			return "删除失败: scheduler: task not found"
+		}
 		err = mgr.Delete(id)
 	} else {
-		err = mgr.DeleteByName(name)
+		err = srvDeleteScheduledTaskByName(mgr, name, caller.InstanceID)
 	}
 	if err != nil {
 		return fmt.Sprintf("删除失败: %s", err.Error())
@@ -358,10 +409,22 @@ func srvToolDeleteScheduledTask(mgr *scheduler.Manager, args map[string]interfac
 	return "定时任务已删除"
 }
 
-func srvToolUpdateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manager, args map[string]interface{}) string {
+func srvDeleteScheduledTaskByName(mgr *scheduler.Manager, name, instanceID string) error {
+	for _, task := range mgr.List() {
+		if task.Name == name && srvScheduleTaskVisible(&task, instanceID) {
+			return mgr.Delete(task.ID)
+		}
+	}
+	return fmt.Errorf("scheduler: task named %q not found", name)
+}
+
+func srvToolUpdateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manager, caller srvScheduleCaller, args map[string]interface{}) string {
 	id := stringArg(args, "id")
 	if id == "" {
 		return "缺少 id 参数"
+	}
+	if !srvScheduleTaskVisible(mgr.Get(id), caller.InstanceID) {
+		return "更新失败: scheduler: task not found"
 	}
 	if ta := stringArg(args, "task_action"); ta != "" {
 		args["action"] = ta

@@ -573,33 +573,260 @@ describe('TokenBankPanel', () => {
         await waitFor(() => expect(takeOutMock).toHaveBeenCalledWith('sh_1'));
     });
 
-    it('withdraws the whole available balance with manual=true', async () => {
-        showConfirmMock.mockResolvedValue(true);
+    it('withdraws the typed amount with manual=true, defaulting to the full balance when the cap is blank', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 25_000_000 });
         withdrawMock.mockResolvedValue({ ok: true });
-        const { getByText } = render(<TokenBankPanel lang="en" />);
-        await waitFor(() => expect(getByText('Withdraw to this machine')).toBeTruthy());
-        fireEvent.click(getByText('Withdraw to this machine'));
+        const { getByRole, findByRole, getByLabelText } = render(<TokenBankPanel lang="en" />);
+        const open = await findByRole('button', { name: 'Withdraw to this machine' }) as HTMLButtonElement;
+        await waitFor(() => expect(open.disabled).toBe(false));
+        fireEvent.click(open);
+        const dialog = await findByRole('dialog', { name: 'Withdraw to this machine' });
+        expect(showConfirmMock).not.toHaveBeenCalled();
+        expect(showPromptMock).not.toHaveBeenCalled();
+        expect(showAlertMock).not.toHaveBeenCalled();
+        const input = getByLabelText('Credits to withdraw') as HTMLInputElement;
+        expect(input.value).toBe('25');
+        fireEvent.click(getByRole('button', { name: /^Withdraw$/ }));
         await waitFor(() => expect(withdrawMock).toHaveBeenCalled());
         const [requestID, amountMicro, manual] = withdrawMock.mock.calls[0];
         expect(typeof requestID).toBe('string');
         expect(requestID.length).toBeGreaterThan(0);
-        // Taking the whole balance is only legal in manual mode (E6 caps the
-        // automatic path at 1/N so one machine cannot drain a multi-hub user).
-        expect(amountMicro).toBe(2_500_000);
+        expect(amountMicro).toBe(25_000_000);
         expect(manual).toBe(true);
+        await waitFor(() => expect(dialog.isConnected).toBe(false));
+    });
+
+    it('defaults the withdraw box to the automatic cap and accepts a larger or smaller amount', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        withdrawMock.mockResolvedValue({ ok: true });
+        const { getByText, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByText('提取到本机'));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        await waitFor(() => expect(input.value).toBe('500'));
+
+        fireEvent.change(input, { target: { value: '800' } });
+        fireEvent.click(getByText('提取'));
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalled());
+        expect(withdrawMock.mock.calls[0][1]).toBe(800_000_000);
+        expect(withdrawMock.mock.calls[0][2]).toBe(true);
+    });
+
+    it('keeps a smaller withdraw inside the dialog and sends that amount', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        withdrawMock.mockResolvedValue({ ok: true });
+        const { getByText, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByText('提取到本机'));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        fireEvent.change(input, { target: { value: '12' } });
+        fireEvent.click(getByText('提取'));
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalled());
+        expect(withdrawMock.mock.calls[0][1]).toBe(12_000_000);
+    });
+
+    it('accepts a pasted grouped balance and fullwidth digits', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        withdrawMock.mockResolvedValue({ ok: true });
+        const { getByRole, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByRole('button', { name: '提取到本机' }));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        fireEvent.change(input, { target: { value: '６，９７１．７６' } });
+        expect((getByRole('button', { name: /^提取$/ }) as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(getByRole('button', { name: /^提取$/ }));
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalled());
+        expect(withdrawMock.mock.calls[0][1]).toBe(6_971_760_000);
+    });
+
+    it('refuses a withdraw below 10 or above the available balance', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        const { findByLabelText, getByLabelText, getByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByRole('button', { name: '提取到本机' }));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        const submit = getByRole('button', { name: /^提取$/ }) as HTMLButtonElement;
+
+        fireEvent.change(input, { target: { value: '9.5' } });
+        expect(submit.disabled).toBe(true);
+        expect(getByRole('alert').textContent).toContain('最少提取 10 积分');
+        fireEvent.click(submit);
+        expect(withdrawMock).not.toHaveBeenCalled();
+
+        fireEvent.change(input, { target: { value: '7000' } });
+        expect(submit.disabled).toBe(true);
+        expect(getByRole('alert').textContent).toContain('不能超过当前可用余额');
+        expect(withdrawMock).not.toHaveBeenCalled();
+        expect(showAlertMock).not.toHaveBeenCalled();
+    });
+
+    it('clamps the default to the balance when the automatic cap is higher', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 80_000_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        const { getByText, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByText('提取到本机'));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        expect(input.value).toBe('80');
+    });
+
+    it('keeps focus inside the dialog while a withdrawal is in flight', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 25_000_000 });
+        withdrawMock.mockReturnValue(new Promise(() => {}));
+        const { getByRole, findByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const open = await findByRole('button', { name: '提取到本机' }) as HTMLButtonElement;
+        await waitFor(() => expect(open.disabled).toBe(false));
+        fireEvent.click(open);
+        const dialog = await findByRole('dialog', { name: '提取到本机' });
+        fireEvent.click(getByRole('button', { name: /^提取$/ }));
+        await waitFor(() => expect(getByRole('button', { name: '提取中…' })).toBeTruthy());
+        expect(document.activeElement).toBe(dialog);
+        fireEvent.keyDown(dialog, { key: 'Tab' });
+        expect(document.activeElement).toBe(dialog);
+        expect(withdrawMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not withdraw when the dialog is cancelled', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 25_000_000 });
+        const { getByRole, findByRole, queryByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const open = await findByRole('button', { name: '提取到本机' }) as HTMLButtonElement;
+        await waitFor(() => expect(open.disabled).toBe(false));
+        fireEvent.click(open);
+        expect(await findByRole('dialog', { name: '提取到本机' })).toBeTruthy();
+        expect(open.disabled).toBe(true);
+        fireEvent.click(getByRole('button', { name: '取消' }));
+        await waitFor(() => expect(queryByRole('dialog', { name: '提取到本机' })).toBeNull());
+        expect(withdrawMock).not.toHaveBeenCalled();
     });
 
     it('reuses the request id when a withdraw fails and the user tries again', async () => {
-        showConfirmMock.mockResolvedValue(true);
-        withdrawMock.mockRejectedValueOnce(new Error('Hub rejected the withdrawal'));
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 25_000_000 });
+        withdrawMock.mockRejectedValueOnce(new Error('credits are reserved for this Hub; retry this withdrawal to finish the grant'));
         withdrawMock.mockResolvedValueOnce({ ok: true });
-        const { getByText } = render(<TokenBankPanel lang="en" />);
-        await waitFor(() => expect(getByText('Withdraw to this machine')).toBeTruthy());
-        fireEvent.click(getByText('Withdraw to this machine'));
-        await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(1));
-        fireEvent.click(getByText('Withdraw to this machine'));
+        const { getByRole, findByRole } = render(<TokenBankPanel lang="en" />);
+        const open = await findByRole('button', { name: 'Withdraw to this machine' }) as HTMLButtonElement;
+        await waitFor(() => expect(open.disabled).toBe(false));
+        fireEvent.click(open);
+        await findByRole('dialog', { name: 'Withdraw to this machine' });
+        fireEvent.click(getByRole('button', { name: /^Withdraw$/ }));
+        await waitFor(() => {
+            expect(withdrawMock).toHaveBeenCalledTimes(1);
+            expect(getByRole('alert').textContent).toContain('credits are reserved');
+            expect((getByRole('button', { name: /^Withdraw$/ }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(getByRole('button', { name: /^Withdraw$/ }));
         await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(2));
         expect(withdrawMock.mock.calls[0][0]).toBe(withdrawMock.mock.calls[1][0]);
+        expect(withdrawMock.mock.calls[0][1]).toBe(withdrawMock.mock.calls[1][1]);
+    });
+
+    it('keeps the saved automatic cap when the field has an unsaved draft', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        const { getByRole, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.change(cap, { target: { value: '80' } });
+        fireEvent.click(getByRole('button', { name: '提取到本机' }));
+        expect((getByLabelText('提取数量') as HTMLInputElement).value).toBe('500');
+    });
+
+    it('refuses a different amount after an unconfirmed withdrawal', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        withdrawMock.mockRejectedValueOnce(new Error('credits are reserved for this Hub; retry this withdrawal to finish the grant'));
+        withdrawMock.mockResolvedValueOnce({ ok: true });
+        const { getByRole, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByRole('button', { name: '提取到本机' }));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        const submit = () => getByRole('button', { name: /^提取$/ }) as HTMLButtonElement;
+        fireEvent.click(submit());
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(submit().disabled).toBe(false));
+
+        fireEvent.change(input, { target: { value: '12' } });
+        expect(submit().disabled).toBe(true);
+        expect(getByRole('alert').textContent).toContain('尚未确认');
+        fireEvent.click(submit());
+        expect(withdrawMock).toHaveBeenCalledTimes(1);
+
+        fireEvent.change(input, { target: { value: '500' } });
+        expect(submit().disabled).toBe(false);
+        fireEvent.click(submit());
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(2));
+        expect(withdrawMock.mock.calls[0][0]).toBe(withdrawMock.mock.calls[1][0]);
+        expect(withdrawMock.mock.calls[1][1]).toBe(500_000_000);
+    });
+
+    it('allows another amount after the hub refuses before any debit', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 6_971_760_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        withdrawMock.mockRejectedValueOnce(new Error('Hub rejected the withdrawal: {"code":"SERVICE_GROUP_MISSING"}'));
+        withdrawMock.mockResolvedValueOnce({ ok: true });
+        const { getByRole, findByLabelText, getByLabelText, queryByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByRole('button', { name: '提取到本机' }));
+        const input = getByLabelText('提取数量') as HTMLInputElement;
+        fireEvent.click(getByRole('button', { name: /^提取$/ }));
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(1));
+        fireEvent.change(input, { target: { value: '12' } });
+        await waitFor(() => expect(queryByText(/尚未确认/)).toBeNull());
+        fireEvent.click(getByRole('button', { name: /^提取$/ }));
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(2));
+        expect(withdrawMock.mock.calls[0][0]).not.toBe(withdrawMock.mock.calls[1][0]);
+        expect(withdrawMock.mock.calls[1][1]).toBe(12_000_000);
+    });
+
+    it('reopens an unfinished withdrawal after the balance has already been debited', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 500_000_000 });
+        getAutoSettingsMock.mockResolvedValue({ enabled: true, max_per_withdraw_micro: 500_000_000 });
+        withdrawMock.mockRejectedValueOnce(new Error(
+            'credits are reserved for this Hub; retry this withdrawal to finish the grant: Hub rejected the withdrawal: {"code":"GRANT_PENDING","message":"token bank grant was not confirmed; retry the same request id"}',
+        ));
+        withdrawMock.mockResolvedValueOnce({ ok: true });
+        const { getByRole, findByLabelText, getByLabelText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const cap = await findByLabelText('每次自动提取上限') as HTMLInputElement;
+        await waitFor(() => expect(cap.value).toBe('500'));
+        fireEvent.click(getByRole('button', { name: '提取到本机' }));
+        fireEvent.click(getByRole('button', { name: /^提取$/ }));
+        await waitFor(() => expect(getByRole('alert').textContent).toContain('retry the same request id'));
+        expect(getByRole('alert').textContent).not.toContain('"code"');
+        fireEvent.click(getByRole('button', { name: '取消' }));
+
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 0 });
+        fireEvent.click(getByRole('button', { name: '刷新' }));
+        const open = await findByLabelText('每次自动提取上限').then(() => getByRole('button', { name: '提取到本机' }) as HTMLButtonElement);
+        await waitFor(() => expect(open.disabled).toBe(false));
+        fireEvent.click(open);
+        expect((getByLabelText('提取数量') as HTMLInputElement).value).toBe('500');
+        fireEvent.click(getByRole('button', { name: /^提取$/ }));
+        await waitFor(() => expect(withdrawMock).toHaveBeenCalledTimes(2));
+        expect(withdrawMock.mock.calls[0][0]).toBe(withdrawMock.mock.calls[1][0]);
+        expect(withdrawMock.mock.calls[1][1]).toBe(500_000_000);
+    });
+
+    it('explains that a balance under 10 credits cannot be withdrawn', async () => {
+        summaryMock.mockResolvedValue({ ...summaryFixture, available_micro: 2_500_000 });
+        const { getByRole, findByRole } = render(<TokenBankPanel lang="zh-Hans" />);
+        const open = await findByRole('button', { name: '提取到本机' }) as HTMLButtonElement;
+        await waitFor(() => expect(open.disabled).toBe(false));
+        fireEvent.click(open);
+        expect(await findByRole('alert')).toBeTruthy();
+        expect(getByRole('alert').textContent).toContain('可用积分不足 10');
+        expect((getByRole('button', { name: /^提取$/ }) as HTMLButtonElement).disabled).toBe(true);
+        expect(withdrawMock).not.toHaveBeenCalled();
     });
 
     it('surfaces the sign-in error from the backend verbatim', async () => {

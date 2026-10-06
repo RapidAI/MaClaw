@@ -616,6 +616,19 @@ export function formatCreditsGrouped(micro: number | string | null | undefined, 
     return rounded.toLocaleString(undefined, { maximumFractionDigits: maxFractionDigits });
 }
 
+/**
+ * Digits a person can type or paste into the withdraw box.
+ * Fullwidth digits come from a Chinese IME. Commas come from copying a grouped balance.
+ */
+export function normalizeCreditInput(input: string | number | null | undefined): string {
+    const raw = text(input)
+        .replace(/[０-９]/g, (digit) => String(digit.charCodeAt(0) - 0xFF10))
+        .replace(/，/g, ',')
+        .replace(/．/g, '.');
+    if (/^\d{1,3}(,\d{3})+(\.\d{0,6})?$/.test(raw)) return raw.replace(/,/g, '');
+    return raw;
+}
+
 /** Parse a user-typed whole-credit amount into microcredits, or null if invalid. */
 export function creditsToMicro(input: string | number | null | undefined): number | null {
     const raw = text(input);
@@ -623,6 +636,154 @@ export function creditsToMicro(input: string | number | null | undefined): numbe
     const credits = Number(raw);
     if (!Number.isFinite(credits) || credits < 0) return null;
     return Math.round(credits * MICROCREDITS_PER_CREDIT);
+}
+
+/** Smallest manual withdrawal. Ten credits, in microcredits. */
+export const MIN_TOKEN_BANK_WITHDRAW_MICRO = 10 * MICROCREDITS_PER_CREDIT;
+
+export type TokenBankWithdrawAmountIssue = 'empty' | 'invalid' | 'below_minimum' | 'above_balance' | 'insufficient_balance' | 'pending_amount';
+
+/**
+ * Credits shown in the withdraw box when it opens.
+ *
+ * `capMicro` is the saved automatic cap. It is clamped to the balance so the
+ * box never starts above what can actually move. Zero means no limit, so the
+ * box starts at the whole available balance.
+ */
+export function defaultTokenBankWithdrawAmount(capMicro: number, availableMicro: number): string {
+    const available = finiteMicro(availableMicro);
+    const cap = finiteMicro(capMicro);
+    let micro = cap > 0 ? cap : available;
+    if (micro > available) micro = available;
+    return formatCredits(micro, 6);
+}
+
+/**
+ * Why a typed withdrawal cannot be sent, or null when it is within 10..balance.
+ *
+ * `pendingMicro` is an attempt that already left the client. A different
+ * amount would use a new request id, and a lost response may already have
+ * debited the first one.
+ */
+export function tokenBankWithdrawAmountIssue(
+    raw: string,
+    availableMicro: number,
+    pendingMicro?: number | null,
+): TokenBankWithdrawAmountIssue | null {
+    const available = finiteMicro(availableMicro);
+    const rawText = normalizeCreditInput(raw);
+    if (!rawText) return available < MIN_TOKEN_BANK_WITHDRAW_MICRO ? 'insufficient_balance' : 'empty';
+    // "1e2" is a number, but it is not what a credits box should accept.
+    if (!/^\d+(\.\d{0,6})?$/.test(rawText)) return 'invalid';
+    const micro = creditsToMicro(rawText);
+    if (micro == null || !Number.isSafeInteger(micro)) return 'invalid';
+    const pending = pendingMicro != null && pendingMicro > 0 ? pendingMicro : 0;
+    if (pending > 0 && micro !== pending) return 'pending_amount';
+    // A replay finishes a debit that already happened. The balance may already
+    // be lower than that amount; the server returns the original row.
+    if (pending > 0) return null;
+    if (available < MIN_TOKEN_BANK_WITHDRAW_MICRO) return 'insufficient_balance';
+    if (micro < MIN_TOKEN_BANK_WITHDRAW_MICRO) return 'below_minimum';
+    if (micro > available) return 'above_balance';
+    return null;
+}
+
+/**
+ * Whether a failed withdrawal must be retried with the same request id.
+ *
+ * A lost response, a reserved debit, or an unconfirmed grant may already have
+ * taken the credits. A structured refusal from before that debit has not.
+ */
+// Codes returned only when the debit transaction did not commit.
+// Compared case-insensitively: the hub sends SERVICE_GROUP_MISSING, HubCenter
+// sends unauthorized. TOKEN_BANK_WITHDRAW_FAILED is not here. The hub uses
+// that code for every unclassified error, including a timeout after HubCenter
+// has already committed the debit.
+const PRE_DEBIT_WITHDRAW_CODES = new Set([
+    'service_group_missing',
+    'nothing_to_withdraw',
+    'insufficient_credits',
+    'unauthorized',
+    'auth_unavailable',
+    'hub_not_registered',
+    'invalid_json',
+    'missing_request_id',
+    'invalid_amount',
+    'invalid_kind',
+    'missing_link_id',
+    'service_group_required',
+    'method_not_allowed',
+    'token_bank_unavailable',
+    'token_bank_settings',
+    'service_group_lookup',
+    'hub_not_linked',
+    'hub_link_lookup_failed',
+    'withdraw_failed',
+]);
+
+// The hub labels every unclassified pull error TOKEN_BANK_WITHDRAW_FAILED.
+// A center HTTP refusal and a local setup error happen before the debit.
+// Anything else, including a timeout or a 200 body that could not be read,
+// may already have committed and has to be retried with the same id.
+function withdrawCatchAllSettledBeforeDebit(message: string): boolean {
+    return /hub center token bank:|hub center token bank request failed|is not configured|base url is required|requires a hub center client|requires request id/i.test(message);
+}
+
+function hubErrorCode(raw: string): string | null {
+    const start = raw.indexOf('{');
+    if (start < 0) return null;
+    try {
+        const parsed = JSON.parse(raw.slice(start)) as { code?: unknown };
+        return typeof parsed.code === 'string' ? parsed.code.trim() : '';
+    } catch {
+        return null;
+    }
+}
+
+export function withdrawFailureNeedsReplay(message: string): boolean {
+    const raw = text(message);
+    if (!raw) return false;
+    if (/credits are reserved|grant was not confirmed|retry the same request id|already issued to a different service group|GRANT_PENDING|GRANT_GROUP_MISMATCH/i.test(raw)) {
+        return true;
+    }
+    if (/please sign in|connect to this Hub|not registered with HubCenter|request id is required|amount must not be negative/i.test(raw)) {
+        return false;
+    }
+    if (/Hub rejected the withdrawal|HubCenter rejected the request/i.test(raw)) {
+        // A coded JSON refusal is the handler finishing before commit. A proxy
+        // page or a body that is not JSON can arrive after the debit landed.
+        const code = hubErrorCode(raw);
+        if (!code) return true;
+        if (code.toLowerCase() === 'token_bank_withdraw_failed') {
+            return !withdrawCatchAllSettledBeforeDebit(raw);
+        }
+        return !PRE_DEBIT_WITHDRAW_CODES.has(code.toLowerCase());
+    }
+    return true;
+}
+
+/** The sentence to show for a withdrawal failure, without the raw JSON envelope. */
+export function withdrawFailureDetail(message: string): string {
+    const raw = text(message);
+    if (!raw) return '';
+    const embedded = raw.match(/\{[\s\S]*\}$/);
+    if (!embedded || embedded.index == null) return raw;
+    let detail = '';
+    try {
+        const parsed = JSON.parse(embedded[0]) as { message?: unknown };
+        detail = typeof parsed.message === 'string' ? parsed.message.trim() : '';
+    } catch {
+        return raw;
+    }
+    if (!detail) return raw;
+    const prefix = raw.slice(0, embedded.index).replace(/[:\s]+$/, '').trim();
+    if (!prefix || /^Hub rejected the withdrawal$/i.test(prefix)) return detail;
+    return `${prefix}: ${detail}`;
+}
+
+function finiteMicro(value: number): number {
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.floor(value);
 }
 
 /**

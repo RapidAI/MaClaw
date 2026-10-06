@@ -4133,8 +4133,8 @@ func TestSearchProjectsMergesLocalCodingRuntimeBlockedStatus(t *testing.T) {
 		t.Fatalf("SearchProjects = %+v, want the local coding task row", recent)
 	}
 	got := recent[0].ActiveWorkflow
-	if got == nil || !got.PendingReview || got.Status != "waiting_review" {
-		t.Fatalf("ActiveWorkflow = %#v, want waiting_review/pending-review snapshot", got)
+	if got == nil || got.PendingReview || got.Status != string(codingruntime.TaskFailed) {
+		t.Fatalf("ActiveWorkflow = %#v, want a fatal block surfaced as failed", got)
 	}
 }
 
@@ -4212,5 +4212,29 @@ func TestSearchProjectsKeepsActiveWorkflowSnapshotOverCodingRuntimeMerge(t *test
 	got := recent[0].ActiveWorkflow
 	if got == nil || got.Status != string(workflow.StatusActive) || got.Phase != "review" {
 		t.Fatalf("ActiveWorkflow = %#v, want active workflow snapshot with phase detail", got)
+	}
+}
+
+func TestProjectWorkflowSnapshotActiveIgnoresFinishedPhaseNames(t *testing.T) {
+	if projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "completed", Phase: "execute"}) {
+		t.Fatal("completed execution phase is not a live run")
+	}
+	if projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "failed", Phase: "processing"}) {
+		t.Fatal("failed processing phase is not a live run")
+	}
+	if !projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "interrupted", Phase: "execute"}) {
+		t.Fatal("interrupted execution phase should stay ahead of the ledger")
+	}
+	if !projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "paused", Phase: "execute"}) {
+		t.Fatal("paused execution phase should stay ahead of the ledger")
+	}
+	if !projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "running", Phase: "implement"}) {
+		t.Fatal("running snapshot should stay live")
+	}
+	if !projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "active", Phase: "review"}) {
+		t.Fatal("active snapshot should stay live")
+	}
+	if projectWorkflowSnapshotActive(nil) {
+		t.Fatal("nil snapshot is not live")
 	}
 }

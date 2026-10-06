@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, taskStatusBucketFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -523,13 +523,25 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-filter-shared')).toBeNull();
 
         const statusGroup = screen.getByTestId('task-filter-all').closest('.mc-task-filter-row');
-        const workspaceGroup = screen.getByTestId('task-workspace-filter-all').closest('.mc-task-filter-row');
+        const workspaceGroup = screen.getByTestId('task-workspace-filter-local').closest('.mc-task-filter-row');
         expect(statusGroup).toBeTruthy();
         expect(workspaceGroup).toBeTruthy();
         expect(statusGroup?.parentElement?.classList.contains('mc-task-filter-stack')).toBe(true);
-        expect(statusGroup?.classList.contains('mc-task-filter-row--grid')).toBe(true);
+        expect(statusGroup?.classList.contains('mc-task-filter-row--line')).toBe(true);
+        expect(statusGroup?.classList.contains('mc-task-filter-row--grid')).toBe(false);
+        expect(workspaceGroup?.classList.contains('mc-task-filter-row--line')).toBe(true);
         expect(workspaceGroup?.classList.contains('mc-task-filter-row--grid')).toBe(false);
-        expect(readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8')).toContain('@container task-filters (max-width: 261px)');
+        const filterCss = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
+        // Pins the single-line filters: both rows use the --line variant, which
+        // must stay no-wrap (chips keep the base no-shrink, overflowing rows
+        // scroll instead) and stretch to the full stack width.
+        expect(filterCss).toMatch(/\.mc-task-pane \.mc-task-filter-row--line \{[^}]*flex-wrap: nowrap/s);
+        expect(filterCss).toMatch(/\.mc-task-pane \.mc-task-filter-row--line \{[^}]*width: 100%/s);
+        // The legacy narrow-track @container fallbacks were removed when both
+        // rows became single-line (nothing matches :not(--line) anymore and
+        // the 160px breakpoint is unreachable at the 280px sidebar minimum).
+        // Re-adding one must come together with a wrapping row layout.
+        expect(filterCss).not.toContain('@container task-filters');
         expect(statusGroup).not.toBe(workspaceGroup);
         expect((statusGroup as HTMLElement).getAttribute('style')).toBeNull();
         expect((workspaceGroup as HTMLElement).getAttribute('style')).toBeNull();
@@ -636,6 +648,16 @@ describe('SidebarTaskManagement', () => {
         expect(taskListStatusKind({ bucket: 'completed', tone: 'success' })).toBe('completed');
         expect(taskListStatusKind({ bucket: 'other', tone: 'neutral' })).toBe('cancelled');
         expect(taskListStatusKind({ bucket: 'other' })).toBe('idle');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'failed' }, has_output: true })).toBe('other');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'completed' }, has_output: true })).toBe('completed');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'completed', phase: 'quality_review' } })).toBe('completed');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'completed', phase: 'execute' } })).toBe('completed');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'completed', phase: 'pause' } })).toBe('completed');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'paused', phase: 'execute' } })).toBe('paused');
+        expect(taskListStatusKind({ bucket: 'paused', tone: 'success' })).toBe('completed');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'failed', phase: 'execute' }, has_output: true })).toBe('other');
+        expect(taskStatusBucketFor({ has_output: true })).toBe('completed');
+        expect(taskListStatusKind({ bucket: 'pending', tone: 'success' })).toBe('completed');
 
         renderTaskManagement({
             tasks: [
@@ -766,7 +788,7 @@ describe('SidebarTaskManagement', () => {
         renderTaskManagement({ tasks: [pausedTask] });
 
         const pausedChip = screen.getByTestId('task-filter-paused');
-        expect(pausedChip.closest('.mc-task-filter-row')?.classList.contains('mc-task-filter-row--grid')).toBe(true);
+        expect(pausedChip.closest('.mc-task-filter-row')?.classList.contains('mc-task-filter-row--line')).toBe(true);
         expect(screen.queryByTestId('task-filter-shared')).toBeNull();
         fireEvent.click(pausedChip);
         expect(pausedChip.getAttribute('aria-pressed')).toBe('true');
@@ -814,7 +836,10 @@ describe('SidebarTaskManagement', () => {
 
         const remoteRow = rowByName('Remote task');
         expect(remoteRow.querySelector('[data-testid="workspace-badge-remote"]')).toBeTruthy();
-        expect(workspaceLine(remoteRow).textContent).toContain('10.0.0.8:/app');
+        expect(workspaceLine(remoteRow).textContent).toContain('10.0.0.8/app');
+        expect(workspaceLine(remoteRow).textContent).not.toContain(':22');
+        expect(workspaceLine(remoteRow).querySelector('.stsm-workspace-value')?.getAttribute('title')).toBe('10.0.0.8/app');
+        expect(remoteRow.querySelector('.sidebar-task-row')?.getAttribute('title') || '').toContain('10.0.0.8/app');
     });
 
     it('falls back to a generic label when a remote task has no host meta', () => {
@@ -851,7 +876,9 @@ describe('SidebarTaskManagement', () => {
         };
         renderTaskManagement({ tasks: [localTask, cloudTask, remoteTask] });
 
-        expect(screen.getByTestId('task-workspace-filter-all').textContent).toContain('3');
+        // The workspace row has no "all" chip (the status row's 全部 shows the
+        // total); a selected workspace chip toggles back off instead.
+        expect(screen.queryByTestId('task-workspace-filter-all')).toBeNull();
         expect(screen.getByTestId('task-workspace-filter-local').textContent).toContain('1');
         expect(screen.getByTestId('task-workspace-filter-cloud').textContent).toContain('1');
         expect(screen.getByTestId('task-workspace-filter-remote').textContent).toContain('1');
@@ -866,7 +893,8 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByText('Remote task')).toBeTruthy();
         expect(screen.queryByText('Cloud task')).toBeNull();
 
-        fireEvent.click(screen.getByTestId('task-workspace-filter-all'));
+        fireEvent.click(screen.getByTestId('task-workspace-filter-remote'));
+        expect(screen.getByTestId('task-workspace-filter-remote').getAttribute('aria-pressed')).toBe('false');
         expect(screen.getByText('Local task')).toBeTruthy();
         expect(screen.getByText('Cloud task')).toBeTruthy();
         expect(screen.getByText('Remote task')).toBeTruthy();
@@ -1105,6 +1133,12 @@ describe('SidebarTaskManagement', () => {
         expect(workflowStatusForTask({ status: 'blocked', phase: 'implement' }, 'en')).toEqual({
             label: 'Needs attention', detail: 'Implement', tone: 'danger',
         });
+        expect(workflowStatusForTask({ status: 'failed' }, 'zh-Hans')).toEqual({
+            label: '失败', detail: undefined, tone: 'danger',
+        });
+        expect(workflowStatusForTask({ status: 'interrupted', pending_review: true }, 'zh-Hans')).toEqual({
+            label: '已中断', detail: undefined, tone: 'warning',
+        });
         expect(workflowStatusForTask({ status: 'paused', phase: 'implement' }, 'en')).toEqual({
             label: 'Paused', detail: 'Implement', tone: 'warning',
         });
@@ -1304,6 +1338,41 @@ describe('SidebarTaskManagement', () => {
 
         expect(createButton.querySelector('svg')).toBeTruthy();
         expect(createButton.textContent).not.toContain('+');
+    });
+
+    it('opens task search on the right from the pane field and closes it when cleared', () => {
+        const seen: Array<{ type: string; detail?: unknown }> = [];
+        const listener = (event: Event) => {
+            const custom = event as CustomEvent;
+            seen.push({ type: custom.type, detail: custom.detail });
+        };
+        window.addEventListener('maclaw:open-task-search', listener);
+        window.addEventListener('maclaw:close-task-search', listener);
+        try {
+            renderTaskManagement({ lang: 'zh' });
+            expect(screen.getByTestId('task-pane-search').getAttribute('placeholder')).toBe('搜索任务、云盘、知识库等');
+            fireEvent.change(screen.getByTestId('task-pane-search'), { target: { value: '打印' } });
+            expect(seen).toEqual([{ type: 'maclaw:open-task-search', detail: { query: '打印', epoch: 1 } }]);
+            fireEvent.change(screen.getByTestId('task-pane-search'), { target: { value: '打印 ' } });
+            expect(seen).toHaveLength(1);
+            expect(screen.getByTestId('task-pane-search').getAttribute('role')).toBe('combobox');
+            const panel = document.createElement('div');
+            panel.id = 'project-search-panel';
+            const row = document.createElement('div');
+            row.className = 'psp-row';
+            row.tabIndex = 0;
+            panel.appendChild(row);
+            document.body.appendChild(panel);
+            fireEvent.keyDown(screen.getByTestId('task-pane-search'), { key: 'ArrowDown' });
+            expect(document.activeElement).toBe(row);
+            panel.remove();
+            fireEvent.click(screen.getByRole('button', { name: '清除搜索' }));
+            expect(seen.at(-1)).toEqual({ type: 'maclaw:close-task-search', detail: null });
+            expect((screen.getByTestId('task-pane-search') as HTMLInputElement).value).toBe('');
+        } finally {
+            window.removeEventListener('maclaw:open-task-search', listener);
+            window.removeEventListener('maclaw:close-task-search', listener);
+        }
     });
 
     it('header 新建任务 button opens the assistant wizard page instead of the create dialog', () => {

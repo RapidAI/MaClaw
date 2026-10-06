@@ -115,11 +115,17 @@ func shouldRetrySimpleLLMError(err error) bool {
 	}
 	var httpErr *llmHTTPError
 	if errors.As(err, &httpErr) {
-		return httpErr.statusCode == http.StatusRequestTimeout || httpErr.statusCode == http.StatusTooManyRequests || httpErr.statusCode >= http.StatusInternalServerError
+		return httpErr.statusCode == http.StatusRequestTimeout ||
+			httpErr.statusCode == http.StatusTooManyRequests ||
+			(httpErr.statusCode == http.StatusForbidden && !llm.IsPermanentForbiddenError(err)) ||
+			httpErr.statusCode >= http.StatusInternalServerError
 	}
 	var statusErr *llm.HTTPStatusError
 	if errors.As(err, &statusErr) && statusErr != nil {
-		return statusErr.StatusCode == http.StatusRequestTimeout || statusErr.StatusCode == http.StatusTooManyRequests || statusErr.StatusCode >= http.StatusInternalServerError
+		return statusErr.StatusCode == http.StatusRequestTimeout ||
+			statusErr.StatusCode == http.StatusTooManyRequests ||
+			(statusErr.StatusCode == http.StatusForbidden && !llm.IsPermanentForbiddenError(err)) ||
+			statusErr.StatusCode >= http.StatusInternalServerError
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
@@ -231,15 +237,20 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
 	}
+	// A structured control-plane call (intent tree) matches the desktop path:
+	// one JSON body, not a token stream. Several OpenAI-compatible relays
+	// drop json_schema when stream is set, then the model writes prose until
+	// the classification budget expires.
+	stream := options.ResponseFormat == nil
 	req, data, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream:                 true,
+		Stream:                 stream,
 		ResponseFormat:         options.ResponseFormat,
 		PreserveResponseFormat: options.PreserveResponseFormat,
 	})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[LLM Simple] POST %s model=%s configured_model=%s protocol=%s (stream=true)", endpoint, cfg.UpstreamModel(), cfg.Model, cfg.Protocol)
+	log.Printf("[LLM Simple] POST %s model=%s configured_model=%s protocol=%s (stream=%t)", endpoint, cfg.UpstreamModel(), cfg.Model, cfg.Protocol, stream)
 
 	resp, err := client.Do(req)
 	if err != nil {

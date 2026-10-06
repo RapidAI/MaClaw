@@ -105,9 +105,9 @@ describe('PetSettingsPanel localization', () => {
             '平衡',
             '活跃',
             '高级交互',
-            '文字优先',
-            '语音轮次',
-            '连续对话',
+            '不说话',
+            '说一句就停',
+            '接着聊',
             '关闭',
             '摘要',
             '全文',
@@ -125,9 +125,9 @@ describe('PetSettingsPanel localization', () => {
             'Alert',
             'Quiet',
             'Active',
-            'Text First',
-            'Voice Turn',
-            'Continuous',
+            "Don't talk",
+            'One line, then stop',
+            'Keep talking',
             'Done Only',
         ].forEach((label) => {
             expect(screen.queryByText(label)).toBeNull();
@@ -149,7 +149,7 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.getByText('Idle')).toBeTruthy();
         expect(screen.getByText('Done')).toBeTruthy();
         expect(screen.getByText('Alert')).toBeTruthy();
-        expect(screen.getByText('Text First')).toBeTruthy();
+        expect(screen.getByText("Don't talk")).toBeTruthy();
         expect(screen.getByText('Done Only')).toBeTruthy();
         expect(screen.getByText('Desktop Entry')).toBeTruthy();
         expect(screen.getByText('Advanced Interaction')).toBeTruthy();

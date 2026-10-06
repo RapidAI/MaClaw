@@ -444,9 +444,10 @@ func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Regist
 // local quota left.
 //
 // Lock order is llmCreditChargeMu, then this mutex. IssueTokenBankGrant takes
-// tokenBankGrantMu, then this mutex. Do not take either of those while holding
-// this mutex, and do not call the public registry loader from a caller that
-// already holds it: that loader locks this mutex inside singleflight.
+// tokenBankGrantMu, then this mutex. Admission pulls take their account stripe
+// before tokenBankGrantMu. Do not take any of those while holding this mutex,
+// and do not call the public registry loader from a caller that already holds
+// it: that loader locks this mutex inside singleflight.
 var serviceRegistryMu sync.Mutex
 
 // LockServiceRegistryMutation guards one registry read-modify-write. Callers

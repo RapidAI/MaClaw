@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
     TokenBankAddShareKey,
@@ -25,6 +25,7 @@ import { useDialog } from './CustomDialog';
 import {
     MICROCREDITS_PER_CREDIT,
     creditsToMicro,
+    defaultTokenBankWithdrawAmount,
     extractTokenBankClaimedLinks,
     extractTokenBankGiftLinks,
     extractTokenBankModelDetails,
@@ -45,9 +46,13 @@ import {
     shareCapNoteKind,
     shareCapPauseKind,
     newWithdrawRequestID,
+    normalizeCreditInput,
     normalizeTokenBankGiftLink,
     normalizeTokenBankGiftPreview,
     normalizeTokenBankSummary,
+    tokenBankWithdrawAmountIssue,
+    withdrawFailureDetail,
+    withdrawFailureNeedsReplay,
     toShareStatus,
     wholeCreditsOrMicro,
     type TokenBankGiftLink,
@@ -58,6 +63,7 @@ import {
     type TokenBankShareWindow,
     type TokenBankStatsRange,
     type TokenBankSummary as TokenBankSummaryData,
+    type TokenBankWithdrawAmountIssue,
     type TokenBankWithdrawal,
 } from '../utils/hubcenterTokenBank';
 import { TokenBankAccessDialog } from './TokenBankAccessDialog';
@@ -477,6 +483,224 @@ function giftLinkFromPreview(preview: TokenBankGiftPreview): TokenBankGiftLink {
     };
 }
 
+function withdrawAmountMessage(
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+    issue: TokenBankWithdrawAmountIssue,
+    availableMicro: number,
+    pendingMicro: number | null,
+): string {
+    const available = formatCredits(availableMicro, 6);
+    const pending = formatCredits(pendingMicro || 0, 6);
+    switch (issue) {
+        case 'empty':
+            return t('Enter the credits to withdraw.', '请输入要提取的积分。', '請輸入要提取的積分。');
+        case 'invalid':
+            return t('Enter a valid number of credits.', '请输入有效的积分数量。', '請輸入有效的積分數量。');
+        case 'below_minimum':
+            return t('Withdraw at least 10 credits.', '最少提取 10 积分。', '最少提取 10 積分。');
+        case 'above_balance':
+            return t(
+                `Cannot withdraw more than the ${available} credits available.`,
+                `不能超过当前可用余额 ${available}。`,
+                `不能超過目前可用餘額 ${available}。`,
+            );
+        case 'insufficient_balance':
+            return t(
+                'Fewer than 10 credits are available, so nothing can be withdrawn.',
+                '可用积分不足 10，暂时不能提取。',
+                '可用積分不足 10，暫時不能提取。',
+            );
+        case 'pending_amount':
+            return t(
+                `The last attempt of ${pending} credits is not confirmed. Keep that amount and try again so it is not taken twice.`,
+                `上一次提取 ${pending} 积分尚未确认。请保持这个数量再试，以免重复扣款。`,
+                `上一次提取 ${pending} 積分尚未確認。請保持這個數量再試，以免重複扣款。`,
+            );
+    }
+}
+
+function TokenBankWithdrawDialog({
+    t,
+    availableMicro,
+    amount,
+    pendingMicro,
+    serverError,
+    busy,
+    onAmountChange,
+    onClose,
+    onSubmit,
+}: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    availableMicro: number;
+    amount: string;
+    pendingMicro: number | null;
+    serverError: string;
+    busy: boolean;
+    onAmountChange: (value: string) => void;
+    onClose: () => void;
+    onSubmit: () => void;
+}) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+    const backdropPressed = useRef(false);
+    const wasBusy = useRef(false);
+    const hintId = useId();
+    const errorId = useId();
+    const issue = tokenBankWithdrawAmountIssue(amount, availableMicro, pendingMicro);
+    const message = issue ? withdrawAmountMessage(t, issue, availableMicro, pendingMicro) : withdrawFailureDetail(serverError);
+    const availableLabel = formatCredits(availableMicro, 6);
+    const title = t('Withdraw to this machine', '提取到本机', '提取到本機');
+
+    useEffect(() => {
+        const node = dialogRef.current;
+        if (!node) return;
+        const focusAmount = () => {
+            const input = inputRef.current;
+            if (input && !input.disabled) {
+                input.focus({ preventScroll: true });
+                return;
+            }
+            const button = node.querySelector<HTMLElement>('button:not([disabled])');
+            (button ?? node).focus({ preventScroll: true });
+        };
+        focusAmount();
+        inputRef.current?.select();
+        const onFocusIn = (event: FocusEvent) => {
+            const target = event.target;
+            if (!(target instanceof Node) || node.contains(target)) return;
+            if (target instanceof Element && target.closest('[role="dialog"]')) return;
+            focusAmount();
+        };
+        document.addEventListener('focusin', onFocusIn, true);
+        return () => document.removeEventListener('focusin', onFocusIn, true);
+    }, []);
+
+    useEffect(() => {
+        const node = dialogRef.current;
+        if (!node) return;
+        const onKey = (event: KeyboardEvent) => {
+            const active = document.activeElement;
+            const focusInside = active instanceof Node && node.contains(active);
+            if (event.key === 'Escape') {
+                if (busy || !focusInside) return;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                onClose();
+                return;
+            }
+            if (event.key !== 'Tab' || !focusInside) return;
+            const focusable = [...node.querySelectorAll<HTMLElement>(
+                'button:not([disabled]), input:not([disabled])',
+            )];
+            // While the withdrawal is in flight every control is disabled.
+            // Tab must not leave the dialog and reach the page behind it.
+            if (focusable.length === 0) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                node.focus({ preventScroll: true });
+                return;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && (active === first || active === node)) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                last.focus();
+            } else if (!event.shiftKey && active === last) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                first.focus();
+            }
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [busy, onClose]);
+
+    useEffect(() => {
+        const node = dialogRef.current;
+        if (!node) return;
+        if (busy) {
+            // Disabling the focused field moves focus to the page. Park it on
+            // the dialog until the request finishes and the field can take it back.
+            if (!node.querySelector('button:not([disabled]), input:not([disabled])')) {
+                node.focus({ preventScroll: true });
+            }
+        } else if (wasBusy.current) {
+            const input = inputRef.current;
+            if (input && !input.disabled) input.focus({ preventScroll: true });
+        }
+        wasBusy.current = busy;
+    }, [busy]);
+
+    return (
+        <div
+            ref={dialogRef}
+            className="tbk-modal-backdrop"
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
+            data-testid="tbk-withdraw-dialog"
+            tabIndex={-1}
+            onMouseDown={(event) => {
+                backdropPressed.current = event.target === event.currentTarget;
+            }}
+            onClick={(event) => {
+                const pressedHere = backdropPressed.current;
+                backdropPressed.current = false;
+                if (pressedHere && event.target === event.currentTarget && !busy) onClose();
+            }}
+        >
+            <form
+                className="tbk-modal tbk-withdraw-dialog"
+                onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!busy && issue == null) onSubmit();
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+            >
+                <h3 className="tbk-modal__title">{title}</h3>
+                <p className="tbk-modal__hint" id={hintId}>
+                    {t(
+                        `At least 10 credits, and at most the ${availableLabel} available now. This starts at the saved automatic withdrawal cap, or at the full balance when that cap is blank.`,
+                        `最少 10 积分，最多为当前可用余额 ${availableLabel}。默认与已保存的自动提取上限相同；上限留空时，默认为全部可用积分。`,
+                        `最少 10 積分，最多為目前可用餘額 ${availableLabel}。預設與已儲存的自動提取上限相同；上限留空時，預設為全部可用積分。`,
+                    )}
+                </p>
+                <input
+                    ref={inputRef}
+                    aria-label={t('Credits to withdraw', '提取数量', '提取數量')}
+                    aria-invalid={message !== ''}
+                    aria-describedby={message ? `${hintId} ${errorId}` : hintId}
+                    inputMode="decimal"
+                    value={amount}
+                    disabled={busy}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) {
+                            event.preventDefault();
+                        }
+                    }}
+                    onChange={(event) => onAmountChange(event.target.value)}
+                />
+                {message ? (
+                    <p className="tbk-withdraw-dialog__error" id={errorId} role="alert">
+                        {message}
+                    </p>
+                ) : null}
+                <div className="tbk-modal__footer">
+                    <button className="btn-secondary" type="button" onClick={onClose} disabled={busy}>
+                        {t('Cancel', '取消', '取消')}
+                    </button>
+                    <button className="btn-primary" type="submit" disabled={busy || issue != null}>
+                        {busy
+                            ? t('Withdrawing…', '提取中…', '提取中…')
+                            : t('Withdraw', '提取', '提取')}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+}
+
 export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initialClaimSeq = 0, onRequestVerification }: TokenBankPanelProps) => {
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [summary, setSummary] = useState<TokenBankSummaryData | null>(null);
@@ -507,6 +731,9 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
     const [sharePage, setSharePage] = useState(1);
     const [giftPage, setGiftPage] = useState(1);
     const [withdrawPage, setWithdrawPage] = useState(1);
+    const [withdrawOpen, setWithdrawOpen] = useState(false);
+    const [withdrawAmount, setWithdrawAmount] = useState('');
+    const [withdrawError, setWithdrawError] = useState('');
     const [autoCap, setAutoCap] = useState('');
     const [autoCapError, setAutoCapError] = useState('');
     // True only after the field has shown the stored cap. A blank save before
@@ -518,6 +745,9 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
     // the first answer are not an edit: that answer is the stored cap.
     const autoCapDirty = useRef(false);
     const autoCapSynced = useRef(false);
+    // The cap the hub will actually apply. The text field can be an unsaved
+    // draft, and the withdraw box must not treat that draft as the default.
+    const autoCapAppliedMicro = useRef(0);
     // A refresh that started before Save must not paint the old cap afterwards.
     const autoCapRevision = useRef(0);
     const autoCapSaveFlight = useRef(0);
@@ -541,6 +771,11 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
     // because the hub may already have debited HubCenter before the response
     // was lost. A new id on every click would take the credits twice.
     const withdrawRequestID = useRef('');
+    // Paired with withdrawRequestID. Set once an attempt has left the client
+    // and cleared only after it succeeds. A different amount is refused until
+    // then: a new id could debit again if the first response was lost.
+    const withdrawRequestAmount = useRef<number | null>(null);
+    const withdrawInFlight = useRef(false);
     // setState does not block a second click in the same turn. This does.
     const giftWithdrawBusy = useRef(false);
     // One id per gift for as long as this panel is open. The hub debits once
@@ -661,8 +896,9 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                 if (gen === refreshGen.current && capRevision === autoCapRevision.current) {
                     setAutoCapSettled(true);
                     setAutoCapUnsupported(false);
+                    const cap = numericAutoCap(autoRaw);
+                    autoCapAppliedMicro.current = cap;
                     if (!autoCapSynced.current || !autoCapDirty.current) {
-                        const cap = numericAutoCap(autoRaw);
                         setAutoCap(cap > 0 ? formatCredits(cap, 6) : '');
                         setAutoCapError('');
                         setAutoCapCanClear(true);
@@ -972,44 +1208,65 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
         setAccessShare(share);
     }, [busyKey]);
 
-    const withdrawAll = useCallback(async () => {
-        if (busyKey) return;
+    const closeWithdraw = useCallback(() => {
+        if (withdrawInFlight.current) return;
+        setWithdrawOpen(false);
+    }, []);
+
+    const openWithdraw = useCallback(() => {
+        if (busyKey || withdrawOpen || withdrawInFlight.current) return;
         const available = summary?.available_micro || 0;
-        if (available <= 0) {
+        const pending = withdrawRequestID.current ? withdrawRequestAmount.current : null;
+        // A reserved debit can already have emptied the balance. That attempt
+        // still has to be replayed, or the grant on this machine is never written.
+        if (available <= 0 && pending == null) {
             notify(t('There are no credits available to withdraw.', '没有可提取的积分。', '沒有可提取的積分。'));
             return;
         }
-        const ok = await showConfirm(
-            t(
-                `All ${formatCreditsGrouped(available, 2)} available credits will be moved into this Hub's grant pool. Credits cannot leave the platform.`,
-                `将把全部 ${formatCreditsGrouped(available, 2)} 可用积分提取到本机的授权额度。积分不能离开平台。`,
-                `將把全部 ${formatCreditsGrouped(available, 2)} 可用積分提取到本機的授權額度。積分不能離開平台。`,
-            ),
-            t('Withdraw to this machine?', '提取到本机？', '提取到本機？'),
-            {
-                confirmText: t('Withdraw', '提取', '提取'),
-                cancelText: t('Cancel', '取消', '取消'),
-            },
-        );
-        if (!ok) return;
+        if (pending == null) setWithdrawError('');
+        setWithdrawAmount(pending != null
+            ? formatCredits(pending, 6)
+            : defaultTokenBankWithdrawAmount(autoCapAppliedMicro.current, available));
+        setWithdrawOpen(true);
+    }, [busyKey, notify, summary, t, withdrawOpen]);
+
+    const submitWithdraw = useCallback(async () => {
+        if (busyKey || withdrawInFlight.current) return;
+        const available = summary?.available_micro || 0;
+        const pending = withdrawRequestID.current ? withdrawRequestAmount.current : null;
+        const micro = creditsToMicro(normalizeCreditInput(withdrawAmount));
+        if (tokenBankWithdrawAmountIssue(withdrawAmount, available, pending) != null || micro == null) return;
+        withdrawInFlight.current = true;
         setBusyKey('withdraw');
+        setWithdrawError('');
         try {
-            // manual=true is what makes taking the whole balance legal; the
-            // server caps an automatic top-up at 1/N so one machine cannot
-            // drain a user with several hubs (E6).
-            if (!withdrawRequestID.current) {
+            // manual=true is what makes an amount above the 1/N automatic
+            // share legal. The server still refuses more than the balance.
+            if (!withdrawRequestID.current || withdrawRequestAmount.current !== micro) {
                 withdrawRequestID.current = newWithdrawRequestID();
+                withdrawRequestAmount.current = micro;
             }
-            await TokenBankWithdraw(withdrawRequestID.current, available, true);
+            await TokenBankWithdraw(withdrawRequestID.current, micro, true);
             withdrawRequestID.current = '';
+            withdrawRequestAmount.current = null;
+            setWithdrawError('');
+            setWithdrawOpen(false);
             notify(t('Credits withdrawn to this machine.', '积分已提取到本机。', '積分已提取到本機。'));
             await refresh();
         } catch (err) {
-            notify(err instanceof Error ? err.message : String(err));
+            // The dialog covers a toast, so the failure stays in the box.
+            // Only a debit that may already have landed keeps the request id.
+            const message = err instanceof Error ? err.message : String(err);
+            setWithdrawError(message);
+            if (!withdrawFailureNeedsReplay(message)) {
+                withdrawRequestID.current = '';
+                withdrawRequestAmount.current = null;
+            }
         } finally {
+            withdrawInFlight.current = false;
             setBusyKey('');
         }
-    }, [busyKey, notify, refresh, showConfirm, summary, t]);
+    }, [busyKey, notify, refresh, summary, t, withdrawAmount]);
 
     const createGift = useCallback(async () => {
         if (busyKey) return;
@@ -1469,6 +1726,7 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
             // Drop a read that sampled this same revision and has not landed yet.
             autoCapRevision.current += 1;
             autoCapDirty.current = false;
+            autoCapAppliedMicro.current = micro;
             setAutoCap(micro > 0 ? formatCredits(micro, 6) : '');
             setAutoCapCanClear(true);
             setAutoCapUnsupported(false);
@@ -1526,7 +1784,7 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                     <button className="btn-secondary" type="button" onClick={() => setGiftOpen((open) => !open)} disabled={loading}>
                         {t('Gift credits', '转赠积分', '轉贈積分')}
                     </button>
-                    <button className="btn-primary" type="button" onClick={() => void withdrawAll()} disabled={loading || busyKey === 'withdraw' || !summary?.available_micro}>
+                    <button className="btn-primary" type="button" onClick={openWithdraw} disabled={loading || withdrawOpen || busyKey === 'withdraw' || (!summary?.available_micro && !(withdrawRequestID.current && withdrawRequestAmount.current))}>
                         {t('Withdraw to this machine', '提取到本机', '提取到本機')}
                     </button>
                 </div>
@@ -2222,6 +2480,22 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                     </>
                 )}
             </section>
+            {withdrawOpen ? (
+                <TokenBankWithdrawDialog
+                    t={t}
+                    availableMicro={summary?.available_micro || 0}
+                    amount={withdrawAmount}
+                    pendingMicro={withdrawRequestID.current ? withdrawRequestAmount.current : null}
+                    serverError={withdrawError}
+                    busy={busyKey === 'withdraw'}
+                    onAmountChange={(value) => {
+                        setWithdrawAmount(value);
+                        if (!withdrawRequestID.current) setWithdrawError('');
+                    }}
+                    onClose={closeWithdraw}
+                    onSubmit={() => { void submitWithdraw(); }}
+                />
+            ) : null}
             {accessShare ? (
                 <TokenBankAccessDialog
                     lang={lang}

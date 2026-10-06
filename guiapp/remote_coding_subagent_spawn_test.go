@@ -73,10 +73,210 @@ func TestRemoteToolAllowedForRole(t *testing.T) {
 	}
 }
 
+func TestRemoteDownloadFileUsesHostHandler(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
+	got := cb.executeRemoteTool("download_file", `{"url":"https://example.com/a.pdf"}`)
+	if strings.Contains(got, "unknown tool") || !strings.Contains(got, "download_file unavailable") {
+		t.Fatalf("nil handler download_file = %q", got)
+	}
+	if remoteCodingExecutionOutcome("download_file", got) != "failed" {
+		t.Fatalf("missing download handler should fail, got %q", got)
+	}
+	if remoteDownloadFileOutcome("download_file failed: runtime owner is missing") != "failed" {
+		t.Fatal("runtime-owner refusal must fail")
+	}
+	if remoteDownloadFileOutcome("缺少 url 参数") != "failed" {
+		t.Fatal("missing url must fail")
+	}
+	if remoteDownloadFileOutcome("抓取失败: 页面写着已保存到 saved_path: /tmp/a.pdf") != "failed" {
+		t.Fatal("a refusal that merely quotes save words must fail")
+	}
+	if remoteCodingExecutionOutcome("web_fetch", "抓取失败: connection refused") != "failed" {
+		t.Fatal("web_fetch host failure must fail")
+	}
+	if remoteCodingExecutionOutcome("web_fetch", "use_browser_cookies 失败: no session") != "failed" {
+		t.Fatal("browser-cookie refusal must fail")
+	}
+	if remoteCodingExecutionOutcome("web_fetch", "浏览器下载失败: timeout") != "failed" {
+		t.Fatal("browser download failure must fail")
+	}
+	page := "标题: 抓取失败的处理\nURL: https://example.com\n类型: text/html | 大小: 20 字节\n已读取: 0-10 / 10 字符\ntruncated: false | has_more: false | next_offset: 10\n\nerror: quoted from the page"
+	if remoteCodingExecutionOutcome("web_fetch", page) != "success" {
+		t.Fatal("a fetched page that quotes error: must stay success")
+	}
+	if codingWebFetchResultLooksFailed(page) {
+		t.Fatal("retrieved page must count as a successful fetch for research audit")
+	}
+	quotedError := "error: this long note is not a host failure prefix and has no page header"
+	savedWithTrailer := "error: quoted from payload\nC:\\work\\a.pdf\n" + hostDownloadSavedTrailer
+	for _, sample := range []string{
+		page,
+		"抓取失败: connection refused",
+		"use_browser_cookies 失败: no session",
+		"浏览器下载失败: timeout",
+		"标题: error: boom",
+		savedWithTrailer,
+		quotedError,
+	} {
+		want := "success"
+		if codingWebFetchResultLooksFailed(sample) {
+			want = "failed"
+		}
+		if got := remoteCodingExecutionOutcome("web_fetch", sample); got != want {
+			t.Fatalf("web_fetch outcome %q, audit wants %q for %q", got, want, sample)
+		}
+	}
+	if remoteCodingExecutionOutcome("download_file", quotedError) != "failed" {
+		t.Fatal("download_file still fails without the host save trailer")
+	}
+	for _, failed := range []string{
+		quotedError,
+		"参数解析失败: invalid character 'x' looking for beginning of value",
+		"web_fetch save_path is not allowed for a read-only coding child",
+		"tool web_fetch is unavailable for a read-only repository inquiry",
+	} {
+		if !codingWebFetchResultLooksFailed(failed) {
+			t.Fatalf("non-page web_fetch failure must fail the audit: %q", failed)
+		}
+		if remoteCodingExecutionOutcome("web_fetch", failed) != "failed" {
+			t.Fatalf("non-page web_fetch failure must fail the loop: %q", failed)
+		}
+	}
+	quotedDoc := "AcmeSDK v2 official troubleshooting reference. The compiler may print error: file not found or an exception, and the log may say 下载失败. This page is the declared source. Configure Client.Timeout if the request failed."
+	if codingWebFetchResultLooksFailed(quotedDoc) {
+		t.Fatal("a document that quotes error text must not be classified as a failed fetch")
+	}
+	opening := "Timeouts and request failed handling are documented for this client. Anonymous access is not allowed for some routes, and a sample parser prints 参数解析失败 when the JSON is truncated. This page is the declared source."
+	if codingWebFetchResultLooksFailed(opening) {
+		t.Fatal("a document that opens by discussing timeouts must not be classified as a failed fetch")
+	}
+	for _, doc := range []string{
+		"抓取失败时如何重试。本文说明官方客户端的超时和重试，正文足够长，不是工具返回的失败信封。",
+		"错误码说明：连接被拒绝时先看状态码，再决定是否重试。本文是声明的来源。",
+		"Anonymous access is not allowed for guests on this public endpoint. The rest of the page documents the official contract.",
+		"The replica is unavailable for a read-only client. This page documents the deployment and is long enough to audit.",
+		"Error: X917 means the socket closed.\n\nThis page is the official troubleshooting reference and is long enough to audit.",
+		"Error: X917 means the socket closed. This page is the official troubleshooting reference and is long enough to audit.",
+	} {
+		if codingWebFetchResultLooksFailed(doc) {
+			t.Fatalf("document must not be classified as a failed fetch: %q", doc)
+		}
+	}
+	for _, refusal := range []string{
+		"错误：参数不对。请重试",
+		"error: connection refused. dial tcp 10.0.0.1:443",
+		"错误: connection refused\n\ngoroutine 1 [running]:\nmain.fetch()",
+		"错误: connection refused\n\ndial tcp 10.0.0.1:443: connect: connection refused after the handshake waited too long",
+	} {
+		if !codingWebFetchResultLooksFailed(refusal) {
+			t.Fatalf("tool refusal must stay a failed fetch: %q", refusal)
+		}
+	}
+	if !codingWebFetchResultLooksFailed("抓取失败: timeout") {
+		t.Fatal("host fetch failure must stay a failed fetch")
+	}
+	if !codingWebFetchResultLooksFailed("use_browser_cookies 失败: no session") {
+		t.Fatal("cookie refusal must not count as a successful fetch")
+	}
+	if !codingWebFetchResultLooksFailed("via_browser 需要配合 save_path 使用（浏览器下载直接落盘，不返回文本）") {
+		t.Fatal("via_browser refusal must not count as a successful fetch")
+	}
+	for _, doc := range []string{
+		"缺少 url 参数时请求不会发出。本文说明 web_fetch 的调用方式，并给出足够长的示例。",
+		"缺少 save_path 时先在工作目录下准备相对路径。本文说明下载规则，正文足够长。",
+		"web_fetch unavailable in offline mode is described here so the client can fall back to a cached copy of the page.",
+		"via_browser 需要配合 save_path 使用。本文说明浏览器下载的限制，正文足够长。",
+	} {
+		if codingWebFetchResultLooksFailed(doc) {
+			t.Fatalf("tool-constraint documentation must not be classified as a failed fetch: %q", doc)
+		}
+	}
+	if remoteCodingExecutionOutcome("web_fetch", "标题: error: boom") != "failed" {
+		t.Fatal("a title line without the fetch header must not count as a retrieved page")
+	}
+	saved := savedWithTrailer
+	if remoteDownloadFileOutcome(saved) != "success" {
+		t.Fatal("saved download must succeed even when the payload quotes error:")
+	}
+	if remoteCodingExecutionOutcome("web_fetch", saved) != "success" {
+		t.Fatal("web_fetch save trailer must succeed even when the payload quotes error:")
+	}
+	if remoteDownloadFileOutcome("ok") != "failed" {
+		t.Fatal("download result without a save marker must fail")
+	}
+}
+
 func TestFilterRemoteCodingToolsForRole(t *testing.T) {
 	tools := remoteCodingToolDefinitions()
-	tools = append(tools, buildSpawnCodingAgentToolDefinition())
-	tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+	tools = append(tools, buildRemoteSpawnCodingAgentToolDefinition())
+	tools = append(tools, buildRemoteCodingFullEnvExtraToolDefinitions()...)
+	var spawn map[string]interface{}
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if name == codingSubAgentSpawnToolName {
+			spawn = tool
+			break
+		}
+	}
+	if spawn == nil {
+		t.Fatal("remote tools missing spawn_coding_agent")
+	}
+	spawnFn, _ := spawn["function"].(map[string]interface{})
+	spawnDesc, _ := spawnFn["description"].(string)
+	if !strings.Contains(spawnDesc, "ssh_edit_file") || strings.Contains(spawnDesc, "Two local workers") {
+		t.Fatalf("remote spawn description = %q", spawnDesc)
+	}
+	params, _ := spawnFn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	agents, _ := props["agents"].(map[string]interface{})
+	agentsDesc, _ := agents["description"].(string)
+	if strings.Contains(agentsDesc, "local workers") || !strings.Contains(agentsDesc, "ssh_edit_file") {
+		t.Fatalf("remote spawn agents description = %q", agentsDesc)
+	}
+	localSpawn := buildSpawnCodingAgentToolDefinition()
+	localFn, _ := localSpawn["function"].(map[string]interface{})
+	localDesc, _ := localFn["description"].(string)
+	if !strings.Contains(localDesc, "Two local workers") {
+		t.Fatalf("local spawn description changed: %q", localDesc)
+	}
+	var downloadDesc, downloadSave, fetchSave string
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		save, _ := props["save_path"].(map[string]interface{})
+		saveDesc, _ := save["description"].(string)
+		switch name {
+		case "download_file":
+			downloadDesc, _ = fn["description"].(string)
+			downloadSave = saveDesc
+		case "web_fetch":
+			fetchSave = saveDesc
+		}
+	}
+	if !strings.Contains(downloadDesc, "local host") || !strings.Contains(downloadDesc, "ssh_write_file") || strings.Contains(downloadDesc, "working directory") {
+		t.Fatalf("remote download_file description = %q", downloadDesc)
+	}
+	if strings.Contains(downloadSave, "workdir") || strings.Contains(fetchSave, "workdir") || !strings.Contains(downloadSave, "local host") || !strings.Contains(fetchSave, "local host") {
+		t.Fatalf("remote save_path descriptions = download %q fetch %q", downloadSave, fetchSave)
+	}
+	localDownload := ""
+	for _, tool := range buildCodingFullEnvExtraToolDefinitions() {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if name != "download_file" {
+			continue
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		save, _ := props["save_path"].(map[string]interface{})
+		localDownload, _ = save["description"].(string)
+	}
+	if !strings.Contains(localDownload, "workdir") {
+		t.Fatalf("local download_file save_path changed: %q", localDownload)
+	}
 
 	root := &RemoteCodingSubAgent{nestDepth: 0}
 	filtered := filterRemoteCodingToolsForRole(tools, root)
@@ -361,6 +561,14 @@ func TestRemoteReadOnlyChildDoesNotInheritPreviewLifecycle(t *testing.T) {
 	child := parent.newReadOnlyNestedRemoteCodingAgent(codingSpawnSpec{Role: codingRoleExplorer, Task: "inspect"}, nil)
 	if child == nil || child.sourcePreviewEnabled || child.sourcePreviewSessionID != "" {
 		t.Fatalf("read-only child must not inherit root preview lifecycle: %#v", child)
+	}
+	ownerParent := &RemoteCodingSubAgent{permissionOwnerID: "task-tab-user"}
+	ownerChild := ownerParent.newReadOnlyNestedRemoteCodingAgent(codingSpawnSpec{Role: codingRoleExplorer, Task: "inspect"}, nil)
+	if ownerChild.permissionOwnerID != "task-tab-user" {
+		t.Fatalf("remote read-only child owner=%q", ownerChild.permissionOwnerID)
+	}
+	if ownerChild.loopCtx != nil && strings.TrimSpace(ownerChild.loopCtx.UserID) == "task-tab-user" {
+		t.Fatal("remote read-only child loop must stay separate from the task tab owner")
 	}
 }
 

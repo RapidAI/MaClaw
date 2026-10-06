@@ -38,12 +38,6 @@ type VoicePart struct {
 	MimeType string `json:"mime_type"`
 }
 
-type AgentVoicePart struct {
-	Index int       `json:"index"`
-	Total int       `json:"total"`
-	Part  VoicePart `json:"part"`
-}
-
 // FormatStatusIconMark maps semantic StatusIcon tokens to short ASCII marks
 // for plain-text IM delivery. Never emits emoji.
 func FormatStatusIconMark(icon string) string {

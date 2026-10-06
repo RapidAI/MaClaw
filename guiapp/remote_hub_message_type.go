@@ -19,12 +19,16 @@ const (
 	hubInboundMessageIMGatewayReply               hubInboundMessageType = "im.gateway_reply"
 	hubInboundMessageDeviceGatewayPlaybackReceipt hubInboundMessageType = "im.device_gateway_playback_receipt"
 	hubInboundMessageDeviceGatewayDevices         hubInboundMessageType = "im.device_gateway_devices"
-	hubInboundMessageGatewayClaimResult           hubInboundMessageType = "im.gateway_claim_result"
-	hubInboundMessageNicknameAssigned             hubInboundMessageType = "machine.nickname_assigned"
-	hubInboundMessageNotificationPush             hubInboundMessageType = "notification.push"
-	hubInboundMessageMobileDigitalEmployeeTask    hubInboundMessageType = "mobile.digital_employee_task"
-	hubInboundMessageAck                          hubInboundMessageType = "ack"
-	hubInboundMessageVEEvent                      hubInboundMessageType = "ve_event" // sentinel for all ve:* events
+	// Mirrors hub/internal/im/device_event_ack.go's deviceEventAckEnvelopeType.
+	// The Hub's internal package is not importable from guiapp, so the literal
+	// is duplicated the same way im.device_gateway_playback_receipt is.
+	hubInboundMessageDeviceGatewayEventAck     hubInboundMessageType = "im.device_gateway_event_ack"
+	hubInboundMessageGatewayClaimResult        hubInboundMessageType = "im.gateway_claim_result"
+	hubInboundMessageNicknameAssigned          hubInboundMessageType = "machine.nickname_assigned"
+	hubInboundMessageNotificationPush          hubInboundMessageType = "notification.push"
+	hubInboundMessageMobileDigitalEmployeeTask hubInboundMessageType = "mobile.digital_employee_task"
+	hubInboundMessageAck                       hubInboundMessageType = "ack"
+	hubInboundMessageVEEvent                   hubInboundMessageType = "ve_event" // sentinel for all ve:* events
 )
 
 func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
@@ -60,6 +64,8 @@ func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
 		return hubInboundMessageDeviceGatewayPlaybackReceipt
 	case hubInboundMessageDeviceGatewayDevices:
 		return hubInboundMessageDeviceGatewayDevices
+	case hubInboundMessageDeviceGatewayEventAck:
+		return hubInboundMessageDeviceGatewayEventAck
 	case hubInboundMessageGatewayClaimResult:
 		return hubInboundMessageGatewayClaimResult
 	case hubInboundMessageNicknameAssigned:

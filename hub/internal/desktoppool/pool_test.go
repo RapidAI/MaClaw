@@ -1,0 +1,169 @@
+package desktoppool
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+)
+
+type memSettings struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func (m *memSettings) Get(_ context.Context, key string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	value, ok := m.m[key]
+	if !ok {
+		return "", io.EOF
+	}
+	return value, nil
+}
+
+func (m *memSettings) Set(_ context.Context, key, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.m == nil {
+		m.m = map[string]string{}
+	}
+	m.m[key] = value
+	return nil
+}
+
+type memDir struct {
+	email   map[string]string
+	group   map[string]string
+	parents map[string]string
+}
+
+func (d memDir) Email(_ context.Context, userID string) (string, error) { return d.email[userID], nil }
+func (d memDir) GroupID(_ context.Context, email string) (string, error) {
+	return d.group[email], nil
+}
+func (d memDir) ParentID(_ context.Context, groupID string) (string, error) {
+	return d.parents[groupID], nil
+}
+
+func TestUserDepartmentAndGlobalPickDifferentDockerHosts(t *testing.T) {
+	seen := map[string]string{}
+	newServer := func(name, memory string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+name+"-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			var body struct {
+				UserID string `json:"user_id"`
+				Memory string `json:"memory"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			seen[body.UserID] = name + ":" + body.Memory
+			if r.URL.Path == "/v1/desktops/session" {
+				_, _ = w.Write([]byte(`{"cdp_url":"http://` + name + `.example:19020","display":":20"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status":"running","memory":"` + body.Memory + `"}`))
+		}))
+	}
+	globalSrv := newServer("global", "2500m")
+	deptSrv := newServer("dept", "4g")
+	userSrv := newServer("user", "8g")
+	defer globalSrv.Close()
+	defer deptSrv.Close()
+	defer userSrv.Close()
+
+	pool := New(&memSettings{}, memDir{
+		email:   map[string]string{"bob": "bob@example.com", "carol": "carol@example.com"},
+		group:   map[string]string{"bob@example.com": "eng", "carol@example.com": "eng-child"},
+		parents: map[string]string{"eng-child": "eng"},
+	})
+	ctx := context.Background()
+	add := func(name, rawURL, memory string) string {
+		view, err := pool.CreateServer(ctx, "tenant-a", Server{
+			Name: name, BaseURL: rawURL, AccessToken: name + "-token", Memory: memory, CPUs: "1.5", ShmSize: "512m",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return view.ID
+	}
+	globalID := add("global", globalSrv.URL, "2500m")
+	deptID := add("dept", deptSrv.URL, "4g")
+	userID := add("user", userSrv.URL, "8g")
+	if _, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeGlobal, ServerID: globalID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeDepartment, TargetID: "eng", ServerID: deptID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeUser, TargetID: "alice", ServerID: userID}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := pool.View(ctx, "tenant-a")
+	if err != nil || strings.Contains(mustJSON(view), "token") && strings.Contains(mustJSON(view), "global-token") {
+		t.Fatalf("token leaked or view failed: %s %v", mustJSON(view), err)
+	}
+
+	cdp, _, err := pool.OpenSession(ctx, "tenant-a", "alice")
+	if err != nil || cdp != "http://user.example:19020" || seen["alice"] != "user:8g" {
+		t.Fatalf("alice cdp=%s seen=%v err=%v", cdp, seen, err)
+	}
+	if _, _, err := pool.OpenSession(ctx, "tenant-a", "carol"); err != nil || seen["carol"] != "dept:4g" {
+		t.Fatalf("carol seen=%v err=%v", seen, err)
+	}
+	if _, _, err := pool.OpenSession(ctx, "tenant-a", "dave"); err != nil || seen["dave"] != "global:2500m" {
+		t.Fatalf("dave seen=%v err=%v", seen, err)
+	}
+}
+
+func mustJSON(v any) string {
+	raw, _ := json.Marshal(v)
+	return string(raw)
+}
+
+func TestDeletingUserAssignmentStopsTheOldServerDesktop(t *testing.T) {
+	var stopMu sync.Mutex
+	stops := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/desktops/stop" {
+			var body struct {
+				UserID string `json:"user_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			stopMu.Lock()
+			stops[body.UserID]++
+			stopMu.Unlock()
+			_, _ = w.Write([]byte(`{"status":"stopped"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"running"}`))
+	}))
+	defer srv.Close()
+
+	pool := New(&memSettings{}, memDir{})
+	ctx := context.Background()
+	view, err := pool.CreateServer(ctx, "tenant-a", Server{
+		Name: "old", BaseURL: srv.URL, AccessToken: "old-token", Memory: "2500m", CPUs: "1.5", ShmSize: "512m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeUser, TargetID: "alice", ServerID: view.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.DeleteAssignment(ctx, "tenant-a", assignment.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopMu.Lock()
+	defer stopMu.Unlock()
+	if stops["alice"] != 1 {
+		t.Fatalf("old server desktop was not stopped on assignment removal: %v", stops)
+	}
+}

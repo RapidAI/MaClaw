@@ -17,7 +17,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		if h.memory != nil {
 			h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		}
-		h.clearPerUserSessionState(msg.UserID)
+		h.resetConversationResidue(msg.UserID)
 		log.Printf("[TaskContext] new task for user %s: previous task was explicitly cancelled", msg.UserID)
 		return "", true, len(entries) > 0
 	}
@@ -58,7 +58,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		if h.memory != nil {
 			h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		}
-		h.clearPerUserSessionState(msg.UserID)
+		h.resetConversationResidue(msg.UserID)
 		log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
 		return "", true, len(entries) > 0
 	case agent.TaskRecall:

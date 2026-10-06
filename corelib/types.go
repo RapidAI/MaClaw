@@ -1730,6 +1730,12 @@ type TokenUsageStat struct {
 	CachedRequests               int64   `json:"cached_requests,omitempty"`
 	LocalCacheRequests           int64   `json:"local_cache_requests,omitempty"`
 	LocalCacheHits               int64   `json:"local_cache_hits,omitempty"`
+	// TodayTokens, WeekTokens, and MonthTokens are filled on read for the
+	// sidebar. Week starts Monday in the local timezone. They are not stored;
+	// llm_token_usage_by_day is the source for these windows.
+	TodayTokens int64 `json:"today_tokens,omitempty"`
+	WeekTokens  int64 `json:"week_tokens,omitempty"`
+	MonthTokens int64 `json:"month_tokens,omitempty"`
 }
 
 // AdaptivePromptStat is a compact process-level adaptive system-prompt cost

@@ -1,5 +1,7 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetPosition, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
+import { DesktopBotAccess } from '../wailsjs/go/main/App';
+import { beginBotAccessRead, botOpenDecision, isCurrentBotAccessRead, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
 // Windows/tray icon rather than the legacy standalone SVG mark.
@@ -26,6 +28,7 @@ import type { AIExecutionProfile } from './components/ai/AITabTypes';
 import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
 import { SuggestCombobox } from './components/ui/SuggestCombobox';
 import { clipboardImageExtension, readClipboardImageBase64 } from './utils/clipboardImage';
+import { PetCompanionSurface } from './components/pet/PetCompanionSurface';
 
 const windowMaximizeRestore = createWindowMaximizeRestoreSession({
     getSize: WindowGetSize,
@@ -190,6 +193,7 @@ import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
+import { DesktopBotWorkspace } from './components/bots/DesktopBotWorkspace';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
 import {
@@ -385,8 +389,10 @@ function App() {
         };
     }, []);
     const navTabRef = useRef(navTab);
+    const botOpenEpochRef = useRef(0);
     const startupNavAppliedRef = useRef(false);
     const setNavTabNow = useCallback((tab: string) => {
+        botOpenEpochRef.current = navigationEpoch(botOpenEpochRef.current, tab, navTabRef.current);
         if (tab === 'utilities' || tab === 'tools') setUtilitiesPageVisited(true);
         navTabRef.current = tab;
         setNavTab(tab);
@@ -1385,6 +1391,7 @@ function App() {
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
+    const [hubCheckinPending, setHubCheckinPending] = useState(false);
     const [moaSession, setMoaSession] = useState<{
         available: boolean;
         active: boolean;
@@ -2559,6 +2566,39 @@ function App() {
     };
 
     const switchTool = (tool: string) => {
+        if (tool === 'bots') {
+            const accessRead = beginBotAccessRead();
+            const request = ++botOpenEpochRef.current;
+            setToolDropdownOpen(false);
+            const finishBotOpen = (enabled: boolean, message?: string) => {
+                if (request !== botOpenEpochRef.current) return;
+                const decision = botOpenDecision(botOpenEpochRef.current, request, enabled, navTabRef.current);
+                if (decision.toast) {
+                    showToastMessage(message || localizeText('Bot is not enabled on this Hub', '服务器没有开通bot功能', '伺服器沒有開通 bot 功能'));
+                }
+                if (decision.leave) {
+                    setNavTabNow('ai');
+                    setToolDropdownOpen(false);
+                    return;
+                }
+                if (decision.open) {
+                    setNavTabNow('bots');
+                    setToolDropdownOpen(false);
+                }
+            };
+            void DesktopBotAccess().then(access => {
+                if (!isCurrentBotAccessRead(accessRead)) return;
+                const enabled = !!access?.enabled;
+                publishBotAccess(enabled);
+                finishBotOpen(enabled, access?.message);
+            }).catch(() => {
+                // A transport failure is not a grant decision. The rail hides
+                // the entry only after a denial, and the Bot page is left when
+                // Hub stays unreachable (see useSidebarHubAccess).
+            });
+            return;
+        }
+        botOpenEpochRef.current += 1;
         // External editor/CLI tool tabs are retired; keep navigation on the built-in assistant.
         if (isToolTab(tool)) {
             setNavTabNow('ai');
@@ -3754,8 +3794,11 @@ function App() {
                 total.cachedRequests = (total.cachedRequests ?? 0) + Number(item.cached_requests ?? 0);
                 total.localCacheRequests = (total.localCacheRequests ?? 0) + Number(item.local_cache_requests ?? 0);
                 total.localCacheHits = (total.localCacheHits ?? 0) + Number(item.local_cache_hits ?? 0);
+                total.today = (total.today ?? 0) + Number(item.today_tokens ?? item.TodayTokens ?? 0);
+                total.week = (total.week ?? 0) + Number(item.week_tokens ?? item.WeekTokens ?? 0);
+                total.month = (total.month ?? 0) + Number(item.month_tokens ?? item.MonthTokens ?? 0);
                 return total;
-            }, { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
+            }, { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0, today: 0, week: 0, month: 0 });
             const currentProviderUsage = activeSummary ? profileTotals : getSidebarUsageForProvider(normalizedMap, currentProviderName);
             // Names are editable and therefore not stable identifiers. Prefer
             // the active profile's provider ID so its vision state cannot be
@@ -3854,6 +3897,32 @@ function App() {
         }
         showAlert(lang === 'zh-Hans' ? 'Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002' : 'Hub URL is missing, so the Credits page cannot be opened.');
     }, [config, lang, showAlert]);
+
+    const handleHubCheckin = useCallback(async () => {
+        if (hubCheckinPending) return;
+        setHubCheckinPending(true);
+        try {
+            const result = await callBackend(() => CheckinHubLLMService());
+            if (result?.already_checked_in) {
+                showToastMessage(localizeText('Already checked in today', '\u4eca\u65e5\u5df2\u7b7e\u5230', '\u4eca\u65e5\u5df2\u7c3d\u5230'), 3000);
+            } else {
+                const credits = Math.round((Number(result?.credits_awarded) || 0) * 100) / 100;
+                showToastMessage(localizeText(
+                    `Checked in! ${credits} credits awarded`,
+                    `\u7b7e\u5230\u6210\u529f\uff0c\u5df2\u5956\u52b1 ${credits} \u79ef\u5206`,
+                    `\u7c3d\u5230\u6210\u529f\uff0c\u5df2\u734e\u52f5 ${credits} \u7a4d\u5206`,
+                ), 3500);
+            }
+            // Flip the rail button to its claimed state right away; the status
+            // refresh below reconciles the full balance view.
+            setSidebarHubCredits((prev) => prev && prev.checkin ? { ...prev, checkin: { ...prev.checkin, checkedInToday: true } } : prev);
+            void refreshSidebarTokenUsage();
+        } catch (err: any) {
+            showToastMessage(err?.message || localizeText('Check-in failed', '\u7b7e\u5230\u5931\u8d25', '\u7c3d\u5230\u5931\u6557'), 4000);
+        } finally {
+            setHubCheckinPending(false);
+        }
+    }, [hubCheckinPending, localizeText, refreshSidebarTokenUsage, showToastMessage]);
 
     const openServiceRedeemPage = useCallback(() => {
         setNavTabNow('settings');
@@ -5314,6 +5383,7 @@ ${instruction}`;
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <DataMigrationOverlay />
+            <PetCompanionSurface />
             <div className="app-scale-layer">
                 <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
@@ -5372,6 +5442,8 @@ ${instruction}`;
                 busyTaskRuns={busyTaskRuns}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                 sidebarHubCredits={sidebarHubCredits}
+                onHubCheckin={handleHubCheckin}
+                hubCheckinPending={hubCheckinPending}
                 formatSidebarTokens={formatSidebarTokens}
                 formatSidebarHubExpiry={formatSidebarHubExpiry}
                 formatSidebarHubTotalCredits={formatSidebarHubTotalCredits}
@@ -5543,7 +5615,8 @@ ${instruction}`;
                     handleWindowMaximizeToggle={handleWindowMaximizeToggle}
                     windowMaximized={windowMaximized}
                 />}
-                {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
+                {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' || navTab === 'bots' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
+                {navTab === 'bots' && <DesktopBotWorkspace lang={lang} userId={String((config as any)?.remote_user_id || (config as any)?.remote_email || 'local')} />}
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (

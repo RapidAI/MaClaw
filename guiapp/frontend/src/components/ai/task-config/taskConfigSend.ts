@@ -248,7 +248,11 @@ export async function runTaskConfigSend(args: {
     } else {
         bindings.openTaskLaunch({
             projectPath,
-            taskTitle: shortTaskLaunchTitle(trimmed),
+            // describeTaskTitle returns "" for raw commands it cannot rewrite;
+            // fall back to the first line so the tab shows the instruction
+            // instead of the project path until the backend's LLM title
+            // (project-task:renamed) arrives.
+            taskTitle: shortTaskLaunchTitle(trimmed) || trimmed.split(/\r?\n/)[0].slice(0, 40),
             initialMessage,
             ...(opts.mode === "coding_dev" || opts.mode === "remote_coding_dev"
                 ? { agentMode: opts.mode as TaskLaunchNavigation["agentMode"] }

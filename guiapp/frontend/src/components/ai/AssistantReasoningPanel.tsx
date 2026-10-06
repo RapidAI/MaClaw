@@ -3,9 +3,10 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
-/** Recessed field surface inside the assistant bubble. A uniform border keeps
- *  the 8px corners even; the response accent is an inset rail so it is not
- *  wiped out by the `border` shorthand. */
+/** Field fill sits on the chat bubble. The bubble itself is the page surface,
+ *  so this must not reuse `bg` (light) or the title bar (dark) — those match
+ *  the bubble and the panel disappears. Uniform border; the accent is an
+ *  inset rail so the 8px corners stay even. */
 export function reasoningPanelChrome(t: Pick<Theme, "textMuted" | "fieldBg" | "fieldBorder" | "responseBorderLeft">): React.CSSProperties {
     return {
         margin: "5px 0 7px 0",

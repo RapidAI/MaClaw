@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { cloudWorkspaceIdFromPath, isCloudWorkspacePath } from "./codingTaskMode";
 
@@ -1156,9 +1156,19 @@ export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIS
 export function useCodePreviewState(
     activeTabProjectPath?: string,
     previewEnabled = true,
-    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string; latexResultTab?: boolean; taskResultTab?: boolean; expertId?: string; markTaskResult?: boolean },
+    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string; latexResultTab?: boolean; taskResultTab?: boolean; expertId?: string; markTaskResult?: boolean; onAgentFileWrite?: (file: CodeFile) => void },
 ) {
+    // Held in a ref so an inline callback does not re-subscribe the event
+    // listeners on every render.
+    const onAgentFileWriteRef = useRef(scope?.onAgentFileWrite);
+    onAgentFileWriteRef.current = scope?.onAgentFileWrite;
     const [state, setState] = useState<CodePreviewUIState>(initialState);
+    // Last rendered state, used to probe whether an incoming write will
+    // actually land before notifying the host panel. Assigned during render
+    // (sync updates only here), so it matches the `prev` the next event's
+    // updater starts from except within same-tick event bursts.
+    const appliedStateRef = useRef(state);
+    appliedStateRef.current = state;
     const belongingPath = scope?.belongingPath || activeTabProjectPath;
     const cloudWorkspaceTab = scope?.cloudWorkspaceTab === true;
     const latexResultTab = scope?.latexResultTab === true;
@@ -1220,6 +1230,22 @@ export function useCodePreviewState(
             if (latexResult) file = prepareLatexResultFile(file, activeTabProjectPath);
             file = withTaskResultMark(file, markTaskResult);
             const expertWrite = taskResultTab && data.force_open === true && isTaskResultWrite(opType) && isExpertResultSession(data.session_id, expertId);
+            // A write that actually lands in the preview is worth surfacing:
+            // the host panel focuses the file body (content + diff) instead of
+            // leaving the directory tree selected. Reads never notify, and a
+            // probe against the last rendered state (same pure function the
+            // updater runs, so no drift) keeps session-blocked events and
+            // identical redeliveries from yanking the view.
+            if (opType !== 'read') {
+                const belongs = file.latexWorkbench || expertWrite
+                    || codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);
+                // Probe only past the cheap ownership gate: applyFileUpdate
+                // copies the whole state tree, so probing events the updater
+                // would reject anyway is wasted work.
+                if (belongs && applyFileUpdate(appliedStateRef.current, file) !== appliedStateRef.current) {
+                    onAgentFileWriteRef.current?.(file);
+                }
+            }
 
             setState(prev => {
                 if (!file.latexWorkbench && !expertWrite && !codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {

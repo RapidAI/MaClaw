@@ -83,6 +83,17 @@ type UnifiedTaskCreateResult struct {
 // Partial failures return the created path plus Warning and a nil err, so the
 // GUI can still open the task and surface the degradation.
 func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
+	result, err := a.createTaskUnified(opts)
+	// Expert tasks keep the launcher convention (expert display name as the
+	// title); every other branch derives its title from the first instruction,
+	// which the async pass may condense into a short summary.
+	if err == nil && strings.TrimSpace(result.ProjectPath) != "" && strings.TrimSpace(opts.ExpertID) == "" {
+		a.scheduleTaskTitleSummarization(result.ProjectPath, taskNameForCreate(opts.Name, true))
+	}
+	return result, err
+}
+
+func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
 	zero := UnifiedTaskCreateResult{}
 	if a == nil {
 		return zero, fmt.Errorf("app unavailable")

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -18,9 +19,15 @@ import (
 )
 
 // srvIntentTreeHTTPTimeout is only a stuck-connection backstop. The unified
-// classifier's own context is the classification budget: 12s after an
-// embedding guess, 30s when embedding is unavailable.
+// classifier waits its full LLM budget (30s) on every path, including after
+// an embedding guess. The 12s fusion default turned a slow hub reply into a
+// degraded label and an empty tool list.
 const srvIntentTreeHTTPTimeout = 35 * time.Second
+
+// srvIntentMaxOutputTokens is the tree reply cap. The schema allows at most
+// three short candidates. The chat default reserves 65536 output tokens at
+// the hub before this control-plane call is allowed to start.
+const srvIntentMaxOutputTokens = 512
 
 type srvIntentPrincipalContextKey struct{}
 
@@ -28,11 +35,20 @@ type srvIntentPrincipalContextKey struct{}
 // LLM. Tests replace it; production loads that principal's config.
 type srvIntentTreeFunc func(ctx, parentCtx context.Context, p agentservice.Principal, systemPrompt, userText string) (string, error)
 
-type srvIntentLeaseKey struct {
+type srvIntentPrincipalID struct {
 	tenantID string
 	userID   string
-	text     string
 }
+
+// srvIntentLeaseTTL covers the fusion wait and a delayed start of the
+// background tree. The principal is read once, at the start of that retry.
+// srvIntentLeaseGrace keeps an expired principal visible as a tombstone so a
+// different tenant who then says the same words cannot be billed for the
+// first tenant's retry.
+const (
+	srvIntentLeaseTTL   = 2 * time.Minute
+	srvIntentLeaseGrace = 2 * time.Minute
+)
 
 // srvPrincipalIntentClassifier is the same UnifiedIntentClassifier the GUI
 // uses. Layer 2 (the shared embedding model) decides a plain weather lookup
@@ -45,11 +61,25 @@ type srvPrincipalIntentClassifier struct {
 	client *http.Client
 	uic    *intent.UnifiedIntentClassifier
 	tree   srvIntentTreeFunc
+	// clock is replaced by tests. Production uses time.Now.
+	clock func() time.Time
+	// embedderMu guards the last attached model so a second ready signal does
+	// not wipe a warmup that is already running or finished.
+	embedderMu sync.Mutex
+	embedder   embedding.Embedder
+	embedderAt time.Time
 	// leases keeps the principal for a late tree verdict. That retry runs on
 	// context.Background after the turn's deadline, so the request context is
-	// gone. The map is keyed by tenant and user; a shared utterance never
-	// borrows another tenant's model.
-	leases sync.Map // srvIntentLeaseKey -> time.Time
+	// gone. Entries are keyed by the utterance, then by tenant and user.
+	leases srvIntentLeaseBook
+}
+
+// srvIntentLeaseBook is the in-flight utterance table. A mutex keeps the
+// "exactly one principal" check atomic with inserts; sync.Map's Range can
+// observe only one of two concurrent tenants.
+type srvIntentLeaseBook struct {
+	mu    sync.Mutex
+	items map[string]map[srvIntentPrincipalID]time.Time
 }
 
 // srvDynamicIntentClassifier is the process classifier so the embedding model
@@ -60,21 +90,59 @@ func newSrvPrincipalIntentClassifier(svc *agentservice.Service) *srvPrincipalInt
 	c := &srvPrincipalIntentClassifier{
 		svc:    svc,
 		client: &http.Client{Timeout: srvIntentTreeHTTPTimeout},
+		leases: srvIntentLeaseBook{items: map[string]map[srvIntentPrincipalID]time.Time{}},
 	}
 	c.tree = c.defaultIntentTree
 	c.uic = intent.New(intent.Config{
-		LLMContextFunc:     c.classifyTree,
-		LLMTimeout:         intent.DefaultLLMTimeout,
-		FusionTreeDeadline: intent.DefaultFusionTreeDeadline,
+		LLMContextFunc: c.classifyTree,
+		LLMTimeout:     intent.DefaultLLMTimeout,
+		// Match the desktop classifier. The 12s default (DefaultFusionTreeDeadline)
+		// expired under a slow hub model and the turn continued with no tools.
+		FusionTreeDeadline: intent.DefaultLLMTimeout,
 	})
 	return c
 }
+
+// srvIntentEmbedderRearm is how long an in-flight warmup owns the embedder.
+// A ready signal inside that window used to call SetEmbedder again, which
+// drops the generation and discards the anchors already being built.
+const srvIntentEmbedderRearm = time.Minute
 
 func (c *srvPrincipalIntentClassifier) setEmbedder(emb embedding.Embedder) {
 	if c == nil || c.uic == nil {
 		return
 	}
+	now := c.timeNow()
+	c.embedderMu.Lock()
+	defer c.embedderMu.Unlock()
+	if !srvEmbedderAttachNeeded(c.embedder, emb, c.uic.Ready(), c.embedderAt, now) {
+		return
+	}
+	c.embedder = emb
+	c.embedderAt = now
 	c.uic.SetEmbedder(emb)
+}
+
+func srvEmbedderAttachNeeded(current, next embedding.Embedder, ready bool, attachedAt, now time.Time) bool {
+	if next == nil || embedding.IsNoop(next) {
+		return false
+	}
+	if !sameSrvIntentEmbedder(current, next) {
+		return true
+	}
+	if ready {
+		return false
+	}
+	if attachedAt.IsZero() {
+		return true
+	}
+	return !now.Before(attachedAt.Add(srvIntentEmbedderRearm))
+}
+
+func sameSrvIntentEmbedder(current, next embedding.Embedder) bool {
+	currentAdapter, currentOK := current.(srvAIModelEmbedderAdapter)
+	nextAdapter, nextOK := next.(srvAIModelEmbedderAdapter)
+	return currentOK && nextOK && currentAdapter.manager == nextAdapter.manager
 }
 
 func attachSrvIntentEmbedder(emb embedding.Embedder) {
@@ -97,49 +165,78 @@ func (c *srvPrincipalIntentClassifier) ClassifyDynamicIntent(ctx context.Context
 	return projectSrvReadOnlyLookupForPlanning(result), nil
 }
 
+func (c *srvPrincipalIntentClassifier) timeNow() time.Time {
+	if c != nil && c.clock != nil {
+		return c.clock()
+	}
+	return time.Now()
+}
+
 func (c *srvPrincipalIntentClassifier) rememberPrincipal(p agentservice.Principal, text string) {
 	if c == nil || strings.TrimSpace(text) == "" || (p.TenantID == "" && p.UserID == "") {
 		return
 	}
-	now := time.Now()
-	c.leases.Range(func(key, value any) bool {
-		until, ok := value.(time.Time)
-		if ok && !now.Before(until) {
-			c.leases.Delete(key)
-		}
-		return true
-	})
-	c.leases.Store(srvIntentLeaseKey{tenantID: p.TenantID, userID: p.UserID, text: text}, now.Add(intent.DefaultLLMTimeout))
+	now := c.timeNow()
+	c.leases.mu.Lock()
+	defer c.leases.mu.Unlock()
+	if c.leases.items == nil {
+		c.leases.items = map[string]map[srvIntentPrincipalID]time.Time{}
+	}
+	c.sweepLeasesLocked(now)
+	bucket := c.leases.items[text]
+	if bucket == nil {
+		bucket = map[srvIntentPrincipalID]time.Time{}
+		c.leases.items[text] = bucket
+	}
+	bucket[srvIntentPrincipalID{tenantID: p.TenantID, userID: p.UserID}] = now.Add(srvIntentLeaseTTL)
 }
 
 func (c *srvPrincipalIntentClassifier) principalForLateTree(text string) (agentservice.Principal, bool) {
 	if c == nil || text == "" {
 		return agentservice.Principal{}, false
 	}
-	now := time.Now()
+	now := c.timeNow()
+	c.leases.mu.Lock()
+	defer c.leases.mu.Unlock()
+	c.sweepLeasesLocked(now)
+	bucket := c.leases.items[text]
+	usable := 0
+	tombstones := 0
 	var found agentservice.Principal
-	matches := 0
-	c.leases.Range(func(key, value any) bool {
-		lease, ok := key.(srvIntentLeaseKey)
-		until, untilOK := value.(time.Time)
-		if !ok || !untilOK || !now.Before(until) {
-			c.leases.Delete(key)
-			return true
+	for id, expiry := range bucket {
+		if now.Before(expiry) {
+			usable++
+			found = agentservice.Principal{TenantID: id.tenantID, UserID: id.userID}
+			continue
 		}
-		if lease.text != text {
-			return true
-		}
-		matches++
-		found = agentservice.Principal{TenantID: lease.tenantID, UserID: lease.userID}
-		return true
-	})
-	if matches != 1 {
+		tombstones++
+	}
+	// A tombstone means some other principal owned this utterance recently.
+	// Returning the remaining live one would bill that tenant for a retry
+	// that started under the expired principal.
+	if usable != 1 || tombstones != 0 {
 		return agentservice.Principal{}, false
 	}
 	return found, true
 }
 
+func (c *srvPrincipalIntentClassifier) sweepLeasesLocked(now time.Time) {
+	for text, bucket := range c.leases.items {
+		for id, expiry := range bucket {
+			if !now.Before(expiry.Add(srvIntentLeaseGrace)) {
+				delete(bucket, id)
+			}
+		}
+		if len(bucket) == 0 {
+			delete(c.leases.items, text)
+		}
+	}
+}
+
 func (c *srvPrincipalIntentClassifier) classifyTree(ctx, parentCtx context.Context, systemPrompt, userText string) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	p, ok := principalFromIntentContext(ctx)
 	if !ok {
 		p, ok = principalFromIntentContext(parentCtx)
@@ -157,6 +254,9 @@ func (c *srvPrincipalIntentClassifier) classifyTree(ctx, parentCtx context.Conte
 }
 
 func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context, p agentservice.Principal, systemPrompt, userText string) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	if c == nil || c.svc == nil {
 		return "", fmt.Errorf("semantic intent classifier service is unavailable")
 	}
@@ -167,6 +267,14 @@ func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context,
 	llmConfig, err := agentservice.ResolveLLMConfig(config.AppConfig)
 	if err != nil {
 		return "", fmt.Errorf("resolve principal semantic classifier configuration: %w", err)
+	}
+	// The tree prompt mentions code, bugs, and functions. Without an intent
+	// hint the hub reads that text and can send this call to the slow code
+	// model, which misses the fusion budget. Third-party endpoints stay
+	// unmarked: the hint must not turn them into hub-managed calls.
+	llmConfig = srvIntentLLMConfig(llmConfig)
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
 	}
 	client := c.client
 	if client == nil {
@@ -185,6 +293,28 @@ func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context,
 		return "", err
 	}
 	return response.Content, nil
+}
+
+func srvIntentLLMConfig(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if cfg.HubManaged || corelib.IsHubManagedLLMEndpoint(cfg.URL, cfg.Model) {
+		// A hub request with no task type is classified from the prompt body.
+		// The tree prompt mentions code and functions, which outweighs
+		// "classify", so the call lands on the code model and misses the
+		// fusion deadline. Pin the lightweight class. A third-party URL is
+		// left unmarked: the hint helper also sets HubManaged.
+		cfg = cfg.WithHubWorkloadHints(string(llm.TaskIntent), "", "")
+	}
+	// A pinned reasoning model is not rewritten by that class. Thinking on
+	// this control-plane call is what blows the fusion budget. The chat turn
+	// keeps the user's own setting; only this copy is turned off. Models
+	// that reject thinking.type=disabled also need the room to emit that
+	// trace, so they keep the caller's output cap.
+	if !corelib.IsAlwaysOnThinkingModel(cfg) {
+		cfg.ThinkingMode = "disabled"
+		cfg.ReasoningEffort = "none"
+		cfg.MaxOutputTokens = srvIntentMaxOutputTokens
+	}
+	return cfg
 }
 
 func srvIntentCallTimeout(ctx context.Context) time.Duration {

@@ -2058,6 +2058,11 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 	}
 	a.conversationMemoryMu.Lock()
 	defer a.conversationMemoryMu.Unlock()
+	defer func() {
+		if a.aiConversationMemory != nil {
+			a.attachPetConversationFile(a.aiConversationMemory)
+		}
+	}()
 	if a.aiConversationMemory != nil {
 		return a.aiConversationMemory
 	}
@@ -2568,6 +2573,10 @@ func (a *App) startup(ctx context.Context) {
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
 	a.ctx = ctx
 	a.watchFrontendPaint()
+	// Runtime watchdog for the WebView2 "renders but input dies" failure mode;
+	// boot-time paint watches cannot detect it because the render heartbeat
+	// keeps ticking (see frontend_input_watch.go).
+	a.watchFrontendInput()
 	// On Windows, set the native HWND icon as early as possible so the taskbar
 	// and window switcher use the same asset as the notification-area icon.
 	setMainWindowIconFromTray()
@@ -6349,6 +6358,9 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	// Profile-aware usage is likewise backend-owned. It must survive stale
 	// full-config writes independently of the legacy provider aggregate.
 	incoming.LLMProfileTokenUsage = ondisk.LLMProfileTokenUsage
+	// Day buckets are written only by the usage flush. A frontend snapshot
+	// must not drop today/week/month history.
+	incoming.LLMTokenUsageByDay = ondisk.LLMTokenUsageByDay
 
 	// ── Working directory (SetTabWorkingDir for local tab) ──
 	// Only PatchConfigFields should modify this. A stale frontend snapshot
@@ -6536,6 +6548,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 				}
 			}
 		}(config)
+	}
+	if !floatingChanged && floatingVoiceCompanionChanged(oldConfig, config) {
+		a.syncPetVoiceCompanion()
 	}
 	if (devicePetChanged && !config.HardwareAllowCustomPets || hardwareCustomPetsDisabled) && a.thirdPartyGateway != nil {
 		// Local Gateway mode has no Hub relay; broadcast to paired devices
@@ -9154,6 +9169,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				}
 			}
 		}(cfg)
+	}
+	if !floatingChanged && floatingVoiceCompanionChanged(current, cfg) {
+		a.syncPetVoiceCompanion()
 	}
 	if devicePetChanged && !cfg.HardwareAllowCustomPets || hardwareCustomPetsDisabled {
 		// Propagate the active GUI pet immediately. Previously the Hub profile was

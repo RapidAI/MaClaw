@@ -361,8 +361,17 @@ func (h *IMMessageHandler) executeSharedTurn(
 	}
 	if strings.TrimSpace(loopID) == "" {
 		loopID = fmt.Sprintf("shared-%d", time.Now().UnixNano())
-		log.Printf("[InFlightTask] generated missing shared run id user=%q run=%q", userID, loopID)
+		log.Printf("[InFlightTask] generated missing shared loop id user=%q loop=%q", userID, loopID)
 	}
+	// Recovery identity is per turn. loopID stays the context kind for logs
+	// and event scope; reusing it as the checkpoint run id made every chat
+	// turn share in_flight_run:chat.
+	recoveryRunID := newInFlightRecoveryRunID()
+	// Closed when this turn returns. The refresh goroutine starts only after a
+	// checkpoint exists; a turn that never commits recoverable work does not
+	// spawn one.
+	leaseStop := make(chan struct{})
+	defer close(leaseStop)
 	runtimeSink := events
 	if runtimeSink == nil {
 		runtimeSink = runtimeEventSinkForLoop(ctx)
@@ -374,8 +383,8 @@ func (h *IMMessageHandler) executeSharedTurn(
 	var loopStats struct {
 		tools, iters int
 	}
-	log.Printf("[agent-loop] shared start owner=%q request_id=%q loop=%q kind=%s platform=%q text_len=%d attachments=%d",
-		userID, requestID, loopID, kind, platform, len([]rune(userText)), len(attachments))
+	log.Printf("[agent-loop] shared start owner=%q request_id=%q loop=%q recovery_run=%q kind=%s platform=%q text_len=%d attachments=%d",
+		userID, requestID, loopID, recoveryRunID, kind, platform, len([]rune(userText)), len(attachments))
 	// Trajectory cleanup after recover so panic turns stamp error status before Flush.
 	var (
 		trajRecorder  *TrajectoryRecorder
@@ -493,7 +502,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		userID:            userID,
 		userText:          userText,
 		checkpointHistory: append(append([]agent.ConversationEntry(nil), history...), agent.ConversationEntry{Role: "user", Content: userContent}),
-		checkpointRunID:   loopID,
+		checkpointRunID:   recoveryRunID,
 		checkpointProject: projectPath,
 		hasLocalFileWork:  len(attachments) > 0 || hasCurrentLocalFileWork(userText),
 		platform:          platform, // pin turn platform for tool rewrites (not only loopCtx)
@@ -514,6 +523,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		httpClient:        startState.HTTPClient,
 		eventSequence:     &eventSequence,
 	}
+	cb.leaseStop = leaseStop
 	if startupEventErr != nil {
 		cb.recordRuntimeEventError(startupEventErr)
 	}
@@ -589,7 +599,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		}
 		// A crash never reaches this branch. User stop drops the marker here;
 		// every other cancel keeps it.
-		return h.sharedLoopCancelResponse(ctx, userID, loopID, outHistory, userText, cb.hasPendingToolBatch)
+		return h.sharedLoopCancelResponse(ctx, userID, recoveryRunID, outHistory, userText, cb.hasPendingToolBatch)
 	}
 	// ask_user intentionally pauses before the core loop can append its tool
 	// result. Reuse the legacy pause finalizer to atomically persist the paired
@@ -614,9 +624,9 @@ func (h *IMMessageHandler) executeSharedTurn(
 		// Persist the paired interactive history and retire the temporary pre-tool
 		// marker in one write. A split save/clear can leave an old marker on disk
 		// and incorrectly show crash recovery after a normal interactive pause.
-		if err := h.persistSharedInteractivePause(userID, loopID, askUserOutcome.History); err != nil {
+		if err := h.persistSharedInteractivePause(userID, recoveryRunID, askUserOutcome.History); err != nil {
 			cb.semanticDurabilityBlocked = true
-			log.Printf("[InFlightTask] shared ask-user finalization flush failed user=%q run=%q err=%v", userID, loopID, err)
+			log.Printf("[InFlightTask] shared ask-user finalization flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
 			// The paired question only becomes resumable state after its history and
 			// marker transition reach disk together. Do not leave an in-memory
 			// pending answer that can disappear on restart while the old pre-tool
@@ -685,8 +695,8 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// latest successful checkpoint for crash recovery. User cancel already
 	// retired its marker above.
 	if cb.checkpointCommitted && loopResult.Error == "" && loopResult.AskUser == nil && loopResult.RecordAudio == nil {
-		if err := h.memory.CompleteInFlightCheckpointForRun(userID, loopID); err != nil {
-			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, loopID, err)
+		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
+			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
 		}
 	}
 
@@ -1340,6 +1350,11 @@ type sharedAgentLoopCallbacks struct {
 	checkpointRunID     string
 	checkpointProject   string
 	checkpointCommitted bool
+	// leaseStop ends the background lease refresh started after the first
+	// durable checkpoint. Token callbacks must not refresh the lease themselves:
+	// that takes the conversation lock on the stream path.
+	leaseStop <-chan struct{}
+	leaseOnce sync.Once
 	// contextCheckpointReader is set when this request's conversation contains
 	// a checkpoint handle. The handle is a user message, not a tool result, so
 	// the spill overlay cannot see it in checkpointHistory. The reader has to
@@ -2558,6 +2573,11 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if c == nil {
 		return nil
 	}
+	if petCompanionToolsDisabled(c.userID) {
+		c.semanticSurface = nil
+		c.setVisibleToolDefinitions(nil)
+		return nil
+	}
 	if c.semanticSurface != nil {
 		c.maybeOverlaySQLDatabaseForTurn(userText)
 		c.maybeOverlayDocumentContinuationForTurn(userText)
@@ -3449,7 +3469,7 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if isLegacyModelMCPGateway(name) {
 		return legacyModelMCPGatewayDeniedText()
 	}
-	if isLegacyModelManageSkillGateway(name, argsJSON) {
+	if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 		return legacyModelManageSkillGatewayDeniedText()
 	}
 	if c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
@@ -3494,7 +3514,7 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 			result = agent.ToolExecutionResult{Result: legacyToolSurfaceDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && isLegacyModelMCPGateway(name) {
 			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
-		} else if c != nil && isLegacyModelManageSkillGateway(name, argsJSON) {
+		} else if c != nil && legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
 			result = agent.ToolExecutionResult{Result: legacyAdapterCatalogDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
@@ -3518,7 +3538,7 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 			}
 		} else if isLegacyModelMCPGateway(name) {
 			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
-		} else if isLegacyModelManageSkillGateway(name, argsJSON) {
+		} else if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 		} else {
 			result = c.ExecuteToolStructured(name, argsJSON)
@@ -7017,6 +7037,26 @@ func (c *sharedAgentLoopCallbacks) OnToken(delta string) {
 	c.emitRuntimeEvent(agentruntime.EventAssistantDelta, map[string]any{"delta": delta})
 }
 
+// ensureInFlightLeaseRefresh starts one background refresh for this turn.
+// It runs off the token path so a long model call or a silent tool still
+// counts as the owner being alive, without taking the conversation lock on
+// every delta.
+func (c *sharedAgentLoopCallbacks) ensureInFlightLeaseRefresh() {
+	if c == nil || c.leaseStop == nil || c.handler == nil || c.handler.memory == nil {
+		return
+	}
+	runID := strings.TrimSpace(c.checkpointRunID)
+	if runID == "" {
+		return
+	}
+	memory := c.handler.memory
+	userID := c.userID
+	stop := c.leaseStop
+	c.leaseOnce.Do(func() {
+		startInFlightLeaseRefresh(stop, memory, userID, runID)
+	})
+}
+
 // OnLLMNewRound implements agent.LLMRoundNotifier. A live-steer replacement
 // uses the same stream-generation boundary as an ordinary next tool round.
 func (c *sharedAgentLoopCallbacks) OnLLMNewRound() {
@@ -7106,6 +7146,7 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.Conversatio
 	}
 	c.checkpointCommitted = true
 	c.hasPendingToolBatch = true
+	c.ensureInFlightLeaseRefresh()
 	return nil
 }
 
@@ -7150,6 +7191,7 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchCommitted(delta []agent.Conversati
 	}
 	c.checkpointCommitted = true
 	c.hasPendingToolBatch = false
+	c.ensureInFlightLeaseRefresh()
 	// A dependant becomes model-visible only after the complete paired batch is
 	// durably checkpointed. Releasing before persistRecoveryCheckpoint succeeds
 	// would expose authority derived from a batch that recovery still treats as

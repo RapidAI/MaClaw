@@ -69,6 +69,83 @@ func TestParseContentToolCallsDetailed_DeepSeekDSMLDropsSearchPagination(t *test
 	}
 }
 
+func TestParseContentToolCallsDetailed_DeepSeekDSMLRepeatedBars(t *testing.T) {
+	// Recorded from a remote coding turn: the provider decoded the ｜DSML｜
+	// token with the bar written twice and a space before the tag. The calls
+	// are still the invoke elements of that token.
+	content := "先看一下现有代码结构和 main.cpp 的输出方式。\n\n" +
+		"<｜｜DSML｜｜ calls>\n" +
+		"<｜｜DSML｜｜ invoke name=\"ssh_list_dir\">\n" +
+		"<｜｜DSML｜｜ parameter name=\"path\" string=\"true\">/home/znsoft/prj8</｜｜DSML｜｜ parameter>\n" +
+		"</｜｜DSML｜｜ invoke>\n" +
+		"<｜｜DSML｜｜ invoke name=\"ssh_read_file\">\n" +
+		"<｜｜DSML｜｜ parameter name=\"path\" string=\"true\">/home/znsoft/prj8/src/main.cpp</｜｜DSML｜｜ parameter>\n" +
+		"</｜｜DSML｜｜ invoke>\n" +
+		"</｜｜DSML｜｜ calls>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed {
+		t.Fatal("repeated-bar DSML is the same token and must parse")
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %#v", calls)
+	}
+	if calls[0].Function.Name != "ssh_list_dir" || calls[1].Function.Name != "ssh_read_file" {
+		t.Fatalf("names = %q, %q", calls[0].Function.Name, calls[1].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"/home/znsoft/prj8"`) {
+		t.Fatalf("list args = %q", calls[0].Function.Arguments)
+	}
+	if !strings.Contains(calls[1].Function.Arguments, `"/home/znsoft/prj8/src/main.cpp"`) {
+		t.Fatalf("read args = %q", calls[1].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DSMLKeepsFullwidthBarInValue(t *testing.T) {
+	content := "<｜DSML｜tool_calls>\n" +
+		"<｜DSML｜invoke name=\"ssh_write_file\">\n" +
+		"<｜DSML｜parameter name=\"content\" string=\"true\">列｜表</｜DSML｜parameter>\n" +
+		"</｜DSML｜invoke>\n" +
+		"</｜DSML｜tool_calls>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "列｜表") {
+		t.Fatalf("fullwidth bar in value was rewritten: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DSMLSpaceBeforeGt(t *testing.T) {
+	content := "<｜DSML｜calls >\n" +
+		"<｜DSML｜invoke name=\"ssh_list_dir\">\n" +
+		"<｜DSML｜parameter name=\"path\" string=\"true\">/home/znsoft/prj8</｜DSML｜parameter >\n" +
+		"</｜DSML｜invoke >\n" +
+		"</｜DSML｜calls >"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "ssh_list_dir" {
+		t.Fatalf("calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "/home/znsoft/prj8") {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DSMLMentionIsNotACall(t *testing.T) {
+	for _, content := range []string{
+		"The <|DSML| token is documentation, not a call.",
+		"The <|DSML| calls for a retry, not a tool.",
+		"The <|DSML| parameter is a field.",
+		"The <|DSML|invoke the helper.",
+		"see < | DSML | note",
+		"echo |DSML| ok",
+	} {
+		calls, malformed := ParseContentToolCallsDetailed(content)
+		if len(calls) != 0 || malformed {
+			t.Fatalf("%q parsed as a call: %#v malformed=%v", content, calls, malformed)
+		}
+	}
+}
+
 func TestParseContentToolCallsDetailed_DeepSeekDSMLSpacedASCII(t *testing.T) {
 	content := `< | DSML | tool_calls>
 < | DSML | invoke name="web_search">

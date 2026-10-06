@@ -54,8 +54,19 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 
 	// Expose manage_schedule to agents (list_targets / create with group_name resolve).
 	// im_message is wired independently in main (does not require the scheduler).
+	// The context handler binds each task to the calling agent instance.
 	if executor != nil {
 		executor.ScheduleHandler = newSrvManageScheduleHandler(svc, mgr)
+		executor.ScheduleHandlerContext = func(_ context.Context, principal agentservice.Principal, instanceID string, args map[string]interface{}) string {
+			if strings.TrimSpace(instanceID) == "" {
+				return "定时任务必须绑定到当前 agent 实例"
+			}
+			return newSrvManageScheduleHandlerForCaller(svc, mgr, srvScheduleCaller{
+				InstanceID: instanceID,
+				TenantID:   principal.TenantID,
+				UserID:     principal.UserID,
+			})(args)
+		}
 	}
 
 	setSrvSchedulerManager(mgr)
@@ -80,49 +91,9 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 
 		actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
 
-		// Determine the tenant/user for execution.
-		tenantID := executor.LocalBashTenantID
-		userID := executor.LocalBashUserID
-		if tenantID == "" {
-			tenantID = "system"
-		}
-		if userID == "" {
-			userID = "scheduler"
-		}
-
-		principal := agentservice.Principal{
-			TenantID: tenantID,
-			UserID:   userID,
-		}
-
-		// Resolve the scheduler instance (cached after first lookup).
-		mu.Lock()
-		instanceID := cachedInstanceID
-		mu.Unlock()
-
-		if instanceID == "" {
-			instances, _ := svc.ListInstances(ctx, principal)
-			for _, inst := range instances {
-				if inst.Metadata != nil && inst.Metadata["purpose"] == "scheduler" {
-					instanceID = inst.ID
-					break
-				}
-			}
-			if instanceID == "" {
-				inst, err := svc.CreateInstance(ctx, principal, agentservice.CreateInstanceInput{
-					Name: "Scheduled Tasks",
-					Metadata: map[string]string{
-						"purpose": "scheduler",
-					},
-				})
-				if err != nil {
-					return "", fmt.Errorf("create scheduler instance: %w", err)
-				}
-				instanceID = inst.ID
-			}
-			mu.Lock()
-			cachedInstanceID = instanceID
-			mu.Unlock()
+		principal, instanceID, err := srvScheduledTaskRunTarget(ctx, svc, executor, agentservice.Principal{}, task, &mu, &cachedInstanceID)
+		if err != nil {
+			return "", err
 		}
 
 		// Post the message to the instance.
@@ -202,17 +173,23 @@ func sendSrvScheduleDispatch(ctx context.Context, svc *agentservice.Service, pri
 	return nil
 }
 
-func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor, principal agentservice.Principal, task *scheduler.ScheduledTask) (string, error) {
-	if task == nil {
-		return "", fmt.Errorf("scheduled task is nil")
+// srvScheduledTaskRunTarget returns the principal and instance that should run
+// the task. A task with InstanceID runs on that instance. A legacy task with
+// an empty InstanceID still uses the shared scheduler instance.
+func srvScheduledTaskRunTarget(ctx context.Context, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor, fallback agentservice.Principal, task *scheduler.ScheduledTask, mu *sync.Mutex, cachedInstanceID *string) (agentservice.Principal, string, error) {
+	if svc == nil {
+		return agentservice.Principal{}, "", fmt.Errorf("scheduler service is unavailable")
 	}
-	if strings.TrimSpace(principal.TenantID) == "" {
-		principal.TenantID = "system"
-	}
-	if strings.TrimSpace(principal.UserID) == "" {
-		principal.UserID = "scheduler"
-	}
-	if executor != nil {
+	principal := fallback
+	bound := task != nil && strings.TrimSpace(task.InstanceID) != ""
+	if bound {
+		if tenantID := strings.TrimSpace(task.OwnerTenantID); tenantID != "" {
+			principal.TenantID = tenantID
+		}
+		if userID := strings.TrimSpace(task.OwnerUserID); userID != "" {
+			principal.UserID = userID
+		}
+	} else if executor != nil {
 		if tenantID := strings.TrimSpace(executor.LocalBashTenantID); tenantID != "" {
 			principal.TenantID = tenantID
 		}
@@ -220,25 +197,76 @@ func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, e
 			principal.UserID = userID
 		}
 	}
-	actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
-	instances, _ := svc.ListInstances(ctx, principal)
-	instanceID := ""
-	for _, inst := range instances {
-		if inst.Metadata != nil && inst.Metadata["purpose"] == "scheduler" {
-			instanceID = inst.ID
-			break
+	if strings.TrimSpace(principal.TenantID) == "" {
+		principal.TenantID = "system"
+	}
+	if strings.TrimSpace(principal.UserID) == "" {
+		principal.UserID = "scheduler"
+	}
+	if bound {
+		instanceID := strings.TrimSpace(task.InstanceID)
+		if _, err := svc.GetInstance(ctx, principal, instanceID); err != nil {
+			return principal, "", fmt.Errorf("scheduled task instance %s: %w", instanceID, err)
 		}
+		return principal, instanceID, nil
+	}
+
+	instanceID := ""
+	if mu != nil && cachedInstanceID != nil {
+		mu.Lock()
+		instanceID = *cachedInstanceID
+		mu.Unlock()
 	}
 	if instanceID == "" {
-		inst, err := svc.CreateInstance(ctx, principal, agentservice.CreateInstanceInput{
-			Name:     "Scheduled Tasks",
-			Metadata: map[string]string{"purpose": "scheduler"},
-		})
-		if err != nil {
-			return "", fmt.Errorf("create scheduler instance: %w", err)
+		instances, _ := svc.ListInstances(ctx, principal)
+		for _, inst := range instances {
+			if inst.Metadata != nil && inst.Metadata["purpose"] == "scheduler" {
+				instanceID = inst.ID
+				break
+			}
 		}
-		instanceID = inst.ID
+		if instanceID == "" {
+			inst, err := svc.CreateInstance(ctx, principal, agentservice.CreateInstanceInput{
+				Name:     "Scheduled Tasks",
+				Metadata: map[string]string{"purpose": "scheduler"},
+			})
+			if err != nil {
+				return principal, "", fmt.Errorf("create scheduler instance: %w", err)
+			}
+			instanceID = inst.ID
+		}
+		if mu != nil && cachedInstanceID != nil {
+			mu.Lock()
+			*cachedInstanceID = instanceID
+			mu.Unlock()
+		}
 	}
+	return principal, instanceID, nil
+}
+
+func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor, principal agentservice.Principal, task *scheduler.ScheduledTask) (string, error) {
+	if task == nil {
+		return "", fmt.Errorf("scheduled task is nil")
+	}
+	principal, instanceID, err := srvScheduledTaskRunTarget(ctx, svc, executor, principal, task, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
+	var metadata map[string]string
+	if svc != nil && strings.TrimSpace(instanceID) != "" {
+		if inst, instErr := svc.GetInstance(ctx, principal, instanceID); instErr == nil && inst != nil {
+			metadata = inst.Metadata
+			if strings.TrimSpace(inst.ID) != "" {
+				instanceID = inst.ID
+			}
+		}
+	}
+	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, principal.UserID, principal.TenantID)
+	endUnattended := markDesktopUnattended(instanceID)
+	defer endUnattended()
+	releaseDesktop := occupyUserDesktop(ctx, desktopTenantID, desktopUserID, instanceID)
+	defer releaseDesktop()
 	_, msg, err := svc.PostMessage(ctx, principal, instanceID, "", agentservice.PostMessageInput{Content: actionText})
 	if err != nil {
 		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", err))

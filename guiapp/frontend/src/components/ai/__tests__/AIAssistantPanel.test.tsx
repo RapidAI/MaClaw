@@ -195,6 +195,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     LoadProjectContext: loadProjectContextMock,
     LoadProjectConversationHistory: loadProjectConversationHistoryMock,
     SearchTasks: vi.fn().mockResolvedValue([]),
+    NotifyDesktopPetMicBusy: vi.fn().mockResolvedValue(undefined),
     ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
     KnowledgeSearch: vi.fn().mockResolvedValue([]),
     ListExperts: vi.fn().mockResolvedValue('[]'),
@@ -1617,7 +1618,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(inputBar.style.flex).toBe('1 1 auto');
     });
 
-    it('shows card store action before search in the title bar tools group', () => {
+    it('shows card store action in the title bar tools group', () => {
         const { getByTestId } = renderPanel({
             actions: {
                 sendMessage: async () => {},
@@ -1633,9 +1634,8 @@ describe('AIAssistantPanel property tests', () => {
         const titledButtons = buttons.map(button => button.getAttribute('title')).filter((title): title is string => !!title);
         expect(titledButtons).toEqual([
             'Notifications',
-            'Mobile documents (shared Hub library)',
+            'Cloud drive (shared with the phone)',
             'Buy service redemption cards',
-            'Search tasks, cloud files, workspaces, knowledge, experts',
             'Knowledge Base',
             'Refresh news',
             'New conversation',
@@ -1693,17 +1693,17 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('covers the assistant conversation when header search is open', async () => {
-        const { getByTitle, getByTestId, queryByTestId } = renderPanel({
+        const { getByTestId, queryByTestId } = renderPanel({
             window: { inline: true },
             state: { messages: [], sending: false, streaming: false, ready: true, active: true },
         });
 
         expect(getByTestId('ai-welcome-container')).toBeTruthy();
-        fireEvent.mouseDown(getByTitle('Search tasks, cloud files, workspaces, knowledge, experts'));
+        act(() => window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query: 'notes' } })));
         await waitFor(() => expect(getByTestId('project-search-panel')).toBeTruthy());
 
         const panel = getByTestId('project-search-panel');
-        expect(panel.getAttribute('role')).toBe('dialog');
+        expect(panel.getAttribute('role')).toBe('region');
         expect(panel.style.position).toBe('absolute');
         expect(getByTestId('ai-chat-column').getAttribute('data-search-open')).toBe('true');
         expect(getByTestId('ai-welcome-container').hidden).toBe(true);
@@ -1734,13 +1734,13 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('closes task search when app navigation hides the retained panel', async () => {
-        const { getByTitle, getByTestId, queryByTestId, rerender } = renderPanel({
+        const { getByTestId, queryByTestId, rerender } = renderPanel({
             window: { inline: true },
             state: { messages: [], sending: false, streaming: false, ready: true, active: true },
         });
 
-        fireEvent.mouseDown(getByTitle('Search tasks, cloud files, workspaces, knowledge, experts'));
-        await waitFor(() => expect(getByTestId('project-search-input')).toBeTruthy());
+        act(() => window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query: 'notes' } })));
+        await waitFor(() => expect(getByTestId('project-search-panel')).toBeTruthy());
 
         rerender(
             <AIAssistantPanel
@@ -1750,7 +1750,7 @@ describe('AIAssistantPanel property tests', () => {
             />
         );
 
-        await waitFor(() => expect(queryByTestId('project-search-input')).toBeNull());
+        await waitFor(() => expect(queryByTestId('project-search-panel')).toBeNull());
     });
 
     it('hides approval prompts off-page without discarding a live backend request', async () => {
@@ -3724,7 +3724,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(liveEdit?.className).toContain('assistant-reasoning-live-label');
         expect(container.querySelector('[data-live="true"] .assistant-reasoning-live-label')).toBeTruthy();
         expect(container.querySelector('[data-live="false"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程');
-        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(false);
+        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(true);
 
         const calling = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"unknown_mcp"}';
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
@@ -3795,7 +3795,7 @@ describe('AIAssistantPanel property tests', () => {
         });
         expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
         expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
-        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(false);
+        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(true);
     });
 
     it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {
@@ -4121,13 +4121,13 @@ describe('AIAssistantPanel property tests', () => {
             state: { messages: [], sending: false, streaming: false, ready: true },
         });
 
-        await waitFor(() => expect(getByTestId('task-execution-meta').textContent || '').toContain('www.driverdevelopment.com'));
-        expect(getByTestId('task-execution-meta').textContent || '').not.toContain('/home/ubuntu/app');
-        expect(getByTestId('task-execution-meta').getAttribute('title') || '').toContain('www.driverdevelopment.com:/home/ubuntu/app');
+        await waitFor(() => expect(getByTestId('task-execution-meta').textContent || '').toContain('www.driverdevelopment.com/home/ubuntu/app'));
+        expect(getByTestId('task-execution-meta').textContent || '').not.toContain(':22');
+        expect(getByTestId('task-execution-meta').getAttribute('title') || '').toContain('www.driverdevelopment.com/home/ubuntu/app');
         expect(getByTestId('task-execution-meta').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
         await waitFor(() => expect(getByTestId('working-dir-chip').textContent || '').toContain('远程'));
         expect(getByTestId('working-dir-chip').textContent || '').not.toContain('www.driverdevelopment.com');
-        expect(getByTestId('working-dir-chip').getAttribute('title') || '').toContain('www.driverdevelopment.com:/home/ubuntu/app');
+        expect(getByTestId('working-dir-chip').getAttribute('title') || '').toContain('www.driverdevelopment.com/home/ubuntu/app');
         expect(getByTestId('working-dir-chip').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
         expect(getByTestId('working-dir-chip').textContent || '').not.toContain('默认');
     });
@@ -4154,6 +4154,9 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('uses the diagnosis-only SSH preparation path when reconnecting an incident task', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.1.1.2', 'ops', 'remembered-secret', 22, '/srv/service');
         let rearmed = false;
         getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
             ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_safety: 'diagnosis' }
@@ -4175,6 +4178,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        expect((getByTestId('remote-reconnect-password') as HTMLInputElement).value).toBe('');
+        expect(prepareRemoteOpsDiagnosisEnvironmentMock).not.toHaveBeenCalled();
         fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
         fireEvent.click(getByTestId('remote-reconnect-submit'));
         await waitFor(() => expect(prepareRemoteOpsDiagnosisEnvironmentMock).toHaveBeenCalledWith(
@@ -4251,7 +4256,9 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
         await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('/mcp install remote-helper'));
         expect(sendMessage).not.toHaveBeenCalled();
-        expect((getByTestId('remote-reconnect-password') as HTMLInputElement).value).toBe('');
+        const passwordInput = getByTestId('remote-reconnect-password') as HTMLInputElement;
+        expect(passwordInput.value).toBe('');
+        expect(passwordInput.autocomplete).toBe('new-password');
         expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
         expect(getByTestId('remote-coding-reconnect-form').textContent || '').toMatch(/Ship payment fix|payment fix/i);
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
@@ -4388,10 +4395,131 @@ describe('AIAssistantPanel property tests', () => {
             );
         });
         await waitFor(() => expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy());
+        const success = getByTestId('remote-coding-reconnect-success');
+        expect(success.getAttribute('data-surface')).toBe('theme');
+        expect(success.className).toContain('aap-reconnect-success');
+        expect(success.style.background || '').not.toMatch(/success|4f7f6f|11813a/i);
         expect(queryByTestId('remote-coding-reconnect-form')).toBeNull();
         // Auto uses vault only — typing into the password field must not re-fire Prepare.
         prepareRemoteCodingEnvironmentMock.mockClear();
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('auto-reconnects from the OS keyring when local password memory is gone', async () => {
+        window.localStorage.clear();
+        const recall = vi.fn().mockResolvedValue('keyring-secret');
+        (window as unknown as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => (rearmed
+            ? {
+                kind: 'remote', armed: true, needs_reconnect: false, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }
+            : {
+                kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }));
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        try {
+            renderPanel({
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/remote-coding-keyring',
+                    taskTitle: 'Keyring reconnect',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'home.rapidai.tech',
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => {
+                expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledWith(
+                    'D:/tasks/remote-coding-keyring',
+                    'home.rapidai.tech',
+                    'root',
+                    'keyring-secret',
+                    '/home/rapidrec',
+                    55,
+                );
+            });
+            expect(recall).toHaveBeenCalled();
+        } finally {
+            delete (window as unknown as { go?: unknown }).go;
+            prepareRemoteCodingEnvironmentMock.mockReset();
+            prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+        }
+    });
+
+    it('auto-reconnects with the keyring password when the local copy is stale', async () => {
+        window.localStorage.clear();
+        window.localStorage.setItem('maclaw:remote-ssh-passwords', JSON.stringify({
+            'root@home.rapidai.tech:55': 'stale-secret',
+        }));
+        const recall = vi.fn().mockResolvedValue('keyring-secret');
+        const remember = vi.fn().mockResolvedValue(undefined);
+        (window as unknown as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: remember,
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => (rearmed
+            ? {
+                kind: 'remote', armed: true, needs_reconnect: false, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }
+            : {
+                kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }));
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        try {
+            renderPanel({
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/remote-coding-keyring-stale',
+                    taskTitle: 'Keyring stale reconnect',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'home.rapidai.tech',
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => {
+                expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledWith(
+                    'D:/tasks/remote-coding-keyring-stale',
+                    'home.rapidai.tech',
+                    'root',
+                    'keyring-secret',
+                    '/home/rapidrec',
+                    55,
+                );
+            });
+            expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledTimes(1);
+            expect(remember).not.toHaveBeenCalledWith('home.rapidai.tech', 'root', 'stale-secret', 55);
+        } finally {
+            delete (window as unknown as { go?: unknown }).go;
+            prepareRemoteCodingEnvironmentMock.mockReset();
+            prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+        }
     });
 
     it('retries a failed remote SSH reconnect up to three times with exponential backoff', async () => {

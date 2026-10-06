@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -15,6 +17,9 @@ import (
 const (
 	codingWorkbenchPlanMaxTasks = 6
 	codingWorkbenchPlanMinTasks = 2
+	// Six steps with 300-rune briefs already pass 2000 runes. The cut lands
+	// on the last step, which is the one a credit stop still has to run.
+	codingWorkbenchExecutionPlanPersistRunes = 4000
 )
 
 // codingRequestKind is the user-facing level of work expected from a coding
@@ -154,22 +159,6 @@ func applyCodingRequestPlanFloor(decision codingRequestDecision, userText string
 	return decision
 }
 
-// codingBareContinuations are follow-ups that name no new work. In a session
-// that already wrote project files they mean "keep implementing", not a fresh
-// read-only repository question. A longer change request is recognized
-// separately by codingFollowUpAsksForCodeChange.
-var codingBareContinuations = map[string]bool{
-	"继续": true, "繼續": true, "接着": true, "接著": true,
-	"接着做": true, "接著做": true, "继续做": true, "繼續做": true,
-	"继续吧": true, "繼續吧": true, "请继续": true, "請繼續": true,
-	"continue": true, "go on": true, "keep going": true, "carry on": true, "resume": true,
-}
-
-func codingRequestIsBareContinuation(userText string) bool {
-	text := strings.ToLower(strings.Trim(strings.TrimSpace(userText), " \t\r\n。.!！?？~～,，、"))
-	return text != "" && codingBareContinuations[text]
-}
-
 func codingSessionHasImplementationTrajectory(mem stickyCodingWorkbenchMemory) bool {
 	return codingSessionHasWrittenPath(mem.FilesModified) || codingSessionHasWrittenPath(mem.FilesCreated)
 }
@@ -183,143 +172,35 @@ func codingSessionHasWrittenPath(paths []string) bool {
 	return false
 }
 
-// codingFollowUpAsksForCodeChange reports a follow-up that mentions changing
-// the project. A question that only mentions the word ("如何修改", "为什么没实现")
-// is not an edit order; codingFollowUpIsDirectEditOrder covers those.
-func codingFollowUpAsksForCodeChange(userText string) bool {
-	lower := strings.ToLower(userText)
-	for _, cue := range []string{
-		"修改", "修复", "修復", "改一下", "修一下", "改成", "改为", "改為", "写成", "寫成",
-		"实现", "實現", "完善", "优化", "優化", "重构", "重構", "补上", "補上", "改进", "改進",
-	} {
-		if strings.Contains(lower, cue) {
-			return true
-		}
-	}
-	for _, word := range []string{"fix", "fixed", "fixes", "fixing", "implement", "refactor", "rewrite"} {
-		if codingHasASCIIWord(lower, word) {
-			return true
-		}
-	}
-	return false
-}
-
-// codingFollowUpIsDirectEditOrder is a polite or explicit edit, including one
-// phrased as a question ("能不能修一下顶栏？"). "如何修改" is not one of these.
-func codingFollowUpIsDirectEditOrder(userText string) bool {
-	lower := strings.ToLower(userText)
-	for _, cue := range []string{
-		"改一下", "修一下", "请修改", "请修复", "請修改", "請修復", "帮我改", "幫我改", "帮我修", "幫我修",
-	} {
-		if strings.Contains(lower, cue) {
-			return true
-		}
-	}
-	return false
-}
-
-// codingFollowUpIsQuestion reports an explanation request. "为什么没实现分页"
-// mentions a change word but is still a question, so it must not reopen writes.
-func codingFollowUpIsQuestion(userText string) bool {
-	text := strings.TrimSpace(userText)
-	if text == "" {
-		return false
-	}
-	if strings.ContainsAny(text, "?？") {
-		return true
-	}
-	lower := strings.ToLower(text)
-	for _, cue := range []string{
-		"什么", "什麼", "为什么", "為什麼", "为何", "為何", "怎么", "怎麼", "如何", "吗", "嗎",
-	} {
-		if strings.Contains(lower, cue) {
-			return true
-		}
-	}
-	for _, word := range []string{"what", "why", "how", "where"} {
-		if codingHasASCIIWord(lower, word) {
-			return true
-		}
-	}
-	return false
-}
-
-// codingFollowUpContinuationNamesEdit is "继续改" / "continue and fix the
-// header": a continuation prefix plus an edit stem. The stem is only read
-// after the prefix, so "看看改动" does not count.
-func codingFollowUpContinuationNamesEdit(userText string) bool {
-	rest, ok := codingFollowUpContinuationRemainder(userText)
-	if !ok || rest == "" {
-		return false
-	}
-	for _, stem := range []string{"改", "修", "写", "寫"} {
-		if strings.Contains(rest, stem) {
-			return true
-		}
-	}
-	for _, word := range []string{"fix", "write", "change", "implement", "refactor", "rewrite"} {
-		if codingHasASCIIWord(rest, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func codingFollowUpContinuationRemainder(userText string) (string, bool) {
-	text := strings.ToLower(strings.TrimSpace(userText))
-	for _, lead := range []string{"请", "請"} {
-		if strings.HasPrefix(text, lead) {
-			text = strings.TrimSpace(strings.TrimPrefix(text, lead))
-			break
-		}
-	}
-	for _, prefix := range []string{
-		"继续", "繼續", "接着做", "接著做", "接着", "接著",
-		"keep going", "carry on", "continue",
-	} {
-		if !strings.HasPrefix(text, prefix) {
-			continue
-		}
-		rest := strings.TrimLeft(text[len(prefix):], " \t\r\n。.!！?？~～,，、:：")
-		return rest, true
-	}
-	return "", false
-}
-
-func codingFollowUpShouldResumeImplementation(userText string) bool {
-	if codingRequestIsBareContinuation(userText) || codingFollowUpIsDirectEditOrder(userText) {
-		return true
-	}
-	if !codingFollowUpAsksForCodeChange(userText) && !codingFollowUpContinuationNamesEdit(userText) {
-		return false
-	}
-	if codingFollowUpIsQuestion(userText) {
-		return false
-	}
-	return true
-}
-
-// applyCodingSessionContinuationFloor reopens read/write tools when a session
-// that already changed files is about to be locked into the inquiry posture.
-// That posture removes ssh_write_file/ssh_edit_file and rejects ordinary
-// shell (compound commands, git -C, running the build). The lightweight
-// classifier does this to "继续" and to direct edit requests.
-//
-// A question that only mentions implementation ("为什么没实现分页"), a
-// run/build/list follow-up, and a session with no written files stay on the
-// classifier's answer. Operational decisions are not rewritten. Rescued
-// follow-ups stay single-step: planning already ran against the original decision.
-func applyCodingSessionContinuationFloor(decision codingRequestDecision, userText string, mem stickyCodingWorkbenchMemory) codingRequestDecision {
+// applyCodingSessionImplementationPosture keeps the implementation tool
+// contract for a session that has already written project files. The
+// classifier sees only the latest utterance, so a follow-up in that session
+// is labeled inquiry and the host then removes ssh_write_file, ssh_edit_file,
+// and ordinary shell. The session record is the authority for that contract,
+// not the wording of the new message. Operational turns stay operational: a
+// run or build still must not be retargeted at source edits. A session with
+// no written files, including one that only has a plan, can still be inquiry.
+func applyCodingSessionImplementationPosture(decision codingRequestDecision, mem stickyCodingWorkbenchMemory) codingRequestDecision {
 	if decision.Kind != codingRequestInquiry || !codingSessionHasImplementationTrajectory(mem) {
-		return decision
-	}
-	if !codingFollowUpShouldResumeImplementation(userText) {
 		return decision
 	}
 	decision.Kind = codingRequestImplementation
 	decision.NeedsPlan = false
 	decision.Acceptance = ""
 	return decision
+}
+
+// codingSessionWriteContractNote is attached to an implementation turn whose
+// session already wrote project files. The previous turn summary is carried
+// forward verbatim, and a rejected inquiry used to describe that rejection as
+// the environment. This note is the current tool contract.
+const codingSessionWriteContractNote = "会话写合同：本会话已经写过项目文件。本轮可以使用 ssh_write_file、ssh_edit_file 和普通 ssh_bash，包括复合命令、git，以及运行已有构建结果。上一轮如果把环境说成只读，那只是当时的询问结果，不是当前限制。"
+
+func codingSessionWriteContractContext(kind codingRequestKind, mem stickyCodingWorkbenchMemory) string {
+	if kind != codingRequestImplementation || !codingSessionHasImplementationTrajectory(mem) {
+		return ""
+	}
+	return codingSessionWriteContractNote
 }
 
 func codingRequestLooksModeratelyComplex(userText string) bool {
@@ -1605,6 +1486,332 @@ func sentenceDotCount(text string) int {
 	return n
 }
 
+// codingWorkbenchContinueCue is a bare resume after a stopped coding plan.
+// "继续" stays out of parseCodingExecRetryCommand because workflow document
+// confirmation also owns that word; here it only resumes a plan that already
+// started and still has steps that did not pass.
+func codingWorkbenchContinueCue(userText string) bool {
+	if semanticBareContinueQuery(userText) {
+		return true
+	}
+	switch parseCodingExecRetryCommand(userText) {
+	case codingExecRetryActionResume, codingExecRetryActionFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func codingPlanStepWasStarted(status string) bool {
+	switch strings.TrimSpace(status) {
+	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+func codingPlanStepNeedsResume(status string) bool {
+	return strings.TrimSpace(status) != codingStepPassed
+}
+
+// codingWorkbenchShouldResumeIncompletePlan reports whether this utterance
+// should re-enter the current plan instead of planning a new turn.
+func codingWorkbenchShouldResumeIncompletePlan(userText string, mem stickyCodingWorkbenchMemory) bool {
+	_, ok := selectIncompleteCodingPlanTasks(userText, mem)
+	return ok
+}
+
+// selectIncompleteCodingPlanTasks returns the not-yet-passed steps of a plan
+// that has already started. An untouched pending approval and a fully passed
+// plan are left alone.
+func selectIncompleteCodingPlanTasks(userText string, mem stickyCodingWorkbenchMemory) ([]*v2.TaskItem, bool) {
+	if mem.SkipNextPlan || !codingWorkbenchContinueCue(userText) {
+		return nil, false
+	}
+	if len(mem.StepStatuses) == 0 {
+		return nil, false
+	}
+	started := false
+	incomplete := make(map[int]codingWorkbenchStepStatus)
+	for _, st := range mem.StepStatuses {
+		if codingPlanStepWasStarted(st.Status) {
+			started = true
+		}
+		if codingPlanStepNeedsResume(st.Status) {
+			incomplete[st.Index] = st
+		}
+	}
+	if !started || len(incomplete) == 0 {
+		return nil, false
+	}
+	parsed := parseCodingWorkbenchPlan(mem.ExecutionPlan)
+	byIndex := make(map[int]*v2.TaskItem, len(parsed))
+	var ordered []*v2.TaskItem
+	for _, task := range parsed {
+		if task == nil || task.Index <= 0 {
+			continue
+		}
+		byIndex[task.Index] = task
+		ordered = append(ordered, task)
+	}
+	var selected []*v2.TaskItem
+	if len(ordered) > 0 {
+		for _, task := range ordered {
+			if _, need := incomplete[task.Index]; need {
+				selected = append(selected, task)
+			}
+		}
+		for _, st := range mem.StepStatuses {
+			if _, need := incomplete[st.Index]; !need {
+				continue
+			}
+			if _, found := byIndex[st.Index]; found {
+				continue
+			}
+			selected = append(selected, taskFromCodingStepStatus(st))
+		}
+	} else {
+		for _, st := range mem.StepStatuses {
+			if _, need := incomplete[st.Index]; need {
+				selected = append(selected, taskFromCodingStepStatus(st))
+			}
+		}
+	}
+	if len(selected) == 0 {
+		return nil, false
+	}
+	sort.SliceStable(selected, func(i, j int) bool {
+		if selected[i] == nil || selected[j] == nil {
+			return selected[i] != nil
+		}
+		return selected[i].Index < selected[j].Index
+	})
+	return codingPlanTasksForResume(selected), true
+}
+
+func taskFromCodingStepStatus(st codingWorkbenchStepStatus) *v2.TaskItem {
+	title := strings.TrimSpace(st.Title)
+	if title == "" {
+		title = fmt.Sprintf("T%d", st.Index)
+	}
+	// Summary is the last failure or skip note. It is not the step brief;
+	// putting "insufficient credits" into the description makes the next
+	// run treat the billing error as the work.
+	return &v2.TaskItem{Index: st.Index, Title: title, Description: title}
+}
+
+// codingPlanTasksForResume keeps dependencies that are also being re-run and
+// drops dependencies that already passed. Those passed steps are not in this
+// subset, so leaving the edge in place would make TaskRunner skip the step.
+func codingPlanTasksForResume(tasks []*v2.TaskItem) []*v2.TaskItem {
+	out := cloneV2TaskItems(tasks)
+	present := make(map[int]bool, len(out))
+	for _, task := range out {
+		if task != nil && task.Index > 0 {
+			present[task.Index] = true
+		}
+	}
+	for _, task := range out {
+		if task == nil || len(task.DependsOn) == 0 {
+			continue
+		}
+		kept := make([]int, 0, len(task.DependsOn))
+		for _, dep := range task.DependsOn {
+			if present[dep] {
+				kept = append(kept, dep)
+			}
+		}
+		task.DependsOn = kept
+	}
+	return out
+}
+
+func (h *IMMessageHandler) reopenIncompleteCodingPlanSteps(userID string, mem stickyCodingWorkbenchMemory, execute []*v2.TaskItem) {
+	if h == nil || len(execute) == 0 {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	want := make(map[int]struct{}, len(execute))
+	for _, task := range execute {
+		if task != nil && task.Index > 0 {
+			want[task.Index] = struct{}{}
+		}
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(stored *stickyCodingWorkbenchMemory) {
+		if len(stored.StepStatuses) == 0 && len(mem.StepStatuses) > 0 {
+			stored.StepStatuses = append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+		}
+		if strings.TrimSpace(stored.ExecutionPlan) == "" && strings.TrimSpace(mem.ExecutionPlan) != "" {
+			stored.ExecutionPlan = mem.ExecutionPlan
+		}
+		now := time.Now().Unix()
+		for i := range stored.StepStatuses {
+			if _, ok := want[stored.StepStatuses[i].Index]; !ok {
+				continue
+			}
+			stored.StepStatuses[i].Status = codingStepPending
+			stored.StepStatuses[i].Summary = ""
+			stored.StepStatuses[i].VerifyCmd = ""
+			stored.StepStatuses[i].VerifyOK = nil
+			stored.StepStatuses[i].UpdatedUnix = now
+		}
+	})
+	h.emitCodingWorkbenchStepsUpdate(userID)
+}
+
+// codingPlanOutlineForPrompt is the full plan shown inside a resumed step.
+// Execution may only include the unfinished tail, but the prompt still needs
+// the original T index and plan length.
+func codingPlanOutlineForPrompt(mem stickyCodingWorkbenchMemory, execute []*v2.TaskItem) (outline []*v2.TaskItem, total int) {
+	parsed := parseCodingWorkbenchPlan(mem.ExecutionPlan)
+	byIndex := make(map[int]*v2.TaskItem, len(parsed))
+	for _, task := range parsed {
+		if task != nil && task.Index > 0 {
+			byIndex[task.Index] = task
+		}
+	}
+	// Statuses are the checklist the user still sees. Parsed steps supply
+	// the original brief when the heading survived; a truncated plan must
+	// not drop the earlier titles from the resumed prompt.
+	if len(mem.StepStatuses) > 0 {
+		outline = make([]*v2.TaskItem, 0, len(mem.StepStatuses))
+		seen := make(map[int]bool, len(mem.StepStatuses))
+		for _, st := range mem.StepStatuses {
+			seen[st.Index] = true
+			if task, ok := byIndex[st.Index]; ok {
+				outline = append(outline, task)
+				continue
+			}
+			outline = append(outline, taskFromCodingStepStatus(st))
+		}
+		for _, task := range parsed {
+			if task == nil || seen[task.Index] {
+				continue
+			}
+			outline = append(outline, task)
+		}
+	} else if len(parsed) > 0 {
+		outline = parsed
+	} else {
+		outline = execute
+	}
+	sort.SliceStable(outline, func(i, j int) bool {
+		if outline[i] == nil || outline[j] == nil {
+			return outline[i] != nil
+		}
+		return outline[i].Index < outline[j].Index
+	})
+	outline = codingPlanOutlineMarkPassed(outline, mem.StepStatuses)
+	total = len(outline)
+	if total < 1 {
+		total = 1
+	}
+	return outline, total
+}
+
+// codingPlanOutlineMarkPassed labels steps that already passed. The resumed
+// prompt lists the whole checklist; without this mark the model redoes them.
+func codingPlanOutlineMarkPassed(outline []*v2.TaskItem, statuses []codingWorkbenchStepStatus) []*v2.TaskItem {
+	if len(outline) == 0 || len(statuses) == 0 {
+		return outline
+	}
+	passed := make(map[int]bool, len(statuses))
+	for _, st := range statuses {
+		if st.Index > 0 && strings.TrimSpace(st.Status) == codingStepPassed {
+			passed[st.Index] = true
+		}
+	}
+	if len(passed) == 0 {
+		return outline
+	}
+	for i, task := range outline {
+		if task == nil || !passed[task.Index] {
+			continue
+		}
+		clone := *task
+		title := strings.TrimSpace(clone.Title)
+		if title == "" {
+			title = fmt.Sprintf("T%d", clone.Index)
+		}
+		if !strings.Contains(title, "already done") {
+			clone.Title = title + " (already done)"
+		}
+		outline[i] = &clone
+	}
+	return outline
+}
+
+// codingPlanReportedStepTotal is the plan length shown after a turn.
+// A resume executes only the unfinished tail, but the checklist is still
+// the original plan.
+func codingPlanReportedStepTotal(planned bool, executing, recorded int) int {
+	if planned && recorded > executing {
+		return recorded
+	}
+	if executing > 0 {
+		return executing
+	}
+	if recorded > 0 {
+		return recorded
+	}
+	return 0
+}
+
+// codingPlanResumeStopNote replaces the previous step's own summary on a
+// resume. That summary often says the project is already finished, or it
+// repeats the credit error. Either one makes the next step no-op or spend
+// another large prompt on text that is not the task.
+func codingPlanResumeStopNote() string {
+	return "The previous plan step stopped before the plan finished. Execute the current unfinished step. Ignore any earlier claim that the whole project is already done."
+}
+
+// codingPlanResumePromptMemory is a prompt-only copy. The stored plan and the
+// last failure summary stay on disk; this copy just keeps them out of the
+// next step's context because the step outline already carries the checklist.
+func codingPlanResumePromptMemory(mem stickyCodingWorkbenchMemory) stickyCodingWorkbenchMemory {
+	mem.ExecutionPlan = ""
+	mem.LastSummary = codingPlanResumeStopNote()
+	plan := strings.TrimSpace(mem.SessionPlan)
+	rest := strings.TrimSpace(mem.RequirementRestatement)
+	last := strings.TrimSpace(mem.LastUserText)
+	// "继续" is how this turn was started. Leaving it as the previous request
+	// makes the step look like a new one-line ask.
+	if codingWorkbenchContinueCue(last) {
+		mem.LastUserText = ""
+		last = ""
+	}
+	// The short-follow-up restatement says "only the change you just named"
+	// and that change is the word 继续. Drop it so the unfinished step runs.
+	if strings.Contains(rest, "上继续你这次提出的改动") {
+		mem.RequirementRestatement = ""
+		rest = ""
+	}
+	// Session plan is already the goal line. Repeating it as the restatement
+	// and the previous request spends credits without adding a step brief.
+	if plan != "" && rest == plan {
+		mem.RequirementRestatement = ""
+	}
+	if plan != "" && last == plan {
+		mem.LastUserText = ""
+	}
+	return mem
+}
+
+// codingPlanResumeGoal is the original request, not the word "继续".
+func codingPlanResumeGoal(userText string, mem stickyCodingWorkbenchMemory) string {
+	for _, candidate := range []string{mem.SessionPlan, mem.RequirementRestatement, mem.LastUserText} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && !codingWorkbenchContinueCue(candidate) {
+			return candidate
+		}
+	}
+	return strings.TrimSpace(userText)
+}
+
 // Digit / T-numbered steps only. Bare markdown bullets (- item) are NOT counted — they appear in ordinary "fix: - a - b" lists and would false-trigger multi-step plans.
 var numberedStepLineRe = regexp.MustCompile(`(?m)^\s*(?:\d+[\.\)]|[Tt]\d+\s*[:：])\s+\S+`)
 
@@ -1662,6 +1869,18 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 		// Leaving it behind would let a later /plan approve execute stale work.
 		h.clearStickyPendingCodingPlan(userID)
 		return single, "", false
+	}
+	// "继续" after a credit stop (or any hard stop) must keep the plan that
+	// already ran and execute only the steps that did not pass. A new
+	// single-task turn would wipe that checklist and start requirement
+	// understanding over.
+	if execute, ok := selectIncompleteCodingPlanTasks(userText, sessionMem); ok {
+		log.Printf("[coding-plan] resume incomplete plan user=%s steps=%d", userID, len(execute))
+		h.reopenIncompleteCodingPlanSteps(userID, sessionMem, execute)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("继续未完成的计划：剩余 %d 步", len(execute)))
+		}
+		return execute, strings.TrimSpace(sessionMem.ExecutionPlan), true
 	}
 	// Plan mode off: never multi-step.
 	planMode := normalizeCodingPlanMode(sessionMem.PlanMode)
@@ -2308,7 +2527,7 @@ func (h *IMMessageHandler) persistCodingWorkbenchPlans(userID, executionPlan, se
 		return
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
-		if ep := truncateRunesForSubAgent(strings.TrimSpace(executionPlan), 2000); ep != "" {
+		if ep := truncateRunesForSubAgent(strings.TrimSpace(executionPlan), codingWorkbenchExecutionPlanPersistRunes); ep != "" {
 			mem.ExecutionPlan = ep
 		}
 		if seed := truncateRunesForSubAgent(strings.TrimSpace(sessionPlanIfEmpty), 800); seed != "" {

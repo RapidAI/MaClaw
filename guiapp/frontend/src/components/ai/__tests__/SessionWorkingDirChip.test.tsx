@@ -73,11 +73,11 @@ describe('SessionWorkingDirChip', () => {
         expect(screen.queryByText(/你好呀/)).toBeNull();
         expect(screen.queryByText(/driverdevelopment/)).toBeNull();
         expect(screen.queryByText('默认')).toBeNull();
-        expect(screen.getByTestId('working-dir-chip').getAttribute('title')).toBe('www.driverdevelopment.com:/home/ubuntu/app');
+        expect(screen.getByTestId('working-dir-chip').getAttribute('title')).toBe('www.driverdevelopment.com/home/ubuntu/app');
         fireEvent.click(screen.getByTestId('working-dir-chip'));
         expect(screen.queryByLabelText('选择其他工作目录')).toBeNull();
         fireEvent.click(await screen.findByLabelText('复制工作目录路径'));
-        expect(writeText).toHaveBeenCalledWith('www.driverdevelopment.com:/home/ubuntu/app');
+        expect(writeText).toHaveBeenCalledWith('www.driverdevelopment.com/home/ubuntu/app');
     });
 
     it('keeps local directory switching for ordinary folders', async () => {
@@ -208,12 +208,22 @@ describe('workingDirDisplayLabel', () => {
         expect(workingDirDisplayLabel('D:/work/app', 'zh')).toBe('D:/work/app');
     });
 
-    it('shows the remote server instead of the sandbox or remote directory', () => {
+    it('shows the remote host and directory instead of the sandbox path', () => {
         expect(workingDirDisplayLabel(
             'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
             'zh',
             { host: 'www.driverdevelopment.com', workDir: '/srv/app' },
-        )).toBe('www.driverdevelopment.com');
+        )).toBe('www.driverdevelopment.com/srv/app');
+        expect(workingDirDisplayLabel(
+            'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
+            'zh',
+            { host: 'home.rapidai.tech', workDir: '/home/rapidrec', port: 22 },
+        )).toBe('home.rapidai.tech/home/rapidrec');
+        expect(workingDirDisplayLabel(
+            'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
+            'zh',
+            { host: 'home.rapidai.tech', workDir: '/home/rapidrec', port: 55 },
+        )).toBe('home.rapidai.tech:55/home/rapidrec');
     });
 
     it('uses a known cloud workspace name', () => {

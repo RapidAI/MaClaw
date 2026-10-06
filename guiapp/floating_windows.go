@@ -67,10 +67,12 @@ const (
 	mfChecked    = 0x00000008
 	tpmReturncmd = 0x0100
 
-	menuIdSoundOff = 1000
-	menuIdSettings = 1001
-	menuIdHide     = 1002
-	menuIdQuit     = 1003
+	menuIdSoundOff    = 1000
+	menuIdSettings    = 1001
+	menuIdHide        = 1002
+	menuIdQuit        = 1003
+	menuIdOpenMain    = 1004
+	menuIdOpenPetChat = 1005
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -1671,7 +1673,7 @@ func (w *windowsFloatingWindow) playPetMotionSound(interactionMode, skin, preset
 		}
 		for index, tone := range toneSet {
 			w.mu.Lock()
-			stillCurrent := w.petMotionSound && !w.petQuietMode && !w.petReducedMotion && w.soundGeneration == generation
+			stillCurrent := petMotionSoundHeard(w.petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState) && w.soundGeneration == generation
 			w.mu.Unlock()
 			if !stillCurrent {
 				return
@@ -1702,7 +1704,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petMotionEnabled := w.petMotionEnabled
 	petMotionSound := w.petMotionSound
 	playPetSound := false
-	if hwnd != 0 && base != nil && distMap != nil && w.petEnabled && w.petMotionEnabled && petMotionSound && !w.petQuietMode {
+	if hwnd != 0 && base != nil && distMap != nil && w.petEnabled && w.petMotionEnabled && petMotionSoundHeard(petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState) {
 		bucket := int(math.Floor(w.haloPhase/(2*math.Pi)*4)) % 4
 		if bucket != w.lastPetSoundBucket {
 			w.lastPetSoundBucket = bucket
@@ -2159,9 +2161,13 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		// Separator
 		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
 
+		openMainText, _ := syscall.UTF16PtrFromString("\u6253\u5f00\u4e3b\u7a97\u53e3")
+		openPetText, _ := syscall.UTF16PtrFromString("\u6253\u5f00\u5ba0\u7269\u5bf9\u8bdd")
 		settingsText, _ := syscall.UTF16PtrFromString("\u8bbe\u7f6e")
 		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
 		quitText, _ := syscall.UTF16PtrFromString("\u9000\u51fa")
+		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdOpenMain), uintptr(unsafe.Pointer(openMainText)))
+		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdOpenPetChat), uintptr(unsafe.Pointer(openPetText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdSettings), uintptr(unsafe.Pointer(settingsText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdQuit), uintptr(unsafe.Pointer(quitText)))
@@ -2183,6 +2189,18 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				// PatchConfigFields triggers floatingSoundChanged → UpdateSoundConfig,
 				// which updates w.petMotionSound without rebuilding the window.
 				_, _ = w.app.PatchConfigFields(map[string]interface{}{"pet_motion_sound_enabled": newEnabled})
+			}()
+		case menuIdOpenMain:
+			go func() {
+				if w.app != nil {
+					w.app.showMainWindowFromPet()
+				}
+			}()
+		case menuIdOpenPetChat:
+			go func() {
+				if w.app != nil {
+					w.app.openPetConversationFromMenu()
+				}
 			}()
 		case menuIdSettings:
 			go func() {

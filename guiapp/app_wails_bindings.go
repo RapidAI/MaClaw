@@ -2615,6 +2615,74 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}, nil
 }
 
+func (a *App) desktopBotAccountUserID() string {
+	if id := a.configuredRemoteUserID(); id != "" {
+		return id
+	}
+	if a == nil {
+		return "local"
+	}
+	cfg, _ := a.LoadConfig()
+	if email := strings.TrimSpace(cfg.RemoteEmail); email != "" {
+		return email
+	}
+	return "local"
+}
+
+func desktopBotIdentity(owner, botID string) (userID, instanceID string, err error) {
+	owner = strings.TrimSpace(owner)
+	botID = strings.TrimSpace(botID)
+	if owner == "" {
+		owner = "local"
+	}
+	if strings.Contains(owner, ":") || strings.Contains(owner, "\x00") || len(owner) > 120 {
+		return "", "", fmt.Errorf("desktop owner is invalid")
+	}
+	if botID == "" || len(botID) > 80 {
+		return "", "", fmt.Errorf("bot id is required")
+	}
+	for _, r := range botID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return "", "", fmt.Errorf("bot id is invalid")
+		}
+	}
+	return owner, botID, nil
+}
+
+// desktopBotLocalSessionKey isolates one instance's local conversation.
+// The MaClawSrv user stays userID; this string is not another user.
+func desktopBotLocalSessionKey(userID, instanceID string) string {
+	return userID + ":" + instanceID
+}
+
+// SendDesktopBotTask sends the command to that bot's MaClawSrv instance through Hub.
+// The GUI does not run the agent. The instance drives the user's cloud desktop.
+func (a *App) SendDesktopBotTask(botID, text string) (*IMAgentResponse, error) {
+	if a == nil {
+		return nil, fmt.Errorf("AI assistant backend is unavailable")
+	}
+	userID, instanceID, err := desktopBotIdentity(a.desktopBotAccountUserID(), botID)
+	if err != nil {
+		return nil, err
+	}
+	sessionKey := desktopBotLocalSessionKey(userID, instanceID)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("message text is required")
+	}
+	requestID := fmt.Sprintf("desktop-bot-%d", time.Now().UnixNano())
+	log.Printf("[desktop bot] enqueue request_id=%s user=%q instance=%q text_len=%d", requestID, userID, instanceID, len(text))
+	go a.finishDesktopBotTask(requestID, sessionKey, botID, text)
+	return &IMAgentResponse{
+		RequestID:    requestID,
+		Deferred:     true,
+		SessionKey:   sessionKey,
+		EventScopeID: sessionKey,
+	}, nil
+}
+
 func desktopAIAssistantUserIDForProjectPath(projectPath string) string {
 	return projectSessionOwnerID(projectPath)
 }

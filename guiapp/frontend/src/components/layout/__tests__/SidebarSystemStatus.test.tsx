@@ -981,6 +981,90 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(card.getAttribute('data-change-count')).toBe('0');
         expect(card.getAttribute('data-file-count')).toBe('0');
     });
+
+    it('cycles the workbench token row through today, week, month, and back to cumulative', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 80, output: 40, total: 120, today: 0, week: 20, month: 40 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="无限"
+                noHubAuthorizationText="无"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const row = screen.getByTestId('workbench-token-period');
+        expect(row.getAttribute('data-token-period')).toBe('total');
+        expect(row.textContent).toContain('累计 Token');
+        expect(row.textContent).toContain('120');
+        expect(row.getAttribute('title')).toContain('点击切换');
+
+        fireEvent.click(row);
+        expect(row.getAttribute('data-token-period')).toBe('today');
+        expect(row.textContent).toContain('本日 Token');
+        expect(row.textContent).toContain('0');
+        expect(row.getAttribute('title')).toContain('点击切换');
+        expect(row.getAttribute('title')).not.toContain('按日统计从本次更新后开始');
+
+        fireEvent.click(row);
+        expect(row.getAttribute('data-token-period')).toBe('week');
+        expect(row.textContent).toContain('本周 Token');
+        expect(row.textContent).toContain('20');
+
+        fireEvent.click(row);
+        expect(row.getAttribute('data-token-period')).toBe('month');
+        expect(row.textContent).toContain('本月 Token');
+        expect(row.textContent).toContain('40');
+
+        fireEvent.click(row);
+        expect(row.getAttribute('data-token-period')).toBe('total');
+        expect(row.textContent).toContain('累计 Token');
+        expect(row.textContent).toContain('120');
+    });
+
+    it('explains a zero day window only before any per-day usage exists', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 80, output: 40, total: 120, today: 0, week: 0, month: 0 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="无限"
+                noHubAuthorizationText="无"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const row = screen.getByTestId('workbench-token-period');
+        expect(row.getAttribute('title')).not.toContain('按日统计从本次更新后开始');
+        fireEvent.click(row);
+        expect(row.getAttribute('title')).toContain('按日统计从本次更新后开始');
+        expect(row.getAttribute('title')).toContain('点击切换');
+    });
 });
 
 describe('SidebarSystemStatus IM status', () => {

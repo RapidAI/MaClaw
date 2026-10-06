@@ -42,6 +42,12 @@ func (a *App) ensureScheduleTargetCatalogs() {
 				return a.listQQDeliveryTargets(ctx, query)
 			},
 		})
+		reg.Register(scheduler.TargetCatalogFunc{
+			ChannelName: scheduler.DeliveryChannelDevice,
+			List: func(ctx context.Context, query string) ([]scheduler.TargetRef, error) {
+				return a.listDeviceDeliveryTargets(ctx, query)
+			},
+		})
 		a.scheduleTargetCatalogs = reg
 	})
 }
@@ -176,6 +182,23 @@ func (a *App) listQQDeliveryTargets(_ context.Context, query string) ([]schedule
 			})
 		}
 	}
+	return scheduler.FilterTargetRefs(refs, query), nil
+}
+
+// listDeviceDeliveryTargets exposes the owner's paired companion terminals as
+// the only addressable device target. The Hub fans a device event out to every
+// terminal bound to this machine, so there is no per-device id to enumerate and
+// no name to resolve.
+func (a *App) listDeviceDeliveryTargets(_ context.Context, query string) ([]scheduler.TargetRef, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app unavailable")
+	}
+	refs := []scheduler.TargetRef{{
+		Kind:    scheduler.DeliveryKindUser,
+		ID:      "self",
+		Name:    "码卡龙设备（本机已配对的全部终端）",
+		Channel: scheduler.DeliveryChannelDevice,
+	}}
 	return scheduler.FilterTargetRefs(refs, query), nil
 }
 

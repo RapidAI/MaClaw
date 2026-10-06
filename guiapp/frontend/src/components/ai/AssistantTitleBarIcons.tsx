@@ -51,14 +51,9 @@ export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
                     <path {...common} d="M19 4v14h-5" />
                 </>
             )}
-            {/* Phone + document: shared Hub library with MaClaw Mobile. */}
+            {/* Cloud drive shared with MaClaw Mobile. */}
             {name === "mobileDocs" && (
-                <>
-                    <rect {...common} x="7" y="2.5" width="10" height="19" rx="2" />
-                    <path {...common} d="M10 5.5h4" />
-                    <path {...common} d="M10 9h4M10 12h4M10 15h2.5" />
-                    <path {...common} d="M9.5 18.5h5" />
-                </>
+                <path {...common} d="M6.5 17.5h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 17.5Z" />
             )}
             {name === "guide" && (
                 <>

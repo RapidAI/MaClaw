@@ -73,7 +73,7 @@ export interface PreviewFileActionsProps {
 
 /**
  * Action cluster shared by every file preview surface (code preview, image
- * preview, ...): upload to the mobile documents library, share (copy the file
+ * preview, ...): upload to the cloud drive, share (copy the file
  * path), and reveal the file in its OS folder.
  */
 export function PreviewFileActions({ absPath, lang, color, buttonStyle }: PreviewFileActionsProps) {
@@ -99,7 +99,7 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
         setUploading(true);
         try {
             await ImportMobileDocumentFromPath(absPath);
-            flash(true, isZh ? "已上传到文稿库" : "Uploaded to documents library");
+            flash(true, isZh ? "已上传到云盘" : "Uploaded to cloud drive");
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err || "");
             flash(false, message || (isZh ? "上传失败" : "Upload failed"));
@@ -135,7 +135,7 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
         ...buttonStyle,
     };
 
-    const uploadLabel = isZh ? "上传到文稿库" : "Upload to documents library";
+    const uploadLabel = isZh ? "上传到云盘" : "Upload to cloud drive";
     const shareLabel = isZh ? "分享（复制文件路径）" : "Share (copy file path)";
     const revealLabel = isZh ? "打开文件夹" : "Show in folder";
 

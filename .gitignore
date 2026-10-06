@@ -342,3 +342,13 @@ deploy/run_deploy_run*.ps1
 
 /deploy/run[0-9][0-9]_*
 /deploy/sed*
+
+# iot-agentos 刷新备份与一次性锁备份
+iot-agentos/.stray-lock-*.badbak
+iot-agentos/managed_components_orphan_backup_*/
+# desktopd 部署打包产物
+build/desktopd_deploy/*.tar.gz
+build/desktopd_deploy/stage/
+
+# desktopd 部署工作目录（打包产物与宿主配置）
+build/desktopd_deploy/

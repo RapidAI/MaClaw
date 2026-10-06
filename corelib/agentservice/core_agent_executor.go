@@ -57,6 +57,10 @@ type CoreAgentExecutor struct {
 	// ScheduleHandler hosts manage_schedule (create/list/update/delete/list_targets).
 	// Nil keeps the tool visible but returns "not initialized".
 	ScheduleHandler func(args map[string]interface{}) string
+	// ScheduleHandlerContext is the request-scoped variant. The instance id
+	// is the caller that owns the task; model arguments cannot choose another
+	// instance. Hosts should prefer it so one user's instances stay separate.
+	ScheduleHandlerContext func(ctx context.Context, principal Principal, instanceID string, args map[string]interface{}) string
 
 	// IMMessageHandler hosts im_message (list_targets | send) for proactive IM push.
 	// Independent of the scheduler; nil returns "not initialized".
@@ -587,6 +591,14 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 			return e.IMMessageHandlerContext(ctx, req.Principal, args)
 		}
 	}
+	scheduleHandler := e.ScheduleHandler
+	if e.ScheduleHandlerContext != nil {
+		principal := req.Principal
+		instanceID := strings.TrimSpace(req.Instance.ID)
+		scheduleHandler = func(args map[string]interface{}) string {
+			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
+		}
+	}
 	imFileHandler := e.IMFileHandler
 	if e.IMFileHandlerContext != nil {
 		imFileHandler = func(args map[string]interface{}) string {
@@ -639,7 +651,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		onToken:                  wrapVisibleChatTokenCallback(req.OnToken),
 		onToolCall:               req.OnToolCall,
 		onToolResult:             req.OnToolResult,
-		scheduleHandler:          e.ScheduleHandler,
+		scheduleHandler:          scheduleHandler,
 		imMessageHandler:         imMessageHandler,
 		imFileHandler:            imFileHandler,
 		messageMetadata:          cloneMap(req.Message.Metadata),
@@ -1425,6 +1437,13 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 		promptProfile = agent.PromptProfileFull
 		classified = llm.ClassifyResult{Task: llm.TaskReasoning, Reason: "semantic capability-managed mutating intent"}
 	}
+	// A short follow-up such as "登录完成，继续" is otherwise a light turn.
+	// That prompt tells the model not to use tools, so it would answer
+	// without the browser where this user just logged in.
+	if promptProfile.IsLight() && c.desktopBotKeepsLoggedInBrowser() {
+		promptProfile = agent.PromptProfileFull
+		classified = llm.ClassifyResult{Task: llm.TaskReasoning, Reason: "hub bot continues on the logged-in desktop"}
+	}
 	c.lastPromptProfile = promptProfile
 	deps := agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
@@ -1707,6 +1726,13 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 	if e.IMFileHandlerContext != nil {
 		cb.imFileHandler = func(args map[string]interface{}) string { return e.IMFileHandlerContext(ctx, req.Principal, args) }
 	}
+	if e.ScheduleHandlerContext != nil {
+		principal := req.Principal
+		instanceID := strings.TrimSpace(req.Instance.ID)
+		cb.scheduleHandler = func(args map[string]interface{}) string {
+			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
+		}
+	}
 	return &AgentCapabilities{
 		Executor:          "core_agent",
 		SupportsSessions:  true,
@@ -1899,7 +1925,7 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		// Phase 1 dual-run: log which surface tools the permission snapshot
 		// would unconditionally deny/ask — behavior unchanged.
 		c.dualEvalManagedSurfacePermissions(managedTools, surface)
-		return agent.FilterToolDefinitionsForPromptProfile(c, managedTools, profile)
+		return c.finishToolSurface(agent.FilterToolDefinitionsForPromptProfile(c, managedTools, profile))
 	} else {
 		// The legacy bound adapter surface remains only for request families not
 		// yet migrated to a governed capability resolver. It is deliberately
@@ -1932,9 +1958,9 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
 	}
 	if profile.IsLight() {
-		return agent.FilterToolDefinitionsForPromptProfile(c, tools, profile)
+		return c.finishToolSurface(agent.FilterToolDefinitionsForPromptProfile(c, tools, profile))
 	}
-	return tools
+	return c.finishToolSurface(tools)
 }
 
 // appendRuntimeModuleTools converts transport-neutral module definitions into
@@ -2286,12 +2312,72 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
 		return c != nil && c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil
 	}
+	// A short bot command is classified as a light turn. The cloud desktop is
+	// still how that bot does the work, so the module tool stays visible even
+	// when a semantic grant uses the same name.
+	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) {
+		return true
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
 		if _, ok := c.dynamicSemanticSurface.grants[strings.TrimSpace(name)]; ok {
 			return coretool.GrantSelectionIsLightPromptSafe(c.dynamicSemanticSurface.plan, c.dynamicSemanticSurface.grants, name)
 		}
 	}
 	return agent.IsLightTurnToolAllowed(name)
+}
+
+// desktopBotKeepsLoggedInBrowser is a Hub bot whose cloud desktop is on this
+// turn. web_fetch and web_search would open another browser and miss the
+// login the person just left in the desktop.
+func (c *coreAgentCallbacks) desktopBotKeepsLoggedInBrowser() bool {
+	if c == nil || strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot"]) != "1" {
+		return false
+	}
+	return c.runtimeToolExposed("desktop")
+}
+
+func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) []map[string]interface{} {
+	if !c.desktopBotKeepsLoggedInBrowser() {
+		return tools
+	}
+	kept := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		if c.missesDesktopLogin(tooldef.Name(tool)) {
+			continue
+		}
+		kept = append(kept, tool)
+	}
+	return kept
+}
+
+func (c *coreAgentCallbacks) missesDesktopLogin(name string) bool {
+	if !c.desktopBotKeepsLoggedInBrowser() {
+		return false
+	}
+	if desktopLeavesLoggedInBrowser(name) {
+		return true
+	}
+	surface := c.dynamicSemanticSurface
+	if surface == nil {
+		return false
+	}
+	grant, ok := surface.grants[strings.TrimSpace(name)]
+	if !ok {
+		return false
+	}
+	return desktopLeavesLoggedInBrowser(grant.AdapterName)
+}
+
+func desktopLeavesLoggedInBrowser(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "web_fetch", "web_search", "download_file", "knowledge_save_url", "open", "browser", "computer_use":
+		return true
+	}
+	switch coretool.SemanticModelFunctionName(name) {
+	case "web_fetch", "web_search", "download_file", "open", "browser", "computer_use":
+		return true
+	}
+	return false
 }
 
 func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allowed map[string]bool) bool {
@@ -2310,6 +2396,9 @@ func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allow
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c != nil && c.missesDesktopLogin(name) {
+		return false, "use the desktop browser; a separate web tool does not have this user's login"
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil && c.dynamicSemanticSurface.HasGrant(name) {
 		// Dynamic semantic calls use an opaque grant as their function name.
 		// The planner has already applied the capability-level policy; the

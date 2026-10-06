@@ -507,24 +507,51 @@ func codingWebResearchResultLooksFailed(result string) bool {
 }
 
 func codingWebFetchResultLooksFailed(result string) bool {
+	if remoteHostDownloadSaved(result) || remoteWebFetchPageRetrieved(result) {
+		return false
+	}
+	if remoteWebFetchHostFailure(result) || remoteWebFetchToolEnvelopeFailed(result) {
+		return true
+	}
 	trimmed := strings.TrimSpace(result)
 	lower := strings.ToLower(trimmed)
 	if lower == "" {
 		return true
 	}
-	for _, marker := range []string{
-		"web_fetch unavailable", "web_fetch failed", "fetch failed", "request failed",
-		"timed out", "timeout", "抓取失败", "缺少 url 参数",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
+	if codingWebFetchEnvelopeHasFailureMarker(trimmed) {
+		return true
 	}
 	// A successful page extraction contains enough title/body material to audit.
 	// Tiny acknowledgements such as "ok" or a bare URL do not prove that the
 	// declared source was actually read.
 	if utf8.RuneCountInString(trimmed) < 24 {
 		return true
+	}
+	return false
+}
+
+// codingWebFetchEnvelopeHasFailureMarker matches role refusals in the opening
+// line. The phrases are the tool's own wording, not a general "read-only" sentence.
+func codingWebFetchEnvelopeHasFailureMarker(result string) bool {
+	head := result
+	if i := strings.IndexAny(head, "\r\n"); i >= 0 {
+		head = head[:i]
+	}
+	runes := []rune(head)
+	if len(runes) > 120 {
+		head = string(runes[:120])
+	}
+	lower := strings.ToLower(head)
+	for _, marker := range []string{
+		"is not allowed for a read-only coding child",
+		"is not allowed for this coding-agent role",
+		"is not available for nested role",
+		"is unavailable for a read-only repository inquiry",
+		"is unavailable for a run/build/demo request",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
 	}
 	return false
 }
@@ -1899,7 +1926,7 @@ func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[
 		if !tracked {
 			log.Printf("[remote-localization] edit blocked stage=existence project=%q path=%q error=%q",
 				remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300), "target existence is unknown")
-			return "bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before rewriting existing code"
+			return "bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before editing existing code"
 		}
 		if !exists {
 			log.Printf("[remote-localization] edit exempt reason=new_file project=%q path=%q",

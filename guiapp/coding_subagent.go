@@ -93,6 +93,9 @@ type CodingSubAgent struct {
 	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
 	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
 	nestDepth int
+	// permissionOwnerID is the coding-task tab owner used to re-read 以后允许.
+	// Nested children do not copy LoopContext, so the owner is stored here.
+	permissionOwnerID string
 	// role specializes the tool surface for nested agents (explorer/worker/reviewer).
 	// Empty means worker (full coding surface).
 	role codingSubAgentRole
@@ -525,10 +528,22 @@ func (s *CodingSubAgent) SetScopeApprovalCallback(callback ScopeApprovalCallback
 	s.scopeApproval = newScopeApprovalState(callback, fullAccess)
 }
 
+// inheritLocalTaskCommandAllowance lets a nested step of the same task skip
+// command prompts the parent already settled. It does not copy path trust:
+// the isolate root stays the only pre-approved directory.
+func inheritLocalTaskCommandAllowance(parent, child *CodingSubAgent) {
+	if parent == nil || child == nil || child.scopeApproval == nil || parent.scopeApproval == nil {
+		return
+	}
+	if parent.scopeApproval.highRiskApproved() {
+		child.scopeApproval.grantHighRiskFullAccess()
+	}
+}
+
 // setNestedWorkerScopeApproval installs a child-owned approval state only for
-// an isolated worker. It deliberately never copies the parent's mutable
-// approvals; the isolate root is the only pre-approved directory and all
-// further widening must be explicitly approved for this child execution.
+// an isolated worker. It deliberately never copies the parent's mutable path
+// approvals; the isolate root is the only pre-approved directory. Command
+// auto-allow for the current task is applied separately.
 func (s *CodingSubAgent) setNestedWorkerScopeApproval(callback ScopeApprovalCallback) {
 	if s == nil || s.nestDepth == 0 || s.role != codingRoleWorker {
 		return
@@ -1511,7 +1526,11 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	}
 
 	if c != nil && c.subagent != nil && c.subagent.scopeApproval != nil && c.subagent.scopeApproval.highRiskApproved() {
-		prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+		if c.subagent.scopeApproval.pathFullAccessGranted() {
+			prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+		} else {
+			prompt += "\n当前任务已选择以后允许。本任务内高危命令将由宿主自动放行，不要再要求用户确认；仍须调用工具发起该命令。\n"
+		}
 	}
 	if c != nil && !c.codingQualityGateOn() {
 		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
@@ -5322,12 +5341,53 @@ func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}
 	}
 }
 
+// taskPermissionOwnerID is the coding-task tab whose 以后允许 / 完全控制 grant
+// this agent must re-read. Nested children keep it separately because their
+// loop context is not the parent session.
+func (s *CodingSubAgent) taskPermissionOwnerID() string {
+	if s == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(s.permissionOwnerID); id != "" {
+		return id
+	}
+	if s.loopCtx != nil {
+		return strings.TrimSpace(s.loopCtx.UserID)
+	}
+	return ""
+}
+
+// refreshTaskCommandAllowance re-reads the task tab's 以后允许 / 完全控制 grant
+// so a child started before the user answered still skips later commands, and
+// a child already running asks again after the user returns to 请求授权.
+func (c *codingSubAgentCallbacks) refreshTaskCommandAllowance() {
+	if c == nil || c.subagent == nil || c.subagent.scopeApproval == nil || c.subagent.handler == nil {
+		return
+	}
+	// No task tab to re-read. Keep an in-memory grant; an empty owner must not
+	// look like the user switched back to 请求授权.
+	owner := c.subagent.taskPermissionOwnerID()
+	if owner == "" {
+		return
+	}
+	if c.subagent.handler.taskCommandsAutoAllowed(owner) {
+		if !c.subagent.scopeApproval.highRiskApproved() {
+			c.subagent.scopeApproval.grantHighRiskFullAccess()
+		}
+		return
+	}
+	if c.subagent.scopeApproval.highRiskApproved() {
+		c.subagent.scopeApproval.revokeHighRiskFullAccess()
+	}
+}
+
 // guardCodingShellCommand runs the bash guardrails for one command and returns
 // the rejection the caller must surface, or "" when the command may execute.
 // The order is deliberate: hard blocks come before anything the user can wave
 // through, and a command the user already allowed is not queued up for a second
 // prompt from a later guardrail.
 func (c *codingSubAgentCallbacks) guardCodingShellCommand(command, workingDir string) string {
+	c.refreshTaskCommandAllowance()
 	// A repository inquiry stays a hard block. Its run report states
 	// "只读检查：未修改任何文件" purely from the request kind, so approving a command
 	// past this guardrail would make the report claim something untrue.
@@ -14060,10 +14120,9 @@ func relaxCodingPromptForDisabledQualityGate(prompt string) string {
 		{"- Do not use failure-suppressing or non-auditable verification shells: no || true, pipes, output redirection, help/list/collect-only flags, watch/UI modes, mutating flags such as --fix/--write, or chained post-verification commands.\n", "- Pipes, redirection, and combined test/build/lint/typecheck commands are allowed. Do not append || true or || echo to hide a failing command. Do not use watch/UI modes or mutating flags such as --fix/--write.\n"},
 		{"- 验证命令不要追加 echo exit=$LASTEXITCODE 显示尾：bash 结果末尾自带 command exited with code N（含成功 0），此类尾巴会判 failure-suppressing 而失败。\n", ""},
 		{"3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。若项目不是 Git 仓库，说明该情况并依赖文件审计列表，不要用 bash 反复跑 git status/diff/log，也不要对 git 自检加 2>/dev/null。\n", "3. 改完后用匹配的测试或构建确认结果。git diff 只在需要核对范围时再看。\n"},
-		{"以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告。唯一例外是第 5 步：当前多步骤计划明确把编译/build/test 交给后续独立步骤时，不要提前构建，但第 4、6 步仍为必做项。\n", "修改后按任务需要回读并运行验证。验证可以和诊断写在同一条命令里，也可以使用管道或重定向。\n"},
-		{"\t5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 \"g++ -o hello hello.cpp\"、\"python3 -m py_compile file.py\"、pytest/go test/npm test 等）。例外仅适用于：当前是多步骤计划的实现步骤，且计划后续明确有独立的编译/build/test 步骤时，不要提前执行完整构建；完成本步骤的修改后回读确认，后续步骤负责可执行验证。没有这一明确的后续步骤时，必须在本步骤验证。\n", "5. 修改后按需要运行匹配的测试或构建。可以和诊断写在一起。计划已把编译或测试交给后续步骤时，不要提前完整构建。\n"},
-		{"6. 修改后运行并查看只读自检命令（优先 git status --short 与 git diff --stat；不要附带 git log，除非任务明确要求）\n", "6. git status 或 git diff 只在需要核对改动范围时再跑，不要为了自检反复重试。\n"},
-		{"并触发质量门误判", ""},
+		{"4. 每个改过或新建的文件，都要在它最后一次修改或新建之后，再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容\n", "4. 修改或新建后可以再 ssh_read_file 核对关键片段。\n"},
+		{"5. 最后一次修改或新建后用 ssh_bash 运行匹配任务的验证命令（如 \"g++ -o hello hello.cpp\"、\"python3 -m py_compile file.py\"、pytest/go test/npm test 等）。验证命令不要加管道、|| 或重定向，也不要和 git status/diff 写在同一条命令里。验证跟在最后一次非文档修改之后。文档只算 Markdown（含 mdx）、README、changelog、rst；只改这些才不必跑，改了 go.mod、CMakeLists、package.json 或其他文件都要重跑。只有当前任务是带编号的计划步骤，且后面另有编号步骤写明编译、构建或测试时，实现、编写或新建步骤才不要提前完整构建；其他步骤必须在本步骤验证。\n", "5. 修改后按需要运行匹配的测试或构建。可以和诊断写在一起。计划已把编译或测试交给后续步骤时，不要提前完整构建。\n"},
+		{"6. 最后一次修改或新建后用一条 ssh_bash 运行 git status --short && git diff --stat。不要用分号、管道或 || 拆开，也不要附带 git log，除非任务明确要求\n", "6. git status 或 git diff 只在需要核对改动范围时再跑，不要为了自检反复重试。\n"},
 		{"## Quality audit gates\n", "## Bug-fix notes\n"},
 		{"solely to satisfy an audit gate", "when the workspace inventory is already empty"},
 		{"不要调用 git_diff 来「凑」质量门禁。", "不要为了凑检查而调用 git_diff。"},
@@ -14071,7 +14130,7 @@ func relaxCodingPromptForDisabledQualityGate(prompt string) string {
 		{"，除非门禁明确要求重交", ""},
 		{"只有修复已有文件中的 bug 才提交定位报告；被接受后同任务轮次可直接改根因文件，不要把同一份完整报告再交一遍。", "修复 bug 时可以提交定位报告记录根因。缺少这份报告不会阻止修改。"},
 		{"\t- Bug fixes: localize with code_navigation, reproduction and alternatives, make an explicit research decision, then report_localization before editing. Once accepted, do not resubmit the same report on later turns. Unknown/current/third-party facts require web_search (exact error + component/version) and authoritative sources.\n", "\t- Bug fixes: localize with code_navigation when it helps. report_localization is optional, and a missing report does not block edits.\n"},
-		{"随后调用 report_localization；被接受后即可在后续轮次修改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。", "可以调用 report_localization 记录根因。缺少这份报告不会阻止修改。"},
+		{"然后调用 report_localization；被接受后才改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。", "可以调用 report_localization 记录根因。缺少这份报告不会阻止修改。"},
 	}
 	for _, pair := range replacements {
 		prompt = strings.ReplaceAll(prompt, pair[0], pair[1])
@@ -17131,23 +17190,10 @@ func runTaskWithSubAgentRuntimeOptions(
 		// Dual-run observation only (Phase 1, R3): the gate outcome never changes.
 		sa.scopeApproval.setDualEvalSnapshot(scopeApprovalDualEvalSnapshotFunc(handler))
 		sa.scopeApproval.setAuditCallback(func(req ScopeApprovalRequest, decision ScopeApprovalDecision, source string) {
+			// User 以后允许 / 允许该目录 is stored by rememberLocalScopeStickyDecision.
+			// This callback only sees already-granted automatic passes, so it
+			// must not rewrite the task record on every later command.
 			recordScopeApprovalAudit(handler, "", req, decision, source)
-			// Multi-turn continuity: remember allow_dir / path trust / high-risk trust
-			// without requiring a global config write when the user already chose session trust.
-			if loopCtx != nil {
-				switch decision {
-				case ScopeApprovalAllowDir:
-					handler.rememberStickyApprovedDir(loopCtx.UserID, req.Directory)
-				case ScopeApprovalFullAccess:
-					if req.Kind == localHighRiskApprovalKind {
-						handler.markStickyCodingSessionHighRiskAccess(loopCtx.UserID)
-					} else {
-						handler.markStickyCodingSessionFullAccess(loopCtx.UserID, "", sa.projectPath)
-					}
-					// Path + high-risk both granted → upgrade UI mode to full.
-					handler.maybeUpgradeStickyPermissionModeToFull(loopCtx.UserID)
-				}
-			}
 		})
 		// Trust the user-selected coding workspace + parent (monorepo common case).
 		sa.seedFullEnvironmentWorkspaceApprovals()

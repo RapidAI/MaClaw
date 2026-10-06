@@ -98,7 +98,7 @@ func TestCodingQualityGateOffPromptDropsAuditThreat(t *testing.T) {
 		correlatedRemoteExecution: true,
 	}}
 	remoteOff := remote.BuildSystemPrompt("update parser error handling", true)
-	if strings.Contains(remoteOff, "质量门禁") || strings.Contains(remoteOff, "门禁") || strings.Contains(remoteOff, "质量门误判") || strings.Contains(remoteOff, "必须在本步骤验证") || strings.Contains(remoteOff, "Finish the requested change") || strings.Contains(remoteOff, "禁止修改") || !strings.Contains(remoteOff, "缺少这份报告不会阻止修改") || !strings.Contains(remoteOff, "Host quality gate is off for this turn.") {
+	if strings.Contains(remoteOff, "质量门禁") || strings.Contains(remoteOff, "门禁") || strings.Contains(remoteOff, "质量门误判") || strings.Contains(remoteOff, "必须在本步骤验证") || strings.Contains(remoteOff, "确认远程文件确实变成预期内容") || strings.Contains(remoteOff, "git status --short && git diff --stat") || strings.Contains(remoteOff, "改完用 ssh_bash 验证") || strings.Contains(remoteOff, "按步骤推进并验证") || strings.Contains(remoteOff, "Finish the requested change") || strings.Contains(remoteOff, "禁止修改") || !strings.Contains(remoteOff, "缺少这份报告不会阻止修改") || !strings.Contains(remoteOff, "按需要运行匹配的测试或构建") || !strings.Contains(remoteOff, "可以再 ssh_read_file 核对") || !strings.Contains(remoteOff, "Host quality gate is off for this turn.") {
 		t.Fatalf("disabled remote prompt must stop requiring the quality gate")
 	}
 

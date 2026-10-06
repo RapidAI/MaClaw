@@ -348,9 +348,12 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 	// Keep pure-coding sticky routing armed across multi-turn /goal loops.
 	h.ensurePureCodingArmedForGoalContinuation(userID)
 	// Remote pure coding with dead SSH: do not schedule into the general agent.
-	if h.isPureCodingWorkbenchSession(userID) && !h.hasPendingTemplateSubAgentExecution(userID) {
+	// A leftover local project path is not an SSH session. Scheduling that
+	// turn re-enters the desktop pipeline for a task whose machine is the
+	// remote host.
+	if h.isPureCodingWorkbenchSession(userID) && !h.remoteCodingSSHEnginePending(userID) {
 		mem := h.getStickyCodingWorkbenchMemory(userID)
-		if strings.TrimSpace(mem.Kind) == "remote" {
+		if h.codingSessionIsRemote(userID, mem) {
 			log.Printf("[goal-continuation] skip schedule: remote pure coding not armed (SSH reconnect required) user=%s", userID)
 			return
 		}

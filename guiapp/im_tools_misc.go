@@ -3506,6 +3506,10 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 // maxWebFetchDownloadBytes allows large PDFs / papers (logs saw 10MB+ arXiv PDFs).
 const maxWebFetchDownloadBytes = 100 * 1024 * 1024
 
+// hostDownloadSavedTrailer is appended only after a file has been written on
+// the local host. Remote coding treats this exact trailer as download success.
+const hostDownloadSavedTrailer = "下载过程日志: ~/.maclaw/logs/download.log"
+
 func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	rawURL := stringVal(args, "url")
 	if rawURL == "" {
@@ -3640,7 +3644,7 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		if result.URL != "" && result.URL != rawURL {
 			msg = fmt.Sprintf("%s\nfinal_url: %s", msg, result.URL)
 		}
-		msg = fmt.Sprintf("%s\n下载过程日志: ~/.maclaw/logs/download.log", msg)
+		msg = fmt.Sprintf("%s\n%s", msg, hostDownloadSavedTrailer)
 		return msg
 	}
 

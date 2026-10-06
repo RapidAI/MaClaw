@@ -3,6 +3,12 @@ import {
     MICROCREDITS_PER_CREDIT,
     countProbeProgress,
     creditsToMicro,
+    defaultTokenBankWithdrawAmount,
+    MIN_TOKEN_BANK_WITHDRAW_MICRO,
+    normalizeCreditInput,
+    tokenBankWithdrawAmountIssue,
+    withdrawFailureDetail,
+    withdrawFailureNeedsReplay,
     describeAutoWithdraw,
     displayProviderLabel,
     extractTokenBankGiftLinks,
@@ -225,6 +231,45 @@ describe('hubcenterTokenBank credit formatting', () => {
         expect(creditsToMicro('')).toBeNull();
         expect(creditsToMicro('abc')).toBeNull();
         expect(creditsToMicro('-5')).toBeNull();
+    });
+
+    it('defaults a manual withdrawal to the automatic cap, clamped to the balance', () => {
+        expect(MIN_TOKEN_BANK_WITHDRAW_MICRO).toBe(10_000_000);
+        expect(defaultTokenBankWithdrawAmount(500_000_000, 6_971_760_000)).toBe('500');
+        expect(defaultTokenBankWithdrawAmount(0, 25_000_000)).toBe('25');
+        expect(defaultTokenBankWithdrawAmount(800_000_000, 80_000_000)).toBe('80');
+        expect(tokenBankWithdrawAmountIssue('9', 100_000_000)).toBe('below_minimum');
+        expect(tokenBankWithdrawAmountIssue('10', 100_000_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('101', 100_000_000)).toBe('above_balance');
+        expect(tokenBankWithdrawAmountIssue('', 100_000_000)).toBe('empty');
+        expect(tokenBankWithdrawAmountIssue('abc', 100_000_000)).toBe('invalid');
+        expect(tokenBankWithdrawAmountIssue('10', 8_000_000)).toBe('insufficient_balance');
+        expect(tokenBankWithdrawAmountIssue('1e2', 200_000_000)).toBe('invalid');
+        expect(normalizeCreditInput('\uFF15\uFF10\uFF10')).toBe('500');
+        expect(tokenBankWithdrawAmountIssue('\uFF15\uFF10\uFF10', 6_971_760_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('6,971.76', 6_971_760_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('6,971.77', 6_971_760_000)).toBe('above_balance');
+        expect(tokenBankWithdrawAmountIssue('100', 200_000_000, 50_000_000)).toBe('pending_amount');
+        expect(tokenBankWithdrawAmountIssue('50', 200_000_000, 50_000_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('50', 0, 50_000_000)).toBeNull();
+        expect(withdrawFailureNeedsReplay('credits are reserved for this Hub; retry this withdrawal to finish the grant')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"GRANT_PENDING","message":"token bank grant was not confirmed; retry the same request id"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"SERVICE_GROUP_MISSING"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center token bank request failed"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"Post \\"https://center.example/token-bank/withdraw\\": context deadline exceeded"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"decode hub center token bank response: invalid character"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"http2: server sent GOAWAY and closed the connection"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center token bank: service_group_not_token_bank: not a token bank group"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center client is not configured"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('HubCenter rejected the request: {"code":"unauthorized","message":"session expired or invalid"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('HubCenter rejected the request: {"code":"token_bank_unavailable","message":"token bank is not available on this node"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('HubCenter rejected the request: {"code":"withdraw_failed","message":"begin tx: disk I/O error"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: 502 Bad Gateway')).toBe(true);
+        expect(withdrawFailureNeedsReplay('please sign in to HubCenter to use the Token Bank')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Post "https://hub.example/api/token-bank/withdraw": context deadline exceeded')).toBe(true);
+        expect(withdrawFailureDetail('Hub rejected the withdrawal: {"code":"SERVICE_GROUP_MISSING","message":"choose a service group"}')).toBe('choose a service group');
+        expect(withdrawFailureDetail('credits are reserved for this Hub; retry this withdrawal to finish the grant: Hub rejected the withdrawal: {"message":"retry the same request id"}')).toBe('credits are reserved for this Hub; retry this withdrawal to finish the grant: Hub rejected the withdrawal: retry the same request id');
+        expect(withdrawFailureDetail('dial tcp: connection refused')).toBe('dial tcp: connection refused');
     });
 });
 

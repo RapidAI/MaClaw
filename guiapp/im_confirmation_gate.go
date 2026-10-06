@@ -126,7 +126,19 @@ func (h *IMMessageHandler) handleExecutionConfirmationGate(freshTask bool, msg I
 		return nil, false
 	}
 
-	intent := h.classifyTaskIntentForExecution(msg.UserID, trimmed, msg.Attachments, httpClient)
+	// Judge intent and understanding on the user-authored text only. The
+	// desktop file picker appends a host block (paths + English tool-routing
+	// boilerplate) to msg.Text; embedding intent classification and the
+	// LLM-written card summary must not be steered by that boilerplate (same
+	// 2026-10-06 incident class as the interrupt scheduler).
+	analysisText := stripHostAttachmentSections(trimmed)
+	if analysisText == "" {
+		// Attachment-only fresh task: no user prose to judge — fall back to
+		// the full text rather than abandoning the gate.
+		analysisText = trimmed
+	}
+
+	intent := h.classifyTaskIntentForExecution(msg.UserID, analysisText, msg.Attachments, httpClient)
 	if !shouldRequireExecutionConfirmationForIntent(msg, nil, intent) {
 		return nil, false
 	}
@@ -136,11 +148,16 @@ func (h *IMMessageHandler) handleExecutionConfirmationGate(freshTask bool, msg I
 	// incoming text inside a confirmation card is both redundant and confusing.
 	// If task understanding is unavailable, let the normal agent path handle the
 	// request instead of sending a no-op confirmation.
-	understanding := h.understandTaskWithLLM(msg.UserID, trimmed, intent)
-	if !hasMeaningfulTaskUnderstanding(understanding, trimmed) {
+	understanding := h.understandTaskWithLLM(msg.UserID, analysisText, intent)
+	if !hasMeaningfulTaskUnderstanding(understanding, analysisText) {
 		return nil, false
 	}
-	item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent, understanding)
+	// Paraphrase detection and the fallback echo inside buildPendingConfirmation
+	// run on the clean text; the stored item must keep the FULL text so that
+	// approval re-executes with the attachment paths intact.
+	item := buildPendingConfirmation(h.app, msg.UserID, analysisText, intent, understanding)
+	item.OriginalText = strings.TrimSpace(trimmed)
+	item.ResumeText = item.OriginalText
 	if h.confirmationStore != nil {
 		h.confirmationStore.set(item)
 	}

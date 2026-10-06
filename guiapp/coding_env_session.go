@@ -193,28 +193,34 @@ func stickyCodingMemoryFilePath(userID string) string {
 	return filepath.Join(corelib.MaclawBaseDir(), "data", "coding_workbench", hex.EncodeToString(sum[:])+".json")
 }
 
-func loadStickyCodingWorkbenchMemoryFromDisk(userID string) (stickyCodingWorkbenchMemory, bool) {
+// loadStickyCodingWorkbenchMemoryFromDisk reads the workbench file.
+// missing is true only when there is nothing to retry: no path, the file is
+// gone, or it was expired and removed. A read or parse failure is not missing,
+// so the caller retries instead of caching an empty workbench over a real file.
+func loadStickyCodingWorkbenchMemoryFromDisk(userID string) (mem stickyCodingWorkbenchMemory, found bool, missing bool) {
 	path := stickyCodingMemoryFilePath(userID)
 	if path == "" {
-		return stickyCodingWorkbenchMemory{}, false
+		return stickyCodingWorkbenchMemory{}, false, true
 	}
 	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
-		return stickyCodingWorkbenchMemory{}, false
+	if err != nil {
+		return stickyCodingWorkbenchMemory{}, false, os.IsNotExist(err)
 	}
-	var mem stickyCodingWorkbenchMemory
+	if len(data) == 0 {
+		return stickyCodingWorkbenchMemory{}, false, false
+	}
 	if err := json.Unmarshal(data, &mem); err != nil {
 		log.Printf("[coding-env] load sticky memory failed path=%s err=%v", path, err)
-		return stickyCodingWorkbenchMemory{}, false
+		return stickyCodingWorkbenchMemory{}, false, false
 	}
 	if mem.UpdatedAtUnix > 0 {
 		age := time.Since(time.Unix(mem.UpdatedAtUnix, 0))
 		if age > stickyCodingMemoryMaxAge {
 			_ = os.Remove(path)
-			return stickyCodingWorkbenchMemory{}, false
+			return stickyCodingWorkbenchMemory{}, false, true
 		}
 	}
-	return mem, true
+	return mem, true, false
 }
 
 func persistStickyCodingWorkbenchMemoryToDisk(userID string, mem stickyCodingWorkbenchMemory) {
@@ -236,13 +242,20 @@ func persistStickyCodingWorkbenchMemoryToDisk(userID string, mem stickyCodingWor
 	}
 }
 
-func deleteStickyCodingWorkbenchMemoryFromDisk(userID string) {
+func deleteStickyCodingWorkbenchMemoryFromDisk(userID string) bool {
 	path := stickyCodingMemoryFilePath(userID)
 	if path == "" {
-		return
+		return true
 	}
-	_ = os.Remove(path)
+	err := os.Remove(path)
+	return err == nil || os.IsNotExist(err)
 }
+
+// stickyCodingMemoryMiss remembers that this user has no workbench file.
+// Ordinary chat checks sticky on every send; repeating the stat is wasted.
+// store/update replace the marker, and clear installs it after deleting the
+// file so a disk read that started earlier cannot put the deleted session back.
+type stickyCodingMemoryMiss struct{}
 
 func (h *IMMessageHandler) getStickyCodingWorkbenchMemory(userID string) stickyCodingWorkbenchMemory {
 	if h == nil {
@@ -257,14 +270,24 @@ func (h *IMMessageHandler) getStickyCodingWorkbenchMemory(userID string) stickyC
 		mem, _ := raw.(stickyCodingWorkbenchMemory)
 		return mem
 	}
-	// Cold load after restart / process restart.
-	// LoadOrStore: a concurrent update must not be overwritten by a slower disk load.
-	if mem, loaded := loadStickyCodingWorkbenchMemoryFromDisk(userID); loaded {
+	// Cold load after restart. LoadOrStore so a bind that landed during the
+	// read wins. A miss marker also wins: that read is older than a clear.
+	// Only a confirmed absence is cached. A locked or corrupt file must be
+	// retried, or one error would hide the workbench for the rest of the process.
+	mem, found, missing := loadStickyCodingWorkbenchMemoryFromDisk(userID)
+	if found {
 		actual, _ := h.stickyCodingWorkbenchMemory.LoadOrStore(userID, mem)
 		if got, ok := actual.(stickyCodingWorkbenchMemory); ok {
 			return got
 		}
-		return mem
+		return stickyCodingWorkbenchMemory{}
+	}
+	if !missing {
+		return stickyCodingWorkbenchMemory{}
+	}
+	actual, _ := h.stickyCodingWorkbenchMemory.LoadOrStore(userID, stickyCodingMemoryMiss{})
+	if got, ok := actual.(stickyCodingWorkbenchMemory); ok {
+		return got
 	}
 	return stickyCodingWorkbenchMemory{}
 }
@@ -432,9 +455,16 @@ func (h *IMMessageHandler) clearStickyCodingWorkbenchMemory(userID string) {
 
 	withStickyCodingUserLock(userID, func() {
 		// Drop pending flush so a timer cannot re-create the file after delete.
+		// Keep a miss marker in the map: a cold load already in flight must not
+		// LoadOrStore the snapshot it read before this delete.
 		cancelStickyCodingDebouncedPersist(userID)
-		h.stickyCodingWorkbenchMemory.Delete(userID)
-		deleteStickyCodingWorkbenchMemoryFromDisk(userID)
+		if deleteStickyCodingWorkbenchMemoryFromDisk(userID) {
+			h.stickyCodingWorkbenchMemory.Store(userID, stickyCodingMemoryMiss{})
+		} else {
+			// The file is still there. Leave the key empty so the next read
+			// retries it instead of treating a failed delete as absence.
+			h.stickyCodingWorkbenchMemory.Delete(userID)
+		}
 	})
 }
 
@@ -509,18 +539,21 @@ func (h *IMMessageHandler) FlushAllStickyCodingWorkbenchMemory() {
 	flushAllStickyCodingDebouncedPersist()
 	h.stickyCodingWorkbenchMemory.Range(func(key, value interface{}) bool {
 		userID, _ := key.(string)
-		mem, _ := value.(stickyCodingWorkbenchMemory)
-		if userID == "" {
+		if _, isMem := value.(stickyCodingWorkbenchMemory); userID == "" || !isMem {
 			return true
 		}
 		withStickyCodingUserLock(userID, func() {
-			// Re-load in case concurrent update advanced state.
-			if raw, ok := h.stickyCodingWorkbenchMemory.Load(userID); ok {
-				if m, ok := raw.(stickyCodingWorkbenchMemory); ok {
-					mem = m
-				}
+			// Re-load in case concurrent update advanced state. A miss marker
+			// means clear won; do not write an empty workbench file.
+			raw, ok := h.stickyCodingWorkbenchMemory.Load(userID)
+			if !ok {
+				return
 			}
-			persistStickyCodingWorkbenchMemoryToDisk(userID, mem)
+			m, ok := raw.(stickyCodingWorkbenchMemory)
+			if !ok {
+				return
+			}
+			persistStickyCodingWorkbenchMemoryToDisk(userID, m)
 		})
 		return true
 	})
@@ -620,6 +653,14 @@ func (h *IMMessageHandler) markStickyCodingSessionFullAccess(userID, kind, proje
 	if userID == "" {
 		return
 	}
+	current := h.getStickyCodingWorkbenchMemory(userID)
+	mode := strings.ToLower(strings.TrimSpace(current.SessionPermissionMode))
+	modeStable := mode != "" && !stickyCodingPermissionIsRequest(mode)
+	kindSame := kind == "" || current.Kind == kind
+	projectSame := strings.TrimSpace(projectPath) == "" || current.ProjectPath == strings.TrimSpace(projectPath)
+	if current.SessionFullAccess && modeStable && kindSame && projectSame {
+		return
+	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		if kind != "" {
 			mem.Kind = kind
@@ -628,41 +669,59 @@ func (h *IMMessageHandler) markStickyCodingSessionFullAccess(userID, kind, proje
 			mem.ProjectPath = p
 		}
 		mem.SessionFullAccess = true
-		// Path trust from a dialog is stronger than menu "请求授权".
+		// Path trust from a dialog is stronger than menu "请求授权", but it
+		// stays 工作区信任. Command 以后允许 must not flip the input to 完全控制.
 		mode := strings.ToLower(strings.TrimSpace(mem.SessionPermissionMode))
 		if stickyCodingPermissionIsRequest(mode) || mode == "" {
-			if mem.SessionHighRiskAccess {
-				mem.SessionPermissionMode = "full"
-			} else {
-				mem.SessionPermissionMode = "workspace"
-			}
-		} else if mem.SessionHighRiskAccess && mode != "full" {
-			mem.SessionPermissionMode = "full"
+			mem.SessionPermissionMode = "workspace"
 		}
 	})
 }
 
 // markStickyCodingSessionHighRiskAccess enables session-scoped high-risk bash
-// auto-allow (create-task pure coding). Independent of path full-access.
-// When path trust is already present, escalates SessionPermissionMode to full
-// (including from explicit request after a prior path allow-full dialog).
+// auto-allow for the current coding task tab. It does not change the input
+// permission mode: 请求授权 and 工作区信任 stay as the user left them.
 func (h *IMMessageHandler) markStickyCodingSessionHighRiskAccess(userID string) {
 	if h == nil {
 		return
 	}
 	userID = strings.TrimSpace(userID)
-	if userID == "" {
+	if userID == "" || h.getStickyCodingWorkbenchMemory(userID).SessionHighRiskAccess {
 		return
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.SessionHighRiskAccess = true
-		if mem.SessionFullAccess {
-			mode := strings.ToLower(strings.TrimSpace(mem.SessionPermissionMode))
-			if mode != "full" {
-				mem.SessionPermissionMode = "full"
-			}
-		}
 	})
+}
+
+// stickyCommandGrantForMode reports whether high-risk commands stay auto-allowed
+// after applying an input-box mode. 完全控制 always allows them. 工作区信任 keeps
+// an existing 以后允许, including a repeat workspace write. 请求授权 and stepping
+// down from 完全控制 drop it.
+func stickyCommandGrantForMode(mode, prevMode string, alreadyGranted bool) bool {
+	if mode == "full" {
+		return true
+	}
+	prevMode = strings.ToLower(strings.TrimSpace(prevMode))
+	return mode == "workspace" && alreadyGranted && prevMode != "full"
+}
+
+// taskCommandsAutoAllowed reports whether this task tab should run guarded
+// commands without another prompt: input-box 完全控制, or 以后允许 on this tab.
+func (h *IMMessageHandler) taskCommandsAutoAllowed(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.SessionHighRiskAccess {
+		return true
+	}
+	global := h.app != nil && h.app.isSubAgentFullAccessGranted()
+	return codingWorkbenchPermissionModeFromMemory(mem, global) == "full"
 }
 
 // setStickyCodingSessionPermissionMode records the user's input-box choice and
@@ -688,16 +747,26 @@ func (h *IMMessageHandler) setStickyCodingSessionPermissionMode(userID, mode, ki
 		return
 	}
 	wantPath := mode == "full" || mode == "workspace"
-	wantRisk := mode == "full"
 	nextProject := strings.TrimSpace(projectPath)
+	current := h.getStickyCodingWorkbenchMemory(userID)
+	risk := stickyCommandGrantForMode(mode, current.SessionPermissionMode, current.SessionHighRiskAccess)
+	kindSame := kind == "" || current.Kind == kind
+	projectSame := nextProject == "" || strings.TrimSpace(current.ProjectPath) == nextProject
+	if current.SessionPermissionMode == mode &&
+		current.SessionFullAccess == wantPath &&
+		current.SessionHighRiskAccess == risk &&
+		kindSame && projectSame {
+		return
+	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		// Empty projectPath means "keep sticky ProjectPath" (permission UI must
 		// not replace the execution workspace path with the task folder path).
 		kindSame := kind == "" || mem.Kind == kind
 		projectSame := nextProject == "" || strings.TrimSpace(mem.ProjectPath) == nextProject
+		risk := stickyCommandGrantForMode(mode, mem.SessionPermissionMode, mem.SessionHighRiskAccess)
 		if mem.SessionPermissionMode == mode &&
 			mem.SessionFullAccess == wantPath &&
-			mem.SessionHighRiskAccess == wantRisk &&
+			mem.SessionHighRiskAccess == risk &&
 			kindSame && projectSame {
 			return
 		}
@@ -709,7 +778,7 @@ func (h *IMMessageHandler) setStickyCodingSessionPermissionMode(userID, mode, ki
 		}
 		mem.SessionPermissionMode = mode
 		mem.SessionFullAccess = wantPath
-		mem.SessionHighRiskAccess = wantRisk
+		mem.SessionHighRiskAccess = risk
 	})
 }
 
@@ -772,6 +841,11 @@ func (h *IMMessageHandler) rememberStickyApprovedDir(userID, dir string) {
 	dir = strings.TrimSpace(dir)
 	if userID == "" || dir == "" {
 		return
+	}
+	for _, existing := range h.getStickyCodingWorkbenchMemory(userID).ApprovedDirs {
+		if strings.EqualFold(strings.TrimSpace(existing), dir) {
+			return
+		}
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.ApprovedDirs = uniqueSortedSubAgentStrings(append(mem.ApprovedDirs, dir))
@@ -865,11 +939,14 @@ func (h *IMMessageHandler) bindStickyRemoteCodingContext(userID string, remoteCt
 }
 
 // codingWorkbenchPermissionMode returns the effective pure-coding permission tier.
-// "full" = global full access and/or session path+high-risk trust;
-// "workspace" = session path trust only (high-risk still prompts);
-// "request" = seed project+parent only / interactive.
+// "full" is only the input-box 完全控制 choice or the global switch.
+// Path trust stays "workspace". Command 以后允许 does not change this tier.
+// "request" keeps prompts until the user allows a command for this task.
 func (h *IMMessageHandler) codingWorkbenchPermissionMode(userID string, globalFullAccess bool) string {
-	mem := h.getStickyCodingWorkbenchMemory(userID)
+	return codingWorkbenchPermissionModeFromMemory(h.getStickyCodingWorkbenchMemory(userID), globalFullAccess)
+}
+
+func codingWorkbenchPermissionModeFromMemory(mem stickyCodingWorkbenchMemory, globalFullAccess bool) string {
 	// Explicit "request" wins over global so the user can force prompts on a pure
 	// coding tab even when global full-access is enabled elsewhere.
 	mode := strings.ToLower(strings.TrimSpace(mem.SessionPermissionMode))
@@ -879,14 +956,7 @@ func (h *IMMessageHandler) codingWorkbenchPermissionMode(userID string, globalFu
 	if globalFullAccess || mode == "full" {
 		return "full"
 	}
-	if mode == "workspace" {
-		return "workspace"
-	}
-	// Legacy sticky flags without explicit mode.
-	if mem.SessionHighRiskAccess && mem.SessionFullAccess {
-		return "full"
-	}
-	if mem.SessionFullAccess {
+	if mode == "workspace" || mem.SessionFullAccess {
 		return "workspace"
 	}
 	return "request"
@@ -932,29 +1002,6 @@ func (h *IMMessageHandler) applyStickyRemoteCodingPermissions(userID string, sta
 			state.approveDir(dir)
 		}
 	}
-}
-
-// maybeUpgradeStickyPermissionModeToFull promotes SessionPermissionMode to
-// "full" when both path and high-risk session grants are present (e.g. after
-// sequential allow-full dialogs). Dialog grants escalate even from explicit
-// "request" so the input-box mode matches multi-turn sticky enforcement.
-func (h *IMMessageHandler) maybeUpgradeStickyPermissionModeToFull(userID string) {
-	if h == nil {
-		return
-	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return
-	}
-	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
-		if !mem.SessionFullAccess || !mem.SessionHighRiskAccess {
-			return
-		}
-		if strings.ToLower(strings.TrimSpace(mem.SessionPermissionMode)) == "full" {
-			return
-		}
-		mem.SessionPermissionMode = "full"
-	})
 }
 
 // syncStickyCodingFullAccessFromGlobal copies global full-access into sticky
@@ -1006,6 +1053,94 @@ func ensureLoopCtxUserID(loopCtx *LoopContext, userID string) {
 	if cur == desktopUserID && userID != desktopUserID && strings.HasPrefix(userID, desktopUserID+":") {
 		loopCtx.UserID = userID
 	}
+}
+
+type openCodingRow int
+
+const (
+	openCodingRowUnseen openCodingRow = iota
+	openCodingRowOrdinary
+	openCodingRowWorkbench
+)
+
+// classifyOpenCodingRow reads the already-open project index. Unseen means
+// there is no project path, the store is not open, or the row has not
+// flushed. That is not an ordinary chat row.
+func (h *IMMessageHandler) classifyOpenCodingRow(userID string) openCodingRow {
+	if h == nil || h.app == nil {
+		return openCodingRowUnseen
+	}
+	projectPath := projectPathFromSessionOwnerID(userID)
+	if projectPath == "" {
+		return openCodingRowUnseen
+	}
+	mode, found := h.app.lookupProjectCodingMode(projectPath)
+	if !found {
+		return openCodingRowUnseen
+	}
+	if mode == taskCodingDevTag || mode == taskRemoteCodingDevTag {
+		return openCodingRowWorkbench
+	}
+	return openCodingRowOrdinary
+}
+
+// clearOrdinaryCodingResidue drops a coding template or sticky binding on a
+// row already classified as ordinary. A blank sticky record is left untouched
+// so a chat message does not stat and delete a missing workbench file.
+// It reports whether an arm was dropped.
+func (h *IMMessageHandler) clearOrdinaryCodingResidue(userID string) bool {
+	if h == nil {
+		return false
+	}
+	if !h.hasPendingTemplateSubAgentExecution(userID) && !codingStickyHasResidue(h.getStickyCodingWorkbenchMemory(userID)) {
+		return false
+	}
+	h.clearStickyCodingEnvironment(userID)
+	return true
+}
+
+// codingStickyHasResidue is true when sticky memory still carries a coding
+// binding. An ordinary row must not keep that file; a blank record does not
+// need a disk delete.
+func codingStickyHasResidue(mem stickyCodingWorkbenchMemory) bool {
+	if strings.TrimSpace(mem.Kind) != "" || strings.TrimSpace(mem.ProjectPath) != "" {
+		return true
+	}
+	if strings.TrimSpace(mem.RemoteSessionID) != "" || strings.TrimSpace(mem.RemoteHost) != "" || strings.TrimSpace(mem.RemoteUser) != "" {
+		return true
+	}
+	if strings.TrimSpace(mem.RemoteWorkDir) != "" || strings.TrimSpace(mem.RemoteProjectDir) != "" || mem.RemotePort > 0 {
+		return true
+	}
+	return len(mem.WorktreeConflicts) > 0 || mem.UpdatedAtUnix != 0
+}
+
+// codingWorkbenchSurvivesConversationBoundary reports whether the project
+// execution environment outlives a chat boundary. The project row is
+// authoritative when it is already visible. Before that flush, an armed
+// template (or sticky kind) on the project owner is the workbench Prepare
+// just created. A non-project chat, and an ordinary row with a leftover
+// coding arm, do not survive.
+func (h *IMMessageHandler) codingWorkbenchSurvivesConversationBoundary(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	projectPath := projectPathFromSessionOwnerID(userID)
+	if projectPath == "" {
+		return false
+	}
+	switch h.classifyOpenCodingRow(userID) {
+	case openCodingRowOrdinary:
+		return false
+	case openCodingRowWorkbench:
+		return true
+	}
+	if h.hasPendingTemplateSubAgentExecution(userID) {
+		return true
+	}
+	kind := strings.TrimSpace(h.getStickyCodingWorkbenchMemory(userID).Kind)
+	return kind == "local" || kind == "remote"
 }
 
 // isPureCodingWorkbenchSession reports whether this owner has an armed or
@@ -1065,6 +1200,13 @@ func (h *IMMessageHandler) ensurePureCodingArmedForIncomingMessage(userID string
 	}
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
+		return
+	}
+	// A visible ordinary row is not a coding workbench. Drop a leftover arm
+	// and return. EnsureCodingWorkbenchArmed would only clear that same arm,
+	// after opening the hub client and rewriting sticky memory.
+	if h.classifyOpenCodingRow(userID) == openCodingRowOrdinary {
+		h.clearOrdinaryCodingResidue(userID)
 		return
 	}
 	h.ensurePureCodingArmedForGoalContinuation(userID)

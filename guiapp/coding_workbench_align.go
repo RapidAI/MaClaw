@@ -233,7 +233,7 @@ func (h *IMMessageHandler) storeStickyPendingCodingPlanAt(userID, userText, mark
 		mem.PendingPlanMarkdown = pending.Markdown
 		mem.PendingPlanUserText = pending.UserText
 		if pending.Markdown != "" {
-			mem.ExecutionPlan = truncateRunesForSubAgent(pending.Markdown, 2000)
+			mem.ExecutionPlan = truncateRunesForSubAgent(pending.Markdown, codingWorkbenchExecutionPlanPersistRunes)
 		}
 		mem.StepStatuses = codingWorkbenchStepsFromTasks(cloned, codingStepPending)
 	})
@@ -427,7 +427,7 @@ func (h *IMMessageHandler) restoreApprovedCodingPlanAsPending(userID string) (co
 		mem.PendingPlanUserText = restored.UserText
 		mem.ApprovedPlanJSON = ""
 		if restored.Markdown != "" {
-			mem.ExecutionPlan = truncateRunesForSubAgent(restored.Markdown, 2000)
+			mem.ExecutionPlan = truncateRunesForSubAgent(restored.Markdown, codingWorkbenchExecutionPlanPersistRunes)
 		}
 		mem.StepStatuses = codingWorkbenchStepsFromTasks(restored.Tasks, codingStepPending)
 		ok = true
@@ -725,18 +725,18 @@ func formatRemoteCodingPlanIncompleteNote(totalSteps, passed, failed, skipped in
 	}
 	switch {
 	case failed > 0 && skipped > 0:
-		return "说明：多步计划在失败步骤处停止，后续步骤已被跳过，不会自动继续。" +
-			"修复后请重新发起任务，或明确指令从失败后的下一步继续。"
+		return "说明：多步计划在失败步骤处停止，后续步骤已被跳过。" +
+			"恢复后发送「继续」会从失败步骤接着执行，已通过的步骤不会重做。"
 	case failed > 0:
-		return "说明：多步计划在失败步骤处停止，不会自动继续。" +
-			"修复后请重新发起任务，或明确指令从失败后的下一步继续。"
+		return "说明：多步计划在失败步骤处停止。" +
+			"恢复后发送「继续」会从失败步骤接着执行，已通过的步骤不会重做。"
 	case skipped > 0:
-		return "说明：部分计划步骤被跳过，不会自动继续。" +
-			"请重新发起任务或明确指令从剩余步骤继续。"
+		return "说明：部分计划步骤被跳过。" +
+			"发送「继续」会接着执行这些未完成的步骤。"
 	default:
 		// e.g. success/status lag: some steps passed, none failed/skipped, but count < total.
-		return "说明：多步计划未全部完成，不会自动继续剩余步骤。" +
-			"请重新发起任务或明确指令继续执行。"
+		return "说明：多步计划未全部完成。" +
+			"发送「继续」会接着执行剩余步骤。"
 	}
 }
 

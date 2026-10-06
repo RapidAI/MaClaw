@@ -5,15 +5,11 @@ import (
 	"log"
 	"strings"
 	"sync"
-
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// ToolDefinitionGenerator renders the static legacy host catalog. Dynamic MCP
-// and Skill gateways deliberately do not enter this compatibility surface:
-// their provider identity, observed schema and contract must be bound by the
-// managed semantic planner, rather than inferred from a model-emitted function
-// name.
+// ToolDefinitionGenerator renders the static legacy host catalog. call_mcp_tool
+// does not enter this surface: its arguments select the provider. manage_skill
+// does: it names an installed skill on the local runtime.
 type ToolDefinitionGenerator struct {
 	registry          *MCPRegistry
 	localMCPManager   *LocalMCPManager
@@ -39,7 +35,10 @@ func filterAgentVisibleBuiltinToolDefs(defs []map[string]interface{}) []map[stri
 	out := make([]map[string]interface{}, 0, len(filtered))
 	for _, def := range filtered {
 		name := extractToolName(def)
-		if shouldHideToolFromDiscovery(name) || coretool.IsLegacyModelDynamicGateway(name) {
+		// call_mcp_tool stays hidden: its arguments select the provider.
+		// manage_skill is the host-bound local skill runtime and belongs in
+		// the catalog so a full surface can pin it as an execution baseline.
+		if shouldHideToolFromDiscovery(name) || name == "call_mcp_tool" {
 			continue
 		}
 		out = append(out, def)

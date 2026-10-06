@@ -57,7 +57,9 @@ function statusFor(tab: AITab, lang: string, participantCount: number, online: b
             : localizeText(lang, "Group", "群聊", "群聊");
         return { label, tone: "" };
     }
-    if (online) return { label: localizeText(lang, "Online", "在线", "在線"), tone: "completed" };
+    // Presence keeps its own tone: the completed chip is now neutral blue-gray
+    // (task-outcome semantic), while "online" stays conventionally green.
+    if (online) return { label: localizeText(lang, "Online", "在线", "在線"), tone: "online" };
     return { label: localizeText(lang, "Offline", "离线", "離線"), tone: "pending" };
 }
 

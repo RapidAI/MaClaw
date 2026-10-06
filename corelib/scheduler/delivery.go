@@ -14,6 +14,11 @@ const (
 	DeliveryChannelWeixin    = "weixin"
 	DeliveryChannelTelegram  = "telegram"
 	DeliveryChannelQQ        = "qq"
+	// DeliveryChannelDevice targets the paired companion hardware terminals
+	// (MaClaw 码卡龙). Unlike the IM channels it has no per-recipient platform
+	// id: the desktop fans the payload out to every device bound to its own
+	// machine, so the only addressable target is the owner (user_id=self).
+	DeliveryChannelDevice = "device"
 )
 
 // Delivery target kinds.
@@ -334,6 +339,36 @@ func (d *TaskDelivery) FormatBody(taskName, resultText string, runErr error) str
 		b.WriteString(body)
 	}
 	return TruncateDeliveryBody(b.String())
+}
+
+// SplitScheduledTaskBody separates the task name that FormatBody prefixed with
+// 【定时任务】 from the rest of the body.
+//
+// Channels that render a title separately -- the companion device card -- would
+// otherwise repeat the task name inside their own text, because the name only
+// survives in the formatted body by the time a per-target sender sees it. The
+// parser lives beside the formatter so the two cannot drift, and the first
+// occurrence wins: FormatBody always writes the task line before the agent
+// result, so a result that happens to contain the marker cannot hijack it.
+//
+// A body that was not produced by FormatBody (an immediate im_message push, or
+// the managed dispatch path which sends the raw result) yields an empty name and
+// the whole text as rest.
+func SplitScheduledTaskBody(body string) (name, rest string) {
+	const marker = "【定时任务】"
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, marker) {
+			continue
+		}
+		name = strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+		remaining := make([]string, 0, len(lines)-1)
+		remaining = append(remaining, lines[:i]...)
+		remaining = append(remaining, lines[i+1:]...)
+		return name, strings.TrimSpace(strings.Join(remaining, "\n"))
+	}
+	return "", strings.TrimSpace(body)
 }
 
 // ParseDeliveryFromAny converts JSON-decoded values (map / []byte / string / TaskDelivery) into TaskDelivery.

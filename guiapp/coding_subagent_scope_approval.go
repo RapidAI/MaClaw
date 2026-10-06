@@ -327,23 +327,28 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 }
 
 // checkTaskModeGuard asks before running a command that a task-mode guardrail
-// turned down. Unlike checkHighRisk it neither consults nor grants the sticky
-// high-risk allowance: answering "allow risky commands" is a statement about
-// danger, not about widening what a run/build turn is, so each widening stays
-// an explicit per-command decision the user actually sees.
+// turned down. 完全控制 and a prior 以后允许 skip the prompt the same way
+// checkHighRisk does. 本次放行 stays one command; 以后允许 covers the rest of this task.
 func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, workingDir, rejection string) (result string) {
 	if s == nil {
 		return rejection
 	}
-	// Dual-run observation: same mapping as checkHighRisk() (the sticky
-	// high-risk grant is deliberately not consulted here — that asymmetry is
-	// the point of this gate — so the automatic-allow branch does not exist
-	// and a pending prompt is the only ask). Never changes the outcome.
+	// Dual-run observation: same mapping as checkHighRisk(). Never changes the
+	// returned rejection.
 	legacyEffect := permission.EffectDeny
 	defer func() {
 		s.dualEval(toolName, map[string]interface{}{"command": command, "working_dir": workingDir, "project_path": projectPath}, legacyEffect)
 	}()
 	s.mu.Lock()
+	if s.highRiskFullAccess {
+		audit := s.auditApproval
+		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: toolName, Path: command, ProjectPath: projectPath, Directory: workingDir, Kind: localHighRiskApprovalKind}, ScopeApprovalFullAccess, "automatic")
+		}
+		legacyEffect = permission.EffectAllow
+		return ""
+	}
 	callback := s.onScopeApproval
 	s.mu.Unlock()
 	if callback == nil {
@@ -359,7 +364,11 @@ func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, 
 		Message:     rejection,
 		AutoAllow:   false,
 	}) {
-	case ScopeApprovalAllowOnce, ScopeApprovalFullAccess:
+	case ScopeApprovalAllowOnce:
+		legacyEffect = permission.EffectAllow
+		return ""
+	case ScopeApprovalFullAccess:
+		s.grantHighRiskFullAccess()
 		legacyEffect = permission.EffectAllow
 		return ""
 	default:
@@ -431,6 +440,15 @@ func (s *scopeApprovalState) highRiskApproved() bool {
 	return s.highRiskFullAccess
 }
 
+func (s *scopeApprovalState) pathFullAccessGranted() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fullAccess
+}
+
 func (s *scopeApprovalState) grantHighRiskFullAccess() {
 	if s == nil {
 		return
@@ -440,8 +458,74 @@ func (s *scopeApprovalState) grantHighRiskFullAccess() {
 	s.highRiskFullAccess = true
 }
 
+func (s *scopeApprovalState) revokeHighRiskFullAccess() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.highRiskFullAccess = false
+}
+
 func shouldPersistLocalScopeFullAccess(req ScopeApprovalRequest, decision ScopeApprovalDecision) bool {
-	return decision == ScopeApprovalFullAccess && req.Kind != localHighRiskApprovalKind
+	if decision != ScopeApprovalFullAccess {
+		return false
+	}
+	// Command 以后允许 stays on this task. Path 完全访问 is what persists globally.
+	switch req.Kind {
+	case localHighRiskApprovalKind, remoteHighRiskApprovalKind:
+		return false
+	default:
+		return true
+	}
+}
+
+// rememberLocalScopeStickyDecision keeps a user 以后允许 / 允许该目录 choice
+// for later turns. High-risk 以后允许 is session-scoped and must not flip the
+// global full-access switch by itself.
+// stickyDecisionUser picks where a user approval is stored. A nested step's loop
+// user is not the task tab, so 以后允许 must be stored on stickyOwner. Path trust
+// from that step stays on the step: writing it to the task tab would replace the
+// task folder with the child workspace.
+func stickyDecisionUser(loopCtx *LoopContext, stickyOwner string) (userID string, nested bool) {
+	loopUser := ""
+	if loopCtx != nil {
+		loopUser = strings.TrimSpace(loopCtx.UserID)
+	}
+	owner := strings.TrimSpace(stickyOwner)
+	if owner == "" || owner == loopUser {
+		return loopUser, false
+	}
+	return owner, true
+}
+
+func rememberLocalScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopContext, stickyOwner string, req ScopeApprovalRequest, decision ScopeApprovalDecision) {
+	if handler == nil {
+		return
+	}
+	userID, nested := stickyDecisionUser(loopCtx, stickyOwner)
+	if userID == "" {
+		return
+	}
+	switch decision {
+	case ScopeApprovalAllowDir:
+		if nested {
+			return
+		}
+		handler.rememberStickyApprovedDir(userID, req.Directory)
+	case ScopeApprovalFullAccess:
+		if req.Kind == localHighRiskApprovalKind {
+			handler.markStickyCodingSessionHighRiskAccess(userID)
+			return
+		}
+		if nested {
+			return
+		}
+		handler.markStickyCodingSessionFullAccess(userID, "", req.ProjectPath)
+		if dir := strings.TrimSpace(req.Directory); dir != "" {
+			handler.rememberStickyApprovedDir(userID, dir)
+		}
+	}
 }
 
 // formatScopeRejection generates the rejection message shown to the LLM.
@@ -460,11 +544,34 @@ func formatScopeRejection(toolName, path, projectPath string) string {
 	}
 }
 
-// buildSubAgentScopeApprovalCallback creates a ScopeApprovalCallback that
-// uses the GUI's event system to ask the user for approval.
-// It emits a "subagent-scope-approval" event and blocks until the user responds
-// via ResolveScopeApproval, the loop is cancelled, or the approval times out.
+// nestedTaskCommandApprovalCallback lets a nested step ask for a guarded command
+// and store 以后允许 on the task tab. Other approval kinds stay denied here so a
+// child workspace cannot widen the task's path trust.
+func nestedTaskCommandApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, stickyOwner string, onProgress func(string), remote, maintenance bool) ScopeApprovalCallback {
+	if handler == nil || handler.app == nil || strings.TrimSpace(stickyOwner) == "" {
+		return nil
+	}
+	var inner ScopeApprovalCallback
+	if remote {
+		inner = buildRemoteHighRiskApprovalCallbackOwned(handler, loopCtx, stickyOwner, onProgress, maintenance)
+	} else {
+		inner = buildSubAgentScopeApprovalCallbackOwned(handler, loopCtx, stickyOwner, onProgress)
+	}
+	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		if req.Kind != localHighRiskApprovalKind && req.Kind != remoteHighRiskApprovalKind {
+			return ScopeApprovalDeny
+		}
+		return inner(req)
+	}
+}
+
+// buildSubAgentScopeApprovalCallback asks the user before an out-of-scope path
+// or a guarded command, and waits for the response, cancellation, or timeout.
 func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
+	return buildSubAgentScopeApprovalCallbackOwned(handler, loopCtx, "", onProgress)
+}
+
+func buildSubAgentScopeApprovalCallbackOwned(handler *IMMessageHandler, loopCtx *LoopContext, stickyOwner string, onProgress func(string)) ScopeApprovalCallback {
 	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		// If already cancelled, deny immediately.
 		if loopCtx != nil && loopCtx.IsCancelled() {
@@ -502,6 +609,7 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 			select {
 			case decision := <-responseCh:
 				recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
+				rememberLocalScopeStickyDecision(handler, loopCtx, stickyOwner, req, decision)
 				if shouldPersistLocalScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 					handler.app.persistSubAgentFullAccess()
 				}
@@ -524,6 +632,7 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 		select {
 		case decision := <-responseCh:
 			recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
+			rememberLocalScopeStickyDecision(handler, loopCtx, stickyOwner, req, decision)
 			if shouldPersistLocalScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 				handler.app.persistSubAgentFullAccess()
 			}

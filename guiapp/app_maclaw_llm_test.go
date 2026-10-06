@@ -4464,6 +4464,203 @@ func TestRecordLLMUsageSnapshotKeepsCapturedCodingProfile(t *testing.T) {
 	}
 }
 
+func TestTokenUsageWindowsUseMondayAndCalendarMonth(t *testing.T) {
+	now := time.Date(2026, 10, 7, 15, 0, 0, 0, time.Local)
+	today, week, month := tokenUsageWindowStarts(now)
+	if today != "2026-10-07" || week != "2026-10-05" || month != "2026-10-01" {
+		t.Fatalf("windows today=%s week=%s month=%s", today, week, month)
+	}
+	sunday := time.Date(2026, 10, 4, 12, 0, 0, 0, time.Local)
+	if _, weekStart, _ := tokenUsageWindowStarts(sunday); weekStart != "2026-09-28" {
+		t.Fatalf("sunday week start = %s, want 2026-09-28", weekStart)
+	}
+
+	byDay := map[string]map[string]*corelib.TokenUsageStat{
+		"2026-10-07": {"MiniMax": {InputTokens: 10}},
+		"2026-10-05": {"MiniMax": {InputTokens: 7}},
+		"2026-10-01": {"MiniMax": {InputTokens: 3}},
+		"2026-09-30": {"MiniMax": {InputTokens: 100}},
+		"2026-08-01": {"MiniMax": {InputTokens: 9}},
+		"2026-10-08": {"MiniMax": {InputTokens: 50}},
+		"not-a-date": {"MiniMax": {InputTokens: 80}},
+	}
+	out := map[string]*corelib.TokenUsageStat{"MiniMax": {}}
+	applyTokenUsageWindows(out, byDay, map[string]int64{"MiniMax": 1}, now)
+	stat := out["MiniMax"]
+	if stat.TodayTokens != 11 || stat.WeekTokens != 18 || stat.MonthTokens != 21 {
+		t.Fatalf("windows = today %d week %d month %d", stat.TodayTokens, stat.WeekTokens, stat.MonthTokens)
+	}
+	pruneTokenUsageByDay(byDay, now)
+	if _, ok := byDay["2026-08-01"]; ok {
+		t.Fatal("day older than retention should be pruned")
+	}
+	if _, ok := byDay["2026-09-30"]; !ok {
+		t.Fatal("previous month inside retention should stay")
+	}
+	if _, ok := byDay["not-a-date"]; ok {
+		t.Fatal("malformed day key should be pruned")
+	}
+	if _, ok := byDay["2026-10-08"]; !ok {
+		t.Fatal("future day inside retention should stay until that date")
+	}
+}
+
+func TestFlushRecordsTokenUsageDayAndResetClearsThatProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	app.AccumulateLLMTokenUsageWithCache("MiniMax", 30, 5, 0, 0)
+	pending := app.GetLLMTokenUsage("MiniMax")
+	if pending.TotalTokens != 35 || pending.TodayTokens != 35 || pending.WeekTokens != 35 || pending.MonthTokens != 35 {
+		t.Fatalf("pending windows = %+v", pending)
+	}
+	app.AccumulateLLMProfileTokenUsageWithCache(corelib.MaclawLLMConfig{
+		Profile: "assistant", ProviderID: "provider", ProviderName: "MiniMax", Model: "model",
+	}, 4, 1, 0, 0)
+	app.flushPendingTokenUsage()
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	date := time.Now().Format("2006-01-02")
+	day := saved.LLMTokenUsageByDay[date]["MiniMax"]
+	if day == nil || day.TotalTokens != 35 {
+		t.Fatalf("provider day bucket = %+v", saved.LLMTokenUsageByDay)
+	}
+	profileDay := saved.LLMTokenUsageByDay[date]["profile:assistant|provider|model"]
+	if profileDay == nil || profileDay.TotalTokens != 5 {
+		t.Fatalf("profile day bucket = %+v", saved.LLMTokenUsageByDay[date])
+	}
+	if saved.LLMTokenUsage["MiniMax"].TodayTokens != 0 {
+		t.Fatalf("window fields leaked into stored usage: %+v", saved.LLMTokenUsage["MiniMax"])
+	}
+	app.AccumulateLLMTokenUsageWithCache("MiniMax", 2, 0, 0, 0)
+	withPending := app.GetLLMTokenUsage("MiniMax")
+	if withPending.TotalTokens != 37 || withPending.TodayTokens != 37 || withPending.WeekTokens != 37 || withPending.MonthTokens != 37 {
+		t.Fatalf("unflushed delta counted twice or dropped: %+v", withPending)
+	}
+
+	stale := corelib.AppConfig{RemoteEmail: "owner@example.com"}
+	if err := app.SaveConfig(stale); err != nil {
+		t.Fatalf("stale SaveConfig: %v", err)
+	}
+	kept, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if kept.LLMTokenUsageByDay[date]["MiniMax"] == nil || kept.LLMTokenUsageByDay[date]["MiniMax"].TotalTokens != 35 {
+		t.Fatalf("stale save dropped day buckets: %+v", kept.LLMTokenUsageByDay)
+	}
+
+	if err := app.ResetLLMTokenUsage("MiniMax"); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	reset, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("reload after reset: %v", err)
+	}
+	if reset.LLMTokenUsage["MiniMax"] != nil {
+		t.Fatalf("provider usage survived reset: %+v", reset.LLMTokenUsage)
+	}
+	if reset.LLMTokenUsageByDay[date]["MiniMax"] != nil {
+		t.Fatalf("provider day bucket survived reset: %+v", reset.LLMTokenUsageByDay[date])
+	}
+	if reset.LLMTokenUsageByDay[date]["profile:assistant|provider|model"] == nil {
+		t.Fatalf("profile day bucket was cleared with the provider reset: %+v", reset.LLMTokenUsageByDay)
+	}
+}
+
+func TestGetLLMTokenUsageByDayIncludesPendingAndSkipsProfileRows(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	today := time.Now().Format("2006-01-02")
+	if err := app.SaveConfig(corelib.AppConfig{LLMTokenUsageByDay: map[string]map[string]*corelib.TokenUsageStat{
+		today: {
+			"MiniMax":                          {InputTokens: 30, OutputTokens: 5, TotalTokens: 35},
+			"profile:assistant|provider|model": {InputTokens: 9, OutputTokens: 1, TotalTokens: 10},
+			"codex:gpt-5.4":                    {InputTokens: 100, OutputTokens: 1, TotalTokens: 101},
+		},
+		"not-a-date": {"MiniMax": {InputTokens: 8, OutputTokens: 0, TotalTokens: 8}},
+	}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.AccumulateLLMTokenUsageWithCache("MiniMax", 2, 1, 0, 0)
+
+	points := app.GetLLMTokenUsageByDay()
+	if len(points) != 1 {
+		t.Fatalf("day points = %+v", points)
+	}
+	got := points[0]
+	if got.Date != today || got.Provider != "MiniMax" || got.InputTokens != 32 || got.OutputTokens != 6 || got.TotalTokens != 38 {
+		t.Fatalf("day point = %+v", got)
+	}
+}
+
+// A row persisted before the price fields existed reads back with zero unit
+// prices (all of them are omitempty). Cost must still be derived from the
+// configured/default prices instead of reporting a flat zero.
+func TestBackfillLLMUsagePricesFillsMissingPricesOnly(t *testing.T) {
+	cfg := corelib.AppConfig{}
+	missing := &corelib.TokenUsageStat{InputTokens: 1000, OutputTokens: 500}
+	backfillLLMUsagePrices(&cfg, "MiniMax", missing)
+	if missing.InputPricePerMTokensRMB != corelib.DefaultLLMInputPricePerMTokensRMB ||
+		missing.OutputPricePerMTokensRMB != corelib.DefaultLLMOutputPricePerMTokensRMB {
+		t.Fatalf("missing prices not filled from defaults: %+v", missing)
+	}
+	if missing.CacheReadPricePerMTokensRMB <= 0 || missing.CacheWritePricePerMTokensRMB <= 0 {
+		t.Fatalf("cache prices not derived: %+v", missing)
+	}
+
+	// A stored custom price is authoritative and must survive untouched.
+	custom := &corelib.TokenUsageStat{
+		InputTokens:                 10,
+		InputPricePerMTokensRMB:     7.5,
+		OutputPricePerMTokensRMB:    9,
+		CacheReadPricePerMTokensRMB: 0.75,
+	}
+	backfillLLMUsagePrices(&cfg, "MiniMax", custom)
+	if custom.InputPricePerMTokensRMB != 7.5 || custom.OutputPricePerMTokensRMB != 9 || custom.CacheReadPricePerMTokensRMB != 0.75 {
+		t.Fatalf("stored custom prices overwritten: %+v", custom)
+	}
+	// Only the still-missing cache-write price may be derived.
+	if custom.CacheWritePricePerMTokensRMB != 7.5 {
+		t.Fatalf("cache write price = %v, want derived 7.5", custom.CacheWritePricePerMTokensRMB)
+	}
+}
+
+func TestGetAllLLMTokenUsageReportsCostForLegacyZeroPricedRows(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	// No unit prices on the persisted row, exactly as an older build wrote it.
+	if err := app.SaveConfig(corelib.AppConfig{LLMTokenUsage: map[string]*corelib.TokenUsageStat{
+		"MiniMax": {InputTokens: 1_000_000, OutputTokens: 500_000, TotalTokens: 1_500_000},
+	}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	stat := app.GetAllLLMTokenUsage()["MiniMax"]
+	if stat == nil {
+		t.Fatal("MiniMax usage row missing")
+	}
+	if stat.TotalCostRMB <= 0 {
+		t.Fatalf("legacy zero-priced row reported zero cost: total=%v input=%v output=%v",
+			stat.TotalCostRMB, stat.InputCostRMB, stat.OutputCostRMB)
+	}
+	if stat.InputCostRMB <= 0 || stat.OutputCostRMB <= 0 {
+		t.Fatalf("directional cost missing: %+v", stat)
+	}
+}
+
 func TestMaclawLLMTokenUsagePatchesWithoutStaleOverwrite(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

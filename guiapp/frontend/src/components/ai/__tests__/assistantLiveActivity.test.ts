@@ -5,6 +5,7 @@ import {
     assistantLiveActivityObject,
     assistantLiveReasoningSource,
     assistantMessageOwnsLiveActivity,
+    codingTimelineLastThoughtIndex,
     codingTimelineLiveThoughtIndex,
     extractInFlightToolName,
     isGenericCodingLiveKind,
@@ -192,6 +193,14 @@ describe('assistantLiveActivity', () => {
         expect(codingTimelineLiveThoughtIndex([{ kind: 'thinking' }, { kind: 'progress' }], true)).toBe(-1);
         expect(codingTimelineLiveThoughtIndex([], true)).toBe(-1);
         expect(codingTimelineLiveThoughtIndex(undefined, true)).toBe(-1);
+        expect(codingTimelineLastThoughtIndex(timeline)).toBe(2);
+        expect(codingTimelineLastThoughtIndex([{ kind: 'thinking' }, { kind: 'progress' }])).toBe(0);
+        expect(codingTimelineLastThoughtIndex([
+            { kind: 'thinking', content: 'Earlier.' },
+            { kind: 'thinking', content: '   ' },
+        ])).toBe(0);
+        expect(codingTimelineLastThoughtIndex([{ kind: 'progress' }])).toBe(-1);
+        expect(codingTimelineLastThoughtIndex(undefined)).toBe(-1);
     });
 
     it('keeps a trailing live header for coding tools and ordinary follow-ups', () => {

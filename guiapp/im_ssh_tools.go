@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -153,6 +154,46 @@ func (h *IMMessageHandler) sshExecChannelContext(ctx context.Context, sessionID,
 		return "", fmt.Errorf("remote coding command returned no output (exit %d)", result.ExitCode)
 	}
 	return output, nil
+}
+
+// runRemoteSetupCommand runs one workspace-setup script on a dedicated exec
+// channel of an existing SSH connection. Setup is not interactive input: the
+// shared login PTY echoes the script into the result stream, keeps options
+// such as set -e, and has no process exit status. A failing git command typed
+// there exits the verified session.
+func (h *IMMessageHandler) runRemoteSetupCommand(ctx context.Context, sessionID, command string, timeout time.Duration) (remote.SSHExecResult, error) {
+	if h == nil {
+		return remote.SSHExecResult{}, fmt.Errorf("remote setup handler is unavailable")
+	}
+	sessionID, command = strings.TrimSpace(sessionID), strings.TrimSpace(command)
+	if sessionID == "" || command == "" {
+		return remote.SSHExecResult{}, fmt.Errorf("remote setup binding is incomplete")
+	}
+	mgr := h.ensureSSHManager()
+	if mgr == nil {
+		return remote.SSHExecResult{}, fmt.Errorf("remote setup session manager is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return mgr.ExecCommandChannel(ctx, sessionID, command, timeout)
+}
+
+func formatRemoteSetupFailure(result remote.SSHExecResult) string {
+	text := codingruntime.RemoteFailureLine(result.Stderr)
+	if text == "" {
+		text = codingruntime.RemoteFailureLine(result.Stdout)
+	}
+	if text == "" {
+		return fmt.Sprintf("exit %d", result.ExitCode)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Sprintf("exit %d: %s", result.ExitCode, text)
+	}
+	return text
 }
 
 // sshSessionStatusUsable is deliberately stricter than "record exists": a

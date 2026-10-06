@@ -321,7 +321,7 @@ func BuildClientCapabilityPrompt(capabilities *ClientCapabilities) string {
 		fmt.Fprintf(&b, "- File: MIME=%s, maxBytes=%d (0 means transport default).\n", strings.Join(normalized.Output.File.MimeTypes, ","), normalized.Output.File.MaxBytes)
 	}
 	if normalized.Features.EventPush {
-		b.WriteString("- Events: this client accepts structured event pushes with a severity (silent, notice, interrupt) and optional decision actions. Prefer an event over plain text when the user must learn about something or decide something while away from the computer, name the concrete object in the title, and use severity=interrupt only when waiting for the user would be worse than interrupting them.\n")
+		b.WriteString("- Events: this client accepts structured event pushes with a severity (silent, soft, interrupt) and optional decision actions. Prefer an event over plain text when the user must learn about something or decide something while away from the computer, name the concrete object in the title, and use severity=interrupt only when waiting for the user would be worse than interrupting them.\n")
 	}
 	b.WriteString("Reply only in a declared output modality and combination. Do not create or attach image, audio, video, or file output unless declared. Always keep the useful answer in concise plain text when text is available.")
 	return b.String()

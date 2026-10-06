@@ -38,9 +38,8 @@ func TestBuildAll_ExcludesEmptyDescriptionTools(t *testing.T) {
 	r.Register(RegisteredTool{
 		Name: "generate_pdf", Description: "生成 PDF", Status: RegToolAvailable,
 	})
-	// Legacy dynamic gateway — even with a description it is a managed-surface
-	// capability only and must never become legacy model authority
-	// (tool.IsLegacyModelDynamicGateway).
+	// Local skill runtime. Retrieval ranking still skips it; the host catalog
+	// keeps the definition so a full surface can pin it.
 	r.Register(RegisteredTool{
 		Name: "manage_skill", Description: "Skill 管理", Status: RegToolAvailable,
 	})
@@ -60,8 +59,8 @@ func TestBuildAll_ExcludesEmptyDescriptionTools(t *testing.T) {
 	if !names["generate_pdf"] {
 		t.Error("expected 'generate_pdf' (has description) in BuildAll output")
 	}
-	if names["manage_skill"] {
-		t.Error("'manage_skill' is a legacy dynamic gateway and must NOT appear in BuildAll output")
+	if !names["manage_skill"] {
+		t.Error("manage_skill is the local skill runtime and must stay in BuildAll")
 	}
 	if names["browser_navigate"] {
 		t.Error("'browser_navigate' (empty description) must NOT appear in BuildAll output")
@@ -69,7 +68,7 @@ func TestBuildAll_ExcludesEmptyDescriptionTools(t *testing.T) {
 	if names["run_skill"] {
 		t.Error("'run_skill' (empty description) must NOT appear in BuildAll output")
 	}
-	if len(defs) != 2 {
-		t.Errorf("BuildAll returned %d tools, want 2", len(defs))
+	if len(defs) != 3 {
+		t.Errorf("BuildAll returned %d tools, want 3", len(defs))
 	}
 }

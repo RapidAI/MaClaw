@@ -3147,6 +3147,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	var tasks []*v2.TaskItem
 	var planMarkdown string
 	var planned bool
+	var planOutline []*v2.TaskItem
+	planStepTotal := 0
+	resumeIncompletePlan := false
 	recordUserText := userText
 	var decision codingRequestDecision
 	if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
@@ -3169,14 +3172,26 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			recordUserText = userText
 		}
 		attachCodingWorkRoot(&sessionMem, projectPath)
-		if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
-			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
-			attachCodingWorkRoot(&sessionMem, projectPath)
-		}
-		decision = forceWorkspaceClearCodingDecision(recordUserText, h.resolveCodingRequestDecision(recordUserText))
-		if got := h.refineCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision); got != "" {
-			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
-			attachCodingWorkRoot(&sessionMem, projectPath)
+		resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(recordUserText, sessionMem)
+		if resumeIncompletePlan {
+			// Keep the previous requirement text and skip another planner call.
+			// "继续" after a credit failure is the unfinished plan, not a new ask.
+			decision = codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: true}
+			log.Printf("[coding-plan] continue resumes incomplete local plan user=%s", userID)
+		} else {
+			if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
+				sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+				attachCodingWorkRoot(&sessionMem, projectPath)
+			}
+			decision = forceWorkspaceClearCodingDecision(recordUserText, h.resolveCodingRequestDecision(recordUserText))
+			if upgraded := applyCodingSessionImplementationPosture(decision, sessionMem); upgraded.Kind != decision.Kind {
+				log.Printf("[coding-plan] session already wrote files; keep read/write implementation")
+				decision = upgraded
+			}
+			if got := h.refineCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision); got != "" {
+				sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+				attachCodingWorkRoot(&sessionMem, projectPath)
+			}
 		}
 		hooks := loadCodingWorkbenchHooks(projectPath)
 		if prePlan := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_plan"); prePlan.Report != "" {
@@ -3189,7 +3204,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		// workbenches.  The planner has already persisted it; return the same
 		// actionable prompt regardless of whether the user selected the default
 		// adaptive mode or the explicit plan-first preference.
-		if planned {
+		if planned && !resumeIncompletePlan {
 			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
 				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
 				if onToken != nil {
@@ -3202,7 +3217,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			}
 		}
 	}
-	if planned && planMarkdown != "" {
+	if planned && planMarkdown != "" && !resumeIncompletePlan {
 		// Refresh prevOutputs after plan was persisted so steps see the plan.
 		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
 		prevOutputs = sessionMem.prevOutputs()
@@ -3212,6 +3227,16 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
 	}
+	planOutline = tasks
+	planStepTotal = len(tasks)
+	if resumeIncompletePlan {
+		resumedMem := h.getStickyCodingWorkbenchMemory(userID)
+		planOutline, planStepTotal = codingPlanOutlineForPrompt(resumedMem, tasks)
+		promptMem := codingPlanResumePromptMemory(resumedMem)
+		prevOutputs = promptMem.prevOutputs()
+		sessionMem = promptMem
+		reqCtx = strings.TrimSpace(reqCtx + "\n\nSession plan is context only. Execute the current unfinished step; do not redo passed steps.")
+	}
 	// Cap this request's continuation chain at the dispatch work actually
 	// planned: writer + reviewer per step plus retry slack (see
 	// armDesktopCodingContinuationBudget).
@@ -3219,10 +3244,6 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
 	}
 	decision = forceWorkspaceClearCodingDecision(userText, decision)
-	if upgraded := applyCodingSessionContinuationFloor(decision, userText, sessionMem); upgraded.Kind != decision.Kind {
-		log.Printf("[coding-plan] follow-up keeps read/write implementation: %q", truncateRunesV2(userText, 40))
-		decision = upgraded
-	}
 	requestKind := decision.Kind
 	inquiry := requestKind == codingRequestInquiry
 	sourcePreview := requestKind == codingRequestImplementation
@@ -3230,7 +3251,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	log.Printf("[workflow-v2] pure coding: user=%s project=%s task=%q sticky_turn=%d prev_outputs=%d planned=%v steps=%d",
 		userID, projectPath, truncateRunesV2(userText, 80), sessionMem.TurnCount, len(prevOutputs), planned, len(tasks))
 
-	if onProgress != nil {
+	// Resume already announced the remaining steps. A second "继续第 N 轮"
+	// line reads like a new turn and the plan was replaced.
+	if onProgress != nil && !resumeIncompletePlan {
 		if inquiry {
 			onProgress("仓库分析：正在只读检查")
 		} else if planned {
@@ -3272,6 +3295,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// The cap is only a scheduler upper-bound: every ready wave is still
 	// rejected unless its explicit write declarations satisfy P3 admission.
 	maxParallel := codingWorkbenchMaxParallel(requestKind, planned, worktreeMode)
+	if resumeIncompletePlan {
+		// Passed dependencies were removed so the runner will not skip the
+		// step. Leaving MaxParallel at 2 would treat that as a fresh parallel
+		// wave and write the continuation off the main tree.
+		maxParallel = 1
+	}
 	var lastCodingResult *CodingSubAgentResult
 	totalToolCalls, totalIters := 0, 0
 	totalInTok, totalOutTok := 0, 0
@@ -3313,7 +3342,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		stepReqCtx := reqCtx
 		if planned {
-			stepReqCtx = localCodingPlanStepReqCtx(reqCtx, tasks, t, len(tasks))
+			stepReqCtx = localCodingPlanStepReqCtx(reqCtx, planOutline, t, planStepTotal)
 		}
 
 		// Worktree isolation is only for implementation turns. A simple local
@@ -3368,6 +3397,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		// Snapshot prevOutputs under lock so parallel waves don't race the slice.
 		usageMu.Lock()
 		stepPrev := append([]string(nil), prevOutputs...)
+		if note := codingSessionWriteContractContext(requestKind, sessionMem); note != "" {
+			stepPrev = append(stepPrev, note)
+		}
 		usageMu.Unlock()
 		var v1Result *CodingSubAgentResult
 		parallelIsolatedWriter := wt != nil && runTaskWithSubAgent == nil && config.WaveSize > 1
@@ -3496,7 +3528,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		summary := v1Result.Summary
 		// Step verification gate after successful implement/verify-style steps.
 		// Always verify on the main project path (post-merge).
-		if status == v2.TaskPassed && planned && stepNeedsVerifyGate(t.Title, t.Description, t.Index, len(tasks)) {
+		if status == v2.TaskPassed && planned && stepNeedsVerifyGate(t.Title, t.Description, t.Index, planStepTotal) {
 			preV := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_verify")
 			if preV.Report != "" {
 				log.Printf("[coding-hooks] pre_verify T%d: %s", t.Index, truncateRunesV2(preV.Report, 160))
@@ -3730,6 +3762,7 @@ func buildRemoteCodingPlanStepText(
 	sessionPlan string,
 	lastSummary string,
 	filesModified []string,
+	filesCreated []string,
 ) string {
 	userText = strings.TrimSpace(userText)
 	if step != nil && planned {
@@ -3812,6 +3845,14 @@ func buildRemoteCodingPlanStepText(
 		cont.WriteString("\nFiles modified earlier: ")
 		cont.WriteString(strings.Join(files, ", "))
 	}
+	if len(filesCreated) > 0 {
+		files := uniqueSortedSubAgentStrings(filesCreated)
+		if len(files) > 12 {
+			files = files[:12]
+		}
+		cont.WriteString("\nFiles created earlier: ")
+		cont.WriteString(strings.Join(files, ", "))
+	}
 	return cont.String()
 }
 
@@ -3824,7 +3865,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 		return coding
 	}
-	userText = strings.TrimSpace(userText)
+	requested := strings.TrimSpace(userText)
+	userText = requested
 	if userText == "" {
 		userText = remoteTaskLabel("执行远程编程任务", "执行远程维护任务")
 	}
@@ -3840,12 +3882,14 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	var reconnectErr string
 	remoteCtx, reconnectErr = h.recoverStickyRemoteCodingSSHSession(userID, remoteCtx)
 	if reconnectErr != "" {
+		h.noteUnexecutedRemoteCodingRequest(userID, requested)
 		if _, restored := h.restoreApprovedCodingPlanAsPending(userID); restored {
 			return &IMAgentResponse{Text: "远程连接暂不可用，已将待执行计划恢复为待确认状态。请重连后再次点击“开始实施”。\n\n" + reconnectErr}
 		}
 		return &IMAgentResponse{Text: reconnectErr}
 	}
 	if strings.TrimSpace(remoteCtx.SessionID) == "" {
+		h.noteUnexecutedRemoteCodingRequest(userID, requested)
 		if _, restored := h.restoreApprovedCodingPlanAsPending(userID); restored {
 			return &IMAgentResponse{Text: "远程 SSH 会话不可用，已将待执行计划恢复为待确认状态。请重连后再次点击“开始实施”。"}
 		}
@@ -3888,6 +3932,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	var tasks []*v2.TaskItem
 	var planMarkdown string
 	var planned bool
+	var planOutline []*v2.TaskItem
+	planStepTotal := 0
+	resumeIncompletePlan := false
 	recordUserText := userText
 	decisionForRecord := func() codingRequestDecision {
 		if decision, ok := normalizeCodingRequestDecision(codingRequestDecision{
@@ -3917,20 +3964,32 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			recordUserText = userText
 		}
 		attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
-		if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
-			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
-			attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
-		}
-		decision = forceWorkspaceClearCodingDecision(userText, decisionForRecord())
-		if got := h.refineCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision); got != "" {
-			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
-			attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
+		resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(recordUserText, sessionMem)
+		if resumeIncompletePlan {
+			decision = codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: true}
+			log.Printf("[coding-plan] continue resumes incomplete remote plan user=%s", userID)
+		} else {
+			if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
+				sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+				attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
+			}
+			decision = forceWorkspaceClearCodingDecision(userText, decisionForRecord())
+			if !remoteCtx.Maintenance {
+				if upgraded := applyCodingSessionImplementationPosture(decision, sessionMem); upgraded.Kind != decision.Kind {
+					log.Printf("[coding-plan] remote session already wrote files; keep read/write implementation")
+					decision = upgraded
+				}
+			}
+			if got := h.refineCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision); got != "" {
+				sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+				attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
+			}
 		}
 		if prePlan := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_plan"); prePlan.Report != "" {
 			log.Printf("[coding-hooks] remote pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
 		}
 		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasksWithDecision(userID, userText, remoteCtx.ProjectDir, sessionMem, decision, onProgress, onToken)
-		if planned {
+		if planned && !resumeIncompletePlan {
 			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
 				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
 				if onToken != nil {
@@ -3947,42 +4006,60 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
 	}
+	planOutline = tasks
+	planStepTotal = len(tasks)
+	if resumeIncompletePlan {
+		planOutline, planStepTotal = codingPlanOutlineForPrompt(sessionMem, tasks)
+		if goal := codingPlanResumeGoal(requested, sessionMem); goal != "" {
+			userText = goal
+		}
+		sessionMem.LastSummary = codingPlanResumeStopNote()
+	}
 	// Same continuation-chain budget as the local runner: writer + reviewer
 	// per step plus retry slack, so a remote multi-step plan cannot mint an
 	// unbounded turn chain either.
 	if h.app != nil {
 		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
 	}
-	// Preserve the kind of the user's actual turn for the remote subagent. The
-	// expanded per-step prompt may include a prior session plan, which must not
-	// make a short remote "run it" follow-up look like implementation work.
-	// "继续" or an explicit change request after this session has already
-	// written files keeps the read/write surface. A run/build follow-up does not.
-	// The normalized root decision is canonical for every remote plan step.
-	decision = forceWorkspaceClearCodingDecision(userText, decision)
-	if !remoteCtx.Maintenance {
-		if upgraded := applyCodingSessionContinuationFloor(decision, userText, sessionMem); upgraded.Kind != decision.Kind {
-			log.Printf("[coding-plan] remote follow-up keeps read/write implementation: %q", truncateRunesV2(userText, 40))
-			decision = upgraded
-		}
+	// Planning already consumed this decision. Copy it onto the remote context
+	// after maintenance and the session write-contract have been applied.
+	decisionText := userText
+	if resumeIncompletePlan {
+		// userText is now the original goal. A goal that mentions clearing a
+		// directory must not turn "继续" into a workspace wipe.
+		decisionText = requested
 	}
+	decision = forceWorkspaceClearCodingDecision(decisionText, decision)
 	remoteCtx.RequestKind = decision.Kind
 	remoteCtx.RequestNeedsPlan = decision.NeedsPlan
 	remoteCtx.OperationalAcceptance = decision.Acceptance
 
 	buildRemoteTaskText := func(step *v2.TaskItem, stepIdx, stepTotal int) string {
-		return buildRemoteCodingPlanStepText(
+		outline := planOutline
+		if len(outline) == 0 {
+			outline = tasks
+		}
+		total := planStepTotal
+		if total < 1 {
+			total = stepTotal
+		}
+		text := buildRemoteCodingPlanStepText(
 			step,
 			stepIdx,
-			stepTotal,
+			total,
 			planned,
 			userText,
-			tasks,
+			outline,
 			sessionMem.TurnCount,
 			sessionMem.SessionPlan,
 			sessionMem.LastSummary,
 			sessionMem.FilesModified,
+			sessionMem.FilesCreated,
 		)
+		if note := codingSessionWriteContractContext(remoteCtx.RequestKind, sessionMem); note != "" {
+			text += "\n\n" + note
+		}
+		return text
 	}
 
 	log.Printf("[workflow-v2] pure remote coding: user=%s session=%s project=%s task=%q sticky_turn=%d planned=%v steps=%d acceptance=%s",
@@ -4044,8 +4121,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		stepRemoteCtx := remoteCtx
 		var isolate *remoteCodingIsolate
 		wtMode := h.getStickyCodingWorktreeMode(userID)
+		// Resume drops dependencies that already passed so the runner will not
+		// skip the step. Auto isolation treats "no deps" as a fresh parallel
+		// step and would copy the remote tree again. Stay on the main tree.
+		isolatePlanned := planned && !resumeIncompletePlan
 		if remoteCtx.RequestKind == codingRequestImplementation &&
-			shouldUseRemoteCodingIsolate(wtMode, planned, step.Title, step.Description, step.DependsOn) {
+			shouldUseRemoteCodingIsolate(wtMode, isolatePlanned, step.Title, step.Description, step.DependsOn) {
 			allowCopy := normalizeCodingWorktreeMode(wtMode) == codingWorktreeModeAlways
 			iso, isoErr := createRemoteCodingIsolate(h, remoteCtx.SessionID, remoteCtx.ProjectDir, step.Index, allowCopy, step.Files)
 			if isoErr != nil {
@@ -4128,7 +4209,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			}
 			// Remote step verification gate (parity with local pure-coding).
 			if stepResult.Status == "success" && planned &&
-				stepNeedsVerifyGate(step.Title, step.Description, step.Index, len(tasks)) {
+				stepNeedsVerifyGate(step.Title, step.Description, step.Index, planStepTotal) {
 				preV := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_verify")
 				if preV.Report != "" {
 					log.Printf("[coding-hooks] remote pre_verify T%d: %s", step.Index, truncateRunesV2(preV.Report, 160))
@@ -4219,16 +4300,17 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	runResults = appendCodingWorkbenchSkippedResults(runResults, tasks, memAfter.StepStatuses)
 	cancelled := loopCtx != nil && loopCtx.IsCancelled()
 	if result == nil && len(runResults) == 0 {
-		if cancelled {
-			return &IMAgentResponse{Text: formatCodingAgentUserFinish(nil, true)}
+		note := ""
+		if pending := h.pendingSteerInjectionNote(userID); pending != "" {
+			note = "\n\n" + pending
 		}
-		return &IMAgentResponse{Text: remoteTaskLabel("远程编程执行失败：RemoteCodingSubAgent 没有返回结果。", "远程维护执行失败：未收到执行结果。")}
+		if cancelled {
+			return &IMAgentResponse{Text: formatCodingAgentUserFinish(nil, true) + note}
+		}
+		return &IMAgentResponse{Text: remoteTaskLabel("远程编程执行失败：RemoteCodingSubAgent 没有返回结果。", "远程维护执行失败：未收到执行结果。") + note}
 	}
 	passedSteps, failedSteps, skippedSteps := countCodingWorkbenchStepOutcomes(memAfter.StepStatuses)
-	totalSteps := len(tasks)
-	if planned && totalSteps == 0 {
-		totalSteps = len(memAfter.StepStatuses)
-	}
+	totalSteps := codingPlanReportedStepTotal(planned, len(tasks), len(memAfter.StepStatuses))
 	resultStatus := ""
 	if result != nil {
 		resultStatus = result.Status
@@ -4238,6 +4320,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	report := formatCodingWorkbenchUserAnswer(decision.Kind, runResults, cancelled)
 	if strings.TrimSpace(report) == "" {
 		report = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
+	}
+	// A round that ended early (failed step, nil result) may never have reached
+	// an iteration boundary, leaving the user's mid-run steering queued. Surface
+	// it instead of letting the injection sit silently until the next round.
+	if note := h.pendingSteerInjectionNote(userID); note != "" {
+		report = strings.TrimRight(report, "\n") + "\n\n" + note
 	}
 	if onToken != nil && codingAgentFinishNeedsToken(report, nil, runResults, cancelled) {
 		onToken("\n\n" + report)

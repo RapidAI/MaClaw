@@ -342,7 +342,7 @@ Typical usage: User asked to send a file to WeChat or other IM`,
 	"im_message": `Parameters:
 - action (string, required): list_targets | send
 - text (string, required for send): Message body
-- channel (string, optional): lansenger|weixin|telegram|qq (default lansenger)
+- channel (string, optional): lansenger|weixin|telegram|qq|device (default lansenger)
 - group_name / group_id / user_id: Destination shorthand
 Typical usage: Immediately send text to a Lansenger group or other IM channel (not scheduled)`,
 
