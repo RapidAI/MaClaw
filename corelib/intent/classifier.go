@@ -1104,23 +1104,16 @@ func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]fl
 		return scores
 	}
 
-	queryVec, err := emb.Embed(text)
+	queryVec, err := embedIntentQuery(emb, text)
 	if err != nil || queryVec == nil {
 		return scores
 	}
 
+	cal := intentScoreCalibrationFor(emb)
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
-			continue
+		if maxSim, ok := maxAnchorScore(queryVec, anchor, cal); ok {
+			scores[anchor.Label] = maxSim
 		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
-		}
-		scores[anchor.Label] = maxSim
 	}
 
 	return scores
@@ -1436,10 +1429,11 @@ func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelSc
 	anchors := u.anchors
 	u.mu.RUnlock()
 
-	queryVec, err := emb.Embed(text)
+	queryVec, err := embedIntentQuery(emb, text)
 	if err != nil || queryVec == nil {
 		return nil
 	}
+	cal := intentScoreCalibrationFor(emb)
 
 	type scored struct {
 		label IntentLabel
@@ -1448,17 +1442,9 @@ func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelSc
 	var scores []scored
 
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
-			continue
+		if maxSim, ok := maxAnchorScore(queryVec, anchor, cal); ok {
+			scores = append(scores, scored{anchor.Label, maxSim})
 		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
-		}
-		scores = append(scores, scored{anchor.Label, maxSim})
 	}
 
 	// Sort descending by score.

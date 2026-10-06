@@ -634,24 +634,20 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	}
 
 	// 1. Get query embedding.
-	queryVec, err := embedder.Embed(text)
+	queryVec, err := embedIntentQuery(embedder, text)
 	if err != nil || queryVec == nil {
 		return ClassificationResult{}, false
 	}
 
-	// 2. Compute max cosine similarity for each anchor set.
+	// 2. Compute max cosine similarity for each anchor set, mapped onto the
+	// raw-text scale the thresholds below were calibrated on.
+	cal := intentScoreCalibrationFor(embedder)
 	scores := make([]labelScore, 0, len(anchors))
 
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
+		maxSim, ok := maxAnchorScore(queryVec, anchor, cal)
+		if !ok {
 			continue // anchor not yet warmed up
-		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
 		}
 		scores = append(scores, labelScore{label: anchor.Label, score: maxSim})
 	}
@@ -863,6 +859,10 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		result.RunnerUp = ""
 		result.RunnerUpScore = 0
 	}
+	if len(result.Secondary) == 1 && top1.label == LabelOffice {
+		result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
+		return result, false
+	}
 	result.Reason = fmt.Sprintf("embedding ambiguous: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 	return result, false
 }
@@ -878,13 +878,23 @@ func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]inten
 	if embedder == nil || embedding.IsNoop(embedder) {
 		return nil, fmt.Errorf("embedding unavailable for anchor warmup")
 	}
+	cacheDir, cacheKey := intentAnchorCacheDir(), ""
+	if cacheDir != "" {
+		cacheKey = intentAnchorCacheKey(embedder, anchors)
+		if cacheKey != "" {
+			if warmed, ok := loadIntentAnchorCache(cacheDir, cacheKey, embedder, anchors); ok {
+				log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels, disk cache)", len(warmed))
+				return warmed, nil
+			}
+		}
+	}
 	warmed := make([]intentAnchor, len(anchors))
 	for i, anchor := range anchors {
 		warmed[i] = intentAnchor{Label: anchor.Label, Texts: append([]string(nil), anchor.Texts...)}
 		if len(anchor.Texts) == 0 {
 			continue
 		}
-		vecs, err := embedder.EmbedBatch(anchor.Texts)
+		vecs, err := embedIntentAnchors(embedder, anchor.Texts)
 		if err != nil {
 			log.Printf("[UnifiedIntentClassifier] warmup failed for %s: %v", anchor.Label, err)
 			return nil, fmt.Errorf("warm %s anchors: %w", anchor.Label, err)
@@ -898,6 +908,9 @@ func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]inten
 			}
 		}
 		warmed[i].Vecs = vecs
+	}
+	if cacheDir != "" && cacheKey != "" {
+		saveIntentAnchorCache(cacheDir, cacheKey, embedder, warmed)
 	}
 	log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels)", len(warmed))
 	return warmed, nil

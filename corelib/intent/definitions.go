@@ -494,6 +494,12 @@ func DefaultDefinitions() []IntentDefinition {
 				"create a PowerPoint presentation",
 				"generate an Excel spreadsheet report",
 				"make a Word document for the proposal",
+				// Writing Word content is office, not a desktop-GUI task: under
+				// the Layer 2 classification prompt "帮我写一份word简历" otherwise
+				// lands nearer the computer_use exemplar "打开word程序写一份简历".
+				"写一份Word格式的个人简历",
+				"用Word文档起草一份工作总结",
+				"draft a resume as a Word document",
 				"organize the data into an Excel file",
 				"build a slide deck for the meeting",
 				"create a spreadsheet with the analysis results",
