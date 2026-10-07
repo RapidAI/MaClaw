@@ -65,7 +65,8 @@ class WebSocket:
         self.sock.sendall((
             "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer %s\r\n\r\n"
-        ) % (path, host, key, token)).encode()
+            % (path, host, key, token)
+        ).encode())
         buf = b""
         while b"\r\n\r\n" not in buf:
             chunk = self.sock.recv(4096)

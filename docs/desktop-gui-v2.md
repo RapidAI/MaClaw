@@ -255,6 +255,28 @@ CONFIRM=1 deploy/linux/rollout_desktop_gui2.sh switch-image   # 改 Hub 配置�
 nginx 反代示例:`desktopd/deploy/nginx-dockerd.conf.example`(只反代 desktopd API,
 不暴露容器端口)。
 
+### 4.3 新主机只部署 desktopd(能访问 ghcr.io)
+
+已验证于 Ubuntu 24.04 + Docker 29(主机上已有 nginx 与通配证书,另有 Hub 在跑也不受影响):
+
+```sh
+export REMOTE_HOST=hubs.example.com GOTOOLCHAIN=go1.26.5 ONLY=desktopd
+deploy/linux/rollout_desktop_gui2.sh build upload
+DESKTOPD_ADVERTISE_HOST=dockerd.example.com DESKTOPD_IMAGE_FROM=pull \
+  deploy/linux/rollout_desktop_gui2.sh deploy-desktopd     # 镜像解压后约 2.7GB,境外主机约 2 分钟
+```
+
+- 首次部署在 `/data/soft/maclaw_desktopd/.env`(600)生成新的 `DESKTOPD_TOKEN`,不要复用其他实例的。
+- `DESKTOPD_ADVERTISE_HOST` 要填对外域名:它出现在返回给 Hub 的 `cdp_url`/`novnc_url` 里。
+- nginx:按 `desktopd/deploy/nginx-dockerd.conf.example` 改 `server_name` 和证书路径,放进
+  `/etc/nginx/conf.d/`,`nginx -t && systemctl reload nginx`;不带 token 访问
+  `https://dockerd.example.com/v1/health` 应返回 401。
+- 冒烟:`TEST_USER=deploy-test MIGRATE=0 DESKTOPD_URL=https://dockerd.example.com sh $REMOTE_TMP/scripts/smoke_gui2.sh`
+  (新主机没有 maclaw-gui:1,必须 `MIGRATE=0`),结束后用 `dapi.sh POST /v1/desktops/stop` 停掉测试桌面。
+- 防火墙:每个桌面的 CDP/noVNC gate 端口由 Docker 发布在随机高位端口(如 32768+),Docker 的
+  iptables 规则绕过 ufw,所以 ufw 不放行也能从公网访问;这些端口只靠每桌面 token 保护。
+  需要收紧时在 `DOCKER-USER` 链限制来源,而不是改 ufw。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为
