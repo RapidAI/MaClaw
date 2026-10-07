@@ -62,9 +62,18 @@ func TestBrowserRestoresTheLoggedInProfile(t *testing.T) {
 	}
 	persistAt := strings.Index(locked[:lockedNext], "persist_website_login(")
 	captureAt := strings.Index(locked[:lockedNext], "capture_page_login(")
-	killAt := strings.Index(locked[:lockedNext], "os.kill")
+	killAt := strings.Index(locked[:lockedNext], "quit_browser(")
 	if persistAt < 0 || captureAt < 0 || killAt < 0 || persistAt > captureAt || captureAt > killAt {
 		t.Fatal("the browser exits before the website login is saved in this profile")
+	}
+	// SIGTERM ends Chromium like a system logout and skips the cookie
+	// database write; a normal quit over CDP comes first.
+	quit := text[strings.Index(text, "def quit_browser"):]
+	quitNext := strings.Index(quit, "\ndef ")
+	closeAt := strings.Index(quit[:quitNext], `"Browser.close"`)
+	termAt := strings.Index(quit[:quitNext], "os.kill(int(pid), 15)")
+	if quitNext < 0 || closeAt < 0 || termAt < 0 || closeAt > termAt {
+		t.Fatal("the stop kills the browser before it writes its cookies")
 	}
 	saved := text[strings.Index(text, "def persistent_cookie"):]
 	savedNext := strings.Index(saved, "\ndef ")

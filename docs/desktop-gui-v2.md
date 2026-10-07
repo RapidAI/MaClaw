@@ -439,6 +439,13 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
   走 `sensible-browser → /usr/bin/chromium`,以 root 且无 `--no-sandbox` 直接退出,即使启动也是另一个无登录、
   无 CDP 的 profile。已修复:新 supervisor 在每次 `ensure`(打开桌面)时写入共用浏览器配置,所以已有容器只需
   按正常部署 `docker cp` 新 supervisor,下次打开桌面即生效,无需重建容器;新建容器用重建后的镜像。
+- **停止后再打开,noVNC 反复“桌面 → Connecting → 桌面”**:docker start 后第一次 `ensure` 若被打断
+  (desktopd 重启、请求中断、Chromium 启动超时),会留下没记进 `pids.json` 的 Xvfb/XFCE/x11vnc/websockify;
+  `pids.json` 在卷上跨 docker stop 保留,重启后旧 pid 又可能被别的进程复用。下一次打开会再起一套桌面,新的
+  websockify 绑不上 6081,watcher 每 2 秒杀掉正在用的 x11vnc 重来,于是每 4–5 秒断一次。已修复:supervisor
+  按命令行认领容器里实际在跑的桌面进程,`pids.json` 带容器启动标记(重启前的记录作废)、启动中逐步写入,
+  watcher 回收僵尸进程,部署新 supervisor 后旧 watcher 在下次打开时被替换。已在运行的容器 `docker cp` 新
+  supervisor 后,下次打开桌面(无需停止)即收敛。
 - 截图只截已在运行的 display;桌面没开时返回错误而不是启动桌面。
 - 重建会断开该用户当前的 noVNC/CDP 连接;迁移发生在打开桌面时,首次约 10–30 秒。
 

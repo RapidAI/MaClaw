@@ -7,6 +7,7 @@ ensure for the same key reuses that desktop. Other keys cannot see it.
 import base64
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import hmac
 import json
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 ROOT = Path("/desktops")
+PROC = Path("/proc")
 MAX_RUNNING = 3
 DISPLAY_MIN = 20
 DISPLAY_MAX = 50
@@ -77,7 +79,7 @@ def clear_stale_display(display):
         pid = 0
     if pid > 0:
         try:
-            comm = Path("/proc/%d/comm" % pid).read_text(encoding="utf-8").strip()
+            comm = (PROC / str(pid) / "comm").read_text(encoding="utf-8").strip()
         except OSError:
             comm = ""
         if comm == "Xvfb":
@@ -254,7 +256,7 @@ def browser_pid(profile):
     Treating that as stopped would start a second browser and a new profile.
     """
     needle = b"--user-data-dir=" + str(profile).encode()
-    proc = Path("/proc")
+    proc = PROC
     if not proc.is_dir():
         return 0
     for entry in proc.iterdir():
@@ -286,7 +288,7 @@ def desktop_running(key):
     if not pid_alive(pid):
         return False
     try:
-        cmd = (Path("/proc") / str(int(pid)) / "cmdline").read_bytes()
+        cmd = (PROC / str(int(pid)) / "cmdline").read_bytes()
     except (OSError, TypeError, ValueError):
         return True
     needle = b"--user-data-dir=" + str(profile).encode()
@@ -340,7 +342,40 @@ def browser_argv(profile, chrome_port):
         "--remote-debugging-port=%d" % chrome_port,
         "--remote-allow-origins=*",
         "--start-maximized",
-    ]
+    ] + browser_proxy_flags()
+
+
+def browser_proxy_flags():
+    """Chromium proxy flags derived from the container's proxy environment.
+
+    desktopd can inject HTTP(S)_PROXY into the container when the desktops
+    egress through a proxy. Chromium does not read those variables, and it
+    never takes credentials from --proxy-server, so userinfo is dropped here;
+    the proxy desktopd points the container at must not need them.
+    Without a proxy in the environment there are no extra flags.
+    """
+    proxy = ""
+    for name in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            proxy = value
+            break
+    if not proxy:
+        return []
+    parsed = urlsplit(proxy)
+    if parsed.scheme != "http" or not parsed.hostname:
+        return []
+    try:
+        port = parsed.port
+    except ValueError:
+        return []
+    host = parsed.hostname
+    if port:
+        host += ":%d" % port
+    bypass = os.environ.get("no_proxy") or os.environ.get("NO_PROXY") or ""
+    rules = [rule.strip() for rule in bypass.replace(";", ",").split(",") if rule.strip()]
+    rules.append("<local>")
+    return ["--proxy-server=http://%s" % host, "--proxy-bypass-list=%s" % ";".join(rules)]
 
 
 def start_browser(profile, env, log, chrome_port):
@@ -383,15 +418,30 @@ def start_desktop(key, display):
     log = open(log_path, "ab")
     env = desktop_env(display)
     chrome_port = 18000 + display
-    pids = read_pids(key)
+    # What actually runs in this container, not only what pids.json says. An
+    # earlier start that was cut off (desktopd restarted, the request was
+    # dropped, Chromium was slow) leaves its X server, session and VNC running
+    # without a record. Starting a second set beside them puts two sessions on
+    # one display, and the new VNC cannot bind its ports, so the watcher kept
+    # restarting the screen and noVNC reconnected every few seconds.
+    pids = current_pids(key, display)
     if session_alive(pids, display):
         restart_browser(key, display, profile, env, log, chrome_port, pids)
         return
+    # No usable session: whatever is left of the old one belongs to a display
+    # that is about to be replaced, and it would hold the VNC ports.
+    for name in ("proxy", "vgate", "vnc", "x11vnc", "fluxbox", "dbus", "xvfb"):
+        kill_pid(pids.pop(name, None))
     clear_stale_display(display)
     xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
+    pids["xvfb"] = xvfb.pid
+    write_pids(key, pids)
     wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
     token = desktop_token_for(key)
     vnc = start_vnc(env, log, display, token) if token else None
+    if vnc is not None:
+        record_vnc(pids, vnc)
+        write_pids(key, pids)
     session = session_argv()
     bus_pid = 0
     if session[0] == "dbus-launch":
@@ -408,6 +458,12 @@ def start_desktop(key, display):
     # The pid key stays "fluxbox" so stop_desktop and pids.json written by
     # older supervisors keep the same meaning: the window session.
     flux = spawn(session, env, log)
+    pids["fluxbox"] = flux.pid
+    if bus_pid:
+        pids["dbus"] = bus_pid
+    # Recorded before the browser starts: a start that stops at the browser
+    # still leaves a session the next ensure reuses instead of duplicating.
+    write_pids(key, pids)
     start_browser(profile, env, log, chrome_port)
     try:
         restore_page_login(key)
@@ -416,24 +472,10 @@ def start_desktop(key, display):
     proxy = None
     if token:
         proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], env, log)
-    pids = {
-        "xvfb": xvfb.pid,
-        "fluxbox": flux.pid,
-        "chromium": browser_pid(profile),
-    }
-    if bus_pid:
-        pids["dbus"] = bus_pid
+    pids["chromium"] = browser_pid(profile)
     if proxy is not None:
         pids["proxy"] = proxy.pid
-    if vnc is not None:
-        x11, web, gate = vnc
-        if x11 is not None:
-            pids["x11vnc"] = x11.pid
-        if web is not None:
-            pids["vnc"] = web.pid
-        if gate is not None:
-            pids["vgate"] = gate.pid
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    write_pids(key, pids)
 
 
 def restart_browser(key, display, profile, env, log, chrome_port, pids):
@@ -450,7 +492,7 @@ def restart_browser(key, display, profile, env, log, chrome_port, pids):
     except (OSError, ValueError, TypeError):
         pass
     pids["chromium"] = browser_pid(profile)
-    (ROOT / key / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    write_pids(key, pids)
     ensure_vnc(key, display)
     ensure_proxy(key, display)
 
@@ -892,7 +934,11 @@ def http_json_any(host, port, path):
     sock = socket.create_connection((host, port), 2)
     try:
         sock.settimeout(2)
-        sock.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (path, host)).encode("ascii"))
+        # Chromium builds the webSocketDebuggerUrl it returns from this Host
+        # header. Without the port it answered ws://127.0.0.1/devtools/...,
+        # every CDP connection went to port 80 and was refused, and the
+        # cookie and page saves before a stop silently did nothing.
+        sock.sendall(("GET %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n\r\n" % (path, host, port)).encode("ascii"))
         buf = bytearray()
         while True:
             try:
@@ -1478,12 +1524,10 @@ def flush_browser_locked(key):
         # Write them into this profile first, then let the browser exit.
         persist_website_login(key)
         capture_page_login(key)
-        try:
-            os.kill(int(pid), 15)
-        except (OSError, TypeError, ValueError):
+        mark_flush_signaled(key)
+        if not quit_browser(key, pid, profile):
             clear_flush_flag(key)
             return 0
-        mark_flush_signaled(key)
     for _ in range(150):
         if not browser_pid(profile) and not pid_alive(pid):
             clear_flush_flag(key)
@@ -1496,14 +1540,52 @@ def flush_browser_locked(key):
                 owned = True
                 persist_website_login(key)
                 capture_page_login(key)
-                try:
-                    os.kill(int(pid), 15)
-                except (OSError, TypeError, ValueError):
+                mark_flush_signaled(key)
+                if not quit_browser(key, pid, profile):
                     clear_flush_flag(key)
                     return 0
-                mark_flush_signaled(key)
         time.sleep(0.1)
     return 0
+
+
+def quit_browser(key, pid, profile):
+    """Quit Chromium the way a person quits it, so the cookie store is written.
+
+    On SIGTERM Chromium ends as at a system logout (exit_type "SessionEnded"):
+    preferences and tabs are saved, but the cookie database, which Chromium
+    commits only every 30 seconds, is not. Cookies set or renewed shortly
+    before the stop were lost, including the session cookies made persistent
+    just above and sign-in cookies that sites such as Google keep rotating,
+    and the next start came up signed out. Browser.close over CDP is a normal
+    quit that writes them. SIGTERM stays the fallback.
+    Returns False only when the browser could not be signaled at all.
+    """
+    asked = False
+    try:
+        version = http_json("127.0.0.1", chrome_debug_port(key), "/json/version")
+        ws = version.get("webSocketDebuggerUrl") or ""
+        if isinstance(ws, str) and ws.startswith("ws://"):
+            with cdp_connection(ws) as conn:
+                payload = json.dumps({"id": 1, "method": "Browser.close", "params": {}}).encode("utf-8")
+                conn.sock.sendall(ws_client_frame(payload))
+                asked = True
+                try:
+                    # The reply, or the socket closing as the browser exits.
+                    ws_read(conn.sock, conn.pending)
+                except (OSError, ValueError):
+                    pass
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    if asked:
+        for _ in range(100):
+            if not browser_pid(profile) and not pid_alive(pid):
+                return True
+            time.sleep(0.1)
+    try:
+        os.kill(int(pid), 15)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
 
 
 SUPERVISED_BROWSER_ENV = "MACLAW_SUPERVISED_BROWSER"
@@ -1736,7 +1818,7 @@ def pid_alive(pid):
     if pid <= 0:
         return False
     try:
-        text = Path("/proc/%d/stat" % pid).read_text(encoding="utf-8")
+        text = (PROC / str(pid) / "stat").read_text(encoding="utf-8")
     except OSError:
         return False
     # "pid (comm) state". A zombie still has a /proc entry and the old
@@ -1749,12 +1831,191 @@ def pid_alive(pid):
 
 
 def read_pids(key):
+    """The pids recorded for this desktop since the container last started.
+
+    pids.json lives on the desktop volume and outlasts docker stop. After the
+    next docker start its numbers belong to other processes, so a file written
+    before the restart (its "boot" differs) records nothing. Files from older
+    supervisors have no "boot" and are still read.
+    """
     pid_file = ROOT / key / "pids.json"
     try:
         data = json.loads(pid_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    boot = data.pop("boot", None)
+    if boot is not None and boot != container_boot():
+        return {}
+    return data
+
+
+def write_pids(key, pids):
+    home = ROOT / key
+    home.mkdir(mode=0o700, exist_ok=True)
+    data = {name: pid for name, pid in pids.items() if name != "boot" and pid}
+    boot = container_boot()
+    if boot:
+        data["boot"] = boot
+    tmp = home / "pids.json.tmp"
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(str(tmp), str(home / "pids.json"))
+
+
+def proc_stat_fields(pid):
+    """Fields of /proc/<pid>/stat after "(comm)": state, ppid, ..."""
+    try:
+        text = (PROC / str(int(pid)) / "stat").read_text(encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return []
+    end = text.rfind(")")
+    return text[end + 2:].split() if end >= 0 else []
+
+
+def container_boot():
+    """When this container started: the start time of its pid 1.
+
+    It changes with every docker start, so it tells pids recorded in this run
+    of the container from numbers left over from an earlier one.
+    """
+    fields = proc_stat_fields(1)
+    # starttime is field 22 of stat, the 20th after "(comm)".
+    return "b" + fields[19] if len(fields) > 19 else ""
+
+
+def proc_argv(pid):
+    try:
+        raw = (PROC / str(int(pid)) / "cmdline").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def proc_on_display(pid, display):
+    try:
+        raw = (PROC / str(int(pid)) / "environ").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return False
+    return ("DISPLAY=:%d" % display).encode() in raw.split(b"\0")
+
+
+# Desktop parts found by command line. Chromium is found by its profile.
+DESKTOP_PARTS = ("xvfb", "fluxbox", "dbus", "x11vnc", "vnc", "vgate", "proxy", "watch")
+
+
+def desktop_part(pid, key, display):
+    """Which part of this desktop the process is, or ""."""
+    argv = proc_argv(pid)
+    if not argv:
+        return ""
+    names = [os.path.basename(arg) for arg in argv[:2]]
+    screen = ":%d" % display
+    if names[0] == "Xvfb":
+        return "xvfb" if len(argv) > 1 and argv[1] == screen else ""
+    if names[0] == "x11vnc":
+        return "x11vnc" if screen in argv else ""
+    if names[0] == "dbus-daemon":
+        return "dbus" if "--address=unix:path=/tmp/.maclaw-dbus-%d" % display in argv else ""
+    if names[0] in ("xfce4-session", "fluxbox") or "startxfce4" in names:
+        return "fluxbox" if proc_on_display(pid, display) else ""
+    if "websockify" in names:
+        return "vnc" if "127.0.0.1:%d" % VNC_WEBSOCKIFY_PORT in argv else ""
+    if len(argv) >= 4 and names[1] == "desktop_supervisor.py":
+        if argv[2] == "gate" and argv[3] == str(VNC_GATE_PORT):
+            return "vgate"
+        if argv[2] == "gate" and argv[3] == str(proxy_port(display)):
+            return "proxy"
+        if argv[2] == "watch" and argv[3] == key:
+            return "watch"
+    return ""
+
+
+def find_desktop_parts(key, display):
+    """The running process of each desktop part, found by command line.
+
+    A part can have several processes (websockify forks one per connection,
+    startxfce4 runs xfce4-session); the outermost, oldest one is the part.
+    """
+    found = {}
+    if not PROC.is_dir():
+        return {}
+    me = os.getpid()
+    for entry in PROC.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in (1, me) or not pid_alive(pid):
+            continue
+        part = desktop_part(pid, key, display)
+        if part:
+            found.setdefault(part, []).append(pid)
+    parts = {}
+    for part, pids in found.items():
+        outer = [pid for pid in pids if proc_ppid(pid) not in pids] or pids
+        outer.sort(key=proc_start_time)
+        parts[part] = outer[0]
+    return parts
+
+
+def proc_ppid(pid):
+    fields = proc_stat_fields(pid)
+    try:
+        return int(fields[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def proc_start_time(pid):
+    fields = proc_stat_fields(pid)
+    try:
+        return int(fields[19])
+    except (IndexError, ValueError):
+        return 0
+
+
+def current_pids(key, display):
+    """pids.json brought in line with the processes that really run.
+
+    A recorded pid that is gone or is now another process is replaced by the
+    running part, and a running part nobody recorded is adopted. The file is
+    rewritten when anything changed.
+    """
+    pids = read_pids(key)
+    found = None
+    changed = False
+    for part in DESKTOP_PARTS:
+        pid = pids.get(part)
+        if pid and pid_alive(pid) and desktop_part(pid, key, display) == part:
+            continue
+        if found is None:
+            found = find_desktop_parts(key, display)
+        if part in found:
+            pids[part] = found[part]
+            changed = True
+        elif part in pids:
+            del pids[part]
+            changed = True
+    browser = browser_pid(ROOT / key / "profile")
+    if browser and pids.get("chromium") != browser:
+        pids["chromium"] = browser
+        changed = True
+    if changed:
+        write_pids(key, pids)
+    return pids
+
+
+def reap_children():
+    """Collect exited children so they do not stay behind as zombies."""
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        except OSError:
+            return
+        if pid == 0:
+            return
 
 
 def desktop_token_for(key):
@@ -1773,7 +2034,7 @@ def ensure_proxy(key, display):
     The website login lives in the running Chromium. A dead gate only
     hides that browser from the agent.
     """
-    pids = read_pids(key)
+    pids = current_pids(key, display)
     if pid_alive(pids.get("proxy")):
         return
     token = desktop_token_for(key)
@@ -1786,7 +2047,7 @@ def ensure_proxy(key, display):
     chrome_port = 18000 + display
     proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], os.environ.copy(), log)
     pids["proxy"] = proxy.pid
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    write_pids(key, pids)
 
 
 def ensure_vnc(key, display):
@@ -1797,7 +2058,10 @@ def ensure_vnc(key, display):
     """
     if shutil.which("x11vnc") is None or shutil.which("websockify") is None:
         return
-    pids = read_pids(key)
+    # Found by command line, so VNC processes nobody recorded are seen too.
+    # Restarting beside them failed to bind the ports and dropped the view
+    # every few seconds.
+    pids = current_pids(key, display)
     if vnc_pair_alive(pids):
         return
     token = desktop_token_for(key)
@@ -1814,20 +2078,16 @@ def ensure_vnc(key, display):
     pair = start_vnc(env, log, display, token)
     if pair is None:
         return
-    x11, web, gate = pair
-    if x11 is not None:
-        pids["x11vnc"] = x11.pid
-    else:
-        pids.pop("x11vnc", None)
-    if web is not None:
-        pids["vnc"] = web.pid
-    else:
-        pids.pop("vnc", None)
-    if gate is not None:
-        pids["vgate"] = gate.pid
-    else:
-        pids.pop("vgate", None)
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    record_vnc(pids, pair)
+    write_pids(key, pids)
+
+
+def record_vnc(pids, pair):
+    for name, proc in zip(("x11vnc", "vnc", "vgate"), pair):
+        if proc is not None:
+            pids[name] = proc.pid
+        else:
+            pids.pop(name, None)
 
 
 def vnc_pair_alive(pids):
@@ -1841,14 +2101,14 @@ def kill_pid(pid):
         pid = int(pid or 0)
     except (TypeError, ValueError):
         return
-    if pid <= 0 or not Path("/proc/%d" % pid).exists():
+    if pid <= 0 or not (PROC / str(pid)).exists():
         return
     try:
         os.kill(pid, 15)
     except OSError:
         return
     for _ in range(20):
-        if not Path("/proc/%d" % pid).exists():
+        if not (PROC / str(pid)).exists():
             return
         time.sleep(0.05)
     try:
@@ -1858,16 +2118,33 @@ def kill_pid(pid):
 
 
 def ensure_watch(key, display):
-    """Keep the login view up while the browser is still running."""
-    pids = read_pids(key)
-    if pid_alive(pids.get("watch")):
+    """Keep the login view up while the browser is still running.
+
+    A watcher keeps running the supervisor it was started with. After a
+    deploy copied in a new desktop_supervisor.py, the old watcher would go on
+    restarting VNC by its old rules, so it is replaced once by one that runs
+    the current file.
+    """
+    pids = current_pids(key, display)
+    code = supervisor_code()
+    if pid_alive(pids.get("watch")) and pids.get("watch_code") == code:
         return
+    kill_pid(pids.get("watch"))
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
     log = open(home / "desktop.log", "ab")
     proc = spawn([sys.executable, __file__, "watch", key, str(display)], os.environ.copy(), log)
     pids["watch"] = proc.pid
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    pids["watch_code"] = code
+    write_pids(key, pids)
+
+
+def supervisor_code():
+    """Short hash of this supervisor file, to tell old watchers from new."""
+    try:
+        return "c" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
 
 
 def watch_vnc(key, display):
@@ -1883,6 +2160,8 @@ def watch_vnc(key, display):
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             lock_file.close()
+        # VNC parts this watcher restarted are its children.
+        reap_children()
         time.sleep(2)
     return 0
 
@@ -1956,13 +2235,14 @@ def stop_desktop(key):
     profile = ROOT / key / "profile"
     browser_gone = not browser_pid(profile)
     pid_file = ROOT / key / "pids.json"
-    try:
-        pids = json.loads(pid_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    if not pid_file.exists():
         return
-    if not isinstance(pids, dict):
-        return
+    # Only pids from this run of the container: older numbers are now other
+    # processes.
+    pids = read_pids(key)
     for name, pid in pids.items():
+        if not isinstance(pid, int):
+            continue
         # The browser was already asked to exit. Signaling it again, or
         # closing its display first, aborts the cookie write.
         if name in ("chromium", "xvfb", "fluxbox", "dbus") and not browser_gone:
