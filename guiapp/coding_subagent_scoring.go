@@ -47,8 +47,9 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 	// Signal 3: Embedding vectors (optional)
 	var queryEmbed []float32
 	var docEmbeddings map[int][]float32
+	embBaseline := codingEmbeddingBaseline(emb)
 	if emb != nil && !embedding.IsNoop(emb) {
-		if vec, err := emb.Embed(taskDescription); err == nil && len(vec) > 0 {
+		if vec, err := embedCodingQuery(emb, taskDescription); err == nil && len(vec) > 0 {
 			queryEmbed = vec
 		}
 		if queryEmbed != nil {
@@ -81,7 +82,7 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 		if queryEmbed != nil {
 			if docVec, ok := docEmbeddings[i]; ok {
 				raw := float64(cosine32(queryEmbed, docVec))
-				embScore = raw - codingSubAgentEmbeddingBaseline
+				embScore = raw - embBaseline
 				if embScore < 0 {
 					embScore = 0
 				}
@@ -116,4 +117,41 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 	}
 
 	return results
+}
+
+// Qwen3 cosine baselines. Qwen3's cosine scale differs from Gemma's; the
+// query side carries the RoleQuery instruction when the embedder supports
+// prompts. Calibrated on the TRAIN half of the 305-task cross-family
+// coding-skill set (2026-10-07 replacement audit, out/replace_audit/int3/
+// coding_r3.txt): RoleQuery task + plain doc, train F1 0.673 at 0.40 (plain
+// Embed both sides: best 0.594 at 0.48); test F1 0.664 vs Gemma 0.640.
+const (
+	codingSubAgentEmbeddingBaselineQwen3      = 0.40
+	codingSubAgentEmbeddingBaselineQwen3Plain = 0.48
+)
+
+// codingEmbeddingPolicy returns whether the task side is embedded with the
+// RoleQuery instruction and the matching cosine baseline for emb.
+func codingEmbeddingPolicy(emb embedding.Embedder) (queryRole bool, baseline float64) {
+	if embedding.EmbedderFamily(emb) != embedding.FamilyQwen3 {
+		return false, codingSubAgentEmbeddingBaseline
+	}
+	if _, ok := emb.(embedding.RoleEmbedder); ok {
+		return true, codingSubAgentEmbeddingBaselineQwen3
+	}
+	return false, codingSubAgentEmbeddingBaselineQwen3Plain
+}
+
+// codingEmbeddingBaseline returns the cosine baseline for emb.
+func codingEmbeddingBaseline(emb embedding.Embedder) float64 {
+	_, b := codingEmbeddingPolicy(emb)
+	return b
+}
+
+// embedCodingQuery embeds the task side (documents stay plain EmbedBatch).
+func embedCodingQuery(emb embedding.Embedder, task string) ([]float32, error) {
+	if role, _ := codingEmbeddingPolicy(emb); role {
+		return embedding.EmbedAs(emb, task, embedding.RoleQuery)
+	}
+	return emb.Embed(task)
 }
