@@ -195,7 +195,7 @@ func TestDesktopImageKeepsTheBrowserAndTheDomainIsAPIOnly(t *testing.T) {
 			t.Fatalf("desktop image missing %s", want)
 		}
 	}
-	vhost, err := os.ReadFile("../build/desktopd_deploy/dockerd.mypapers.top.conf")
+	vhost, err := os.ReadFile("deploy/nginx-dockerd.conf.example")
 	if err != nil {
 		t.Fatal(err)
 	}
