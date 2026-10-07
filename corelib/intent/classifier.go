@@ -427,7 +427,8 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 	if canEmb {
 		var confident bool
 		var queryVec []float32
-		l2Result, confident, queryVec = classifyByEmbeddingVec(emb, anchors, msg.Text)
+		var anchorMaxCos map[string]float64
+		l2Result, confident, queryVec, anchorMaxCos = classifyByEmbeddingVecScores(emb, anchors, msg.Text)
 		l2Ran = true
 		if len(queryVec) > 0 {
 			l2Result.QueryVec = append([]float32(nil), queryVec...)
@@ -438,7 +439,9 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 			st.noteL2(emb, anchors, l2Result, confident, queryVec)
 		}
 		if len(queryVec) > 0 {
-			treeCtx = WithQueryEmbedding(ctx, newQueryEmbedding(emb, msg.Text, queryVec))
+			qe := newQueryEmbedding(emb, msg.Text, queryVec)
+			qe.AnchorMaxCos = anchorMaxCos
+			treeCtx = WithQueryEmbedding(ctx, qe)
 		}
 		if confident {
 			NormalizeDeclaredComposite(&l2Result)

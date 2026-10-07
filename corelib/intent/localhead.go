@@ -59,6 +59,11 @@ type LocalHead struct {
 	// were fitted under; "" = unknown (offline heads, fitted on float/2-pass).
 	CalibrationCompute string
 
+	// AnchorFeatureLabels, when non-empty, means the head's input is the query
+	// vector followed by the raw Layer 2 max anchor cosine of each of these
+	// labels (optional "anchor_features" JSON field; Qwen3 r4 heads only).
+	AnchorFeatureLabels []string
+
 	sensitive map[string]bool
 	dim       int
 	hidden    int
@@ -96,6 +101,12 @@ type localHeadFile struct {
 	// description string (cross-family trainer heads, 2026-10-07): a string
 	// used to fail the whole load with an unmarshal error.
 	Calibration localHeadCalibration `json:"calibration"`
+	// AnchorFeatures (optional): labels whose raw L2 max anchor cosines are
+	// appended to the query vector, in this order. Standardisation is folded
+	// into w1/b1 at export time.
+	AnchorFeatures *struct {
+		Labels []string `json:"labels"`
+	} `json:"anchor_features,omitempty"`
 }
 
 type localHeadCalibration struct {
@@ -215,11 +226,58 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 			return nil, errors.New("non-finite weight in w2")
 		}
 	}
+	if f.AnchorFeatures != nil && len(f.AnchorFeatures.Labels) > 0 {
+		if h.mean != nil {
+			return nil, errors.New("anchor_features with mean/scale is not supported")
+		}
+		if len(f.AnchorFeatures.Labels) >= h.dim {
+			return nil, fmt.Errorf("anchor_features %d >= input dim %d", len(f.AnchorFeatures.Labels), h.dim)
+		}
+		h.AnchorFeatureLabels = append([]string(nil), f.AnchorFeatures.Labels...)
+	}
 	return h, nil
 }
 
-// Dim is the input vector dimension the head expects.
-func (h *LocalHead) Dim() int { return h.dim }
+// Dim is the query-vector (embedding) dimension the head expects; for heads
+// with anchor features the network input is Dim()+len(AnchorFeatureLabels).
+func (h *LocalHead) Dim() int { return h.dim - len(h.AnchorFeatureLabels) }
+
+// NeedsAnchorScores reports whether Predict needs Layer 2 anchor cosines
+// (use PredictWithAnchors).
+func (h *LocalHead) NeedsAnchorScores() bool { return len(h.AnchorFeatureLabels) > 0 }
+
+// PredictWithAnchors is Predict for heads with anchor features: v is the
+// query vector, scores the raw per-label max anchor cosines of the Layer 2
+// pass. Heads without anchor features ignore scores.
+func (h *LocalHead) PredictWithAnchors(v []float32, scores map[string]float64) ([]float64, error) {
+	if !h.NeedsAnchorScores() {
+		return h.Predict(v)
+	}
+	ed := h.Dim()
+	if len(v) != ed {
+		return nil, fmt.Errorf("local head: vector dim %d != head dim %d", len(v), ed)
+	}
+	x := make([]float64, h.dim)
+	var n float64
+	for i, f := range v {
+		x[i] = float64(f)
+		n += x[i] * x[i]
+	}
+	if h.l2norm && n > 0 {
+		inv := 1 / math.Sqrt(n)
+		for i := 0; i < ed; i++ {
+			x[i] *= inv
+		}
+	}
+	for j, l := range h.AnchorFeatureLabels {
+		s, ok := scores[l]
+		if !ok {
+			return nil, fmt.Errorf("local head: missing L2 anchor score for %q", l)
+		}
+		x[ed+j] = s
+	}
+	return h.forward(x), nil
+}
 
 // IsSensitive reports whether label uses τ_s.
 func (h *LocalHead) IsSensitive(label string) bool { return h.sensitive[label] }
@@ -235,6 +293,9 @@ func (h *LocalHead) Threshold(label string) float64 {
 // Predict returns calibrated class probabilities for one query vector
 // (same space and dimension the head was trained on).
 func (h *LocalHead) Predict(v []float32) ([]float64, error) {
+	if h.NeedsAnchorScores() {
+		return nil, errors.New("local head: needs L2 anchor scores (PredictWithAnchors)")
+	}
 	if len(v) != h.dim {
 		return nil, fmt.Errorf("local head: vector dim %d != head dim %d", len(v), h.dim)
 	}
@@ -255,6 +316,11 @@ func (h *LocalHead) Predict(v []float32) ([]float64, error) {
 			x[i] = (x[i] - h.mean[i]) * h.invScale[i]
 		}
 	}
+	return h.forward(x), nil
+}
+
+// forward runs the network on the prepared input x (len h.dim).
+func (h *LocalHead) forward(x []float64) []float64 {
 	if h.hidden > 0 {
 		hid := make([]float64, h.hidden)
 		for j := 0; j < h.hidden; j++ {
@@ -293,7 +359,7 @@ func (h *LocalHead) Predict(v []float32) ([]float64, error) {
 	for k := range p {
 		p[k] /= z
 	}
-	return p, nil
+	return p
 }
 
 // LocalHeadScore is one label with its calibrated probability.

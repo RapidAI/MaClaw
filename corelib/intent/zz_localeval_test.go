@@ -396,6 +396,9 @@ func TestZZLocalEval(t *testing.T) {
 	var head *zzHead
 	if hp := os.Getenv("ZZ_HEAD"); hp != "" {
 		head = zzLoadHead(t, hp)
+		if b, err := os.ReadFile(hp); err == nil && strings.Contains(string(b), `"anchor_features"`) {
+			head = nil // anchor-feature heads need L2 scores; head_top recording is skipped (pipeline uses LocalTreeFunc)
+		}
 	}
 	u.mu.RLock()
 	anchors := u.anchors
@@ -413,6 +416,10 @@ func TestZZLocalEval(t *testing.T) {
 		rec["l2_secondary"] = l2.Secondary
 		rec["l2_runnerup"] = l2.RunnerUp
 		rec["l2_runnerup_score"] = l2.RunnerUpScore
+		if os.Getenv("ZZ_DUMP_ANCHOR") == "1" {
+			_, _, _, raw := classifyByEmbeddingVecScores(emb, anchors, r.Text)
+			rec["l2_anchor_maxcos"] = raw
+		}
 		ta = time.Now()
 		res := u.ClassifyContext(context.Background(), MessageContext{Text: r.Text, UserID: "zz"})
 		rec["cls_ms"] = float64(time.Since(ta).Microseconds()) / 1000

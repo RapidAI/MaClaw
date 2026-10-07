@@ -31,6 +31,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,25 @@ func embedIntentQuery(emb embedding.Embedder, text string) ([]float32, error) {
 // embedIntentAnchors embeds anchor sentences in the Layer 2 space.
 func embedIntentAnchors(emb embedding.Embedder, texts []string) ([][]float32, error) {
 	return embedding.EmbedBatchAs(emb, texts, intentEmbeddingRole)
+}
+
+// maxAnchorScoreRaw is maxAnchorScore that also returns the raw (uncalibrated,
+// unclamped) max cosine over the anchor set, from the same cosine pass.
+func maxAnchorScoreRaw(queryVec []float32, anchor intentAnchor, cal intentScoreCalibration) (float64, float64, bool) {
+	if len(anchor.Vecs) == 0 {
+		return 0, 0, false
+	}
+	maxSim, rawMax := 0.0, math.Inf(-1)
+	for _, vec := range anchor.Vecs {
+		sim := cosineSimilarity(queryVec, vec)
+		if sim > maxSim {
+			maxSim = sim
+		}
+		if sim > rawMax {
+			rawMax = sim
+		}
+	}
+	return cal.apply(maxSim), rawMax, true
 }
 
 // maxAnchorScore returns the calibrated max cosine between queryVec and one

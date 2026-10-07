@@ -30,6 +30,10 @@ type QueryEmbedding struct {
 	Role    embedding.Role
 	ModelID string    // "" when the embedder does not report one
 	Vec     []float32 // owned by the receiver (a copy of the Layer 2 vector)
+	// AnchorMaxCos is the raw per-label max anchor cosine of the same Layer 2
+	// pass (nil when unavailable); read-only. Used by heads with L2 anchor
+	// features (LocalHead.AnchorFeatureLabels) — no extra embedding call.
+	AnchorMaxCos map[string]float64
 
 	emb embedding.Embedder
 }
@@ -100,4 +104,15 @@ func newQueryEmbedding(emb embedding.Embedder, text string, vec []float32) Query
 		Vec:     append([]float32(nil), vec...),
 		emb:     emb,
 	}
+}
+
+// IntentQueryEmbeddingScores is IntentQueryEmbedding that also returns the
+// Layer 2 per-label raw anchor cosines when the attached vector is reused
+// (nil otherwise).
+func IntentQueryEmbeddingScores(ctx context.Context, emb embedding.Embedder, text string) (vec []float32, scores map[string]float64, err error) {
+	if qe, ok := QueryEmbeddingFromContext(ctx); ok && qe.matches(emb, text, intentEmbeddingRole) {
+		return qe.Vec, qe.AnchorMaxCos, nil
+	}
+	vec, err = embedIntentQuery(emb, text)
+	return vec, nil, err
 }
