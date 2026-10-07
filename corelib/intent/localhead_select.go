@@ -223,15 +223,20 @@ func SelectLocalHead(emb embedding.Embedder, candidates []string) (*LocalHead, e
 	return nil, fmt.Errorf("%w: %s", ErrHeadMismatch, strings.Join(errs, "; "))
 }
 
+// CalibrationSourceOOFRule marks a head whose τ/τ_s were chosen by the r4
+// locked out-of-family rule and gated end-to-end at exactly those values;
+// production then uses the head's own τ_s (like "human_labels").
+const CalibrationSourceOOFRule = "oof_rule"
+
 // ApplyProductTauS sets τ_s for production: LocalTauSEnv if set, else the
-// head's own τ_s when it was re-fitted on human labels, else
-// DefaultLocalTauS. τ_s never drops below τ. Returns the τ_s in force.
+// head's own τ_s when it was re-fitted on human labels or carries
+// calibration.source "oof_rule", else DefaultLocalTauS. τ_s never drops below τ. Returns the τ_s in force.
 func ApplyProductTauS(h *LocalHead) float64 {
 	if h == nil {
 		return 0
 	}
 	ts := DefaultLocalTauS
-	if h.CalibrationSource == "human_labels" && h.TauS > 0 {
+	if (h.CalibrationSource == "human_labels" || h.CalibrationSource == CalibrationSourceOOFRule) && h.TauS > 0 {
 		ts = h.TauS
 	}
 	if v := strings.TrimSpace(os.Getenv(LocalTauSEnv)); v != "" {
