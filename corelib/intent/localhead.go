@@ -73,26 +73,43 @@ type LocalHead struct {
 	invScale  []float64
 	w1        []float64 // [hidden*dim] row-major
 	b1        []float64
-	w2        []float64 // [C*in] row-major, in = hidden or dim
+	w2        []float64 // [C*in] row-major, in = last hidden width or dim
+	extra     []denseLayer
+	srcDim    int // >0: Matryoshka truncation from srcDim to dim
+	tauLabel  map[string]float64
 	b2        []float64
 }
 
 type localHeadFile struct {
-	Labels      []string    `json:"labels"`
-	Mean        []float64   `json:"mean"`
-	Scale       []float64   `json:"scale"`
-	W1          [][]float64 `json:"w1"`
-	B1          []float64   `json:"b1"`
-	W2          [][]float64 `json:"w2"`
-	B2          []float64   `json:"b2"`
-	Temperature float64     `json:"temperature"`
-	Tau         float64     `json:"tau"`
-	TauS        float64     `json:"tau_s"`
-	L2Norm      bool        `json:"l2norm"`
-	Sensitive   []string    `json:"sensitive"`
-	EmbedRole   string      `json:"embed_role"`
-	Note        string      `json:"note"`
-	EmbedModel  string      `json:"embed_model"`
+	Labels []string    `json:"labels"`
+	Mean   []float64   `json:"mean"`
+	Scale  []float64   `json:"scale"`
+	W1     [][]float64 `json:"w1"`
+	B1     []float64   `json:"b1"`
+	// Hidden is optional extra ReLU layers applied after w1/b1 (deeper
+	// heads); w2 then takes the last layer's width as input.
+	Hidden []struct {
+		W [][]float64 `json:"w"`
+		B []float64   `json:"b"`
+	} `json:"hidden,omitempty"`
+	W2 [][]float64 `json:"w2"`
+	// SourceDim, when set, marks a Matryoshka head: the query vector has
+	// SourceDim dims, the network uses its first len(w1[0]) dims, then
+	// re-normalises them (l2norm must be true).
+	SourceDim int `json:"source_dim,omitempty"`
+	// TauByLabel is an optional per-label acceptance threshold map (fitted on
+	// out-of-family OOF). Labels not listed use tau / tau_s; sensitive labels
+	// never go below the tau_s in force.
+	TauByLabel  map[string]float64 `json:"tau_by_label,omitempty"`
+	B2          []float64          `json:"b2"`
+	Temperature float64            `json:"temperature"`
+	Tau         float64            `json:"tau"`
+	TauS        float64            `json:"tau_s"`
+	L2Norm      bool               `json:"l2norm"`
+	Sensitive   []string           `json:"sensitive"`
+	EmbedRole   string             `json:"embed_role"`
+	Note        string             `json:"note"`
+	EmbedModel  string             `json:"embed_model"`
 	// EmbedderModelID is the trainer's full embedder ID (e.g. "Qwen3
 	// Embedding 0.6b:1024:prompt-v1:qwen3-instruct-v1"); used as the family
 	// hint when embed_model is absent.
@@ -184,11 +201,45 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 	for _, s := range f.Sensitive {
 		h.sensitive[s] = true
 	}
+	if len(f.TauByLabel) > 0 {
+		known := map[string]bool{}
+		for _, l := range f.Labels {
+			known[l] = true
+		}
+		h.tauLabel = map[string]float64{}
+		for l, t := range f.TauByLabel {
+			if !known[l] || !(t > 0 && t <= 1) {
+				return nil, fmt.Errorf("tau_by_label: bad entry %q=%v", l, t)
+			}
+			h.tauLabel[l] = t
+		}
+	}
 	if len(f.W1) > 0 {
 		h.hidden = len(f.W1)
 		h.dim = len(f.W1[0])
-		if len(f.B1) != h.hidden || in != h.hidden {
-			return nil, fmt.Errorf("hidden layer shape mismatch (w1 %d, b1 %d, w2 in %d)", h.hidden, len(f.B1), in)
+		last := h.hidden
+		for li, L := range f.Hidden {
+			if len(L.W) == 0 || len(L.B) != len(L.W) {
+				return nil, fmt.Errorf("hidden[%d]: w rows %d, b %d", li, len(L.W), len(L.B))
+			}
+			d := denseLayer{out: len(L.W), in: last, b: append([]float64(nil), L.B...)}
+			d.w = make([]float64, 0, d.out*d.in)
+			for j, row := range L.W {
+				if len(row) != last {
+					return nil, fmt.Errorf("hidden[%d] row %d has %d cols, want %d", li, j, len(row), last)
+				}
+				for _, v := range row {
+					if math.IsNaN(v) || math.IsInf(v, 0) {
+						return nil, fmt.Errorf("non-finite weight in hidden[%d]", li)
+					}
+				}
+				d.w = append(d.w, row...)
+			}
+			h.extra = append(h.extra, d)
+			last = d.out
+		}
+		if len(f.B1) != h.hidden || in != last {
+			return nil, fmt.Errorf("hidden layer shape mismatch (w1 %d, b1 %d, last hidden %d, w2 in %d)", h.hidden, len(f.B1), last, in)
 		}
 		h.w1 = make([]float64, 0, h.hidden*h.dim)
 		for j, row := range f.W1 {
@@ -199,6 +250,9 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		}
 		h.b1 = append([]float64(nil), f.B1...)
 	} else {
+		if len(f.Hidden) > 0 {
+			return nil, errors.New("hidden layers need w1/b1")
+		}
 		h.dim = in
 	}
 	h.w2 = make([]float64, 0, c*in)
@@ -226,6 +280,12 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 			return nil, errors.New("non-finite weight in w2")
 		}
 	}
+	if f.SourceDim > 0 && f.SourceDim != h.dim {
+		if f.SourceDim < h.dim || !h.l2norm || h.mean != nil || (f.AnchorFeatures != nil && len(f.AnchorFeatures.Labels) > 0) {
+			return nil, fmt.Errorf("source_dim %d needs source_dim > input dim %d, l2norm, no mean/scale, no anchor_features", f.SourceDim, h.dim)
+		}
+		h.srcDim = f.SourceDim
+	}
 	if f.AnchorFeatures != nil && len(f.AnchorFeatures.Labels) > 0 {
 		if h.mean != nil {
 			return nil, errors.New("anchor_features with mean/scale is not supported")
@@ -240,7 +300,12 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 
 // Dim is the query-vector (embedding) dimension the head expects; for heads
 // with anchor features the network input is Dim()+len(AnchorFeatureLabels).
-func (h *LocalHead) Dim() int { return h.dim - len(h.AnchorFeatureLabels) }
+func (h *LocalHead) Dim() int {
+	if h.srcDim > 0 {
+		return h.srcDim
+	}
+	return h.dim - len(h.AnchorFeatureLabels)
+}
 
 // NeedsAnchorScores reports whether Predict needs Layer 2 anchor cosines
 // (use PredictWithAnchors).
@@ -284,8 +349,15 @@ func (h *LocalHead) IsSensitive(label string) bool { return h.sensitive[label] }
 
 // Threshold returns the acceptance threshold for label (τ_s for sensitive labels).
 func (h *LocalHead) Threshold(label string) float64 {
+	t, ok := h.tauLabel[label]
 	if h.sensitive[label] {
+		if ok && t > h.TauS {
+			return t
+		}
 		return h.TauS
+	}
+	if ok {
+		return t
 	}
 	return h.Tau
 }
@@ -295,6 +367,12 @@ func (h *LocalHead) Threshold(label string) float64 {
 func (h *LocalHead) Predict(v []float32) ([]float64, error) {
 	if h.NeedsAnchorScores() {
 		return nil, errors.New("local head: needs L2 anchor scores (PredictWithAnchors)")
+	}
+	if h.srcDim > 0 {
+		if len(v) != h.srcDim {
+			return nil, fmt.Errorf("local head: vector dim %d != head source dim %d", len(v), h.srcDim)
+		}
+		v = v[:h.dim] // Matryoshka prefix; re-normalised below (l2norm required)
 	}
 	if len(v) != h.dim {
 		return nil, fmt.Errorf("local head: vector dim %d != head dim %d", len(v), h.dim)
@@ -334,6 +412,9 @@ func (h *LocalHead) forward(x []float64) []float64 {
 			}
 		}
 		x = hid
+		for _, d := range h.extra {
+			x = d.relu(x)
+		}
 	}
 	in := len(x)
 	c := len(h.Labels)
@@ -414,4 +495,26 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// denseLayer is one extra ReLU layer of a deeper local head.
+type denseLayer struct {
+	in, out int
+	w       []float64 // [out*in] row-major
+	b       []float64
+}
+
+func (d denseLayer) relu(x []float64) []float64 {
+	y := make([]float64, d.out)
+	for j := 0; j < d.out; j++ {
+		row := d.w[j*d.in : (j+1)*d.in]
+		s := d.b[j]
+		for i, w := range row {
+			s += w * x[i]
+		}
+		if s > 0 {
+			y[j] = s
+		}
+	}
+	return y
 }
