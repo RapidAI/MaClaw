@@ -451,3 +451,72 @@ func (f *ModelFetcher) downloadOnce(ctx context.Context, url string) error {
 	}
 	return nil
 }
+
+// Running reports whether a Start/EnsureShared download is in progress.
+func (f *ModelFetcher) Running() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.running
+}
+
+// EnsureShared is Ensure for a caller that wants to block (e.g. a UI
+// "download" button): it waits for an in-flight Start to finish, then runs
+// Ensure itself (instant when the verified file is present), so the .part is
+// never written by two goroutines. Pending Start callbacks fire on success.
+func (f *ModelFetcher) EnsureShared(ctx context.Context) (string, error) {
+	for {
+		f.mu.Lock()
+		if !f.running {
+			f.running = true
+			f.mu.Unlock()
+			break
+		}
+		f.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	p, err := f.Ensure(ctx)
+	f.mu.Lock()
+	f.running = false
+	cbs := f.ready
+	if err == nil {
+		f.ready = nil
+	}
+	f.mu.Unlock()
+	if err == nil {
+		for _, cb := range cbs {
+			cb(p)
+		}
+	}
+	return p, err
+}
+
+// Forget removes the installed file, its .verified marker and any .part, and
+// resets the status to missing (UI "delete model"). It refuses while a
+// download is running.
+func (f *ModelFetcher) Forget() error {
+	f.mu.Lock()
+	if f.running {
+		f.mu.Unlock()
+		return errors.New("download in progress")
+	}
+	f.mu.Unlock()
+	for _, p := range []string{f.Path(), f.Path() + ".verified", f.PartPath(), f.PartPath() + ".verified"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	f.set(func(s *FetchStatus) {
+		*s = FetchStatus{State: FetchMissing, Path: f.Path(), Total: f.spec.Size}
+	})
+	f.mu.Lock()
+	f.lastPct = -1
+	f.mu.Unlock()
+	return nil
+}
+
+// Spec returns the fetcher's model spec (file name, URLs, size, sha256).
+func (f *ModelFetcher) Spec() ModelSpec { return f.spec }

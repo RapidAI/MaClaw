@@ -306,13 +306,13 @@ func TestSrvAIEmbeddingDimMatchesProductionWidth(t *testing.T) {
 	if srvEmbeddingModelFilename() != embedding.Qwen3ModelFilename {
 		t.Fatalf("default embedding file = %q", srvEmbeddingModelFilename())
 	}
-	// Gemma pin (rollback): the historical 768 width and file.
+	// The retired Gemma pin is ignored: still Qwen3 width and file.
 	t.Setenv(embedding.EmbedModelEnv, "gemma")
-	if got := (srvAIModelEmbedderAdapter{}).Dim(); got != srvAIEmbeddingDim {
-		t.Fatalf("srvAIModelEmbedderAdapter.Dim() = %d, want srvAIEmbeddingDim = %d", got, srvAIEmbeddingDim)
+	if got := (srvAIModelEmbedderAdapter{}).Dim(); got != embedding.Qwen3EmbeddingDim {
+		t.Fatalf("legacy gemma pin must be ignored: Dim() = %d", got)
 	}
-	if srvEmbeddingModelFilename() != embedding.DefaultModelFilename {
-		t.Fatalf("gemma-pinned embedding file = %q", srvEmbeddingModelFilename())
+	if srvEmbeddingModelFilename() != embedding.Qwen3ModelFilename {
+		t.Fatalf("legacy gemma pin must be ignored: file = %q", srvEmbeddingModelFilename())
 	}
 }
 

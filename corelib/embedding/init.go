@@ -20,9 +20,9 @@ const DefaultEmbeddingDim = 768
 // EmbedModelEnv selects the local embedding model family for
 // NewDefaultEmbedder (and therefore SharedGemma256) and LoadPreferredEmbedder:
 //
-//	unset / "qwen3" / "auto"   Qwen3-Embedding-0.6B (Q8_0 GGUF, the single
-//	                            shipped model), located by ResolveQwen3ModelPath
-//	"gemma"                    EmbeddingGemma-300M (explicit rollback pin)
+//	any value                  Qwen3-Embedding-0.6B (Q8_0 GGUF, the single
+//	                            shipped model), located by ResolveQwen3ModelPath;
+//	                            the retired "gemma" pin is ignored
 //
 // Switching changes ModelID, so stored vectors and intent anchor caches are
 // re-embedded rather than mixed.
@@ -31,21 +31,16 @@ const EmbedModelEnv = "MACLAW_EMBED_MODEL"
 // EmbedModelPathEnv overrides the model file used when EmbedModelEnv=qwen3.
 const EmbedModelPathEnv = "MACLAW_EMBED_MODEL_PATH"
 
-// SelectedEmbedModel returns the normalised EmbedModelEnv value ("gemma" or
-// "qwen3"). Qwen3 is the default; only an explicit "gemma" selects Gemma.
+// SelectedEmbedModel returns the local embedding model family: always "qwen3"
+// (the Gemma pin is retired; see GemmaPinned).
 func SelectedEmbedModel() string {
-	if GemmaPinned() {
-		return "gemma"
-	}
+	GemmaPinned() // logs a legacy MACLAW_EMBED_MODEL=gemma once
 	return "qwen3"
 }
 
 // resolveModelPath maps the caller's (Gemma) model path onto the file of the
 // selected model family.
 func resolveModelPath(modelPath string) string {
-	if SelectedEmbedModel() != "qwen3" {
-		return modelPath
-	}
 	if p := strings.TrimSpace(os.Getenv(EmbedModelPathEnv)); p != "" {
 		return p
 	}
@@ -69,23 +64,11 @@ func NewEmbedderFromFile(modelPath string, dim int) (Embedder, error) {
 	return NewGemmaEmbedder(modelPath, dim)
 }
 
-// NewDefaultEmbedder creates the configured local embedder from modelPath
-// (see EmbedModelEnv): Qwen3 through LoadPreferredEmbedder (path resolution,
-// low-memory guard, failure backoff, panic-safe load), or Gemma when pinned.
-// If initialization fails (model not found, etc.), it silently falls back to
-// NoopEmbedder.
+// NewDefaultEmbedder loads the local embedder (Qwen3) from the model slot
+// through LoadPreferredEmbedder (path resolution, low-memory guard, failure
+// backoff, panic-safe load). If initialization fails (model not found, etc.),
+// it silently returns NoopEmbedder.
 func NewDefaultEmbedder(modelPath string) Embedder {
-	if SelectedEmbedModel() == "qwen3" {
-		res, _ := LoadPreferredEmbedder(modelPath, PreferredOptions{})
-		return res.Embedder
-	}
-	modelPath = resolveModelPath(modelPath)
-	if _, err := os.Stat(modelPath); err != nil {
-		return NoopEmbedder{}
-	}
-	emb, err := NewEmbedderFromFile(modelPath, DefaultEmbeddingDim)
-	if err != nil {
-		return NoopEmbedder{}
-	}
-	return emb
+	res, _ := LoadPreferredEmbedder(modelPath, PreferredOptions{})
+	return res.Embedder
 }

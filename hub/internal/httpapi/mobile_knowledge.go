@@ -85,7 +85,7 @@ func mobileResetKnowledgePurgeStateForTest() {
 // mobileInitKnowledgeStore opens a process-level knowledge DB under the mobile
 // agent data root and attaches it to the shared CoreAgentExecutor (same pattern
 // as MaClawSrv). Embedding uses the single shipped model (Qwen3-Embedding-0.6B;
-// EmbeddingGemma only with MACLAW_EMBED_MODEL=gemma) when present, else FTS-only.
+// the only local model) when present, else FTS-only.
 func mobileInitKnowledgeStore(dataRoot string, exec *agentservice.CoreAgentExecutor) {
 	if exec == nil {
 		return

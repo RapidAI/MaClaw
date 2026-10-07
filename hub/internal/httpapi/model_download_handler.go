@@ -24,7 +24,6 @@ const defaultHubModelBaseURL = "https://github.com/RapidAI/MaClaw/releases/downl
 // defaultHubModelBaseURL (the OCR PP-OCRv6 ONNX files of every tier ship
 // bundled in ocr.ModelsZipFilename; see ocr.DefaultModelsZipURL).
 var defaultHubModelFiles = strings.Join([]string{
-	"embeddinggemma-300M-Q8_0.gguf",
 	asr.DefaultModelFilename,
 	diarization.DefaultCAMPlusFilename,
 	"omniparser-v2.yolow",

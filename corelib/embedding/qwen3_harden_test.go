@@ -20,7 +20,7 @@ func TestResolveQwen3ModelPathOrder(t *testing.T) {
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	slot := t.TempDir()
-	gp := filepath.Join(slot, DefaultModelFilename)
+	gp := filepath.Join(slot, LegacyGemmaModelFilename)
 	base := t.TempDir()
 	old, _ := BaseDirFunc.Load().(func() string)
 	BaseDirFunc.Store(func() string { return base })
@@ -84,7 +84,7 @@ func TestResolveQwen3ModelPathSkipsPartialWrongArchAndDirs(t *testing.T) {
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	slot := t.TempDir()
-	gp := filepath.Join(slot, DefaultModelFilename)
+	gp := filepath.Join(slot, LegacyGemmaModelFilename)
 	qp := filepath.Join(slot, Qwen3ModelFilename)
 
 	qwen3ExpectSize = func() int64 { return 10 }

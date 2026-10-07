@@ -6,15 +6,15 @@ import (
 )
 
 func TestResolveModelPathSelectsFamily(t *testing.T) {
-	gemma := filepath.Join("/m", DefaultModelFilename)
+	gemma := filepath.Join("/m", LegacyGemmaModelFilename)
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	if got := resolveModelPath(gemma); got != filepath.Join("/m", Qwen3ModelFilename) {
 		t.Fatalf("default family is Qwen3 (single shipped model), got %q", got)
 	}
 	t.Setenv(EmbedModelEnv, "gemma")
-	if got := resolveModelPath(gemma); got != gemma {
-		t.Fatalf("gemma pin must keep the Gemma path, got %q", got)
+	if got := resolveModelPath(gemma); got != filepath.Join("/m", Qwen3ModelFilename) {
+		t.Fatalf("retired gemma pin must be ignored (Qwen3 path), got %q", got)
 	}
 	t.Setenv(EmbedModelEnv, "qwen3")
 	if got := resolveModelPath(gemma); got != filepath.Join("/m", Qwen3ModelFilename) {

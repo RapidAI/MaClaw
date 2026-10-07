@@ -104,14 +104,20 @@ func TestAttachPrefersXFHead(t *testing.T) {
 	}
 }
 
-func TestGemmaFallbackUsesGemmaHead(t *testing.T) {
+// The retired EmbeddingGemma heads are never auto-selected: with no Gemma
+// default head names, a (legacy) Gemma embedder gets no head even when an old
+// head_mlp_gemmacls_* file is still on disk.
+func TestRetiredGemmaHeadNotAutoSelected(t *testing.T) {
 	t.Setenv(intent.LocalHeadEnv, "")
 	dir := t.TempDir()
 	writeHead(t, dir, "head_mlp_gemmacls_GK.json", "", 768, nil)
 	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
-	h, err := NewWithMode(dir, intent.LocalL3On).Attach(gemma)
-	if err != nil || !strings.HasPrefix(h.ID, "head_mlp_gemmacls_GK.json@") || h.TauS != 0.95 {
-		t.Fatalf("h=%v err=%v", h, err)
+	if h, err := NewWithMode(dir, intent.LocalL3On).Attach(gemma); err == nil && h != nil {
+		t.Fatalf("retired Gemma head must not attach: h=%v", h.ID)
+	}
+	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if err != nil || !strings.HasPrefix(h.ID, "head_mlp_qwen3go_GK.json@") {
+		t.Fatalf("qwen3 head: h=%v err=%v", h, err)
 	}
 }
 

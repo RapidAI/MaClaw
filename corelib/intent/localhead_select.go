@@ -121,9 +121,9 @@ func DefaultLocalHeadNames(family string) []string {
 	switch family {
 	case embedding.FamilyQwen3:
 		return []string{"head_mlp_qwen3go_GK.json", "head_mlp_qwen3go_KG.json"}
-	case embedding.FamilyGemma:
-		return []string{"head_mlp_gemmacls_GK.json", "head_mlp_gemmacls_KG.json"}
 	}
+	// No shipped heads for any other family: the retired EmbeddingGemma heads
+	// are never auto-selected (Qwen3 is the only local model).
 	return nil
 }
 
@@ -131,8 +131,6 @@ func familyPrefix(family string) string {
 	switch family {
 	case embedding.FamilyQwen3:
 		return "head_mlp_qwen3go_"
-	case embedding.FamilyGemma:
-		return "head_mlp_gemmacls_"
 	}
 	return ""
 }

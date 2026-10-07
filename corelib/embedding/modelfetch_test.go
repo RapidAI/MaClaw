@@ -288,3 +288,38 @@ func TestQwen3ModelSpecMatchesLocalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestModelFetcherEnsureSharedAndForget(t *testing.T) {
+	body := []byte("qwen3-model-bytes")
+	sum := sha256.Sum256(body)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(body) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	f := NewModelFetcher(dir, ModelSpec{Filename: "m.gguf", URLs: []string{srv.URL + "/m.gguf"}, Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])})
+	f.Backoff = 0
+	fired := make(chan string, 1)
+	f.Start(context.Background(), func(p string) { fired <- p })
+	p, err := f.EnsureShared(context.Background())
+	if err != nil || p != f.Path() {
+		t.Fatalf("EnsureShared = %q, %v", p, err)
+	}
+	<-fired
+	if f.Running() {
+		t.Fatal("not running after EnsureShared")
+	}
+	if err := f.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(f.Path()); !os.IsNotExist(err) {
+		t.Fatalf("file must be removed: %v", err)
+	}
+	if st := f.Status(); st.State != FetchMissing {
+		t.Fatalf("state after Forget = %v", st.State)
+	}
+	if _, err := f.EnsureShared(context.Background()); err != nil {
+		t.Fatalf("redownload: %v", err)
+	}
+	if err := VerifyModelFile(f.Path(), f.Spec()); err != nil {
+		t.Fatal(err)
+	}
+}

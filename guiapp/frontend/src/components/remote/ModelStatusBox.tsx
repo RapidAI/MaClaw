@@ -7,10 +7,12 @@ export function formatBytes(bytes: number) {
     return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
-export function ModelStatusBox({ exists, downloading, size, progress, downloaded, total, error, onDownload, onRetry, accentColor, t }: {
+export function ModelStatusBox({ exists, downloading, size, progress, downloaded, total, error, onDownload, onRetry, onDelete, onRedownload, accentColor, t }: {
     exists: boolean; downloading: boolean; size: number; progress: number;
     downloaded: number; total: number; error: string;
     onDownload: () => void; onRetry: () => void; accentColor: string;
+    /** Optional: show "Delete" / "Re-download" actions when the model is ready. */
+    onDelete?: () => void; onRedownload?: () => void;
     t: (en: string, zhHans: string, zhHant?: string) => string;
 }) {
     return (
@@ -22,6 +24,16 @@ export function ModelStatusBox({ exists, downloading, size, progress, downloaded
                     </span>
                     <span className="model-status-box__label">{t('Model Ready', '模型已就绪')}</span>
                     <span className="model-status-box__size">{formatBytes(size)}</span>
+                    {onRedownload && (
+                        <button onClick={onRedownload} className="model-status-box__retry">
+                            {t('Re-download', '重新下载', '重新下載')}
+                        </button>
+                    )}
+                    {onDelete && (
+                        <button onClick={onDelete} className="model-status-box__retry">
+                            {t('Delete', '删除', '刪除')}
+                        </button>
+                    )}
                 </div>
             )}
             {downloading && (

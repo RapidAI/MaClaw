@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-    GetVectorSearchEnabled, SetVectorSearchEnabled, CheckEmbeddingModel, DownloadEmbeddingModel,
+    GetVectorSearchEnabled, SetVectorSearchEnabled, CheckEmbeddingModel, DownloadEmbeddingModel, DeleteEmbeddingModel,
     GetScreenParsingEnabled, SetScreenParsingEnabled, CheckYOLOModel, DownloadYOLOModel,
     GetComputerUseEnabled, SetComputerUseEnabled, GetComputerUseStatus,
     ComputerUseSelfCheck, GetComputerUseLastWarmup, OpenComputerUsePermissionSettingsDefault,
@@ -237,6 +237,28 @@ export function EmbeddingConfigPanel({ lang }: Props) {
             setEmbError(prev => prev || (e?.message || String(e)));
             setEmbDownloading(false);
         }
+    };
+
+    const deleteEmbModel = async () => {
+        setEmbError('');
+        try {
+            await DeleteEmbeddingModel();
+            setEmbModelExists(false); setEmbModelSize(0); setEmbProgress(0);
+        } catch (e: any) {
+            setEmbError(e?.message || String(e));
+        }
+    };
+
+    const redownloadEmbModel = async () => {
+        setEmbError('');
+        try {
+            await DeleteEmbeddingModel();
+            setEmbModelExists(false); setEmbModelSize(0);
+        } catch (e: any) {
+            setEmbError(e?.message || String(e));
+            return;
+        }
+        await startEmbDownload();
     };
 
     const handleSpToggle = async (on: boolean) => {
@@ -1034,7 +1056,7 @@ export function EmbeddingConfigPanel({ lang }: Props) {
 
             {/* ===== Section 2: Embedding Model (Vector Search) ===== */}
             <h4 className="model-config-heading model-config-heading--primary model-config-heading--spaced">
-                {t('Embedding Model (Vector Search)', '嵌入模型（向量搜索）', '嵌入模型（向量搜索）')}
+                {t('Embedding Model: Qwen3-Embedding-0.6B (Vector Search)', '嵌入模型：Qwen3-Embedding-0.6B（向量搜索）', '嵌入模型：Qwen3-Embedding-0.6B（向量搜尋）')}
             </h4>
             <div className="model-config-toggle-row">
                 <label className="model-config-check">
@@ -1044,9 +1066,9 @@ export function EmbeddingConfigPanel({ lang }: Props) {
             </div>
             <p className="model-config-copy">
                 {t(
-                    'Vector search uses EmbeddingGemma 300M model to generate semantic vectors for memory and documents, improving search accuracy. Model file ~300MB, downloaded from Hub.',
-                    '向量搜索使用 EmbeddingGemma 300M 模型为记忆和文档生成语义向量，提升搜索精度。模型文件约 300MB，将从 Hub 下载到本地。',
-                    '向量搜索使用 EmbeddingGemma 300M 模型為記憶和文檔生成語義向量，提升搜索精度。模型文件約 300MB，將從 Hub 下載到本地。'
+                    'Vector search, local intent recognition and tool routing use the Qwen3-Embedding-0.6B model (Q8_0, ~610 MB) plus small intent/tool/interrupt heads. Files are downloaded from the GitHub release first, then from your Hub, and checked with SHA-256.',
+                    '向量搜索、本地意图识别和工具路由使用 Qwen3-Embedding-0.6B 模型（Q8_0，约 610 MB）以及小型意图/工具/打断头。文件先从 GitHub Release 下载，失败时改用 Hub，并做 SHA-256 校验。',
+                    '向量搜尋、本地意圖識別和工具路由使用 Qwen3-Embedding-0.6B 模型（Q8_0，約 610 MB）以及小型意圖/工具/打斷頭。檔案先從 GitHub Release 下載，失敗時改用 Hub，並做 SHA-256 校驗。'
                 )}
             </p>
             {embEnabled && (
@@ -1054,6 +1076,7 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                     exists={embModelExists} downloading={embDownloading} size={embModelSize}
                     progress={embProgress} downloaded={embDownloaded} total={embTotal}
                     error={embError} onDownload={startEmbDownload} onRetry={startEmbDownload}
+                    onDelete={deleteEmbModel} onRedownload={redownloadEmbModel}
                     accentColor="var(--theme-primary)" t={t}
                 />
             )}

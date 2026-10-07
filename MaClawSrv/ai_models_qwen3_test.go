@@ -50,7 +50,7 @@ func TestSrvEmbedderLoadsQwen3NotGemma(t *testing.T) {
 	defer func() { srvLoadEmbedder = orig }()
 	dataRoot := t.TempDir()
 	os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755)
-	os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("gemma"), 0o644)
+	os.WriteFile(filepath.Join(dataRoot, "models", embedding.LegacyGemmaModelFilename), []byte("gemma"), 0o644)
 	m := newSrvAIModelManager(dataRoot)
 	if _, err := m.embedBatch(nil, corelib.AppConfig{}, []string{"x"}); err == nil {
 		t.Fatal("only the Gemma file exists: the server must report not-ready, not load Gemma")

@@ -47,7 +47,7 @@ const (
 	//
 	// Tied to embedding.DefaultEmbeddingDim instead of written as a literal so
 	// the server cannot drift from the production width. It must also stay in
-	// sync with the dim handed to NewGemmaEmbedder below: it is part of the
+	// sync with the width the loaded model reports: it is part of the
 	// vector space identity reported by ModelID, so a mismatch would let the
 	// knowledge store believe it is reading one space while the manager writes
 	// another. TestSrvAIEmbeddingDimMatchesProductionWidth pins both.
@@ -55,28 +55,19 @@ const (
 )
 
 // Single shipped embedding model: the server follows the desktop app onto
-// Qwen3-Embedding-0.6B (full 1024 width, Qwen3 instruct prompts). The
-// EmbeddingGemma path (768, Gemma prompts) remains for MACLAW_EMBED_MODEL=gemma.
-// The filename, width and prompt recipe all feed the adapter's ModelID, so the
-// switch re-embeds the knowledge store once instead of mixing spaces.
+// Qwen3-Embedding-0.6B (full 1024 width, Qwen3 instruct prompts); there is no
+// other local model. The filename, width and prompt recipe all feed the
+// adapter's ModelID, so a store written by the retired EmbeddingGemma model is
+// re-embedded once instead of mixing spaces.
 func srvEmbedFamily() string {
-	if embedding.GemmaPinned() {
-		return embedding.FamilyGemma
-	}
 	return embedding.FamilyQwen3
 }
 
 func srvEmbeddingModelFilename() string {
-	if srvEmbedFamily() == embedding.FamilyGemma {
-		return embedding.DefaultModelFilename
-	}
 	return embedding.Qwen3ModelFilename
 }
 
 func srvEmbeddingDim() int {
-	if srvEmbedFamily() == embedding.FamilyGemma {
-		return srvAIEmbeddingDim
-	}
 	return embedding.Qwen3EmbeddingDim
 }
 
@@ -89,9 +80,6 @@ var srvVerifyEmbeddingModel = func(path string) error {
 // srvLoadEmbedder loads the model at path (swappable in tests). Qwen3 goes
 // through the hardened factory (low-memory guard, failure backoff, panic-safe).
 var srvLoadEmbedder = func(path string) (embedding.Embedder, error) {
-	if srvEmbedFamily() == embedding.FamilyGemma {
-		return embedding.NewGemmaEmbedder(path, srvAIEmbeddingDim)
-	}
 	res, err := embedding.LoadPreferredEmbedder(path, embedding.PreferredOptions{})
 	if err != nil {
 		return nil, err
@@ -589,9 +577,6 @@ func (m *srvAIModelManager) doneChannel() <-chan struct{} {
 func (m *srvAIModelManager) download(model string, cfg corelib.AppConfig, done <-chan struct{}) error {
 	switch model {
 	case srvAIModelEmbedding:
-		if srvEmbedFamily() == embedding.FamilyGemma {
-			return m.downloadWithFallback(embedding.DefaultModelFilename, embedding.DefaultModelDownloadURL, cfg, done)
-		}
 		if err := m.downloadWithFallback(embedding.Qwen3ModelFilename, embedding.Qwen3ModelSpec.URLs[0], cfg, done); err != nil {
 			return err
 		}

@@ -1,5 +1,5 @@
 // Package locall3 is the host-side wiring for the fully local intent path:
-// one shared embedder (Qwen3 first, Gemma only when Qwen3 fails to load) and
+// one shared embedder (Qwen3, the only local model; no fallback model) and
 // the matching calibrated MLP head as Layer 3 via intent.LocalTreeFunc.
 //
 // It is pure Go (CGO-free) so the exact wiring guiapp uses can be exercised

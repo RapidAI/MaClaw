@@ -6,12 +6,19 @@ import (
 	"sync/atomic"
 )
 
-// DefaultModelFilename is the standard filename for the Gemma embedding model.
-const DefaultModelFilename = "embeddinggemma-300M-Q8_0.gguf"
+// DefaultModelFilename is the file name of the single shipped local
+// embedding model (Qwen3-Embedding-0.6B Q8_0 GGUF).
+const DefaultModelFilename = Qwen3ModelFilename
 
-// DefaultModelDownloadURL is the primary download source for the embedding model (GitHub Releases).
-// Used by GUI and maclawsrv for background model preloading.
-const DefaultModelDownloadURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf"
+// DefaultModelDownloadURL is the primary download source for the embedding
+// model (GitHub release Model_Release). Hosts append the hub mirror
+// (<hub>/api/v1/models/<file>) as the fallback.
+const DefaultModelDownloadURL = ReleaseBaseURL + "/" + Qwen3ModelFilename
+
+// LegacyGemmaModelFilename is the EmbeddingGemma-300M file earlier releases
+// downloaded into the models dir. It is no longer loaded or downloaded; hosts
+// only use the name to remove the stale cache copy once Qwen3 is installed.
+const LegacyGemmaModelFilename = "embeddinggemma-300M-Q8_0.gguf"
 
 // BaseDirFunc optionally supplies the effective Maclaw base directory.
 // corelib wires this at init time without creating an import cycle.

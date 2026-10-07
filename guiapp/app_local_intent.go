@@ -4,9 +4,8 @@ package guiapp
 //
 // Every guiapp embedder load goes through loadAppEmbedder (via
 // sharedEmbeddingEmbedder, which already keeps one runtime per App), so the
-// process holds exactly one model: Qwen3-Embedding-0.6B (EmbeddingGemma only
-// with MACLAW_EMBED_MODEL=gemma; there is no automatic Gemma fallback — when
-// Qwen3 is unavailable the host degrades to rules + BM25 / remote L3 while the
+// process holds exactly one model: Qwen3-Embedding-0.6B (there is no other
+// local model and no fallback model — when Qwen3 is unavailable the host degrades to rules + BM25 / remote L3 while the
 // background fetch and the factory's retry backoff run). The intent classifiers (desktop
 // UIC, per-device hardware UICs), tool router (Track A hybrid retrieval),
 // tool builder, memory/knowledge stores and interrupt relevance all receive
@@ -106,7 +105,7 @@ func toolHeadCandidates(modelsDir string) []string {
 		filepath.Join(modelsDir, intent.LocalHeadsDirName),
 		modelsDir,
 	} {
-		for _, n := range []string{"tool_head_ovr_qwen3go.json", "tool_head_ovr_qwen3.json", "tool_head_ovr_gemma.json"} {
+		for _, n := range []string{"tool_head_ovr_qwen3go.json", "tool_head_ovr_qwen3.json"} {
 			p := filepath.Join(dir, n)
 			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 				out = append(out, p)

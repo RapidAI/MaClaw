@@ -108,11 +108,8 @@ func ResetSharedGemmaForTest() {
 }
 
 // sharedModelPath is the file the shared embedder loads: the resolved Qwen3
-// GGUF (ResolveQwen3ModelPath), or the Gemma slot when Gemma is pinned.
+// GGUF (ResolveQwen3ModelPath).
 func sharedModelPath() string {
-	if SelectedEmbedModel() == "qwen3" {
-		p, _ := ResolveQwen3ModelPath(DefaultModelPath())
-		return p
-	}
-	return DefaultModelPath()
+	p, _ := ResolveQwen3ModelPath(DefaultModelPath())
+	return p
 }

@@ -616,7 +616,7 @@ func TestEmbeddingModelSourceURLsIncludeGitHubMirror(t *testing.T) {
 	if !strings.HasPrefix(urls[1], "https://ghfast.top/https://github.com/") {
 		t.Fatalf("mirror = %s", urls[1])
 	}
-	t.Setenv(embeddingModelDownloadEnv, "https://mirror.example/model.gguf, https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf")
+	t.Setenv(embeddingModelDownloadEnv, "https://mirror.example/model.gguf, "+embedding.DefaultModelDownloadURL)
 	urls = embeddingModelSourceURLs()
 	if urls[0] != "https://mirror.example/model.gguf" {
 		t.Fatalf("env override should be first: %v", urls)

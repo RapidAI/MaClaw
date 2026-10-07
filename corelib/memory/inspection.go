@@ -53,7 +53,10 @@ func (s *Store) EmbedStatusForTool() EmbedStatus {
 	}
 	status.WithoutEmbeddings = status.TotalEntries - status.WithEmbeddings
 	if embedder := s.Embedder(); embedder != nil && !embedding.IsNoop(embedder) {
-		status.EmbedderType = "Gemma"
+		status.EmbedderType = "Qwen3"
+		if fam := embedding.EmbedderFamily(embedder); fam != "" && fam != embedding.FamilyQwen3 {
+			status.EmbedderType = fam
+		}
 		status.ModelPath = embedding.DefaultModelPath()
 	}
 	return status

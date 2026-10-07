@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -43,7 +44,7 @@ func main() {
 	fmt.Printf("Phoneme table: %d symbols\n", pt.Size())
 
 	// Load Gemma Embedding model
-	gemmaPath := embedding.DefaultModelPath()
+	gemmaPath := filepath.Join(embedding.DefaultModelsDir(), embedding.LegacyGemmaModelFilename) // offline BERT experiment only
 	var embedder embedding.Embedder
 	if _, err := os.Stat(gemmaPath); err == nil {
 		embedder, err = embedding.NewGemmaEmbedder(gemmaPath, embedding.DefaultEmbeddingDim)

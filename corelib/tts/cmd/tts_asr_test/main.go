@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -65,7 +66,7 @@ func main() {
 	}
 
 	// Load Gemma for BERT embedding
-	gemmaPath := embedding.DefaultModelPath()
+	gemmaPath := filepath.Join(embedding.DefaultModelsDir(), embedding.LegacyGemmaModelFilename) // offline BERT experiment only
 	var embedder embedding.Embedder
 	if _, err3 := os.Stat(gemmaPath); err3 == nil {
 		embedder, _ = embedding.NewGemmaEmbedder(gemmaPath, embedding.DefaultEmbeddingDim)

@@ -20,10 +20,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-const embeddingModelFilename = "embeddinggemma-300M-Q8_0.gguf"
-
-// embeddingModelDefaultURL is the primary download source (from corelib/embedding).
-var embeddingModelDefaultURL = embedding.DefaultModelDownloadURL
+// embeddingModelFilename is the single local embedding model
+// (Qwen3-Embedding-0.6B Q8_0, GitHub release Model_Release + hub mirror).
+const embeddingModelFilename = embedding.DefaultModelFilename
 
 // embeddingDownloadMu prevents concurrent model downloads.
 var embeddingDownloadMu sync.Mutex
@@ -126,6 +125,7 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 
 	// Mark intent embedding as active so activateEmbedderAsync doesn't double-load.
 	a.intentEmbeddingActive.Store(true)
+	a.removeLegacyGemmaModel() // Qwen3 is live: drop a migrated user's stale Gemma cache
 
 	log.Printf("[startup] embedding sync: done in %v — UIC L2 now available", time.Since(t0))
 }
@@ -178,15 +178,8 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 	dir, _ := embeddingModelsDir()
 	if dir != "" {
 		// Report the file the single-model factory loads: the resolved
-		// Qwen3 GGUF (or its download target), Gemma only when pinned.
-		p := filepath.Join(dir, embeddingModelFilename)
-		if !embedding.GemmaPinned() {
-			if q, _ := embedding.ResolveQwen3ModelPath(p); q != "" {
-				p = q
-			} else {
-				p = embedding.PreferredQwen3Path(p)
-			}
-		}
+		// Qwen3 GGUF (or its download target).
+		p := localEmbeddingModelPath(dir)
 		status.ModelPath = p
 		if fi, err := os.Stat(p); err == nil {
 			status.ModelExists = true
@@ -265,57 +258,151 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 	return nil
 }
 
-// CheckEmbeddingModel checks if the embedding model file exists locally.
-// Returns: { "exists": bool, "path": string, "size": int64 }
-func (a *App) CheckEmbeddingModel() map[string]interface{} {
-	dir, err := embeddingModelsDir()
-	if err != nil {
-		return map[string]interface{}{"exists": false, "path": "", "size": int64(0)}
+// localEmbeddingModelPath is the Qwen3 GGUF the factory loads from dir
+// (resolved file if present, else the download target).
+func localEmbeddingModelPath(dir string) string {
+	slot := filepath.Join(dir, embeddingModelFilename)
+	if q, _ := embedding.ResolveQwen3ModelPath(slot); q != "" {
+		return q
 	}
-	p := filepath.Join(dir, embeddingModelFilename)
-	fi, err := os.Stat(p)
-	if err != nil {
-		return map[string]interface{}{"exists": false, "path": p, "size": int64(0)}
-	}
-	return map[string]interface{}{"exists": true, "path": p, "size": fi.Size()}
+	return embedding.PreferredQwen3Path(slot)
 }
 
-// DownloadEmbeddingModel downloads the embedding model.
-// It first tries the default GitHub Releases URL; on failure it falls back
-// to the user-configured Hub URL.
-// Progress is emitted via Wails event "embedding-download-progress" with payload:
+// CheckEmbeddingModel reports the local embedding model (Qwen3-Embedding-0.6B)
+// for Settings → AI Model. Returns { "exists", "path", "size", "name",
+// "expected_size", "state", "custom" }; "state" is the background fetcher's
+// state (missing / downloading / verifying / ready / failed, or "custom" when
+// MACLAW_EMBED_MODEL_PATH points at a user file).
+func (a *App) CheckEmbeddingModel() map[string]interface{} {
+	out := map[string]interface{}{
+		"exists": false, "path": "", "size": int64(0),
+		"name":          "Qwen3-Embedding-0.6B (Q8_0)",
+		"expected_size": embedding.Qwen3ModelSpec.Size,
+		"state":         "missing",
+		"custom":        false,
+	}
+	dir, err := embeddingModelsDir()
+	if err != nil {
+		return out
+	}
+	p := localEmbeddingModelPath(dir)
+	out["path"] = p
+	if f := a.localModelFetcher(); f != nil {
+		out["state"] = f.Status().State.String()
+	} else {
+		out["state"], out["custom"] = "custom", true
+	}
+	if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+		out["exists"], out["size"] = true, fi.Size()
+		if out["state"] == "missing" {
+			out["state"] = "ready"
+		}
+	}
+	return out
+}
+
+// DownloadEmbeddingModel downloads (or re-downloads) the local embedding
+// model, Qwen3-Embedding-0.6B Q8_0, plus the intent / tool / interrupt heads:
+// GitHub release Model_Release first, then the hub mirror
+// (<hub>/api/v1/models/<file>); resumable .part, size + SHA-256 verified
+// before install (embedding.ModelFetcher). Progress is emitted via the Wails
+// event "embedding-download-progress":
 //
 //	{ "percent": int, "downloaded": int64, "total": int64, "error": string }
 //
-// This method blocks until download completes or fails.
+// It blocks until the model is installed and (with vector search on) loaded.
 func (a *App) DownloadEmbeddingModel() error {
-	// Prevent concurrent downloads 鈥?second caller is silently ignored.
+	f := a.localModelFetcher()
+	if f == nil {
+		return fmt.Errorf("%s points at a custom model file; nothing to download", embedding.EmbedModelPathEnv)
+	}
 	if !embeddingDownloadMu.TryLock() {
-		return nil
+		return nil // a UI download is already running; progress events continue
 	}
 	defer embeddingDownloadMu.Unlock()
-
-	dir, err := embeddingModelsDir()
-	if err != nil {
+	if _, err := embeddingModelsDir(); err != nil {
 		return fmt.Errorf("create models dir: %w", err)
 	}
-	destPath := filepath.Join(dir, embeddingModelFilename)
-
-	// 1) Try default GitHub URL first (silent 鈥?don't emit errors to UI).
-	if err := a.downloadModelFrom(embeddingModelDefaultURL, destPath, false); err == nil {
-		return a.verifyDownloadedEmbeddingModel(destPath)
-	}
-
-	// 2) Fallback: Hub URL (emit progress & errors to UI; lock-free peek).
-	hubURL := a.PeekRemoteHubURLTrimmed()
-	if hubURL == "" {
-		return fmt.Errorf("default download URL is unavailable and Hub URL is not configured")
-	}
-	fallbackURL := hubURL + "/api/v1/models/" + embeddingModelFilename
-	if err := a.downloadModelFrom(fallbackURL, destPath, true); err != nil {
+	a.startHeadAssetFetch()
+	if _, err := f.EnsureShared(context.Background()); err != nil {
+		a.emitDownloadProgressNamed("embedding-download-progress", 0, 0, 0, err.Error())
 		return err
 	}
-	return a.verifyDownloadedEmbeddingModel(destPath)
+	a.removeLegacyGemmaModel()
+	embedding.ResetQwen3LoadBackoff()
+	return a.verifyDownloadedEmbeddingModel(embedding.DefaultModelPath())
+}
+
+// DeleteEmbeddingModel removes the downloaded local embedding model (Settings
+// → AI Model "delete"): the live embedder is detached and closed (intent and
+// tools degrade to rules + BM25 + remote L3), then the GGUF, its .part /
+// .verified side files and any legacy EmbeddingGemma file are deleted. A
+// custom MACLAW_EMBED_MODEL_PATH file is never deleted. Heads are kept (they
+// are small and re-verified on the next download).
+func (a *App) DeleteEmbeddingModel() error {
+	f := a.localModelFetcher()
+	if f == nil {
+		return fmt.Errorf("%s points at a custom model file; not deleting it", embedding.EmbedModelPathEnv)
+	}
+	if f.Running() {
+		return fmt.Errorf("model download in progress")
+	}
+	a.detachLocalEmbedder()
+	if err := f.Forget(); err != nil {
+		return err
+	}
+	a.removeLegacyGemmaModel()
+	embedding.ResetQwen3LoadBackoff()
+	log.Printf("[embedding] local model deleted (%s)", f.Path())
+	return nil
+}
+
+// detachLocalEmbedder unwires and closes the App's embedder so its file can
+// be deleted (Windows refuses to delete a mapped file).
+func (a *App) detachLocalEmbedder() {
+	noop := embedding.NoopEmbedder{}
+	if a.memoryStore != nil {
+		a.memoryStore.SetEmbedder(noop)
+	}
+	if a.toolRouter != nil {
+		a.toolRouter.SetEmbedder(noop)
+	}
+	if a.unifiedClassifier != nil {
+		a.unifiedClassifier.SetEmbedder(noop)
+	}
+	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+		if handler := a.remoteSessions.hubClient.currentIMHandler(); handler != nil && handler.toolBuilder != nil {
+			handler.toolBuilder.SetEmbedder(noop)
+		}
+	}
+	a.embeddingMu.Lock()
+	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
+		a.localL3Runtime().Detach()
+		a.intentEmbedder.Close()
+	}
+	a.intentEmbedder = nil
+	a.intentEmbedderPath = ""
+	a.embeddingMu.Unlock()
+	a.intentEmbeddingActive.Store(false)
+	a.embeddingActivated.Store(false)
+}
+
+// removeLegacyGemmaModel deletes the EmbeddingGemma-300M cache file (and its
+// download side files) that earlier releases put in the models dir. Only
+// that exact cache name is touched, and only once the Qwen3 model is the
+// installed model, so users migrating from Gemma end up on Qwen3 without a
+// stale 330 MB file.
+func (a *App) removeLegacyGemmaModel() {
+	dir := embedding.DefaultModelsDir()
+	if dir == "" {
+		return
+	}
+	base := filepath.Join(dir, embedding.LegacyGemmaModelFilename)
+	for _, p := range []string{base, base + ".tmp", base + ".part", base + ".verified"} {
+		if err := os.Remove(p); err == nil {
+			log.Printf("[embedding] removed legacy EmbeddingGemma cache file %s", p)
+		}
+	}
 }
 
 func (a *App) verifyDownloadedEmbeddingModel(modelPath string) error {
@@ -484,8 +571,7 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 		return
 	}
 
-	dir, err := embeddingModelsDir()
-	if err != nil {
+	if _, err := embeddingModelsDir(); err != nil {
 		return
 	}
 	// Local model (Qwen3) first run: background, resumable, sha-verified
@@ -493,58 +579,9 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 	if a.startLocalModelFetch() {
 		return
 	}
-	if !embedding.GemmaPinned() {
-		// Custom MACLAW_EMBED_MODEL_PATH: load what is there (the factory
-		// resolves it). Never download or load Gemma unless explicitly
-		// pinned — single shipped model.
-		a.verifyAndEnableEmbedding(embedding.DefaultModelPath())
-		return
-	}
-	// Below: legacy EmbeddingGemma download, reached only with
-	// MACLAW_EMBED_MODEL=gemma (rollback pin).
-
-	destPath := filepath.Join(dir, embeddingModelFilename)
-	if _, err := os.Stat(destPath); err == nil {
-		// Model file already exists; verify and wire it into the runtime.
-		if a.verifyAndEnableEmbedding(destPath) {
-			return
-		}
-		// Verification failed 鈥?file is corrupt, remove and re-download.
-		if !a.vectorSearchConfiguredEnabled() {
-			return
-		}
-		os.Remove(destPath)
-	}
-
-	// Acquire download lock; skip if another download is in progress.
-	if !embeddingDownloadMu.TryLock() {
-		return
-	}
-	defer embeddingDownloadMu.Unlock()
-
-	fmt.Println("[embedding] background preload: starting silent download")
-
-	// Try default GitHub URL first.
-	if err := a.downloadModelFrom(embeddingModelDefaultURL, destPath, false); err != nil {
-		// Fallback: Hub URL.
-		hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
-		if hubURL == "" {
-			fmt.Printf("[embedding] background preload: all sources failed: %v\n", err)
-			return
-		}
-		fallbackURL := hubURL + "/api/v1/models/" + embeddingModelFilename
-		if err := a.downloadModelFrom(fallbackURL, destPath, false); err != nil {
-			fmt.Printf("[embedding] background preload: fallback failed: %v\n", err)
-			return
-		}
-	}
-
-	// Verify and activate unless the user disabled vector search while the
-	// download was running.
-	if !a.vectorSearchConfiguredEnabled() {
-		return
-	}
-	a.verifyAndEnableEmbedding(destPath)
+	// Custom MACLAW_EMBED_MODEL_PATH: load what is there (the factory
+	// resolves it); never download over a user file.
+	a.verifyAndEnableEmbedding(embedding.DefaultModelPath())
 }
 
 // verifyAndEnableEmbedding loads the model to verify integrity, then activates
@@ -558,7 +595,7 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	// Ensure infrastructure is ready before enabling.
 	a.ensureRemoteInfra()
 
-	// Smoke-tested load of the single model (Qwen3; Gemma only when pinned).
+	// Smoke-tested load of the single model (Qwen3).
 	// Failure degrades to rules + BM25; the factory backs off and retries.
 	emb, err := a.sharedEmbeddingEmbedder(modelPath, loadAppEmbedder(true))
 	if err != nil {
@@ -764,7 +801,7 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 
 // sharedEmbeddingEmbedder serializes model loading and publishes one shared
 // embedding runtime per App. This prevents concurrent startup/settings/download
-// paths from loading multiple Gemma instances and spiking memory.
+// paths from loading multiple model instances and spiking memory.
 func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embedding.Embedder, error)) (embedding.Embedder, error) {
 	if a == nil {
 		return embedding.NoopEmbedder{}, nil
@@ -772,8 +809,7 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 	a.embeddingMu.Lock()
 	defer a.embeddingMu.Unlock()
 	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
-		if (strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath) &&
-			!qwen3UpgradeAvailable(a.intentEmbedder, a.intentEmbedderPath) {
+		if strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath {
 			return a.intentEmbedder, nil
 		}
 		log.Printf("[embedding] switching embedder %s -> %s (closing previous instance)", embedding.EmbedderFamily(a.intentEmbedder), modelPath)

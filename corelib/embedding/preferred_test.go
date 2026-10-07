@@ -56,7 +56,7 @@ func (s *loadSpy) loaders() modelLoaders {
 func prefModels(t *testing.T, qwen, gemma bool) (dir, gemmaPath string) {
 	t.Helper()
 	dir = t.TempDir()
-	gemmaPath = filepath.Join(dir, DefaultModelFilename)
+	gemmaPath = filepath.Join(dir, LegacyGemmaModelFilename)
 	if gemma {
 		os.WriteFile(gemmaPath, []byte("gemma"), 0o644)
 	}
@@ -179,14 +179,18 @@ func TestPreferredLoadPanicDegradesNotCrash(t *testing.T) {
 	}
 }
 
-func TestPreferredGemmaPinnedSkipsQwen3(t *testing.T) {
+// The retired MACLAW_EMBED_MODEL=gemma pin is ignored: Qwen3 loads, Gemma never.
+func TestPreferredLegacyGemmaPinIgnored(t *testing.T) {
 	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "gemma")
 	_, gp := prefModels(t, true, true)
 	spy := &loadSpy{}
 	res, err := loadPreferredWith(spy.loaders(), gp, PreferredOptions{})
-	if err != nil || res.Family != FamilyGemma || res.Fallback || spy.qwenCalls != 0 {
+	if err != nil || res.Family != FamilyQwen3 || spy.gemmaCalls != 0 || spy.qwenCalls != 1 {
 		t.Fatalf("got %+v err=%v spy=%+v", res, err, spy)
+	}
+	if GemmaPinned() {
+		t.Fatal("GemmaPinned must be retired (always false)")
 	}
 }
 
@@ -214,7 +218,7 @@ func TestPreferredRealModels(t *testing.T) {
 	}
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
-	gp := filepath.Join(dir, DefaultModelFilename)
+	gp := filepath.Join(dir, LegacyGemmaModelFilename)
 	res, err := LoadPreferredEmbedder(gp, PreferredOptions{SmokeTest: true})
 	if err != nil {
 		t.Fatal(err)
@@ -226,12 +230,12 @@ func TestPreferredRealModels(t *testing.T) {
 	// Gemma slot in a directory without the Qwen3 file: noop, never Gemma.
 	other := t.TempDir()
 	if b, err := os.ReadFile(gp); err == nil {
-		os.WriteFile(filepath.Join(other, DefaultModelFilename), b, 0o644)
+		os.WriteFile(filepath.Join(other, LegacyGemmaModelFilename), b, 0o644)
 	}
 	oExe := executableFn
 	executableFn = func() (string, error) { return filepath.Join(other, "maclaw"), nil }
 	defer func() { executableFn = oExe }()
-	res, err = LoadPreferredEmbedder(filepath.Join(other, DefaultModelFilename), PreferredOptions{SmokeTest: true})
+	res, err = LoadPreferredEmbedder(filepath.Join(other, LegacyGemmaModelFilename), PreferredOptions{SmokeTest: true})
 	if err != nil {
 		t.Fatal(err)
 	}
