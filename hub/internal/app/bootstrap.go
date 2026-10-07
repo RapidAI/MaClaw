@@ -313,7 +313,7 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 	feishuNotifier.SetPlugin(feishuPlugin)
 	feishuPlugin.SetAdapter(imAdapter)
 
-	// 8a. Remote Gateway Plugins 闂?client-side IM gateways (QQ Bot, Telegram)
+	// 7. Remote Gateway Plugins — client-side IM gateways (QQ Bot, Telegram)
 	//     forwarded through the existing Hub闂備焦鍓氶崑鍛村箺閺勭ent WebSocket.
 	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
 	if err := imAdapter.RegisterPlugin(qqRemotePlugin); err != nil {
@@ -737,15 +737,15 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		KnowledgeShares: st.KnowledgeShares,
 
 		// Agent Passthrough IM modules
-		MessageRouter:    messageRouter,
-		IMAdapter:        imAdapter,
-		FeishuPlugin:     feishuPlugin,
-		QQBotPlugin:      qqbotPlugin,
-		WecomPlugin:      wecomPlugin,
-		DingTalkPlugin:   dingtalkPlugin,
-		QQRemotePlugin:   qqRemotePlugin,
-		TelegramPlugin:   telegramPlugin,
-		ChatNotifier:     chatNotifier,
+		MessageRouter:  messageRouter,
+		IMAdapter:      imAdapter,
+		FeishuPlugin:   feishuPlugin,
+		QQBotPlugin:    qqbotPlugin,
+		WecomPlugin:    wecomPlugin,
+		DingTalkPlugin: dingtalkPlugin,
+		QQRemotePlugin: qqRemotePlugin,
+		TelegramPlugin: telegramPlugin,
+		ChatNotifier:   chatNotifier,
 	}, nil
 }
 

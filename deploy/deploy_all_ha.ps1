@@ -437,7 +437,7 @@ function Stage-DeployAssets {
 
     $assetDirs = @(
         [pscustomobject]@{ Path = 'hubcenter'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
-        [pscustomobject]@{ Path = 'hub'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
+        [pscustomobject]@{ Path = 'hub'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') }
     )
 
     foreach ($dir in $assetDirs) {

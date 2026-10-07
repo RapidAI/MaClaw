@@ -39,14 +39,14 @@ type App struct {
 	KnowledgeShares store.KnowledgeShareRepository
 
 	// IM modules (Agent Passthrough)
-	MessageRouter    *im.MessageRouter
-	IMAdapter        *im.Adapter
-	FeishuPlugin     *feishu.FeishuPlugin
-	QQBotPlugin      *qqbot.Plugin
-	WecomPlugin      *wecom.Plugin
-	DingTalkPlugin   *dingtalk.Plugin
-	QQRemotePlugin   *im.RemoteGatewayPlugin
-	TelegramPlugin   *im.RemoteGatewayPlugin
+	MessageRouter  *im.MessageRouter
+	IMAdapter      *im.Adapter
+	FeishuPlugin   *feishu.FeishuPlugin
+	QQBotPlugin    *qqbot.Plugin
+	WecomPlugin    *wecom.Plugin
+	DingTalkPlugin *dingtalk.Plugin
+	QQRemotePlugin *im.RemoteGatewayPlugin
+	TelegramPlugin *im.RemoteGatewayPlugin
 
 	// Chat module
 	ChatNotifier *chat.Notifier
