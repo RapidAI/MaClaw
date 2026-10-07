@@ -459,10 +459,6 @@ func executeConfigAgentStep(r *http.Request, deps ConfigAgentDeps, system, baseS
 		return execDingTalkConfigGet(r, system)
 	case "dingtalk.config.update":
 		return execDingTalkConfigUpdate(r, deps, system, step.Args)
-	case "openclaw_im.config.get":
-		return execOpenclawIMConfigGet(r, system)
-	case "openclaw_im.config.update":
-		return execOpenclawIMConfigUpdate(r, system, step.Args)
 	case "content_audit.config.get":
 		return execContentAuditConfigGet(r, system)
 	case "content_audit.config.update":
@@ -472,10 +468,6 @@ func executeConfigAgentStep(r *http.Request, deps ConfigAgentDeps, system, baseS
 		return execQQBotConfigGet(r, system)
 	case "qqbot.config.update":
 		return execQQBotConfigUpdate(r, deps, system, step.Args)
-	case "bridge.channels.list":
-		return execBridgeChannelsList(r, system, deps.BridgeDir)
-	case "bridge.channels.save":
-		return execBridgeChannelSaveWithDeps(r, deps, system, step.Args)
 
 	case "mail.sender_name.get":
 		return execMailSenderNameGet(r, system)
@@ -1362,55 +1354,6 @@ func execDingTalkConfigUpdate(r *http.Request, deps ConfigAgentDeps, system stor
 	return resp, nil
 }
 
-func execOpenclawIMConfigGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
-	cfg := OpenclawIMConfigState{
-		WebhookURL: "http://127.0.0.1:3210/outbound",
-		Secret:     maskSecret(DefaultOpenclawIMSecret),
-	}
-	raw, err := system.Get(r.Context(), openclawIMConfigKey)
-	if err == nil && strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &cfg)
-		if cfg.Secret != "" {
-			cfg.Secret = maskSecret(cfg.Secret)
-		}
-	}
-	return cfg, nil
-}
-
-func execOpenclawIMConfigUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
-	cfg := OpenclawIMConfigState{
-		WebhookURL: strings.TrimSpace(fmt.Sprint(args["webhook_url"])),
-		Secret:     strings.TrimSpace(fmt.Sprint(args["secret"])),
-	}
-	if b, ok := args["enabled"].(bool); ok {
-		cfg.Enabled = b
-	} else {
-		cfg.Enabled = true
-	}
-	if cfg.WebhookURL == "" {
-		cfg.WebhookURL = "http://127.0.0.1:3210/outbound"
-	}
-	if isMasked(cfg.Secret) || cfg.Secret == "" {
-		old := loadOpenclawIMConfig(r, system)
-		if isMasked(cfg.Secret) || cfg.Secret == "" {
-			if old.Secret != "" {
-				cfg.Secret = old.Secret
-			} else {
-				cfg.Secret = DefaultOpenclawIMSecret
-			}
-		}
-	}
-	data, _ := json.Marshal(cfg)
-	if err := system.Set(r.Context(), openclawIMConfigKey, string(data)); err != nil {
-		return nil, err
-	}
-	resp := cfg
-	if resp.Secret != "" {
-		resp.Secret = maskSecret(resp.Secret)
-	}
-	return resp, nil
-}
-
 func execContentAuditConfigGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
 	cfg := im.ContentAuditDynamicConfig{}
 	raw, err := system.Get(r.Context(), contentAuditConfigKey)
@@ -1787,8 +1730,6 @@ func configAgentToolExample(name string) string {
 		return "show dingtalk config"
 	case "qqbot.config.get":
 		return "show qqbot config"
-	case "bridge.channels.list":
-		return "list bridge channels"
 	case "content_audit.config.get":
 		return "show content audit config"
 	case "smart_route_all.get":
@@ -1911,156 +1852,6 @@ func execQQBotConfigUpdate(r *http.Request, deps ConfigAgentDeps, system store.S
 		return map[string]any{"config": resp, "reload_error": reloadErr.Error()}, nil
 	}
 	return resp, nil
-}
-
-func execBridgeChannelsList(r *http.Request, system store.SystemSettingsRepository, bridgeDir string) (any, error) {
-	saved := loadChannelStates(r, system)
-	type channelResp struct {
-		ID        string            `json:"id"`
-		Name      string            `json:"name"`
-		Enabled   bool              `json:"enabled"`
-		Config    map[string]string `json:"config"`
-		Installed bool              `json:"installed"`
-	}
-	result := make([]channelResp, 0, len(knownChannels))
-	for _, ch := range knownChannels {
-		cr := channelResp{ID: ch.ID, Name: ch.Name, Config: map[string]string{}}
-		if st, ok := saved[ch.ID]; ok {
-			cr.Enabled = st.Enabled
-			if st.Fields != nil {
-				// mask password-like fields
-				cr.Config = map[string]string{}
-				for k, v := range st.Fields {
-					lk := strings.ToLower(k)
-					if strings.Contains(lk, "token") || strings.Contains(lk, "secret") || strings.Contains(lk, "password") {
-						cr.Config[k] = maskSecret(v)
-					} else {
-						cr.Config[k] = v
-					}
-				}
-			}
-		}
-		cr.Installed = isNpmPackageInstalled(bridgeDir, ch.Package) || (ch.AltPackage != "" && isNpmPackageInstalled(bridgeDir, ch.AltPackage))
-		result = append(result, cr)
-	}
-	return map[string]any{"channels": result, "count": len(result)}, nil
-}
-
-func execBridgeChannelSave(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
-	return execBridgeChannelSaveWithDeps(r, ConfigAgentDeps{System: system}, system, args)
-}
-
-func execBridgeChannelSaveWithDeps(r *http.Request, deps ConfigAgentDeps, system store.SystemSettingsRepository, args map[string]any) (any, error) {
-	id := strings.TrimSpace(fmt.Sprint(args["id"]))
-	if id == "" {
-		return nil, fmt.Errorf("channel id required")
-	}
-	var known *KnownChannel
-	for i := range knownChannels {
-		if knownChannels[i].ID == id {
-			known = &knownChannels[i]
-			break
-		}
-	}
-	if known == nil {
-		return nil, fmt.Errorf("unknown channel %q", id)
-	}
-	enabled := false
-	if b, ok := args["enabled"].(bool); ok {
-		enabled = b
-	} else {
-		enabled = true
-	}
-	installNPM := false
-	if b, ok := args["install_npm"].(bool); ok {
-		installNPM = b
-	}
-	validKeys := map[string]bool{}
-	for _, f := range known.Fields {
-		validKeys[f.Key] = true
-	}
-	cleanFields := map[string]string{}
-	// fields may be map[string]any or map[string]string
-	switch fv := args["fields"].(type) {
-	case map[string]string:
-		for k, v := range fv {
-			if validKeys[k] {
-				cleanFields[k] = v
-			}
-		}
-	case map[string]any:
-		for k, v := range fv {
-			if validKeys[k] {
-				cleanFields[k] = strings.TrimSpace(fmt.Sprint(v))
-			}
-		}
-	}
-	// also accept top-level common keys
-	if token := strings.TrimSpace(fmt.Sprint(args["botToken"])); token != "" && validKeys["botToken"] {
-		cleanFields["botToken"] = token
-	}
-	saved := loadChannelStates(r, system)
-	// preserve existing secrets if masked/empty
-	if prev, ok := saved[id]; ok && prev.Fields != nil {
-		for k, oldVal := range prev.Fields {
-			newVal := cleanFields[k]
-			if newVal == "" || isMasked(newVal) {
-				cleanFields[k] = oldVal
-			}
-		}
-	}
-	saved[id] = ChannelState{Enabled: enabled, Fields: cleanFields}
-	data, _ := json.Marshal(saved)
-	if err := system.Set(r.Context(), bridgeChannelsConfigKey, string(data)); err != nil {
-		return nil, err
-	}
-
-	bridgeDir := deps.BridgeDir
-	installMsg := ""
-	if installNPM && enabled && bridgeDir != "" {
-		if !isNpmPackageInstalled(bridgeDir, known.Package) {
-			if err := npmInstallPackage(bridgeDir, known.Package); err != nil {
-				if known.AltPackage != "" {
-					if err2 := npmInstallPackage(bridgeDir, known.AltPackage); err2 != nil {
-						installMsg = fmt.Sprintf("npm install failed for both %s and %s", known.Package, known.AltPackage)
-					} else {
-						installMsg = fmt.Sprintf("npm install %s succeeded (fallback)", known.AltPackage)
-					}
-				} else {
-					installMsg = fmt.Sprintf("npm install %s failed: %v", known.Package, err)
-				}
-			} else {
-				installMsg = fmt.Sprintf("npm install %s succeeded", known.Package)
-			}
-		} else {
-			installMsg = "package already installed"
-		}
-	} else if enabled && !installNPM {
-		installMsg = "npm install skipped (set install_npm=true to install)"
-	}
-
-	configErr := ""
-	if shouldWriteSharedBridgeConfig(r, bridgeDir) {
-		if err := writeBridgeConfig(r, system, bridgeDir, saved); err != nil {
-			configErr = err.Error()
-		}
-	}
-
-	// Mask secrets in response
-	masked := map[string]string{}
-	for k, v := range cleanFields {
-		lk := strings.ToLower(k)
-		if strings.Contains(lk, "token") || strings.Contains(lk, "secret") || strings.Contains(lk, "password") {
-			masked[k] = maskSecret(v)
-		} else {
-			masked[k] = v
-		}
-	}
-	return map[string]any{
-		"id": id, "enabled": enabled, "fields": masked,
-		"install_msg": installMsg, "config_err": configErr,
-		"install_npm": installNPM,
-	}, nil
 }
 
 func execMailSenderNameGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {

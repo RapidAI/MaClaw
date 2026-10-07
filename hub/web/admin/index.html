@@ -362,7 +362,6 @@
                     <button type="button" class="btn-ghost" data-ca-example="show dingtalk config">dingtalk</button>
                     <button type="button" class="btn-ghost" data-ca-example="show content audit config">content audit</button>
                     <button type="button" class="btn-ghost" data-ca-example="show qqbot config">qqbot</button>
-                    <button type="button" class="btn-ghost" data-ca-example="list bridge channels">bridge channels</button>
                     <button type="button" class="btn-ghost" data-ca-example="show mail sender name">mail sender</button>
                     <button type="button" class="btn-ghost" data-ca-example="show smart route">smart route</button>
                     <button type="button" class="btn-ghost" data-ca-example="show migration settings">migration settings</button>
@@ -924,7 +923,6 @@
         <div class="im-layout">
           <div class="im-sidebar">
             <button class="active" data-imsub="feishu" onclick="openImSub('feishu')"><span id="imSubFeishuNav"></span><small id="imSubFeishuNavDesc"></small></button>
-            <button data-imsub="openclaw" onclick="openImSub('openclaw')"><span id="imSubOpenclawNav"></span><small id="imSubOpenclawNavDesc"></small></button>
             <button data-imsub="qqbot" onclick="openImSub('qqbot')"><span id="imSubQQBotNav"></span><small id="imSubQQBotNavDesc"></small></button>
             <button data-imsub="wecom" onclick="openImSub('wecom')"><span id="imSubWeComNav"></span><small id="imSubWeComNavDesc"></small></button>
             <button data-imsub="dingtalk" onclick="openImSub('dingtalk')"><span id="imSubDingTalkNav"></span><small id="imSubDingTalkNavDesc"></small></button>
@@ -989,40 +987,6 @@
               </div>
             </div>
 
-            <!-- OpenClaw pane -->
-            <div id="im-pane-openclaw" class="im-pane">
-              <div class="item">
-                <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" data-icon="bot" id="openclawImTitle"></div><div class="item-meta" id="openclawImDesc"></div></div>
-                </div>
-                <div class="grid2">
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="openclawImEnabled"> <span id="openclawImEnabledLabel"></span></label></div>
-                  <div></div>
-                </div>
-                <div class="grid2" style="margin-top:10px">
-                  <div><label for="openclawImWebhookUrl" id="openclawImWebhookUrlLabel"></label><input id="openclawImWebhookUrl" placeholder="http://127.0.0.1:3210/outbound"></div>
-                  <div><label for="openclawImSecret" id="openclawImSecretLabel"></label><input id="openclawImSecret" type="password" placeholder="shared secret"></div>
-                </div>
-                <div class="actions" style="margin-top:10px">
-                  <button class="btn-secondary" onclick="saveOpenclawImConfig()" id="openclawImSaveBtn"></button>
-                  <button class="btn-primary" onclick="testOpenclawImWebhook()" id="openclawImTestBtn"></button>
-                </div>
-                <div class="hint" style="margin-top:10px">
-                  <div id="openclawImGuideTitle" style="font-weight:700;margin-bottom:8px"></div>
-                  <div id="openclawImGuideContent" style="font-size:13px;line-height:1.8"></div>
-                </div>
-                <div style="margin-top:18px">
-                  <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" data-icon="plug" id="bridgeChannelsTitle"></div><div class="item-meta" id="bridgeChannelsDesc"></div></div>
-                    <div class="actions">
-                      <span id="bridgeStatusBadge" class="badge warn" style="font-size:12px"></span>
-                      <button class="btn-ghost" onclick="loadBridgeChannels()" id="bridgeReloadBtn"></button>
-                    </div>
-                  </div>
-                  <div id="bridgeChannelsList"></div>
-                </div>
-              </div>
-            </div>
 
             <!-- QQBot pane -->
             <div id="im-pane-qqbot" class="im-pane">

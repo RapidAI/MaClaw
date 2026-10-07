@@ -376,7 +376,7 @@ func (b *NotifyBroadcaster) SendToActiveForTenant(ctx context.Context, tenantID,
 	if b.adapter != nil {
 		plugins := b.adapter.PluginsForTenant(tenantID)
 
-		preferred := []string{"weixin", "qqbot_remote", "telegram", "feishu", "qqbot", "openclaw"}
+		preferred := []string{"weixin", "qqbot_remote", "telegram", "feishu", "qqbot"}
 		for _, name := range preferred {
 			plugin, ok := plugins[name]
 			if !ok {

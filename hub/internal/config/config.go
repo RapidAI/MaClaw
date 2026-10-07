@@ -90,10 +90,6 @@ type Config struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"digital_assets"`
 
-	Bridge struct {
-		Dir string `yaml:"dir"` // path to openclaw-bridge directory
-	} `yaml:"bridge"`
-
 	ContentAudit struct {
 		ProgramPath    string `yaml:"program_path"`
 		TimeoutSeconds int    `yaml:"timeout_seconds"`
@@ -192,8 +188,6 @@ func Default() *Config {
 
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"
-
-	cfg.Bridge.Dir = "./openclaw-bridge"
 
 	cfg.ContentAudit.TimeoutSeconds = 30
 	cfg.ContentAudit.TimeoutPolicy = "block"

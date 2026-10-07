@@ -259,28 +259,10 @@ func TestExecReferralConfigUpdateRotatesSessionEpochWhenAvailabilityChanges(t *t
 	}
 }
 
-func TestRulePlanQQBotAndBridge(t *testing.T) {
+func TestRulePlanQQBot(t *testing.T) {
 	qq := rulePlanFromMessage("show qqbot config", "t1", nil, nil)
 	if qq == nil || qq.Intent != "qqbot.config.get" {
 		t.Fatalf("qqbot = %#v", qq)
-	}
-	bridge := rulePlanFromMessage("list bridge channels", "t1", nil, nil)
-	if bridge == nil || bridge.Intent != "bridge.channels.list" {
-		t.Fatalf("bridge list = %#v", bridge)
-	}
-	tg := rulePlanFromMessage("enable telegram channel botToken 123:ABC", "t1", nil, nil)
-	if tg == nil || tg.Intent != "bridge.channels.save" {
-		t.Fatalf("telegram save = %#v", tg)
-	}
-	if tg.Steps[0].Args["id"] != "telegram" {
-		t.Fatalf("channel id = %#v", tg.Steps[0].Args)
-	}
-	if tg.Steps[0].Args["install_npm"] == true {
-		t.Fatal("install_npm should be false without install keyword")
-	}
-	tgInstall := rulePlanFromMessage("enable telegram channel and install botToken 123:ABC", "t1", nil, nil)
-	if tgInstall == nil || tgInstall.Steps[0].Args["install_npm"] != true {
-		t.Fatalf("install plan = %#v", tgInstall)
 	}
 }
 
@@ -300,10 +282,6 @@ func TestRulePlanIMAndContentAudit(t *testing.T) {
 	update := rulePlanFromMessage("update content audit keywords: spam, phishing timeout_policy pass", "t1", nil, nil)
 	if update == nil || update.Intent != "content_audit.config.update" {
 		t.Fatalf("audit update = %#v", update)
-	}
-	openclaw := rulePlanFromMessage("show openclaw config", "t1", nil, nil)
-	if openclaw == nil || openclaw.Intent != "openclaw_im.config.get" {
-		t.Fatalf("openclaw = %#v", openclaw)
 	}
 }
 

@@ -42,7 +42,6 @@ type App struct {
 	MessageRouter    *im.MessageRouter
 	IMAdapter        *im.Adapter
 	FeishuPlugin     *feishu.FeishuPlugin
-	OpenclawIMPlugin *im.WebhookIMPlugin
 	QQBotPlugin      *qqbot.Plugin
 	WecomPlugin      *wecom.Plugin
 	DingTalkPlugin   *dingtalk.Plugin

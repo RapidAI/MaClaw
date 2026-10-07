@@ -313,34 +313,6 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 	feishuNotifier.SetPlugin(feishuPlugin)
 	feishuPlugin.SetAdapter(imAdapter)
 
-	// 7. OpenClaw IM Webhook Plugin 闂?enables external IM adapters to
-	//     communicate with Hub via the OpenClaw IM protocol.
-	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func(ctx context.Context) im.WebhookConfig {
-		tenantID := im.TenantIDFromContext(ctx)
-		system := st.System
-		configTenantID := ""
-		if tenantID != "" && tenantID != store.DefaultTenantID {
-			system = httpapi.ScopedSystemSettingsForTenant(tenantID, st.System)
-			configTenantID = tenantID
-		}
-		raw, err := system.Get(context.Background(), "openclaw_im_config")
-		if err != nil || raw == "" {
-			return im.WebhookConfig{}
-		}
-		var cfg struct {
-			Enabled    bool   `json:"enabled"`
-			WebhookURL string `json:"webhook_url"`
-			Secret     string `json:"secret"`
-		}
-		if json.Unmarshal([]byte(raw), &cfg) != nil || !cfg.Enabled {
-			return im.WebhookConfig{}
-		}
-		return im.WebhookConfig{TenantID: configTenantID, WebhookURL: cfg.WebhookURL, Secret: cfg.Secret}
-	})
-	if err := imAdapter.RegisterPlugin(openclawIMPlugin); err != nil {
-		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
-	}
-
 	// 8a. Remote Gateway Plugins 闂?client-side IM gateways (QQ Bot, Telegram)
 	//     forwarded through the existing Hub闂備焦鍓氶崑鍛村箺閺勭ent WebSocket.
 	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
@@ -729,7 +701,6 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		st.FailureLogs,
 		feishuNotifier,
 		feishuPlugin,
-		openclawIMPlugin,
 		qqbotPlugin,
 		wecomPlugin,
 		dingtalkPlugin,
@@ -747,7 +718,6 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		cfg,
 		configPath,
 		EnsureSelfSignedCert,
-		cfg.Bridge.Dir,
 		tenantNativeIMRuntimes,
 		st.KnowledgeShares,
 		st.Tenants,
@@ -770,7 +740,6 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		MessageRouter:    messageRouter,
 		IMAdapter:        imAdapter,
 		FeishuPlugin:     feishuPlugin,
-		OpenclawIMPlugin: openclawIMPlugin,
 		QQBotPlugin:      qqbotPlugin,
 		WecomPlugin:      wecomPlugin,
 		DingTalkPlugin:   dingtalkPlugin,

@@ -164,12 +164,10 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		nil,
 		nil,
 		nil,
-		nil,
 		securitySvc,
 		testCfg,
 		"",
 		nil,
-		"",
 		nil,
 		st.KnowledgeShares,
 		st.Tenants,
@@ -363,113 +361,12 @@ func TestLegacyHubLLMConfigAdminRoutesRemoved(t *testing.T) {
 	}
 }
 
-func TestTenantBridgeConfigDoesNotRewriteSharedConfigFile(t *testing.T) {
-	ctx := newAdminRouterTestContext(t)
-	bridgeDir := t.TempDir()
-	globalAdmin := &store.AdminUser{ID: "global-admin", Scope: "global"}
-	tenantAdmin := &store.AdminUser{ID: "tenant-admin", Scope: "tenant", TenantID: "tenant_acme"}
-	postChannel := SaveBridgeChannelHandler(ctx.store.System, bridgeDir)
-	postIM := UpdateOpenclawIMConfigHandler(ctx.store.System, bridgeDir)
-
-	send := func(handler http.HandlerFunc, body any, admin *store.AdminUser) *httptest.ResponseRecorder {
-		data, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal body: %v", err)
-		}
-		req := httptest.NewRequest(http.MethodPost, "/api/admin/test", bytes.NewReader(data))
-		req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, admin))
-		rec := httptest.NewRecorder()
-		handler(rec, req)
-		return rec
-	}
-
-	globalResp := send(postChannel, map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "global-token"}}, globalAdmin)
-	if globalResp.Code != http.StatusOK {
-		t.Fatalf("global channel save status=%d body=%s", globalResp.Code, globalResp.Body.String())
-	}
-	configPath := filepath.Join(bridgeDir, "config.json")
-	globalConfig, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read global bridge config: %v", err)
-	}
-	if !bytes.Contains(globalConfig, []byte("global-token")) {
-		t.Fatalf("expected global bridge config to contain global channel: %s", string(globalConfig))
-	}
-
-	tenantResp := send(postChannel, map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "tenant-token"}}, tenantAdmin)
-	if tenantResp.Code != http.StatusOK {
-		t.Fatalf("tenant channel save status=%d body=%s", tenantResp.Code, tenantResp.Body.String())
-	}
-	afterTenantChannel, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read bridge config after tenant channel save: %v", err)
-	}
-	if !bytes.Equal(afterTenantChannel, globalConfig) || bytes.Contains(afterTenantChannel, []byte("tenant-token")) {
-		t.Fatalf("tenant channel save rewrote shared bridge config: %s", string(afterTenantChannel))
-	}
-
-	tenantIMResp := send(postIM, OpenclawIMConfigState{Enabled: true, WebhookURL: "http://127.0.0.1:3210/outbound", Secret: "tenant-secret"}, tenantAdmin)
-	if tenantIMResp.Code != http.StatusOK {
-		t.Fatalf("tenant im save status=%d body=%s", tenantIMResp.Code, tenantIMResp.Body.String())
-	}
-	afterTenantIM, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read bridge config after tenant im save: %v", err)
-	}
-	if !bytes.Equal(afterTenantIM, globalConfig) || bytes.Contains(afterTenantIM, []byte("tenant-secret")) {
-		t.Fatalf("tenant im save rewrote shared bridge config: %s", string(afterTenantIM))
-	}
-}
 func TestAdminDebugHandlersRequireToken(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 
 	resp := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/debug/machines", nil, "")
 	if resp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", resp.Code, resp.Body.String())
-	}
-}
-
-func TestBridgeChannelsReturnReadableChineseLabels(t *testing.T) {
-	ctx := newAdminRouterTestContext(t)
-	tenantAdmin := &store.AdminUser{ID: "tenant-admin", Scope: "tenant", TenantID: "tenant_acme"}
-	req := httptest.NewRequest(http.MethodGet, "/api/admin/bridge/channels", nil)
-	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, tenantAdmin))
-	rec := httptest.NewRecorder()
-	GetBridgeChannelsHandler(ctx.store.System, "")(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("bridge channels status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var payload struct {
-		Channels []struct {
-			ID     string `json:"id"`
-			NameZH string `json:"name_zh"`
-			DescZH string `json:"desc_zh"`
-			Fields []struct {
-				Key     string `json:"key"`
-				LabelZH string `json:"label_zh"`
-			} `json:"fields"`
-		} `json:"channels"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode bridge channels: %v body=%s", err, rec.Body.String())
-	}
-	var foundWeChat, foundDingTalk bool
-	for _, channel := range payload.Channels {
-		switch channel.ID {
-		case "wechatwork":
-			foundWeChat = true
-			if channel.NameZH != "\u4f01\u4e1a\u5fae\u4fe1" || channel.DescZH != "\u8fde\u63a5\u4f01\u4e1a\u5fae\u4fe1\u673a\u5668\u4eba\u3002" {
-				t.Fatalf("wechatwork zh labels are not readable: %#v", channel)
-			}
-		case "dingtalk":
-			foundDingTalk = true
-			if channel.NameZH != "\u9489\u9489" || channel.DescZH != "\u8fde\u63a5\u9489\u9489\u673a\u5668\u4eba\u3002" {
-				t.Fatalf("dingtalk zh labels are not readable: %#v", channel)
-			}
-		}
-	}
-	if !foundWeChat || !foundDingTalk {
-		t.Fatalf("expected wechatwork and dingtalk channels, got %#v", payload.Channels)
 	}
 }
 
@@ -1417,8 +1314,6 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		{http.MethodDelete, "/api/admin/feishu/bindings?user_id=u1", nil},
 		{http.MethodGet, "/api/admin/feishu/auto-enroll", nil},
 		{http.MethodPost, "/api/admin/feishu/auto-enroll", map[string]any{"enabled": true}},
-		{http.MethodPost, "/api/admin/settings/openclaw_im/test", map[string]any{}},
-		{http.MethodGet, "/api/admin/bridge/status", nil},
 		{http.MethodGet, "/api/admin/qqbot/bindings", nil},
 		{http.MethodDelete, "/api/admin/qqbot/bindings?user_id=u1", nil},
 		{http.MethodGet, "/api/admin/wecom/bindings", nil},
@@ -1463,17 +1358,6 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		t.Fatalf("tenant content audit = %s", tenantAuditGet.Body.String())
 	}
 
-	assertGlobalForbidden(http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "global-token"}})
-	tenantBridge := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "tenant-token"}}, loginPayload.AccessToken)
-	if tenantBridge.Code != http.StatusOK {
-		t.Fatalf("tenant bridge status = %d body=%s", tenantBridge.Code, tenantBridge.Body.String())
-	}
-	assertGlobalForbidden(http.MethodGet, "/api/admin/bridge/channels", nil)
-	tenantBridgeGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/bridge/channels", nil, loginPayload.AccessToken)
-	if !bytes.Contains(tenantBridgeGet.Body.Bytes(), []byte(`"botToken":"tenant-token"`)) {
-		t.Fatalf("tenant bridge channels = %s", tenantBridgeGet.Body.String())
-	}
-
 	assertGlobalForbidden(http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "global-feishu", "app_secret": "global-secret"})
 	tenantFeishu := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "tenant-feishu", "app_secret": "tenant-secret"}, loginPayload.AccessToken)
 	if tenantFeishu.Code != http.StatusOK {
@@ -1483,17 +1367,6 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 	tenantFeishuGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/feishu/config", nil, loginPayload.AccessToken)
 	if !bytes.Contains(tenantFeishuGet.Body.Bytes(), []byte(`"app_id":"tenant-feishu"`)) {
 		t.Fatalf("tenant feishu config = %s", tenantFeishuGet.Body.String())
-	}
-
-	assertGlobalForbidden(http.MethodPost, "/api/admin/settings/openclaw_im", map[string]any{"enabled": true, "webhook_url": "http://127.0.0.1:3210/global", "secret": "global-openclaw"})
-	tenantOpenclawIM := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/settings/openclaw_im", map[string]any{"enabled": true, "webhook_url": "http://127.0.0.1:3210/tenant", "secret": "tenant-openclaw"}, loginPayload.AccessToken)
-	if tenantOpenclawIM.Code != http.StatusOK {
-		t.Fatalf("tenant openclaw im status = %d body=%s", tenantOpenclawIM.Code, tenantOpenclawIM.Body.String())
-	}
-	assertGlobalForbidden(http.MethodGet, "/api/admin/settings/openclaw_im", nil)
-	tenantOpenclawIMGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/openclaw_im", nil, loginPayload.AccessToken)
-	if !bytes.Contains(tenantOpenclawIMGet.Body.Bytes(), []byte(`"webhook_url":"http://127.0.0.1:3210/tenant"`)) {
-		t.Fatalf("tenant openclaw im config = %s", tenantOpenclawIMGet.Body.String())
 	}
 
 	assertGlobalForbidden(http.MethodPost, "/api/admin/settings/qqbot", map[string]any{"enabled": true, "app_id": "global-qq", "app_secret": "global-secret"})

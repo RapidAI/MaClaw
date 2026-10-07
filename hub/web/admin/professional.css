@@ -572,7 +572,6 @@ button:active{transform:scale(.985)}
 .im-sidebar button>span{grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .im-sidebar button small{grid-column:2;margin-top:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .im-sidebar button[data-imsub="feishu"]{--feature-icon:var(--icon-sms)}
-.im-sidebar button[data-imsub="openclaw"]{--feature-icon:var(--icon-bot)}
 .im-sidebar button[data-imsub="qqbot"]{--feature-icon:var(--icon-sms)}
 .im-sidebar button[data-imsub="wecom"]{--feature-icon:var(--icon-briefcase)}
 .im-sidebar button[data-imsub="dingtalk"]{--feature-icon:var(--icon-bell)}

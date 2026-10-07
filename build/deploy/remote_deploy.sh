@@ -82,34 +82,6 @@ deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/maclaw-hub" "maclaw-hu
 echo "[remote] Deploying hubcenter files..."
 deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/maclaw-hubcenter" "maclaw-hubcenter"
 
-# Deploy openclaw-bridge (Node.js project)
-BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"
-BRIDGE_DST="$REMOTE_HUB_DIR/openclaw-bridge"
-if [ -d "$BRIDGE_SRC" ] && [ -f "$BRIDGE_SRC/package.json" ]; then
-  echo "[remote] Deploying openclaw-bridge..."
-  mkdir -p "$BRIDGE_DST"
-  cp -f "$BRIDGE_SRC/package.json" "$BRIDGE_DST/package.json"
-  cp -f "$BRIDGE_SRC/tsconfig.json" "$BRIDGE_DST/tsconfig.json" 2>/dev/null || true
-  rm -rf "$BRIDGE_DST/src" "$BRIDGE_DST/dist"
-  cp -Rf "$BRIDGE_SRC/src" "$BRIDGE_DST/src"
-  if [ -f "$BRIDGE_SRC/config.example.json" ]; then
-    cp -f "$BRIDGE_SRC/config.example.json" "$BRIDGE_DST/config.example.json"
-  fi
-  if command -v npm >/dev/null 2>&1; then
-    echo "[remote] Running npm install in openclaw-bridge..."
-    cd "$BRIDGE_DST" && npm install 2>&1 || echo "[WARN] npm install failed for openclaw-bridge"
-    echo "[remote] Building openclaw-bridge..."
-    npx tsc 2>&1 || echo "[WARN] tsc build failed for openclaw-bridge"
-    echo "[remote] Pruning dev dependencies..."
-    npm prune --production 2>&1 || true
-    cd "$SRC_ROOT"
-  else
-    echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies"
-  fi
-else
-  echo "[remote] openclaw-bridge source not found, skipping"
-fi
-
 echo "[remote] Restarting hub..."
 if [ -x "$REMOTE_HUB_DIR/start.sh" ]; then
   cd "$REMOTE_HUB_DIR"

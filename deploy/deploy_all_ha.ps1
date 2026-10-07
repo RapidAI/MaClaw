@@ -9,13 +9,6 @@ param(
 
     [switch]$CleanHubCenterDB,
 
-    # Skip rebuilding the openclaw-bridge node package on the remote hosts
-    # (skips source sync + npm install + tsc + prune). The bridge is not enabled
-    # on any current host, so this only saves time; the existing remote
-    # openclaw-bridge directory is left completely untouched.
-    # Can also be enabled with DEPLOY_SKIP_BRIDGE_BUILD=1.
-    [switch]$SkipOpenClawBridgeBuild,
-
     [switch]$NoCheck
 )
 
@@ -399,10 +392,6 @@ function Stage-SourceTree {
             )
         },
         [pscustomobject]@{
-            Path = 'openclaw-bridge'
-            ExcludePaths = @('node_modules', 'dist')
-        },
-        [pscustomobject]@{
             Path = 'guiapp\internal\systray'
             ExcludePaths = @()
         }
@@ -449,7 +438,6 @@ function Stage-DeployAssets {
     $assetDirs = @(
         [pscustomobject]@{ Path = 'hubcenter'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
         [pscustomobject]@{ Path = 'hub'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
-        [pscustomobject]@{ Path = 'openclaw-bridge'; ExcludePaths = @('node_modules', 'dist') }
     )
 
     foreach ($dir in $assetDirs) {
@@ -755,7 +743,6 @@ function Write-RemoteScript {
         ': "${REMOTE_HUBCENTER_DIR:=/data/soft/hubcenter}"',
         ': "${DEPLOY_HUBCENTER:=1}"',
         ': "${DEPLOY_HUB:=0}"',
-        ': "${BUILD_OPENCLAW_BRIDGE:=1}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
         ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"',
@@ -1108,34 +1095,6 @@ function Write-RemoteScript {
         '  fi',
         '  replace_web_tree "$SRC_ROOT/hub/web" "$REMOTE_HUB_DIR/web" "$SRC_ROOT/deploy-manifest/hub-web.sha256" "hub"',
         '  backup_and_write_config "$REMOTE_HUB_DIR/configs/config.yaml" "$REMOTE_TMP_DIR/$HUB_CONFIG_BASENAME"',
-        '  BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"',
-        '  BRIDGE_DST="$REMOTE_HUB_DIR/openclaw-bridge"',
-        '  if [ "$BUILD_OPENCLAW_BRIDGE" != "1" ]; then',
-        '    echo "[remote] openclaw-bridge: build skipped (BUILD_OPENCLAW_BRIDGE=0), leaving $BRIDGE_DST untouched"',
-        '  elif [ -d "$BRIDGE_SRC" ] && [ -f "$BRIDGE_SRC/package.json" ]; then',
-        '    echo "[remote] Deploying openclaw-bridge..."',
-        '    mkdir -p "$BRIDGE_DST"',
-        '    cp -f "$BRIDGE_SRC/package.json" "$BRIDGE_DST/package.json"',
-        '    cp -f "$BRIDGE_SRC/tsconfig.json" "$BRIDGE_DST/tsconfig.json" 2>/dev/null || true',
-        '    rm -rf "$BRIDGE_DST/src" "$BRIDGE_DST/dist"',
-        '    cp -Rf "$BRIDGE_SRC/src" "$BRIDGE_DST/src"',
-        '    if [ -f "$BRIDGE_SRC/config.example.json" ]; then',
-        '      cp -f "$BRIDGE_SRC/config.example.json" "$BRIDGE_DST/config.example.json"',
-        '    fi',
-        '    if command -v npm >/dev/null 2>&1; then',
-        '      echo "[remote] openclaw-bridge: building with node $(node -v 2>/dev/null || echo unknown) / npm $(npm -v 2>/dev/null || echo unknown)"',
-        '      echo "[remote] openclaw-bridge requires node >=22.19.0; a lower version only produces EBADENGINE warnings"',
-        '      echo "[remote] Running npm install in openclaw-bridge..."',
-        '      cd "$BRIDGE_DST" && npm install 2>&1 || echo "[WARN] npm install failed for openclaw-bridge"',
-        '      echo "[remote] Building openclaw-bridge..."',
-        '      npx tsc 2>&1 || echo "[WARN] tsc build failed for openclaw-bridge"',
-        '      echo "[remote] Pruning dev dependencies..."',
-        '      npm prune --production 2>&1 || true',
-        '      cd "$SRC_ROOT"',
-        '    else',
-        '      echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies (openclaw-bridge needs node >=22.19.0 and npm; install node 22 before enabling the openclaw IM channel on this host)"',
-        '    fi',
-        '  fi',
         '}',
         '',
         'install_logrotate_config() {',
@@ -2061,15 +2020,12 @@ try {
         $deployHubFlag = if ($target.DeployHub) { '1' } else { '0' }
         $deployHubCenterFlag = if ($target.DeployHubCenter) { '1' } else { '0' }
         $cleanHubCenterDBFlag = if ($CleanHubCenterDB) { '1' } else { '0' }
-        $skipBridgeBuild = $SkipOpenClawBridgeBuild -or ((Get-EnvOrDefault 'DEPLOY_SKIP_BRIDGE_BUILD' '0') -eq '1')
-        $buildOpenClawBridgeFlag = if ($skipBridgeBuild) { '0' } else { '1' }
         $envParts = @(
             ("export REMOTE_TMP_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteTmpDir)),
             ("export REMOTE_HUB_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubDir)),
             ("export REMOTE_HUBCENTER_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubCenterDir)),
             ("export DEPLOY_HUBCENTER={0}" -f (Quote-ShellEnvValue $deployHubCenterFlag)),
             ("export DEPLOY_HUB={0}" -f (Quote-ShellEnvValue $deployHubFlag)),
-            ("export BUILD_OPENCLAW_BRIDGE={0}" -f (Quote-ShellEnvValue $buildOpenClawBridgeFlag)),
             ("export CLEAN_HUBCENTER_DB={0}" -f (Quote-ShellEnvValue $cleanHubCenterDBFlag)),
             ("export HUBCENTER_DB_PATH={0}" -f (Quote-ShellEnvValue $target.HubCenterDBPath)),
             ("export ENSURE_HUB_MODELS={0}" -f (Quote-ShellEnvValue $ensureHubModels)),

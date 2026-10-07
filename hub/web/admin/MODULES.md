@@ -29,7 +29,7 @@ This folder now uses a thin-shell structure.
 - security-tab.js: security management and org tree
 - machines-tab.js: machine list and session inspection
 - group-discussion-tab.js: current-Hub MaClaw expert list, discussions, and results
-- im-tab.js: IM sub-pane routing and bridge integrations
+- im-tab.js: IM sub-pane routing and IM integrations
 - feishu-tab.js: Feishu settings and bindings
 - invitation-tab.js: recharge/invitation code management
 - system-tab.js: mail, TLS, admin profile/password

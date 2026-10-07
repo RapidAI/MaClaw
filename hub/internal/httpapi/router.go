@@ -25,7 +25,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/expert"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
-	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/industryexpert"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
@@ -78,7 +77,6 @@ func NewRouter(
 	failureLogs store.FailureEventLogRepository,
 	feishuNotifier *feishu.Notifier,
 	feishuPlugin *feishu.FeishuPlugin,
-	openclawIMPlugin *im.WebhookIMPlugin,
 	qqbotPlugin *qqbot.Plugin,
 	wecomPlugin *wecom.Plugin,
 	dingtalkPlugin *dingtalk.Plugin,
@@ -96,7 +94,6 @@ func NewRouter(
 	hubCfg *config.Config,
 	configPath string,
 	ensureTLSCert func(certFile, keyFile string) error,
-	bridgeDir string,
 	tenantIMRuntimeReloader TenantIMRuntimeReloader,
 	knowledgeShares store.KnowledgeShareRepository,
 	tenantRepoOpt ...store.TenantRepository,
@@ -568,15 +565,6 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/feishu/bindings", requireTenantAdmin(DeleteFeishuBindingHandler(feishuNotifier)))
 	mux.HandleFunc("GET /api/admin/feishu/auto-enroll", requireTenantAdmin(GetFeishuAutoEnrollHandler(system)))
 	mux.HandleFunc("POST /api/admin/feishu/auto-enroll", requireTenantAdmin(UpdateFeishuAutoEnrollHandler(system, feishuNotifier)))
-	mux.HandleFunc("GET /api/admin/settings/openclaw_im", requireTenantAdmin(GetOpenclawIMConfigHandler(system)))
-	mux.HandleFunc("POST /api/admin/settings/openclaw_im", requireTenantAdmin(UpdateOpenclawIMConfigHandler(system, bridgeDir)))
-	mux.HandleFunc("POST /api/admin/settings/openclaw_im/test", requireTenantAdmin(TestOpenclawIMWebhookHandler(system)))
-	mux.HandleFunc("POST /api/openclaw_im/webhook", OpenclawIMWebhookHandler(system, openclawIMPlugin))
-	// Bridge channel management
-	mux.HandleFunc("GET /api/admin/bridge/channels", requireTenantAdmin(GetBridgeChannelsHandler(system, bridgeDir)))
-	mux.HandleFunc("POST /api/admin/bridge/channels", requireTenantAdmin(SaveBridgeChannelHandler(system, bridgeDir)))
-	mux.HandleFunc("GET /api/admin/bridge/status", requireTenantAdmin(BridgeStatusHandler(system)))
-	mux.HandleFunc("POST /api/admin/bridge/install", requireGlobalAdmin(InstallBridgeDepsHandler(bridgeDir)))
 	// LLM prompt cache compatibility/operations APIs. There is no standalone
 	// global-admin UI; model endpoints are tenant-scoped under /api/admin/llm.
 	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_config", requireGlobalAdmin(GetHubLLMPromptCacheConfigHandler(system, llmPromptCache)))
@@ -617,7 +605,6 @@ func NewRouter(
 		DingTalk:      dingtalkPlugin,
 		QQBot:         qqbotPlugin,
 		IMRuntime:     tenantIMRuntimeReloader,
-		BridgeDir:     bridgeDir,
 		DigitalAssets: digitalAssetSvc,
 	}
 	mux.HandleFunc("POST /api/admin/config-agent/plan", requireTenantAdmin(ConfigAgentPlanHandler(configAgentDeps)))
