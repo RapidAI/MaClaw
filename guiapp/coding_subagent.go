@@ -14434,19 +14434,17 @@ func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
 		return
 	}
 	fileName := filepath.Base(normalized.displayPath)
-	// Pure-coding full environment: force-open so exploration populates the
-	// right-hand panel even when the agent only reads existing sources.
-	forceOpen := c.subagent != nil && c.subagent.isFullEnvironment()
+	// A read must not pop the right-hand panel open or steal the view: while the
+	// pane is already visible the read fills a background tab; when it is closed
+	// it stays closed. Only create/modify events open and focus the pane.
 	app.codeEventEmitter.EmitCodeFileEvent(CodeFileEvent{
-		SessionID:       c.codeSessionID(),
-		FilePath:        normalized.displayPath,
-		FileName:        fileName,
-		AbsPath:         normalized.absPath,
-		Content:         string(data),
-		OpType:          "read",
-		Language:        detectLanguageFromExt(fileName),
-		ForceOpen:       forceOpen,
-		AutoOpenPreview: forceOpen,
+		SessionID: c.codeSessionID(),
+		FilePath:  normalized.displayPath,
+		FileName:  fileName,
+		AbsPath:   normalized.absPath,
+		Content:   string(data),
+		OpType:    "read",
+		Language:  detectLanguageFromExt(fileName),
 		// Route with tab project path (managed task dir), not exec/working_dir.
 		ProjectPath: c.previewRouteProjectPath(),
 	})

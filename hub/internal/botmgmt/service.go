@@ -64,15 +64,15 @@ type Bot struct {
 }
 
 type record struct {
-	BaseURL        string               `json:"base_url"`
-	AccessToken    string               `json:"access_token,omitempty"`
-	AdminSecret    string               `json:"admin_secret,omitempty"`
-	MaClawTenantID string               `json:"maclaw_tenant_id,omitempty"`
+	BaseURL        string                `json:"base_url"`
+	AccessToken    string                `json:"access_token,omitempty"`
+	AdminSecret    string                `json:"admin_secret,omitempty"`
+	MaClawTenantID string                `json:"maclaw_tenant_id,omitempty"`
 	Connection     *connectionCredential `json:"connection,omitempty"`
-	Principals     []ownerPrincipal     `json:"principals,omitempty"`
-	Bots           []Bot                `json:"bots"`
-	Grants         []Grant              `json:"grants,omitempty"`
-	Desktop        *desktopStateRecord  `json:"desktop,omitempty"`
+	Principals     []ownerPrincipal      `json:"principals,omitempty"`
+	Bots           []Bot                 `json:"bots"`
+	Grants         []Grant               `json:"grants,omitempty"`
+	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.
@@ -174,8 +174,12 @@ func (s *Service) SaveConnection(ctx context.Context, tenantID, baseURL, token s
 		rec.AccessToken = strings.TrimSpace(token)
 	}
 	// A connection credential was minted for the previous URL's server and
-	// the previous token's user, so a change to either retires it.
-	if tokenProvided || urlChanged {
+	// the previous token's user, so a change to either retires it. Re-saving
+	// the same token keeps it: there is nothing to re-provision. Retiring for
+	// a changed principal orphans the credential on the MaClawSrv side — by
+	// then it answers for an account this connection no longer uses, and
+	// revoking it there is the other system's admin job.
+	if urlChanged || (tokenProvided && !connectionMatchesToken(rec)) {
 		rec.Connection = nil
 	}
 	if err := s.save(ctx, tenantID, rec); err != nil {
@@ -218,7 +222,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	if err := configured(rec); err != nil {
 		return 0, err
 	}
-	count, err := s.countInstances(ctx, rec)
+	count, err := s.countInstances(ctx, rec, s.sharedBearer(ctx, rec))
 	if err == nil {
 		return count, nil
 	}
@@ -228,35 +232,37 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	// MaClawSrv access tokens expire with the server-side TTL, so a stored
 	// connection eventually 401s. With the admin secret the hub re-issues
 	// the connection credential and retries once; without it the honest 401
-	// is all there is.
+	// is all there is. A renewal failure only replaces the 401 when
+	// MaClawSrv named a concrete problem (say, a revoked connection user) —
+	// anything else, like an undecodable token, is less actionable than the
+	// token-rejected message the admin already sees.
 	cred, renewErr := s.provisionConnectionCredential(ctx, tenantID)
 	if renewErr != nil {
-		if errors.Is(renewErr, ErrAdminSecretMissing) {
-			return 0, err
+		var statusErr *upstream.StatusError
+		if !errors.Is(renewErr, ErrAdminSecretMissing) && errors.As(renewErr, &statusErr) {
+			return 0, renewErr
 		}
-		return 0, renewErr
+		return 0, err
 	}
 	bearer, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
 	if err != nil {
 		return 0, err
 	}
-	var payload struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := s.call(ctx, rec, bearer, "", http.MethodGet, "/api/v1/instances", nil, &payload); err != nil {
-		return 0, err
-	}
-	return len(payload.Items), nil
+	return s.countInstances(ctx, rec, bearer)
 }
 
-func (s *Service) countInstances(ctx context.Context, rec record) (int, error) {
-	var payload struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := s.do(ctx, rec, http.MethodGet, "/api/v1/instances", nil, &payload); err != nil {
+// instancePage is the paged shape the instance list returns; only the item
+// count matters here.
+type instancePage struct {
+	Items []json.RawMessage `json:"items"`
+}
+
+func (s *Service) countInstances(ctx context.Context, rec record, bearer string) (int, error) {
+	var page instancePage
+	if err := s.call(ctx, rec, bearer, "", http.MethodGet, "/api/v1/instances", nil, &page); err != nil {
 		return 0, err
 	}
-	return len(payload.Items), nil
+	return len(page.Items), nil
 }
 
 func (s *Service) CreateBot(ctx context.Context, tenantID, name, description string) (Bot, error) {

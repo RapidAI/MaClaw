@@ -125,6 +125,13 @@ func (s *Service) provisionOwner(ctx context.Context, rec *record, owner string)
 		var me struct {
 			TenantID string `json:"tenant_id"`
 		}
+		// The /me probe rides the shared bearer and has no 401 repair
+		// loop: do() cannot renew the connection credential here, because
+		// provisioning runs under s.mu and the renewal saves need that
+		// lock too. What keeps this bearer mintable is the connection
+		// credential provisioned by TestConnection or a settings save;
+		// a brand-new tenant whose token expired before its first
+		// successful probe surfaces MaClawSrv's 401 to the caller.
 		if err := s.do(ctx, *rec, http.MethodGet, "/api/v1/me", nil, &me); err != nil {
 			return ownerPrincipal{}, err
 		}

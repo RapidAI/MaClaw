@@ -3,15 +3,15 @@
  *
  * useCodePreviewState notifies the host panel (scope.onAgentFileWrite) for
  * create/modify events that belong to the tab's preview project, and for read
- * events the backend explicitly surfaced (force_open / auto_open_preview —
- * pure-coding exploration relies on those to populate the right-hand pane).
+ * events the backend explicitly surfaced (force_open / auto_open_preview).
  * The panel bumps its file-focus nonce so the pane shows the file body —
  * content plus its +N -M modification status — instead of leaving the
  * directory tree selected. Events that would not actually land stay silent so
- * they cannot steal the view: unflagged reads (snapshot-restore batches),
- * foreign-project writes (an owned expert result write is the one exception),
- * writes blocked by the active-session guard (except force-open takeovers),
- * identical re-reads of the selected file, and identical redeliveries.
+ * they cannot steal the view: unflagged reads (a read fills a background tab
+ * and must never open the pane or change the selection), foreign-project
+ * writes (an owned expert result write is the one exception), writes blocked
+ * by the active-session guard (except force-open takeovers), identical
+ * re-reads of the selected file, and identical redeliveries.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -26,7 +26,17 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-import { applyFileUpdate, useCodePreviewState } from '../useCodePreviewState';
+import { applyFileUpdate, fileEventSurfacesPreview, useCodePreviewState } from '../useCodePreviewState';
+
+describe('fileEventSurfacesPreview', () => {
+    it('surfaces create/modify always, and reads only when explicitly flagged', () => {
+        expect(fileEventSurfacesPreview({ opType: 'modify' })).toBe(true);
+        expect(fileEventSurfacesPreview({ opType: 'create' })).toBe(true);
+        expect(fileEventSurfacesPreview({ opType: 'read', forceOpen: false, autoOpenPreview: false })).toBe(false);
+        expect(fileEventSurfacesPreview({ opType: 'read', forceOpen: true, autoOpenPreview: false })).toBe(true);
+        expect(fileEventSurfacesPreview({ opType: 'read', forceOpen: false, autoOpenPreview: true })).toBe(true);
+    });
+});
 
 function emitFileUpdate(data: any) {
     const handler = eventHandlers.get('code:file_update');
@@ -74,6 +84,31 @@ describe('useCodePreviewState onAgentFileWrite', () => {
         emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined }));
 
         expect(onWrite).not.toHaveBeenCalled();
+    });
+
+    it('a plain read never opens the pane nor selects, even with nothing selected yet', () => {
+        const onWrite = vi.fn();
+        const { result } = renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined, auto_open_preview: false, force_open: false }));
+
+        expect(onWrite).not.toHaveBeenCalled();
+        expect(result.current.state.active).toBe(false);
+        expect(result.current.state.activeFilePath).toBe('');
+        expect(result.current.state.files.has('src/main.cpp')).toBe(true);
+
+        // Same while the pane is already open on the directory tree.
+        act(() => { eventHandlers.get('code:session_start')?.({ session_id: 'session-1', project_path: 'D:/tasks/linux-sysinfo', auto_open_preview: true }); });
+        emitFileUpdate(modifyEvent({
+            file_path: 'src/other.cpp',
+            content: '// other',
+            op_type: 'read',
+            original: undefined,
+        }));
+
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.activeFilePath).toBe('');
+        expect(result.current.state.files.has('src/other.cpp')).toBe(true);
     });
 
     it('notifies for a force-open read so exploration shows the file body', () => {

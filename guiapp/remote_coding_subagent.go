@@ -4625,13 +4625,15 @@ func remoteCodingPreviewRouteProjectPath(r *RemoteCodingSubAgent) string {
 }
 
 // buildRemoteCodingCodeFileEvent builds a code:file_update payload for remote coding.
-// ForceOpen is always set so reads actually open the right-hand pane.
+// Writes (create/modify) force the right-hand pane open; a read only fills a
+// background tab so exploration cannot pop the pane over the user's screen.
 // projectPath is the local tab identity, never the remote SSH path.
 func buildRemoteCodingCodeFileEvent(sessionID, projectPath, path, content, original, opType string, previewTruncated, originalMissing bool) CodeFileEvent {
 	op := strings.ToLower(strings.TrimSpace(opType))
 	if op == "" {
 		op = "modify"
 	}
+	forceOpen := op != "read"
 	return CodeFileEvent{
 		SessionID:        sessionID,
 		FilePath:         path,
@@ -4641,8 +4643,8 @@ func buildRemoteCodingCodeFileEvent(sessionID, projectPath, path, content, origi
 		Original:         original,
 		OpType:           op,
 		Language:         detectLanguageFromExt(path),
-		ForceOpen:        true,
-		AutoOpenPreview:  true,
+		ForceOpen:        forceOpen,
+		AutoOpenPreview:  forceOpen,
 		PreviewTruncated: previewTruncated,
 		OriginalMissing:  originalMissing,
 		ProjectPath:      strings.TrimSpace(projectPath),

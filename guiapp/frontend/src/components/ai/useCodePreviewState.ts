@@ -246,6 +246,18 @@ export function isTaskResultWrite(opType?: string | null): boolean {
     return opType === "create" || opType === "modify";
 }
 
+/**
+ * Whether a file event should surface in the preview pane (select the file,
+ * notify the host panel). Always true for create/modify; a read only when the
+ * backend explicitly asked the pane to show it (force_open / auto_open_preview)
+ * — plain reads fill background tabs and never open or focus the pane.
+ */
+export function fileEventSurfacesPreview(
+    file: Pick<CodeFile, 'opType' | 'forceOpen' | 'autoOpenPreview'>,
+): boolean {
+    return file.opType !== 'read' || file.forceOpen === true || file.autoOpenPreview === true;
+}
+
 /** Mark a create or rewrite so it survives leaving a programming workflow. */
 export function withTaskResultMark<T extends { opType?: string | null; taskResult?: boolean }>(file: T, mark: boolean): T {
     if (!mark || !isTaskResultWrite(file.opType) || file.taskResult) return file;
@@ -575,14 +587,11 @@ export function applyFileUpdate(
     }
 
     const shouldAutoOpen = file.forceOpen || (file.autoOpenPreview && !state.userClosed);
-    // Auto-select: always for create/modify. A read selects when the backend
-    // surfaced it (force_open / auto_open_preview — "exploration populates the
-    // right-hand panel") or when nothing is selected yet. Unflagged reads
-    // (snapshot-restore batches, tool fills) must not yank the view.
-    const shouldAutoSelect = file.opType !== 'read'
-        || file.forceOpen === true
-        || file.autoOpenPreview === true
-        || !state.activeFilePath;
+    // Select and notify share one rule (fileEventSurfacesPreview): always for
+    // create/modify; a read only when the backend explicitly surfaced it —
+    // plain reads stay background tabs so exploration never yanks the view,
+    // and never pops the panel open at all.
+    const shouldAutoSelect = fileEventSurfacesPreview(file);
     const nextActive = shouldAutoSelect ? file.filePath : state.activeFilePath;
     const nextSessionID = file.sessionID || state.sessionID;
     const nextSessionActive = file.forceOpen && file.sessionID ? true : state.sessionActive;
@@ -1253,13 +1262,13 @@ export function useCodePreviewState(
             // A write that actually lands in the preview is worth surfacing:
             // the host panel focuses the file body (content + diff) instead of
             // leaving the directory tree selected. A read surfaces only when
-            // the backend explicitly asked the pane to show it (force_open /
-            // auto_open_preview — pure-coding exploration relies on this);
-            // unflagged reads stay silent. A probe against the last rendered
-            // state (same pure function the updater runs, so no drift) keeps
-            // session-blocked events, identical re-reads of the selected file,
-            // and identical redeliveries from yanking the view.
-            const surfaces = opType !== 'read' || file.forceOpen === true || file.autoOpenPreview === true;
+            // the backend explicitly asked the pane to show it; plain reads
+            // stay background tabs and never open the pane. A probe against
+            // the last rendered state (same pure function the updater runs, so
+            // no drift) keeps session-blocked events, identical re-reads of
+            // the selected file, and identical redeliveries from yanking the
+            // view.
+            const surfaces = fileEventSurfacesPreview(file);
             if (surfaces) {
                 const belongs = file.latexWorkbench || expertWrite
                     || codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);

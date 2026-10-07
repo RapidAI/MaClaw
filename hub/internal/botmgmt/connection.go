@@ -21,6 +21,7 @@ import (
 // shared call. It lives in settings storage and is never copied into
 // SettingsView.
 type connectionCredential struct {
+	ID        string `json:"id,omitempty"`
 	TenantID  string `json:"tenant_id"`
 	UserID    string `json:"user_id"`
 	APIKey    string `json:"api_key"`
@@ -80,6 +81,18 @@ func (s *Service) sharedBearer(ctx context.Context, rec record) string {
 	return rec.AccessToken
 }
 
+// connectionMatchesToken reports whether the stored connection credential
+// still answers for the principal the (re)saved access token names. An
+// undecodable token retires the credential, because it can no longer be
+// tied to the principal it was minted for.
+func connectionMatchesToken(rec record) bool {
+	if rec.Connection == nil {
+		return false
+	}
+	claims, ok := decodeTokenClaims(rec.AccessToken)
+	return ok && claims.TenantID == rec.Connection.TenantID && claims.UserID == rec.Connection.UserID
+}
+
 // issueConnectionCredential creates a fresh MaClawSrv API credential for the
 // shared connection user. An existing (broken) connection credential carries
 // that user; otherwise the saved access token's claims do.
@@ -97,6 +110,7 @@ func (s *Service) issueConnectionCredential(ctx context.Context, rec record) (co
 		return connectionCredential{}, fmt.Errorf("%w: cannot tell which MaClawSrv user the connection belongs to", ErrSrv)
 	}
 	var issued struct {
+		ID        string `json:"id"`
 		APIKey    string `json:"api_key"`
 		APISecret string `json:"api_secret"`
 	}
@@ -107,6 +121,7 @@ func (s *Service) issueConnectionCredential(ctx context.Context, rec record) (co
 	if strings.TrimSpace(issued.APIKey) == "" || strings.TrimSpace(issued.APISecret) == "" {
 		return connectionCredential{}, fmt.Errorf("%w: maclawsrv credential missing", ErrSrv)
 	}
+	target.ID = strings.TrimSpace(issued.ID)
 	target.APIKey = strings.TrimSpace(issued.APIKey)
 	target.APISecret = strings.TrimSpace(issued.APISecret)
 	return target, nil
@@ -122,6 +137,10 @@ func (s *Service) provisionConnectionCredential(ctx context.Context, tenantID st
 	if strings.TrimSpace(rec.AdminSecret) == "" {
 		return connectionCredential{}, ErrAdminSecretMissing
 	}
+	previous := connectionCredential{}
+	if rec.Connection != nil {
+		previous = *rec.Connection
+	}
 	cred, err := s.issueConnectionCredential(ctx, rec)
 	if err != nil {
 		return connectionCredential{}, err
@@ -129,7 +148,27 @@ func (s *Service) provisionConnectionCredential(ctx context.Context, tenantID st
 	if err := s.mergeConnection(ctx, tenantID, cred); err != nil {
 		return connectionCredential{}, err
 	}
+	// Revoke only a genuinely different credential: a response without an id
+	// would otherwise name the credential just stored.
+	if previous.ID != "" && previous.ID != cred.ID {
+		s.retireConnectionCredential(ctx, rec, previous)
+	}
 	return cred, nil
+}
+
+// retireConnectionCredential revokes the credential this connection used
+// before the fresh one took over, so in-place renewals do not pile up
+// hub-connection credentials inside MaClawSrv. A credential that was retired
+// by a settings save is already gone from the record, so its ID cannot be
+// cited here — the MaClawSrv admin revokes that one by hand. Best effort.
+func (s *Service) retireConnectionCredential(ctx context.Context, rec record, previous connectionCredential) {
+	previousID := strings.TrimSpace(previous.ID)
+	if previousID == "" {
+		return
+	}
+	path := "/api/v1/admin/tenants/" + url.PathEscape(previous.TenantID) + "/users/" + url.PathEscape(previous.UserID) +
+		"/credentials/" + url.PathEscape(previousID)
+	_ = s.doAdmin(ctx, rec, http.MethodDelete, path, nil, nil)
 }
 
 // mergeConnection stores a freshly issued credential without disturbing
