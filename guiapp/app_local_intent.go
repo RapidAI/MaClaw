@@ -4,8 +4,10 @@ package guiapp
 //
 // Every guiapp embedder load goes through loadAppEmbedder (via
 // sharedEmbeddingEmbedder, which already keeps one runtime per App), so the
-// process holds exactly one model: Qwen3-Embedding-0.6B when it loads, else
-// EmbeddingGemma (only when Qwen3 fails). The intent classifiers (desktop
+// process holds exactly one model: Qwen3-Embedding-0.6B (EmbeddingGemma only
+// with MACLAW_EMBED_MODEL=gemma; there is no automatic Gemma fallback — when
+// Qwen3 is unavailable the host degrades to rules + BM25 / remote L3 while the
+// background fetch and the factory's retry backoff run). The intent classifiers (desktop
 // UIC, per-device hardware UICs), tool router (Track A hybrid retrieval),
 // tool builder, memory/knowledge stores and interrupt relevance all receive
 // that one instance.
@@ -29,8 +31,9 @@ import (
 )
 
 // loadAppEmbedder is the only embedder loader guiapp uses. path is the
-// Gemma model slot (embedding.DefaultModelPath() / the download target);
-// the Qwen3 file next to it (or MACLAW_EMBED_MODEL_PATH) is tried first.
+// model slot (embedding.DefaultModelPath()); the Qwen3 file is located with
+// embedding.ResolveQwen3ModelPath (MACLAW_EMBED_MODEL_PATH, slot dir, models
+// dir, exe dir).
 func loadAppEmbedder(smoke bool) func(string) (embedding.Embedder, error) {
 	return func(path string) (embedding.Embedder, error) {
 		res, err := locall3.LoadEmbedder(path, smoke)

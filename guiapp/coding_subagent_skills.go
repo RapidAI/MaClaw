@@ -801,7 +801,7 @@ func truncateLogText(text string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
-// getSubAgentEmbedder retrieves the local Gemma embedding model from the host
+// getSubAgentEmbedder retrieves the shared local embedding model from the host
 // handler's interrupt handler. Returns nil if embedder is unavailable or noop.
 func getSubAgentEmbedder(handler *IMMessageHandler) embedding.Embedder {
 	if handler == nil || handler.interruptHandler == nil {

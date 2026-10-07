@@ -99,6 +99,7 @@ func (a *App) startLocalModelFetch() bool {
 			return
 		}
 		log.Printf("[embedding] local model verified (%s) — hot-loading, no restart", path)
+		embedding.ResetQwen3LoadBackoff() // a failure before the download must not delay the hot-load
 		// Gemma-slot path keeps sharedEmbeddingEmbedder's cache key stable;
 		// the factory picks the Qwen3 file that now exists next to it.
 		a.verifyAndEnableEmbedding(embedding.DefaultModelPath())

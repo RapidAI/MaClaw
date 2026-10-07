@@ -96,7 +96,7 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 		return
 	}
 	if !embedding.PreferredModelFileExists(modelPath) {
-		log.Printf("[startup] embedding sync: skipped (no Qwen3 or Gemma model file next to %s)", modelPath)
+		log.Printf("[startup] embedding sync: skipped (local model not present yet; background fetch will hot-load it)")
 		return
 	}
 
@@ -176,12 +176,14 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 	// Model file check.
 	dir, _ := embeddingModelsDir()
 	if dir != "" {
-		// Report the file the single-model factory prefers (Qwen3 unless
-		// pinned to Gemma or missing), so a Qwen3-only install shows green.
+		// Report the file the single-model factory loads: the resolved
+		// Qwen3 GGUF (or its download target), Gemma only when pinned.
 		p := filepath.Join(dir, embeddingModelFilename)
-		if q := embedding.PreferredQwen3Path(p); !embedding.GemmaPinned() && q != "" {
-			if fi, err := os.Stat(q); err == nil && fi.Size() > 0 {
+		if !embedding.GemmaPinned() {
+			if q, _ := embedding.ResolveQwen3ModelPath(p); q != "" {
 				p = q
+			} else {
+				p = embedding.PreferredQwen3Path(p)
 			}
 		}
 		status.ModelPath = p
@@ -486,11 +488,19 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 		return
 	}
 	// Local model (Qwen3) first run: background, resumable, sha-verified
-	// download + hot-load (app_model_fetch.go). Never blocks startup; the
-	// Gemma file is no longer downloaded here (it is only used if present).
+	// download + hot-load (app_model_fetch.go). Never blocks startup.
 	if a.startLocalModelFetch() {
 		return
 	}
+	if !embedding.GemmaPinned() {
+		// Custom MACLAW_EMBED_MODEL_PATH: load what is there (the factory
+		// resolves it). Never download or load Gemma unless explicitly
+		// pinned — single shipped model.
+		a.verifyAndEnableEmbedding(embedding.DefaultModelPath())
+		return
+	}
+	// Below: legacy EmbeddingGemma download, reached only with
+	// MACLAW_EMBED_MODEL=gemma (rollback pin).
 
 	destPath := filepath.Join(dir, embeddingModelFilename)
 	if _, err := os.Stat(destPath); err == nil {
@@ -547,8 +557,8 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	// Ensure infrastructure is ready before enabling.
 	a.ensureRemoteInfra()
 
-	// Smoke-tested load: Qwen3 first (a failed Qwen3 smoke embed falls back
-	// to the Gemma file just downloaded), never both.
+	// Smoke-tested load of the single model (Qwen3; Gemma only when pinned).
+	// Failure degrades to rules + BM25; the factory backs off and retries.
 	emb, err := a.sharedEmbeddingEmbedder(modelPath, loadAppEmbedder(true))
 	if err != nil {
 		fmt.Printf("[embedding] verification failed: %v\n", err)
@@ -782,7 +792,7 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 	if emb == nil || embedding.IsNoop(emb) {
 		return emb, nil
 	}
-	if g, ok := emb.(*embedding.GemmaEmbedder); ok {
+	if g, ok := emb.(embedding.AccelEmbedder); ok {
 		g.ApplyAccel(embedding.HWAccelPreferred())
 	}
 	a.intentEmbedder = emb
@@ -797,7 +807,10 @@ func (a *App) GetEmbedAccelInfo() embedding.AccelInfo {
 	}
 	a.embeddingMu.Lock()
 	defer a.embeddingMu.Unlock()
-	if g, ok := a.intentEmbedder.(*embedding.GemmaEmbedder); ok && g != nil {
+	// Interface, not a concrete model type: with Qwen3 as the single model a
+	// *GemmaEmbedder assertion always failed and the badge fell back to the
+	// global NPU detection instead of the live instance.
+	if g, ok := a.intentEmbedder.(embedding.AccelEmbedder); ok && g != nil && !embedding.IsNoop(a.intentEmbedder) {
 		return g.Accel()
 	}
 	info := embedding.CurrentAccelInfo()
@@ -812,7 +825,7 @@ func (a *App) SetEmbedHWAccel(enabled bool) (corelib.AppConfig, error) {
 	embedding.SetHWAccelPreferred(enabled)
 	if a != nil {
 		a.embeddingMu.Lock()
-		if g, ok := a.intentEmbedder.(*embedding.GemmaEmbedder); ok && g != nil {
+		if g, ok := a.intentEmbedder.(embedding.AccelEmbedder); ok && g != nil && !embedding.IsNoop(a.intentEmbedder) {
 			g.ApplyAccel(enabled)
 		}
 		a.embeddingMu.Unlock()
