@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,11 +104,24 @@ func modelFingerprint(modelPath string) string {
 	return fmt.Sprintf("%d_%d", fi.ModTime().UnixNano(), fi.Size())
 }
 
+// toolEmbeddingCacheModelID keys the disk cache on the embedder actually in
+// use. Embedders that report a ModelID (Gemma, Qwen3: model name + dim +
+// prompt recipe) use it, so a Qwen3-only install (no Gemma GGUF on disk) can
+// restore its cache and a Gemma<->Qwen3 switch never mixes vectors. Others
+// fall back to the legacy Gemma model-file fingerprint.
+func toolEmbeddingCacheModelID(emb embedding.Embedder) string {
+	if m, ok := emb.(interface{ ModelID() string }); ok && m != nil {
+		if id := strings.TrimSpace(m.ModelID()); id != "" {
+			return "embedder:" + id
+		}
+	}
+	return modelFingerprint(embedding.DefaultModelPath())
+}
+
 // NewToolEmbeddingCache creates a new ToolEmbeddingCache and attempts to
 // restore previously persisted embeddings from disk.
 func NewToolEmbeddingCache(emb embedding.Embedder) *ToolEmbeddingCache {
-	modelPath := embedding.DefaultModelPath()
-	mid := modelFingerprint(modelPath)
+	mid := toolEmbeddingCacheModelID(emb)
 
 	c := &ToolEmbeddingCache{
 		embedder: emb,
