@@ -2668,114 +2668,6 @@ jobs:
           echo "${MANIFEST_NAME} preview:"
           cat "release-assets/${MANIFEST_NAME}"
 
-      - name: Set up Node.js for Cloudflare R2
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Upload release assets to Cloudflare R2
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
-          RELEASE_ASSETS_DIR: release-assets
-          R2_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
-            echo "Cloudflare R2 credentials are required for an official firmware release." >&2
-            exit 1
-          fi
-          node --version
-          npm --version
-          npm install -g wrangler@latest
-          wrangler --version
-          echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
-          # Determine asset prefix based on release channel (stable 閳?latest/, beta 閳?beta/)
-          ASSET_PREFIX="latest"
-          if [ "${RELEASE_CHANNEL}" = "beta" ]; then
-            ASSET_PREFIX="beta"
-          fi
-          echo "Channel=${RELEASE_CHANNEL} prefix=${ASSET_PREFIX}/ manifest=${MANIFEST_NAME}"
-          printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
-            [ -n "$name" ] || continue
-            path="$RELEASE_ASSETS_DIR/$name"
-            if [ ! -f "$path" ]; then
-              echo "R2 release asset not found: $name" >&2
-              exit 1
-            fi
-            echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
-            wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
-            if [ "${RELEASE_CHANNEL}" = "stable" ]; then
-              # Object keys are raw; only the public history URL is escaped.
-              wrangler r2 object put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
-            fi
-          done
-          wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
-
-      - name: Upload release assets to Tencent COS
-        env:
-          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
-          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
-          COS_BUCKET: ${{ secrets.COS_BUCKET }}
-          COS_REGION: ${{ secrets.COS_REGION }}
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
-          COS_UPLOAD_PART_SIZE_MB: 8
-          COS_UPLOAD_THREADS: 8
-          COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-        run: |
-          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
-            echo "Tencent COS credentials and public URL are required for an official firmware release." >&2
-            exit 1
-          fi
-          python3 -m pip install -q cos-python-sdk-v5
-          python3 .github/scripts/sync_cos_release.py
-
-      - name: Publish stable rollback history to Cloudflare R2
-        if: env.RELEASE_CHANNEL == 'stable'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
-        run: |
-          for attempt in 1 2 3 4 5; do
-            if curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
-              break
-            fi
-            [ "$attempt" = "5" ] && exit 1
-            sleep 3
-          done
-          wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
-      - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
-        env:
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-        run: python3 .github/scripts/verify_update_mirror.py
-
-      - name: Verify firmware publication on Cloudflare R2 and Tencent COS
-        if: env.ESP32_FIRMWARE_ENABLED == 'true'
-        env:
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-        run: python3 .github/scripts/verify_firmware_mirrors.py
-
-      # Do not publish the GitHub Release until both public mirrors contain
-      # the same manifest and all four signed firmware archives. This keeps
-      # the desktop client's GitHub/R2/COS discovery contract truthful.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -2909,3 +2801,112 @@ jobs:
                       print(f"rollback installer not ready (attempt {attempt}/5): {exc}")
                       time.sleep(5)
           PY
+
+      - name: Set up Node.js for Cloudflare R2
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Upload release assets to Cloudflare R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+          RELEASE_ASSETS_DIR: release-assets
+          R2_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
+            echo "Cloudflare R2 credentials are required for an official firmware release." >&2
+            exit 1
+          fi
+          node --version
+          npm --version
+          npm install -g wrangler@latest
+          wrangler --version
+          echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
+          # Determine asset prefix based on release channel (stable 閳?latest/, beta 閳?beta/)
+          ASSET_PREFIX="latest"
+          if [ "${RELEASE_CHANNEL}" = "beta" ]; then
+            ASSET_PREFIX="beta"
+          fi
+          echo "Channel=${RELEASE_CHANNEL} prefix=${ASSET_PREFIX}/ manifest=${MANIFEST_NAME}"
+          printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            path="$RELEASE_ASSETS_DIR/$name"
+            if [ ! -f "$path" ]; then
+              echo "R2 release asset not found: $name" >&2
+              exit 1
+            fi
+            echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
+            wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            if [ "${RELEASE_CHANNEL}" = "stable" ]; then
+              # Object keys are raw; only the public history URL is escaped.
+              wrangler r2 object put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            fi
+          done
+          wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
+
+      - name: Upload release assets to Tencent COS
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
+          COS_UPLOAD_PART_SIZE_MB: 8
+          COS_UPLOAD_THREADS: 8
+          COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+        run: |
+          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
+            echo "Tencent COS credentials and public URL are required for an official firmware release." >&2
+            exit 1
+          fi
+          python3 -m pip install -q cos-python-sdk-v5
+          python3 .github/scripts/sync_cos_release.py
+
+      - name: Publish stable rollback history to Cloudflare R2
+        if: env.RELEASE_CHANNEL == 'stable'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
+              break
+            fi
+            [ "$attempt" = "5" ] && exit 1
+            sleep 3
+          done
+          wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
+      - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
+        env:
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: python3 .github/scripts/verify_update_mirror.py
+
+      - name: Verify firmware publication on Cloudflare R2 and Tencent COS
+        if: env.ESP32_FIRMWARE_ENABLED == 'true'
+        env:
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: python3 .github/scripts/verify_firmware_mirrors.py
+
+      # Do not publish the GitHub Release until both public mirrors contain
+      # the same manifest and all four signed firmware archives. This keeps
+      # the desktop client's GitHub/R2/COS discovery contract truthful.
