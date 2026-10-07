@@ -485,6 +485,13 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 	if err != nil {
 		return
 	}
+	// Local model (Qwen3) first run: background, resumable, sha-verified
+	// download + hot-load (app_model_fetch.go). Never blocks startup; the
+	// Gemma file is no longer downloaded here (it is only used if present).
+	if a.startLocalModelFetch() {
+		return
+	}
+
 	destPath := filepath.Join(dir, embeddingModelFilename)
 	if _, err := os.Stat(destPath); err == nil {
 		// Model file already exists; verify and wire it into the runtime.
@@ -753,9 +760,11 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 	a.embeddingMu.Lock()
 	defer a.embeddingMu.Unlock()
 	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
-		if strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath {
+		if (strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath) &&
+			!qwen3UpgradeAvailable(a.intentEmbedder, a.intentEmbedderPath) {
 			return a.intentEmbedder, nil
 		}
+		log.Printf("[embedding] switching embedder %s -> %s (closing previous instance)", embedding.EmbedderFamily(a.intentEmbedder), modelPath)
 		a.localL3Runtime().Detach()
 		a.intentEmbedder.Close()
 		a.intentEmbedder = nil
