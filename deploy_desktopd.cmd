@@ -64,7 +64,13 @@ if not defined DESKTOPD_DEPLOY_DIR set "DESKTOPD_DEPLOY_DIR=/data/soft/maclaw_de
 if not defined DESKTOPD_PORT set "DESKTOPD_PORT=18081"
 if not defined DESKTOPD_BIND_ADDR set "DESKTOPD_BIND_ADDR=127.0.0.1:%DESKTOPD_PORT%"
 if not defined DESKTOPD_ADVERTISE_HOST set "DESKTOPD_ADVERTISE_HOST=%REMOTE_HOST%"
-if not defined DESKTOPD_IMAGE set "DESKTOPD_IMAGE=maclaw-gui:1"
+if not defined DESKTOPD_IMAGE set "DESKTOPD_IMAGE=maclaw-gui:2"
+REM maclaw-gui:2 is built on the Docker host from desktopd\image\Dockerfile.v2.
+REM Empty base image / apt mirror lets remote_deploy.sh pick the Tencent Cloud
+REM mirrors when it runs on Tencent Cloud, and Docker Hub otherwise.
+if not defined DESKTOPD_BASE_IMAGE set "DESKTOPD_BASE_IMAGE="
+if not defined DESKTOPD_APT_MIRROR set "DESKTOPD_APT_MIRROR="
+if not defined DESKTOPD_SKIP_IMAGE_BUILD set "DESKTOPD_SKIP_IMAGE_BUILD=0"
 if not defined GOPROXY set "GOPROXY=https://goproxy.cn,direct"
 if not defined REMOTE_PASS set "PAUSE_ON_EXIT=1"
 
@@ -92,7 +98,10 @@ echo   REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:...
 echo   DESKTOPD_DEPLOY_DIR=/data/soft/maclaw_desktopd
 echo   DESKTOPD_BIND_ADDR=127.0.0.1:18081
 echo   DESKTOPD_ADVERTISE_HOST=maclawsrv.mypapers.top
-echo   DESKTOPD_IMAGE=maclaw-gui:1
+echo   DESKTOPD_IMAGE=maclaw-gui:2
+echo   DESKTOPD_BASE_IMAGE=mirror.ccs.tencentyun.com/library/debian:bookworm
+echo   DESKTOPD_APT_MIRROR=mirrors.tencentyun.com   (none = deb.debian.org)
+echo   DESKTOPD_SKIP_IMAGE_BUILD=1                  (reuse the existing image)
 echo.
 echo The access token is generated on the Docker host the first time and kept
 echo in DESKTOPD_DEPLOY_DIR\.env. It is not printed.
@@ -123,9 +132,11 @@ if not exist "%ROOT_DIR%desktopd\image\desktop_supervisor.py" (
   echo [ERROR] Missing desktop supervisor script
   goto :fail
 )
-if not exist "%ROOT_DIR%desktopd\image\Dockerfile" (
-  echo [ERROR] Missing desktop image Dockerfile
-  goto :fail
+for %%F in (Dockerfile Dockerfile.v2 close_range_shim.c fcitx5-profile) do (
+  if not exist "%ROOT_DIR%desktopd\image\%%F" (
+    echo [ERROR] Missing desktopd\image\%%F
+    goto :fail
+  )
 )
 if not exist "%REMOTE_SCRIPT%" (
   echo [ERROR] Missing %REMOTE_SCRIPT%
@@ -153,6 +164,7 @@ echo        Host: %REMOTE_USER%@%REMOTE_HOST%:%REMOTE_PORT%
 echo        desktopd -^> %DESKTOPD_DEPLOY_DIR%
 echo        Listen   -^> %DESKTOPD_BIND_ADDR%
 echo        Advertise-^> %DESKTOPD_ADVERTISE_HOST%
+echo        Image    -^> %DESKTOPD_IMAGE% ^(built on the host from Dockerfile.v2^)
 echo.
 
 echo [2/5] Building Linux binary locally...
@@ -165,10 +177,12 @@ if errorlevel 1 (
   echo [ERROR] Failed to stage desktop_supervisor.py
   goto :fail
 )
-copy /y "%ROOT_DIR%desktopd\image\Dockerfile" "%STAGE_ROOT%\image\Dockerfile" >nul
-if errorlevel 1 (
-  echo [ERROR] Failed to stage desktop image Dockerfile
-  goto :fail
+for %%F in (Dockerfile Dockerfile.v2 close_range_shim.c fcitx5-profile) do (
+  copy /y "%ROOT_DIR%desktopd\image\%%F" "%STAGE_ROOT%\image\%%F" >nul
+  if errorlevel 1 (
+    echo [ERROR] Failed to stage desktopd\image\%%F
+    goto :fail
+  )
 )
 
 set "OLD_GOOS=%GOOS%"
@@ -199,7 +213,7 @@ if errorlevel 1 goto :upload_fail
 if errorlevel 1 goto :upload_fail
 
 echo [5/5] Remote deploy and restart...
-"%PLINK_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && REMOTE_TMP_DIR=%REMOTE_TMP_DIR% DESKTOPD_DEPLOY_DIR=%DESKTOPD_DEPLOY_DIR% DESKTOPD_BIND_ADDR=%DESKTOPD_BIND_ADDR% DESKTOPD_PORT=%DESKTOPD_PORT% DESKTOPD_ADVERTISE_HOST=%DESKTOPD_ADVERTISE_HOST% DESKTOPD_IMAGE=%DESKTOPD_IMAGE% %REMOTE_TMP_DIR%/remote_deploy.sh"
+"%PLINK_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && REMOTE_TMP_DIR=%REMOTE_TMP_DIR% DESKTOPD_DEPLOY_DIR=%DESKTOPD_DEPLOY_DIR% DESKTOPD_BIND_ADDR=%DESKTOPD_BIND_ADDR% DESKTOPD_PORT=%DESKTOPD_PORT% DESKTOPD_ADVERTISE_HOST=%DESKTOPD_ADVERTISE_HOST% DESKTOPD_IMAGE=%DESKTOPD_IMAGE% DESKTOPD_BASE_IMAGE=%DESKTOPD_BASE_IMAGE% DESKTOPD_APT_MIRROR=%DESKTOPD_APT_MIRROR% DESKTOPD_SKIP_IMAGE_BUILD=%DESKTOPD_SKIP_IMAGE_BUILD% %REMOTE_TMP_DIR%/remote_deploy.sh"
 if errorlevel 1 (
   echo [ERROR] Remote deployment failed.
   goto :fail

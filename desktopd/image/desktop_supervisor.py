@@ -29,6 +29,35 @@ DISPLAY_MAX = 50
 # itself only listens on loopback so the raw screen cannot be reached.
 VNC_GATE_PORT = 6080
 VNC_WEBSOCKIFY_PORT = 6081
+# A fixed screen size keeps agent click coordinates and screenshots stable;
+# noVNC scales it for people. MACLAW_DESKTOP_GEOMETRY overrides it per image
+# or container (WIDTHxHEIGHT or WIDTHxHEIGHTxDEPTH).
+DEFAULT_DESKTOP_GEOMETRY = "1440x900x24"
+
+
+def desktop_geometry():
+    value = os.environ.get("MACLAW_DESKTOP_GEOMETRY", "").strip().lower()
+    parts = value.split("x")
+    if len(parts) == 2:
+        parts.append("24")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return DEFAULT_DESKTOP_GEOMETRY
+    width, height, depth = (int(part) for part in parts)
+    if not (640 <= width <= 3840 and 480 <= height <= 2160 and depth in (16, 24)):
+        return DEFAULT_DESKTOP_GEOMETRY
+    return "%dx%dx%d" % (width, height, depth)
+
+
+def session_argv():
+    """The window session for the display.
+
+    maclaw-gui:2 ships XFCE, which people can actually use (panel, file
+    manager, terminal, input method). maclaw-gui:1 only has fluxbox, so the
+    same supervisor keeps working there.
+    """
+    if shutil.which("startxfce4") and shutil.which("dbus-launch"):
+        return ["dbus-launch", "--exit-with-session", "startxfce4"]
+    return ["fluxbox"]
 
 
 def main(argv):
@@ -221,11 +250,17 @@ def start_desktop(key, display):
     env["XDG_CACHE_HOME"] = str(user_home / ".cache")
     env["PATH"] = str(user_home / ".local" / "bin") + os.pathsep + env.get("PATH", "")
     env["DISPLAY"] = ":%d" % display
-    xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", "1280x720x24", "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
+    xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
     wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
     token = desktop_token_for(key)
     vnc = start_vnc(env, log, display, token) if token else None
-    flux = spawn(["fluxbox"], env, log)
+    session = session_argv()
+    if session[0] == "dbus-launch":
+        env.setdefault("XDG_SESSION_TYPE", "x11")
+        env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
+    # The pid key stays "fluxbox" so stop_desktop and pids.json written by
+    # older supervisors keep the same meaning: the window session.
+    flux = spawn(session, env, log)
     chrome_port = 18000 + display
     # No start URL. A blank page would cover the restored tabs, and the
     # website login lives in this profile.

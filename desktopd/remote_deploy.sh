@@ -8,7 +8,15 @@ set -eu
 : "${DESKTOPD_BIND_ADDR:=127.0.0.1:18081}"
 : "${DESKTOPD_PORT:=18081}"
 : "${DESKTOPD_ADVERTISE_HOST:=}"
-: "${DESKTOPD_IMAGE:=maclaw-gui:1}"
+: "${DESKTOPD_IMAGE:=maclaw-gui:2}"
+# Build inputs for maclaw-gui:2 (desktopd/image/Dockerfile.v2). Empty means
+# auto: Tencent Cloud mirrors when the Tencent metadata service answers (no
+# Docker Hub there), Docker Hub and deb.debian.org otherwise. APT_MIRROR=none
+# forces Debian's own apt sources.
+: "${DESKTOPD_BASE_IMAGE:=}"
+: "${DESKTOPD_APT_MIRROR:=}"
+# 1 skips the image build and requires DESKTOPD_IMAGE to exist already.
+: "${DESKTOPD_SKIP_IMAGE_BUILD:=0}"
 
 rand_secret() {
   if command -v openssl >/dev/null 2>&1; then
@@ -29,7 +37,11 @@ rm -rf "$SRC"
 mkdir -p "$SRC" "$DESKTOPD_DEPLOY_DIR/bin" "$DESKTOPD_DEPLOY_DIR/image" "$DESKTOPD_DEPLOY_DIR/logs"
 tar -xzf "$ARCHIVE_PATH" -C "$SRC"
 cp -f "$SRC/bin/desktopd" "$DESKTOPD_DEPLOY_DIR/bin/desktopd"
-cp -f "$SRC/image/desktop_supervisor.py" "$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
+# The whole image directory is kept so the image can be rebuilt by hand:
+#   docker build -f $DESKTOPD_DEPLOY_DIR/image/Dockerfile.v2 ... $DESKTOPD_DEPLOY_DIR/image
+for file in "$SRC"/image/*; do
+  cp -f "$file" "$DESKTOPD_DEPLOY_DIR/image/"
+done
 chmod 755 "$DESKTOPD_DEPLOY_DIR/bin/desktopd" "$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
 
 if [ ! -f "$DESKTOPD_DEPLOY_DIR/.env" ]; then
@@ -54,15 +66,81 @@ else
 fi
 mkdir -p "$DESKTOPD_DEPLOY_DIR/state"
 
-install_supervisor() {
-  script="$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "[remote] docker is not installed; skipped supervisor image update."
+on_tencent_cloud() {
+  command -v curl >/dev/null 2>&1 &&
+    curl -fsS -m 2 http://metadata.tencentyun.com/latest/meta-data/instance-id >/dev/null 2>&1
+}
+
+# build_desktop_image builds DESKTOPD_IMAGE from Dockerfile.v2. It builds
+# under a temporary tag and checks the result first, so a failed or broken
+# build never replaces the image running desktops use. Only Dockerfile.v2 is
+# ever tagged as a v2 image; the legacy overlay Dockerfile is maclaw-gui:1 only.
+build_desktop_image() {
+  context="$DESKTOPD_DEPLOY_DIR/image"
+  dockerfile="$context/Dockerfile.v2"
+  if [ "$DESKTOPD_SKIP_IMAGE_BUILD" = "1" ]; then
+    if ! docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then
+      echo "[remote] DESKTOPD_SKIP_IMAGE_BUILD=1 but $DESKTOPD_IMAGE does not exist" >&2
+      exit 1
+    fi
+    echo "[remote] Skipped building $DESKTOPD_IMAGE"
     return 0
   fi
-  dockerfile="$SRC/image/Dockerfile"
+  if [ ! -f "$dockerfile" ]; then
+    echo "[remote] $dockerfile is missing; refusing to tag another build as $DESKTOPD_IMAGE" >&2
+    exit 1
+  fi
+  base="$DESKTOPD_BASE_IMAGE"
+  mirror="$DESKTOPD_APT_MIRROR"
+  if [ -z "$base" ] || [ -z "$mirror" ]; then
+    if on_tencent_cloud; then
+      [ -n "$base" ] || base="mirror.ccs.tencentyun.com/library/debian:bookworm"
+      [ -n "$mirror" ] || mirror="mirrors.tencentyun.com"
+    fi
+  fi
+  [ -n "$base" ] || base="debian:bookworm"
+  [ "$mirror" != "none" ] || mirror=""
+  candidate="maclaw-gui-build:$(date +%Y%m%d%H%M%S)"
+  log="$DESKTOPD_DEPLOY_DIR/logs/image-build.log"
+  echo "[remote] Building $DESKTOPD_IMAGE from Dockerfile.v2 (base $base, apt mirror ${mirror:-deb.debian.org}); log: $log"
+  attempt=1
+  while :; do
+    if docker build -f "$dockerfile" \
+        --build-arg BASE_IMAGE="$base" \
+        --build-arg APT_MIRROR="$mirror" \
+        -t "$candidate" "$context" > "$log" 2>&1; then
+      break
+    fi
+    if [ "$attempt" -ge 2 ]; then
+      tail -n 40 "$log" >&2 || true
+      echo "[remote] Building $DESKTOPD_IMAGE failed; the existing image was left unchanged" >&2
+      exit 1
+    fi
+    echo "[remote] Image build failed (attempt $attempt); retrying once for flaky mirrors"
+    attempt=$((attempt + 1))
+  done
+  # The contract desktopd and desktop_supervisor.py depend on.
+  if ! docker run --rm --entrypoint sh "$candidate" -c '
+      test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html &&
+      for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import; do
+        command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+      done' >&2; then
+    docker rmi "$candidate" >/dev/null 2>&1 || true
+    echo "[remote] $candidate does not provide the desktop contract; $DESKTOPD_IMAGE left unchanged" >&2
+    exit 1
+  fi
+  docker tag "$candidate" "$DESKTOPD_IMAGE"
+  docker rmi "$candidate" >/dev/null 2>&1 || true
+  echo "[remote] Built $DESKTOPD_IMAGE ($(docker image inspect --format '{{.Id}}' "$DESKTOPD_IMAGE"))"
+}
+
+# update_legacy_image keeps the old behaviour for DESKTOPD_IMAGE=maclaw-gui:1:
+# overlay the supervisor onto the existing image.
+update_legacy_image() {
+  script="$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
+  dockerfile="$DESKTOPD_DEPLOY_DIR/image/Dockerfile"
   if [ -f "$dockerfile" ] && docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then
-    docker build -f "$dockerfile" -t "$DESKTOPD_IMAGE" "$SRC/image"
+    docker build -f "$dockerfile" -t "$DESKTOPD_IMAGE" "$DESKTOPD_DEPLOY_DIR/image"
     echo "[remote] Built $DESKTOPD_IMAGE with the desktop supervisor, noVNC, and /desktops"
   elif docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then
     cid="$(docker create "$DESKTOPD_IMAGE")"
@@ -73,6 +151,22 @@ install_supervisor() {
   else
     echo "[remote] Image $DESKTOPD_IMAGE is not present yet."
   fi
+}
+
+install_supervisor() {
+  script="$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[remote] docker is not installed; skipped supervisor image update."
+    return 0
+  fi
+  case "$DESKTOPD_IMAGE" in
+    maclaw-gui:1) update_legacy_image ;;
+    *) build_desktop_image ;;
+  esac
+  # Running desktops (v1 or v2) pick up the new supervisor on their next
+  # start; it falls back to fluxbox where XFCE is not installed. desktopd
+  # moves each user onto DESKTOPD_IMAGE the next time that user's desktop is
+  # opened with it (see recreateReason in desktopd/service.go).
   for cid in $(docker ps -aq --filter name=maclaw-desktop-); do
     docker cp "$script" "$cid":/desktop_supervisor.py || true
   done

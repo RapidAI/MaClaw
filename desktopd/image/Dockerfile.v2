@@ -1,0 +1,82 @@
+# maclaw-gui:2: full XFCE desktop for desktopd (CPU only, software rendering).
+# It keeps the contract desktop_supervisor.py and desktopd rely on:
+#   /desktop_supervisor.py, Xvfb, x11vnc, websockify, xdotool, chromium, python3,
+#   noVNC web root /usr/share/novnc (vnc.html), USER root, VOLUME /desktops,
+#   ImageMagick `import` / scrot for /v1/desktops/screenshot.
+# It does not build on maclaw-gui:1. Do not install anything into /opt or
+# /usr/local: desktopd mounts per-user volumes there and they hide image files.
+#
+# Build from the repository root (the build context is desktopd/image):
+#   docker build -f desktopd/image/Dockerfile.v2 -t maclaw-gui:2 desktopd/image
+# Hosts without Docker Hub access (Tencent Cloud, as in production):
+#   docker build -f desktopd/image/Dockerfile.v2 \
+#     --build-arg BASE_IMAGE=mirror.ccs.tencentyun.com/library/debian:bookworm \
+#     --build-arg APT_MIRROR=mirrors.tencentyun.com \
+#     -t maclaw-gui:2 desktopd/image
+# APT_MIRROR replaces deb.debian.org in the apt sources; empty keeps Debian's.
+# No "# syntax=" line on purpose: Docker 20.10's legacy builder works and the
+# frontend image would need Docker Hub.
+ARG BASE_IMAGE=debian:bookworm
+ARG APT_MIRROR=
+
+# Tiny LD_PRELOAD shim, see close_range_shim.c.
+FROM ${BASE_IMAGE} AS shim
+ARG APT_MIRROR
+COPY close_range_shim.c /src/close_range_shim.c
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; fi; \
+    apt-get update; apt-get install -y --no-install-recommends gcc libc6-dev; \
+    gcc -O2 -shared -fPIC -o /src/libclose_range_shim.so /src/close_range_shim.c
+
+FROM ${BASE_IMAGE}
+ARG APT_MIRROR
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    LANG=zh_CN.UTF-8 \
+    LANGUAGE=zh_CN:zh:en_US:en \
+    GTK_IM_MODULE=fcitx \
+    QT_IM_MODULE=fcitx \
+    XMODIFIERS=@im=fcitx \
+    SDL_IM_MODULE=fcitx \
+    APPIMAGE_EXTRACT_AND_RUN=1
+
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      xvfb fluxbox xdotool x11vnc novnc python3 python3-websockify chromium \
+      dbus-x11 xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf \
+      thunar xfce4-terminal xfce4-whiskermenu-plugin xfce4-taskmanager xfce4-notifyd \
+      xfce4-appfinder mousepad ristretto xarchiver adwaita-icon-theme xdg-utils \
+      locales tzdata fonts-noto-cjk fonts-noto-color-emoji \
+      fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
+      sudo ca-certificates curl wget gnupg git unzip xz-utils less nano procps psmisc iproute2 \
+      xauth x11-utils x11-xserver-utils xclip xsel libfuse2 \
+      scrot imagemagick at-spi2-core python3-pyatspi; \
+    sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen; \
+    locale-gen; \
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime; echo Asia/Shanghai > /etc/timezone; \
+    useradd -m -u 1000 -s /bin/bash desktop; \
+    echo 'desktop ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/desktop; chmod 440 /etc/sudoers.d/desktop; \
+    mkdir -p /etc/xdg/xfce4/xfconf/xfce-perchannel-xml; \
+    cp /etc/xdg/xfce4/panel/default.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml; \
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<channel name="xfwm4" version="1.0"><property name="general" type="empty">' \
+      '<property name="use_compositing" type="bool" value="false"/></property></channel>' \
+      > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=shim /src/libclose_range_shim.so /usr/lib/x86_64-linux-gnu/libclose_range_shim.so
+RUN echo /usr/lib/x86_64-linux-gnu/libclose_range_shim.so > /etc/ld.so.preload
+COPY fcitx5-profile /etc/xdg/fcitx5/profile
+# Debian ships no fcitx5 autostart (it relies on im-config); start it with the XFCE session.
+# Drop the xscreensaver autostart entry as well: a blanked or locked screen breaks agents.
+RUN printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Fcitx 5' 'Exec=fcitx5' \
+      'X-GNOME-Autostart-Phase=Applications' > /etc/xdg/autostart/org.fcitx.Fcitx5.desktop \
+ && rm -f /etc/xdg/autostart/xscreensaver.desktop
+COPY desktop_supervisor.py /desktop_supervisor.py
+USER root
+VOLUME ["/desktops"]
+EXPOSE 6080 19020

@@ -1,3 +1,6 @@
+# Legacy overlay for maclaw-gui:1 only (fluxbox desktop). New deployments use
+# Dockerfile.v2, which builds maclaw-gui:2 from Debian directly; never tag a
+# build of this file as maclaw-gui:2.
 # Bake the per-user supervisor into the GUI image and keep profiles on /desktops.
 # The browser is Chromium so a login made in noVNC stays in the profile the
 # agent continues. maclaw-gui:1 must already exist. From the repo root:
