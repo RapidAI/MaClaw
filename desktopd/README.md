@@ -3,6 +3,10 @@
 desktopd 在一台安装了 Docker 的主机上为每个 `tenant+user` 运行一个独立的 Chromium
 桌面容器。Hub 的 desktoppool 和 MaClawSrv 通过 HTTP `/v1/*` API 调用它。
 
+完整的 `maclaw-gui:2` 使用与运维手册(镜像能力、架构、Linux 部署脚本、Hub 配置、迁移、
+截图 API、冒烟、回滚、已知问题)见 [docs/desktop-gui-v2.md](../docs/desktop-gui-v2.md)。
+主机辅助脚本在 [`scripts/`](scripts/),配置示例在 [`deploy/`](deploy/)。
+
 ## 部署
 
 从仓库根目录:
@@ -12,6 +16,9 @@ build_thirdapp.cmd        # 或按需编译 desktopd 与打包 image/desktop_sup
 # remote_deploy.sh 由 deploy_desktopd.cmd 调起,负责:安装二进制、首次生成
 # DESKTOPD_TOKEN、写入 .env、构建带 supervisor 的镜像、注册 systemd 服务。
 ```
+
+Linux/macOS 上用 `deploy/linux/rollout_desktop_gui2.sh`(编译、打包、断点续传上传、
+备份、部署 desktopd/Hub/MaClawSrv、验证、回滚),见 [docs/desktop-gui-v2.md](../docs/desktop-gui-v2.md#4-部署)。
 
 必需环境变量(ds systemd 读 `.env`):
 

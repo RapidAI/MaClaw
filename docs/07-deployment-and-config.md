@@ -173,3 +173,7 @@ screen `1440x900`.
   vision-capable models).
 
 Details, build commands, and the migration rules: `desktopd/README.md`.
+
+On Linux/macOS use `deploy/linux/rollout_desktop_gui2.sh` (build, package,
+resumable upload, backup, deploy desktopd/Hub/MaClawSrv, verify, rollback).
+Full operations manual (Chinese): [desktop-gui-v2.md](desktop-gui-v2.md).
