@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // Model families returned by PreferredLoad.Family / EmbedderFamily.
@@ -225,4 +226,42 @@ func EmbedderFamily(e Embedder) string {
 		return FamilyGemma
 	}
 	return ""
+}
+
+// ComputeMode names the numeric path a Qwen3 embedder runs on, e.g.
+// "q8p:avx512:2pass", "q8p:avx2:1pass", "q8p:sdot:1pass", "q8p:avx512:2pass(qkv,o)"
+// or "float". Probabilities near τ can flip between modes (avx2 single-pass
+// vs two-pass changed 4/150 primaries), so shadow logs record it and heads
+// recalibrated from those logs carry it (calibration.compute).
+func (q *Qwen3Embedder) ComputeMode() string {
+	if q == nil || !q.q8p {
+		return "float"
+	}
+	t := qwen3Q8PTwoPass
+	pass := "1pass"
+	switch {
+	case t.qkv && t.o && t.gu && t.down:
+		pass = "2pass"
+	case t.qkv || t.o || t.gu || t.down:
+		var parts []string
+		for _, p := range []struct {
+			on   bool
+			name string
+		}{{t.qkv, "qkv"}, {t.o, "o"}, {t.gu, "gu"}, {t.down, "down"}} {
+			if p.on {
+				parts = append(parts, p.name)
+			}
+		}
+		pass = "2pass(" + strings.Join(parts, ",") + ")"
+	}
+	return "q8p:" + tensor.Q8PISAName() + ":" + pass
+}
+
+// EmbedderComputeMode returns e's ComputeMode when it has one, else its family
+// ("gemma"), else "".
+func EmbedderComputeMode(e Embedder) string {
+	if m, ok := e.(interface{ ComputeMode() string }); ok && m != nil {
+		return m.ComputeMode()
+	}
+	return EmbedderFamily(e)
 }

@@ -319,10 +319,19 @@ def main():
     ap.add_argument("--retrain-l2", type=float, default=1.0, help="L2 pull toward shipped weights during --retrain")
     ap.add_argument("--holdout", type=float, default=0.3, help="--retrain: fraction of labels held out for T/tau fitting")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--compute", help="only use rows logged under this embedder compute mode (record field `compute`, e.g. q8p:avx2:1pass); "
+                    "required when the logs mix modes: tau is pass-mode sensitive, fit one head per mode")
     ap.add_argument("--report", help="also write a JSON summary here")
     a = ap.parse_args()
 
     rows, files, bad = load_logs(a.logs)
+    modes = {}
+    for r in rows:
+        modes[r.get("compute") or "?"] = modes.get(r.get("compute") or "?", 0) + 1
+    print("compute modes in logs: %s" % ", ".join("%s=%d" % kv for kv in sorted(modes.items())))
+    if a.compute:
+        rows = [r for r in rows if (r.get("compute") or "?") == a.compute]
+        print("--compute %s: kept %d rows" % (a.compute, len(rows)))
     hj = load_head(a.head)
     head = Head(hj)
     print("logs: %d records from %d file(s) (%d unparsable); head %s (T=%.3f tau=%.3f tau_s=%.3f, %d labels, dim %d)"
@@ -339,6 +348,11 @@ def main():
     if not a.out:
         ap.error("--out is required with --labels")
 
+    known = {m for m in modes if m != "?"} if not a.compute else {a.compute}
+    if len(known) > 1:
+        print("refusing: logs mix compute modes %s; rerun with --compute <mode> (one head per mode)" % sorted(known))
+        return 2
+    compute = next(iter(known)) if known else ""
     labels = load_labels(a.labels)
     lid = {l: i for i, l in enumerate(head.labels)}
     data, skipped_unknown_label, no_signal = [], 0, 0
@@ -455,6 +469,7 @@ def main():
         out["embed_model"] = "qwen3" if head.dim == 1024 else "gemma" if head.dim == 768 else ""
     out["calibration"] = {
         "source": "human_labels",
+        "compute": compute,
         "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "base_head": hj["_id"],
         "logs": [os.path.abspath(f) for f in files],

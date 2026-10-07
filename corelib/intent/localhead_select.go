@@ -196,6 +196,8 @@ func SelectLocalHead(emb embedding.Embedder, candidates []string) (*LocalHead, e
 		return nil, fmt.Errorf("no local head file found for %s embedder", embedding.EmbedderFamily(emb))
 	}
 	var errs []string
+	var first *LocalHead
+	live := embedding.EmbedderComputeMode(emb)
 	for _, p := range candidates {
 		h, err := LoadLocalHead(p)
 		if err != nil {
@@ -206,7 +208,17 @@ func SelectLocalHead(emb embedding.Embedder, candidates []string) (*LocalHead, e
 			errs = append(errs, err.Error())
 			continue
 		}
-		return h, nil
+		// τ is pass-mode sensitive: a head recalibrated under the live
+		// compute mode wins over earlier candidates calibrated elsewhere.
+		if h.CalibrationCompute != "" && h.CalibrationCompute == live {
+			return h, nil
+		}
+		if first == nil {
+			first = h
+		}
+	}
+	if first != nil {
+		return first, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrHeadMismatch, strings.Join(errs, "; "))
 }

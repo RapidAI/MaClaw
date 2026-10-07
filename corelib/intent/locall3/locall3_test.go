@@ -222,3 +222,36 @@ func TestRecalibratedHeadFile(t *testing.T) {
 	}
 	t.Logf("recalibrated head %s tau=%.3f tau_s=%.3f", h.ID, h.Tau, h.TauS)
 }
+
+type fakeComputeEmb struct {
+	fakeEmb
+	mode string
+}
+
+func (f fakeComputeEmb) ComputeMode() string { return f.mode }
+
+// τ is pass-mode sensitive: the head recalibrated under the live compute
+// mode is preferred over one calibrated under another mode.
+func TestHeadCalibratedForLiveComputeModePreferred(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	dir := t.TempDir()
+	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	writeHead(t, dir, "head_mlp_qwen3go_xf_avx512.json", "qwen3", 1024, map[string]any{
+		"calibration": map[string]any{"source": "human_labels", "compute": "q8p:avx512:2pass"}})
+	writeHead(t, dir, "head_mlp_qwen3go_xf_avx2.json", "qwen3", 1024, map[string]any{
+		"calibration": map[string]any{"source": "human_labels", "compute": "q8p:avx2:1pass"}})
+	for mode, want := range map[string]string{
+		"q8p:avx2:1pass":   "head_mlp_qwen3go_xf_avx2.json@",
+		"q8p:avx512:2pass": "head_mlp_qwen3go_xf_avx512.json@",
+		"q8p:sdot:1pass":   "head_mlp_qwen3go_xf_avx512.json@", // no match: first candidate (reverse-sorted xf)
+	} {
+		rt := NewWithMode(dir, intent.LocalL3On)
+		h, err := rt.Attach(fakeComputeEmb{qwen, mode})
+		if err != nil || !strings.HasPrefix(h.ID, want) {
+			t.Fatalf("%s: got %v err=%v want %s", mode, h, err, want)
+		}
+		if mode == "q8p:sdot:1pass" && !strings.Contains(rt.Describe(), "WARNING") {
+			t.Fatalf("mismatched compute mode should warn: %s", rt.Describe())
+		}
+	}
+}

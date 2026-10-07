@@ -54,6 +54,10 @@ type LocalHead struct {
 	// fitted offline; "human_labels" for heads re-fitted from shadow logs by
 	// scripts/intent_shadow_recalibrate.py).
 	CalibrationSource string
+	// CalibrationCompute is "calibration.compute": the embedder compute mode
+	// (embedding.EmbedderComputeMode, e.g. q8p:avx2:1pass) the head's T/τ/τ_s
+	// were fitted under; "" = unknown (offline heads, fitted on float/2-pass).
+	CalibrationCompute string
 
 	sensitive map[string]bool
 	dim       int
@@ -85,7 +89,8 @@ type localHeadFile struct {
 	Note        string      `json:"note"`
 	EmbedModel  string      `json:"embed_model"`
 	Calibration struct {
-		Source string `json:"source"`
+		Source  string `json:"source"`
+		Compute string `json:"compute"`
 	} `json:"calibration"`
 }
 
@@ -122,17 +127,18 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		return nil, errors.New("empty w2")
 	}
 	h := &LocalHead{
-		Labels:            append([]string(nil), f.Labels...),
-		Tau:               f.Tau,
-		TauS:              f.TauS,
-		EmbedRole:         f.EmbedRole,
-		Note:              f.Note,
-		EmbedModel:        f.EmbedModel,
-		CalibrationSource: f.Calibration.Source,
-		sensitive:         map[string]bool{},
-		l2norm:            f.L2Norm,
-		temp:              f.Temperature,
-		b2:                append([]float64(nil), f.B2...),
+		Labels:             append([]string(nil), f.Labels...),
+		Tau:                f.Tau,
+		TauS:               f.TauS,
+		EmbedRole:          f.EmbedRole,
+		Note:               f.Note,
+		EmbedModel:         f.EmbedModel,
+		CalibrationSource:  f.Calibration.Source,
+		CalibrationCompute: f.Calibration.Compute,
+		sensitive:          map[string]bool{},
+		l2norm:             f.L2Norm,
+		temp:               f.Temperature,
+		b2:                 append([]float64(nil), f.B2...),
 	}
 	if h.temp <= 0 || math.IsNaN(h.temp) {
 		h.temp = 1

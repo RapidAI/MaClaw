@@ -420,6 +420,7 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 		l2Ran = true
 		if st != nil {
 			st.modelID = embedderModelID(emb)
+			st.compute = embedding.EmbedderComputeMode(emb)
 			st.noteL2(emb, anchors, l2Result, confident, queryVec)
 		}
 		if len(queryVec) > 0 {

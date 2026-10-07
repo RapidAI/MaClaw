@@ -193,6 +193,7 @@ type shadowRecord struct {
 	Kind      string           `json:"kind"` // "l3" (turn reached the L3 decision point) | "l2_sample"
 	ModelID   string           `json:"model_id"`
 	EmbedDim  int              `json:"embed_dim,omitempty"`
+	Compute   string           `json:"compute,omitempty"` // e.g. q8p:avx512:2pass, q8p:avx2:1pass, float, gemma
 	HeadID    string           `json:"head_id,omitempty"`
 	DecidedBy string           `json:"decided_by"` // l2 | l3 | l2_fallback | l2_short_lookup | none
 	Final     shadowFinal      `json:"final"`
@@ -288,6 +289,7 @@ type shadowTurn struct {
 	anchors     []intentAnchor
 	cal         intentScoreCalibration
 	modelID     string
+	compute     string // embedding.EmbedderComputeMode (Q8P ISA + pass mode)
 	// L3
 	reachedL3  bool // turn reached the L3 decision point
 	remoteDone bool
@@ -533,6 +535,7 @@ func (l *shadowLogger) buildRecord(job shadowJob) shadowRecord {
 		TurnID:  l.nonce + "-" + strconv.FormatUint(job.seq, 10),
 		Kind:    job.kind,
 		ModelID: st.modelID,
+		Compute: st.compute,
 	}
 	head := l.headFor(len(st.queryVec))
 	if head != nil {

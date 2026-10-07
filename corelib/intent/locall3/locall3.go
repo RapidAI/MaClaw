@@ -157,8 +157,17 @@ func (r *Runtime) Describe() string {
 		return fmt.Sprintf("local L3 off (%s=0): remote tree LLM is L3", intent.LocalL3Env)
 	}
 	if s := r.st.Load(); s != nil {
-		return fmt.Sprintf("local L3 %s: head=%s family=%s dim=%d tau=%.3f tau_s=%.3f embedder=%s",
-			r.mode, s.head.ID, intent.HeadFamily(s.head), s.head.Dim(), s.head.Tau, s.head.TauS, embedding.EmbedderFamily(s.emb))
+		cal := s.head.CalibrationCompute
+		if cal == "" {
+			cal = "offline"
+		}
+		warn := ""
+		if live := embedding.EmbedderComputeMode(s.emb); s.head.CalibrationCompute != "" && s.head.CalibrationCompute != live {
+			warn = " WARNING: head calibrated under a different compute mode"
+		}
+		return fmt.Sprintf("local L3 %s: head=%s family=%s dim=%d tau=%.3f tau_s=%.3f embedder=%s compute=%s head_calibrated_for=%s%s",
+			r.mode, s.head.ID, intent.HeadFamily(s.head), s.head.Dim(), s.head.Tau, s.head.TauS, embedding.EmbedderFamily(s.emb),
+			embedding.EmbedderComputeMode(s.emb), cal, warn)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
