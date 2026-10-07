@@ -88,10 +88,34 @@ type localHeadFile struct {
 	EmbedRole   string      `json:"embed_role"`
 	Note        string      `json:"note"`
 	EmbedModel  string      `json:"embed_model"`
-	Calibration struct {
-		Source  string `json:"source"`
-		Compute string `json:"compute"`
-	} `json:"calibration"`
+	// EmbedderModelID is the trainer's full embedder ID (e.g. "Qwen3
+	// Embedding 0.6b:1024:prompt-v1:qwen3-instruct-v1"); used as the family
+	// hint when embed_model is absent.
+	EmbedderModelID string `json:"embedder_model_id"`
+	// Calibration is either {"source":..,"compute":..} or a free-text
+	// description string (cross-family trainer heads, 2026-10-07): a string
+	// used to fail the whole load with an unmarshal error.
+	Calibration localHeadCalibration `json:"calibration"`
+}
+
+type localHeadCalibration struct {
+	Source  string `json:"source"`
+	Compute string `json:"compute"`
+}
+
+func (c *localHeadCalibration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		c.Source = s
+		return nil
+	}
+	type plain localHeadCalibration
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*c = localHeadCalibration(p)
+	return nil
 }
 
 // LoadLocalHead reads and validates a head JSON file.
@@ -132,7 +156,7 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		TauS:               f.TauS,
 		EmbedRole:          f.EmbedRole,
 		Note:               f.Note,
-		EmbedModel:         f.EmbedModel,
+		EmbedModel:         firstNonEmpty(f.EmbedModel, f.EmbedderModelID),
 		CalibrationSource:  f.Calibration.Source,
 		CalibrationCompute: f.Calibration.Compute,
 		sensitive:          map[string]bool{},
@@ -315,4 +339,13 @@ func (h *LocalHead) Decide(probs []float64) (label string, prob float64, decisio
 		decision = LocalHeadAccept
 	}
 	return label, prob, decision, threshold
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
