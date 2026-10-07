@@ -25,9 +25,15 @@ func TestReleaseAssetsTable(t *testing.T) {
 			t.Fatalf("url %s", got)
 		}
 	}
-	for _, k := range []string{"model", "intent_head", "tool_head"} {
+	for _, k := range []string{"model", "intent_head", "tool_head", "interrupt_head"} {
 		if !kinds[k] {
 			t.Fatalf("missing %s asset", k)
+		}
+	}
+	for _, a := range as {
+		// guiapp/interrupt_relevance.go loads <models>/interrupt_heads/interrupt_relevance_qwen3go.json.
+		if a.Kind == "interrupt_head" && (a.Subdir != "interrupt_heads" || a.Filename != "interrupt_relevance_qwen3go.json") {
+			t.Fatalf("interrupt head install path %s/%s", a.Subdir, a.Filename)
 		}
 	}
 	if Qwen3ModelSpec.Size != 639150592 || !strings.HasPrefix(Qwen3ModelSpec.URLs[0], "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/") {

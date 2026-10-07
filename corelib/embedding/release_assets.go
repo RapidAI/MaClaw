@@ -22,7 +22,7 @@ var releaseAssetsJSON []byte
 // ReleaseAsset is one first-run downloadable file.
 type ReleaseAsset struct {
 	Filename string `json:"filename"`
-	Kind     string `json:"kind"`   // model | intent_head | tool_head
+	Kind     string `json:"kind"`   // model | intent_head | tool_head | interrupt_head
 	Subdir   string `json:"subdir"` // install dir under the models dir ("" = models dir)
 	Size     int64  `json:"size"`
 	SHA256   string `json:"sha256"`

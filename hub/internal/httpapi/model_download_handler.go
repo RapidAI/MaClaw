@@ -37,6 +37,7 @@ var defaultHubModelFiles = strings.Join([]string{
 	embedding.Qwen3ModelFilename,
 	"head_mlp_qwen3go_xf.json",
 	"tool_head_ovr_qwen3go.json",
+	"interrupt_relevance_qwen3go.json",
 }, " ")
 
 const defaultHubModelLockTTL = 24 * time.Hour
