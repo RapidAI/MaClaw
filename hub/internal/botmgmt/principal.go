@@ -27,10 +27,10 @@ type ownerPrincipal struct {
 func (s *Service) ensureOwnerToken(ctx context.Context, tenantID string, rec *record, owner string) (string, error) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
-		return rec.AccessToken, nil
+		return s.sharedBearer(ctx, *rec), nil
 	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
-		return "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrNotConfigured)
+		return "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
 	}
 	principal := findPrincipal(rec.Principals, owner)
 	if principal == nil {
@@ -44,22 +44,76 @@ func (s *Service) ensureOwnerToken(ctx context.Context, tenantID string, rec *re
 		}
 		principal = &rec.Principals[len(rec.Principals)-1]
 	}
+	return s.exchangeOwnerToken(ctx, *rec, *principal)
+}
+
+// ownerToken loads the settings and returns a bearer for owner, without
+// holding s.mu across the token exchange. That exchange is a remote call on
+// the path of every bot message, and only a first-time provisioning has to
+// mutate the record under the lock.
+func (s *Service) ownerToken(ctx context.Context, tenantID, owner string) (record, string, error) {
+	owner = strings.TrimSpace(owner)
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return record{}, "", err
+	}
+	if owner == "" {
+		return rec, s.sharedBearer(ctx, rec), nil
+	}
+	if strings.TrimSpace(rec.AdminSecret) == "" {
+		return record{}, "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
+	}
+	if principal := findPrincipal(rec.Principals, owner); principal != nil {
+		token, err := s.exchangeOwnerToken(ctx, rec, *principal)
+		return rec, token, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Another command may have provisioned this owner while the lock was free.
+	fresh, err := s.load(ctx, tenantID)
+	if err != nil {
+		return record{}, "", err
+	}
+	principal := findPrincipal(fresh.Principals, owner)
+	if principal == nil {
+		created, err := s.provisionOwner(ctx, &fresh, owner)
+		if err != nil {
+			return record{}, "", err
+		}
+		fresh.Principals = append(fresh.Principals, created)
+		if err := s.save(ctx, tenantID, fresh); err != nil {
+			return record{}, "", err
+		}
+		principal = &fresh.Principals[len(fresh.Principals)-1]
+	}
+	token, err := s.exchangeOwnerToken(ctx, fresh, *principal)
+	return fresh, token, err
+}
+
+// exchangeOwnerToken trades the stored API credential for a bearer.
+func (s *Service) exchangeOwnerToken(ctx context.Context, rec record, principal ownerPrincipal) (string, error) {
+	return s.exchangeToken(ctx, rec, principal.APIKey, principal.APISecret, principal.UserID)
+}
+
+// exchangeToken trades an API credential for a bearer. wantUser guards
+// against a credential that answers for a different account.
+func (s *Service) exchangeToken(ctx context.Context, rec record, apiKey, apiSecret, wantUser string) (string, error) {
 	var issued struct {
 		AccessToken string `json:"access_token"`
 		Principal   struct {
 			UserID string `json:"user_id"`
 		} `json:"principal"`
 	}
-	if err := s.call(ctx, *rec, "", "", http.MethodPost, "/api/v1/auth/token", map[string]string{
-		"api_key":    principal.APIKey,
-		"api_secret": principal.APISecret,
+	if err := s.call(ctx, rec, "", "", http.MethodPost, "/api/v1/auth/token", map[string]string{
+		"api_key":    apiKey,
+		"api_secret": apiSecret,
 	}, &issued); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(issued.AccessToken) == "" {
 		return "", fmt.Errorf("%w: access token missing", ErrSrv)
 	}
-	if userID := strings.TrimSpace(issued.Principal.UserID); userID != "" && userID != principal.UserID {
+	if userID := strings.TrimSpace(issued.Principal.UserID); wantUser != "" && userID != "" && userID != wantUser {
 		return "", fmt.Errorf("%w: token user mismatch", ErrSrv)
 	}
 	return issued.AccessToken, nil

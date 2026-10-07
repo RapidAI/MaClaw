@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
 type memSettings struct {
@@ -1614,5 +1616,50 @@ func TestDesktopHoldPersistSkipsUnchangedState(t *testing.T) {
 	settings.mu.Unlock()
 	if afterRelease == afterFirst {
 		t.Fatal("keyboard release did not persist")
+	}
+}
+
+func TestSrvRejectionMessageKeepsStatusAndDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	svc := NewService(&memSettings{})
+	svc.HTTP = srv.Client()
+	ctx := context.Background()
+	if _, err := svc.SaveConnection(ctx, "tenant-a", srv.URL, "bad-token", true); err != nil {
+		t.Fatalf("SaveConnection: %v", err)
+	}
+	_, err := svc.TestConnection(ctx, "tenant-a")
+	if !errors.Is(err, ErrSrv) {
+		t.Fatalf("TestConnection error = %v want ErrSrv", err)
+	}
+	var statusErr *upstream.StatusError
+	if !errors.As(err, &statusErr) || statusErr.Status != http.StatusUnauthorized {
+		t.Fatalf("StatusError = %#v want 401", statusErr)
+	}
+	if statusErr.Detail != "unauthorized" {
+		t.Fatalf("detail = %q want unauthorized", statusErr.Detail)
+	}
+	msg := SrvRejectionMessage(err)
+	for _, want := range []string{"HTTP 401", "unauthorized", "access token"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message %q missing %q", msg, want)
+		}
+	}
+}
+
+func TestSrvRejectionMessageForNotFoundAndBareErrors(t *testing.T) {
+	if msg := SrvRejectionMessage(ErrSrvNotFound); !strings.Contains(msg, "check the MaClawSrv URL") {
+		t.Fatalf("404 message = %q", msg)
+	}
+	want := "MaClawSrv rejected the instance request"
+	if msg := SrvRejectionMessage(ErrSrv); msg != want {
+		t.Fatalf("bare ErrSrv message = %q", msg)
+	}
+	if msg := SrvRejectionMessage(nil); msg != want {
+		t.Fatalf("nil message = %q", msg)
 	}
 }

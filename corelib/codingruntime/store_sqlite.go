@@ -145,6 +145,7 @@ func activeCodingRuntimeStatusIsLive(status TaskStatus) bool {
 
 type activeCodingRuntimeRefChoice struct {
 	status    string
+	rawStatus string
 	updatedAt int64
 	live      bool
 }
@@ -172,10 +173,12 @@ func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next acti
 // ListActiveTaskStatusesByProjectRef returns one coding runtime status per
 // project_ref. Pure agent loop coding runs (local and remote) never create a
 // workflow snapshot, so the task list merges this ledger status into its
-// status stats; refs whose runs all reached a terminal state are omitted.
-// A live run or an approval still needs the user and outranks a finished
-// sibling. Otherwise the newest row wins. A gate block is a failure, except
-// a final_workspace_unchanged row that already recorded host file activity:
+// status stats; refs whose newest row reached a terminal state are omitted.
+// A live run or an approval still needs the user and outranks any sibling,
+// older or newer. Otherwise the newest row wins, so a later completed run
+// suppresses an older interrupted row instead of letting that stale recovery
+// reminder surface forever. A gate block is a failure, except a
+// final_workspace_unchanged row that already recorded host file activity:
 // that write is complete and is reported as completed.
 func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
 	if s == nil || s.db == nil {
@@ -186,9 +189,7 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 		EXISTS(SELECT 1 FROM coding_runtime_events e WHERE e.attempt_id = a.attempt_id AND e.type IN ('file_activity', 'remote_file_activity'))
 		FROM coding_runtime_tasks t
 		LEFT JOIN coding_runtime_attempts a ON a.task_id = t.task_id
-			AND a.attempt_no = (SELECT MAX(attempt_no) FROM coding_runtime_attempts WHERE task_id = t.task_id)
-		WHERE t.status NOT IN (?, ?, ?)`,
-		TaskCompleted, TaskFailed, TaskCancelled)
+			AND a.attempt_no = (SELECT MAX(attempt_no) FROM coding_runtime_attempts WHERE task_id = t.task_id)`)
 	if err != nil {
 		return nil, err
 	}
@@ -207,10 +208,11 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 		}
 		// Only the latest attempt counts. An earlier write must not turn a later
 		// unchanged-workspace block into a completed run.
+		rawStatus := status
 		if TaskStatus(status) == TaskBlocked && errorCode == "final_workspace_unchanged" && hasFileActivity != 0 {
 			status = string(TaskCompleted)
 		}
-		next := activeCodingRuntimeRefChoice{status: status, updatedAt: updatedAt, live: activeCodingRuntimeStatusIsLive(TaskStatus(status))}
+		next := activeCodingRuntimeRefChoice{status: status, rawStatus: rawStatus, updatedAt: updatedAt, live: activeCodingRuntimeStatusIsLive(TaskStatus(status))}
 		if cur, ok := choices[ref]; !ok || preferActiveCodingRuntimeStatus(cur, next) {
 			choices[ref] = next
 		}
@@ -220,6 +222,14 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 	}
 	byRef := make(map[string]string, len(choices))
 	for ref, choice := range choices {
+		// A row born terminal carries no correction for the task list: the
+		// ref's registry row already shows that outcome. A blocked row rewritten
+		// to completed is kept — the ledger still says blocked, and this
+		// projection is what lets the task list show the finished write.
+		switch TaskStatus(choice.rawStatus) {
+		case TaskCompleted, TaskFailed, TaskCancelled:
+			continue
+		}
 		byRef[ref] = choice.status
 	}
 	return byRef, nil
@@ -1002,7 +1012,12 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 }
 
 func (s *SQLiteStore) ListRecoveryCandidates() ([]*Attempt, error) {
-	rows, err := s.db.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? OR side_effect_state=? ORDER BY started_at`, TaskInterrupted, SideEffectUncertain)
+	// A candidate whose logical task already ended (completed, failed, or
+	// cancelled — e.g. a declined recovery) is history, not a recovery offer.
+	rows, err := s.db.Query(`SELECT a.attempt_id FROM coding_runtime_attempts a
+		JOIN coding_runtime_tasks t ON t.task_id = a.task_id
+		WHERE (a.status = ? OR a.side_effect_state = ?) AND t.status NOT IN (?, ?, ?)
+		ORDER BY a.started_at`, TaskInterrupted, SideEffectUncertain, TaskCompleted, TaskFailed, TaskCancelled)
 	if err != nil {
 		return nil, err
 	}

@@ -89,7 +89,7 @@ describe('CodePreviewPanel minimap', () => {
     });
 
     it('restores a turned-off minimap from localStorage', () => {
-        saveCodePreviewViewPrefs({ wordWrap: false, fontSize: 13, minimap: false });
+        saveCodePreviewViewPrefs({ wordWrap: false, fontSize: 13, minimap: false, diffMode: 'split', diffOnlyChanges: false });
         render(
             <CodePreviewPanel
                 files={makeFiles()}

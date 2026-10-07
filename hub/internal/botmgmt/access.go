@@ -2,6 +2,7 @@ package botmgmt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -51,15 +52,32 @@ type Reply struct {
 }
 
 func (s *Service) Enabled(ctx context.Context, tenantID, userID string) (bool, error) {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return false, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	_, err := s.loadForUser(ctx, tenantID, userID)
+	if errors.Is(err, ErrDisabled) {
+		return false, nil
 	}
-	rec, err := s.load(ctx, tenantID)
 	if err != nil {
 		return false, err
 	}
-	return grantMatches(rec.Grants, userID, s.departmentChain(ctx, userID)), nil
+	return true, nil
+}
+
+// loadForUser reads the settings once and reports whether that user may use
+// bots. Callers that also need the record reuse it instead of reading the
+// store a second time, and the department chain is resolved only once.
+func (s *Service) loadForUser(ctx context.Context, tenantID, userID string) (record, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return record{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return record{}, err
+	}
+	if !grantMatches(rec.Grants, userID, s.departmentChain(ctx, userID)) {
+		return record{}, ErrDisabled
+	}
+	return rec, nil
 }
 
 func (s *Service) CreateGrant(ctx context.Context, tenantID string, in Grant) (Grant, error) {
@@ -109,13 +127,7 @@ func (s *Service) DeleteGrant(ctx context.Context, tenantID, grantID string) err
 }
 
 func (s *Service) BotsForUser(ctx context.Context, tenantID, userID string) ([]Bot, error) {
-	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
-		if err != nil {
-			return nil, err
-		}
-		return nil, ErrDisabled
-	}
-	rec, err := s.load(ctx, tenantID)
+	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -129,23 +141,14 @@ func (s *Service) BotsForUser(ctx context.Context, tenantID, userID string) ([]B
 }
 
 func (s *Service) CreateBotForUser(ctx context.Context, tenantID, userID, name, description string) (Bot, error) {
-	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
-		if err != nil {
-			return Bot{}, err
-		}
-		return Bot{}, ErrDisabled
+	if _, err := s.loadForUser(ctx, tenantID, userID); err != nil {
+		return Bot{}, err
 	}
 	return s.createBot(ctx, tenantID, userID, name, description, true)
 }
 
 func (s *Service) UpdateBotForUser(ctx context.Context, tenantID, userID, botID, name, description string) (Bot, error) {
-	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
-		if err != nil {
-			return Bot{}, err
-		}
-		return Bot{}, ErrDisabled
-	}
-	rec, err := s.load(ctx, tenantID)
+	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
 		return Bot{}, err
 	}
@@ -157,13 +160,7 @@ func (s *Service) UpdateBotForUser(ctx context.Context, tenantID, userID, botID,
 }
 
 func (s *Service) DeleteBotForUser(ctx context.Context, tenantID, userID, botID string) error {
-	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
-		if err != nil {
-			return err
-		}
-		return ErrDisabled
-	}
-	rec, err := s.load(ctx, tenantID)
+	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
 		return err
 	}
@@ -183,13 +180,7 @@ func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, cont
 	if content == "" {
 		return Reply{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
 	}
-	if ok, err := s.Enabled(ctx, tenantID, userID); err != nil || !ok {
-		if err != nil {
-			return Reply{}, err
-		}
-		return Reply{}, ErrDisabled
-	}
-	rec, err := s.load(ctx, tenantID)
+	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -218,13 +209,9 @@ func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, cont
 		DesktopHandoff bool   `json:"desktop_handoff"`
 		Error          string `json:"error"`
 	}
-	s.mu.Lock()
-	fresh, tokenErr := s.load(ctx, tenantID)
-	var token string
-	if tokenErr == nil {
-		token, tokenErr = s.ensureOwnerToken(ctx, tenantID, &fresh, userID)
-	}
-	s.mu.Unlock()
+	// The token exchange is a remote call: keep it off s.mu, so one slow
+	// MaClawSrv cannot stall every other user's command.
+	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
 	if tokenErr != nil {
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
@@ -424,11 +411,15 @@ func (s *Service) finishDesktopOpen(tenantID, userID, instanceID string, opened,
 		return
 	}
 	s.mu.Lock()
+	// The admin hold is persisted, so it has to be restored before it can keep
+	// this desktop up. The counters above are in-memory only and need no load.
+	s.ensureDesktopHydrated(tenantID)
 	key := desktopViewKey(tenantID, userID)
 	left := s.dropDesktopUseLocked(key, instanceID)
 	_, held := s.desktopHeld[key]
+	adminView := s.adminDesktopViewActiveLocked(key)
 	s.mu.Unlock()
-	if !stop || left > 0 || held {
+	if !stop || left > 0 || held || adminView {
 		return
 	}
 	if s.beforeDesktopStop != nil {
@@ -446,8 +437,9 @@ func (s *Service) finishDesktopOpen(tenantID, userID, instanceID string, opened,
 		left = 0
 	}
 	_, held = s.desktopHeld[key]
+	adminView = s.adminDesktopViewActiveLocked(key)
 	s.mu.Unlock()
-	if left == 0 && !held {
+	if left == 0 && !held && !adminView {
 		_ = s.stopDesktop(context.Background(), tenantID, userID)
 	}
 	gate.Unlock()
@@ -531,10 +523,58 @@ func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string) {
 	s.persistDesktopState(tenantID)
 }
 
+// AdminDesktopViewHold is how long an admin's desktop check keeps that
+// desktop alive. A check ends with a stop decision the admin makes, but a bot
+// command that happens to finish in the middle must not pull the desktop out
+// from under the open noVNC page. It is a hold, not a lease: the admin never
+// has to release it, and an explicit stop always wins.
+const AdminDesktopViewHold = 30 * time.Minute
+
+// NoteDesktopAdminView records that an admin opened this desktop just now, so
+// the idle checks leave it alone while the check is still plausibly running.
+func (s *Service) NoteDesktopAdminView(tenantID, userID string) {
+	if s == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	now := s.now()
+	if s.desktopAdminView == nil {
+		s.desktopAdminView = map[string]time.Time{}
+	}
+	if last, ok := s.desktopAdminView[key]; ok && now.Sub(last) < time.Minute {
+		return // a check already in progress; skip the disk write
+	}
+	s.desktopAdminView[key] = now
+	s.persistDesktopState(tenantID)
+}
+
+// adminDesktopViewActiveLocked reports whether an admin check of this desktop
+// started inside the hold window. Callers must hold s.mu.
+func (s *Service) adminDesktopViewActiveLocked(key string) bool {
+	last, ok := s.desktopAdminView[key]
+	if !ok {
+		return false
+	}
+	age := s.now().Sub(last)
+	if age < 0 || age >= AdminDesktopViewHold {
+		delete(s.desktopAdminView, key)
+		return false
+	}
+	return true
+}
+
 // ReleaseDesktopIfIdle drops a timeout pin so the desktop can stop.
-// It returns false while the person still has the keyboard, or while another
-// command of this user already has the desktop open. The caller must leave
-// that browser up so the website login stays there.
+// It returns false while the person still has the keyboard, while another
+// command of this user already has the desktop open, or while an admin check
+// of that desktop is still inside its hold. The caller must leave that
+// browser up so the website login stays there.
 func (s *Service) ReleaseDesktopIfIdle(tenantID, userID string) bool {
 	if s == nil {
 		return true
@@ -544,6 +584,9 @@ func (s *Service) ReleaseDesktopIfIdle(tenantID, userID string) bool {
 	defer s.mu.Unlock()
 	key := desktopViewKey(tenantID, userID)
 	if s.desktopAwaiting[key] {
+		return false
+	}
+	if s.adminDesktopViewActiveLocked(key) {
 		return false
 	}
 	// The command that is stopping still counts as one open. A second open
@@ -798,6 +841,7 @@ func (s *Service) NoteDesktopView(tenantID, userID, raw string) {
 // ForgetDesktopView drops the chat picture after MaClawSrv stops the desktop.
 // The stop call does not go through the bot message path, so the picture has
 // to be cleared here or the next task shows a desktop that is already gone.
+// An admin check hold ends with the desktop it was watching.
 func (s *Service) ForgetDesktopView(tenantID, userID string) {
 	if s == nil {
 		return
@@ -805,8 +849,15 @@ func (s *Service) ForgetDesktopView(tenantID, userID string) {
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)
 	key := desktopViewKey(tenantID, userID)
-	if _, ok := s.desktopView[key]; ok {
+	_, hadView := s.desktopView[key]
+	_, hadAdminView := s.desktopAdminView[key]
+	if hadView {
 		delete(s.desktopView, key)
+	}
+	if hadAdminView {
+		delete(s.desktopAdminView, key)
+	}
+	if hadView || hadAdminView {
 		s.persistDesktopState(tenantID)
 	}
 	s.mu.Unlock()
@@ -865,6 +916,13 @@ func (s *Service) rememberDesktopView(tenantID, userID, raw string) {
 	}
 	s.desktopView[key] = desktopWatch{raw: raw, gated: gated}
 	s.persistDesktopState(tenantID)
+}
+
+// DesktopViewURL is the Hub noVNC path recorded for this user's desktop,
+// or "" when no view was published yet. Admin desktop checks use it to
+// open the same gated picture the chat hands out.
+func (s *Service) DesktopViewURL(tenantID, userID string) string {
+	return s.desktopViewURL(tenantID, userID)
 }
 
 func (s *Service) desktopViewURL(tenantID, userID string) string {

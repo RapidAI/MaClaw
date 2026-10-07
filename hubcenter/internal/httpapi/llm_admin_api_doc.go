@@ -131,6 +131,7 @@ dry_run 为 true 时只校验并返回将要创建或更新的 id，不写库。
 ` + "```" + `
 
 - allowed_node_ids 是字符串数组。allowed_nodes 是逗号分隔的写法，例如 hc-1, hc-2,hc-3，保存时会折成 allowed_node_ids，不会另外存储。两者都省略则保留原名单；allowed_node_ids 传 [] 表示改回全部节点。
+- serve_windows 是服务商的可接单时段列表，多个时段取并集：命中任一时段即可接单，空列表表示全天可接单。每项含 days（0=周日 ... 6=周六，空表示每天）、start 和 end（北京时间 HH:MM，end 不含终点，可为 24:00；start 晚于 end 表示跨午夜）。时段只是拨号门控，不影响计费倍率；时钟无法解析会拒绝保存。
 - dispatch_weight：阵列内部流量份额。0 和 1 都是均分，更大的值被选中更多。批量更新时省略或写 0 会保留原值；要改回均分，用 PATCH 把 dispatch_weight 设为 0。
 - requests_per_minute、requests_per_day：0 表示不限制。用完的成员会被跳过，直到这一分钟或当天结束，而不是继续撞 429。计数在本进程内。
 - rate_limit_cooldown_sec：遇到 HTTP 429 后跳过该成员的秒数。0 保持默认 60 秒。
@@ -649,7 +650,17 @@ func llmAdminAPIOpenAPI() map[string]any {
 						"model_map":               map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 						"allowed_node_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Empty means every node."},
 						"allowed_nodes":           map[string]any{"type": "string", "example": "hc-1, hc-2, hc-3", "description": "Comma-separated node ids. Folded into allowed_node_ids and not stored."},
+						"serve_windows":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ServeWindow"}, "description": "When this provider may answer requests. Windows are a union: one match opens the provider, an empty list means always available. A dial gate only; it never changes the price."},
 						"capability_tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "Member capability tags. A comma-separated string is also accepted. Empty array clears them. Omit to keep the stored tags. A service-group route tag list overrides these. When the route list is empty, dispatch adds these tags to the model tags, including when choosing a model inside one quality band."},
+					},
+				},
+				"ServeWindow": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"days":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Go weekday numbers: 0=Sunday ... 6=Saturday. Empty means every day."},
+						"start": map[string]any{"type": "string", "example": "22:00", "description": "Local clock time HH:MM. Later than end wraps past midnight."},
+						"end":   map[string]any{"type": "string", "example": "08:00", "description": "Exclusive. 24:00 means the end of the day."},
 					},
 				},
 			},

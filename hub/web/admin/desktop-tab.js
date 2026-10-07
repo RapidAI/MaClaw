@@ -3,6 +3,14 @@
 
   var defaults = { image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm: '512m' };
   var editingId = '';
+  // Bumped when the noVNC frame is closed, so a request still in flight does
+  // not reopen a frame the admin just dismissed.
+  var vncRequestSeq = 0;
+  // The live frame, so a second click hands the keyboard back to it instead of
+  // tearing the VNC session down and reconnecting. vncUser keeps that reuse
+  // from showing the previous user after the dropdown moved on.
+  var vncFrame = null;
+  var vncUser = '';
 
   var copy = {
     zh: {
@@ -39,6 +47,12 @@
       userId: '\u7528\u6237',
       start: '\u521b\u5efa\u684c\u9762',
       stop: '\u505c\u6b62\u684c\u9762',
+      view: 'VNC \u67e5\u770b',
+      viewOpened: 'VNC \u5df2\u6253\u5f00',
+      viewMissing: 'Docker \u670d\u52a1\u6ca1\u6709\u8fd4\u56de VNC \u5730\u5740',
+      close: '\u5173\u95ed',
+      viewNewTab: '\u65b0\u7a97\u53e3\u6253\u5f00',
+      viewHold: '\u5173\u95ed\u6b64\u7a97\u53e3\u4e0d\u4f1a\u505c\u6b62\u684c\u9762\uff1a\u684c\u9762\u4f1a\u4fdd\u6301\u8fd0\u884c 30 \u5206\u949f\uff0c\u4e5f\u53ef\u4ee5\u76f4\u63a5\u70b9\u300c\u505c\u6b62\u684c\u9762\u300d\u3002',
       remove: '\u5220\u9664',
       empty: '\u8fd8\u6ca1\u6709 Docker \u670d\u52a1\u3002',
       saved: '\u5df2\u4fdd\u5b58',
@@ -92,6 +106,12 @@
       userId: 'User',
       start: 'Create desktop',
       stop: 'Stop desktop',
+      view: 'View VNC',
+      viewOpened: 'VNC opened',
+      viewMissing: 'The Docker service returned no VNC address',
+      close: 'Close',
+      viewNewTab: 'Open in new tab',
+      viewHold: 'Closing this window does not stop the desktop. It stays up for 30 minutes, or until you press Stop desktop.',
       remove: 'Delete',
       empty: 'No Docker services yet.',
       saved: 'Saved',
@@ -133,6 +153,7 @@
     if (raw.indexOf('no docker service is assigned') !== -1) return text().notAssigned;
     if (raw.indexOf('memory is invalid') !== -1 || raw.indexOf('image is invalid') !== -1 || raw.indexOf('cpus is invalid') !== -1 || raw.indexOf('shm_size is invalid') !== -1) return text().badResources;
     if (raw.indexOf('base_url is invalid') !== -1) return text().badUrl;
+    if (raw.indexOf('vnc') !== -1) return text().viewMissing;
     return raw || text().failed;
   }
   function setLabel(id, value) { var el = byID(id); if (el) el.textContent = value; }
@@ -168,6 +189,7 @@
     setLabel('desktopUserLabel', t.userId);
     setLabel('desktopStart', t.start);
     setLabel('desktopStop', t.stop);
+    setLabel('desktopView', t.view);
     var scope = byID('desktopScope');
     if (scope && scope.options && scope.options.length === 3) {
       scope.options[0].textContent = t.global;
@@ -176,6 +198,7 @@
     }
     fillTargets();
     render(panel._view || { servers: [], assignments: [] });
+    applyVncI18n();
   }
 
   function mount() {
@@ -204,7 +227,7 @@
       + '<div class="bot-actions"><button type="button" class="btn-primary" id="desktopAssign"></button></div><div id="desktopAssignList"></div></section>'
       + '<section><h3 id="desktopRunTitle"></h3><p id="desktopRunHint"></p>'
       + '<label id="desktopUserLabel" for="desktopUser"></label><select id="desktopUser"></select>'
-      + '<div class="bot-actions"><button type="button" class="btn-secondary" id="desktopStart"></button><button type="button" class="btn-secondary" id="desktopStop"></button></div><p id="desktopRunStatus"></p></section>';
+      + '<div class="bot-actions"><button type="button" class="btn-secondary" id="desktopStart"></button><button type="button" class="btn-secondary" id="desktopStop"></button><button type="button" class="btn-secondary" id="desktopView"></button></div><p id="desktopRunStatus"></p></section>';
     byID('desktopImage').value = defaults.image;
     byID('desktopMemory').value = defaults.memory;
     byID('desktopCpus').value = defaults.cpus;
@@ -215,7 +238,21 @@
     byID('desktopScope').addEventListener('change', fillTargets);
     byID('desktopStart').addEventListener('click', function () { runDesktop(true); });
     byID('desktopStop').addEventListener('click', function () { runDesktop(false); });
+    byID('desktopView').addEventListener('click', viewDesktop);
+    closeVncOnTabSwitch();
     applyDesktopI18n();
+  }
+
+  // The frame is appended to body, so it would float over the next tab.
+  function closeVncOnTabSwitch() {
+    var original = global.openTab;
+    if (typeof original !== 'function' || original._desktopVncWrapped) return;
+    var wrapped = function () {
+      closeVncModal();
+      return original.apply(global, arguments);
+    };
+    wrapped._desktopVncWrapped = true;
+    global.openTab = wrapped;
   }
 
   function fillTargets() {
@@ -497,10 +534,130 @@
     if (status) status.textContent = msg || '';
   }
 
+  // The noVNC page is served by Hub and is framed here, so the Docker host's
+  // VNC port and its token never reach the browser address bar.
+  function ensureVncModal() {
+    var overlay = byID('desktopVncOverlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'desktopVncOverlay';
+    overlay.className = 'session-modal-overlay';
+    overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="desktopVncTitle"'
+      + ' style="width:min(1180px,calc(100% - 40px));height:min(780px,90vh);max-height:90vh;padding:0;display:flex;flex-direction:column;overflow:hidden">'
+      + '<button type="button" class="close-btn" id="desktopVncClose" aria-label="' + escapeHtml(text().close) + '">&times;</button>'
+      + '<div style="display:flex;align-items:center;gap:12px;padding:12px 44px 12px 16px;border-bottom:1px solid rgba(31,34,48,.08)">'
+      + '<strong id="desktopVncTitle" style="flex:1;font-size:14px"></strong>'
+      + '<a id="desktopVncNewTab" href="#" target="_blank" rel="noopener" style="font-size:12px"></a></div>'
+      + '<div id="desktopVncBody" style="flex:1;min-height:0;background:#0b1220;display:flex;align-items:center;justify-content:center;color:#e2e8f0;font-size:13px"></div>'
+      + '<div id="desktopVncNote" style="padding:8px 16px;border-top:1px solid rgba(31,34,48,.08);font-size:12px;color:#64748b"></div>'
+      + '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function (event) { if (event.target === overlay) closeVncModal(); });
+    // Keep the page behind the frame still while the desktop is on screen.
+    var blockBackdropScroll = function (event) {
+      if (event.target === overlay) event.preventDefault();
+    };
+    overlay.addEventListener('wheel', blockBackdropScroll, { passive: false });
+    overlay.addEventListener('touchmove', blockBackdropScroll, { passive: false });
+    byID('desktopVncClose').addEventListener('click', closeVncModal);
+    return overlay;
+  }
+
+  function applyVncI18n() {
+    var overlay = byID('desktopVncOverlay');
+    if (!overlay || !overlay.classList.contains('show')) return;
+    setLabel('desktopVncTitle', overlay.dataset.title || text().view);
+    setLabel('desktopVncNewTab', text().viewNewTab);
+    setLabel('desktopVncNote', text().viewHold);
+    var close = byID('desktopVncClose');
+    if (close) close.setAttribute('aria-label', text().close);
+  }
+
+  // Handoff paths come from Hub, but the address behind them is whatever the
+  // Docker service reported. Anything that is not an http(s) page or a
+  // same-origin path could turn the frame into a javascript: URL.
+  function safeFrameUrl(url) {
+    var raw = String(url || '').trim();
+    if (!raw) return '';
+    if (raw.charAt(0) === '/') return raw.charAt(1) === '/' ? '' : raw;
+    var parsed;
+    try { parsed = new URL(raw); } catch (err) { return ''; }
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return raw;
+    return '';
+  }
+
+  function showVncMessage(msg) {
+    var body = byID('desktopVncBody');
+    if (body) body.textContent = msg || '';
+  }
+
+  // url empty opens the frame with the message area still showing, so the
+  // request in flight has somewhere to say it is working.
+  function openVncModal(url, title, userID) {
+    var overlay = ensureVncModal();
+    var body = byID('desktopVncBody');
+    var link = byID('desktopVncNewTab');
+    if (typeof title !== 'undefined') overlay.dataset.title = title;
+    if (typeof userID !== 'undefined') vncUser = userID;
+    body.innerHTML = '';
+    vncFrame = null;
+    if (url) {
+      if (link) link.href = url;
+      var frame = document.createElement('iframe');
+      frame.src = url;
+      frame.setAttribute('allowfullscreen', 'true');
+      frame.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b1220';
+      vncFrame = frame;
+      // The frame is served by Hub, so Esc works inside it too and the
+      // keyboard goes to the desktop instead of the page behind it.
+      frame.addEventListener('load', function () {
+        try {
+          frame.contentWindow.document.addEventListener('keydown', vncEscKey);
+          frame.contentWindow.focus();
+        } catch (err) { /* a frame Hub cannot touch stays as it is */ }
+      });
+      body.appendChild(frame);
+    } else if (link) {
+      link.removeAttribute('href');
+    }
+    overlay.classList.add('show');
+    applyVncI18n();
+    document.addEventListener('keydown', vncEscKey);
+  }
+
+  function vncEscKey(event) {
+    if (event && (event.key === 'Escape' || event.key === 'Esc')) closeVncModal();
+  }
+
+  // Closing drops the iframe, which ends the noVNC websocket. The desktop
+  // itself keeps running, so a check-and-stop is still the admin's call.
+  function closeVncModal() {
+    var overlay = byID('desktopVncOverlay');
+    vncRequestSeq += 1;
+    vncFrame = null;
+    vncUser = '';
+    document.removeEventListener('keydown', vncEscKey);
+    if (!overlay) return;
+    overlay.classList.remove('show');
+    var body = byID('desktopVncBody');
+    if (body) body.innerHTML = '';
+    var link = byID('desktopVncNewTab');
+    if (link) link.removeAttribute('href');
+  }
+
   function statusLabel(status) {
     if (status === 'running') return text().statusRunning;
     if (status === 'stopped') return text().statusStopped;
     return status || '';
+  }
+
+  function setRunning(busy) {
+    var start = byID('desktopStart');
+    var stop = byID('desktopStop');
+    var view = byID('desktopView');
+    if (start) start.disabled = busy;
+    if (stop) stop.disabled = busy;
+    if (view) view.disabled = busy;
   }
 
   function runDesktop(create) {
@@ -512,10 +669,7 @@
       return;
     }
     if (panel) panel._running = true;
-    var start = byID('desktopStart');
-    var stop = byID('desktopStop');
-    if (start) start.disabled = true;
-    if (stop) stop.disabled = true;
+    setRunning(true);
     setRunStatus(text().working);
     var path = create ? '/api/admin/desktop-services/desktops' : '/api/admin/desktop-services/desktops/stop';
     return api(path, { method: 'POST', body: JSON.stringify({ user_id: userID }) }).then(function (result) {
@@ -530,8 +684,53 @@
       showToast(msg, 'error');
     }).then(function () {
       if (panel) panel._running = false;
-      if (start) start.disabled = false;
-      if (stop) stop.disabled = false;
+      setRunning(false);
+    });
+  }
+
+  function userLabel() {
+    var select = byID('desktopUser');
+    if (!select || select.selectedIndex < 0) return '';
+    var option = select.options[select.selectedIndex];
+    return option ? String(option.textContent || '').trim() : '';
+  }
+
+  function viewDesktop() {
+    var panel = host();
+    if (panel && panel._running) return;
+    var userID = (byID('desktopUser').value || '').trim();
+    if (!userID) {
+      showToast(text().targetPick, 'error');
+      return;
+    }
+    // Already watching this desktop: reconnecting would only drop the session.
+    if (vncFrame && vncUser === userID) {
+      if (vncFrame.contentWindow) {
+        try { vncFrame.contentWindow.focus(); } catch (err) { /* focus is best effort */ }
+      }
+      return;
+    }
+    if (panel) panel._running = true;
+    setRunning(true);
+    setRunStatus(text().working);
+    openVncModal('', text().view + (userLabel() ? ' \u00b7 ' + userLabel() : ''), userID);
+    showVncMessage(text().working);
+    var seq = vncRequestSeq;
+    return api('/api/admin/desktop-services/desktops/view', { method: 'POST', body: JSON.stringify({ user_id: userID }) }).then(function (result) {
+      if (seq !== vncRequestSeq) return;
+      var url = safeFrameUrl(result && result.novnc_url);
+      if (!url) throw new Error(text().viewMissing);
+      openVncModal(url);
+      setRunStatus(text().viewOpened);
+    }).catch(function (err) {
+      if (seq !== vncRequestSeq) return;
+      closeVncModal();
+      var msg = messageOf(err);
+      setRunStatus(msg);
+      showToast(msg, 'error');
+    }).then(function () {
+      if (panel) panel._running = false;
+      setRunning(false);
     });
   }
 

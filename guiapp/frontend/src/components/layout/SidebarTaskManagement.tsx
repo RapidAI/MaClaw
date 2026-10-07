@@ -324,15 +324,17 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
 const STATUS_MARK_STROKE = {
     fill: 'none',
     stroke: 'currentColor',
-    strokeWidth: 1.7,
+    strokeWidth: 1.8,
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
 };
 
 /** Row status glyph. In progress is a spinning ring; the other states keep
  * the same outer size but a different mark, so they stay distinct from the
- * task-type icon beside them. No title here: the row tooltip already carries
- * the status plus the path. */
+ * task-type icon beside them. The svg is 16px on a 16-unit viewBox so one
+ * user unit equals one CSS pixel — the previous 14px viewport scaled every
+ * stroke to ~1.5 physical px at 100% DPI and the ring read as a smear.
+ * No title here: the row tooltip already carries the status plus the path. */
 const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
     <span
         className="mc-task-status"
@@ -342,36 +344,36 @@ const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: stri
         aria-label={label}
     >
         {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
-            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                 {kind === 'completed' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
                     </>
                 )}
                 {kind === 'pending' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M8 4.35V8.15l2.45 1.5" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.35V8.15l2.45 1.5" />
                     </>
                 )}
                 {kind === 'failed' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M8 4.55v3.85" />
-                        <circle cx="8" cy="11.15" r="0.85" fill="currentColor" stroke="none" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.55v3.85" />
+                        <circle cx="8" cy="11.15" r="0.9" fill="currentColor" stroke="none" />
                     </>
                 )}
                 {kind === 'paused' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
                     </>
                 )}
                 {kind === 'cancelled' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="m4.15 11.85 7.7-7.7" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="m4.15 11.85 7.7-7.7" />
                     </>
                 )}
             </svg>
@@ -397,7 +399,7 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
             data-testid={kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
             style={{ flexShrink: 0, width: '16px', height: '16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: iconColor, opacity: 0.92, alignSelf: 'center' }}
         >
-            <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
+            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
                 {kind === 'pin' && (
                     <>
                         <path {...TASK_ICON_PROPS} d="M15 4 20 9" />

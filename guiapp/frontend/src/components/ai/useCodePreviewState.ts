@@ -58,13 +58,29 @@ export function splitCodeFileLines(text: string): string[] {
 /**
  * Bag-of-lines delta for tab / breadcrumb badges.
  * Reads are always 0/0. Creates (or missing original) count every line as added.
+ *
+ * The result is cached per file object: tab bar, file list and the overview
+ * totals all ask for the same file repeatedly, and a miss re-splits both
+ * versions of it. Preview state is immutable — every update installs a fresh
+ * CodeFile — so keying on object identity cannot serve a stale delta.
  */
 export function computeCodeFileLineDelta(
     file: Pick<CodeFile, "opType" | "content" | "original">,
 ): CodeFileLineDelta {
-    if (file.opType === "read") {
-        return { added: 0, removed: 0 };
-    }
+    if (file.opType === "read") return NO_LINE_DELTA;
+    const cached = lineDeltaCache.get(file);
+    if (cached) return cached;
+    const delta = countCodeFileLineDelta(file);
+    lineDeltaCache.set(file, delta);
+    return delta;
+}
+
+const NO_LINE_DELTA: CodeFileLineDelta = { added: 0, removed: 0 };
+const lineDeltaCache = new WeakMap<object, CodeFileLineDelta>();
+
+function countCodeFileLineDelta(
+    file: Pick<CodeFile, "opType" | "content" | "original">,
+): CodeFileLineDelta {
     const next = splitCodeFileLines(file.content || "");
     if (file.opType === "create" || file.original === undefined) {
         return { added: next.length, removed: 0 };

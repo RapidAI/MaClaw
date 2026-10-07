@@ -219,7 +219,14 @@ if (typeof I18N_ZH !== 'undefined') {
       billingEmpty: 'No windows. The base multiplier applies all day.',
       billingCurrent: 'Now', billingDroppedWindows: 'Fix windows with empty or identical start/end times before saving.',
       billingOvernight: 'If start is later than end, the window wraps past midnight. The first matching window wins.',
-      weekdaySun: 'Sun', weekdayMon: 'Mon', weekdayTue: 'Tue', weekdayWed: 'Wed', weekdayThu: 'Thu', weekdayFri: 'Fri', weekdaySat: 'Sat'
+      weekdaySun: 'Sun', weekdayMon: 'Mon', weekdayTue: 'Tue', weekdayWed: 'Wed', weekdayThu: 'Thu', weekdayFri: 'Fri', weekdaySat: 'Sat',
+      serveTitle: 'Serve window', serveHint: 'Restrict the weekdays and hours when this provider may answer (evaluated in Beijing time). Requests outside every window skip to other supply; useful for time-limited free tiers.',
+      serveAddWindow: 'Add window', serveRemoveWindow: 'Remove',
+      serveEveryday: 'Every day', serveWeekdays: 'Weekdays', serveAllDay: 'All day',
+      serveDroppedWindows: 'Fix windows with missing or identical start/end times, or invalid weekdays, before saving.',
+      serveEmpty: 'No windows. The provider answers around the clock.',
+      serveWindowBadge: 'Serve window', serveClosedNow: 'closed',
+      weekdayMonFull: 'Mon', weekdayTueFull: 'Tue', weekdayWedFull: 'Wed', weekdayThuFull: 'Thu', weekdayFriFull: 'Fri', weekdaySatFull: 'Sat', weekdaySunFull: 'Sun'
     },
     zh: {
       llmTabTitle: 'LLM \u670d\u52a1', llmTabDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
@@ -422,7 +429,14 @@ if (typeof I18N_ZH !== 'undefined') {
       billingEmpty: '\u6682\u65e0\u5206\u65f6\u65f6\u6bb5\uff0c\u5168\u5929\u4f7f\u7528\u57fa\u7840\u500d\u7387\u3002',
       billingCurrent: '\u5f53\u524d', billingDroppedWindows: '\u5148\u4fee\u597d\u5f00\u59cb\u548c\u7ed3\u675f\u76f8\u540c\u6216\u4e3a\u7a7a\u7684\u65f6\u6bb5\uff0c\u518d\u4fdd\u5b58\u3002',
       billingOvernight: '\u5f00\u59cb\u665a\u4e8e\u7ed3\u675f\u65f6\uff0c\u65f6\u6bb5\u4f1a\u8de8\u8fc7\u5348\u591c\u3002\u5148\u5339\u914d\u5230\u7684\u65f6\u6bb5\u751f\u6548\u3002',
-      weekdaySun: '\u65e5', weekdayMon: '\u4e00', weekdayTue: '\u4e8c', weekdayWed: '\u4e09', weekdayThu: '\u56db', weekdayFri: '\u4e94', weekdaySat: '\u516d'
+      weekdaySun: '\u65e5', weekdayMon: '\u4e00', weekdayTue: '\u4e8c', weekdayWed: '\u4e09', weekdayThu: '\u56db', weekdayFri: '\u4e94', weekdaySat: '\u516d',
+      serveTitle: '\u670d\u52a1\u65f6\u6bb5', serveHint: '\u9650\u5236\u8be5\u670d\u52a1\u5546\u53ef\u4ee5\u63a5\u5355\u7684\u661f\u671f\u4e0e\u65f6\u6bb5\uff08\u6309\u5317\u4eac\u65f6\u95f4\u5224\u5b9a\uff09\u3002\u65f6\u6bb5\u5916\u7684\u8bf7\u6c42\u81ea\u52a8\u6539\u7528\u5176\u5b83\u4f9b\u7ed9\uff0c\u9002\u7528\u4e8e\u9650\u65f6\u514d\u8d39\u7b49\u573a\u666f\u3002',
+      serveAddWindow: '\u6dfb\u52a0\u65f6\u6bb5', serveRemoveWindow: '\u5220\u9664',
+      serveEveryday: '\u6bcf\u5929', serveWeekdays: '\u5de5\u4f5c\u65e5', serveAllDay: '\u5168\u5929',
+      serveDroppedWindows: '\u5148\u4fee\u597d\u5f00\u59cb\u7ed3\u675f\u4e3a\u7a7a\u3001\u76f8\u540c\u6216\u661f\u671f\u65e0\u6548\u7684\u65f6\u6bb5\uff0c\u518d\u4fdd\u5b58\u3002',
+      serveEmpty: '\u6682\u65e0\u9650\u5236\uff0c\u5168\u5929\u53ef\u63a5\u5355\u3002',
+      serveWindowBadge: '\u670d\u52a1\u65f6\u6bb5', serveClosedNow: '\u4e0d\u53ef\u63a5\u5355',
+      weekdayMonFull: '\u5468\u4e00', weekdayTueFull: '\u5468\u4e8c', weekdayWedFull: '\u5468\u4e09', weekdayThuFull: '\u5468\u56db', weekdayFriFull: '\u5468\u4e94', weekdaySatFull: '\u5468\u516d', weekdaySunFull: '\u5468\u65e5'
     }
   };
   function t(k) { var l = (window.currentLang || 'en').startsWith('zh') ? 'zh' : 'en'; return (I18N[l]||I18N.en)[k] || I18N.en[k] || k; }
@@ -464,6 +478,9 @@ if (typeof I18N_ZH !== 'undefined') {
   var providerAccessNodes = [];
   var providerBillingSchedule = [];
   var providerTokenPricingSchedule = [];
+  var providerServeWindowSchedule = [];
+  var providerServeWeekdayOrder = [1, 2, 3, 4, 5, 6, 0];
+  var providerServeWeekdayKeys = ['weekdayMonFull','weekdayTueFull','weekdayWedFull','weekdayThuFull','weekdayFriFull','weekdaySatFull','weekdaySunFull'];
   var providerBillingNowTimer = 0;
   var providerBillingTimezoneOptions = ['Asia/Shanghai','Asia/Hong_Kong','Asia/Tokyo','UTC','America/New_York','Europe/London'];
   var providerBillingWeekdayKeys = ['weekdaySun','weekdayMon','weekdayTue','weekdayWed','weekdayThu','weekdayFri','weekdaySat'];
@@ -1480,6 +1497,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + providerBillingBadge(p)
       + providerWorkBuddyBadge(p)
       + providerAccessBadge(p)
+      + providerServeBadge(p)
       + '</div>'
       + '<span class="data-row-meta" title="' + dragHint + '">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
       + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
@@ -1534,6 +1552,7 @@ if (typeof I18N_ZH !== 'undefined') {
     bindProviderArrayDrag(el);
     patchProviderTraffic();
     scheduleProviderCanaryRefresh();
+    startProviderServeBadgeClock();
   }
   window.toggleProviderArray = function(id) {
     if (!id) return;
@@ -1642,6 +1661,7 @@ if (typeof I18N_ZH !== 'undefined') {
     }
     payload.token_pricing = pricing;
     if (provider.allowed_node_ids) payload.allowed_node_ids = provider.allowed_node_ids;
+    payload.serve_windows = Array.isArray(provider.serve_windows) ? provider.serve_windows : [];
     payload.array_id = arrayID;
     return payload;
   }
@@ -1836,13 +1856,21 @@ if (typeof I18N_ZH !== 'undefined') {
     if (minutes < end) return providerBillingWeekdayMatches(window.days, weekday) || providerBillingWeekdayMatches(window.days, (weekday + 6) % 7);
     return false;
   }
+  var providerClockFormatterCache = {};
   function providerBillingNowParts(timezone) {
     timezone = String(timezone || 'Asia/Shanghai').trim() || 'Asia/Shanghai';
     var now = new Date();
     function read(tz) {
-      var parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23'
-      }).formatToParts(now);
+      // Constructing Intl.DateTimeFormat dominates this helper; cache one
+      // formatter per timezone since it is stateless between formatToParts.
+      var formatter = providerClockFormatterCache[tz];
+      if (!formatter) {
+        formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23'
+        });
+        providerClockFormatterCache[tz] = formatter;
+      }
+      var parts = formatter.formatToParts(now);
       var map = {};
       parts.forEach(function(part) { map[part.type] = part.value; });
       var weekday = { Sun:0,Sunday:0,Mon:1,Monday:1,Tue:2,Tues:2,Tuesday:2,Wed:3,Wednesday:3,Thu:4,Thur:4,Thurs:4,Thursday:4,Fri:5,Friday:5,Sat:6,Saturday:6 }[String(map.weekday||'').replace(/\.$/, '')];
@@ -2331,6 +2359,203 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!ids.length) return '';
     return '<span class="badge">' + esc(t('accessScopeSelected') + ': ' + ids.join(', ')) + '</span>';
   }
+  function providerServeWindowAllDay(item) {
+    return (item && item.start) === '00:00' && (item && item.end) === '24:00';
+  }
+  function providerServeDaysInvalid(days) {
+    if (!Array.isArray(days)) return true;
+    var seen = {};
+    for (var i = 0; i < days.length; i++) {
+      var n = Number(days[i]);
+      if (!isFinite(n) || n < 0 || n > 6 || n !== Math.round(n) || seen[n]) return true;
+      seen[n] = true;
+    }
+    return false;
+  }
+  function normalizeProviderServeWindow(item) {
+    var days = normalizeProviderBillingDays(item && item.days);
+    if (days == null) return null;
+    return {
+      days: days,
+      start: normalizeProviderBillingClock(item && item.start) || '00:00',
+      end: normalizeProviderBillingClock(item && item.end) || '24:00'
+    };
+  }
+  function cloneProviderServeWindows(windows) {
+    // Broken rows stay visible and block the save: silently dropping them
+    // would widen availability beyond the hours that were stored.
+    return (windows || []).map(function(w) {
+      return {
+        days: (w && Array.isArray(w.days)) ? w.days.slice() : [],
+        start: normalizeProviderBillingClock(w && w.start),
+        end: normalizeProviderBillingClock(w && w.end)
+      };
+    }).filter(function(w) { return w.days.length || w.start || w.end; });
+  }
+  function providerServeWindowInvalid(item) {
+    var start = parseProviderBillingMinutes(item && item.start);
+    var end = parseProviderBillingMinutes(item && item.end);
+    if (start < 0 || end < 0 || start === end) return true;
+    return providerServeDaysInvalid(item && item.days);
+  }
+  function providerServeWindowsHTML() {
+    if (!(providerServeWindowSchedule || []).length) {
+      return '<div class="provider-billing-empty">' + esc(t('serveEmpty')) + '</div>';
+    }
+    return providerServeWindowSchedule.map(providerServeWindowHTML).join('');
+  }
+  function providerServeWindowHTML(item, index) {
+    var days = uniqueProviderBillingDays(item && item.days);
+    var everyday = !days.length;
+    var weekdays = providerBillingDaysAreWeekdays(days);
+    var allDay = providerServeWindowAllDay(item);
+    var chips = providerServeWeekdayOrder.map(function(day, position) {
+      var on = everyday || days.indexOf(day) >= 0;
+      return '<button type="button" id="llmPrvServeDay' + index + '_' + day + '" class="provider-day-chip' + (on ? ' is-active' : '') + '" aria-pressed="' + (on ? 'true' : 'false') + '" onclick="toggleProviderServeDay(' + index + ',' + day + ')">' + esc(t(providerServeWeekdayKeys[position])) + '</button>';
+    }).join('');
+    function timeField(key) {
+      var id = 'llmPrvServe' + (key === 'start' ? 'Start' : 'End') + index;
+      var isEnd24 = key === 'end' && item && item.end === '24:00';
+      // A native time input cannot hold 24:00, so the end of the day renders
+      // as an editable text field instead.
+      var input = isEnd24
+        ? '<input id="' + id + '" type="text" inputmode="numeric" value="24:00"' + (allDay ? ' disabled' : '')
+          + ' oninput="setProviderServeField(' + index + ',\'end\',this.value)" onchange="setProviderServeField(' + index + ',\'end\',this.value)">'
+        : '<input id="' + id + '" type="time" value="' + esc((item && item[key]) || (key === 'start' ? '00:00' : '23:59')) + '"' + (allDay ? ' disabled' : '')
+          + ' oninput="setProviderServeField(' + index + ',\'' + key + '\',this.value)" onchange="setProviderServeField(' + index + ',\'' + key + '\',this.value)">';
+      return '<div><label for="' + id + '">' + esc(t(key === 'start' ? 'billingStart' : 'billingEnd')) + '</label>' + input + '</div>';
+    }
+    return '<div class="provider-billing-window' + (providerServeWindowInvalid(item) ? ' is-invalid' : '') + '">'
+      + '<div class="provider-billing-presets">'
+      + '<button type="button" id="llmPrvServePreset' + index + '_everyday" class="provider-preset-chip' + (everyday ? ' is-active' : '') + '" aria-pressed="' + (everyday ? 'true' : 'false') + '" onclick="setProviderServePreset(' + index + ',\'everyday\')">' + esc(t('serveEveryday')) + '</button>'
+      + '<button type="button" id="llmPrvServePreset' + index + '_weekdays" class="provider-preset-chip' + (weekdays ? ' is-active' : '') + '" aria-pressed="' + (weekdays ? 'true' : 'false') + '" onclick="setProviderServePreset(' + index + ',\'weekdays\')">' + esc(t('serveWeekdays')) + '</button>'
+      + '</div>'
+      + '<div class="provider-billing-days">' + chips + '</div>'
+      + '<div class="provider-billing-times provider-serve-times">'
+      + '<div class="provider-serve-allday"><label for="llmPrvServeAllDay' + index + '">' + esc(t('serveAllDay')) + '</label>'
+      + '<input id="llmPrvServeAllDay' + index + '" type="checkbox"' + (allDay ? ' checked' : '') + ' onchange="setProviderServeAllDay(' + index + ',this.checked)"></div>'
+      + timeField('start') + timeField('end')
+      + '<button class="btn-ghost" type="button" id="llmPrvServeRemove' + index + '" onclick="removeProviderServeWindow(' + index + ')">' + esc(t('serveRemoveWindow')) + '</button>'
+      + '</div></div>';
+  }
+  function renderProviderServeWindows() {
+    var el = document.getElementById('llmPrvServeWindows');
+    if (!el) return;
+    el.innerHTML = providerServeWindowsHTML();
+  }
+  function providerServeSection() {
+    // Not provider-access-scope: the access handlers replace the first
+    // element with that class, so the serve box must not match it.
+    return '<div class="provider-serve-scope"><div class="provider-billing-title"><strong>' + esc(t('serveTitle')) + '</strong></div>'
+      + '<div class="provider-billing-hint">' + esc(t('serveHint')) + '</div>'
+      + '<div class="provider-billing-head"><span></span><button class="btn-ghost" type="button" onclick="addProviderServeWindow()">' + esc(t('serveAddWindow')) + '</button></div>'
+      + '<div id="llmPrvServeWindows">' + providerServeWindowsHTML() + '</div></div>';
+  }
+  window.addProviderServeWindow = function() {
+    providerServeWindowSchedule.push({ days: [1, 2, 3, 4, 5], start: '00:00', end: '24:00' });
+    renderProviderServeWindows();
+  };
+  window.removeProviderServeWindow = function(index) {
+    providerServeWindowSchedule.splice(index, 1);
+    renderProviderServeWindows();
+  };
+  window.setProviderServePreset = function(index, preset) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    item.days = preset === 'weekdays' ? [1, 2, 3, 4, 5] : [];
+    renderProviderServeWindows();
+    focusProviderBillingControl('llmPrvServePreset' + index + '_' + preset);
+  };
+  window.toggleProviderServeDay = function(index, day) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    var days = uniqueProviderBillingDays(item.days);
+    if (!days.length) days = [0, 1, 2, 3, 4, 5, 6];
+    var pos = days.indexOf(day);
+    if (pos >= 0) days.splice(pos, 1);
+    else days.push(day);
+    item.days = normalizeProviderBillingDays(days) || [];
+    renderProviderServeWindows();
+    focusProviderBillingControl('llmPrvServeDay' + index + '_' + day);
+  };
+  window.setProviderServeField = function(index, key, value) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    item[key] = normalizeProviderBillingClock(value);
+    var root = document.querySelectorAll('#llmPrvServeWindows .provider-billing-window')[index];
+    if (root) root.classList.toggle('is-invalid', providerServeWindowInvalid(item));
+  };
+  window.setProviderServeAllDay = function(index, on) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    if (on) {
+      item.start = '00:00';
+      item.end = '24:00';
+    } else if (providerServeWindowAllDay(item)) {
+      item.start = '09:00';
+      item.end = '18:00';
+    }
+    renderProviderServeWindows();
+  };
+  function readProviderServeWindows() {
+    return (providerServeWindowSchedule || []).map(normalizeProviderServeWindow).filter(Boolean).filter(function(w) {
+      return !providerServeWindowInvalid(w);
+    });
+  }
+  function providerServeWindowsDropped() {
+    return readProviderServeWindows().length !== (providerServeWindowSchedule || []).length;
+  }
+  function providerHasServeWindows(p) {
+    return !!(p && Array.isArray(p.serve_windows) && p.serve_windows.length);
+  }
+  function providerServeSummary(p) {
+    return (p && p.serve_windows || []).map(function(w) {
+      var days = uniqueProviderBillingDays(w.days);
+      var dayLabel = days.length ? days.map(function(d) { return t(providerBillingWeekdayKeys[d]); }).join('/') : t('billingEveryday');
+      return dayLabel + ' ' + (w.start || '00:00') + '\u2013' + (w.end || '24:00');
+    }).join('; ');
+  }
+  function providerServeBadge(p) {
+    if (!providerHasServeWindows(p)) return '';
+    // The dial gate always evaluates in Asia/Shanghai on the backend, so the
+    // badge must not follow the provider's billing timezone.
+    var parts = providerBillingNowParts('Asia/Shanghai');
+    var open = (p.serve_windows || []).some(function(w) { return providerBillingWindowMatches(w, parts.weekday, parts.minutes); });
+    var title = esc(t('serveWindowBadge') + ': ' + providerServeSummary(p));
+    var cls = 'badge provider-serve-badge' + (open ? ' info' : ' warn');
+    var text = open ? t('serveWindowBadge') : t('serveWindowBadge') + ' \u00b7 ' + t('serveClosedNow');
+    return '<span class="' + cls + '" data-provider-id="' + esc(p.id) + '" title="' + title + '">' + esc(text) + '</span>';
+  }
+  var providerServeBadgeTimer = 0;
+  function refreshProviderServeBadges() {
+    // The list rows re-render only on data loads; flip the badges in place so
+    // a tab left open does not advertise a window that closed an hour ago.
+    var root = document.getElementById('llmProvidersList');
+    if (!root) return;
+    var badges = root.querySelectorAll('.provider-serve-badge');
+    if (!badges.length) return;
+    var parts = providerBillingNowParts('Asia/Shanghai');
+    badges.forEach(function(el) {
+      var id = el.getAttribute('data-provider-id') || '';
+      var provider = null;
+      for (var i = 0; i < providers.length; i++) {
+        if (id && providers[i] && providers[i].id === id) { provider = providers[i]; break; }
+      }
+      if (!providerHasServeWindows(provider)) return;
+      var open = (provider.serve_windows || []).some(function(w) { return providerBillingWindowMatches(w, parts.weekday, parts.minutes); });
+      var title = esc(t('serveWindowBadge') + ': ' + providerServeSummary(provider));
+      el.className = 'badge provider-serve-badge' + (open ? ' info' : ' warn');
+      el.textContent = open ? t('serveWindowBadge') : t('serveWindowBadge') + ' \u00b7 ' + t('serveClosedNow');
+      el.setAttribute('title', title);
+    });
+  }
+  function startProviderServeBadgeClock() {
+    if (providerServeBadgeTimer) return;
+    providerServeBadgeTimer = setInterval(function() {
+      if (document.visibilityState === 'hidden') return;
+      refreshProviderServeBadges();
+    }, 60000);
+  }
   window.showProviderDialog = async function(mode, id, opts) {
     var seq = ++providerDialogSeq;
     var p = mode === 'edit' ? providers.find(function(x){return x.id===id;}) : null;
@@ -2342,6 +2567,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!(opts && opts.keepBilling)) {
       providerBillingSchedule = cloneProviderBillingSchedule(p && p.credit_multiplier_schedule);
       providerTokenPricingSchedule = cloneProviderTokenPricingSchedule(p && p.token_pricing && p.token_pricing.price_schedule);
+      providerServeWindowSchedule = cloneProviderServeWindows(p && p.serve_windows);
       var savedIDs = (p && p.allowed_node_ids) || [];
       providerAccessMode = savedIDs.length ? 'nodes' : 'all';
       providerAccessSelected = {};
@@ -2377,6 +2603,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + '</div><div class="hint">' + esc(t('sequenceHint')) + '</div>'
       + providerArraySection(p, selectedArrayID)
       + providerAccessScopeSection()
+      + providerServeSection()
       + '<div id="llmPrvBillingNote" class="hint">' + esc(t('providerArrayBillingOnEdit')) + '</div>',
       '<button class="btn-primary" onclick="saveProvider(' + jsArg(mode==='edit'?id:'') + ')">' + esc(t('save')) + '</button>'
       + '<button class="btn-ghost" onclick="sgCloseCurrentDialog()">' + esc(t('cancel')) + '</button>');
@@ -2646,6 +2873,14 @@ if (typeof I18N_ZH !== 'undefined') {
     payload.timezone = billing.timezone;
     payload.credit_multiplier = billing.credit_multiplier;
     payload.credit_multiplier_schedule = billing.credit_multiplier_schedule;
+    // The serve editor is authoritative for the dial windows. An empty or
+    // half-filled window would silently widen availability to "always on",
+    // so the save is refused rather than repaired.
+    if (providerServeWindowsDropped()) {
+      toast(t('serveDroppedWindows'), 'error');
+      return;
+    }
+    payload.serve_windows = readProviderServeWindows();
     if (providerAccessMode === 'nodes') {
       var nodeInput = document.getElementById('llmPrvNodes');
       if (nodeInput) {
@@ -4566,6 +4801,7 @@ if (typeof I18N_ZH !== 'undefined') {
       options: (document.getElementById('llmPrvModelOptions') || {}).innerHTML || '',
       accessMode: providerAccessMode,
       accessSelected: Object.assign({}, providerAccessSelected),
+      serveWindows: JSON.parse(JSON.stringify(providerServeWindowSchedule || [])),
       arrayID: val('llmPrvArray')
     };
     var opened = window.showProviderDialog(providerDialogID ? 'edit' : 'create', providerDialogID, {keepBilling:true, arrayID:snap.arrayID, timezone:snap.timezone, multiplier:snap.multiplier});
@@ -4583,6 +4819,8 @@ if (typeof I18N_ZH !== 'undefined') {
       providerAccessSelected = snap.accessSelected || {};
       var accessRoot = document.querySelector('.provider-access-scope');
       if (accessRoot) accessRoot.outerHTML = providerAccessScopeSection();
+      providerServeWindowSchedule = snap.serveWindows || [];
+      renderProviderServeWindows();
       var status = document.getElementById('llmPrvProbeStatus');
       var choices = document.getElementById('llmPrvModelChoices');
       var list = document.getElementById('llmPrvModelOptions');

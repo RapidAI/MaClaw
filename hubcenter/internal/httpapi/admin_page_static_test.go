@@ -1524,7 +1524,7 @@ func TestAdminPageTokenBankArraysCannotBeDeleted(t *testing.T) {
 	html := readAdminPageHTML(t)
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	assertContainsAll(t, html, "token bank array protect cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=sg-array-drag-20261004-12`,
+		`/admin/assets/js/llm-service-tab.js?v=serve-window-20261006-1`,
 	})
 	assertContainsAll(t, js, "token bank array delete guard", []string{
 		`function providerArrayProtected(array)`,
@@ -1553,8 +1553,8 @@ func TestAdminPageServiceGroupArrayDrag(t *testing.T) {
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 	assertContainsAll(t, html, "service group array drag cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=sg-array-drag-20261004-12`,
-		`/admin/assets/css/admin-shell.css?v=sg-array-drag-20261004-12`,
+		`/admin/assets/js/llm-service-tab.js?v=serve-window-20261006-1`,
+		`/admin/assets/css/admin-shell.css?v=serve-window-20261006-1`,
 	})
 	assertContainsAll(t, js, "service group array drag", []string{
 		`sgArrayDragHint: 'Drag an array to change its place in this group'`,
@@ -1660,8 +1660,8 @@ func TestAdminPageProviderCanaryMark(t *testing.T) {
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 	assertContainsAll(t, html, "provider canary mark cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=sg-array-drag-20261004-12`,
-		`/admin/assets/css/admin-shell.css?v=sg-array-drag-20261004-12`,
+		`/admin/assets/js/llm-service-tab.js?v=serve-window-20261006-1`,
+		`/admin/assets/css/admin-shell.css?v=serve-window-20261006-1`,
 	})
 	assertContainsAll(t, js, "provider canary mark", []string{
 		`providerCanaryUntil: 'Canary until {time}'`,

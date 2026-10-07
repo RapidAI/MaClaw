@@ -551,9 +551,18 @@ func (s *MemoryStore) ListRecoveryCandidates() ([]*Attempt, error) {
 	defer s.mu.Unlock()
 	var candidates []*Attempt
 	for _, attempt := range s.attempts {
-		if attempt.Status == TaskInterrupted || attempt.SideEffectState == SideEffectUncertain {
-			candidates = append(candidates, cloneAttempt(attempt))
+		if attempt.Status != TaskInterrupted && attempt.SideEffectState != SideEffectUncertain {
+			continue
 		}
+		// A candidate whose logical task already ended (completed, failed, or
+		// cancelled — e.g. a declined recovery) is history, not a recovery offer.
+		if task := s.tasks[attempt.TaskID]; task != nil {
+			switch task.Status {
+			case TaskCompleted, TaskFailed, TaskCancelled:
+				continue
+			}
+		}
+		candidates = append(candidates, cloneAttempt(attempt))
 	}
 	return candidates, nil
 }

@@ -395,10 +395,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/audit/export", requireTenantAdmin(GetCloudWorkspaceAuditExportAdminHandler(cloudWorkspaceSvc)))
 	botSvc := botmgmt.NewService(system)
 	mux.HandleFunc("GET /api/admin/bots/settings", requireTenantAdmin(GetBotSettingsAdminHandler(botSvc)))
-	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc)))
+	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("POST /api/admin/bots/connection/test", requireTenantAdmin(TestBotConnectionAdminHandler(botSvc)))
-	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc)))
-	mux.HandleFunc("DELETE /api/admin/bots/grants/{id}", requireTenantAdmin(DeleteBotGrantAdminHandler(botSvc)))
+	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("DELETE /api/admin/bots/grants/{id}", requireTenantAdmin(DeleteBotGrantAdminHandler(botSvc, adminAudit)))
 	var desktopDirectory desktoppool.Directory
 	if platformUsers != nil && securitySvc != nil {
 		directory := securityDirectory{users: platformUsers, sec: securitySvc}
@@ -413,8 +413,9 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/desktop-services/{id}", requireTenantAdmin(DeleteDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("POST /api/admin/desktop-services/assignments", requireTenantAdmin(PostDesktopAssignmentAdminHandler(desktopPool)))
 	mux.HandleFunc("DELETE /api/admin/desktop-services/assignments/{id}", requireTenantAdmin(DeleteDesktopAssignmentAdminHandler(desktopPool)))
-	mux.HandleFunc("POST /api/admin/desktop-services/desktops", requireTenantAdmin(PostDesktopCreateAdminHandler(desktopPool)))
-	mux.HandleFunc("POST /api/admin/desktop-services/desktops/stop", requireTenantAdmin(PostDesktopStopAdminHandler(desktopPool)))
+	mux.HandleFunc("POST /api/admin/desktop-services/desktops", requireTenantAdmin(PostDesktopCreateAdminHandler(desktopPool, botSvc)))
+	mux.HandleFunc("POST /api/admin/desktop-services/desktops/stop", requireTenantAdmin(PostDesktopStopAdminHandler(desktopPool, botSvc)))
+	mux.HandleFunc("POST /api/admin/desktop-services/desktops/view", requireTenantAdmin(PostDesktopViewAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("POST /api/v1/desktop-services/session", PostDesktopSessionHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/stop", PostDesktopStopHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/hold", PostDesktopHoldHandler(botSvc))

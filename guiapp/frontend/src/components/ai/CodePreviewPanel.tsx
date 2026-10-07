@@ -27,10 +27,14 @@ import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePrevi
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
-import { computeDiff } from './diffCompute';
-import type { DiffLine } from './diffCompute';
+import { buildDiffRows, computeDiff, computeDiffRowStats, type DiffLine, type DiffRow } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
+import { CodePreviewDiffView, CodeDiffSummaryBar, type CodeDiffMode } from './CodePreviewDiffView';
+
+// The minimap samples one entry per visual row; the diff view reports the rows
+// it actually renders (folding / pairing changes that count).
+const EMPTY_MINIMAP_ROWS: DiffLine[] = [];
 import { CodePreviewMinimap } from './CodePreviewMinimap';
 import { CodePreviewWorkspace } from './CodePreviewWorkspace';
 import { CloudWorkspaceEntitlement } from '../../../wailsjs/go/main/App';
@@ -324,6 +328,12 @@ function tokenColor(type: HighlightToken['type'], theme: CodePreviewTheme): stri
 
 /** Stable empty match list — avoids child re-renders when find is closed. */
 const EMPTY_MATCH_LINE_INDEXES: number[] = [];
+
+/** Stable empty diff row list — keeps the diff view memo stable. */
+const EMPTY_DIFF_ROWS: DiffRow[] = [];
+
+/** Below this preview width the side-by-side diff stops being readable. */
+const DIFF_SPLIT_MIN_WIDTH = 620;
 
 const HighlightedLine = React.memo(function HighlightedLine({ line, language, theme }: {
     line: string;
@@ -634,134 +644,8 @@ function CodePreviewFindBar({
 }
 
 // ── Diff View ──
-
-const DiffView = React.memo(function DiffView({
-    diffLines,
-    theme,
-    matchLineIndexes = EMPTY_MATCH_LINE_INDEXES,
-    activeMatchLine = -1,
-    wordWrap = false,
-    fontSize = CODE_PREVIEW_FONT_DEFAULT,
-}: {
-    diffLines: DiffLine[];
-    theme: CodePreviewTheme;
-    /** 0-based line indexes in the *new* file content. */
-    matchLineIndexes?: number[];
-    activeMatchLine?: number;
-    wordWrap?: boolean;
-    fontSize?: number;
-}) {
-    const matchSet = useMemo(() => new Set(matchLineIndexes), [matchLineIndexes]);
-    const size = clampCodePreviewFontSize(fontSize);
-    const lineHeight = codePreviewLineHeight(size);
-
-    return (
-        <table
-            data-testid="code-preview-diff-view"
-            data-word-wrap={wordWrap ? 'true' : 'false'}
-            data-font-size={String(size)}
-            style={{
-                borderCollapse: 'collapse',
-                width: '100%',
-                fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
-                fontSize: size,
-                lineHeight: `${lineHeight}px`,
-            }}
-        >
-            <tbody>
-                {diffLines.map((dl, idx) => {
-                    let rowBg: string | undefined;
-                    let rowColor: string = theme.text;
-                    let prefix = ' ';
-
-                    if (dl.type === 'add') {
-                        rowBg = theme.diffAddBg;
-                        rowColor = theme.diffAddText;
-                        prefix = '+';
-                    } else if (dl.type === 'delete') {
-                        rowBg = theme.diffDeleteBg;
-                        rowColor = theme.diffDeleteText;
-                        prefix = '-';
-                    }
-
-                    // Find highlights target new-file lines (add / unchanged).
-                    const contentLineIdx = dl.newLineNum != null ? dl.newLineNum - 1 : -1;
-                    const isMatch = contentLineIdx >= 0 && matchSet.has(contentLineIdx);
-                    const isActiveMatch = contentLineIdx >= 0 && contentLineIdx === activeMatchLine;
-                    if (isActiveMatch) {
-                        rowBg = 'rgba(234, 179, 8, 0.28)';
-                    } else if (isMatch) {
-                        rowBg = 'rgba(234, 179, 8, 0.12)';
-                    }
-
-                    return (
-                        <tr
-                            key={idx}
-                            data-line={dl.newLineNum ?? undefined}
-                            data-diff-idx={idx}
-                            data-find-match={isMatch ? 'true' : undefined}
-                            data-find-active={isActiveMatch ? 'true' : undefined}
-                            style={{ backgroundColor: rowBg }}
-                        >
-                            {/* Old line number */}
-                            <td style={{
-                                width: 40,
-                                minWidth: 40,
-                                textAlign: 'right',
-                                paddingRight: 6,
-                                paddingLeft: 8,
-                                color: theme.lineNumText,
-                                backgroundColor: rowBg ?? theme.lineNumBg,
-                                userSelect: 'none',
-                                verticalAlign: 'top',
-                            }}>
-                                {dl.oldLineNum ?? ''}
-                            </td>
-                            {/* New line number */}
-                            <td style={{
-                                width: 40,
-                                minWidth: 40,
-                                textAlign: 'right',
-                                paddingRight: 6,
-                                color: theme.lineNumText,
-                                backgroundColor: rowBg ?? theme.lineNumBg,
-                                userSelect: 'none',
-                                verticalAlign: 'top',
-                                borderRight: `1px solid ${theme.border}`,
-                            }}>
-                                {dl.newLineNum ?? ''}
-                            </td>
-                            {/* Prefix indicator */}
-                            <td style={{
-                                width: 20,
-                                minWidth: 20,
-                                textAlign: 'center',
-                                color: rowColor,
-                                userSelect: 'none',
-                                verticalAlign: 'top',
-                                fontWeight: dl.type !== 'unchanged' ? 600 : 400,
-                            }}>
-                                {dl.type !== 'unchanged' ? prefix : ''}
-                            </td>
-                            {/* Content */}
-                            <td style={{
-                                paddingLeft: 4,
-                                paddingRight: 8,
-                                whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
-                                wordBreak: wordWrap ? 'break-word' : undefined,
-                                overflowWrap: wordWrap ? 'anywhere' : undefined,
-                                color: rowColor,
-                                textAlign: 'left',
-                            }}>
-                                {dl.content}
-                            </td>
-                        </tr>
-                    );
-                })}
-            </tbody>
-        </table>
-    );
-});
+// The change-focused diff renderer lives in CodePreviewDiffView.tsx (paired
+// modify rows, word-level marks, hunk folding, 并排/内联 layouts).
 
 /** Compact view toolbar: wrap + font zoom + minimap. Hosts set the row font
  * (e.g. the path breadcrumb is monospace), so pin the UI font stack here. */
@@ -1056,6 +940,21 @@ export function CodePreviewPanel({
     const findInputRef = useRef<HTMLInputElement>(null);
     const gotoInputRef = useRef<HTMLInputElement>(null);
     const savedScrollTop = useRef<number>(0);
+
+    // Width of the preview body, used to keep the split diff readable: two code
+    // columns inside a narrow pane are unusable, so the layout falls back to
+    // inline until the user picks a mode explicitly.
+    const [paneWidth, setPaneWidth] = useState(0);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver((entries) => {
+            const width = entries[0]?.contentRect?.width ?? 0;
+            if (width > 0) setPaneWidth((prev) => (Math.abs(prev - width) > 8 ? width : prev));
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
     const prevContentRef = useRef<string>('');
     const scrollFlashTimerRef = useRef<number | null>(null);
     const scrollFlashElRef = useRef<HTMLElement | null>(null);
@@ -1091,6 +990,15 @@ export function CodePreviewPanel({
     const [wordWrap, setWordWrap] = useState(() => initialViewPrefsRef.current!.wordWrap);
     const [fontSize, setFontSize] = useState(() => initialViewPrefsRef.current!.fontSize);
     const [minimap, setMinimap] = useState(() => initialViewPrefsRef.current!.minimap);
+    const [diffMode, setDiffMode] = useState<CodeDiffMode>(() => initialViewPrefsRef.current!.diffMode);
+    /** False once the user picks a layout: automatic narrow-pane fallback stops. */
+    const [diffModeAuto, setDiffModeAuto] = useState(true);
+    const [diffOnlyChanges, setDiffOnlyChanges] = useState(() => initialViewPrefsRef.current!.diffOnlyChanges);
+    /** Fold untouched regions around each change (hunk view). */
+    const [diffFoldUnchanged, setDiffFoldUnchanged] = useState(true);
+    /** Ordinal of the change the user jumped to, plus a nonce to re-scroll. */
+    const [diffCursor, setDiffCursor] = useState(0);
+    const [diffFocusNonce, setDiffFocusNonce] = useState(0);
     const skipNextPrefsSaveRef = useRef(true);
 
     // Persist view prefs when wrap/font/minimap change; skip the mount effect write-back.
@@ -1099,8 +1007,8 @@ export function CodePreviewPanel({
             skipNextPrefsSaveRef.current = false;
             return;
         }
-        saveCodePreviewViewPrefs({ wordWrap, fontSize, minimap });
-    }, [wordWrap, fontSize, minimap]);
+        saveCodePreviewViewPrefs({ wordWrap, fontSize, minimap, diffMode, diffOnlyChanges });
+    }, [wordWrap, fontSize, minimap, diffMode, diffOnlyChanges]);
 
     const activeFile = files.get(activeFilePath);
 
@@ -1212,11 +1120,65 @@ export function CodePreviewPanel({
         return computeDiff(activeFile.original, activeFile.content);
     }, [activeFile?.original, activeFile?.content, activeFile?.previewTruncated]);
 
+    // Pair removals with their rewrite so the view can show "改了什么" as one
+    // unit instead of a bare `-` followed by a bare `+`.
+    const diffRows = useMemo<DiffRow[]>(() => (diffLines ? buildDiffRows(diffLines) : EMPTY_DIFF_ROWS), [diffLines]);
+    const diffStats = useMemo(() => computeDiffRowStats(diffRows), [diffRows]);
+    const diffChangeCount = useMemo(
+        () => diffRows.reduce((n, row) => (row.kind === 'unchanged' ? n : n + 1), 0),
+        [diffRows],
+    );
+    const diffHasChange = diffChangeCount > 0;
+    // Narrow pane: two columns would be unreadable, so the automatic fallback
+    // applies only until the user picks a layout explicitly.
+    const effectiveDiffMode: CodeDiffMode =
+        diffModeAuto && paneWidth > 0 && paneWidth < DIFF_SPLIT_MIN_WIDTH ? 'inline' : diffMode;
+    const chooseDiffMode = useCallback((mode: CodeDiffMode) => {
+        setDiffMode(mode);
+        setDiffModeAuto(false);
+    }, []);
+
+    // Rows the diff view actually renders, mirrored into the minimap.
+    const [minimapDiffRows, setMinimapDiffRows] = useState<DiffLine[]>(EMPTY_MINIMAP_ROWS);
+    const handleRenderedDiffRows = useCallback((next: DiffLine[]) => {
+        setMinimapDiffRows((prev) => (prev === next ? prev : next));
+    }, []);
+    const diffChangeCountRef = useRef(diffChangeCount);
+    diffChangeCountRef.current = diffChangeCount;
+
+    // Switching tabs restarts the change walk at the first change.
+    useEffect(() => {
+        setDiffCursor(0);
+    }, [activeFilePath]);
+
+    // Walk 上一处 / 下一处 change; the nonce re-scrolls on repeat clicks.
+    const stepDiffChange = useCallback((delta: number) => {
+        setDiffCursor((prev) => {
+            const count = diffChangeCountRef.current;
+            if (count <= 0) return 0;
+            const base = Math.min(Math.max(prev, 0), count - 1);
+            return (base + delta + count) % count;
+        });
+        setDiffFocusNonce((n) => n + 1);
+    }, []);
+
     const currentContent = activeFile?.content ?? '';
     // Split once; shared by line count, find scan, and go-to-line bounds.
     // Keep editor semantics: '' is still one empty visual line (matches PlainCodeView).
     const contentLines = useMemo(() => currentContent.split('\n'), [currentContent]);
     const totalLines = activeFile ? contentLines.length : 0;
+
+    // computeDiff bails out above its size guard. Large files then fall back to
+    // the plain view, which would hide the edits entirely — surface the cheap
+    // bag-of-lines counts instead so the change is still visible.
+    const diffTooLarge = activeFile != null
+        && activeFile.original !== undefined
+        && !activeFile.previewTruncated
+        && diffLines === null;
+    const diffTooLargeDelta = useMemo(
+        () => (diffTooLarge && activeFile ? computeCodeFileLineDelta(activeFile) : null),
+        [diffTooLarge, activeFile],
+    );
 
     const findOptions = useMemo<FindMatchOptions>(() => ({
         caseSensitive: findCaseSensitive,
@@ -1444,6 +1406,14 @@ export function CodePreviewPanel({
             toggleWordWrap();
             return;
         }
+        // Alt+↓ / Alt+↑ — jump between the file's changes (diff view only)
+        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && diffHasChange
+            && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            e.preventDefault();
+            e.stopPropagation();
+            stepDiffChange(e.key === 'ArrowDown' ? 1 : -1);
+            return;
+        }
         // Ctrl/Cmd + = / + — zoom in; - — zoom out; 0 — reset
         if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey) {
             if (e.key === '=' || e.key === '+') {
@@ -1532,6 +1502,7 @@ export function CodePreviewPanel({
         activeFilePath,
         closeFind,
         closeGoto,
+        diffHasChange,
         files,
         findOpen,
         goNextMatch,
@@ -1541,6 +1512,7 @@ export function CodePreviewPanel({
         onCloseFile,
         handleSelectFile,
         openFind,
+        stepDiffChange,
         workspaceActive,
         openGoto,
         toggleWordWrap,
@@ -2013,6 +1985,26 @@ export function CodePreviewPanel({
                 />
             )}
 
+            {/* Change overview: how much changed + how to read it. Hidden when
+                nothing changed, so the bar always means "there are edits here". */}
+            {!workspaceActive && activeFile && diffLines && diffHasChange && !isVisualDocumentPreview(activeFile) && (
+                <CodeDiffSummaryBar
+                    stats={diffStats}
+                    changeCount={diffChangeCount}
+                    cursor={diffCursor}
+                    mode={effectiveDiffMode}
+                    onlyChanges={diffOnlyChanges}
+                    foldUnchanged={diffFoldUnchanged}
+                    theme={theme}
+                    lang={lang}
+                    onModeChange={chooseDiffMode}
+                    onToggleOnlyChanges={() => setDiffOnlyChanges((v) => !v)}
+                    onToggleFold={() => setDiffFoldUnchanged((v) => !v)}
+                    onPrevChange={() => stepDiffChange(-1)}
+                    onNextChange={() => stepDiffChange(1)}
+                />
+            )}
+
             {/* Code content area */}
             {activeFile?.previewTruncated && (
                 <div role="status" aria-live="polite" style={{ padding: '6px 12px', borderBottom: `1px solid ${theme.border}`, background: theme.lineNumBg, color: theme.textMuted, fontSize: 12, flexShrink: 0 }}>
@@ -2021,6 +2013,23 @@ export function CodePreviewPanel({
                         : lang.startsWith('zh')
                             ? '远程源码预览已截断；当前仅显示文件开头部分。'
                             : 'Remote preview is truncated; only the beginning of this file is shown.'}
+                </div>
+            )}
+            {/* Large files: no line diff, but the user still needs the totals. */}
+            {diffTooLarge && diffTooLargeDelta && (
+                <div
+                    role="status"
+                    data-testid="code-preview-diff-too-large"
+                    style={{ padding: '6px 12px', borderBottom: `1px solid ${theme.border}`, background: theme.lineNumBg, color: theme.textMuted, fontSize: 12, flexShrink: 0 }}
+                >
+                    {lang === 'zh-Hant'
+                        ? '檔案過大，已跳過逐行對比；變更統計：'
+                        : lang.startsWith('zh')
+                            ? '文件较大，已跳过逐行对比；变更统计：'
+                            : 'File is too large for a line diff; change totals:'}
+                    <span style={{ color: theme.diffAddText, fontWeight: 700 }}>+{diffTooLargeDelta.added}</span>
+                    {' '}
+                    <span style={{ color: theme.diffDeleteText, fontWeight: 700 }}>-{diffTooLargeDelta.removed}</span>
                 </div>
             )}
             <div
@@ -2055,13 +2064,22 @@ export function CodePreviewPanel({
                             activeMatchLine={activeMatchLine}
                         >
                     {activeFile && diffLines && !isVisualDocumentPreview(activeFile) ? (
-                            <DiffView
-                                diffLines={diffLines}
+                            <CodePreviewDiffView
+                                rows={diffRows}
                                 theme={theme}
+                                language={activeFile.language}
+                                lang={lang}
+                                mode={effectiveDiffMode}
+                                onlyChanges={diffOnlyChanges}
+                                foldUnchanged={diffFoldUnchanged}
                                 matchLineIndexes={matchLineIndexes}
                                 activeMatchLine={activeMatchLine}
                                 wordWrap={wordWrap}
                                 fontSize={fontSize}
+                                focusChangeIndex={diffHasChange ? Math.min(Math.max(diffCursor, 0), diffChangeCount - 1) : -1}
+                                focusNonce={diffFocusNonce}
+                                resetKey={activeFilePath}
+                                onRenderedRows={handleRenderedDiffRows}
                             />
                     ) : activeFile && !filePreviewUsesSpecialRenderer(activeFile) ? (
                             <PlainCodeView
@@ -2091,7 +2109,7 @@ export function CodePreviewPanel({
                         scrollRef={scrollRef}
                         scrollId={scrollDomId}
                         lines={contentLines}
-                        diffLines={diffLines}
+                        diffLines={diffLines ? minimapDiffRows : null}
                         matchLineIndexes={matchLineIndexes}
                         activeMatchLine={activeMatchLine}
                         theme={theme}

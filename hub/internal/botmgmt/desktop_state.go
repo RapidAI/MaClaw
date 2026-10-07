@@ -39,6 +39,10 @@ type desktopViewPin struct {
 type desktopStateRecord struct {
 	Pins  map[string]*desktopPin     `json:"pins,omitempty"`
 	Views map[string]*desktopViewPin `json:"views,omitempty"`
+	// Viewed is when an admin last opened that desktop from the console,
+	// as RFC3339. Without it a restart right after a check would forget the
+	// hold and the next stop would blank the picture the admin is watching.
+	Viewed map[string]string `json:"viewed,omitempty"`
 }
 
 // ensureDesktopHydrated restores the persisted desktop state into memory once
@@ -107,6 +111,19 @@ func (s *Service) ensureDesktopHydrated(tenantID string) {
 		}
 		s.handoff[view.Token] = handoffView{origin: view.Origin, until: until, bearer: view.Bearer}
 	}
+	for key, stamp := range rec.Desktop.Viewed {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		last, err := time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			continue
+		}
+		if s.desktopAdminView == nil {
+			s.desktopAdminView = map[string]time.Time{}
+		}
+		s.desktopAdminView[key] = last
+	}
 }
 
 // persistDesktopState writes the in-memory desktop pins and views of this
@@ -165,6 +182,16 @@ func (s *Service) persistDesktopState(tenantID string) {
 			Until:  view.until.UTC().Format(time.RFC3339),
 			Bearer: view.bearer,
 		}
+	}
+	// An admin hold that already expired needs no restoring after a restart.
+	for key, last := range s.desktopAdminView {
+		if !strings.HasPrefix(key, prefix) || now.Sub(last) >= AdminDesktopViewHold {
+			continue
+		}
+		if st.Viewed == nil {
+			st.Viewed = map[string]string{}
+		}
+		st.Viewed[key] = last.UTC().Format(time.RFC3339)
 	}
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {

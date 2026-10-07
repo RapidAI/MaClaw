@@ -1,4 +1,13 @@
 import { render, screen } from '@testing-library/react';
+
+/** The diff renders syntax-colored spans, so assert on the rendered row text. */
+function diffText(): string {
+    return screen.getByTestId('code-preview-diff-view').textContent ?? '';
+}
+
+function diffSigns(className: string): string[] {
+    return Array.from(document.querySelectorAll(`.${className}`)).map((el) => el.textContent ?? '');
+}
 import { describe, expect, it, vi } from 'vitest';
 import { CodePreviewPanel, darkCodePreviewTheme } from '../CodePreviewPanel';
 import type { CodeFile } from '../useCodePreviewState';
@@ -26,8 +35,8 @@ describe('CodePreviewPanel diff rendering', () => {
             />,
         );
 
-        expect(screen.getByText('+')).toBeTruthy();
-        expect(screen.getByText('export const value = true;')).toBeTruthy();
+        expect(diffSigns('cp-diff-sign-add')).toContain('+');
+        expect(diffText()).toContain('export const value = true;');
     });
 
     it('renders markdown modifications as diff instead of markdown preview', () => {
@@ -52,10 +61,10 @@ describe('CodePreviewPanel diff rendering', () => {
             />,
         );
 
-        expect(screen.getByText('-')).toBeTruthy();
-        expect(screen.getByText('+')).toBeTruthy();
-        expect(screen.getByText('# Old title')).toBeTruthy();
-        expect(screen.getByText('# New title')).toBeTruthy();
+        expect(diffSigns('cp-diff-sign-del')).toContain('-');
+        expect(diffSigns('cp-diff-sign-add')).toContain('+');
+        expect(diffText()).toContain('# Old title');
+        expect(diffText()).toContain('# New title');
     });
 
     it('keeps a truncated remote file out of diff mode', () => {

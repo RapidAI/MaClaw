@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
 const SettingsKey = "bot_management"
@@ -26,8 +27,31 @@ var (
 	ErrNotConfigured       = errors.New("maclawsrv connection is not configured")
 	ErrNotFound            = errors.New("bot not found")
 	ErrSrv                 = errors.New("maclawsrv request failed")
-	ErrDisabled            = errors.New("bot feature is disabled")
+	// ErrSrvNotFound is a 404 from MaClawSrv: the instance, or the endpoint
+	// itself, is not there. It is not wrapped in ErrSrv, because callers such
+	// as bot deletion treat a missing instance as success.
+	ErrSrvNotFound = errors.New("maclawsrv instance not found")
+	ErrDisabled    = errors.New("bot feature is disabled")
+	// ErrAdminSecretMissing is ErrNotConfigured for the MaClawSrv admin secret.
+	// It is a separate sentinel so callers do not have to match on the message
+	// text to explain what is missing.
+	ErrAdminSecretMissing = fmt.Errorf("%w: maclawsrv admin secret missing", ErrNotConfigured)
 )
+
+// SrvRejectionMessage turns a MaClawSrv failure into a message an admin can
+// act on, instead of the generic "rejected the instance request".
+func SrvRejectionMessage(err error) string {
+	base := "MaClawSrv rejected the instance request"
+	switch {
+	case err == nil:
+		return base
+	case errors.Is(err, ErrSrvNotFound):
+		return base + ": instance or endpoint not found, check the MaClawSrv URL"
+	case errors.Is(err, ErrSrv) && err.Error() == ErrSrv.Error():
+		return base
+	}
+	return upstream.Message(err, base)
+}
 
 // Bot is one Hub bot. It is one MaClawSrv agent instance of OwnerUserID.
 type Bot struct {
@@ -40,14 +64,15 @@ type Bot struct {
 }
 
 type record struct {
-	BaseURL        string           `json:"base_url"`
-	AccessToken    string           `json:"access_token,omitempty"`
-	AdminSecret    string           `json:"admin_secret,omitempty"`
-	MaClawTenantID string           `json:"maclaw_tenant_id,omitempty"`
-	Principals     []ownerPrincipal `json:"principals,omitempty"`
-	Bots           []Bot            `json:"bots"`
-	Grants         []Grant          `json:"grants,omitempty"`
-	Desktop        *desktopStateRecord `json:"desktop,omitempty"`
+	BaseURL        string               `json:"base_url"`
+	AccessToken    string               `json:"access_token,omitempty"`
+	AdminSecret    string               `json:"admin_secret,omitempty"`
+	MaClawTenantID string               `json:"maclaw_tenant_id,omitempty"`
+	Connection     *connectionCredential `json:"connection,omitempty"`
+	Principals     []ownerPrincipal     `json:"principals,omitempty"`
+	Bots           []Bot                `json:"bots"`
+	Grants         []Grant              `json:"grants,omitempty"`
+	Desktop        *desktopStateRecord  `json:"desktop,omitempty"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.
@@ -86,6 +111,11 @@ type Service struct {
 	// timeout pin is not a login, so a later failure must not hand the
 	// keyboard over and let the person type on a page the agent still owns.
 	desktopKeyboardTaken map[string]string
+	// desktopAdminView is when an admin last opened this user's desktop in
+	// the admin console. While that hold is fresh, a bot command finishing
+	// must leave the desktop up, or the picture the admin is watching goes
+	// black halfway through the check.
+	desktopAdminView map[string]time.Time
 	// desktopOpening counts bot commands that have this user's desktop open.
 	// One command failing must not stop the desktop another command is using.
 	desktopOpening map[string]int
@@ -133,18 +163,29 @@ func (s *Service) SaveConnection(ctx context.Context, tenantID, baseURL, token s
 		baseURL = strings.TrimRight(baseURL, "/")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
+		s.mu.Unlock()
 		return SettingsView{}, err
 	}
+	urlChanged := rec.BaseURL != baseURL
 	rec.BaseURL = baseURL
 	if tokenProvided {
 		rec.AccessToken = strings.TrimSpace(token)
 	}
+	// A connection credential was minted for the previous URL's server and
+	// the previous token's user, so a change to either retires it.
+	if tokenProvided || urlChanged {
+		rec.Connection = nil
+	}
 	if err := s.save(ctx, tenantID, rec); err != nil {
+		s.mu.Unlock()
 		return SettingsView{}, err
 	}
+	s.mu.Unlock()
+	// With the admin secret on file this provisions the durable connection
+	// credential, so the just-saved token never has to be re-pasted.
+	s.bootstrapConnection(ctx, tenantID)
 	return viewOf(rec), nil
 }
 
@@ -152,15 +193,20 @@ func (s *Service) SaveConnection(ctx context.Context, tenantID, baseURL, token s
 // MaClawSrv user per Hub user. The secret is never returned.
 func (s *Service) SaveAdminSecret(ctx context.Context, tenantID, secret string) (SettingsView, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
+		s.mu.Unlock()
 		return SettingsView{}, err
 	}
 	rec.AdminSecret = strings.TrimSpace(secret)
 	if err := s.save(ctx, tenantID, rec); err != nil {
+		s.mu.Unlock()
 		return SettingsView{}, err
 	}
+	s.mu.Unlock()
+	// With an access token on file this provisions the durable connection
+	// credential, so the expiring token stops being load-bearing.
+	s.bootstrapConnection(ctx, tenantID)
 	return viewOf(rec), nil
 }
 
@@ -172,6 +218,38 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	if err := configured(rec); err != nil {
 		return 0, err
 	}
+	count, err := s.countInstances(ctx, rec)
+	if err == nil {
+		return count, nil
+	}
+	if !upstreamUnauthorized(err) {
+		return 0, err
+	}
+	// MaClawSrv access tokens expire with the server-side TTL, so a stored
+	// connection eventually 401s. With the admin secret the hub re-issues
+	// the connection credential and retries once; without it the honest 401
+	// is all there is.
+	cred, renewErr := s.provisionConnectionCredential(ctx, tenantID)
+	if renewErr != nil {
+		if errors.Is(renewErr, ErrAdminSecretMissing) {
+			return 0, err
+		}
+		return 0, renewErr
+	}
+	bearer, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
+	if err != nil {
+		return 0, err
+	}
+	var payload struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := s.call(ctx, rec, bearer, "", http.MethodGet, "/api/v1/instances", nil, &payload); err != nil {
+		return 0, err
+	}
+	return len(payload.Items), nil
+}
+
+func (s *Service) countInstances(ctx context.Context, rec record) (int, error) {
 	var payload struct {
 		Items []json.RawMessage `json:"items"`
 	}
@@ -241,7 +319,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.doAuth(ctx, rec, token, http.MethodDelete, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), nil, nil); err != nil && !errors.Is(err, errSrvNotFound) {
+	if err := s.doAuth(ctx, rec, token, http.MethodDelete, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), nil, nil); err != nil && !errors.Is(err, ErrSrvNotFound) {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
@@ -313,7 +391,7 @@ func (s *Service) save(ctx context.Context, tenantID string, rec record) error {
 }
 
 func (s *Service) do(ctx context.Context, rec record, method, path string, body any, dest any) error {
-	return s.call(ctx, rec, rec.AccessToken, "", method, path, body, dest)
+	return s.call(ctx, rec, s.sharedBearer(ctx, rec), "", method, path, body, dest)
 }
 
 func (s *Service) doAuth(ctx context.Context, rec record, bearer, method, path string, body any, dest any) error {
@@ -353,10 +431,10 @@ func (s *Service) call(ctx context.Context, rec record, bearer, adminSecret, met
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusNotFound {
-		return errSrvNotFound
+		return ErrSrvNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%w: status %d", ErrSrv, resp.StatusCode)
+		return upstream.NewStatusError(ErrSrv, resp.StatusCode, payload)
 	}
 	if dest == nil || len(bytes.TrimSpace(payload)) == 0 {
 		return nil
@@ -400,8 +478,6 @@ func (s *Service) now() time.Time {
 	}
 	return time.Now()
 }
-
-var errSrvNotFound = errors.New("maclawsrv instance not found")
 
 func configured(rec record) error {
 	if strings.TrimSpace(rec.BaseURL) == "" || strings.TrimSpace(rec.AccessToken) == "" {

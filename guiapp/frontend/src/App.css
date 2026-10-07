@@ -22713,23 +22713,26 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: 1
 .sidebar ::-webkit-scrollbar, .modal-content ::-webkit-scrollbar { width: 7px; height: 7px; }
 .sidebar ::-webkit-scrollbar-thumb, .modal-content ::-webkit-scrollbar-thumb { border-radius: 99px; background: color-mix(in srgb, var(--office-muted) 32%, transparent); }
 .sidebar ::-webkit-scrollbar-thumb:hover, .modal-content ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--office-accent) 58%, transparent); }
+/* These chip paints must not land on the row's SVG status mark: the mark is a
+   bare glyph (110-mc-app-shell.css) and the forced tile background turned
+   every completed/pending/failed mark into a colored chip. */
 .sidebar-task-row [data-tone='success'],
-.sidebar-task-row [data-status='completed'],
+.sidebar-task-row [data-status='completed']:not(.mc-task-status),
 .sidebar-task-row [data-state='completed'] { color: var(--mc-done, #64748b) !important; background: var(--mc-done-bg, color-mix(in srgb, #64748b 10%, transparent)) !important; }
 .sidebar-task-row [data-tone='warning'],
-.sidebar-task-row [data-status='pending'],
+.sidebar-task-row [data-status='pending']:not(.mc-task-status),
 .sidebar-task-row [data-state='review'] { color: var(--theme-warning) !important; background: var(--theme-warning-bg) !important; }
 .sidebar-task-row [data-tone='danger'],
-.sidebar-task-row [data-status='failed'],
+.sidebar-task-row [data-status='failed']:not(.mc-task-status),
 .sidebar-task-row [data-state='error'] { color: var(--theme-danger) !important; background: var(--theme-danger-bg) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='success'],
-[data-ai-theme='dark'] .sidebar-task-row [data-status='completed'],
+[data-ai-theme='dark'] .sidebar-task-row [data-status='completed']:not(.mc-task-status),
 [data-ai-theme='dark'] .sidebar-task-row [data-state='completed'] { color: var(--mc-done, #a9bbd2) !important; background: color-mix(in srgb, var(--mc-done, #a9bbd2) 14%, var(--theme-surface)) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='warning'],
-[data-ai-theme='dark'] .sidebar-task-row [data-status='pending'],
+[data-ai-theme='dark'] .sidebar-task-row [data-status='pending']:not(.mc-task-status),
 [data-ai-theme='dark'] .sidebar-task-row [data-state='review'] { color: #ffd18a !important; background: rgba(200,130,20,.18) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='danger'],
-[data-ai-theme='dark'] .sidebar-task-row [data-status='failed'],
+[data-ai-theme='dark'] .sidebar-task-row [data-status='failed']:not(.mc-task-status),
 [data-ai-theme='dark'] .sidebar-task-row [data-state='error'] { color: #ffaaa4 !important; background: rgba(200,50,40,.18) !important; }
 @media (max-width: 720px) {
   .modal-content, .provider-config-modal { width: calc(100vw - 24px) !important; max-height: calc(100vh - 24px) !important; border-radius: 16px !important; }
@@ -24597,8 +24600,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     .mc-task-pane__create-group > span { font-size: 13px !important; }
     .mc-task-pane__save-group { display: none !important; }
 }
-/* Guard-required dark sidebar variables for the live Wails shell */
-.sidebar {
+/* Guard-required dark sidebar variables for the live Wails shell. Light theme
+   must opt out: the rail's active entries (AI workbench, Bot) paint with
+   --theme-primary, and the unscoped gray here rendered their active states as
+   gray "disabled" chips in light mode. :where() keeps specificity at (0,1,0)
+   so the [data-ai-theme='dark'][data-ai-dark-scheme=...] scheme blocks win. */
+.sidebar:where(:not([data-ai-theme='light'])) {
     --theme-primary: #a8a8a8;
     --theme-primary-strong: #c6c6c6;
     --theme-primary-soft: rgba(255, 255, 255, 0.10);
@@ -25806,10 +25813,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   content: none;
 }
 .mc-task-pane .sidebar-task-row > .mc-task-status {
-  flex: 0 0 14px;
-  width: 14px;
-  min-width: 14px;
-  height: 14px;
+  /* 16px matches the mark's 16-unit viewBox 1:1 so strokes keep their authored
+     CSS width; 14px rescaled every stroke to ~1.5 device px at 100% DPI. */
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -25821,8 +25830,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-status svg {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 .mc-task-status[data-status='running'] { color: var(--mc-accent, #2f6fbc); }
 .mc-task-status[data-status='completed'] { color: var(--mc-done, #64748b); }
@@ -25840,10 +25849,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-status__spin {
   box-sizing: border-box;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  border: 1.75px solid color-mix(in srgb, currentColor 32%, transparent);
+  border: 2px solid color-mix(in srgb, currentColor 32%, transparent);
   border-top-color: currentColor;
   border-right-color: currentColor;
   animation: mc-task-status-spin 0.9s linear infinite;
@@ -27390,6 +27399,284 @@ input.cwshare-url {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* ── Code preview: change-focused diff view ────────────────────────────────
+   Table layout (not CSS grid) on purpose: auto table sizing keeps the old/new
+   columns aligned across every row and grows past the pane so the body scrolls
+   sideways, which per-row grids cannot do without overlapping the text.
+   Colors arrive as CSS custom properties from codeDiffCssVars(theme), so one
+   rule set serves every light/dark scheme.
+   ------------------------------------------------------------------------ */
+
+.cp-diff {
+    --cp-diff-empty-bg: color-mix(in srgb, var(--cp-diff-ink-muted) 8%, transparent);
+    --cp-diff-mark-add: color-mix(in srgb, var(--cp-diff-add-ink) 38%, transparent);
+    --cp-diff-mark-del: color-mix(in srgb, var(--cp-diff-del-ink) 32%, transparent);
+    border-collapse: collapse;
+    width: 100%;
+    color: var(--cp-diff-text);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    text-align: left;
+    table-layout: auto;
+}
+
+/* ── Cells ── */
+
+.cp-diff-row > td {
+    vertical-align: top;
+    font-weight: inherit;
+}
+
+.cp-diff-gutter {
+    min-width: 42px;
+    padding: 0 6px;
+    text-align: right;
+    color: var(--cp-diff-ink-muted);
+    background: var(--cp-diff-gutter-bg);
+    user-select: none;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.cp-diff-sign {
+    min-width: 13px;
+    padding: 0 2px;
+    text-align: center;
+    color: var(--cp-diff-ink-muted);
+    user-select: none;
+    font-weight: 700;
+}
+
+.cp-diff-sign-add {
+    color: var(--cp-diff-add-ink);
+}
+
+.cp-diff-sign-del {
+    color: var(--cp-diff-del-ink);
+}
+
+.cp-diff-cell {
+    padding: 0 6px;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+}
+
+.cp-diff-wrap .cp-diff-cell {
+    white-space: pre-wrap;
+    /* `anywhere` (unlike `break-word`) also shrinks the min-content width, so
+       the table fits the pane and wraps instead of scrolling sideways. */
+    overflow-wrap: anywhere;
+}
+
+/* Divider between the old and new halves of a split row. */
+.cp-diff-cell-old {
+    border-right: 1px solid var(--cp-diff-border);
+}
+
+/* Additions / deletions: tinted cell plus a solid edge marker so the eye
+   catches the change even when scrolling fast. */
+.cp-diff-cell-add {
+    background: var(--cp-diff-add-bg);
+    box-shadow: inset 3px 0 0 var(--cp-diff-add-ink);
+    padding-left: 9px;
+}
+
+.cp-diff-cell-del {
+    background: var(--cp-diff-del-bg);
+    box-shadow: inset 3px 0 0 var(--cp-diff-del-ink);
+    padding-left: 9px;
+}
+
+.cp-diff-cell-empty {
+    background: var(--cp-diff-empty-bg);
+}
+
+/* Word-level marks inside a rewritten line. */
+.cp-diff-mark-add {
+    background: var(--cp-diff-mark-add);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cp-diff-add-ink) 45%, transparent);
+}
+
+.cp-diff-mark-del {
+    background: var(--cp-diff-mark-del);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cp-diff-del-ink) 40%, transparent);
+}
+
+/* Inline rewrite: the '-' and '+' halves are one change, so their gutters
+   carry the same tint as the cells. */
+.cp-diff-row-modold .cp-diff-gutter {
+    background: var(--cp-diff-del-bg);
+    color: var(--cp-diff-del-ink);
+}
+
+.cp-diff-row-modnew .cp-diff-gutter {
+    background: var(--cp-diff-add-bg);
+    color: var(--cp-diff-add-ink);
+}
+
+/* Find-in-file highlight. Cells and gutters paint their own background, so a
+   row tint alone would be invisible on changed lines: overlay it instead and
+   the add/delete colour stays underneath. */
+.cp-diff-row-match {
+    --cp-diff-match: rgba(234, 179, 8, 0.14);
+}
+
+.cp-diff-row-match-active {
+    --cp-diff-match: rgba(234, 179, 8, 0.32);
+}
+
+.cp-diff-row-match > td,
+.cp-diff-row-match-active > td {
+    background-image: linear-gradient(var(--cp-diff-match, transparent), var(--cp-diff-match, transparent));
+}
+
+/* ── Hunk headers + collapsed gaps ── */
+
+.cp-diff-sep-cell {
+    padding: 0;
+}
+
+.cp-diff-hunk,
+.cp-diff-gap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 2px 8px;
+    border: none;
+    border-top: 1px solid var(--cp-diff-border);
+    border-bottom: 1px solid var(--cp-diff-border);
+    background: var(--cp-diff-bar-bg);
+    color: var(--cp-diff-ink-muted);
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 20px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.cp-diff-hunk:hover,
+.cp-diff-gap:hover {
+    background: var(--cp-diff-hover-bg);
+}
+
+.cp-diff-gap {
+    border-top-style: dashed;
+    border-bottom-style: dashed;
+}
+
+.cp-diff-gap-dots {
+    letter-spacing: 2px;
+}
+
+.cp-diff-hunk-mark {
+    width: 10px;
+    flex-shrink: 0;
+}
+
+.cp-diff-hunk-range {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.cp-diff-hunk-stats {
+    font-weight: 700;
+}
+
+.cp-diff-hunk-action {
+    margin-left: auto;
+    opacity: 0.75;
+}
+
+/* ── Summary / control bar ── */
+
+.cp-diff-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--cp-diff-border);
+    background: var(--cp-diff-bar-bg);
+    color: var(--cp-diff-text);
+    font-size: 11px;
+    line-height: 20px;
+}
+
+.cp-diff-bar-spacer {
+    flex: 1 1 auto;
+    min-width: 4px;
+}
+
+.cp-diff-bar-note,
+.cp-diff-cursor-unit {
+    color: var(--cp-diff-ink-muted);
+}
+
+.cp-diff-stat-add {
+    color: var(--cp-diff-add-ink);
+    font-weight: 700;
+}
+
+.cp-diff-stat-del {
+    color: var(--cp-diff-del-ink);
+    font-weight: 700;
+}
+
+.cp-diff-stat-mod {
+    color: var(--cp-diff-text);
+    font-weight: 700;
+    opacity: 0.8;
+}
+
+.cp-diff-btn {
+    border: 1px solid var(--cp-diff-border);
+    background: transparent;
+    color: var(--cp-diff-ink-muted);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.cp-diff-btn:hover:not(:disabled) {
+    background: var(--cp-diff-hover-bg);
+}
+
+.cp-diff-btn[data-active='true'] {
+    background: var(--cp-diff-active-bg);
+    color: var(--cp-diff-active-fg);
+    font-weight: 600;
+}
+
+.cp-diff-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.cp-diff-btn-icon {
+    min-width: 20px;
+    padding: 1px 4px;
+}
+
+.cp-diff-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.cp-diff-cursor {
+    min-width: 62px;
+    text-align: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Backend task monitor: give the page a deliberate breathing space below the

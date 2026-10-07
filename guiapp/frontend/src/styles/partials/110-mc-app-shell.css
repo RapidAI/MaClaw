@@ -520,8 +520,12 @@
     .mc-task-pane__create-group > span { font-size: 13px !important; }
     .mc-task-pane__save-group { display: none !important; }
 }
-/* Guard-required dark sidebar variables for the live Wails shell */
-.sidebar {
+/* Guard-required dark sidebar variables for the live Wails shell. Light theme
+   must opt out: the rail's active entries (AI workbench, Bot) paint with
+   --theme-primary, and the unscoped gray here rendered their active states as
+   gray "disabled" chips in light mode. :where() keeps specificity at (0,1,0)
+   so the [data-ai-theme='dark'][data-ai-dark-scheme=...] scheme blocks win. */
+.sidebar:where(:not([data-ai-theme='light'])) {
     --theme-primary: #a8a8a8;
     --theme-primary-strong: #c6c6c6;
     --theme-primary-soft: rgba(255, 255, 255, 0.10);
@@ -1729,10 +1733,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   content: none;
 }
 .mc-task-pane .sidebar-task-row > .mc-task-status {
-  flex: 0 0 14px;
-  width: 14px;
-  min-width: 14px;
-  height: 14px;
+  /* 16px matches the mark's 16-unit viewBox 1:1 so strokes keep their authored
+     CSS width; 14px rescaled every stroke to ~1.5 device px at 100% DPI. */
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1744,8 +1750,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-status svg {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 .mc-task-status[data-status='running'] { color: var(--mc-accent, #2f6fbc); }
 .mc-task-status[data-status='completed'] { color: var(--mc-done, #64748b); }
@@ -1763,10 +1769,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-status__spin {
   box-sizing: border-box;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  border: 1.75px solid color-mix(in srgb, currentColor 32%, transparent);
+  border: 2px solid color-mix(in srgb, currentColor 32%, transparent);
   border-top-color: currentColor;
   border-right-color: currentColor;
   animation: mc-task-status-spin 0.9s linear infinite;

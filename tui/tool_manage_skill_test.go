@@ -1699,7 +1699,13 @@ func tuiPipelineTestEchoParams() map[string]interface{} {
 }
 
 func tuiPipelineTestSlowParams() map[string]interface{} {
-	return map[string]interface{}{"command": `python -c "import time; time.sleep(1.2); print('slow-done')"`}
+	// No quotes and no shell syntax: the step must survive whichever shell
+	// ResolveStepShell picks (cmd, bash, or powershell) on every platform,
+	// and must outlast the pipeline's 1s GlobalTimeout.
+	if runtime.GOOS == "windows" {
+		return map[string]interface{}{"command": "ping -n 3 127.0.0.1"}
+	}
+	return map[string]interface{}{"command": "ping -c 3 127.0.0.1"}
 }
 
 func tuiPipelineTestFailCapturedParams() map[string]interface{} {

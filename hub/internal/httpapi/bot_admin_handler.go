@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -21,22 +20,41 @@ func writeBotError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+	case errors.Is(err, botmgmt.ErrAdminSecretMissing):
+		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "请先在 Bot 管理里保存 MaClawSrv 管理密钥")
 	case errors.Is(err, botmgmt.ErrNotConfigured):
-		message := "save the MaClawSrv URL and access token first"
-		if strings.Contains(err.Error(), "管理密钥") {
-			message = "请先在 Bot 管理里保存 MaClawSrv 管理密钥"
-		}
-		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", message)
+		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "save the MaClawSrv URL and access token first")
 	case errors.Is(err, botmgmt.ErrNotFound):
 		writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "bot not found")
 	case errors.Is(err, botmgmt.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
 	case errors.Is(err, botmgmt.ErrDisabled):
 		writeError(w, http.StatusForbidden, "BOT_DISABLED", botmgmt.DisabledMessage)
-	case errors.Is(err, botmgmt.ErrSrv):
-		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "MaClawSrv rejected the instance request")
+	case errors.Is(err, botmgmt.ErrSrv), errors.Is(err, botmgmt.ErrSrvNotFound):
+		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", botmgmt.SrvRejectionMessage(err))
 	default:
 		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "MaClawSrv rejected the instance request")
+	}
+}
+
+// writeBotUserError reports a bot failure to an end user. MaClawSrv status
+// codes and response bodies are admin diagnostics only, and a user cannot act
+// on "save the admin secret", so those collapse into one unavailable message.
+func writeBotUserError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, botmgmt.ErrSettingsUnavailable),
+		errors.Is(err, botmgmt.ErrNotConfigured),
+		errors.Is(err, botmgmt.ErrSrv),
+		errors.Is(err, botmgmt.ErrSrvNotFound):
+		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator")
+	case errors.Is(err, botmgmt.ErrNotFound):
+		writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "bot not found")
+	case errors.Is(err, botmgmt.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+	case errors.Is(err, botmgmt.ErrDisabled):
+		writeError(w, http.StatusForbidden, "BOT_DISABLED", botmgmt.DisabledMessage)
+	default:
+		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator")
 	}
 }
 
@@ -57,7 +75,7 @@ func GetBotSettingsAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 }
 
 // PutBotSettingsAdminHandler PUT /api/admin/bots/settings
-func PutBotSettingsAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
+func PutBotSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
@@ -88,6 +106,15 @@ func PutBotSettingsAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 				return
 			}
 		}
+		// This record holds a MaClawSrv bearer token and the root admin
+		// secret. Only whether they are set is ever written down.
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.settings.update", map[string]any{
+			"base_url":             view.BaseURL,
+			"token_set":            view.TokenSet,
+			"admin_secret_set":     view.AdminSecretSet,
+			"token_changed":        in.AccessToken != nil,
+			"admin_secret_changed": in.AdminSecret != nil,
+		})
 		writeJSON(w, http.StatusOK, view)
 	}
 }
@@ -109,7 +136,7 @@ func TestBotConnectionAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 }
 
 // PostBotGrantAdminHandler POST /api/admin/bots/grants
-func PostBotGrantAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
+func PostBotGrantAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
@@ -125,21 +152,32 @@ func PostBotGrantAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 			writeBotError(w, err)
 			return
 		}
+		// A grant decides who may use bots, so who got access is part of the
+		// record of what this admin did.
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.grant.create", map[string]any{
+			"grant_id":  grant.ID,
+			"scope":     grant.Scope,
+			"target_id": grant.TargetID,
+		})
 		writeJSON(w, http.StatusCreated, grant)
 	}
 }
 
 // DeleteBotGrantAdminHandler DELETE /api/admin/bots/grants/{id}
-func DeleteBotGrantAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
+func DeleteBotGrantAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
 			return
 		}
-		if err := svc.DeleteGrant(r.Context(), botTenantID(r), r.PathValue("id")); err != nil {
+		grantID := r.PathValue("id")
+		if err := svc.DeleteGrant(r.Context(), botTenantID(r), grantID); err != nil {
 			writeBotError(w, err)
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.grant.delete", map[string]any{
+			"grant_id": grantID,
+		})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	}
 }

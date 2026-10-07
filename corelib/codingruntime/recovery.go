@@ -90,6 +90,13 @@ func (s RecoveryService) PrepareRecovery(attemptID string) (*RecoveryPlan, error
 	if err != nil {
 		return nil, err
 	}
+	// The logical task already ended (completed, failed, or cancelled — e.g. a
+	// declined recovery). Its uncertain attempt is history; retrying goes
+	// through a new task instead of this recovery flow.
+	switch task.Status {
+	case TaskCompleted, TaskFailed, TaskCancelled:
+		return nil, ErrRecoveryRequired
+	}
 	plan := &RecoveryPlan{Task: *task, Interrupted: *attempt, Before: cloneProbe(attempt.WorkspaceBefore), After: cloneProbe(attempt.WorkspaceAfter)}
 	children, err := s.Store.ListChildTasks(task.TaskID)
 	if err != nil {
@@ -149,7 +156,10 @@ func (s RecoveryService) PresentRecoveryDiff(plan *RecoveryPlan) (string, error)
 
 // ConfirmContinuation records an explicit human decision. A positive result
 // only authorizes a caller to invoke Runner with the stable TaskID; Runner will
-// allocate a new AttemptID. It never calls an Executor itself.
+// allocate a new AttemptID. It never calls an Executor itself. A decline is a
+// human decision that this logical task ends uncontinued: the task is closed
+// so its interrupted attempt stops surfacing as the project's active status
+// and recovery candidate. The decline event above stays as audit.
 func (s RecoveryService) ConfirmContinuation(plan *RecoveryPlan, policy PolicySnapshot, confirmed bool) error {
 	if plan == nil || plan.Observed == nil {
 		return ErrRecoveryNotReady
@@ -165,7 +175,8 @@ func (s RecoveryService) ConfirmContinuation(plan *RecoveryPlan, policy PolicySn
 		return err
 	}
 	if !confirmed {
-		return nil
+		_, err := s.Store.CancelTask(plan.Task.TaskID, s.now())
+		return err
 	}
 	_, err := s.Store.MarkTaskReadyForRecovery(plan.Task.TaskID, s.now())
 	return err

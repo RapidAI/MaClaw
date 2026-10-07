@@ -169,6 +169,9 @@ func (s *Service) importProviderArrays(ctx context.Context, batch []ProviderArra
 					applyImportedArrayBilling(&provider, item)
 				}
 				provider.NormalizeBilling()
+				if err := normalizeProviderServeWindows(&provider); err != nil {
+					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+				}
 				if err := validateProviderDefaultBilling(provider); err != nil {
 					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
 				}
@@ -183,6 +186,9 @@ func (s *Service) importProviderArrays(ctx context.Context, batch []ProviderArra
 				applyImportedArrayBilling(&provider, item)
 			}
 			provider.NormalizeBilling()
+			if err := normalizeProviderServeWindows(&provider); err != nil {
+				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+			}
 			if err := validateProviderDefaultBilling(provider); err != nil {
 				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
 			}

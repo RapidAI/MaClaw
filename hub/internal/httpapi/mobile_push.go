@@ -11,11 +11,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
 // Mobile push: device registration + offline pending queue + optional remote transport.
@@ -663,6 +665,10 @@ func mobilePushDeliverRemote(tenantID, userID string, item mobilePushPendingItem
 	}
 }
 
+// mobilePushHTTPClient is the shared client for both remote transports. It is
+// a variable so tests can inject a stub transport.
+var mobilePushHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 func mobilePushPostWebhook(url string, payload map[string]any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -676,15 +682,17 @@ func mobilePushPostWebhook(url string, payload map[string]any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "MaClaw-Hub-Mobile-Push/1.0")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobilePushHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("[mobile-push] webhook error: %v", err)
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if resp.StatusCode >= 300 {
-		err = fmt.Errorf("webhook status %d", resp.StatusCode)
+		// The webhook says why it refused; a bare status cannot tell a bad
+		// payload from a bad route.
+		err = fmt.Errorf("webhook status %d: %s", resp.StatusCode, upstream.Detail(body))
 		log.Printf("[mobile-push] %v", err)
 		return err
 	}
@@ -719,14 +727,41 @@ func mobilePushSendFCMLegacy(ctx context.Context, serverKey, deviceToken string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "key="+serverKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobilePushHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("fcm status %d", resp.StatusCode)
+		return fmt.Errorf("fcm status %d: %s", resp.StatusCode, upstream.Detail(respBody))
+	}
+	// FCM answers 200 even when nothing was delivered: the failure count and
+	// the reason per registration live in the body. Counting that as success
+	// hides an invalid or unregistered token forever.
+	var sent struct {
+		Failure int `json:"failure"`
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(respBody, &sent); err == nil && sent.Failure > 0 {
+		reasons := map[string]bool{}
+		for _, result := range sent.Results {
+			if reason := strings.TrimSpace(result.Error); reason != "" {
+				reasons[reason] = true
+			}
+		}
+		names := make([]string, 0, len(reasons))
+		for name := range reasons {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		detail := strings.Join(names, ",")
+		if detail == "" {
+			detail = upstream.Detail(respBody)
+		}
+		return fmt.Errorf("fcm reported %d failure(s): %s", sent.Failure, detail)
 	}
 	return nil
 }

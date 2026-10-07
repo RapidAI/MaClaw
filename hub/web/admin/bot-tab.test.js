@@ -171,7 +171,10 @@ function createHarness(options) {
       }
       return Promise.resolve({ members: members[groupId] || [] });
     }
-    if (url === '/api/admin/bots/connection/test') return Promise.resolve({ ok: true, instance_count: 3 });
+    if (url === '/api/admin/bots/connection/test') {
+      if (opts.testError) return Promise.reject(new Error(opts.testError));
+      return Promise.resolve({ ok: true, instance_count: 3 });
+    }
     if (url === '/api/admin/desktop-services/desktops' || url === '/api/admin/desktop-services/desktops/stop') {
       if (opts.failDesktop) return Promise.reject(new Error('no docker service is assigned to this user'));
       return Promise.resolve({ server_name: 'dockerd-a', status: 'running', user_id: 'u_alice' });
@@ -726,6 +729,31 @@ async function testConnectionUsesSavedSettings() {
   assertIncludes(harness.elements.botConnStatus.textContent, '3', 'reports the instance count');
 }
 
+async function testConnectionFailureIsExplainedInChinese() {
+  console.log('  Test: a rejected MaClawSrv request explains the fix and keeps the upstream reason');
+  const harness = createHarness({
+    testError: 'MaClawSrv rejected the instance request (HTTP 401; the access token was rejected, re-save it in bot settings): unauthorized'
+  });
+  await harness.open();
+  await flush();
+  harness.elements.botTest.listeners.click[0]();
+  await flush();
+  const shown = harness.elements.botConnStatus.textContent;
+  assertIncludes(shown, 'HTTP 401', 'names the status code');
+  assertIncludes(shown, '\u8bbf\u95ee\u4ee4\u724c', 'explains it in Chinese');
+  assertIncludes(shown, 'unauthorized', 'keeps what MaClawSrv said');
+  assertNotIncludes(shown, 'the access token was rejected', 'drops the English hint');
+
+  const missing = createHarness({
+    testError: 'MaClawSrv rejected the instance request (HTTP 404; endpoint not found, check the service URL): not found'
+  });
+  await missing.open();
+  await flush();
+  missing.elements.botTest.listeners.click[0]();
+  await flush();
+  assertIncludes(missing.elements.botConnStatus.textContent, 'HTTP 404', 'explains a wrong URL in Chinese');
+}
+
 async function testDesktopCheckNamesTheService() {
   console.log('  Test: checking a desktop names the assigned Docker service');
   const harness = createHarness({ loadDesktop: true });
@@ -812,6 +840,7 @@ Promise.resolve()
   .then(testTypedUrlSurvivesFirstLoad)
   .then(testUnsavedUrlSurvivesReload)
   .then(testConnectionUsesSavedSettings)
+  .then(testConnectionFailureIsExplainedInChinese)
   .then(testDesktopCheckNamesTheService)
   .then(testDesktopCheckKeepsTheError)
   .then(testBotOwnerUsesDirectoryName)

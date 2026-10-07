@@ -21,6 +21,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
 const SettingsKey = "desktop_service"
@@ -38,6 +39,16 @@ var (
 	ErrNotAssigned         = errors.New("no docker service is assigned")
 	ErrService             = errors.New("docker service request failed")
 )
+
+// ServiceFailureMessage turns a docker desktop service failure into a message
+// an admin can act on, instead of the generic "rejected the desktop request".
+func ServiceFailureMessage(err error) string {
+	base := "docker service rejected the desktop request"
+	if err == nil || (errors.Is(err, ErrService) && err.Error() == ErrService.Error()) {
+		return base
+	}
+	return upstream.Message(err, base)
+}
 
 // Directory resolves a user's department chain. Nil skips department matching.
 type Directory interface {
@@ -460,7 +471,7 @@ func (p *Pool) call(ctx context.Context, server Server, method, path string, bod
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%w: status %d", ErrService, resp.StatusCode)
+		return upstream.NewStatusError(ErrService, resp.StatusCode, payload)
 	}
 	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
 		if err := json.Unmarshal(payload, dest); err != nil {

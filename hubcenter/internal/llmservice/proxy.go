@@ -637,6 +637,10 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				if lastErr == nil {
 					lastErr = fmt.Errorf("provider %s is outside its share window", route.ProviderID)
 				}
+			} else if arrayRouteServeWindowClosed(reg, route.ProviderID, model) {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("provider %s is outside its serve window", route.ProviderID)
+				}
 			} else {
 				lastErr = fmt.Errorf("provider %s referenced in model but not found in registry", route.ProviderID)
 			}
@@ -1676,6 +1680,7 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	sawCooling := false
 	sawQuota := false
 	sawWindow := false
+	sawServeWindow := false
 	triedArrays := map[string]struct{}{}
 	for _, route := range orderedRoutes {
 		if logicalProviderSeen(triedArrays, reg, route.ProviderID, route.Model) {
@@ -1692,6 +1697,8 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 				sawQuota = true
 			} else if arrayRouteShareWindowClosed(reg, route.ProviderID, accept, model, req.HubID, req.TenantID) {
 				sawWindow = true
+			} else if arrayRouteServeWindowClosed(reg, route.ProviderID, model) {
+				sawServeWindow = true
 			}
 			continue
 		}
@@ -1737,6 +1744,9 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 		}
 		if sawWindow {
 			return nil, fmt.Errorf("no available providers for model %q: outside share window", model)
+		}
+		if sawServeWindow {
+			return nil, fmt.Errorf("no available providers for model %q: outside serve window", model)
 		}
 		return nil, fmt.Errorf("no available providers for model %q", model)
 	}
@@ -2405,7 +2415,10 @@ func proxyRedactDebugSecrets(text string) string {
 }
 
 func acceptLiveProvider(provider *llmpool.ProviderConfig) bool {
-	return provider != nil && !provider.Paused
+	// ServeWindows is a dial gate like Paused: a provider outside its windows
+	// stays configured but dispatch skips it, so a time-limited free tier is
+	// not dialed at night and its siblings take the traffic instead.
+	return provider != nil && !provider.Paused && llmpool.ServeWindowsAllows(provider.ServeWindows, time.Now())
 }
 
 func acceptLiveStreamProvider(provider *llmpool.ProviderConfig) bool {

@@ -47,6 +47,20 @@ describe("computeCodeFileLineDelta", () => {
         expect(formatCodeFileLineDelta({ added: 2, removed: 1 })).toBe("+2 -1");
     });
 
+    it("caches per file object without ever serving a stale delta", () => {
+        const file = previewFile({
+            filePath: "/src/a.go",
+            content: "keep\nnew\nkeep\n",
+            original: "keep\nold\nkeep\n",
+            opType: "modify",
+        });
+        const first = computeCodeFileLineDelta(file);
+        expect(computeCodeFileLineDelta(file)).toBe(first);
+        const edited = { ...file, content: "keep\nnew\nkeep\nextra\nmore\n" };
+        expect(computeCodeFileLineDelta(edited)).toEqual({ added: 3, removed: 1 });
+        expect(computeCodeFileLineDelta(file)).toBe(first);
+    });
+
     it("returns empty label when both sides are zero", () => {
         expect(codeFileLineDeltaHasChange({ added: 0, removed: 0 })).toBe(false);
         expect(formatCodeFileLineDelta({ added: 0, removed: 0 })).toBe("");

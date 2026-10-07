@@ -464,3 +464,116 @@ func TestSQLiteStoreListActiveTaskStatusesPreferNewestOutcome(t *testing.T) {
 		t.Fatalf("stale queue status=%q, want completed", got)
 	}
 }
+
+func TestSQLiteStoreListRecoveryCandidatesExcludesEndedTasks(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 10, 6, 20, 0, 0, 0, time.UTC)
+
+	interrupt := func(taskID string, at time.Time) {
+		t.Helper()
+		attempt, err := store.StartAttempt(taskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: "repo"}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskInterrupted, SideEffectState: SideEffectUncertain}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	declined, err := store.CreateTask(Task{TaskID: "declined", ProjectRef: "repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt(declined.TaskID, now)
+	if _, err := store.CancelTask(declined.TaskID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A recovered task that later completed must retire its old uncertain
+	// attempt as a recovery candidate too.
+	recovered, err := store.CreateTask(Task{TaskID: "recovered", ProjectRef: "repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt(recovered.TaskID, now)
+	if _, err := store.MarkTaskReadyForRecovery(recovered.TaskID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(recovered.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: "repo"}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, err := store.ListRecoveryCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("ended tasks still offered as recovery candidates: %v", candidates)
+	}
+}
+
+func TestSQLiteStoreListActiveTaskStatusesSuppressesStaleInterrupted(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	older := time.Date(2026, 10, 6, 19, 38, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+
+	interruptRun := func(taskID, ref string, at time.Time) {
+		t.Helper()
+		task, err := store.CreateTask(Task{TaskID: taskID, ProjectRef: ref, Mode: "remote", CreatedAt: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.StartAttempt(task.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: ref, Mode: "remote"}, at); err != nil {
+			t.Fatal(err)
+		}
+		// The production path: a restart marks the abandoned lease interrupted.
+		if _, err := store.ExpireLeases(at.Add(2 * time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finishRun := func(taskID, ref string, at time.Time) {
+		t.Helper()
+		task, err := store.CreateTask(Task{TaskID: taskID, ProjectRef: ref, Mode: "remote", CreatedAt: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempt, err := store.StartAttempt(task.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: ref, Mode: "remote"}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An interrupted row older than a later completed write must not surface
+	// as the ref's active status forever.
+	interruptRun("crashed-run", "/home/recovered", older)
+	finishRun("later-run", "/home/recovered", newer)
+	// The newest interrupted row is still the ref's live recovery reminder.
+	finishRun("done-run", "/home/latest-broke", older)
+	interruptRun("crashed-later", "/home/latest-broke", newer)
+
+	active, err := store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := active["/home/recovered"]; ok {
+		t.Fatalf("stale interrupted ref surfaced after a later completed run: %v", active)
+	}
+	if got := active["/home/latest-broke"]; got != string(TaskInterrupted) {
+		t.Fatalf("newest interrupted run status=%q, want interrupted", got)
+	}
+}

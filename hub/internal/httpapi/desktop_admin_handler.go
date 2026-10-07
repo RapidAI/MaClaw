@@ -90,6 +90,8 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "DOCKER_SERVICE_NOT_ASSIGNED", "no docker service is assigned to this user")
 	case errors.Is(err, desktoppool.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
+	case errors.Is(err, desktoppool.ErrService):
+		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", desktoppool.ServiceFailureMessage(err))
 	default:
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "docker service rejected the desktop request")
 	}
@@ -213,15 +215,15 @@ func DeleteDesktopAssignmentAdminHandler(pool *desktoppool.Pool) http.HandlerFun
 	}
 }
 
-func PostDesktopCreateAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
-	return desktopUserAction(pool, true)
+func PostDesktopCreateAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
+	return desktopUserAction(pool, bots, true)
 }
 
-func PostDesktopStopAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
-	return desktopUserAction(pool, false)
+func PostDesktopStopAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
+	return desktopUserAction(pool, bots, false)
 }
 
-func desktopUserAction(pool *desktoppool.Pool, create bool) http.HandlerFunc {
+func desktopUserAction(pool *desktoppool.Pool, bots *botmgmt.Service, create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pool == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
@@ -238,16 +240,65 @@ func desktopUserAction(pool *desktoppool.Pool, create bool) http.HandlerFunc {
 			desktop desktoppool.Desktop
 			err     error
 		)
+		tenantID := desktopTenantID(r)
 		if create {
-			desktop, err = pool.CreateDesktop(r.Context(), desktopTenantID(r), in.UserID)
+			desktop, err = pool.CreateDesktop(r.Context(), tenantID, in.UserID)
 		} else {
-			desktop, err = pool.StopDesktop(r.Context(), desktopTenantID(r), in.UserID)
+			desktop, err = pool.StopDesktop(r.Context(), tenantID, in.UserID)
 		}
 		if err != nil {
 			writeDesktopError(w, err)
 			return
 		}
+		// The desktop is gone, so the noVNC picture an admin may have opened
+		// is gone too. Leaving it behind would hand the chat a dead page.
+		if bots != nil && !create {
+			bots.ForgetDesktopView(tenantID, in.UserID)
+		}
 		writeJSON(w, http.StatusOK, desktop)
+	}
+}
+
+// PostDesktopViewAdminHandler opens (or reuses) the user's desktop and
+// returns the Hub noVNC page so an admin can watch that desktop. botmgmt is
+// required: it gates the page, and without it the reply would carry the
+// Docker host's address and its VNC token straight to the browser.
+func PostDesktopViewAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil || bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		var in struct {
+			UserID string `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		tenantID := desktopTenantID(r)
+		session, err := pool.OpenDesktop(r.Context(), tenantID, in.UserID)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		novnc := strings.TrimSpace(session.Novnc)
+		if novnc == "" {
+			writeError(w, http.StatusBadGateway, "DESKTOP_NOVNC_UNAVAILABLE", "docker service returned no vnc address")
+			return
+		}
+		bots.NoteDesktopView(tenantID, in.UserID, novnc)
+		// The admin is watching this desktop now. A bot command that finishes
+		// mid-check must not pull it out from under the open noVNC page.
+		bots.NoteDesktopAdminView(tenantID, in.UserID)
+		gated := bots.DesktopViewURL(tenantID, in.UserID)
+		if gated == "" {
+			// Never fall back to the raw address: it points at the Docker
+			// host's published port and carries the VNC token as userinfo.
+			writeError(w, http.StatusBadGateway, "DESKTOP_NOVNC_UNAVAILABLE", "hub could not publish a vnc address")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"novnc_url": gated})
 	}
 }
 

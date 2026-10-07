@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodexProxy 布局预览 · MaClaw 默认蓝白</title>
+  <style>
+    :root {
+      --shadow-sm: 0 1px 2px rgba(30, 58, 95, 0.06);
+      --shadow-md: 0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10);
+      --shadow-lg: 0 8px 28px -6px rgba(30, 58, 95, 0.18);
+      --radius-xs: 4px;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-pill: 999px;
+      --theme-primary: #2f6fbc;
+      --theme-primary-strong: #235a9e;
+      --theme-primary-soft: rgba(47, 111, 188, 0.10);
+      --theme-page-bg: #f4f7fb;
+      --theme-surface: #ffffff;
+      --theme-surface-muted: #f0f4f9;
+      --theme-text-primary: #1c2733;
+      --theme-text-secondary: #44546a;
+      --theme-text-muted: #657384;
+      --theme-border: #d9e1ec;
+      --theme-border-subtle: #e8eef5;
+      --theme-success: #4f7f6f;
+      --theme-success-bg: #f3f7f5;
+      --theme-danger: #c43d34;
+      --theme-on-primary: #ffffff;
+      --theme-info-bg: #f3f7fb;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: var(--theme-text-primary);
+      background: #e6edf6;
+      font-size: 14px;
+    }
+    .preview-bar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 12px 20px;
+      background: #fff;
+      border-bottom: 1px solid var(--theme-border);
+    }
+    .preview-bar strong { font-size: 13px; }
+    .preview-bar span { color: var(--theme-text-muted); font-size: 12px; }
+    .preview-bar button {
+      height: 32px; padding: 0 12px; border-radius: var(--radius-sm);
+      border: 1px solid var(--theme-border); background: #fff;
+      font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer;
+      color: var(--theme-text-primary);
+    }
+    .preview-bar button.active {
+      border-color: var(--theme-primary);
+      background: var(--theme-primary);
+      color: #fff;
+    }
+    .swatches { display: flex; gap: 8px; margin-left: auto; }
+    .swatch { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--theme-text-muted); }
+    .swatch i { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--theme-border); display: block; }
+
+    .stage { padding: 28px 20px 48px; display: flex; justify-content: center; }
+    .window {
+      width: min(1080px, 100%);
+      min-height: 720px;
+      background: var(--theme-page-bg);
+      border: 1px solid var(--theme-border);
+      border-radius: 12px;
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      display: none;
+      flex-direction: column;
+    }
+    .window.show { display: flex; }
+    .titlebar {
+      height: 36px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 12px 0 16px;
+      background: linear-gradient(120deg, var(--theme-surface) 55%, var(--theme-primary-soft) 130%);
+      border-bottom: 1px solid var(--theme-border-subtle);
+      user-select: none;
+    }
+    .titlebar .dots { display: flex; gap: 6px; }
+    .titlebar .dots b { width: 10px; height: 10px; border-radius: 50%; display: block; background: #d9e1ec; }
+    .titlebar .name { font-size: 12px; font-weight: 700; color: var(--theme-text-secondary); }
+    .shell { padding: 20px 28px 24px; display: flex; flex-direction: column; gap: 14px; flex: 1; }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 26px; font-weight: 750; letter-spacing: -0.02em; }
+    h2 { font-size: 14px; font-weight: 700; }
+    h3 { font-size: 12px; font-weight: 700; color: var(--theme-text-muted); }
+    .sub { color: var(--theme-text-muted); font-size: 13px; line-height: 1.5; }
+
+    .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+    .token-stats {
+      display: flex; align-items: center; gap: 12px;
+      padding: 5px 12px; border-radius: var(--radius-pill);
+      background: var(--theme-surface); border: 1px solid var(--theme-border);
+      font-size: 12px; color: var(--theme-text-muted); font-weight: 500;
+      box-shadow: var(--shadow-sm);
+    }
+    .token-stats strong { color: var(--theme-text-primary); font-variant-numeric: tabular-nums; }
+    .chip, .badge {
+      display: inline-flex; align-items: center; min-height: 28px;
+      padding: 4px 10px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 700;
+    }
+    .chip { background: var(--theme-surface-muted); color: var(--theme-text-secondary); border: 1px solid var(--theme-border-subtle); }
+    .chip.ok { background: var(--theme-success-bg); color: var(--theme-success); }
+    .badge { background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
+    .badge.ok { background: #e8f1fb; color: var(--theme-primary-strong); }
+    .status-group { display: flex; align-items: center; gap: 8px; }
+
+    .actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .runtime { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--theme-text-muted); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    button.app {
+      height: 34px; padding: 0 12px; border-radius: var(--radius-sm);
+      border: 1px solid var(--theme-border); background: var(--theme-surface);
+      color: var(--theme-text-primary); font: inherit; font-size: 12.5px; font-weight: 700; cursor: default;
+    }
+    button.primary {
+      border-color: var(--theme-primary); background: var(--theme-primary); color: #fff;
+      box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-primary) 35%, transparent);
+    }
+    button.ghost { background: var(--theme-surface-muted); }
+    button.danger { color: var(--theme-danger); }
+
+    .panel {
+      background: var(--theme-surface);
+      border: 1px solid var(--theme-border-subtle);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+    }
+    .guide {
+      padding: 14px 18px;
+      background: linear-gradient(120deg, var(--theme-info-bg), color-mix(in srgb, var(--theme-primary-soft) 55%, var(--theme-info-bg)));
+      border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border));
+    }
+    .guide h3 { color: var(--theme-primary); margin-bottom: 10px; font-size: 12.5px; }
+    .guide ol {
+      margin: 0; padding: 0; list-style: none; display: grid;
+      grid-template-columns: 1fr 1fr; gap: 8px 24px; counter-reset: g;
+    }
+    .guide li {
+      display: flex; gap: 8px; font-size: 12.5px; color: var(--theme-text-secondary); counter-increment: g;
+    }
+    .guide li::before {
+      content: counter(g); width: 18px; height: 18px; border-radius: 50%;
+      background: var(--theme-primary); color: #fff; font-size: 11px; font-weight: 700;
+      display: grid; place-items: center; flex: 0 0 18px;
+    }
+    .guide strong { color: var(--theme-primary-strong); }
+
+    .layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr); gap: 14px; align-items: start; }
+    .config { padding: 16px 18px; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .field-stack { display: flex; flex-direction: column; gap: 12px; }
+    label { display: block; margin: 0 0 6px; font-size: 12px; font-weight: 700; color: var(--theme-text-secondary); }
+    .hint { font-weight: 500; color: var(--theme-text-muted); margin-left: 6px; }
+    input, select {
+      width: 100%; height: 38px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm);
+      padding: 0 10px; font: inherit; font-size: 13px; color: var(--theme-text-primary);
+      background: #fbfdff;
+    }
+    input:disabled { background: var(--theme-surface-muted); color: var(--theme-text-muted); }
+    .inline { display: grid; grid-template-columns: 1fr 72px; gap: 8px; }
+    .two { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 12px; }
+    .divider { height: 1px; background: var(--theme-border-subtle); margin: 2px 0; }
+    .local-head { font-size: 12.5px; color: var(--theme-text-primary); }
+    .check {
+      display: grid; grid-template-columns: 16px 1fr; gap: 10px;
+      padding: 12px; border: 1px solid var(--theme-border-subtle);
+      border-radius: var(--radius-md); background: var(--theme-surface-muted);
+    }
+    .check small { color: var(--theme-text-muted); font-size: 12px; }
+
+    .side { padding: 14px 16px; }
+    .endpoint { display: grid; grid-template-columns: 72px 1fr; gap: 6px; align-items: center;
+      padding: 7px 10px; border: 1px solid var(--theme-border-subtle); border-radius: var(--radius-sm);
+      background: var(--theme-surface-muted); margin-bottom: 6px; font-size: 12px; font-weight: 750; color: var(--theme-text-secondary); }
+    code { font-family: Consolas, "Courier New", monospace; font-size: 11.5px; color: #20364f;
+      background: #edf3f8; padding: 3px 6px; border-radius: 5px; word-break: break-all; }
+    .block { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--theme-border-subtle); }
+    .cache { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--theme-text-muted); }
+    .cache strong { color: var(--theme-text-primary); }
+
+    /* first-run */
+    .chooser { max-width: 760px; margin: 12px auto 0; display: flex; flex-direction: column; gap: 16px; flex: 1; }
+    .chooser-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+    .grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    }
+    .method {
+      text-align: left; padding: 14px 14px 13px; border-radius: var(--radius-md);
+      border: 1px solid var(--theme-border); background: var(--theme-surface);
+      box-shadow: var(--shadow-sm); cursor: pointer;
+      display: flex; gap: 12px; align-items: flex-start;
+    }
+    .method:hover { border-color: color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border)); }
+    .method.selected {
+      border-color: var(--theme-primary);
+      background: color-mix(in srgb, var(--theme-primary-soft) 72%, var(--theme-surface));
+      box-shadow: 0 0 0 3px var(--theme-primary-soft);
+    }
+    .ico {
+      width: 36px; height: 36px; border-radius: 10px; flex: 0 0 36px;
+      display: grid; place-items: center;
+      background: var(--theme-primary-soft); color: var(--theme-primary); font-size: 13px; font-weight: 800;
+    }
+    .method b { display: block; font-size: 13.5px; }
+    .method small { display: block; margin-top: 3px; color: var(--theme-text-muted); font-size: 12px; line-height: 1.4; }
+    .chooser-foot { display: flex; justify-content: flex-end; margin-top: auto; padding-bottom: 8px; }
+    .chooser-foot button { height: 38px; min-width: 120px; }
+
+    .note {
+      margin: 0 auto 20px; width: min(1080px, calc(100% - 40px));
+      font-size: 12.5px; color: var(--theme-text-muted); line-height: 1.55;
+    }
+  </style>
+</head>
+<body>
+  <div class="preview-bar">
+    <strong>CodexProxy 布局预览</strong>
+    <span>色板对齐 MaClaw GUI 默认亮色</span>
+    <button class="active" data-screen="first">首次选择登录</button>
+    <button data-screen="main-sso">主界面 · SSO</button>
+    <button data-screen="main-api">主界面 · 自定义 API</button>
+    <div class="swatches">
+      <div class="swatch"><i style="background:#2f6fbc"></i> primary</div>
+      <div class="swatch"><i style="background:#f4f7fb"></i> page</div>
+      <div class="swatch"><i style="background:#fff"></i> card</div>
+      <div class="swatch"><i style="background:#d9e1ec"></i> border</div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <!-- FIRST RUN -->
+    <div class="window show" id="first">
+      <div class="titlebar"><span class="name">CodexProxy</span><div class="dots"><b></b><b></b><b></b></div></div>
+      <div class="shell">
+        <div class="chooser">
+          <div class="chooser-head">
+            <div>
+              <h1>选择登录方式</h1>
+              <p class="sub">第一次使用请选一种上游。之后可在主界面切换，切换后会自动重启生效。</p>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="method selected"><span class="ico">SSO</span><span><b>CodeGen SSO</b><small>现有企业登录，功能保持不变</small></span></div>
+            <div class="method"><span class="ico">API</span><span><b>自定义 OpenAI API</b><small>手动填写 URL / API Key，可列出模型</small></span></div>
+            <div class="method"><span class="ico">OA</span><span><b>OpenAI 账号登录</b><small>浏览器 OAuth，登录 ChatGPT / OpenAI</small></span></div>
+            <div class="method"><span class="ico">GK</span><span><b>xAI Grok 登录</b><small>浏览器 OAuth，使用 xAI 账号</small></span></div>
+            <div class="method"><span class="ico">CC</span><span><b>Claude Code 登录</b><small>Anthropic OAuth，使用 Claude.ai 账号</small></span></div>
+            <div class="method"><span class="ico">智</span><span><b>智谱编程</b><small>预置 Anthropic 端点，填写 API Key</small></span></div>
+            <div class="method"><span class="ico">K</span><span><b>Kimi Web 登录</b><small>打开网页完成登录后同步凭据</small></span></div>
+          </div>
+          <div class="chooser-foot"><button class="app primary">继续</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN SSO -->
+    <div class="window" id="main-sso">
+      <div class="titlebar"><span class="name">CodexProxy</span><div class="dots"><b></b><b></b><b></b></div></div>
+      <div class="shell">
+        <div class="topbar">
+          <div><h1>CodexProxy</h1></div>
+          <div class="token-stats">
+            <span>↑ <strong>12.4K</strong></span>
+            <span>↓ <strong>3.1K</strong></span>
+            <span>Σ <strong>15.5K</strong></span>
+            <span>日 / 周 / 月 / 全</span>
+          </div>
+          <div class="status-group">
+            <span class="chip ok">SSO · user@corp</span>
+          </div>
+        </div>
+        <div class="actions-row">
+          <div class="runtime">运行状态 <span class="badge ok">运行中</span></div>
+          <div class="actions">
+            <button class="app ghost">配置 Codex</button>
+            <button class="app ghost">恢复 Codex</button>
+            <button class="app ghost danger">退出登录</button>
+          </div>
+        </div>
+        <section class="panel guide">
+          <h3>快速使用指南</h3>
+          <ol>
+            <li><span>确认 <strong>Codex Desktop</strong> 已安装</span></li>
+            <li><span>已用 <strong>CodeGen SSO</strong> 登录</span></li>
+            <li><span>选择 <strong>默认模型</strong> 并保存</span></li>
+            <li><span>点击 <strong>配置 Codex</strong> 后启动 Desktop</span></li>
+          </ol>
+        </section>
+        <div class="layout">
+          <section class="panel config">
+            <div class="section-head"><h2>配置</h2><button class="app primary">保存</button></div>
+            <div class="field-stack">
+              <div>
+                <label>登录方式 <span class="hint">切换后将自动重启生效</span></label>
+                <select><option selected>CodeGen SSO</option><option>自定义 OpenAI API</option><option>OpenAI 账号登录</option><option>xAI Grok 登录</option><option>Claude Code 登录</option><option>智谱编程</option><option>Kimi Web 登录</option></select>
+              </div>
+              <div>
+                <label>上游 Base URL</label>
+                <input value="https://codegen.qianxin-inc.cn/api/v1" disabled />
+              </div>
+              <div class="two">
+                <div><label>默认模型</label><select><option>gpt-5.5</option></select></div>
+                <div><label>账号</label><input value="user@corp" disabled /></div>
+              </div>
+              <div class="divider"></div>
+              <div class="local-head">本地服务</div>
+              <div><label>监听地址 <span class="hint">默认全部地址，可用 127.0.0.1 或局域网 IP</span></label><input value="0.0.0.0:18086" /></div>
+              <div>
+                <label>本地 API Key <span class="hint">OpenAI 与 Anthropic 共用，给 Codex 用</span></label>
+                <div class="inline"><input value="tigerproxy-local-key" /><button class="app ghost">生成</button></div>
+              </div>
+              <label class="check"><input type="checkbox" checked /><span><strong>开机自动启动</strong><small>登录 Windows 时自动启动 CodexProxy</small></span></label>
+              <div class="two">
+                <div><label>上下文长度</label><input value="199000" /></div>
+                <div><label>压缩启动长度</label><input value="180000" /></div>
+              </div>
+            </div>
+          </section>
+          <aside class="panel side">
+            <div class="section-head"><h2>协议地址</h2></div>
+            <div class="endpoint"><span>OpenAI</span><code>http://127.0.0.1:18086/v1</code></div>
+            <div class="endpoint"><span>Anthropic</span><code>http://127.0.0.1:18086/anthropic/v1</code></div>
+            <div class="endpoint"><span>Health</span><code>http://127.0.0.1:18086/health</code></div>
+            <div class="block"><h3>局域网地址</h3><code>http://192.168.1.12:18086/v1</code></div>
+            <div class="block">
+              <h3>响应缓存</h3>
+              <div class="cache"><span>条目 <strong>12</strong></span><span>命中率 <strong>38%</strong></span></div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN CUSTOM API -->
+    <div class="window" id="main-api">
+      <div class="titlebar"><span class="name">CodexProxy</span><div class="dots"><b></b><b></b><b></b></div></div>
+      <div class="shell">
+        <div class="topbar">
+          <div><h1>CodexProxy</h1></div>
+          <div class="token-stats">
+            <span>↑ <strong>2.0K</strong></span>
+            <span>↓ <strong>800</strong></span>
+            <span>Σ <strong>2.8K</strong></span>
+          </div>
+          <div class="status-group"><span class="chip ok">自定义 API</span></div>
+        </div>
+        <div class="actions-row">
+          <div class="runtime">运行状态 <span class="badge ok">运行中</span></div>
+          <div class="actions">
+            <button class="app ghost">配置 Codex</button>
+            <button class="app ghost">恢复 Codex</button>
+          </div>
+        </div>
+        <section class="panel guide">
+          <h3>快速使用指南</h3>
+          <ol>
+            <li><span>填写上游 <strong>URL</strong> 和 <strong>API Key</strong></span></li>
+            <li><span>点击 <strong>列出模型</strong> 并选择默认模型</span></li>
+            <li><span>保存后如已切换方式将 <strong>自动重启</strong></span></li>
+            <li><span>再点击 <strong>配置 Codex</strong></span></li>
+          </ol>
+        </section>
+        <div class="layout">
+          <section class="panel config">
+            <div class="section-head"><h2>配置</h2><button class="app primary">保存</button></div>
+            <div class="field-stack">
+              <div>
+                <label>登录方式 <span class="hint">切换后将自动重启生效</span></label>
+                <select><option>CodeGen SSO</option><option selected>自定义 OpenAI API</option><option>OpenAI 账号登录</option><option>xAI Grok 登录</option><option>Claude Code 登录</option><option>智谱编程</option><option>Kimi Web 登录</option></select>
+              </div>
+              <div><label>上游 Base URL</label><input value="https://api.example.com/v1" /></div>
+              <div>
+                <label>上游 API Key <span class="hint">只给上游用，和本地 Key 分开</span></label>
+                <input value="sk-••••••••" />
+              </div>
+              <div class="two">
+                <div><label>默认模型</label><select><option>gpt-4.1</option></select></div>
+                <div style="display:flex;align-items:flex-end;"><button class="app ghost" style="width:100%;">列出模型</button></div>
+              </div>
+              <div class="divider"></div>
+              <div class="local-head">本地服务</div>
+              <div><label>监听地址</label><input value="0.0.0.0:18086" /></div>
+              <div>
+                <label>本地 API Key</label>
+                <div class="inline"><input value="tigerproxy-local-key" /><button class="app ghost">生成</button></div>
+              </div>
+            </div>
+          </section>
+          <aside class="panel side">
+            <div class="section-head"><h2>协议地址</h2></div>
+            <div class="endpoint"><span>OpenAI</span><code>http://127.0.0.1:18086/v1</code></div>
+            <div class="endpoint"><span>Anthropic</span><code>http://127.0.0.1:18086/anthropic/v1</code></div>
+            <div class="endpoint"><span>Health</span><code>http://127.0.0.1:18086/health</code></div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">
+    这是布局预览，不是已接入的产品页。色值直接取自 MaClaw GUI <code>App.css</code> 默认亮色：主色 <code>#2f6fbc</code>，页面底 <code>#f4f7fb</code>，卡片白底 14px 圆角，蓝向阴影。
+    当前 TigerProxy 用的是青绿 <code>#126b86</code>，落地时整页换成这套蓝白，不再沿用青绿。
+  </p>
+  <script>
+    const buttons = document.querySelectorAll(".preview-bar button");
+    const screens = ["first", "main-sso", "main-api"];
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        buttons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        screens.forEach((id) => document.getElementById(id).classList.toggle("show", id === btn.dataset.screen));
+      });
+    });
+    document.querySelectorAll("#first .method").forEach((card) => {
+      card.addEventListener("click", () => {
+        document.querySelectorAll("#first .method").forEach((c) => c.classList.remove("selected"));
+        card.classList.add("selected");
+      });
+    });
+  </script>
+</body>
+</html>
