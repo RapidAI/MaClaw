@@ -23,6 +23,22 @@ func main() {
 		log.Fatal("DESKTOPD_TOKEN is required")
 	}
 	svc := &desktopd.Service{AdvertiseHost: strings.TrimSpace(os.Getenv("DESKTOPD_ADVERTISE_HOST"))}
+	// DESKTOPD_IMAGE_SOURCE: where a missing maclaw-gui:2 comes from. Empty
+	// means the public ghcr.io/rapidai/maclaw-gui:2; "off" disables pulls
+	// (the image is built on the host by remote_deploy.sh). A present local
+	// image is never pulled over or replaced.
+	sources, err := desktopd.ParseImageSources(os.Getenv("DESKTOPD_IMAGE_SOURCE"))
+	if err != nil {
+		log.Fatalf("DESKTOPD_IMAGE_SOURCE is invalid: %v", err)
+	}
+	svc.ImageSources = sources
+	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_IMAGE_PULL_TIMEOUT")); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err != nil || timeout <= 0 {
+			log.Fatalf("DESKTOPD_IMAGE_PULL_TIMEOUT is invalid: %q", raw)
+		}
+		svc.ImagePullTimeout = timeout
+	}
 	// The admin panel keeps its account and extra API keys here. Defaults to
 	// ./data, which resolves to the deploy directory under the systemd unit.
 	// DESKTOPD_STATE_DIR=off disables the panel entirely.
@@ -65,6 +81,12 @@ func main() {
 	displayAddr := addr
 	if strings.HasPrefix(displayAddr, ":") {
 		displayAddr = "127.0.0.1" + displayAddr
+	}
+	if len(sources) == 0 {
+		log.Printf("[desktopd] image source pulls disabled (DESKTOPD_IMAGE_SOURCE=off)")
+	} else {
+		// Background only: /v1/health and the admin panel answer while it runs.
+		go svc.PrefetchImages(ctx)
 	}
 	log.Printf("desktopd listening on %s", addr)
 	if adminDisabled {

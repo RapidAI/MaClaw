@@ -151,6 +151,10 @@ async function loadDash() {
     '<dt>对外主机</dt><dd class="mono">' + (esc(o.advertise_host) || '<span class="muted">未设置 DESKTOPD_ADVERTISE_HOST</span>') + '</dd>' +
     '<dt>Docker</dt><dd>' + docker + '</dd>' +
     '<dt>默认镜像</dt><dd class="mono">' + esc(o.image) + '</dd>' +
+    '<dt>镜像来源</dt><dd class="mono">' + ((o.image_sources || []).map(function (x) {
+      const state = {idle: '本地已有或未触发', pulling: '拉取中', pulled: '已拉取', failed: '拉取失败'}[x.state] || x.state;
+      return esc(x.image) + ' ← ' + esc(x.source) + ' (' + esc(state) + (x.message ? ': ' + esc(x.message) : '') + ')';
+    }).join('<br>') || '<span class="muted">未配置(DESKTOPD_IMAGE_SOURCE=off),镜像需在主机上构建</span>') + '</dd>' +
     '<dt>默认资源</dt><dd class="mono">' + esc(o.memory) + ' / ' + esc(o.cpus) + ' CPU / shm ' + esc(o.shm_size) + '</dd>';
 
   const rows = [];

@@ -17,6 +17,20 @@ set -eu
 : "${DESKTOPD_APT_MIRROR:=}"
 # 1 skips the image build and requires DESKTOPD_IMAGE to exist already.
 : "${DESKTOPD_SKIP_IMAGE_BUILD:=0}"
+# Where the deploy gets maclaw-gui:2 from:
+#   build (default)  docker build Dockerfile.v2 on this host (production: Tencent mirrors)
+#   pull             docker pull DESKTOPD_IMAGE_SOURCE, check it, tag it DESKTOPD_IMAGE
+#   auto             pull with DESKTOPD_IMAGE_PULL_TIMEOUT, build when that fails
+# Either way the image is checked before it is tagged, and a failure leaves
+# the existing image alone.
+: "${DESKTOPD_IMAGE_FROM:=build}"
+# Remember whether the caller chose these, so only explicit values reach .env
+# (desktopd itself defaults to ghcr.io/rapidai/maclaw-gui:2 for a missing image).
+IMAGE_SOURCE_GIVEN="${DESKTOPD_IMAGE_SOURCE+x}"
+PULL_TIMEOUT_GIVEN="${DESKTOPD_IMAGE_PULL_TIMEOUT+x}"
+: "${DESKTOPD_IMAGE_SOURCE:=ghcr.io/rapidai/maclaw-gui:2}"
+# coreutils timeout syntax: 30m, 1800s, 1h.
+: "${DESKTOPD_IMAGE_PULL_TIMEOUT:=30m}"
 
 rand_secret() {
   if command -v openssl >/dev/null 2>&1; then
@@ -25,6 +39,11 @@ rand_secret() {
     dd if=/dev/urandom bs=48 count=1 2>/dev/null | base64 | tr -d '\n'
   fi
 }
+
+case "$DESKTOPD_IMAGE_FROM" in
+  build|pull|auto) ;;
+  *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM)" >&2; exit 1 ;;
+esac
 
 if [ -z "$DESKTOPD_ADVERTISE_HOST" ]; then
   echo "[remote] DESKTOPD_ADVERTISE_HOST is required" >&2
@@ -66,9 +85,86 @@ else
 fi
 mkdir -p "$DESKTOPD_DEPLOY_DIR/state"
 
+# set_env_key KEY VALUE replaces or appends one .env line (values are image
+# references or durations; no secrets).
+set_env_key() {
+  if grep -q "^$1=" "$DESKTOPD_DEPLOY_DIR/.env"; then
+    sed -i "s|^$1=.*|$1=$2|" "$DESKTOPD_DEPLOY_DIR/.env"
+  else
+    echo "$1=$2" >> "$DESKTOPD_DEPLOY_DIR/.env"
+  fi
+}
+if [ -n "$IMAGE_SOURCE_GIVEN" ]; then set_env_key DESKTOPD_IMAGE_SOURCE "$DESKTOPD_IMAGE_SOURCE"; fi
+if [ -n "$PULL_TIMEOUT_GIVEN" ]; then set_env_key DESKTOPD_IMAGE_PULL_TIMEOUT "$DESKTOPD_IMAGE_PULL_TIMEOUT"; fi
+
 on_tencent_cloud() {
   command -v curl >/dev/null 2>&1 &&
     curl -fsS -m 2 http://metadata.tencentyun.com/latest/meta-data/instance-id >/dev/null 2>&1
+}
+
+# check_image_contract IMAGE: the files and tools desktopd and
+# desktop_supervisor.py rely on. desktopd runs the same check after its own
+# source pulls (imageContractScript in desktopd/image_source.go).
+check_image_contract() {
+  docker run --rm --entrypoint sh "$1" -c '
+      test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html &&
+      for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import; do
+        command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+      done' >&2
+}
+
+# pull_desktop_image pulls DESKTOPD_IMAGE_SOURCE (a tag or an @sha256 digest),
+# checks it, and tags it DESKTOPD_IMAGE. Returns 1 without touching
+# DESKTOPD_IMAGE when the pull or the check fails.
+pull_desktop_image() {
+  src="$DESKTOPD_IMAGE_SOURCE"
+  case "$src" in
+    ""|off|none) echo "[remote] DESKTOPD_IMAGE_SOURCE is off; nothing to pull" >&2; return 1 ;;
+  esac
+  log="$DESKTOPD_DEPLOY_DIR/logs/image-pull.log"
+  echo "[remote] Pulling $src for $DESKTOPD_IMAGE (timeout $DESKTOPD_IMAGE_PULL_TIMEOUT); log: $log"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$DESKTOPD_IMAGE_PULL_TIMEOUT" docker pull "$src" > "$log" 2>&1 || {
+      tail -n 5 "$log" >&2 || true
+      echo "[remote] Pulling $src failed or timed out" >&2
+      return 1
+    }
+  else
+    docker pull "$src" > "$log" 2>&1 || { tail -n 5 "$log" >&2 || true; echo "[remote] Pulling $src failed" >&2; return 1; }
+  fi
+  id="$(docker image inspect --format '{{.Id}}' "$src" 2>/dev/null)" || { echo "[remote] $src is missing after the pull" >&2; return 1; }
+  if ! check_image_contract "$id"; then
+    echo "[remote] $src does not provide the desktop contract; $DESKTOPD_IMAGE left unchanged" >&2
+    return 1
+  fi
+  docker tag "$id" "$DESKTOPD_IMAGE" || return 1
+  echo "[remote] Pulled $DESKTOPD_IMAGE from $src ($id)"
+}
+
+# provide_desktop_image applies DESKTOPD_SKIP_IMAGE_BUILD / DESKTOPD_IMAGE_FROM.
+provide_desktop_image() {
+  if [ "$DESKTOPD_SKIP_IMAGE_BUILD" = "1" ]; then
+    if ! docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then
+      echo "[remote] DESKTOPD_SKIP_IMAGE_BUILD=1 but $DESKTOPD_IMAGE does not exist" >&2
+      exit 1
+    fi
+    echo "[remote] Skipped building $DESKTOPD_IMAGE"
+    return 0
+  fi
+  case "$DESKTOPD_IMAGE_FROM" in
+    build) build_desktop_image ;;
+    pull)
+      if ! pull_desktop_image; then
+        echo "[remote] DESKTOPD_IMAGE_FROM=pull failed; $DESKTOPD_IMAGE left unchanged" >&2
+        exit 1
+      fi ;;
+    auto)
+      if ! pull_desktop_image; then
+        echo "[remote] Falling back to building $DESKTOPD_IMAGE on this host"
+        build_desktop_image
+      fi ;;
+    *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM)" >&2; exit 1 ;;
+  esac
 }
 
 # build_desktop_image builds DESKTOPD_IMAGE from Dockerfile.v2. It builds
@@ -78,14 +174,6 @@ on_tencent_cloud() {
 build_desktop_image() {
   context="$DESKTOPD_DEPLOY_DIR/image"
   dockerfile="$context/Dockerfile.v2"
-  if [ "$DESKTOPD_SKIP_IMAGE_BUILD" = "1" ]; then
-    if ! docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then
-      echo "[remote] DESKTOPD_SKIP_IMAGE_BUILD=1 but $DESKTOPD_IMAGE does not exist" >&2
-      exit 1
-    fi
-    echo "[remote] Skipped building $DESKTOPD_IMAGE"
-    return 0
-  fi
   if [ ! -f "$dockerfile" ]; then
     echo "[remote] $dockerfile is missing; refusing to tag another build as $DESKTOPD_IMAGE" >&2
     exit 1
@@ -120,11 +208,7 @@ build_desktop_image() {
     attempt=$((attempt + 1))
   done
   # The contract desktopd and desktop_supervisor.py depend on.
-  if ! docker run --rm --entrypoint sh "$candidate" -c '
-      test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html &&
-      for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import; do
-        command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
-      done' >&2; then
+  if ! check_image_contract "$candidate"; then
     docker rmi "$candidate" >/dev/null 2>&1 || true
     echo "[remote] $candidate does not provide the desktop contract; $DESKTOPD_IMAGE left unchanged" >&2
     exit 1
@@ -161,7 +245,7 @@ install_supervisor() {
   fi
   case "$DESKTOPD_IMAGE" in
     maclaw-gui:1) update_legacy_image ;;
-    *) build_desktop_image ;;
+    *) provide_desktop_image ;;
   esac
   # Running desktops (v1 or v2) pick up the new supervisor on their next
   # start; it falls back to fluxbox where XFCE is not installed. desktopd

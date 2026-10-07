@@ -42,7 +42,14 @@ type Runner func(ctx context.Context, args ...string) (string, error)
 type Service struct {
 	Run           Runner
 	AdvertiseHost string
-	userGates     sync.Map
+	// ImageSources maps a local image name (maclaw-gui:2) to the public
+	// reference pulled and tagged when that image is missing on this host.
+	// Empty disables source pulls; see ParseImageSources.
+	ImageSources map[string]string
+	// ImagePullTimeout bounds one source pull; zero means DefaultImagePullTimeout.
+	ImagePullTimeout time.Duration
+	userGates        sync.Map
+	pulls            imagePulls
 }
 
 // Spec is the desktop Hub asks this service to create for one user.
@@ -615,14 +622,6 @@ func (s *Service) keepUserLayer(ctx context.Context, name string, spec Spec, fro
 		return err
 	}
 	return nil
-}
-
-func (s *Service) installImage(ctx context.Context, image string) error {
-	if _, err := s.docker(ctx, "image", "inspect", "--format", "{{.Id}}", image); err == nil {
-		return nil
-	}
-	_, err := s.docker(ctx, "pull", image)
-	return err
 }
 
 // runContainer starts a new desktop from image. spec.Image is the requested

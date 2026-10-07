@@ -71,6 +71,13 @@ REM mirrors when it runs on Tencent Cloud, and Docker Hub otherwise.
 if not defined DESKTOPD_BASE_IMAGE set "DESKTOPD_BASE_IMAGE="
 if not defined DESKTOPD_APT_MIRROR set "DESKTOPD_APT_MIRROR="
 if not defined DESKTOPD_SKIP_IMAGE_BUILD set "DESKTOPD_SKIP_IMAGE_BUILD=0"
+REM build (default) = docker build on the host; pull = pull DESKTOPD_IMAGE_SOURCE
+REM (default ghcr.io/rapidai/maclaw-gui:2), check, tag; auto = pull, build on failure.
+if not defined DESKTOPD_IMAGE_FROM set "DESKTOPD_IMAGE_FROM=build"
+REM Only explicit values are passed on (and written to the host .env).
+set "IMAGE_SOURCE_ARGS="
+if defined DESKTOPD_IMAGE_SOURCE set "IMAGE_SOURCE_ARGS=DESKTOPD_IMAGE_SOURCE=%DESKTOPD_IMAGE_SOURCE%"
+if defined DESKTOPD_IMAGE_PULL_TIMEOUT set "IMAGE_SOURCE_ARGS=%IMAGE_SOURCE_ARGS% DESKTOPD_IMAGE_PULL_TIMEOUT=%DESKTOPD_IMAGE_PULL_TIMEOUT%"
 if not defined GOPROXY set "GOPROXY=https://goproxy.cn,direct"
 if not defined REMOTE_PASS set "PAUSE_ON_EXIT=1"
 
@@ -102,6 +109,9 @@ echo   DESKTOPD_IMAGE=maclaw-gui:2
 echo   DESKTOPD_BASE_IMAGE=mirror.ccs.tencentyun.com/library/debian:bookworm
 echo   DESKTOPD_APT_MIRROR=mirrors.tencentyun.com   (none = deb.debian.org)
 echo   DESKTOPD_SKIP_IMAGE_BUILD=1                  (reuse the existing image)
+echo   DESKTOPD_IMAGE_FROM=build^|pull^|auto        (default build; pull = ghcr.io image)
+echo   DESKTOPD_IMAGE_SOURCE=ghcr.io/rapidai/maclaw-gui:2   (or @sha256:...; off = desktopd never pulls)
+echo   DESKTOPD_IMAGE_PULL_TIMEOUT=30m
 echo.
 echo The access token is generated on the Docker host the first time and kept
 echo in DESKTOPD_DEPLOY_DIR\.env. It is not printed.
@@ -164,7 +174,7 @@ echo        Host: %REMOTE_USER%@%REMOTE_HOST%:%REMOTE_PORT%
 echo        desktopd -^> %DESKTOPD_DEPLOY_DIR%
 echo        Listen   -^> %DESKTOPD_BIND_ADDR%
 echo        Advertise-^> %DESKTOPD_ADVERTISE_HOST%
-echo        Image    -^> %DESKTOPD_IMAGE% ^(built on the host from Dockerfile.v2^)
+echo        Image    -^> %DESKTOPD_IMAGE% ^(DESKTOPD_IMAGE_FROM=%DESKTOPD_IMAGE_FROM%^)
 echo.
 
 echo [2/5] Building Linux binary locally...
@@ -213,7 +223,7 @@ if errorlevel 1 goto :upload_fail
 if errorlevel 1 goto :upload_fail
 
 echo [5/5] Remote deploy and restart...
-"%PLINK_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && REMOTE_TMP_DIR=%REMOTE_TMP_DIR% DESKTOPD_DEPLOY_DIR=%DESKTOPD_DEPLOY_DIR% DESKTOPD_BIND_ADDR=%DESKTOPD_BIND_ADDR% DESKTOPD_PORT=%DESKTOPD_PORT% DESKTOPD_ADVERTISE_HOST=%DESKTOPD_ADVERTISE_HOST% DESKTOPD_IMAGE=%DESKTOPD_IMAGE% DESKTOPD_BASE_IMAGE=%DESKTOPD_BASE_IMAGE% DESKTOPD_APT_MIRROR=%DESKTOPD_APT_MIRROR% DESKTOPD_SKIP_IMAGE_BUILD=%DESKTOPD_SKIP_IMAGE_BUILD% %REMOTE_TMP_DIR%/remote_deploy.sh"
+"%PLINK_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && REMOTE_TMP_DIR=%REMOTE_TMP_DIR% DESKTOPD_DEPLOY_DIR=%DESKTOPD_DEPLOY_DIR% DESKTOPD_BIND_ADDR=%DESKTOPD_BIND_ADDR% DESKTOPD_PORT=%DESKTOPD_PORT% DESKTOPD_ADVERTISE_HOST=%DESKTOPD_ADVERTISE_HOST% DESKTOPD_IMAGE=%DESKTOPD_IMAGE% DESKTOPD_BASE_IMAGE=%DESKTOPD_BASE_IMAGE% DESKTOPD_APT_MIRROR=%DESKTOPD_APT_MIRROR% DESKTOPD_SKIP_IMAGE_BUILD=%DESKTOPD_SKIP_IMAGE_BUILD% DESKTOPD_IMAGE_FROM=%DESKTOPD_IMAGE_FROM% %IMAGE_SOURCE_ARGS% %REMOTE_TMP_DIR%/remote_deploy.sh"
 if errorlevel 1 (
   echo [ERROR] Remote deployment failed.
   goto :fail

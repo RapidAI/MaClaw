@@ -30,6 +30,8 @@
 #   DESKTOPD_ADVERTISE_HOST (default REMOTE_HOST; .env keeps an existing value)
 #   DESKTOPD_BASE_IMAGE / DESKTOPD_APT_MIRROR (empty = auto Tencent mirrors on Tencent Cloud)
 #   DESKTOPD_SKIP_IMAGE_BUILD=0  HUB_PUBLIC_URL (e.g. https://hub.example.com, for verify)
+#   DESKTOPD_IMAGE_FROM=build|pull|auto (default build; pull/auto use the public
+#   ghcr.io/rapidai/maclaw-gui:2)  DESKTOPD_IMAGE_SOURCE  DESKTOPD_IMAGE_PULL_TIMEOUT=30m
 #   DESKTOP_IMAGE=maclaw-gui:2 DESKTOP_MEMORY=3g DESKTOP_CPUS=1.5 DESKTOP_SHM=1g DESKTOP_SERVER_ID
 #   TEST_USER=rollout-test-gui2 MIGRATE=1 STOP_AFTER=1 (smoke)   BACKUP_TS (rollback)
 # Usage notes: docs/desktop-gui-v2.md
@@ -73,6 +75,10 @@ remote_env() {
     "${DESKTOPD_BASE_IMAGE:-}" "${DESKTOPD_APT_MIRROR:-}" "${DESKTOPD_SKIP_IMAGE_BUILD:-0}" "${HUB_PUBLIC_URL:-}" \
     "${DESKTOP_IMAGE:-maclaw-gui:2}" "${DESKTOP_MEMORY:-3g}" "${DESKTOP_CPUS:-1.5}" "${DESKTOP_SHM:-1g}" \
     "${DESKTOP_SERVER_ID:-}" "${BACKUP_TS:-}"
+  printf ' DESKTOPD_IMAGE_FROM=%q' "${DESKTOPD_IMAGE_FROM:-build}"
+  # Only explicit values: remote_deploy.sh writes them to the host .env.
+  if [[ -n "${DESKTOPD_IMAGE_SOURCE+x}" ]]; then printf ' DESKTOPD_IMAGE_SOURCE=%q' "$DESKTOPD_IMAGE_SOURCE"; fi
+  if [[ -n "${DESKTOPD_IMAGE_PULL_TIMEOUT+x}" ]]; then printf ' DESKTOPD_IMAGE_PULL_TIMEOUT=%q' "$DESKTOPD_IMAGE_PULL_TIMEOUT"; fi
 }
 
 run_remote_step() {

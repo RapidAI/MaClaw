@@ -451,6 +451,7 @@ func (a *adminServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"advertise_host": a.svc.advertiseHostOrEmpty(),
 		"primary_token":  a.primary,
 		"image":          DefaultImage,
+		"image_sources":  a.svc.ImagePullStatuses(),
 		"memory":         DefaultMemory,
 		"cpus":           DefaultCPUs,
 		"shm_size":       DefaultShmSize,
