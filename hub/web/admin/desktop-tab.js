@@ -1,7 +1,8 @@
 (function (global) {
   'use strict';
 
-  var defaults = { image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm: '512m' };
+  // Keep in step with corelib/desktop (DefaultImage, DefaultMemory, DefaultCPUs, DefaultShmSize).
+  var defaults = { image: 'maclaw-gui:2', memory: '3g', cpus: '1.5', shm: '1g' };
   var editingId = '';
   // Bumped when the noVNC frame is closed, so a request still in flight does
   // not reopen a frame the admin just dismissed.

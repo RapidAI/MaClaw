@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -85,18 +86,21 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 	if err != nil {
 		return Desktop{}, err
 	}
-	image, err := s.resolveImage(ctx, spec)
-	if err != nil {
-		return Desktop{}, err
-	}
-	spec.Image = image
+	// spec.Image stays the requested image (for example maclaw-gui:2) for the
+	// whole call. The image docker actually runs may be this user's private
+	// state image; that is resolved last and only used for docker run.
 	name := containerName(spec.TenantID, spec.UserID)
-	running, shm, mountText, exists, err := s.inspect(ctx, name)
+	current, err := s.inspect(ctx, name)
 	if err != nil {
 		return Desktop{}, err
 	}
-	mountsReady := privateMountsReady(mountText, spec)
-	if exists && ((shm != "" && !strings.EqualFold(shm, spec.ShmSize)) || !mountsReady) {
+	if reason := recreateReason(current, spec); reason != "" {
+		// The requested image must exist before anything is torn down: a
+		// missing or unpullable image has to leave the old desktop in place.
+		if err := s.installImage(ctx, spec.Image); err != nil {
+			return Desktop{}, err
+		}
+		log.Printf("desktopd: recreating %s (%s); private volumes are kept", name, reason)
 		// The profile volume survives the new container, but only after Chromium
 		// has written the website login. rm -f would otherwise kill it first.
 		writeCtx, cancelWrite := loginWriteContext(ctx)
@@ -105,10 +109,13 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 		// writing the website login into this user's profile.
 		_ = s.stopContainer(writeCtx, name)
 		cancelWrite()
-		if err := s.keepUserLayer(ctx, name, spec); err != nil {
+		// The committed layer is labelled with the image the OLD container came
+		// from. When the requested image changed, resolveImage below sees the
+		// mismatch and sets this layer aside instead of running it.
+		if err := s.keepUserLayer(ctx, name, spec, containerImage(current)); err != nil {
 			return Desktop{}, err
 		}
-		if !mountsReady {
+		if !privateMountsReady(current.Mounts, spec) {
 			if err := s.migrateLiveFiles(ctx, name, spec); err != nil {
 				return Desktop{}, err
 			}
@@ -116,28 +123,110 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 		if _, err := s.docker(ctx, "rm", "-f", name); err != nil {
 			return Desktop{}, err
 		}
-		exists = false
-		image, err = s.resolveImage(ctx, spec)
-		if err != nil {
-			return Desktop{}, err
-		}
-		spec.Image = image
+		current.Exists = false
 	}
-	if !exists {
-		if err := s.runContainer(ctx, name, spec); err != nil {
+	image, err := s.resolveImage(ctx, spec)
+	if err != nil {
+		return Desktop{}, err
+	}
+	if !current.Exists {
+		if err := s.runContainer(ctx, name, spec, image); err != nil {
 			return Desktop{}, err
 		}
 	} else {
 		if _, err := s.docker(ctx, "update", "--memory", spec.Memory, "--cpus", spec.CPUs, name); err != nil {
 			return Desktop{}, err
 		}
-		if !running {
+		if !current.Running {
 			if _, err := s.docker(ctx, "start", name); err != nil {
 				return Desktop{}, err
 			}
 		}
 	}
-	return desktopOf(spec, name, "running"), nil
+	running := spec
+	running.Image = image
+	return desktopOf(running, name, "running"), nil
+}
+
+// containerState is what desktopd reads back from an existing desktop.
+type containerState struct {
+	Exists  bool
+	Running bool
+	Shm     string
+	Mounts  string
+	// Image is the maclaw.image label: the requested image this container was
+	// created for. Containers created before the label existed leave it empty.
+	Image string
+	// ConfigImage is the image name docker run was given. For those older
+	// containers it is the legacy image or this user's state image.
+	ConfigImage string
+}
+
+// containerImage is the requested image an existing container belongs to.
+func containerImage(c containerState) string {
+	if image := labelValue(c.Image); image != "" {
+		return image
+	}
+	// No label: created by a desktopd that only knew the legacy image. It ran
+	// either that image directly or this user's state image committed from it.
+	configImage := labelValue(c.ConfigImage)
+	if configImage == "" || isStateImage(configImage) {
+		return desktop.LegacyImage
+	}
+	return configImage
+}
+
+// recreateReason decides whether an existing container must be replaced.
+// Replacing keeps every private volume (/desktops, /home/desktop, /opt,
+// /usr/local) and commits the container layer first; see createUnlocked.
+// An empty reason means the container is reused as is.
+//
+// The image check compares requested image names, not image IDs. Rebuilding
+// maclaw-gui:2 in place (for example a deploy that only refreshes the
+// supervisor, which remote_deploy.sh also copies into running containers)
+// must not restart every desktop and drop the user's installed packages.
+// Moving users onto a new image is done by changing the tag.
+func recreateReason(c containerState, spec Spec) string {
+	if !c.Exists {
+		return ""
+	}
+	if !privateMountsReady(c.Mounts, spec) {
+		return "private volumes are not mounted"
+	}
+	if c.Shm != "" && !strings.EqualFold(c.Shm, spec.ShmSize) {
+		return "shm size changed"
+	}
+	if image := containerImage(c); image != spec.Image {
+		return "image changed from " + image + " to " + spec.Image
+	}
+	return ""
+}
+
+// stateImageUsable reports whether this user's committed state image may be
+// run for the requested image. A state image holds the packages a user
+// installed on top of one specific base image. Running a v1-based state image
+// when maclaw-gui:2 is requested would silently keep the user on v1, so only a
+// state image committed from the same requested image is used. State images
+// committed before the label existed came from the legacy image.
+func stateImageUsable(label, requested string) bool {
+	label = labelValue(label)
+	if label == "" {
+		return requested == desktop.LegacyImage
+	}
+	return label == requested
+}
+
+func isStateImage(image string) bool {
+	return strings.HasPrefix(image, "maclaw-desktop-user-") && strings.HasSuffix(image, ":state")
+}
+
+// labelValue treats docker's rendering of a missing label as empty.
+func labelValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "<no value>" {
+		return ""
+	}
+	return value
 }
 
 func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, error) {
@@ -272,6 +361,40 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 	return out, err
 }
 
+// Screenshot returns a PNG of the user's X display. It does not start the
+// desktop: like App it acts on the container a session already opened.
+func (s *Service) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
+	if err != nil {
+		return nil, err
+	}
+	display = strings.TrimSpace(display)
+	if display == "" {
+		display = desktop.DefaultDisplay
+	}
+	if !desktop.ValidDisplay(display) {
+		return nil, fmt.Errorf("%w: display is invalid", ErrInvalid)
+	}
+	var out string
+	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		var runErr error
+		out, runErr = s.docker(ctx, "exec", "-e", "DISPLAY="+display, containerName(spec.TenantID, spec.UserID), "sh", "-c", desktop.ScreenshotScript)
+		return runErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return decodeScreenshot(out)
+}
+
+func decodeScreenshot(out string) ([]byte, error) {
+	data, err := desktop.DecodeScreenshot(out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrDocker, err.Error())
+	}
+	return data, nil
+}
+
 // loginWriteTimeout covers the supervisor flush and the container stop grace.
 // A cancelled request must not cut that short.
 const loginWriteTimeout = 60 * time.Second
@@ -321,18 +444,48 @@ func (s *Service) advertiseHostOrEmpty() string {
 // resolveImage uses this user's private image when one exists, so packages
 // installed into the container stay with that user. A new user starts from
 // the shared image and never receives another user's layer.
+//
+// spec.Image must be the requested image. A state image committed from a
+// different requested image (for example a maclaw-gui:1 layer when
+// maclaw-gui:2 is requested) is not run: it is retired, and the user starts
+// from the requested image. Their browser profile, home, /opt and /usr/local
+// are volumes and carry over; only packages installed into the old image
+// layer stay behind in the retired image.
 func (s *Service) resolveImage(ctx context.Context, spec Spec) (string, error) {
 	state, err := desktop.StateImage(spec.TenantID, spec.UserID)
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.docker(ctx, "image", "inspect", "--format", "{{.Id}}", state); err == nil {
-		return state, nil
+	if label, err := s.docker(ctx, "image", "inspect", "--format", `{{index .Config.Labels "`+desktop.ImageLabel+`"}}`, state); err == nil {
+		if stateImageUsable(label, spec.Image) {
+			return state, nil
+		}
+		s.retireStateImage(ctx, state, labelValue(label), spec.Image)
 	}
 	if err := s.installImage(ctx, spec.Image); err != nil {
 		return "", err
 	}
 	return spec.Image, nil
+}
+
+// retireStateImage moves a stale state image to the :prev tag. Only one
+// generation is kept (the next retirement overwrites it), so disk use stays
+// bounded while an operator can still recover packages by hand. Untagging
+// :state does not delete layers a container still uses. Failure is logged
+// and otherwise ignored: the stale image is skipped either way.
+func (s *Service) retireStateImage(ctx context.Context, state, from, requested string) {
+	if from == "" {
+		from = desktop.LegacyImage
+	}
+	prev := strings.TrimSuffix(state, ":state") + ":prev"
+	log.Printf("desktopd: %s was committed from %s, not %s; keeping it as %s", state, from, requested, prev)
+	if _, err := s.docker(ctx, "tag", state, prev); err != nil {
+		log.Printf("desktopd: tag %s: %v", prev, err)
+		return
+	}
+	if _, err := s.docker(ctx, "rmi", state); err != nil {
+		log.Printf("desktopd: untag %s: %v", state, err)
+	}
 }
 
 // keepUserLayer copies installed packages into the user's private image
@@ -450,12 +603,15 @@ func (s *Service) flushBrowser(ctx context.Context, name, tenantID, userID strin
 	_, _ = s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "flush", key)
 }
 
-func (s *Service) keepUserLayer(ctx context.Context, name string, spec Spec) error {
+// keepUserLayer commits the container to this user's state image. from is
+// the requested image the container was created for; it is recorded as a
+// label so resolveImage can tell which base the layer belongs to.
+func (s *Service) keepUserLayer(ctx context.Context, name string, spec Spec, from string) error {
 	state, err := desktop.StateImage(spec.TenantID, spec.UserID)
 	if err != nil {
 		return err
 	}
-	if _, err := s.docker(ctx, "commit", name, state); err != nil {
+	if _, err := s.docker(ctx, "commit", "--change", "LABEL "+desktop.ImageLabel+"="+strconv.Quote(from), name, state); err != nil {
 		return err
 	}
 	return nil
@@ -469,7 +625,10 @@ func (s *Service) installImage(ctx context.Context, image string) error {
 	return err
 }
 
-func (s *Service) runContainer(ctx context.Context, name string, spec Spec) error {
+// runContainer starts a new desktop from image. spec.Image is the requested
+// image and is recorded in the maclaw.image label; image may be this user's
+// state image built on top of it.
+func (s *Service) runContainer(ctx context.Context, name string, spec Spec, image string) error {
 	mounts, err := desktop.PrivateMounts(spec.TenantID, spec.UserID)
 	if err != nil {
 		return err
@@ -491,6 +650,7 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec) erro
 		"--label", "maclaw.memory=" + spec.Memory,
 		"--label", "maclaw.cpus=" + spec.CPUs,
 		"--label", "maclaw.shm=" + spec.ShmSize,
+		"--label", desktop.ImageLabel + "=" + spec.Image,
 		"--env", "HOME=/home/desktop",
 		"--env", "MACLAW_DESKTOP_KEY=" + key,
 		"--publish", desktop.ProxyPort + "/tcp",
@@ -502,28 +662,42 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec) erro
 	// The image command is not the desktop. This process only stays up so
 	// desktopd can exec the supervisor. On docker stop it flushes Chromium
 	// before exiting, which keeps the website login in the same profile.
-	args = append(args, spec.Image, "-c", desktopHoldCommand)
+	args = append(args, image, "-c", desktopHoldCommand)
 	_, err = s.docker(ctx, args...)
 	return err
 }
 
-func (s *Service) inspect(ctx context.Context, name string) (running bool, shm, mounts string, exists bool, err error) {
-	out, callErr := s.docker(ctx, "inspect", "--format", "{{.State.Running}}|{{index .Config.Labels \"maclaw.shm\"}}|{{range .Mounts}}{{.Name}}={{.Destination}} {{end}}", name)
+// inspectFormat prints running|shm|mounts|maclaw.image|config image. Mount
+// and image names cannot contain "|".
+const inspectFormat = `{{.State.Running}}|{{index .Config.Labels "maclaw.shm"}}|{{range .Mounts}}{{.Name}}={{.Destination}} {{end}}|{{index .Config.Labels "` + desktop.ImageLabel + `"}}|{{.Config.Image}}`
+
+func (s *Service) inspect(ctx context.Context, name string) (containerState, error) {
+	out, callErr := s.docker(ctx, "inspect", "--format", inspectFormat, name)
 	if callErr != nil {
 		if missingObject(callErr) || missingObject(errors.New(out)) {
-			return false, "", "", false, nil
+			return containerState{}, nil
 		}
-		return false, "", "", false, callErr
+		return containerState{}, callErr
 	}
-	parts := strings.SplitN(strings.TrimSpace(out), "|", 3)
-	running = parts[0] == "true"
+	return parseInspect(out), nil
+}
+
+func parseInspect(out string) containerState {
+	parts := strings.SplitN(strings.TrimSpace(out), "|", 5)
+	state := containerState{Exists: true, Running: parts[0] == "true"}
 	if len(parts) > 1 {
-		shm = strings.TrimSpace(parts[1])
+		state.Shm = labelValue(parts[1])
 	}
 	if len(parts) > 2 {
-		mounts = parts[2]
+		state.Mounts = parts[2]
 	}
-	return running, shm, mounts, true, nil
+	if len(parts) > 3 {
+		state.Image = labelValue(parts[3])
+	}
+	if len(parts) > 4 {
+		state.ConfigImage = labelValue(parts[4])
+	}
+	return state
 }
 
 func privateMountsReady(mountText string, spec Spec) bool {

@@ -69,3 +69,16 @@ func TestParseEnsureReadsSupervisorLine(t *testing.T) {
 		t.Fatal("missing status was accepted")
 	}
 }
+
+func TestDefaultsAreTheXfceImage(t *testing.T) {
+	// Hub's admin page (hub/web/admin/desktop-tab.js) shows the same values.
+	if DefaultImage != "maclaw-gui:2" || LegacyImage != "maclaw-gui:1" || DefaultMemory != "3g" || DefaultShmSize != "1g" || DefaultDisplay != ":20" {
+		t.Fatalf("defaults image=%s memory=%s shm=%s display=%s", DefaultImage, DefaultMemory, DefaultShmSize, DefaultDisplay)
+	}
+	if _, err := NormalizeResources(DefaultImage, DefaultMemory, DefaultCPUs, DefaultShmSize); err != nil {
+		t.Fatal(err)
+	}
+	if !ValidDisplay(DefaultDisplay) {
+		t.Fatal("default display is invalid")
+	}
+}

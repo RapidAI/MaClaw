@@ -3,7 +3,9 @@
 package desktop
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,10 +16,26 @@ import (
 )
 
 const (
-	DefaultImage   = "maclaw-gui:1"
-	DefaultMemory  = "2500m"
+	// DefaultImage is the XFCE desktop built from desktopd/image/Dockerfile.v2.
+	// Hub sends its configured image; this default only applies when that is
+	// empty. Changing the tag (not rebuilding the same tag) is what makes
+	// desktopd move existing users onto a new image, see desktopd/service.go.
+	DefaultImage = "maclaw-gui:2"
+	// LegacyImage is the fluxbox-only image. Containers and per-user state
+	// images created before desktopd recorded the maclaw.image label are
+	// assumed to come from it.
+	LegacyImage = "maclaw-gui:1"
+	// XFCE plus Chromium needs more headroom than fluxbox did; a full desktop
+	// with a few apps open measured about 600MiB, Chromium tabs add the rest.
+	DefaultMemory  = "3g"
 	DefaultCPUs    = "1.5"
-	DefaultShmSize = "512m"
+	DefaultShmSize = "1g"
+	// DefaultDisplay is the X display the supervisor uses inside a per-user
+	// container (DISPLAY_MIN in desktop_supervisor.py, CDP gate 19000+20).
+	DefaultDisplay = ":20"
+	// ImageLabel records, on a desktop container and on the per-user state
+	// image committed from it, which requested image (tag) it came from.
+	ImageLabel = "maclaw.image"
 	// ProxyPort is the container port published for the per-user CDP proxy.
 	// Display :20 maps to this port inside the image.
 	ProxyPort = "19020"
@@ -195,10 +213,53 @@ func ValidGateToken(token string) bool {
 }
 
 var (
-	imagePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$`)
-	memoryPattern  = regexp.MustCompile(`(?i)^[1-9][0-9]{0,6}([kmg]i?b?)?$`)
-	userPattern    = regexp.MustCompile(`^[A-Za-z0-9_.:@+-]{1,200}$`)
-	userKeyPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	imagePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$`)
+	memoryPattern    = regexp.MustCompile(`(?i)^[1-9][0-9]{0,6}([kmg]i?b?)?$`)
+	userPattern      = regexp.MustCompile(`^[A-Za-z0-9_.:@+-]{1,200}$`)
+	userKeyPattern   = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	gateTokenPattern = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
-	displayPattern = regexp.MustCompile(`^:[0-9]{1,3}$`)
+	displayPattern   = regexp.MustCompile(`^:[0-9]{1,3}$`)
 )
+
+// MaxScreenshotBytes bounds one decoded desktop screenshot. A 1440x900 PNG is
+// usually well under 2MB; anything far larger is not a screenshot.
+const MaxScreenshotBytes = 16 << 20
+
+// ScreenshotScript runs inside a desktop container (sh -c, DISPLAY set) and
+// prints the root window as base64 PNG. ImageMagick import is preferred
+// (maclaw-gui:2); scrot covers maclaw-gui:1. Base64 keeps the image intact
+// through runners that return combined text output, and tool diagnostics go
+// to /dev/null so they cannot corrupt it.
+const ScreenshotScript = `d=$(mktemp -d) || exit 1
+f="$d/screen.png"
+if command -v import >/dev/null 2>&1; then
+  import -window root "png:$f" >/dev/null 2>&1
+elif command -v scrot >/dev/null 2>&1; then
+  scrot -o "$f" >/dev/null 2>&1
+else
+  false
+fi
+s=$?
+if [ "$s" -eq 0 ]; then base64 -w0 "$f"; s=$?; fi
+rm -rf "$d"
+exit "$s"`
+
+var pngSignature = []byte("\x89PNG\r\n\x1a\n")
+
+// IsPNG reports whether data starts with the PNG signature.
+func IsPNG(data []byte) bool {
+	return bytes.HasPrefix(data, pngSignature)
+}
+
+// DecodeScreenshot turns ScreenshotScript output back into PNG bytes.
+func DecodeScreenshot(out string) ([]byte, error) {
+	encoded := strings.Join(strings.Fields(out), "")
+	if encoded == "" || base64.StdEncoding.DecodedLen(len(encoded)) > MaxScreenshotBytes {
+		return nil, fmt.Errorf("screenshot is empty or too large")
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || !IsPNG(data) {
+		return nil, fmt.Errorf("screenshot is not a PNG image")
+	}
+	return data, nil
+}

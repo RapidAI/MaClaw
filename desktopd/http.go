@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -101,6 +102,37 @@ func Handler(svc *Service, token, stateDir string) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"output": text})
 	})
+	// screenshot returns the user's display as image/png. GET takes query
+	// parameters, POST the same JSON fields as /v1/desktops/app.
+	screenshot := func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			Display  string `json:"display"`
+		}
+		if r.Method == http.MethodGet {
+			query := r.URL.Query()
+			in.TenantID, in.UserID, in.Display = query.Get("tenant_id"), query.Get("user_id"), query.Get("display")
+		} else if !decodeBody(w, r, &in) {
+			return
+		}
+		png, err := svc.Screenshot(r.Context(), in.TenantID, in.UserID, in.Display)
+		if err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", strconv.Itoa(len(png)))
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(png)
+	}
+	mux.HandleFunc("GET /v1/desktops/screenshot", screenshot)
+	mux.HandleFunc("POST /v1/desktops/screenshot", screenshot)
 	mux.HandleFunc("POST /v1/desktops/stop", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")

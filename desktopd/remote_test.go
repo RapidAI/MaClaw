@@ -324,11 +324,16 @@ func TestRecreateKeepsTheUsersSoftwareAndDropsNothingShared(t *testing.T) {
 			if strings.Contains(strings.Join(args, " "), ":state") && !contains(commands[:len(commands)-1], "commit ") {
 				return "", errString("Error: No such image")
 			}
+			if strings.Contains(strings.Join(args, " "), desktop.ImageLabel) {
+				// State images committed before the label existed.
+				return "", nil
+			}
 			return "sha256:img", nil
 		case "inspect":
 			return "true|512m", nil
 		case "commit":
-			if len(args) != 3 || !strings.HasPrefix(args[2], "maclaw-desktop-user-") || !strings.HasSuffix(args[2], ":state") {
+			state := args[len(args)-1]
+			if len(args) != 5 || args[2] != "LABEL "+desktop.ImageLabel+`="maclaw-gui:1"` || !strings.HasPrefix(state, "maclaw-desktop-user-") || !strings.HasSuffix(state, ":state") {
 				return "", errString("bad commit " + strings.Join(args, " "))
 			}
 			return "sha256:state", nil
@@ -353,7 +358,7 @@ func TestRecreateKeepsTheUsersSoftwareAndDropsNothingShared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(joined, "commit maclaw-desktop-"+mustKey(t, "tenant", "alice")+" "+state) {
+	if !strings.Contains(joined, " maclaw-desktop-"+mustKey(t, "tenant", "alice")+" "+state) {
 		t.Fatalf("user layer was not kept:\n%s", joined)
 	}
 	ran := false
@@ -397,6 +402,10 @@ func TestExistingDesktopWithoutPrivateDataIsRecreated(t *testing.T) {
 		case "image":
 			if strings.Contains(strings.Join(args, " "), ":state") && !contains(commands[:len(commands)-1], "commit ") {
 				return "", errString("Error: No such image")
+			}
+			if strings.Contains(strings.Join(args, " "), desktop.ImageLabel) {
+				// State images committed before the label existed.
+				return "", nil
 			}
 			return "sha256:img", nil
 		case "inspect":
@@ -450,6 +459,10 @@ func TestSharedVolumeIsReplacedWithTheUsersVolume(t *testing.T) {
 		case "image":
 			if strings.Contains(strings.Join(args, " "), ":state") && !contains(commands[:len(commands)-1], "commit ") {
 				return "", errString("Error: No such image")
+			}
+			if strings.Contains(strings.Join(args, " "), desktop.ImageLabel) {
+				// State images committed before the label existed.
+				return "", nil
 			}
 			return "sha256:img", nil
 		case "inspect":
@@ -541,7 +554,7 @@ func TestSessionWaitsUntilTheLoginStopFinishes(t *testing.T) {
 	for _, mount := range mounts {
 		parts = append(parts, mount.Volume+"="+mount.Target)
 	}
-	inspect := "true|" + desktop.DefaultShmSize + "|" + strings.Join(parts, " ")
+	inspect := "true|" + desktop.DefaultShmSize + "|" + strings.Join(parts, " ") + "|" + desktop.DefaultImage + "|" + desktop.DefaultImage
 	var mu sync.Mutex
 	var order []string
 	entered := make(chan struct{})
