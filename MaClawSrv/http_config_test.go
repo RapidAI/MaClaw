@@ -15,7 +15,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
-	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
@@ -186,7 +185,7 @@ func TestUserAIModelsStatusAndDownloadEndpoints(t *testing.T) {
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, embedding.DefaultModelFilename), []byte("embedding-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, srvEmbeddingModelFilename()), []byte("embedding-model"), 0o644); err != nil {
 		t.Fatalf("write embedding model: %v", err)
 	}
 	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
@@ -672,7 +671,7 @@ func TestAdminAIModelTestEndpointsUseSharedModels(t *testing.T) {
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, embedding.DefaultModelFilename), []byte("embedding-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, srvEmbeddingModelFilename()), []byte("embedding-model"), 0o644); err != nil {
 		t.Fatalf("write embedding model: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(modelsDir, srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
