@@ -47,6 +47,13 @@ type LocalHead struct {
 	TauS      float64  // threshold for sensitive labels (≥ Tau; == Tau when unset)
 	EmbedRole string   // "classification" = trained on Layer 2 prompted vectors
 	Note      string
+	// EmbedModel is the embedder family the head was trained on ("qwen3" /
+	// "gemma"), from the optional "embed_model" JSON field; "" = infer.
+	EmbedModel string
+	// CalibrationSource is "calibration.source" from the JSON ("" for heads
+	// fitted offline; "human_labels" for heads re-fitted from shadow logs by
+	// scripts/intent_shadow_recalibrate.py).
+	CalibrationSource string
 
 	sensitive map[string]bool
 	dim       int
@@ -76,6 +83,10 @@ type localHeadFile struct {
 	Sensitive   []string    `json:"sensitive"`
 	EmbedRole   string      `json:"embed_role"`
 	Note        string      `json:"note"`
+	EmbedModel  string      `json:"embed_model"`
+	Calibration struct {
+		Source string `json:"source"`
+	} `json:"calibration"`
 }
 
 // LoadLocalHead reads and validates a head JSON file.
@@ -111,15 +122,17 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		return nil, errors.New("empty w2")
 	}
 	h := &LocalHead{
-		Labels:    append([]string(nil), f.Labels...),
-		Tau:       f.Tau,
-		TauS:      f.TauS,
-		EmbedRole: f.EmbedRole,
-		Note:      f.Note,
-		sensitive: map[string]bool{},
-		l2norm:    f.L2Norm,
-		temp:      f.Temperature,
-		b2:        append([]float64(nil), f.B2...),
+		Labels:            append([]string(nil), f.Labels...),
+		Tau:               f.Tau,
+		TauS:              f.TauS,
+		EmbedRole:         f.EmbedRole,
+		Note:              f.Note,
+		EmbedModel:        f.EmbedModel,
+		CalibrationSource: f.Calibration.Source,
+		sensitive:         map[string]bool{},
+		l2norm:            f.L2Norm,
+		temp:              f.Temperature,
+		b2:                append([]float64(nil), f.B2...),
 	}
 	if h.temp <= 0 || math.IsNaN(h.temp) {
 		h.temp = 1
