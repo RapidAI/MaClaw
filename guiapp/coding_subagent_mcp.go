@@ -93,13 +93,18 @@ func (c *codingSubAgentCallbacks) selectRelevantMCPToolsForTask(taskDescription 
 
 	// Build document strings for scoring.
 	docs := make([]string, len(candidates))
+	embedDocs := make([]string, len(candidates))
 	for i, cand := range candidates {
 		docs[i] = cand.doc
+		embedDocs[i] = codingQwen3EmbedDoc(
+			sanitizeCodingSubAgentMCPPromptText(cand.serverName, codingSubAgentMCPPromptNameMaxRunes)+" "+
+				sanitizeCodingSubAgentMCPPromptText(cand.toolName, codingSubAgentMCPPromptNameMaxRunes),
+			sanitizeCodingSubAgentMCPPromptText(cand.description, codingSubAgentMCPPromptDescriptionMaxRunes))
 	}
 
 	// Three-signal scoring via shared infrastructure.
 	emb := getSubAgentEmbedder(c.subagent.handler)
-	scored := scoreAndSelectTopK(taskForScore, docs, emb, codingSubAgentMaxMCPTools, codingSubAgentMCPScoreThreshold)
+	scored := scoreAndSelectTopKWithEmbedDocs(taskForScore, docs, embedDocs, emb, codingSubAgentMaxMCPTools, codingSubAgentMCPScoreThreshold)
 
 	if len(scored) == 0 {
 		logCodingSubAgentMCPToolSelection(taskDescription, false, len(candidates), nil)

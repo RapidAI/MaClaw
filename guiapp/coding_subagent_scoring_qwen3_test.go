@@ -9,6 +9,21 @@ import (
 type codingFamilyEmb struct{ id string }
 
 func (e codingFamilyEmb) Embed(string) ([]float32, error) { return []float32{1, 0}, nil }
+
+type codingRecEmb struct {
+	codingRoleEmb
+	embedded []string
+	batched  [][]string
+}
+
+func (e *codingRecEmb) Embed(t string) ([]float32, error) {
+	e.embedded = append(e.embedded, t)
+	return []float32{1, 0}, nil
+}
+func (e *codingRecEmb) EmbedBatch(t []string) ([][]float32, error) {
+	e.batched = append(e.batched, append([]string(nil), t...))
+	return e.codingRoleEmb.EmbedBatch(t)
+}
 func (e codingFamilyEmb) EmbedBatch(t []string) ([][]float32, error) {
 	out := make([][]float32, len(t))
 	for i := range t {
@@ -44,9 +59,26 @@ func TestCodingEmbeddingPolicyPerFamily(t *testing.T) {
 	}
 	q := &codingRoleEmb{codingFamilyEmb: codingFamilyEmb{"Qwen3 Embedding 0.6b:1024"}}
 	if role, b := codingEmbeddingPolicy(q); !role || b != codingSubAgentEmbeddingBaselineQwen3 {
-		t.Fatalf("qwen3: role=%v baseline=%v, want RoleQuery/0.40", role, b)
+		t.Fatalf("qwen3: role=%v baseline=%v, want instructed/0.50", role, b)
 	}
-	if _, err := embedCodingQuery(q, "add pytest coverage"); err != nil || len(q.roles) != 1 || q.roles[0] != embedding.RoleQuery {
-		t.Fatalf("qwen3 task side must use RoleQuery, got %v err=%v", q.roles, err)
+	if p := codingEmbeddingPolicyFor(q); p.bm25Weight != codingSubAgentBM25WeightQwen3 {
+		t.Fatalf("qwen3 bm25 weight %v", p.bm25Weight)
+	}
+	if p := codingEmbeddingPolicyFor(g); p.bm25Weight != 1 || p.instructed {
+		t.Fatalf("gemma policy changed: %+v", p)
+	}
+	r := &codingRecEmb{codingRoleEmb: codingRoleEmb{codingFamilyEmb: codingFamilyEmb{"Qwen3 Embedding 0.6b:1024"}}}
+	if _, err := embedCodingQuery(r, "add pytest coverage"); err != nil || len(r.embedded) != 1 ||
+		r.embedded[0] != "Instruct: "+codingSubAgentQwen3TaskInstruction+"\nQuery: add pytest coverage" {
+		t.Fatalf("qwen3 task side must carry the coding instruction, got %q err=%v", r.embedded, err)
+	}
+	scoreAndSelectTopKWithEmbedDocs("add pytest coverage", []string{"pytest python tests"}, []string{codingQwen3EmbedDoc("pytest", " python tests")}, r, 5, 0.15)
+	if len(r.batched) != 1 || r.batched[0][0] != "Tool: pytest\nDescription: python tests" {
+		t.Fatalf("qwen3 docs must use the structured embed doc, got %q", r.batched)
+	}
+	gr := &codingRecEmb{codingRoleEmb: codingRoleEmb{codingFamilyEmb: codingFamilyEmb{"embeddinggemma-300m"}}}
+	scoreAndSelectTopKWithEmbedDocs("add pytest coverage", []string{"pytest python tests"}, []string{"Tool: pytest"}, gr, 5, 0.15)
+	if len(gr.batched) != 1 || gr.batched[0][0] != "pytest python tests" || gr.embedded[0] != "add pytest coverage" {
+		t.Fatalf("gemma must stay plain, got %q / %q", gr.batched, gr.embedded)
 	}
 }
