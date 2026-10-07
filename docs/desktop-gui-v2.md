@@ -94,6 +94,26 @@ docker build -f desktopd/image/Dockerfile.v2 \
 覆盖变量:`DESKTOPD_BASE_IMAGE`、`DESKTOPD_APT_MIRROR`(`none` = deb.debian.org)、
 `DESKTOPD_SKIP_IMAGE_BUILD=1`。不要删除或重新打 tag `maclaw-gui:1`,迁移和回滚都依赖它。
 
+### 3.1 使用预构建镜像(GHCR)
+
+GitHub Actions(`.github/workflows/desktop-image.yml`)在 `desktopd/image/**` 有改动推到 main、
+推 `maclaw-gui-v*` tag 或手动触发时构建 `Dockerfile.v2`(`debian:bookworm` + deb.debian.org,
+仅 linux/amd64),先跑镜像契约检查和镜像文件系统的密钥扫描,通过后才推送到
+`ghcr.io/rapidai/maclaw-gui`。tag:`2`、`2-<短 sha>`(固定版本)、`latest`。
+
+```sh
+docker pull ghcr.io/rapidai/maclaw-gui:2          # 或固定到 ghcr.io/rapidai/maclaw-gui:2-<sha>
+docker tag ghcr.io/rapidai/maclaw-gui:2 maclaw-gui:2   # desktopd 与 Hub 配置用的名字
+# 部署 desktopd 时跳过主机上的构建(要求 maclaw-gui:2 已存在):
+DESKTOPD_SKIP_IMAGE_BUILD=1 deploy/linux/rollout_desktop_gui2.sh deploy-desktopd
+```
+
+- 中国大陆主机从 ghcr.io 拉取可能很慢或超时;生产(腾讯云)继续在主机上用腾讯镜像源本地构建
+  (第 3 节),不依赖 GHCR。
+- desktopd 比较的是镜像**名**:重新 pull 并覆盖 `maclaw-gui:2` 不会触发已有用户重建;
+  只有新建的容器会用到新镜像。要让所有人换新版,改用新的镜像名并修改 Hub 配置(第 6 节)。
+- `DESKTOPD_SKIP_IMAGE_BUILD=1` 只跳过构建,不会拉取;镜像不存在时部署直接失败,不会改动现有服务。
+
 ## 4. 部署
 
 一台 Docker 主机上同时跑 desktopd、Hub、MaClawSrv 时,按顺序部署:
@@ -335,6 +355,7 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
 | 路径 | 用途 |
 | --- | --- |
 | `desktopd/image/Dockerfile.v2` | maclaw-gui:2 镜像 |
+| `.github/workflows/desktop-image.yml` | CI 构建、检查并发布 `ghcr.io/rapidai/maclaw-gui` |
 | `desktopd/image/desktop_supervisor.py` | 容器内 supervisor(XFCE/fcitx5/D-Bus/gate) |
 | `desktopd/image/close_range_shim.c` | close_range EPERM→ENOSYS 垫片 |
 | `desktopd/image/fcitx5-profile` | fcitx5 默认输入法(keyboard-us + pinyin) |

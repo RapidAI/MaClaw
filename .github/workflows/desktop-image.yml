@@ -1,0 +1,165 @@
+name: Desktop Image (maclaw-gui:2)
+
+# Builds desktopd/image/Dockerfile.v2 and publishes ghcr.io/rapidai/maclaw-gui.
+# Tags: 2, 2-<shortsha>, latest (main), plus the git tag on maclaw-gui-v* tags.
+# Release tags ([Vv]*) belong to main.yml (Release Build) and do not trigger this.
+# The image is checked before anything is pushed: the desktopd contract (same
+# list as desktopd/remote_deploy.sh) and a secrets scan of the filesystem.
+# Usage notes: docs/desktop-gui-v2.md
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'desktopd/image/**'
+      - '.github/workflows/desktop-image.yml'
+    tags:
+      - 'maclaw-gui-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: desktop-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/rapidai/maclaw-gui
+  LOCAL_TAG: maclaw-gui:ci
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # The floating "2" and "latest" only move from main or a release tag of
+          # the image, never from a manual run on another branch.
+          tags: |
+            type=raw,value=2,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=2-{{sha}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+          labels: |
+            org.opencontainers.image.title=maclaw-gui
+            org.opencontainers.image.description=MaClaw desktopd desktop image: Debian 12 + XFCE, Chromium, fcitx5 pinyin, CJK fonts, noVNC (CPU only)
+            org.opencontainers.image.source=https://github.com/RapidAI/MaClaw
+            org.opencontainers.image.url=https://github.com/RapidAI/MaClaw/blob/main/docs/desktop-gui-v2.md
+            org.opencontainers.image.documentation=https://github.com/RapidAI/MaClaw/blob/main/docs/desktop-gui-v2.md
+            org.opencontainers.image.licenses=LicenseRef-MaClaw-Dual-GPL-or-Commercial
+            org.opencontainers.image.vendor=RapidAI
+
+      # CI uses Docker Hub's debian and deb.debian.org (no Tencent mirror).
+      # linux/amd64 only: close_range_shim is built for x86_64.
+      - name: Build (load for checks)
+        uses: docker/build-push-action@v7
+        with:
+          context: desktopd/image
+          file: desktopd/image/Dockerfile.v2
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE=debian:bookworm
+            APT_MIRROR=
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_TAG }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=maclaw-gui-2
+          cache-to: type=gha,scope=maclaw-gui-2,mode=max
+
+      - name: Check the desktopd image contract
+        run: |
+          set -eu
+          docker run --rm --entrypoint sh "$LOCAL_TAG" -c '
+            set -e
+            test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html
+            for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import fcitx5; do
+              command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+            done
+            grep -qx /usr/lib/x86_64-linux-gnu/libclose_range_shim.so /etc/ld.so.preload
+            test -f /usr/lib/x86_64-linux-gnu/libclose_range_shim.so
+            test -f /etc/xdg/fcitx5/profile && grep -q "DefaultIM=pinyin" /etc/xdg/fcitx5/profile
+            fc-list :lang=zh | grep -qi "Noto Sans CJK"
+            python3 -m py_compile /desktop_supervisor.py
+            echo "contract ok"'
+          test "$(docker image inspect --format '{{.Config.User}}' "$LOCAL_TAG")" = root
+          docker image inspect --format '{{json .Config.Volumes}} {{json .Config.ExposedPorts}}' "$LOCAL_TAG"
+          docker image ls "$LOCAL_TAG"
+
+      - name: Secrets scan of the image filesystem
+        run: |
+          set -eu
+          docker run --rm --entrypoint sh "$LOCAL_TAG" -c '
+            fail=0
+            roots="/root /home /etc /opt /usr/local /desktops /srv /var /tmp /desktop_supervisor.py"
+            # Files that must never ship in a public image.
+            found=$(find $roots -xdev \( -name ".env" -o -name ".env.*" -o -name "*.pem" -o -name "*.key" \
+                -o -name "id_rsa*" -o -name "id_ed25519*" -o -name "id_ecdsa*" -o -name "*.p12" -o -name "*.pfx" \
+                -o -name ".netrc" -o -name ".git-credentials" -o -name ".npmrc" -o -name ".pypirc" \
+                -o -name "credentials" -o -name "*.kdbx" -o -name ".bash_history" \) \
+                -not -path "/etc/ssl/certs/*" -not -path "/usr/share/*" 2>/dev/null || true)
+            if [ -n "$found" ]; then echo "secret-like files:"; echo "$found"; fail=1; fi
+            # Private keys and common token formats in text files outside system docs.
+            hits=$(grep -rIlE -e "-----BEGIN ([A-Z]+ )?PRIVATE KEY-----" -e "gh[pousr]_[A-Za-z0-9]{36}" \
+                -e "github_pat_[A-Za-z0-9_]{22,}" -e "AKIA[0-9A-Z]{16}" -e "xox[baprs]-[A-Za-z0-9-]{10,}" \
+                -e "DESKTOPD_TOKEN=[^\"$ ]+" -e "MACLAW_DESKTOP_API_TOKEN=[^\"$ ]+" \
+                $roots 2>/dev/null | grep -v -e "^/usr/share/" -e "^/var/lib/dpkg/" || true)
+            if [ -n "$hits" ]; then echo "secret-like content:"; echo "$hits"; fail=1; fi
+            exit $fail'
+          echo "no secrets found"
+
+      - name: Trivy secret scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, pinned by commit
+        with:
+          image-ref: ${{ env.LOCAL_TAG }}
+          scanners: secret
+          format: table
+          exit-code: '1'
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push exactly the image that passed the checks (no rebuild).
+      - name: Push
+        id: push
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          for tag in $TAGS; do
+            docker tag "$LOCAL_TAG" "$tag"
+            docker push "$tag"
+          done
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$LOCAL_TAG" | grep "^$IMAGE@" | head -n 1 | cut -d@ -f2)
+          size=$(docker image inspect --format '{{.Size}}' "$LOCAL_TAG")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "pushed $IMAGE@$digest ($size bytes uncompressed)"
+
+      - name: Summary
+        run: |
+          {
+            echo "### ghcr.io/rapidai/maclaw-gui"
+            echo
+            echo "Digest: \`${{ steps.push.outputs.digest }}\` (uncompressed ${{ steps.push.outputs.size }} bytes)"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo "Pull: \`docker pull ${{ env.IMAGE }}:2 && docker tag ${{ env.IMAGE }}:2 maclaw-gui:2\`"
+          } >> "$GITHUB_STEP_SUMMARY"
