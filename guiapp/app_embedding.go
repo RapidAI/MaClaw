@@ -618,7 +618,11 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	if a.toolRouter != nil {
 		ic := tool.NewIntentClassifier(emb)
 		// Wire Layer 3 LLM callback using the app's LLM config.
-		ic.SetLLMFunc(a.buildIntentLLMFunc())
+		// Legacy tool-router intent classifier: its remote LLM fallback is
+		// dropped only in MACLAW_INTENT_LOCAL_L3=strict (see app_local_intent.go).
+		if a.localL3Runtime().Mode() != intent.LocalL3Strict {
+			ic.SetLLMFunc(a.buildIntentLLMFunc())
+		}
 		a.toolRouter.SetIntentClassifier(ic)
 		log.Println("[embedding] IntentClassifier created and wired to tool router")
 	}
