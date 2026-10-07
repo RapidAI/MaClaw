@@ -60,6 +60,67 @@ def session_argv():
     return ["fluxbox"]
 
 
+def clear_stale_display(display):
+    """Remove the X lock and socket a killed Xvfb left behind.
+
+    docker stop ends the container with SIGKILL for everything but pid 1, so
+    Xvfb never removes /tmp/.X<n>-lock. The container keeps its /tmp, and on
+    the next start Xvfb refuses the display ("Server is already active") while
+    the stale socket makes the display look ready. Only a lock whose pid is
+    not a running Xvfb is removed.
+    """
+    lock = Path("/tmp/.X%d-lock" % display)
+    try:
+        pid = int(lock.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0:
+        try:
+            comm = Path("/proc/%d/comm" % pid).read_text(encoding="utf-8").strip()
+        except OSError:
+            comm = ""
+        if comm == "Xvfb":
+            return
+    for path in (lock, Path("/tmp/.X11-unix/X%d" % display)):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def start_session_bus(env, log, display):
+    """Start a D-Bus session bus for one desktop.
+
+    Returns (address, pid), or ("", 0) when no bus could be started; the
+    caller then falls back to dbus-launch, which gives XFCE a bus of its own.
+    The bus listens on a fixed socket per display, so its address is known
+    without reading it back from the daemon.
+    """
+    if not shutil.which("dbus-daemon"):
+        return "", 0
+    socket_path = Path("/tmp/.maclaw-dbus-%d" % display)
+    try:
+        socket_path.unlink()
+    except OSError:
+        pass
+    address = "unix:path=%s" % socket_path
+    try:
+        bus = spawn(["dbus-daemon", "--session", "--nofork", "--nopidfile", "--address=" + address], env, log)
+    except OSError:
+        return "", 0
+    for _ in range(40):
+        if socket_path.exists():
+            return address, bus.pid
+        if bus.poll() is not None:
+            return "", 0
+        time.sleep(0.25)
+    try:
+        bus.kill()
+    except OSError:
+        pass
+    return "", 0
+
+
 def main(argv):
     if len(argv) == 5 and argv[1] == "gate":
         return serve_gate(int(argv[2]), int(argv[3]), argv[4])
@@ -250,14 +311,24 @@ def start_desktop(key, display):
     env["XDG_CACHE_HOME"] = str(user_home / ".cache")
     env["PATH"] = str(user_home / ".local" / "bin") + os.pathsep + env.get("PATH", "")
     env["DISPLAY"] = ":%d" % display
+    clear_stale_display(display)
     xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
     wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
     token = desktop_token_for(key)
     vnc = start_vnc(env, log, display, token) if token else None
     session = session_argv()
+    bus_pid = 0
     if session[0] == "dbus-launch":
         env.setdefault("XDG_SESSION_TYPE", "x11")
         env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
+        # Chromium is started here, not by XFCE. It has to be on the same
+        # session bus as XFCE and fcitx5: its GTK input-method module talks to
+        # fcitx5 over D-Bus, so a browser outside the session bus cannot type
+        # Chinese. Start the bus first and hand it to both.
+        address, bus_pid = start_session_bus(env, log, display)
+        if address:
+            env["DBUS_SESSION_BUS_ADDRESS"] = address
+            session = session[2:]
     # The pid key stays "fluxbox" so stop_desktop and pids.json written by
     # older supervisors keep the same meaning: the window session.
     flux = spawn(session, env, log)
@@ -297,6 +368,8 @@ def start_desktop(key, display):
         "fluxbox": flux.pid,
         "chromium": browser_pid(profile),
     }
+    if bus_pid:
+        pids["dbus"] = bus_pid
     if proxy is not None:
         pids["proxy"] = proxy.pid
     if vnc is not None:
@@ -1606,7 +1679,7 @@ def stop_desktop(key):
     for name, pid in pids.items():
         # The browser was already asked to exit. Signaling it again, or
         # closing its display first, aborts the cookie write.
-        if name in ("chromium", "xvfb", "fluxbox") and not browser_gone:
+        if name in ("chromium", "xvfb", "fluxbox", "dbus") and not browser_gone:
             continue
         if name == "chromium":
             continue
