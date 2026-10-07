@@ -128,3 +128,22 @@ func TestRelevanceModelRealFileParity(t *testing.T) {
 		t.Fatalf("parity failed: n=%d max|Δ|=%v", n, maxd)
 	}
 }
+
+func TestRelevanceModelMLPKind(t *testing.T) {
+	// dims=1, hidden=2 → features [u, v, |u-v|, u*v, cos] (f=5).
+	doc := `{"format":"maclaw-interrupt-relevance-v1","kind":"mlp","dims":1,"hidden":2,
+	 "w":[1,0,0,0,0, 0,0,0,0,-1],"b1":[0,0.5],"w2":[2,3],"b":-1,"high":0.9,"low":0.1}`
+	m, err := ParseRelevanceModel([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// u=v=[1] → x=[1,1,0,1,1]; h=[relu(1)=1, relu(0.5-1)=0] → z=-1+2 → sigmoid(1).
+	got, err := m.RawScore([]float32{1}, []float32{1})
+	if err != nil || math.Abs(got-1/(1+math.Exp(-1))) > 1e-12 {
+		t.Fatalf("mlp raw=%v err=%v", got, err)
+	}
+	bad := `{"format":"maclaw-interrupt-relevance-v1","kind":"mlp","dims":1,"hidden":2,"w":[1],"b1":[0,0],"w2":[1,1],"high":0.9,"low":0.1}`
+	if _, err := ParseRelevanceModel([]byte(bad)); err == nil {
+		t.Fatal("mlp shape mismatch must be rejected")
+	}
+}

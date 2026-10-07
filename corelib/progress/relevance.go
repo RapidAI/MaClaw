@@ -16,6 +16,12 @@ package progress
 //	 "task_instruction":"...","message_instruction":"...",
 //	 "w":[4*dims+1 floats, logistic only],"b":0.0,"high":0.71,"low":0.42}
 //
+// kind "mlp" (round 4): one ReLU hidden layer over the same 4*dims+1 features,
+// input standardisation folded into the first layer:
+//
+//	"hidden":H, "w":[H*(4*dims+1) floats, row-major], "b1":[H], "w2":[H], "b":out bias
+//	raw = sigmoid(b + Σ_h w2[h]·relu(b1[h] + w[h,:]·x))
+//
 // Instructions use the Qwen3 instruct format "Instruct: {task}\nQuery: {text}"
 // (empty → plain text). Pure Go.
 
@@ -46,6 +52,9 @@ type RelevanceModel struct {
 	MessageInstruction string    `json:"message_instruction"`
 	W                  []float64 `json:"w,omitempty"`
 	B                  float64   `json:"b,omitempty"`
+	Hidden             int       `json:"hidden,omitempty"`
+	B1                 []float64 `json:"b1,omitempty"`
+	W2                 []float64 `json:"w2,omitempty"`
 	High               float64   `json:"high"`
 	Low                float64   `json:"low"`
 	Note               string    `json:"note,omitempty"`
@@ -92,6 +101,18 @@ func (m *RelevanceModel) Validate() error {
 	}
 	switch m.Kind {
 	case "cosine":
+	case "mlp":
+		f := 4*m.Dims + 1
+		if m.Dims <= 0 || m.Hidden <= 0 || len(m.W) != m.Hidden*f || len(m.B1) != m.Hidden || len(m.W2) != m.Hidden {
+			return fmt.Errorf("mlp: shape mismatch (dims=%d hidden=%d len(w)=%d len(b1)=%d len(w2)=%d)", m.Dims, m.Hidden, len(m.W), len(m.B1), len(m.W2))
+		}
+		for _, ws := range [][]float64{m.W, m.B1, m.W2, {m.B}} {
+			for _, w := range ws {
+				if math.IsNaN(w) || math.IsInf(w, 0) {
+					return errors.New("mlp: non-finite weight")
+				}
+			}
+		}
 	case "logistic":
 		if m.Dims <= 0 || len(m.W) != 4*m.Dims+1 {
 			return fmt.Errorf("logistic: len(w)=%d, want 4*dims+1=%d", len(m.W), 4*m.Dims+1)
@@ -124,7 +145,7 @@ func (m *RelevanceModel) FormatMessage(text string) string {
 	return applyInstruction(m.MessageInstruction, text)
 }
 
-// RawScore is the model's uncalibrated score (cosine, or logistic
+// RawScore is the model's uncalibrated score (cosine, or logistic / mlp
 // probability) for task vector u and message vector v.
 func (m *RelevanceModel) RawScore(u, v []float32) (float64, error) {
 	if len(u) == 0 || len(u) != len(v) || (m.Dims > 0 && len(u) != m.Dims) {
@@ -145,6 +166,27 @@ func (m *RelevanceModel) RawScore(u, v []float32) (float64, error) {
 	}
 	iu, iv := 1/math.Sqrt(nu), 1/math.Sqrt(nv)
 	d := len(u)
+	if m.Kind == "mlp" {
+		f := 4*d + 1
+		x := make([]float64, f)
+		for i := 0; i < d; i++ {
+			a, b := float64(u[i])*iu, float64(v[i])*iv
+			x[i], x[d+i], x[2*d+i], x[3*d+i] = a, b, math.Abs(a-b), a*b
+		}
+		x[4*d] = cos
+		z := m.B
+		for h := 0; h < m.Hidden; h++ {
+			row := m.W[h*f : (h+1)*f]
+			a := m.B1[h]
+			for i, xi := range x {
+				a += row[i] * xi
+			}
+			if a > 0 {
+				z += m.W2[h] * a
+			}
+		}
+		return 1 / (1 + math.Exp(-z)), nil
+	}
 	z := m.B + m.W[4*d]*cos
 	for i := 0; i < d; i++ {
 		a, b := float64(u[i])*iu, float64(v[i])*iv
