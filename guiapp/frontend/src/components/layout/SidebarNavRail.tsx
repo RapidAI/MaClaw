@@ -128,6 +128,8 @@ export const SidebarNavRail = ({
     const checkinTitle = hubCheckin?.checkedInToday
         ? (lang === 'zh-Hans' ? '今日已签到' : lang === 'zh-Hant' ? '今日已簽到' : 'Checked in today')
         : (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分` : `Check in for ${checkinCredits} credits`);
+    const inviteLabel = lang === 'zh-Hans' ? '推荐' : lang === 'zh-Hant' ? '推薦' : 'Referral';
+    const inviteTitle = lang === 'zh-Hans' ? '推荐好友注册' : lang === 'zh-Hant' ? '推薦好友註冊' : 'Refer friends';
     const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
     const mobileDocsLabel = lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive';
@@ -227,6 +229,19 @@ export const SidebarNavRail = ({
                     <span className="bot-nav-label">Bot</span>
                 </button>
             )}
+            {invitationEnabled && (
+                <button
+                    type="button"
+                    className="sidebar-item left-nav-item left-nav-item--invite"
+                    data-testid="sidebar-invite-nav"
+                    aria-label={inviteTitle}
+                    title={inviteTitle}
+                    onClick={() => setInvitationDialogOpen(true)}
+                >
+                    <span className="sidebar-icon"><span className="invite-nav-icon-badge"><InviteGiftIcon /></span></span>
+                    <span className="bot-nav-label">{inviteLabel}</span>
+                </button>
+            )}
             <div className="mc-legacy-rail-footer">
                 <div
                     className={'sidebar-item left-nav-item ' + (systemMenuOpen || systemPageActive ? 'active' : '')}
@@ -240,22 +255,6 @@ export const SidebarNavRail = ({
                     <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen || systemPageActive ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
                     <span className="snr-system-label">{systemLabel}</span>
                 </div>
-                {invitationEnabled && (
-                    <>
-                        <div aria-hidden="true" className="snr-invite-divider" />
-                        <button
-                            type="button"
-                            className="sidebar-item left-nav-item"
-                            onClick={() => setInvitationDialogOpen(true)}
-                            title={lang === 'zh-Hans' ? '邀请好友' : lang === 'zh-Hant' ? '邀請好友' : 'Invite friends'}
-                            style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '2px', border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', position: 'relative' }}
-                        >
-                            <span className="sidebar-icon snr-invite-icon"><InviteGiftIcon /></span>
-                            <span className="snr-invite-label">{lang === 'en' ? 'Invite' : '邀请'}</span>
-                            <span aria-hidden="true" className="snr-invite-dot" />
-                        </button>
-                    </>
-                )}
             </div>
             <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} title={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" aria-current={systemPageActive ? 'page' : undefined} onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
                 <span className="mc-profile-rail__avatar mc-profile-rail__avatar--system" aria-hidden="true"><SystemIcon /></span>

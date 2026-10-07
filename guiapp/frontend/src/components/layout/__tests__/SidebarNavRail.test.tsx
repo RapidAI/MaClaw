@@ -8,6 +8,8 @@ import type React from 'react';
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     DesktopBotAccess: vi.fn().mockResolvedValue({ enabled: false }),
     GetHubUserInvitationStatus: vi.fn().mockResolvedValue({ enabled: false }),
+    GetHubUserInvitationsPage: vi.fn().mockResolvedValue(null),
+    RotateHubUserInvitation: vi.fn().mockResolvedValue(null),
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
 }));
 
@@ -18,7 +20,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 
 import { SidebarNavRail } from '../SidebarNavRail';
 import { publishBotAccess } from '../../bots/botOpenGate';
-import { DesktopBotAccess, GetHubUserInvitationStatus, GetHubUserRanking } from '../../../../wailsjs/go/main/App';
+import { DesktopBotAccess, GetHubUserInvitationStatus, GetHubUserInvitationsPage, GetHubUserRanking, RotateHubUserInvitation } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
@@ -41,6 +43,10 @@ beforeEach(() => {
     vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
     vi.mocked(GetHubUserInvitationStatus).mockReset();
     vi.mocked(GetHubUserInvitationStatus).mockResolvedValue(invitationStatus(false));
+    vi.mocked(GetHubUserInvitationsPage).mockReset();
+    vi.mocked(GetHubUserInvitationsPage).mockResolvedValue({ enabled: true } as Awaited<ReturnType<typeof GetHubUserInvitationsPage>>);
+    vi.mocked(RotateHubUserInvitation).mockReset();
+    vi.mocked(RotateHubUserInvitation).mockResolvedValue(null as unknown as Awaited<ReturnType<typeof RotateHubUserInvitation>>);
     vi.mocked(GetHubUserRanking).mockReset();
     vi.mocked(GetHubUserRanking).mockResolvedValue(rankingResult({ error: 'hub not configured' }));
 });
@@ -341,13 +347,13 @@ describe('SidebarNavRail favorite employees', () => {
         await act(async () => {
             await Promise.resolve();
         });
-        expect(screen.getByTitle('Invite friends')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-invite-nav')).toBeTruthy();
 
         await act(async () => {
             await vi.advanceTimersByTimeAsync(30_000);
         });
 
-        expect(screen.queryByTitle('Invite friends')).toBeNull();
+        expect(screen.queryByTestId('sidebar-invite-nav')).toBeNull();
     });
 
     it('shows the invitation button again when Hub re-enables invitations', async () => {
@@ -356,11 +362,39 @@ describe('SidebarNavRail favorite employees', () => {
             .mockResolvedValueOnce(invitationStatus(true));
         renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
 
-        await waitFor(() => expect(screen.queryByTitle('Invite friends')).toBeNull());
+        await waitFor(() => expect(screen.queryByTestId('sidebar-invite-nav')).toBeNull());
         Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
         document.dispatchEvent(new Event('visibilitychange'));
 
-        await waitFor(() => expect(screen.getByTitle('Invite friends')).toBeTruthy());
+        await waitFor(() => expect(screen.getByTestId('sidebar-invite-nav')).toBeTruthy());
+    });
+
+    it('places the invitation entry under the bot button and opens the invitation dialog from 推荐', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: true });
+        vi.mocked(GetHubUserInvitationStatus).mockResolvedValue(invitationStatus(true));
+        renderRail({ lang: 'zh-Hans', remoteActivationStatus: { activated: true } });
+
+        await screen.findByTestId('sidebar-bot-nav');
+        const invite = screen.getByTestId('sidebar-invite-nav');
+
+        // The entry lives directly under the Bot icon in the live rail...
+        expect(screen.getByTestId('sidebar-bot-nav')).toBe(invite.previousElementSibling);
+        // ...with the Simplified-Chinese 推荐 label and the original invitation dialog wiring.
+        expect(invite.textContent).toContain('推荐');
+        fireEvent.click(invite);
+        expect(await screen.findByText('邀请好友')).toBeTruthy();
+    });
+
+    it('styles the invitation entry as a vertical pill outside the icon grayscale', () => {
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        const pill = css.match(/\.sidebar \.left-nav-item\.left-nav-item--invite \{[^}]+\}/);
+        expect(pill?.[0]).toMatch(/overflow:\s*visible/);
+        expect(pill?.[0]).not.toContain('!important');
+        const badge = css.match(/\.sidebar \.left-nav-item\.left-nav-item--invite \.sidebar-icon \.invite-nav-icon-badge \{[^}]+\}/);
+        expect(badge?.[0]).toContain('filter: none');
+        // The old hidden-footer invite markup is gone for good.
+        expect(css).not.toContain('.snr-invite-dot');
+        expect(css).not.toContain('.snr-invite-divider');
     });
 
     it('does not poll invitation status while MaClaw is in the background', async () => {

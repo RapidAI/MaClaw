@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -37,6 +38,10 @@ func credentialStoreProviderID(provider corelib.MaclawLLMProvider) string {
 		return workbuddy.StoreChina
 	case provider.Name == workbuddy.NameGlobal && kind.IsOAuth():
 		return workbuddy.StoreGlobal
+	case provider.Name == qoder.NameCN && kind.IsOAuth():
+		return qoder.StoreCN
+	case provider.Name == qoder.NameGlobal && kind.IsOAuth():
+		return qoder.StoreGlobal
 	case provider.Name == codegenProviderName && provider.AuthType == "sso":
 		return "codegen"
 	default:
@@ -156,6 +161,30 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provid
 			return updated, nil
 		case "xai-grok":
 			result, refreshErr = oauth.RefreshXAIToken(ctx, old.RefreshToken)
+		case qoder.StoreCN, qoder.StoreGlobal:
+			edition, found := qoder.ProfileByStoreID(storeID)
+			if !found {
+				return old, fmt.Errorf("unknown Qoder provider %s", storeID)
+			}
+			refreshed, refreshErr := qoder.Refresh(ctx, edition, old.RefreshToken, qoder.MachineID())
+			if refreshErr != nil {
+				return old, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			updated := &oauth.StoredCredential{
+				Type:           old.Type,
+				AccessToken:    refreshed.AccessToken,
+				RawAccessToken: refreshed.AccessToken,
+				RefreshToken:   refreshed.RefreshToken,
+				ExpiresAt:      refreshed.ExpiresAt,
+				UserID:         old.UserID,
+				Email:          old.Email,
+			}
+			if refreshed.RefreshToken == "" {
+				updated.RefreshToken = old.RefreshToken
+			}
+			syncCred = updated
+			log.Printf("[credential-store] refreshed %s token", storeID)
+			return updated, nil
 		case kimicode.StoreID:
 			refreshed, refreshErr := kimicode.Refresh(ctx, old.RefreshToken, provider.URL)
 			if refreshErr != nil {

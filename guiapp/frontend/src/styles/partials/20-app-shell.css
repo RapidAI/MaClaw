@@ -2982,35 +2982,6 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     font-weight: 700;
 }
 
-.snr-invite-divider {
-    width: 60%;
-    height: 1px;
-    margin: 3px 0;
-    background: var(--theme-border);
-    opacity: 0.7;
-}
-
-.snr-invite-icon {
-    margin: 0;
-    display: inline-flex;
-}
-
-.snr-invite-label {
-    font-size: 0.66rem;
-    line-height: 1;
-    font-weight: 800;
-}
-
-.snr-invite-dot {
-    position: absolute;
-    top: 5px;
-    right: 25%;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--theme-danger);
-}
-
 /* Migrated from inline styles in SidebarTaskEvidencePanel. */
 .step-root {
     margin: 3px 0 5px 22px;

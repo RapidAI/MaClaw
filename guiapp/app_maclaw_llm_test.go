@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"pgregory.net/rapid"
 )
@@ -5246,7 +5247,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}
@@ -5278,6 +5279,16 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		}
 		if provider.URL != profile.ChatURL || provider.Model != profile.DefaultModel || provider.AuthType != "oauth" || provider.Protocol != "openai" {
 			t.Errorf("%s = %#v, want chat %s model %s oauth", profile.Name, provider, profile.ChatURL, profile.DefaultModel)
+		}
+	}
+
+	for _, profile := range []qoder.Profile{qoder.CNProfile(), qoder.GlobalProfile()} {
+		provider, ok := findProviderByName(providers, profile.Name)
+		if !ok {
+			t.Fatalf("providers missing %s", profile.Name)
+		}
+		if provider.URL != profile.ChatURL || provider.AuthType != "oauth" || provider.Protocol != "openai" {
+			t.Errorf("%s = %#v, want chat %s oauth/openai", profile.Name, provider, profile.ChatURL)
 		}
 	}
 

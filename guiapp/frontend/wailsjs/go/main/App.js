@@ -282,6 +282,11 @@ export function CancelKimiCodeOAuth() {
   return window['go']['main']['App']['CancelKimiCodeOAuth']();
 }
 
+
+export function CancelQoderOAuth() {
+  return window['go']['main']['App']['CancelQoderOAuth']();
+}
+
 export function CancelNLSkillRun(arg1) {
   return window['go']['main']['App']['CancelNLSkillRun'](arg1);
 }
@@ -4786,6 +4791,11 @@ export function StartKimiCodeOAuth() {
   return window['go']['main']['App']['StartKimiCodeOAuth']();
 }
 
+
+export function StartQoderOAuth(arg1) {
+  return window['go']['main']['App']['StartQoderOAuth'](arg1);
+}
+
 export function StartGitHubCopilotOAuth() {
   return window['go']['main']['App']['StartGitHubCopilotOAuth']();
 }
@@ -5191,6 +5201,11 @@ export function WaitCodeGenSSOResult() {
 
 export function WaitKimiCodeOAuth() {
   return window['go']['main']['App']['WaitKimiCodeOAuth']();
+}
+
+
+export function WaitQoderOAuth() {
+  return window['go']['main']['App']['WaitQoderOAuth']();
 }
 
 export function WaitGitHubCopilotOAuth() {

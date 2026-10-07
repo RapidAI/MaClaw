@@ -293,6 +293,8 @@ type App struct {
 	copilotPollCtx           context.Context             // Copilot device code polling context
 	kimiLogin                *kimiCodeLogin              // in-progress Kimi Code device login
 	kimiOwnedGen             uint64                      // oauth generation owned by the Kimi login above
+	qoderLogin               *qoderLoginFlow             // in-progress Qoder device login
+	qoderOwnedGen            uint64                      // oauth generation owned by the Qoder login above
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex

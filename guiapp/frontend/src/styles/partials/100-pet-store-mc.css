@@ -916,7 +916,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-nav-rail .sidebar-header--maclaw { display: none !important; }
 
 /* Reference primary navigation rhythm */
-.sidebar .left-nav-item:not(.left-nav-item--bot) { width: calc(100% - 20px) !important; min-height: 62px !important; margin: 4px 10px !important; gap: 6px !important; border-radius: 12px !important; }
+.sidebar .left-nav-item:not(.left-nav-item--bot):not(.left-nav-item--invite) { width: calc(100% - 20px) !important; min-height: 62px !important; margin: 4px 10px !important; gap: 6px !important; border-radius: 12px !important; }
 .sidebar .left-nav-item .sidebar-icon { width: 24px; height: 24px; justify-content: center; }
 /* The workbench entry wraps a 32px badge chip in .sidebar-icon; clamping the
    wrapper to 24px makes the badge overflow and paint over the label. */
@@ -1044,6 +1044,51 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .sidebar .left-nav-item.left-nav-item--checkin.checked-in > .bot-nav-label {
     color: var(--theme-text-muted);
+}
+/* Referral (推荐) rail entry: vertical pill geometry matching the Bot entry —
+   primary-tinted badge chip above the label, plus a static attention dot.
+   Excluded from the generic reset above so none of these declarations have
+   to outrank it; the badge's filter:none wins over the 20-app-shell grayscale
+   via source order (this partial assembles after 20-app-shell). */
+.sidebar .left-nav-item.left-nav-item--invite {
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: auto;
+    min-height: 62px;
+    margin: 4px 6px;
+    gap: 6px;
+    border-radius: 12px;
+    overflow: visible;
+    padding: 6px 0;
+    border: none;
+    text-align: center;
+}
+.sidebar .left-nav-item.left-nav-item--invite .sidebar-icon { width: auto; height: auto; margin: 0; }
+.sidebar .left-nav-item.left-nav-item--invite .sidebar-icon .invite-nav-icon-badge {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    filter: none;
+    opacity: 1;
+    color: var(--theme-primary-strong, var(--theme-primary));
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 34%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--invite > .bot-nav-label { color: var(--theme-primary); }
+.sidebar .left-nav-item.left-nav-item--invite .sidebar-icon .invite-nav-icon-badge::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #ef4444;
 }
 .sidebar .left-nav-item:not(.left-nav-item--bot) > span:last-child { font-size: 12px !important; line-height: 1.2 !important; font-weight: 600 !important; }
 .sidebar .left-nav-item.left-nav-item--bot > .bot-nav-label {
@@ -1464,14 +1509,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .vecv-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
 .vecv-file-meta { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .vecv-file-title { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.vet-avatar-img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
-.vet-avatar-fallback { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface)); color: var(--theme-primary); font-size: 11px; font-weight: 700; }
+.vet-avatar-img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.vet-avatar-fallback { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface)); color: var(--theme-primary); font-size: 12px; font-weight: 700; }
 .vet-list-shell { position: relative; overflow: auto; height: 100%; min-width: 0; width: 100%; }
-.vet-avatar-wrap { position: relative; width: 28px; height: 28px; flex-shrink: 0; }
+.vet-avatar-wrap { position: relative; width: 30px; height: 30px; flex-shrink: 0; }
 .vet-row-text { flex: 1; min-width: 0; text-align: left; }
-.vet-row-name-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.vet-policy-icon { font-size: 12px; flex-shrink: 0; }
-.vet-menu-key { width: 28px; text-align: center; font-size: 9px; font-weight: 700; flex-shrink: 0; }
+.vet-row-name-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.vet-policy-icon { flex-shrink: 0; display: inline-flex; }
+.vet-list-shell [role="button"]:focus-visible { outline: 2px solid var(--theme-primary, #2f5f98); outline-offset: -2px; }
+.vet-menu-icon { flex-shrink: 0; }
+@keyframes vet-icon-spin { to { transform: rotate(1turn); } }
+.vet-spinning { animation: vet-icon-spin 0.9s linear infinite; }
 .vet-dialog-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
 .vet-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .vet-info-avatar-block { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 20px; }

@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -245,6 +246,9 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 		provider = normalizeZhipuCodingProvider(provider)
 		if profile, ok := workbuddy.ProfileByName(provider.Name); ok {
 			provider = normalizeWorkBuddyProvider(provider, workbuddyProvider(profile))
+		}
+		if profile, ok := qoder.ProfileByName(provider.Name); ok {
+			provider = normalizeQoderProvider(provider, qoderProvider(profile))
 		}
 		if kimicode.IsProviderName(provider.Name) {
 			provider = normalizeKimiCodeProvider(provider, kimiCodeProvider())
@@ -752,6 +756,36 @@ func workbuddyProvider(profile workbuddy.Profile) corelib.MaclawLLMProvider {
 	}
 }
 
+// qoderProvider is the built-in OpenAI-compatible chat config for each
+// Qoder edition. The chat API carries account tokens, so it is OAuth-only.
+func qoderProvider(profile qoder.Profile) corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          profile.Name,
+		URL:           profile.ChatURL,
+		Model:         qoder.DefaultModel,
+		Protocol:      "openai",
+		AuthType:      "oauth",
+		ContextLength: qoder.DefaultContextWindows,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
+// normalizeQoderProvider keeps both editions on the OAuth chat path. An
+// explicit model and context window are preserved.
+func normalizeQoderProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.URL = defaults.URL
+	provider.AuthType = defaults.AuthType
+	provider.Protocol = defaults.Protocol
+	provider.WireAPI = ""
+	if strings.TrimSpace(provider.Model) == "" {
+		provider.Model = defaults.Model
+	}
+	if provider.ContextLength <= 0 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	return provider
+}
+
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
@@ -773,6 +807,8 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		workbuddyProvider(workbuddy.ChinaProfile()),
 		workbuddyProvider(workbuddy.GlobalProfile()),
+		qoderProvider(qoder.CNProfile()),
+		qoderProvider(qoder.GlobalProfile()),
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 	}

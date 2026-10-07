@@ -153,6 +153,8 @@ export function CancelGitHubCopilotOAuth():Promise<void>;
 
 export function CancelKimiCodeOAuth():Promise<void>;
 
+export function CancelQoderOAuth():Promise<void>;
+
 export function CancelNLSkillRun(arg1:string):Promise<void>;
 
 export function CancelSkillEvolution(arg1:string):Promise<boolean>;
@@ -2397,6 +2399,8 @@ export function StartCodeGenSSOEmbedded():Promise<main.CodeGenSSOEmbeddedResult>
 
 export function StartKimiCodeOAuth():Promise<{user_code:string; verification_uri:string; verification_uri_complete:string; browser_opened:boolean}>;
 
+export function StartQoderOAuth(arg1:string):Promise<{auth_url:string; browser_opened:boolean}>;
+
 export function StartGitHubCopilotOAuth():Promise<main.GitHubCopilotDeviceInfo>;
 
 export function StartMaclawAppApprovalWorkflow(arg1:main.MaclawAppApprovalWorkflowStartInput):Promise<Record<string, any>>;
@@ -2600,6 +2604,8 @@ export function VerifyRemoteRegistrationContactCode(arg1:string,arg2:string,arg3
 export function WaitCodeGenSSOResult():Promise<main.CodeGenSSOInfo>;
 
 export function WaitKimiCodeOAuth():Promise<string>;
+
+export function WaitQoderOAuth():Promise<string>;
 
 export function WaitGitHubCopilotOAuth():Promise<string>;
 

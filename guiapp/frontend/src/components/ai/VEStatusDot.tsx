@@ -18,6 +18,10 @@ interface VEStatusDotProps {
     /** "dot" = plain circle; "badge" = with border for avatar overlay */
     variant?: "dot" | "badge";
     style?: CSSProperties;
+    /** Optional data-testid for the rendered dot */
+    dataTestId?: string;
+    /** Optional tooltip / accessible label for the rendered dot */
+    title?: string;
 }
 
 const STATUS_COLORS: Record<VEOnlineStatus, string> = {
@@ -29,7 +33,7 @@ const STATUS_COLORS: Record<VEOnlineStatus, string> = {
 // Keyframes ID for deduplication in the DOM
 const KEYFRAMES_ID = "ve-status-pulse-keyframes";
 
-export function VEStatusDot({ status, size = 8, variant = "dot", style }: VEStatusDotProps) {
+export function VEStatusDot({ status, size = 8, variant = "dot", style, dataTestId, title }: VEStatusDotProps) {
     const color = STATUS_COLORS[status];
     const isOffline = status === "offline";
     const isUnknown = status === "unknown";
@@ -61,6 +65,7 @@ export function VEStatusDot({ status, size = 8, variant = "dot", style }: VEStat
     };
 
     const dotStyle: CSSProperties = {
+        display: "inline-block",
         width: variant === "badge" ? size + 2 : size,
         height: variant === "badge" ? size + 2 : size,
         borderRadius: "50%",
@@ -73,5 +78,5 @@ export function VEStatusDot({ status, size = 8, variant = "dot", style }: VEStat
         ...style,
     };
 
-    return <span style={dotStyle} data-ve-status={status} />;
+    return <span style={dotStyle} data-ve-status={status} data-testid={dataTestId} title={title} />;
 }

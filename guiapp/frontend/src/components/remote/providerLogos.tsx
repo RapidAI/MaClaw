@@ -3,6 +3,8 @@ import React from "react";
 export const WORKBUDDY_CHINA_PROVIDER = "WorkBuddy 国内版";
 export const WORKBUDDY_GLOBAL_PROVIDER = "WorkBuddy 国际版";
 export const KIMI_CODE_PROVIDER = "Kimi Code";
+export const QODER_CN_PROVIDER = "Qoder 国内版";
+export const QODER_GLOBAL_PROVIDER = "Qoder 国际版";
 
 export function isWorkBuddyProvider(name: string | null | undefined) {
     return name === WORKBUDDY_CHINA_PROVIDER || name === WORKBUDDY_GLOBAL_PROVIDER;
@@ -10,6 +12,10 @@ export function isWorkBuddyProvider(name: string | null | undefined) {
 
 export function isKimiCodeProvider(name: string | null | undefined) {
     return name === KIMI_CODE_PROVIDER;
+}
+
+export function isQoderProvider(name: string | null | undefined) {
+    return name === QODER_CN_PROVIDER || name === QODER_GLOBAL_PROVIDER;
 }
 
 function KimiCodeLogo() {
@@ -25,6 +31,15 @@ function WorkBuddyLogo() {
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M3.2 7.2 8.1 17.2h2.1L12 9.4l1.8 7.8h2.1l4.9-10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
             <circle cx="18.6" cy="5.4" r="1.35" fill="currentColor"/>
+        </svg>
+    );
+}
+
+function QoderLogo() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 2.8a9.2 9.2 0 1 0 5.9 16.3l2.6 2.6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
+            <path d="m15.6 15.6 4.8-4.8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
         </svg>
     );
 }
@@ -113,4 +128,6 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
     ),
     [WORKBUDDY_CHINA_PROVIDER]: <WorkBuddyLogo />,
     [WORKBUDDY_GLOBAL_PROVIDER]: <WorkBuddyLogo />,
+    [QODER_CN_PROVIDER]: <QoderLogo />,
+    [QODER_GLOBAL_PROVIDER]: <QoderLogo />,
 };
