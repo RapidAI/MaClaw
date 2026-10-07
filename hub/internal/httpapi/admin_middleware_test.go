@@ -361,6 +361,33 @@ func TestLegacyHubLLMConfigAdminRoutesRemoved(t *testing.T) {
 	}
 }
 
+// TestOpenclawIMBridgeRoutesRemoved guards against the removed openclaw-bridge
+// integration returning: issue #14 showed its local shared HMAC secret allowed
+// unsigned-style webhook injection, so the routes must stay gone.
+func TestOpenclawIMBridgeRoutesRemoved(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+	for _, endpoint := range []struct {
+		method string
+		target string
+		body   any
+	}{
+		{http.MethodGet, "/api/admin/settings/openclaw_im", nil},
+		{http.MethodPost, "/api/admin/settings/openclaw_im", map[string]any{"enabled": true}},
+		{http.MethodPost, "/api/admin/settings/openclaw_im/test", map[string]any{}},
+		{http.MethodPost, "/api/openclaw_im/webhook", map[string]any{"platform_uid": "u1", "text": "hi"}},
+		{http.MethodGet, "/api/admin/bridge/channels", nil},
+		{http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": true}},
+		{http.MethodGet, "/api/admin/bridge/status", nil},
+		{http.MethodPost, "/api/admin/bridge/install", map[string]any{}},
+	} {
+		resp := doHubAdminJSONRequest(t, ctx.handler, endpoint.method, endpoint.target, endpoint.body, token)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d body=%s, want 404", endpoint.method, endpoint.target, resp.Code, resp.Body.String())
+		}
+	}
+}
+
 func TestAdminDebugHandlersRequireToken(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 
