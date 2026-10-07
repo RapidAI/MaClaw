@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"os/exec"
 	"regexp"
@@ -48,11 +52,12 @@ func (desktopRuntimeModule) Tools(context.Context, agentruntime.TurnRequest) ([]
 			"For web pages use the browser inside that desktop: action=probe once, then action=task_run with steps " +
 			"(navigate, click, type, press, scroll, select, wait) in one call. Do not click the browser window with pixels. " +
 			"For other applications use action=app_list, then action=app_run with steps focus, type, key, or click. " +
+			"action=screenshot returns an image of the whole desktop; its pixel coordinates are the ones app_run click uses. " +
 			"Single browser actions navigate, click, type, and press remain available.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":      map[string]any{"type": "string", "description": "probe, task_run, app_list, app_run, navigate, click, type, or press"},
+				"action":      map[string]any{"type": "string", "description": "probe, task_run, app_list, app_run, screenshot, navigate, click, type, or press"},
 				"url":         map[string]any{"type": "string", "description": "URL for navigate"},
 				"ref":         map[string]any{"type": "string", "description": "Element ref from probe, such as e3"},
 				"snapshot_id": map[string]any{"type": "string", "description": "snapshot_id returned with the ref"},
@@ -83,7 +88,7 @@ func (desktopRuntimeModule) ContributePrompt(context.Context, agentruntime.TurnR
 		"Do not use web_fetch, web_search, or the host open tool for a site this user may have signed into; those tools cannot see this browser. " +
 		"This user's bots are different instances of the same MaClawSrv user, and those instances share this desktop. Other users have separate desktops. " +
 		"Web pages: probe the logged-in page once, then one task_run. Navigate only to another page of this site. Do not pixel-click the browser. " +
-		"Other apps: app_list, then one app_run. " +
+		"Other apps: app_list, then one app_run. Use screenshot to see the whole screen when app_list is not enough, or to check a result. " +
 		"Do not claim the screen changed until the tool result shows the new page or window.", nil
 }
 
@@ -138,9 +143,9 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	}
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	switch action {
-	case "navigate", "probe", "click", "type", "press", "task_run", "app_list", "app_run":
+	case "navigate", "probe", "click", "type", "press", "task_run", "app_list", "app_run", "screenshot":
 	default:
-		return "", fmt.Errorf("desktop action must be probe, task_run, app_list, app_run, navigate, click, type, or press")
+		return "", fmt.Errorf("desktop action must be probe, task_run, app_list, app_run, screenshot, navigate, click, type, or press")
 	}
 	if action == "navigate" && desktopArg(args, "url") == "" {
 		return "", fmt.Errorf("desktop navigate requires url")
@@ -175,6 +180,9 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	}
 	if action == "app_list" || action == "app_run" {
 		return operateDesktopApp(ctx, scope, endpoint.Display, action, args)
+	}
+	if action == "screenshot" {
+		return desktopScreenshot(ctx, scope, endpoint.Display)
 	}
 
 	session, err := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
@@ -529,6 +537,85 @@ func operateDesktopApp(ctx context.Context, scope agentruntime.Scope, display, a
 	default:
 		return "", fmt.Errorf("unknown desktop app action %s", action)
 	}
+}
+
+// desktopScreenshotMaxBase64 keeps the image a model receives small enough
+// for vision APIs. Larger PNGs (photo-heavy pages) are re-encoded as JPEG.
+const desktopScreenshotMaxBase64 = 1_200_000
+
+// desktopScreenshot captures the user's desktop. The text tells every model
+// what was captured; the image itself is attached for vision models and never
+// appears in the text, history, or logs (see agentruntime.AttachModelImage).
+func desktopScreenshot(ctx context.Context, scope agentruntime.Scope, display string) (string, error) {
+	var data []byte
+	var err error
+	switch {
+	case desktopRemoteScreenshot != nil:
+		data, err = desktopRemoteScreenshot(ctx, scope.TenantID, scope.UserID, display)
+	case desktopHubClientFromEnv() != nil:
+		data, err = desktopHubClientFromEnv().Screenshot(ctx, scope.TenantID, scope.UserID, display)
+	default:
+		data, err = desktopLocalScreenshot(display)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !desktop.IsPNG(data) {
+		return "", fmt.Errorf("desktop screenshot is not a PNG image")
+	}
+	mime := "image/png"
+	encoded := base64.StdEncoding.EncodeToString(data)
+	config, decodeErr := png.DecodeConfig(bytes.NewReader(data))
+	if decodeErr != nil {
+		return "", fmt.Errorf("desktop screenshot is not a PNG image")
+	}
+	if len(encoded) > desktopScreenshotMaxBase64 {
+		if smaller, ok := desktopScreenshotJPEG(data); ok {
+			mime, encoded = "image/jpeg", base64.StdEncoding.EncodeToString(smaller)
+		}
+	}
+	text := fmt.Sprintf("Desktop screenshot of display %s: %dx%d pixels (%s, %d KB). "+
+		"The image is attached for models that can see images; app_run click uses these pixel coordinates. "+
+		"If no image is visible to you, use probe for web pages and app_list for windows instead.",
+		strings.TrimSpace(display), config.Width, config.Height, mime, (len(encoded)*3/4+1023)/1024)
+	return agentruntime.AttachModelImage(text, mime, encoded), nil
+}
+
+func desktopScreenshotJPEG(data []byte) ([]byte, bool) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 80}); err != nil || buf.Len() >= len(data) {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// desktopLocalScreenshotRunner is set by tests.
+var desktopLocalScreenshotRunner func(display string) (string, error)
+
+// desktopLocalScreenshot captures the local desktop container (no Hub).
+func desktopLocalScreenshot(display string) ([]byte, error) {
+	if !desktop.ValidDisplay(display) {
+		return nil, fmt.Errorf("desktop display is invalid")
+	}
+	var out string
+	if desktopLocalScreenshotRunner != nil {
+		text, err := desktopLocalScreenshotRunner(display)
+		if err != nil {
+			return nil, err
+		}
+		out = text
+	} else {
+		raw, err := exec.Command("docker", "exec", "-e", "DISPLAY="+display, desktopContainerName(), "sh", "-c", desktop.ScreenshotScript).Output()
+		if err != nil {
+			return nil, fmt.Errorf("desktop screenshot failed: %s", err.Error())
+		}
+		out = string(raw)
+	}
+	return desktop.DecodeScreenshot(out)
 }
 
 func desktopAppSteps(raw any) ([][]string, error) {

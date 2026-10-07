@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -449,5 +451,39 @@ func PostDesktopAppHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"output": output})
+	}
+}
+
+// PostDesktopScreenshotHandler returns a PNG of the user's cloud desktop for
+// MaClawSrv's desktop tool. It uses the same desktop API token as /app, and
+// the image travels base64-encoded in JSON like the other desktop replies.
+func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			Display  string `json:"display"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		png, err := pool.Screenshot(r.Context(), in.TenantID, in.UserID, in.Display)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mime":         "image/png",
+			"image_base64": base64.StdEncoding.EncodeToString(png),
+			"bytes":        len(png),
+		})
 	}
 }

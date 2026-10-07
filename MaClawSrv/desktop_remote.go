@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,10 @@ var desktopRemoteSession func(ctx context.Context, tenantID, userID string) (des
 // desktopRemoteApp is set by tests. Production sends the command through Hub
 // to the Docker service, which may be on another machine.
 var desktopRemoteApp func(ctx context.Context, tenantID, userID, display string, args []string) (string, error)
+
+// desktopRemoteScreenshot is set by tests. Production asks Hub, which asks the
+// Docker service that owns the user's desktop.
+var desktopRemoteScreenshot func(ctx context.Context, tenantID, userID, display string) ([]byte, error)
 
 type desktopHubClient struct {
 	baseURL string
@@ -111,7 +116,31 @@ func (c *desktopHubClient) App(ctx context.Context, tenantID, userID, display st
 	return out.Output, nil
 }
 
+// Screenshot returns a PNG of the user's desktop.
+func (c *desktopHubClient) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+	var out struct {
+		MIME  string `json:"mime"`
+		Image string `json:"image_base64"`
+	}
+	if err := c.postLimit(ctx, "/api/v1/desktop-services/screenshot", map[string]string{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"display":   display,
+	}, &out, desktop.MaxScreenshotBytes*2); err != nil {
+		return nil, err
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out.Image))
+	if err != nil || !desktop.IsPNG(data) || len(data) > desktop.MaxScreenshotBytes {
+		return nil, fmt.Errorf("desktop service returned an invalid screenshot")
+	}
+	return data, nil
+}
+
 func (c *desktopHubClient) post(ctx context.Context, path string, body any, dest any) error {
+	return c.postLimit(ctx, path, body, dest, 1<<20)
+}
+
+func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any, dest any, limit int64) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -127,7 +156,7 @@ func (c *desktopHubClient) post(ctx context.Context, path string, body any, dest
 		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
 	}
 	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("desktop service rejected the request")
 	}

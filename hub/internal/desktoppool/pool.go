@@ -402,6 +402,53 @@ func (p *Pool) RunApp(ctx context.Context, tenantID, userID, display string, arg
 	return out.Output, nil
 }
 
+// maxScreenshotBytes bounds one PNG read from a Docker service.
+const maxScreenshotBytes = 16 << 20
+
+var pngSignature = []byte("\x89PNG\r\n\x1a\n")
+
+// Screenshot returns a PNG of the user's desktop from the Docker service that
+// owns the user. An empty display means the service's default (:20).
+func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   strings.TrimSpace(display),
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server.BaseURL, "/")+"/v1/desktops/screenshot", bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.client().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxScreenshotBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if len(payload) > 1<<20 {
+			payload = payload[:1<<20]
+		}
+		return nil, upstream.NewStatusError(ErrService, resp.StatusCode, payload)
+	}
+	if len(payload) > maxScreenshotBytes || !bytes.HasPrefix(payload, pngSignature) {
+		return nil, fmt.Errorf("%w: screenshot is not a PNG image", ErrService)
+	}
+	return payload, nil
+}
+
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {

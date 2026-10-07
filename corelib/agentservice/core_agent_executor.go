@@ -2125,7 +2125,10 @@ func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string
 			if err != nil {
 				return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: runtime tool %s: %v", name, err), Outcome: agent.ToolExecutionOutcomeError}
 			}
-			return agent.ToolExecutionResult{Result: result, Outcome: agent.ToolExecutionOutcomeOK}
+			// Module tools may attach an image for vision models (for example
+			// the desktop screenshot). The text keeps no trace of it.
+			text, images := agentruntime.ExtractModelImages(result)
+			return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK, ModelImages: images}
 		}
 	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
