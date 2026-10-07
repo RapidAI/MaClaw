@@ -558,8 +558,11 @@ func (c *QueryEmbeddingCache) Get(query string) ([]float32, error) {
 	}
 	c.mu.Unlock()
 
-	// Compute embedding outside the lock to avoid blocking other callers.
-	vec, err := c.embedder.Embed(query)
+	// Prefer RoleClassification so Track A shares the intent L2/L3 query
+	// space (and PutQuery of the L2 vector is a cache hit). Tool descriptions
+	// stay on Embed() (RoleNone); measured Qwen3 Track A used this asymmetric
+	// protocol (ZZ_QROLE=classification).
+	vec, err := embedding.EmbedAs(c.embedder, query, embedding.RoleClassification)
 	if err != nil {
 		return nil, err
 	}
@@ -635,14 +638,29 @@ func (h *HybridRetriever) FuseScores(
 	bm25Scores map[string]float64,
 	toolTexts map[string]string,
 ) map[string]float64 {
+	return h.FuseScoresWithQueryVec(query, nil, bm25Scores, toolTexts)
+}
+
+// FuseScoresWithQueryVec is FuseScores with an optional precomputed query
+// vector (intent L2 RoleClassification). A non-empty queryVec is used as-is
+// and also seeded into the query cache; nil falls back to Put/Get.
+func (h *HybridRetriever) FuseScoresWithQueryVec(
+	query string,
+	queryVec []float32,
+	bm25Scores map[string]float64,
+	toolTexts map[string]string,
+) map[string]float64 {
 	if embedding.IsNoop(h.embedder) {
 		return bm25Scores
 	}
-
-	// Get query embedding.
-	queryVec, err := h.queryCache.Get(query)
-	if err != nil || queryVec == nil {
-		return bm25Scores
+	if len(queryVec) == 0 {
+		var err error
+		queryVec, err = h.queryCache.Get(query)
+		if err != nil || queryVec == nil {
+			return bm25Scores
+		}
+	} else {
+		h.PutQuery(query, queryVec)
 	}
 
 	// Get tool embeddings in batch.
@@ -710,4 +728,36 @@ func normalizeRetrievalScores(scores map[string]float64) map[string]float64 {
 		result[k] = s / maxVal
 	}
 	return result
+}
+
+// PutQuery seeds the query cache with a precomputed vector (e.g. the intent
+// L2 RoleClassification vector). FuseScores then reuses it instead of calling
+// Embed again. The vector is copied.
+func (h *HybridRetriever) PutQuery(query string, vec []float32) {
+	if h == nil || h.queryCache == nil || strings.TrimSpace(query) == "" || len(vec) == 0 {
+		return
+	}
+	h.queryCache.Put(query, append([]float32(nil), vec...))
+}
+
+// Put stores a precomputed embedding for query (copied). Used to hand the
+// intent L2 classification vector to Track A without a second forward pass.
+func (c *QueryEmbeddingCache) Put(query string, vec []float32) {
+	if c == nil || query == "" || len(vec) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.items[query]; ok {
+		c.order.Remove(elem)
+		delete(c.items, query)
+	}
+	if len(c.items) >= c.maxSize {
+		if front := c.order.Front(); front != nil {
+			evicted := c.order.Remove(front).(*queryEntry)
+			delete(c.items, evicted.query)
+		}
+	}
+	entry := &queryEntry{vec: append([]float32(nil), vec...), createdAt: time.Now(), query: query}
+	c.items[query] = c.order.PushBack(entry)
 }

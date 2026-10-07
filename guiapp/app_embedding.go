@@ -115,6 +115,7 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 	// Wire to UIC immediately (creates UIC if not yet created via classifierOnce).
 	a.initEarlyClassifier()
 	a.attachLocalL3(emb)
+	a.attachToolHead(emb)
 	a.unifiedClassifier.SetEmbedder(emb)
 	// The interrupt path needs the same runtime even before the broader async
 	// vector-search wiring completes. Otherwise a task submitted during startup
@@ -637,6 +638,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// even if this goroutine races ahead of the main startup sequence.
 	a.initEarlyClassifier() // idempotent via sync.Once
 	a.attachLocalL3(emb)
+	a.attachToolHead(emb)
 	if !reusedIntentEmbedder {
 		a.unifiedClassifier.SetEmbedder(emb)
 	}
@@ -726,6 +728,7 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	t0 := time.Now()
 	a.initEarlyClassifier()
 	a.attachLocalL3(emb)
+	a.attachToolHead(emb)
 	a.unifiedClassifier.SetEmbedder(emb)
 	a.unifiedClassifier.SetLLMFunc(a.intentL3Func())
 	a.unifiedClassifier.SetLLMContextFunc(a.intentL3ContextFunc())

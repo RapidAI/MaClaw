@@ -18,10 +18,14 @@ package guiapp
 
 import (
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/intent/locall3"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // loadAppEmbedder is the only embedder loader guiapp uses. path is the
@@ -80,4 +84,64 @@ func (a *App) attachLocalL3(emb embedding.Embedder) {
 		return
 	}
 	log.Printf("[intent] %s", rt.Describe())
+}
+
+// Tool-head env (first-party OvR injection into the tool router).
+const (
+	toolHeadEnv      = "MACLAW_TOOL_HEAD"     // path to tool_head_ovr_*.json; empty = auto
+	toolHeadDisable  = "MACLAW_TOOL_HEAD_OFF" // 1/true → never load
+	toolHeadsDirName = "tool_heads"           // default dir under models/
+)
+
+func toolHeadCandidates(modelsDir string) []string {
+	if v := strings.TrimSpace(os.Getenv(toolHeadEnv)); v != "" {
+		return []string{v}
+	}
+	var out []string
+	for _, dir := range []string{
+		filepath.Join(modelsDir, toolHeadsDirName),
+		filepath.Join(modelsDir, intent.LocalHeadsDirName),
+		modelsDir,
+	} {
+		for _, n := range []string{"tool_head_ovr_qwen3go.json", "tool_head_ovr_qwen3.json", "tool_head_ovr_gemma.json"} {
+			p := filepath.Join(dir, n)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// attachToolHead binds the first-party tool head that matches emb onto the
+// tool router (intent scope ∪ head top-k ∪ Track A). No-op when disabled,
+// no matching file, or the head refuses the embedder (wrong model id / dim).
+func (a *App) attachToolHead(emb embedding.Embedder) {
+	if a == nil || a.toolRouter == nil || emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(toolHeadDisable))) {
+	case "1", "true", "on", "yes":
+		_ = a.toolRouter.SetToolHead(nil, nil, 0, 0)
+		log.Printf("[tool] tool head disabled (%s=1)", toolHeadDisable)
+		return
+	}
+	var last error
+	for _, p := range toolHeadCandidates(embedding.DefaultModelsDir()) {
+		h, err := tool.LoadToolHead(p)
+		if err != nil {
+			last = err
+			continue
+		}
+		if err := a.toolRouter.SetToolHead(h, emb, 0, 0); err != nil {
+			last = err
+			continue
+		}
+		log.Printf("[tool] tool head attached: %s (θ=%.2f k=%d, embedder=%s)", h.ID, h.Theta, h.TopKDefault, embedding.EmbedderFamily(emb))
+		return
+	}
+	_ = a.toolRouter.SetToolHead(nil, nil, 0, 0)
+	if last != nil {
+		log.Printf("[tool] tool head not attached: %v", last)
+	}
 }

@@ -134,6 +134,15 @@ func (r *ToolRouter) SetEmbedder(emb embedding.Embedder) {
 	r.inner.SetEmbedder(emb)
 }
 
+// SetToolHead installs or clears the first-party OvR tool head used for
+// candidate injection (must match emb).
+func (r *ToolRouter) SetToolHead(h *tool.ToolHead, emb embedding.Embedder, theta float64, k int) error {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return r.inner.SetToolHead(h, emb, theta, k)
+}
+
 // HybridActive returns true if hybrid retrieval is currently enabled.
 func (r *ToolRouter) HybridActive() bool {
 	return r.inner.HybridActive()

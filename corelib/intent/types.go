@@ -289,6 +289,11 @@ type ClassificationResult struct {
 	// declared composite after the tree supplies the complementary half.
 	RunnerUp      IntentLabel `json:"-"`
 	RunnerUpScore float64     `json:"-"`
+
+	// QueryVec is the Layer 2 query vector used for this turn (RoleClassification
+	// space of the live embedder). Not serialised. Tool routing reuses it for
+	// the first-party tool head and for Track A (same vector, no second embed).
+	QueryVec []float32 `json:"-"`
 }
 
 // Labels returns the primary label followed by any secondary labels.

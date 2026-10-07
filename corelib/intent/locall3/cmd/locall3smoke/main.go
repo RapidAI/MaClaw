@@ -25,6 +25,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/intent/locall3"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func rssMB() (rss, hwm float64) {
@@ -137,6 +138,22 @@ func main() {
 		fmt.Println("tool embed error:", err)
 	}
 	report("after tool-description embeds")
+
+	// First-party tool head (same vector as intent L2).
+	for _, dir := range []string{filepath.Join(*models, "tool_heads"), *heads, *models} {
+		p := filepath.Join(dir, "tool_head_ovr_qwen3go.json")
+		if h, err := tool.LoadToolHead(p); err == nil {
+			if err := h.CheckEmbedderOf(emb); err != nil {
+				fmt.Printf("[toolhead] %s refused: %v\n", h.ID, err)
+				break
+			}
+			v, _, _ := intent.IntentQueryEmbedding(context.Background(), emb, "帮我查一下明天北京的天气")
+			probs, _ := h.Predict(v)
+			top := h.TopK(probs, h.TopKDefault, h.Theta)
+			fmt.Printf("[toolhead] %s θ=%.2f k=%d top=%v\n", h.ID, h.Theta, h.TopKDefault, top)
+			break
+		}
+	}
 
 	turns := []string{
 		"帮我查一下明天北京的天气",

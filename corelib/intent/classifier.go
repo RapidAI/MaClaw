@@ -418,6 +418,9 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 		var queryVec []float32
 		l2Result, confident, queryVec = classifyByEmbeddingVec(emb, anchors, msg.Text)
 		l2Ran = true
+		if len(queryVec) > 0 {
+			l2Result.QueryVec = append([]float32(nil), queryVec...)
+		}
 		if st != nil {
 			st.modelID = embedderModelID(emb)
 			st.compute = embedding.EmbedderComputeMode(emb)
@@ -1024,7 +1027,10 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 		}
 	}
 
-	result, _ := classifyByEmbedding(emb, anchors, msg.Text)
+	result, _, queryVec := classifyByEmbeddingVec(emb, anchors, msg.Text)
+	if len(queryVec) > 0 {
+		result.QueryVec = append([]float32(nil), queryVec...)
+	}
 	NormalizeDeclaredComposite(&result)
 	applyExecutionAffordances(msg.Text, &result)
 	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
@@ -1063,7 +1069,9 @@ func (u *UnifiedIntentClassifier) storeEmbOnly(key string, res *ClassificationRe
 		})
 		u.embOnlyCount.Store(1)
 	}
-	u.embOnlyCache.Store(key, res)
+	stored := *res
+	stored.QueryVec = nil
+	u.embOnlyCache.Store(key, &stored)
 }
 
 // Ready returns true when Layer 2 anchor embeddings are warmed up.
@@ -1358,7 +1366,12 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 			log.Printf("[UnifiedIntentClassifier] cache store dropped by tombstone: text_len=%d primary=%s layer=%d",
 				len([]rune(text)), result.Primary, result.Layer)
 		} else {
-			u.cache.Store(cacheKey, result)
+			// Do not retain the Layer 2 vector in the long-lived classification
+			// cache (≈4 KB per turn). Live PreResolved still carries QueryVec
+			// for same-turn tool routing.
+			stored := *result
+			stored.QueryVec = nil
+			u.cache.Store(cacheKey, &stored)
 			u.cacheSource.Store(cacheKey, classificationProvenance(result))
 		}
 	}
