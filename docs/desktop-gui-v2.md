@@ -62,6 +62,7 @@ curl -sI -H "Authorization: Bearer $T" \
 | --- | --- |
 | 桌面 | Debian 12 + XFCE(面板、Thunar、xfce4-terminal、Mousepad),`startxfce4` 启动;没有 XFCE 的旧镜像自动回退 fluxbox |
 | 浏览器 | Chromium,CDP 端口经 token gate 暴露;登录态写在每用户 profile 卷里 |
+| 共用浏览器 | 面板/底部 dock 的“网络浏览器”、应用菜单、`xdg-open`/`exo-open`、`x-www-browser` 都进入**同一个**受监管 Chromium(同 profile、同登录态、带 CDP):有窗口就恢复并激活(含最小化窗口),带链接就作为新标签打开;浏览器被关掉/崩溃时只重启浏览器(恢复 CDP 与登录态),不会再起第二套桌面。实现见 `desktop_supervisor.py browser` 与 `/usr/bin/maclaw-browser`、`/etc/chromium.d/zz-maclaw-shared-browser` |
 | 中文输入 | fcitx5 + 拼音,默认输入法列表 `keyboard-us` + `pinyin`,**Ctrl+Space** 切换;`GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx`,`LANG=zh_CN.UTF-8` |
 | 字体 | Noto Sans/Serif CJK SC(fontconfig 默认中文字体),emoji 字体 |
 | 软件安装 | 容器内是 root,可以 `apt-get install`;装到 `/opt`、`/usr/local` 的东西在每用户卷里,重建容器也保留 |
@@ -412,6 +413,10 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
   很慢,在拉完之前打开桌面会返回“still being pulled”。不需要时设 `DESKTOPD_IMAGE_SOURCE=off` 并在主机上构建。
 - **Hub 未设 `MACLAW_DESKTOP_API_TOKEN`**:`/api/v1/desktop-services/*` 全部 401,MaClawSrv 远程截图
   和远程桌面会失败;Hub 管理页不受影响。
+- **旧镜像建出的容器里任务栏浏览器打不开**(“无法执行默认网络浏览器/输入输出错误”):原因是 XFCE 默认浏览器
+  走 `sensible-browser → /usr/bin/chromium`,以 root 且无 `--no-sandbox` 直接退出,即使启动也是另一个无登录、
+  无 CDP 的 profile。已修复:新 supervisor 在每次 `ensure`(打开桌面)时写入共用浏览器配置,所以已有容器只需
+  按正常部署 `docker cp` 新 supervisor,下次打开桌面即生效,无需重建容器;新建容器用重建后的镜像。
 - 截图只截已在运行的 display;桌面没开时返回错误而不是启动桌面。
 - 重建会断开该用户当前的 noVNC/CDP 连接;迁移发生在打开桌面时,首次约 10–30 秒。
 

@@ -16,4 +16,6 @@ RUN apt-get update \
         fonts-noto-cjk chromium-browser) \
     && rm -rf /var/lib/apt/lists/*
 COPY desktop_supervisor.py /desktop_supervisor.py
+# Browser entries join the supervised Chromium (see Dockerfile.v2).
+RUN python3 /desktop_supervisor.py install-browser
 VOLUME ["/desktops"]

@@ -10,6 +10,7 @@ import fcntl
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -122,6 +123,11 @@ def start_session_bus(env, log, display):
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "browser":
+        return open_shared_browser(argv[2:])
+    if len(argv) == 2 and argv[1] == "install-browser":
+        install_browser_integration()
+        return 0
     if len(argv) == 5 and argv[1] == "gate":
         return serve_gate(int(argv[2]), int(argv[3]), argv[4])
     if len(argv) == 4 and argv[1] == "watch":
@@ -193,6 +199,11 @@ def valid_key(key):
 
 
 def ensure(key):
+    try:
+        install_browser_integration()
+    except OSError as exc:
+        # A read-only image keeps its old browser entries; the desktop still opens.
+        print("browser integration skipped: %s" % exc, file=sys.stderr)
     registry = load_registry()
     users = registry.setdefault("users", {})
     entry = users.get(key)
@@ -282,6 +293,81 @@ def desktop_running(key):
     return needle in cmd and b"--type=" not in cmd
 
 
+def desktop_env(display):
+    """The environment every program of this desktop runs with."""
+    user_home = Path("/home/desktop")
+    user_home.mkdir(mode=0o700, exist_ok=True)
+    for path in (
+        user_home / ".config",
+        user_home / ".local" / "share",
+        user_home / ".local" / "bin",
+        user_home / ".cache",
+    ):
+        path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    env = os.environ.copy()
+    env["HOME"] = str(user_home)
+    env["XDG_CONFIG_HOME"] = str(user_home / ".config")
+    env["XDG_DATA_HOME"] = str(user_home / ".local" / "share")
+    env["XDG_CACHE_HOME"] = str(user_home / ".cache")
+    env["PATH"] = str(user_home / ".local" / "bin") + os.pathsep + env.get("PATH", "")
+    env["DISPLAY"] = ":%d" % display
+    return env
+
+
+def browser_argv(profile, chrome_port):
+    """The one browser of this desktop: the agent's CDP and the person's window.
+
+    Every other way to open a browser here (panel launcher, menu, xdg-open,
+    x-www-browser) goes through open_shared_browser, which joins this
+    process with the same --user-data-dir instead of starting a second one.
+    """
+    # No start URL. A blank page would cover the restored tabs, and the
+    # website login lives in this profile.
+    return [
+        browser_bin(),
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--user-data-dir=%s" % profile,
+        "--profile-directory=Default",
+        "--password-store=basic",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-session-crashed-bubble",
+        "--restore-last-session",
+        "--disable-features=TrackingProtection3pcd,ThirdPartyStoragePartitioning",
+        "--remote-debugging-port=%d" % chrome_port,
+        "--remote-allow-origins=*",
+        "--start-maximized",
+    ]
+
+
+def start_browser(profile, env, log, chrome_port):
+    env = dict(env)
+    # /etc/chromium.d/zz-maclaw-shared-browser sends every other chromium
+    # start to open_shared_browser. This is the start it must let through.
+    env[SUPERVISED_BROWSER_ENV] = "1"
+    spawn(browser_argv(profile, chrome_port), env, log)
+    # The launcher pid can exit. Only the process that still has this profile
+    # open is the browser with the website login.
+    wait_for(lambda: browser_pid(profile) and port_open(chrome_port), "chromium profile %s" % profile)
+
+
+def session_alive(pids, display):
+    """True while this desktop's X server and window session still run.
+
+    A person can close the browser window, which ends Chromium but not the
+    desktop. Starting the whole desktop again then would put a second XFCE
+    session (panels, window manager) on the same display.
+    """
+    return (
+        pid_alive(pids.get("xvfb"))
+        and pid_alive(pids.get("fluxbox"))
+        and Path("/tmp/.X11-unix/X%d" % display).exists()
+    )
+
+
 def start_desktop(key, display):
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
@@ -293,24 +379,14 @@ def start_desktop(key, display):
     clear_flush_flag(key)
     release_profile_lock(profile)
     keep_website_login(profile)
-    user_home = Path("/home/desktop")
-    user_home.mkdir(mode=0o700, exist_ok=True)
-    for path in (
-        user_home / ".config",
-        user_home / ".local" / "share",
-        user_home / ".local" / "bin",
-        user_home / ".cache",
-    ):
-        path.mkdir(parents=True, mode=0o700, exist_ok=True)
     log_path = home / "desktop.log"
     log = open(log_path, "ab")
-    env = os.environ.copy()
-    env["HOME"] = str(user_home)
-    env["XDG_CONFIG_HOME"] = str(user_home / ".config")
-    env["XDG_DATA_HOME"] = str(user_home / ".local" / "share")
-    env["XDG_CACHE_HOME"] = str(user_home / ".cache")
-    env["PATH"] = str(user_home / ".local" / "bin") + os.pathsep + env.get("PATH", "")
-    env["DISPLAY"] = ":%d" % display
+    env = desktop_env(display)
+    chrome_port = 18000 + display
+    pids = read_pids(key)
+    if session_alive(pids, display):
+        restart_browser(key, display, profile, env, log, chrome_port, pids)
+        return
     clear_stale_display(display)
     xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
     wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
@@ -332,30 +408,7 @@ def start_desktop(key, display):
     # The pid key stays "fluxbox" so stop_desktop and pids.json written by
     # older supervisors keep the same meaning: the window session.
     flux = spawn(session, env, log)
-    chrome_port = 18000 + display
-    # No start URL. A blank page would cover the restored tabs, and the
-    # website login lives in this profile.
-    spawn([
-        browser_bin(),
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--user-data-dir=%s" % profile,
-        "--profile-directory=Default",
-        "--password-store=basic",
-        "--disable-sync",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-session-crashed-bubble",
-        "--restore-last-session",
-        "--disable-features=TrackingProtection3pcd,ThirdPartyStoragePartitioning",
-        "--remote-debugging-port=%d" % chrome_port,
-        "--remote-allow-origins=*",
-        "--start-maximized",
-    ], env, log)
-    # The launcher pid can exit. Only the process that still has this profile
-    # open is the browser with the website login.
-    wait_for(lambda: browser_pid(profile) and port_open(chrome_port), "chromium profile %s" % profile)
+    start_browser(profile, env, log, chrome_port)
     try:
         restore_page_login(key)
     except (OSError, ValueError, TypeError):
@@ -381,6 +434,25 @@ def start_desktop(key, display):
         if gate is not None:
             pids["vgate"] = gate.pid
     (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+
+
+def restart_browser(key, display, profile, env, log, chrome_port, pids):
+    """Start only the browser on a desktop whose session is still running."""
+    bus = Path("/tmp/.maclaw-dbus-%d" % display)
+    if pid_alive(pids.get("dbus")) and bus.exists():
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
+    if shutil.which("startxfce4"):
+        env.setdefault("XDG_SESSION_TYPE", "x11")
+        env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
+    start_browser(profile, env, log, chrome_port)
+    try:
+        restore_page_login(key)
+    except (OSError, ValueError, TypeError):
+        pass
+    pids["chromium"] = browser_pid(profile)
+    (ROOT / key / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    ensure_vnc(key, display)
+    ensure_proxy(key, display)
 
 
 def release_profile_lock(profile):
@@ -1431,6 +1503,220 @@ def flush_browser_locked(key):
                     return 0
                 mark_flush_signaled(key)
         time.sleep(0.1)
+    return 0
+
+
+SUPERVISED_BROWSER_ENV = "MACLAW_SUPERVISED_BROWSER"
+
+# /usr/bin/chromium (Debian's launcher script) sources /etc/chromium.d/* before
+# it starts the browser. Run as root without --no-sandbox Chromium exits at
+# once, and with its default profile it would not be the agent's browser
+# anyway. This hook sends every chromium start that is not the supervisor's
+# own (panel launcher, application menu, xdg-open, x-www-browser,
+# sensible-browser) to maclaw-browser, which joins the supervised browser.
+CHROMIUM_HOOK = """# MaClaw desktop: written by /desktop_supervisor.py (install-browser).
+# Every chromium start in this desktop joins the supervised browser that the
+# agent drives over CDP: same profile, same login, one window list.
+# The supervisor's own start sets MACLAW_SUPERVISED_BROWSER=1; an explicit
+# --user-data-dir keeps a deliberate separate profile.
+case " $* " in
+  *" --user-data-dir"*) ;;
+  *)
+    if [ -z "${MACLAW_SUPERVISED_BROWSER:-}" ] && [ -n "${DISPLAY:-}" ] && [ -x /usr/bin/maclaw-browser ]; then
+      exec /usr/bin/maclaw-browser "$@"
+    fi
+    ;;
+esac
+"""
+
+SHARED_BROWSER_WRAPPER = """#!/bin/sh
+# MaClaw desktop: open the desktop's one browser (the supervised Chromium the
+# agent uses), focusing its window or opening the given URLs in it.
+# Written by /desktop_supervisor.py (install-browser).
+if [ -f /desktop_supervisor.py ]; then
+  exec python3 /desktop_supervisor.py browser "$@"
+fi
+MACLAW_SUPERVISED_BROWSER=1 exec /usr/bin/chromium --no-sandbox "$@"
+"""
+
+BROWSER_MIME_TYPES = (
+    "text/html",
+    "application/xhtml+xml",
+    "x-scheme-handler/http",
+    "x-scheme-handler/https",
+    "x-scheme-handler/about",
+    "x-scheme-handler/unknown",
+)
+
+
+def write_if_changed(path, text, mode):
+    path = Path(path)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            if (path.stat().st_mode & 0o777) != mode:
+                os.chmod(str(path), mode)
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name("." + path.name + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        os.chmod(str(temporary), mode)
+        os.replace(str(temporary), str(path))
+        return True
+    except OSError:
+        return False
+
+
+def set_ini_value(path, section, key, value):
+    """Set key=value in an ini-style file, keeping every other line."""
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    except OSError:
+        return False
+    out, current, done, seen_section = [], None, False, section is None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if current == section and not done:
+                out.append("%s=%s" % (key, value))
+                done = True
+            current = stripped[1:-1]
+            seen_section = seen_section or current == section
+        elif current == section and stripped.split("=", 1)[0].strip() == key:
+            if not done:
+                out.append("%s=%s" % (key, value))
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        if not seen_section and section is not None:
+            out.append("[%s]" % section)
+        out.append("%s=%s" % (key, value))
+    return write_if_changed(path, "\n".join(out) + "\n", 0o644)
+
+
+def install_browser_integration(root=Path("/")):
+    """Make the desktop's browser entries open the supervised browser.
+
+    Idempotent and best effort: the image build runs it, and ensure() runs it
+    again so containers created from an older image pick it up with the next
+    supervisor copy. maclaw-gui:1 has no XFCE; the XFCE parts are skipped.
+    """
+    root = Path(root)
+    write_if_changed(root / "usr/bin/maclaw-browser", SHARED_BROWSER_WRAPPER, 0o755)
+    if (root / "etc/chromium.d").is_dir() or (root / "usr/bin/chromium").exists():
+        write_if_changed(root / "etc/chromium.d/zz-maclaw-shared-browser", CHROMIUM_HOOK, 0o644)
+    # XFCE "Preferred Applications": the panel's Web Browser launcher and
+    # exo-open/xdg-open use this helper. chromium.desktop runs /usr/bin/chromium,
+    # which the hook above routes to the shared browser.
+    helpers = root / "etc/xdg/xfce4/helpers.rc"
+    if helpers.exists():
+        set_ini_value(helpers, None, "WebBrowser", "chromium")
+    # xdg-mime / xdg-settings and GLib apps.
+    for mimeapps in (root / "etc/xdg/mimeapps.list", root / "usr/share/applications/mimeapps.list"):
+        if not (root / "usr/share/applications/chromium.desktop").exists():
+            break
+        for mime in BROWSER_MIME_TYPES:
+            set_ini_value(mimeapps, "Default Applications", mime, "chromium.desktop")
+
+
+def shared_browser_key(env=None):
+    """The user key whose desktop this process runs on, or ""."""
+    env = os.environ if env is None else env
+    raw = env.get("DISPLAY", "")
+    try:
+        display = int(raw.split(":", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        display = 0
+    users = load_registry().get("users", {})
+    owner = env.get("MACLAW_DESKTOP_KEY", "").strip()
+    if valid_key(owner) and owner in users:
+        return owner
+    for key, entry in users.items():
+        try:
+            if valid_key(key) and display and int(entry.get("display") or 0) == display:
+                return key
+        except (TypeError, ValueError):
+            continue
+    return ""
+
+
+def browser_windows(env):
+    """The shared browser's top-level windows, topmost first.
+
+    Minimized windows count: they are not "visible" to xdotool, yet they are
+    what the person expects the panel launcher to bring back. The window
+    manager's client list tells real windows from Chromium's hidden helpers.
+    """
+    def run(args):
+        return subprocess.run(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=5).stdout.decode("ascii", "ignore")
+
+    chromium = [int(w) for w in run(["xdotool", "search", "--class", "chromium"]).split() if w.isdigit()]
+    try:
+        stacking = [int(w, 16) for w in re.findall(r"0x[0-9a-fA-F]+", run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"]))]
+    except (OSError, subprocess.SubprocessError):
+        stacking = []
+    if stacking:
+        return [w for w in reversed(stacking) if w in chromium]
+    return [int(w) for w in run(["xdotool", "search", "--onlyvisible", "--class", "chromium"]).split() if w.isdigit()]
+
+
+def activate_browser_window(display, wait_seconds=3.0):
+    """Raise the shared browser's window. False when there is none to raise."""
+    if not shutil.which("xdotool"):
+        return False
+    env = os.environ.copy()
+    env["DISPLAY"] = ":%d" % display
+    deadline = time.time() + wait_seconds
+    while True:
+        try:
+            windows = browser_windows(env)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        for window in windows:
+            try:
+                done = subprocess.run(["xdotool", "windowactivate", str(window)], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if done.returncode == 0:
+                return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.3)
+
+
+def open_shared_browser(args):
+    """Panel launcher, menu, xdg-open: use the desktop's one browser.
+
+    The supervised Chromium has the agent's CDP port and the website login.
+    When it runs, a start with the same --user-data-dir only hands the URLs
+    to it (Chromium's process singleton) and exits; with no URL its window is
+    raised. When the person closed it, it is started again with the
+    supervisor's flags, so CDP comes back too.
+    """
+    key = shared_browser_key()
+    if not key:
+        print("maclaw-browser: this display has no MaClaw desktop", file=sys.stderr)
+        return 1
+    entry = load_registry().get("users", {}).get(key) or {}
+    display = int(entry.get("display") or DISPLAY_MIN)
+    profile = ROOT / key / "profile"
+    started = False
+    if not browser_pid(profile):
+        with desktop_lock():
+            ensure(key)
+        started = True
+    urls = [arg for arg in args if arg and not arg.startswith("-")]
+    if not urls and activate_browser_window(display, 5.0 if started else 1.0):
+        return 0
+    if started and not urls:
+        return 0
+    env = os.environ.copy()
+    env[SUPERVISED_BROWSER_ENV] = "1"
+    argv = [browser_bin(), "--no-sandbox", "--user-data-dir=%s" % profile, "--profile-directory=Default"] + list(args)
+    os.execvpe(argv[0], argv, env)
     return 0
 
 

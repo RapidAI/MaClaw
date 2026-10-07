@@ -92,6 +92,12 @@ jobs:
             test -f /etc/xdg/fcitx5/profile && grep -q "DefaultIM=pinyin" /etc/xdg/fcitx5/profile
             fc-list :lang=zh | grep -qi "Noto Sans CJK"
             python3 -m py_compile /desktop_supervisor.py
+            # Every browser entry (panel, menu, xdg-open) joins the supervised Chromium.
+            test -x /usr/bin/maclaw-browser && grep -q "desktop_supervisor.py browser" /usr/bin/maclaw-browser
+            grep -q "exec /usr/bin/maclaw-browser" /etc/chromium.d/zz-maclaw-shared-browser
+            grep -qx "WebBrowser=chromium" /etc/xdg/xfce4/helpers.rc
+            grep -qx "x-scheme-handler/https=chromium.desktop" /etc/xdg/mimeapps.list
+            test "$(MACLAW_SUPERVISED_BROWSER=1 DISPLAY=:99 sh -c ". /etc/chromium.d/zz-maclaw-shared-browser; echo through")" = through
             echo "contract ok"'
           test "$(docker image inspect --format '{{.Config.User}}' "$LOCAL_TAG")" = root
           docker image inspect --format '{{json .Config.Volumes}} {{json .Config.ExposedPorts}}' "$LOCAL_TAG"

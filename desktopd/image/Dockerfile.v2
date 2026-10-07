@@ -77,6 +77,14 @@ RUN printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Fcitx 5' 'Exec=fcit
       'X-GNOME-Autostart-Phase=Applications' > /etc/xdg/autostart/org.fcitx.Fcitx5.desktop \
  && rm -f /etc/xdg/autostart/xscreensaver.desktop
 COPY desktop_supervisor.py /desktop_supervisor.py
+# One browser per desktop: the panel's Web Browser launcher, the menu entry,
+# xdg-open and x-www-browser all join the supervised Chromium the agent uses
+# (same profile and login) instead of starting a root Chromium that exits.
+# The supervisor writes the same files again on every ensure, so containers
+# made from an older image pick them up with a supervisor update.
+RUN python3 /desktop_supervisor.py install-browser \
+ && test -x /usr/bin/maclaw-browser && test -f /etc/chromium.d/zz-maclaw-shared-browser \
+ && grep -qx 'WebBrowser=chromium' /etc/xdg/xfce4/helpers.rc
 USER root
 VOLUME ["/desktops"]
 EXPOSE 6080 19020
