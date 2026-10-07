@@ -22,11 +22,11 @@ func main() {
 	model := flag.String("model", "", "GGUF path")
 	in := flag.String("in", "", "input jsonl")
 	out := flag.String("out", "", "output jsonl")
-	roleS := flag.String("role", "none", "none|query|document|classification|similarity")
+	roleS := flag.String("role", "none", "none|query|document|classification|similarity|qa")
 	batch := flag.Int("batch", 32, "batch size")
 	flag.Parse()
 	role, ok := map[string]embedding.Role{"none": embedding.RoleNone, "query": embedding.RoleQuery, "document": embedding.RoleDocument,
-		"classification": embedding.RoleClassification, "similarity": embedding.RoleSimilarity}[*roleS]
+		"classification": embedding.RoleClassification, "similarity": embedding.RoleSimilarity, "qa": embedding.RoleQuestionAnswering}[*roleS]
 	if !ok {
 		fmt.Fprintln(os.Stderr, "bad role", *roleS)
 		os.Exit(2)
