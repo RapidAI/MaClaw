@@ -112,10 +112,42 @@ func modelFingerprint(modelPath string) string {
 func toolEmbeddingCacheModelID(emb embedding.Embedder) string {
 	if m, ok := emb.(interface{ ModelID() string }); ok && m != nil {
 		if id := strings.TrimSpace(m.ModelID()); id != "" {
+			if r := toolDocRole(emb); r != embedding.RoleNone {
+				id += "|tooldoc-role=classification"
+			}
 			return "embedder:" + id
 		}
 	}
 	return modelFingerprint(embedding.DefaultModelPath())
+}
+
+// ToolDocRoleEnv: "none" rolls tool-description embedding back to plain
+// Embed() for Qwen3 (default: RoleClassification, see toolDocRole).
+const ToolDocRoleEnv = "MACLAW_TOOL_DOC_ROLE"
+
+// toolDocRole is the role Track A embeds tool descriptions with. For Qwen3
+// the query side already reuses the intent L2 RoleClassification vector;
+// embedding the descriptions with the same instruct (symmetric) lifted the
+// Qwen3 Track A R@20 from 0.901 to 0.935 (alpha 0.6) on old 262, 0.840 to
+// 0.893 on the independent 644, with the config chosen on tool_eval train 668
+// only (replacement audit, REPORT §20). Gemma keeps plain Embed(): on the
+// same dev set its best doc role was none.
+func toolDocRole(emb embedding.Embedder) embedding.Role {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(ToolDocRoleEnv)), "none") {
+		return embedding.RoleNone
+	}
+	if embedding.EmbedderFamily(emb) == embedding.FamilyQwen3 {
+		return embedding.RoleClassification
+	}
+	return embedding.RoleNone
+}
+
+// embedDoc embeds one tool description with toolDocRole.
+func (c *ToolEmbeddingCache) embedDoc(text string) ([]float32, error) {
+	if r := toolDocRole(c.embedder); r != embedding.RoleNone {
+		return embedding.EmbedAs(c.embedder, text, r)
+	}
+	return c.embedder.Embed(text)
 }
 
 // NewToolEmbeddingCache creates a new ToolEmbeddingCache and attempts to
@@ -377,7 +409,7 @@ func (c *ToolEmbeddingCache) Get(text string) ([]float32, error) {
 	}
 	c.mu.RUnlock()
 
-	vec, err := c.embedder.Embed(text)
+	vec, err := c.embedDoc(text)
 	if err != nil {
 		return nil, err
 	}
@@ -427,6 +459,7 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 
 	// Try concurrent path if embedder supports it and there are multiple items.
 	ce, hasConcurrent := c.embedder.(ConcurrentEmbedder)
+	hasConcurrent = hasConcurrent && toolDocRole(c.embedder) == embedding.RoleNone
 	log.Printf("[ToolEmbeddingCache] GetBatch: total=%d cached=%d missing=%d hasConcurrent=%v", len(texts), len(texts)-len(missing), len(missing), hasConcurrent)
 	if hasConcurrent && len(missing) > 1 {
 		type embedResult struct {
@@ -483,7 +516,7 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 	// Sequential fallback.
 	computed := false
 	for _, m := range missing {
-		vec, err := c.embedder.Embed(m.text)
+		vec, err := c.embedDoc(m.text)
 		if err != nil {
 			result[m.toolID] = nil
 			continue

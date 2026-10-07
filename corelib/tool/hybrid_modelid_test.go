@@ -24,7 +24,7 @@ func TestToolEmbeddingCacheKeysOnEmbedderModelID(t *testing.T) {
 
 	q := stubModelIDEmbedder{id: "Qwen3 Embedding 0.6b:1024:prompt-v1:qwen3-instruct-v1"}
 	c := NewToolEmbeddingCache(q)
-	if c.modelID != "embedder:"+q.id {
+	if c.modelID != "embedder:"+q.id+"|tooldoc-role=classification" { // Qwen3 tool docs embed with RoleClassification (REPORT §20)
 		t.Fatalf("modelID = %q, want embedder ModelID", c.modelID)
 	}
 	c.mu.Lock()
