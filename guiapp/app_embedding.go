@@ -47,8 +47,8 @@ func (a *App) initEarlyClassifier() {
 		// Create UIC with noop embedder; no local keyword fallback is enabled.
 		uic := intent.New(intent.Config{
 			Embedder:       embedding.NoopEmbedder{},
-			LLMFunc:        a.buildUICLLMFunc(),
-			LLMContextFunc: a.buildUICLLMContextFunc(),
+			LLMFunc:        a.intentL3Func(),
+			LLMContextFunc: a.intentL3ContextFunc(),
 			LLMTimeout:     30 * time.Second,
 			// 宁慢勿乱 (2026-09-18): a 12s tree deadline turned every slow-hub
 			// turn into a degraded guess — missing tools, rescue chains, wrong
@@ -95,17 +95,15 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 		log.Println("[startup] embedding sync: skipped (cannot determine home directory)")
 		return
 	}
-	if _, err := os.Stat(modelPath); err != nil {
-		log.Printf("[startup] embedding sync: skipped (model file check: %v)", err)
+	if !embedding.PreferredModelFileExists(modelPath) {
+		log.Printf("[startup] embedding sync: skipped (no Qwen3 or Gemma model file next to %s)", modelPath)
 		return
 	}
 
 	t0 := time.Now()
 	log.Printf("[startup] embedding sync: loading model %s", modelPath)
 
-	emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-		return embedding.NewGemmaEmbedder(path, embedding.DefaultEmbeddingDim)
-	})
+	emb, err := a.sharedEmbeddingEmbedder(modelPath, loadAppEmbedder(false))
 	if err != nil {
 		log.Printf("[startup] embedding sync: load failed: %v (falling back to async)", err)
 		return
@@ -116,6 +114,7 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 
 	// Wire to UIC immediately (creates UIC if not yet created via classifierOnce).
 	a.initEarlyClassifier()
+	a.attachLocalL3(emb)
 	a.unifiedClassifier.SetEmbedder(emb)
 	// The interrupt path needs the same runtime even before the broader async
 	// vector-search wiring completes. Otherwise a task submitted during startup
@@ -176,7 +175,14 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 	// Model file check.
 	dir, _ := embeddingModelsDir()
 	if dir != "" {
+		// Report the file the single-model factory prefers (Qwen3 unless
+		// pinned to Gemma or missing), so a Qwen3-only install shows green.
 		p := filepath.Join(dir, embeddingModelFilename)
+		if q := embedding.PreferredQwen3Path(p); !embedding.GemmaPinned() && q != "" {
+			if fi, err := os.Stat(q); err == nil && fi.Size() > 0 {
+				p = q
+			}
+		}
 		status.ModelPath = p
 		if fi, err := os.Stat(p); err == nil {
 			status.ModelExists = true
@@ -221,9 +227,7 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 
 	if enabled {
 		modelPath := embedding.DefaultModelPath()
-		emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-			return embedding.NewDefaultEmbedder(path), nil
-		})
+		emb, err := a.sharedEmbeddingEmbedder(modelPath, loadAppEmbedder(false))
 		if err != nil {
 			return err
 		}
@@ -535,18 +539,9 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	// Ensure infrastructure is ready before enabling.
 	a.ensureRemoteInfra()
 
-	emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-		emb, err := embedding.NewGemmaEmbedder(path, embedding.DefaultEmbeddingDim)
-		if err != nil {
-			return nil, err
-		}
-		vec, err := emb.Embed("test")
-		if err != nil || len(vec) == 0 {
-			emb.Close()
-			return nil, fmt.Errorf("smoke test failed: err=%v len=%d", err, len(vec))
-		}
-		return emb, nil
-	})
+	// Smoke-tested load: Qwen3 first (a failed Qwen3 smoke embed falls back
+	// to the Gemma file just downloaded), never both.
+	emb, err := a.sharedEmbeddingEmbedder(modelPath, loadAppEmbedder(true))
 	if err != nil {
 		fmt.Printf("[embedding] verification failed: %v\n", err)
 		return false
@@ -637,11 +632,12 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// Guarantee: classifierOnce.Do ensures the UIC exists before we reach here,
 	// even if this goroutine races ahead of the main startup sequence.
 	a.initEarlyClassifier() // idempotent via sync.Once
+	a.attachLocalL3(emb)
 	if !reusedIntentEmbedder {
 		a.unifiedClassifier.SetEmbedder(emb)
 	}
-	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
-	a.unifiedClassifier.SetLLMContextFunc(a.buildUICLLMContextFunc())
+	a.unifiedClassifier.SetLLMFunc(a.intentL3Func())
+	a.unifiedClassifier.SetLLMContextFunc(a.intentL3ContextFunc())
 	// Ensure toolRouter has the UIC reference. initEarlyClassifier may have
 	// skipped this wiring if toolRouter was nil at that time (e.g., startup
 	// without Hub credentials where ensureRemoteInfra runs later).
@@ -725,9 +721,10 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	a.embeddingMu.Unlock()
 	t0 := time.Now()
 	a.initEarlyClassifier()
+	a.attachLocalL3(emb)
 	a.unifiedClassifier.SetEmbedder(emb)
-	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
-	a.unifiedClassifier.SetLLMContextFunc(a.buildUICLLMContextFunc())
+	a.unifiedClassifier.SetLLMFunc(a.intentL3Func())
+	a.unifiedClassifier.SetLLMContextFunc(a.intentL3ContextFunc())
 	// Intent-only activation is also useful for interruption relevance. It is
 	// deliberately available when vector search is off, so this must not wait for
 	// activateEmbedderAsync (which correctly exits in that configuration).
@@ -752,6 +749,7 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 		if strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath {
 			return a.intentEmbedder, nil
 		}
+		a.localL3Runtime().Detach()
 		a.intentEmbedder.Close()
 		a.intentEmbedder = nil
 		a.intentEmbedderPath = ""

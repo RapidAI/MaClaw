@@ -53,6 +53,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/intent/locall3"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -257,6 +258,8 @@ type App struct {
 	embeddingMu              sync.Mutex
 	intentEmbedder           embedding.Embedder // local model held for UIC and reused when vector search is enabled
 	intentEmbedderPath       string             // absolute/loader-provided path for the shared local embedding runtime
+	localL3Once              sync.Once          // guards localL3
+	localL3                  *locall3.Runtime   // local intent L3 (head matching intentEmbedder); see app_local_intent.go
 	usageTracker             *tool.UsageTracker
 	goalContinuation         *GoalContinuationEngine
 	experienceEvents         *lifecycle.EventTrail
@@ -1103,9 +1106,7 @@ func (a *App) ensureMemoryStore() {
 				}
 				a.logMemorySnapshot("ensureMemoryStore:embedding-load")
 				modelPath := embedding.DefaultModelPath()
-				emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-					return embedding.NewDefaultEmbedder(path), nil
-				})
+				emb, err := a.sharedEmbeddingEmbedder(modelPath, loadAppEmbedder(false))
 				if err != nil {
 					log.Printf("[ensureMemoryStore] embedding model load failed: %v", err)
 					return
