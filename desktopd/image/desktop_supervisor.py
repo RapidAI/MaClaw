@@ -383,6 +383,7 @@ def start_browser(profile, env, log, chrome_port):
     # /etc/chromium.d/zz-maclaw-shared-browser sends every other chromium
     # start to open_shared_browser. This is the start it must let through.
     env[SUPERVISED_BROWSER_ENV] = "1"
+    log_signin(Path(profile).parent.name, "start: before browser", browser=False)
     spawn(browser_argv(profile, chrome_port), env, log)
     # The launcher pid can exit. Only the process that still has this profile
     # open is the browser with the website login.
@@ -547,6 +548,15 @@ def keep_website_login(profile):
     defaults["cookies"] = 1
     profile_prefs["default_content_setting_values"] = defaults
     data["profile"] = profile_prefs
+    # "Allow Chromium sign-in" off (the policy written by install-browser does
+    # the same where /etc is writable): with it on, each start signed the
+    # person out of Google websites.
+    signin = data.get("signin")
+    if not isinstance(signin, dict):
+        signin = {}
+    signin["allowed"] = False
+    signin["allowed_on_next_startup"] = False
+    data["signin"] = signin
     tmp = pref.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -598,6 +608,67 @@ def flush_claim(key):
             except ValueError:
                 pid = 0
     return pid, signaled
+
+
+# Google keeps a sign-in in these cookies. Only how many are present is
+# logged, never a value or a host, so a stop/start can be checked for whether
+# the sign-in reached the disk and came back.
+GOOGLE_SIGNIN_COOKIES = ("SID", "__Secure-1PSID", "__Secure-3PSID", "SAPISID", "__Secure-1PSIDTS", "__Secure-3PSIDTS")
+
+
+def google_signin_on_disk(key):
+    """How many Google sign-in cookies the profile's cookie file holds, or -1."""
+    try:
+        import sqlite3
+        db = ROOT / key / "profile" / "Default" / "Cookies"
+        if not db.exists():
+            return 0
+        # The running browser holds the file locked; immutable reads it anyway.
+        conn = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(str(db)), uri=True, timeout=2)
+        try:
+            marks = ",".join("?" * len(GOOGLE_SIGNIN_COOKIES))
+            row = conn.execute(
+                "select count(*) from cookies where host_key in ('.google.com', 'google.com') and name in (%s)" % marks,
+                GOOGLE_SIGNIN_COOKIES,
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row[0])
+    except Exception:
+        return -1
+
+
+def google_signin_in_browser(key):
+    """How many Google sign-in cookies the running browser has, or -1."""
+    try:
+        version = http_json("127.0.0.1", chrome_debug_port(key), "/json/version")
+        with cdp_connection(version.get("webSocketDebuggerUrl") or "") as conn:
+            result = conn.call("Storage.getCookies", {})
+        cookies = result.get("cookies") if isinstance(result, dict) else None
+        if not isinstance(cookies, list):
+            return -1
+        return sum(
+            1 for c in cookies
+            if isinstance(c, dict) and c.get("name") in GOOGLE_SIGNIN_COOKIES
+            and str(c.get("domain") or "").lstrip(".") == "google.com"
+        )
+    except Exception:
+        return -1
+
+
+def log_signin(key, stage, browser=True):
+    """One desktop.log line with sign-in cookie counts (no values, no hosts)."""
+    line = "%s [maclaw] %s: google sign-in cookies browser=%s disk=%s\n" % (
+        time.strftime("%Y-%m-%d %H:%M:%S"),
+        stage,
+        google_signin_in_browser(key) if browser else "-",
+        google_signin_on_disk(key),
+    )
+    try:
+        with open(ROOT / key / "desktop.log", "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 def mark_flush_signaled(key):
@@ -1524,6 +1595,7 @@ def flush_browser_locked(key):
         # Write them into this profile first, then let the browser exit.
         persist_website_login(key)
         capture_page_login(key)
+        log_signin(key, "stop: before quit")
         mark_flush_signaled(key)
         if not quit_browser(key, pid, profile):
             clear_flush_flag(key)
@@ -1531,6 +1603,8 @@ def flush_browser_locked(key):
     for _ in range(150):
         if not browser_pid(profile) and not pid_alive(pid):
             clear_flush_flag(key)
+            if owned:
+                log_signin(key, "stop: browser exited", browser=False)
             return 0
         # The first flush died before it could signal. This stop still has
         # to write the website login into the same profile.
@@ -1621,6 +1695,8 @@ fi
 MACLAW_SUPERVISED_BROWSER=1 exec /usr/bin/chromium --no-sandbox "$@"
 """
 
+BROWSER_SIGNIN_POLICY = '{"BrowserSignin": 0}\n'
+
 BROWSER_MIME_TYPES = (
     "text/html",
     "application/xhtml+xml",
@@ -1688,6 +1764,13 @@ def install_browser_integration(root=Path("/")):
     write_if_changed(root / "usr/bin/maclaw-browser", SHARED_BROWSER_WRAPPER, 0o755)
     if (root / "etc/chromium.d").is_dir() or (root / "usr/bin/chromium").exists():
         write_if_changed(root / "etc/chromium.d/zz-maclaw-shared-browser", CHROMIUM_HOOK, 0o644)
+        # Chromium without Google's API keys still offers "Allow Chromium
+        # sign-in". With it on, every browser start signs the person out of
+        # Google websites (Gmail, YouTube, accounts.google.com show "Signed
+        # out") although the cookies were kept; other sites are not affected.
+        # Turning browser sign-in off keeps the website login. Logging in to
+        # Google websites still works.
+        write_if_changed(root / "etc/chromium/policies/managed/maclaw-browser-signin.json", BROWSER_SIGNIN_POLICY, 0o644)
     # XFCE "Preferred Applications": the panel's Web Browser launcher and
     # exo-open/xdg-open use this helper. chromium.desktop runs /usr/bin/chromium,
     # which the hook above routes to the shared browser.
@@ -2150,7 +2233,13 @@ def supervisor_code():
 def watch_vnc(key, display):
     if not valid_key(key):
         return 2
+    started = time.time()
+    checks = [20, 90]
     while desktop_running(key):
+        # Whether a Google sign-in that came back from disk is still there
+        # once the restored pages have talked to Google.
+        if checks and time.time() - started >= checks[0]:
+            log_signin(key, "running %ds" % checks.pop(0))
         lock_file = open(ROOT / "lock", "a", encoding="utf-8")
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX)

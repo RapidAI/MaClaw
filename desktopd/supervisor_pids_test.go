@@ -113,3 +113,35 @@ print(sup.local_cdp_ws(url) == "ws://127.0.0.1:%d/devtools/browser/x" % port)
 		t.Fatalf("CDP websocket URL lost its port: %s", out)
 	}
 }
+
+func TestGoogleSignInCountOnDiskOnlyCountsSignInCookies(t *testing.T) {
+	out := runSupervisorPython(t, `
+import sqlite3
+key = "ab" * 8
+d = sup.ROOT / key / "profile" / "Default"
+d.mkdir(parents=True)
+c = sqlite3.connect(str(d / "Cookies"))
+c.execute("create table cookies (host_key text, name text, encrypted_value blob)")
+rows = [(".google.com", "SID"), (".google.com", "__Secure-1PSIDTS"), (".google.com", "NID"), ("accounts.google.com", "LSID"), (".example.com", "SID")]
+c.executemany("insert into cookies values (?, ?, x'763130')", rows)
+c.commit(); c.close()
+print(sup.google_signin_on_disk(key), sup.google_signin_on_disk("cd" * 8))
+`)
+	if out != "2 0" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestBrowserStartTurnsOffBrowserSignIn(t *testing.T) {
+	out := runSupervisorPython(t, `
+prof = tmp / "profile"
+(prof / "Default").mkdir(parents=True)
+(prof / "Default" / "Preferences").write_text(json.dumps({"signin": {"allowed": True}, "session": {"restore_on_startup": 4}}))
+sup.keep_website_login(prof)
+d = json.loads((prof / "Default" / "Preferences").read_text())
+print(d["signin"]["allowed"], d["signin"]["allowed_on_next_startup"], d["session"]["restore_on_startup"])
+`)
+	if out != "False False 1" {
+		t.Fatalf("got %q", out)
+	}
+}

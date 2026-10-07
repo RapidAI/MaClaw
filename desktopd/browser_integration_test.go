@@ -49,7 +49,7 @@ root = tmp / "rootfs"
 (root / "etc/xdg/xfce4/helpers.rc").write_text("# comment\nWebBrowser=debian-sensible-browser\nMailReader=thunderbird\n")
 (root / "etc/xdg/mimeapps.list").write_text("[Added Associations]\ntext/plain=mousepad.desktop\n[Default Applications]\ntext/html=firefox.desktop\n")
 sup.install_browser_integration(root)
-first = {p: (root / p).read_text() for p in ("usr/bin/maclaw-browser", "etc/chromium.d/zz-maclaw-shared-browser", "etc/xdg/xfce4/helpers.rc", "etc/xdg/mimeapps.list", "usr/share/applications/mimeapps.list")}
+first = {p: (root / p).read_text() for p in ("usr/bin/maclaw-browser", "etc/chromium.d/zz-maclaw-shared-browser", "etc/xdg/xfce4/helpers.rc", "etc/xdg/mimeapps.list", "usr/share/applications/mimeapps.list", "etc/chromium/policies/managed/maclaw-browser-signin.json")}
 sup.install_browser_integration(root)
 again = {p: (root / p).read_text() for p in first}
 print(json.dumps({"same": first == again, "files": first, "mode": oct((root / "usr/bin/maclaw-browser").stat().st_mode & 0o777)}))
@@ -64,6 +64,9 @@ print(json.dumps({"same": first == again, "files": first, "mode": oct((root / "u
 		`text/plain=mousepad.desktop`,
 		`[Default Applications]\ntext/html=chromium.desktop`,
 		`x-scheme-handler/https=chromium.desktop`,
+		// Browser sign-in off: with it on, Chromium without Google's API
+		// keys signed the person out of Google websites on every start.
+		`{\"BrowserSignin\": 0}`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in %s", want, out)
@@ -81,7 +84,7 @@ root = tmp / "rootfs"
 sup.install_browser_integration(root)
 print(sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()))
 `)
-	if out != "['etc/chromium.d/zz-maclaw-shared-browser', 'usr/bin/maclaw-browser']" {
+	if out != "['etc/chromium.d/zz-maclaw-shared-browser', 'etc/chromium/policies/managed/maclaw-browser-signin.json', 'usr/bin/maclaw-browser']" {
 		t.Fatalf("files = %s", out)
 	}
 }

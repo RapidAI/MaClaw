@@ -446,6 +446,14 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
   按命令行认领容器里实际在跑的桌面进程,`pids.json` 带容器启动标记(重启前的记录作废)、启动中逐步写入,
   watcher 回收僵尸进程,部署新 supervisor 后旧 watcher 在下次打开时被替换。已在运行的容器 `docker cp` 新
   supervisor 后,下次打开桌面(无需停止)即收敛。
+- **停止再打开后 Google 网站显示已退出,其他网站仍登录**:Hub 的停止路径是优雅的(supervisor `flush` →
+  CDP `Browser.close` → `exit_type` Normal → docker stop),cookie 都在盘上。原因是 Chromium 的
+  “允许 Chromium 登录”(`signin.allowed`):没有 Google API key 的 Linux 构建开着它时,每次浏览器启动都会让
+  Google 网站登出。已修复:`install-browser`/`ensure` 写入托管策略
+  `/etc/chromium/policies/managed/maclaw-browser-signin.json`(`{"BrowserSignin": 0}`),supervisor 启动浏览器前
+  把 Preferences 的 `signin.allowed`/`allowed_on_next_startup` 设为 false。下一次浏览器启动生效,此后需重新
+  登录 Google 一次。每次停止/启动在 `desktop.log` 记录 Google 登录 cookie 的数量
+  (`[maclaw] stop: before quit: google sign-in cookies browser=N disk=M`,只有数量)便于排查。
 - 截图只截已在运行的 display;桌面没开时返回错误而不是启动桌面。
 - 重建会断开该用户当前的 noVNC/CDP 连接;迁移发生在打开桌面时,首次约 10–30 秒。
 
