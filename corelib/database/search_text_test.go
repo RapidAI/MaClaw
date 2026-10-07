@@ -17,8 +17,8 @@ func TestProfileSearchTokensOmitsSecretsAndDisabled(t *testing.T) {
 			Database:       "mysql",
 			Username:       "root",
 			SecretRef:      "keyring://maclaw/database/mysql-192-168-1-242",
-			Password:       "sunion123",
-			DSN:            "root:sunion123@tcp(192.168.1.242:3306)/mysql",
+			Password:       "Dummy_Pw2026",
+			DSN:            "root:Dummy_Pw2026@tcp(192.168.1.242:3306)/mysql",
 			DefaultSchema:  "rapidbi",
 			AllowedSchemas: []string{"rapidbi", "mysql"},
 		},
@@ -35,7 +35,7 @@ func TestProfileSearchTokensOmitsSecretsAndDisabled(t *testing.T) {
 			t.Fatalf("tokens %q missing %q", joined, want)
 		}
 	}
-	for _, blocked := range []string{"sunion123", "keyring://", "root:sunion123", "should-omit", "10.0.0.1", "root", "3306"} {
+	for _, blocked := range []string{"Dummy_Pw2026", "keyring://", "root:Dummy_Pw2026", "should-omit", "10.0.0.1", "root", "3306"} {
 		if strings.Contains(joined, blocked) {
 			t.Fatalf("tokens leaked %q: %q", blocked, joined)
 		}

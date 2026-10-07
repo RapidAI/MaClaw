@@ -138,7 +138,7 @@ Useful modes:
 The script defaults to:
 
 - SSH user: `root`
-- SSH password: `sunion123` when `REMOTE_PASS` is not set
+- SSH password: prompted at runtime when `REMOTE_PASS` is not set (never write it into the repository)
 - 3 HA nodes: `hubs.mypapers.top`, `hubs.maclaw.top`, `hubs2.maclaw.top`
 
 After deployment, you can manually verify again with:

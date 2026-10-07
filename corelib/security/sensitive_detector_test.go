@@ -90,7 +90,7 @@ func TestSensitiveDetector_RedactRemovesSensitive(t *testing.T) {
 // hostname while removing the password.
 func TestSensitiveDetector_IncidentPayload(t *testing.T) {
 	d := NewSensitiveDetector()
-	incident := "将以下信息保存于知识库：驱网服务器 www.driverdevelop.com root sunion123"
+	incident := "将以下信息保存于知识库：驱网服务器 www.driverdevelop.com root Dummy_Pw2026"
 	matches := d.Detect(incident)
 	if len(matches) == 0 {
 		t.Fatalf("Detect(%q) = empty, want a password match", incident)
@@ -105,7 +105,7 @@ func TestSensitiveDetector_IncidentPayload(t *testing.T) {
 		t.Fatalf("expected user_password_pair match, got %v", matches)
 	}
 	redacted := d.Redact(incident)
-	if strings.Contains(redacted, "sunion123") {
+	if strings.Contains(redacted, "Dummy_Pw2026") {
 		t.Fatalf("redacted text still contains the password: %q", redacted)
 	}
 	if !strings.Contains(redacted, "www.driverdevelop.com") {
@@ -125,7 +125,7 @@ func TestSensitiveDetector_ChineseCredentialForms(t *testing.T) {
 		"访问密钥：AKIAIOSFODNN7EXAMPLE",
 		"数据库密码是 Sunion@2024",
 		"用户名 admin 密码 P@ssw0rd!",
-		"服务器 192.168.1.10，root 账户密码：sunion123",
+		"服务器 192.168.1.10，root 账户密码：Dummy_Pw2026",
 	} {
 		if matches := d.Detect(input); len(matches) == 0 {
 			t.Errorf("Detect(%q) = empty, want a credential match", input)
@@ -136,7 +136,7 @@ func TestSensitiveDetector_ChineseCredentialForms(t *testing.T) {
 func TestSensitiveDetector_UserPasswordPairs(t *testing.T) {
 	d := NewSensitiveDetector()
 	for _, input := range []string{
-		"root sunion123",
+		"root Dummy_Pw2026",
 		"login as admin Passw0rd!",
 		"ssh ubuntu deploy@2024",
 		"mysql -u root secret99",

@@ -294,7 +294,7 @@ func TestImageSourceProjectionsRemovePathBearingSourceModels(t *testing.T) {
 func TestBestContentText_CardPrefersClaim(t *testing.T) {
 	r := SearchResult{
 		ResultType: "card",
-		Claim:      "api2 服务器: api2.maclaw.top, 用户名 root, 密码 sunion123",
+		Claim:      "api2 服务器: api2.maclaw.top, 用户名 root, 密码 Dummy_Pw2026",
 		Summary:    "api2 服务器信息",
 		Snippet:    "api2...服务器",
 	}
@@ -347,10 +347,10 @@ func TestBestContentText_FactFallsToTriple(t *testing.T) {
 		ResultType: "fact",
 		Subject:    "api2",
 		Predicate:  "密码是",
-		Object:     "sunion123",
+		Object:     "Dummy_Pw2026",
 	}
 	got := BestContentText(r)
-	expected := "api2 密码是 sunion123"
+	expected := "api2 密码是 Dummy_Pw2026"
 	if got != expected {
 		t.Fatalf("fact with only triple: expected %q, got %q", expected, got)
 	}
@@ -405,7 +405,7 @@ func TestBestContentText_SnippetNotUsedWhenClaimAvailableForCard(t *testing.T) {
 	// This is the exact bug scenario: FTS snippet is 14 chars, Claim has full content.
 	r := SearchResult{
 		ResultType: "card",
-		Claim:      "api1 服务器: api1.maclaw.top, 用户名 root, 密码 sunion123\napi2 服务器: api2.maclaw.top, 用户名 root, 密码 sunion123",
+		Claim:      "api1 服务器: api1.maclaw.top, 用户名 root, 密码 Dummy_Pw2026\napi2 服务器: api2.maclaw.top, 用户名 root, 密码 Dummy_Pw2026",
 		Snippet:    "api1/api2 服务器", // 14 chars — the bug would return this instead of full Claim
 	}
 	got := BestContentText(r)

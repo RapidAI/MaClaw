@@ -15,8 +15,8 @@ func TestRecallDynamic_APIServerVsGPUServer(t *testing.T) {
 	// GPU server entry — high access count (simulating real data)
 	gpuEntry := Entry{
 		ID:          "gpu-1",
-		Content:     "GPU服务器→地址:home.rapidai.tech;端口:44;用户:znsoft;密码:sunion123;用途:实验/训练/推理等GPU计算;注意:GPU模型加载慢，勿因日志未刷新判失败，需查GPU使用+进程状态确认",
-		CompactForm: "GPU服务器→地址:home.rapidai.tech;端口:44;用户:znsoft;密码:sunion123;用途:实验/训练/推理等GPU计算;注意:GPU模型加载慢，勿因日志未刷新判失败，需查GPU使用+进程状态确认",
+		Content:     "GPU服务器→地址:home.rapidai.tech;端口:44;用户:znsoft;密码:Dummy_Pw2026;用途:实验/训练/推理等GPU计算;注意:GPU模型加载慢，勿因日志未刷新判失败，需查GPU使用+进程状态确认",
+		CompactForm: "GPU服务器→地址:home.rapidai.tech;端口:44;用户:znsoft;密码:Dummy_Pw2026;用途:实验/训练/推理等GPU计算;注意:GPU模型加载慢，勿因日志未刷新判失败，需查GPU使用+进程状态确认",
 		Category:    CategoryProjectKnowledge,
 		Tags:        []string{"desktop-user", "extracted", "gpu-server", "infrastructure", "ssh"},
 		AccessCount: 104,
@@ -27,7 +27,7 @@ func TestRecallDynamic_APIServerVsGPUServer(t *testing.T) {
 	// API server entry — low access count
 	apiEntry := Entry{
 		ID:          "api-1",
-		Content:     "API服务器→地址:api.rapidai.tech;端口:22;用户:root;密码:sunion123;主机名:znsoftvps4;配置:Intel Xeon E5-2697 v2 10核/15GB内存/220GB磁盘;用途:API网关服务",
+		Content:     "API服务器→地址:api.rapidai.tech;端口:22;用户:root;密码:Dummy_Pw2026;主机名:znsoftvps4;配置:Intel Xeon E5-2697 v2 10核/15GB内存/220GB磁盘;用途:API网关服务",
 		Category:    CategoryProjectKnowledge,
 		Tags:        []string{"服务器", "API", "SSH"},
 		AccessCount: 1,
@@ -49,7 +49,7 @@ func TestRecallDynamic_APIServerVsGPUServer(t *testing.T) {
 	// API server entry with api-server tag
 	apiEntry3 := Entry{
 		ID:       "api-3",
-		Content:  "API服务器→地址:api.rapidai.tech;用户:root;密码:sunion123;用途:API服务",
+		Content:  "API服务器→地址:api.rapidai.tech;用户:root;密码:Dummy_Pw2026;用途:API服务",
 		Category: CategoryProjectKnowledge,
 		Tags:     []string{"API服务器", "服务器", "ssh"},
 		AccessCount: 1,

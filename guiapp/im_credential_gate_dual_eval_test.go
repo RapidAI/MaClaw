@@ -70,7 +70,7 @@ func TestCredentialFenceDualEval(t *testing.T) {
 					{Tool: "knowledge_save_text", Effect: permission.EffectAllow, When: &permission.ArgsPredicate{Field: "action", Equals: "save"}},
 				})
 			},
-			argsJSON:  `{"action":"save","text":"server root sunion123"}`,
+			argsJSON:  `{"action":"save","text":"server root Dummy_Pw2026"}`,
 			triggered: true,
 			wantLog:   true,
 			wantNew:   permission.EffectAllow,

@@ -17,7 +17,7 @@
 
 | 时间 | 事件 | 日志位置 |
 |---|---|---|
-| 11:24:34 | 用户发送「将以下信息保存于知识库：驱网服务器 www.driverdevelop.com root sunion123」 | `app_wails_bindings.go:2551` |
+| 11:24:34 | 用户发送「将以下信息保存于知识库：驱网服务器 www.driverdevelop.com root <已脱敏>」 | `app_wails_bindings.go:2551` |
 | 11:24:36 | 轻量 LLM 调用（pending-reply 答案意图分类，`TimeoutSec:2`，`im_history_persistence.go:559`）`context deadline exceeded`；endpoint failure gate 以 ttl=30s 封禁同 key 轻量调用 | `stream.go:166`、`llm_endpoint_failure_gate.go:86` |
 | 11:24:36~37 | UIC 对该消息分类：L3 树推理被熔断器拦截失败，回退 L2 embedding 结果模糊，最终 `primary=unknown conf=0.30 Degraded` | `classifier.go:489,943` |
 | 11:24:37 | exec-router 按 `ask_user continuation`（上一轮模型以 ask_user 收尾「您选哪个？」）给 full profile；**UIC 仍正常运行**（此路径不跳过分类，已核实 `im_execution_profile.go:99-111`） | `im_agent_loop_start.go:215` |
@@ -159,7 +159,7 @@
 2. **取消穿透**：loop ctx 取消（用户打断/关窗）必须穿透栅栏——等待点同时 `select` loop ctx，取消即让 tool-call 返回错误并正常终止 loop，不泄漏挂起点。
 3. **重启语义**：loop 不持久化而 store 落盘（TTL 2h）——**loop 死亡（取消/重启）时其凭据卡片必须作废，不可走 `ConfirmedResume` 重放**（对一个已死的 mid-loop 工具调用做 resume = 无上下文重跑写入）。卡片状态与 loop 生命周期绑定：loop 终止 → 作废同 turn 的 pending 凭据卡片；用户重启后点一张已作废的卡片 → 提示"该操作已过期，请重新发起"。
 
-**扫描器**：新建权威秘密扫描器（升级 `corelib/security/sensitive_detector.go:32`——现有 5 正则漏"root sunion123"、中文口令形态）：中英口令 keyword、`user + password` 对、token/私钥/JWT。必过测试 = §1.1 事故原文 + 中文形态。路线 B 的 intentdata 复用同一扫描器。
+**扫描器**：新建权威秘密扫描器（升级 `corelib/security/sensitive_detector.go:32`——现有 5 正则漏"root <已脱敏>"、中文口令形态）：中英口令 keyword、`user + password` 对、token/私钥/JWT。必过测试 = §1.1 事故原文 + 中文形态。路线 B 的 intentdata 复用同一扫描器。
 
 **本闸同时是路线 B 写类在降级窗口的独立第二票**（见 Phase 2）。
 
@@ -201,7 +201,7 @@
 
 - **挂点**：UIC 内部 `ClassifyContext` 返回处单点记录——guiapp 各调用点会漏 workflow 拦截、planner 自分类、动态路由；`ClassifyEmbeddingOnly`（`:718-752`）不记录。
 - **来源字段**：`source` 按 UIC 内部可判定的生产者路径命名——`"tree"`（L3 verdict 被采用）/ `"l2"`（未升级 L3）；去重键 `(UserID, Text, history哈希)` 每进程一次。
-- **脱敏**：落盘前过 **P0-4 权威扫描器**（现有 `SensitiveDetector` 漏"root sunion123"/中文口令）。`scrubbed: true/false` 字段用于局部分层分析。
+- **脱敏**：落盘前过 **P0-4 权威扫描器**（现有 `SensitiveDetector` 漏"root <已脱敏>"/中文口令）。`scrubbed: true/false` 字段用于局部分层分析。
 - **历史字段**：记录近 6 条历史的哈希列表；本期语义 = history-free（回标时统一降权；哈希→会话库解析管道留作增强）。
 - 配置：`intentdata.disabled` **默认关，首次开启需用户确认**；`intentdata.retain_days`（默认 90）；问题报告打包默认排除（含权重文件）。
 - **出网红线（战略评审新增）**：intentdata 只留本地；**任何用户原文都不因测量/训练目的出网**（回标/金丝雀只送 scrub 后文本，且见 P1-2/P2-4 的排除规则）。

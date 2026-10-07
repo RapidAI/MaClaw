@@ -287,7 +287,7 @@ func TestDegradedTurnRecoverySecretPayloadAutoContinues(t *testing.T) {
 	hooks.install(t)
 
 	userID := "user-1"
-	text := "保存到知识库：服务器密码是 sunion123"
+	text := "保存到知识库：服务器密码是 Dummy_Pw2026"
 	plan := degradedRecoveryPlan{
 		userID:     userID,
 		userText:   text,
