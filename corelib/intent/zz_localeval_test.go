@@ -412,6 +412,7 @@ func TestZZLocalEval(t *testing.T) {
 		rec["l2_confident"] = conf
 		rec["l2_secondary"] = l2.Secondary
 		rec["l2_runnerup"] = l2.RunnerUp
+		rec["l2_runnerup_score"] = l2.RunnerUpScore
 		ta = time.Now()
 		res := u.ClassifyContext(context.Background(), MessageContext{Text: r.Text, UserID: "zz"})
 		rec["cls_ms"] = float64(time.Since(ta).Microseconds()) / 1000
