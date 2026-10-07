@@ -23,7 +23,11 @@ func SharedGemmaReady() bool {
 	return sharedGemmaReady.Load()
 }
 
-// SharedGemma256 returns the process-wide frozen Gemma embedder.
+// SharedGemma256 returns the process-wide frozen default embedder. Since the
+// single-model switch this is Qwen3-Embedding-0.6B (EmbeddingGemma only when
+// MACLAW_EMBED_MODEL=gemma); the name is kept for API stability. Consumers
+// that persist vectors or train on them (llmpool class head) must tag them
+// with EmbedderFamily so a model switch cannot mix vector spaces.
 //
 // The "256" in the name is historical. It named the intended consumer — the
 // 256-dim llmpool class head, which truncates incoming vectors to its own
@@ -60,7 +64,7 @@ func reloadSharedGemmaLocked(force bool) {
 	if sharedGemma != nil && !IsNoop(sharedGemma) {
 		return
 	}
-	path := resolveModelPath(DefaultModelPath())
+	path := sharedModelPath()
 	if path == "" {
 		if sharedGemma == nil {
 			sharedGemma = NoopEmbedder{}
@@ -101,4 +105,14 @@ func ResetSharedGemmaForTest() {
 	sharedGemmaTriedPath = ""
 	sharedGemmaTriedMod = time.Time{}
 	sharedGemmaReady.Store(false)
+}
+
+// sharedModelPath is the file the shared embedder loads: the resolved Qwen3
+// GGUF (ResolveQwen3ModelPath), or the Gemma slot when Gemma is pinned.
+func sharedModelPath() string {
+	if SelectedEmbedModel() == "qwen3" {
+		p, _ := ResolveQwen3ModelPath(DefaultModelPath())
+		return p
+	}
+	return DefaultModelPath()
 }

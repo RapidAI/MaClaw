@@ -150,11 +150,12 @@ func (g *GemmaEmbedder) ApplyAccel(enabled bool) {
 	g.accelInfo = info
 }
 
-// ReloadSharedGemmaAccel applies HWAccelPreferred to the process singleton.
+// ReloadSharedGemmaAccel applies HWAccelPreferred to the process singleton
+// (whatever model it is; see AccelEmbedder).
 func ReloadSharedGemmaAccel() {
 	sharedGemmaMu.Lock()
 	defer sharedGemmaMu.Unlock()
-	if g, ok := sharedGemma.(*GemmaEmbedder); ok && g != nil {
+	if g, ok := sharedGemma.(AccelEmbedder); ok && g != nil && !IsNoop(sharedGemma) {
 		g.ApplyAccel(HWAccelPreferred())
 	}
 }
@@ -167,3 +168,33 @@ func SetDetectOverrideForTest(info AccelInfo) {
 	detectMu.Unlock()
 	detectDone.Store(true)
 }
+
+// AccelEmbedder is implemented by embedders that report (and can retarget)
+// their compute backend. Hosts must use this instead of asserting a concrete
+// model type, so the About badge / settings toggle keep working for whichever
+// single model is loaded.
+type AccelEmbedder interface {
+	Accel() AccelInfo
+	ApplyAccel(enabled bool)
+}
+
+// Accel reports the Qwen3 instance's backend: always CPU SIMD (no NPU/GPU
+// backend exists for it); Device carries the numeric path (ComputeMode, e.g.
+// "q8p:avx512:2pass" or "float") so the badge is truthful.
+func (q *Qwen3Embedder) Accel() AccelInfo {
+	det := CurrentAccelInfo()
+	info := AccelInfo{Backend: BackendCPUSIMD, Device: q.ComputeMode(), NPUPresent: det.NPUPresent, Reason: "qwen3 runs on CPU SIMD"}
+	if q != nil && q.q8pFallback != "" {
+		info.Reason = "qwen3 float path (Q8P disabled: " + q.q8pFallback + ")"
+	}
+	return info
+}
+
+// ApplyAccel is a no-op for Qwen3 (CPU only); present so the hardware
+// acceleration toggle never needs a type switch on the model.
+func (q *Qwen3Embedder) ApplyAccel(bool) {}
+
+var (
+	_ AccelEmbedder = (*GemmaEmbedder)(nil)
+	_ AccelEmbedder = (*Qwen3Embedder)(nil)
+)

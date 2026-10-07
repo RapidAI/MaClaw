@@ -23,6 +23,7 @@ package embedding
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"runtime"
@@ -99,8 +100,9 @@ type Qwen3Embedder struct {
 	prefixes    []*qwen3PrefixKV // immutable once published; bounded by qwen3MaxPrefixes
 	prefixBuild sync.Mutex       // single-flight prefix computation
 
-	q8p      bool             // layers carry Q8P packed weights (forwardFrom uses MatMulQ8P)
-	q8pArena *tensor.Q8PArena // off-heap storage of the packed weights (freed by Close)
+	q8p         bool             // layers carry Q8P packed weights (forwardFrom uses MatMulQ8P)
+	q8pArena    *tensor.Q8PArena // off-heap storage of the packed weights (freed by Close)
+	q8pFallback string           // why Q8P was wanted but not used; see Q8PFallbackReason
 }
 
 type qwen3Scratch struct {
@@ -250,33 +252,15 @@ func (q *Qwen3Embedder) loadWeights(mf *gguf.MmapFile) error {
 		}
 	}
 	if qwen3UseQ8P(hp) {
-		need := 0
-		for i := range q.layers {
-			l := &q.layers[i]
-			for _, t := range []*tensor.Q8Tensor{&l.wq, &l.wk, &l.wv, &l.wo, &l.wGate, &l.wUp, &l.wDown} {
-				need += tensor.Q8PPackedBytes(t.Rows, t.Cols)
-			}
+		if err := q.packQ8P(mf); err != nil {
+			// Degrade, never fail the load: the float Q8 path needs nothing
+			// the failed pack touched (scales/pages are only dropped after a
+			// fully successful, self-checked pack).
+			q.q8pFallback = err.Error()
+			log.Printf("[qwen3] Q8P disabled, using float path: %v", err)
+		} else {
+			return nil
 		}
-		q.q8pArena = tensor.NewQ8PArena(need)
-		for i := range q.layers {
-			l := &q.layers[i]
-			for _, pr := range []struct {
-				dst **tensor.Q8Packed
-				src *tensor.Q8Tensor
-			}{{&l.pq, &l.wq}, {&l.pk, &l.wk}, {&l.pv, &l.wv}, {&l.po, &l.wo}, {&l.pg, &l.wGate}, {&l.pu, &l.wUp}, {&l.pd, &l.wDown}} {
-				*pr.dst = tensor.PackQ8PInto(pr.src, q.q8pArena)
-				if *pr.dst == nil {
-					return fmt.Errorf("qwen3: Q8P pack failed for layer %d", i)
-				}
-				// The float path is never used by this instance: drop the
-				// per-block float scales and release the mmap'd source pages
-				// (the packed copy holds the same int8 values).
-				pr.src.Scales = nil
-				mf.Release(pr.src.Data)
-			}
-		}
-		q.q8p = true
-		return nil
 	}
 	for i := range q.layers {
 		l := &q.layers[i]
@@ -495,7 +479,18 @@ func (q *Qwen3Embedder) EmbedConcurrent(text string) ([]float32, error) {
 	return q.embed(text, 1)
 }
 
-func (q *Qwen3Embedder) embed(text string, maxWorkers int) ([]float32, error) {
+func (q *Qwen3Embedder) embed(text string, maxWorkers int) (vec []float32, err error) {
+	// Degrade, never crash: a kernel/tokenizer panic (bad file content that
+	// passed the loader, an ISA quirk) becomes an error for this call. This
+	// also covers EmbedBatch workers, where a panic would kill the process.
+	defer func() {
+		if r := recover(); r != nil {
+			vec, err = nil, fmt.Errorf("qwen3: embed panic: %v", r)
+		}
+	}()
+	if q == nil || q.tokenizer == nil {
+		return nil, ErrEmbedderClosed
+	}
 	if !q.inflight.acquire() {
 		return nil, ErrEmbedderClosed
 	}

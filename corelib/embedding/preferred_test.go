@@ -4,7 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 type fakePrefEmb struct {
@@ -56,7 +58,7 @@ func prefModels(t *testing.T, qwen, gemma bool) (dir, gemmaPath string) {
 	dir = t.TempDir()
 	gemmaPath = filepath.Join(dir, DefaultModelFilename)
 	if gemma {
-		os.WriteFile(gemmaPath, []byte("gguf"), 0o644)
+		os.WriteFile(gemmaPath, []byte("gemma"), 0o644)
 	}
 	if qwen {
 		os.WriteFile(filepath.Join(dir, Qwen3ModelFilename), []byte("gguf"), 0o644)
@@ -64,7 +66,38 @@ func prefModels(t *testing.T, qwen, gemma bool) (dir, gemmaPath string) {
 	return dir, gemmaPath
 }
 
+// hardenStubs makes the fake 4-byte "GGUF" files resolvable: no release-size
+// check, arch read from content ("qwen3"/other), exe dir isolated, plenty of
+// memory, fresh backoff state and a controllable clock.
+func hardenStubs(t *testing.T) *time.Time {
+	t.Helper()
+	oSize, oPeek, oExe, oMem, oNow := qwen3ExpectSize, peekArchFn, executableFn, availableMemoryFn, gateNow
+	exeDir := t.TempDir()
+	qwen3ExpectSize = func() int64 { return 0 }
+	peekArchFn = func(p string) (string, error) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return "", err
+		}
+		if string(b) == "gemma" {
+			return "gemma-embedding", nil
+		}
+		return "qwen3", nil
+	}
+	executableFn = func() (string, error) { return filepath.Join(exeDir, "maclaw"), nil }
+	availableMemoryFn = func() (uint64, bool) { return 64 << 30, true }
+	now := time.Unix(1_800_000_000, 0)
+	gateNow = func() time.Time { return now }
+	ResetQwen3LoadBackoff()
+	t.Cleanup(func() {
+		qwen3ExpectSize, peekArchFn, executableFn, availableMemoryFn, gateNow = oSize, oPeek, oExe, oMem, oNow
+		ResetQwen3LoadBackoff()
+	})
+	return &now
+}
+
 func TestPreferredQwen3ChosenGemmaNeverLoaded(t *testing.T) {
+	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	_, gp := prefModels(t, true, true)
@@ -84,7 +117,10 @@ func TestPreferredQwen3ChosenGemmaNeverLoaded(t *testing.T) {
 	}
 }
 
-func TestPreferredFallbackWhenQwen3Missing(t *testing.T) {
+// Single-model rule: a missing Qwen3 file never brings Gemma in, even when the
+// Gemma file is on disk. The host degrades (noop) while the fetch runs.
+func TestPreferredQwen3MissingDoesNotFallBackToGemma(t *testing.T) {
+	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	_, gp := prefModels(t, false, true)
@@ -93,54 +129,58 @@ func TestPreferredFallbackWhenQwen3Missing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Family != FamilyGemma || !res.Fallback || res.QwenErr == nil {
+	if !IsNoop(res.Embedder) || res.Family != "" || res.Fallback || res.QwenErr == nil {
 		t.Fatalf("got %+v", res)
 	}
-	if spy.qwenCalls != 0 {
-		t.Fatalf("qwen3 loader must not run for a missing file")
+	if spy.qwenCalls != 0 || spy.gemmaCalls != 0 {
+		t.Fatalf("loader calls qwen=%d gemma=%d", spy.qwenCalls, spy.gemmaCalls)
 	}
-	if spy.gemmaCalls != 1 {
-		t.Fatalf("gemma calls %d", spy.gemmaCalls)
-	}
-}
-
-func TestPreferredFallbackWhenQwen3PathEnvMissing(t *testing.T) {
-	t.Setenv(EmbedModelEnv, "qwen3")
-	_, gp := prefModels(t, true, true)
-	t.Setenv(EmbedModelPathEnv, filepath.Join(t.TempDir(), "nope.gguf"))
-	spy := &loadSpy{}
-	res, err := loadPreferredWith(spy.loaders(), gp, PreferredOptions{})
-	if err != nil || res.Family != FamilyGemma || !res.Fallback {
-		t.Fatalf("got %+v err=%v", res, err)
+	if PreferredModelFileExists(gp) {
+		t.Fatal("only the Gemma file exists: a download is still needed")
 	}
 }
 
-func TestPreferredFallbackWhenQwen3Unsupported(t *testing.T) {
+func TestPreferredQwen3LoadErrorDegradesWithoutGemma(t *testing.T) {
+	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	_, gp := prefModels(t, true, true)
 	spy := &loadSpy{qwenErr: errors.New(`unsupported architecture "llama"`)}
 	res, err := loadPreferredWith(spy.loaders(), gp, PreferredOptions{})
-	if err != nil || res.Family != FamilyGemma || spy.qwenCalls != 1 || spy.gemmaCalls != 1 {
+	if err == nil || !IsNoop(res.Embedder) || spy.qwenCalls != 1 || spy.gemmaCalls != 0 {
 		t.Fatalf("got %+v err=%v spy=%+v", res, err, spy)
 	}
 }
 
-func TestPreferredSmokeFailureClosesQwen3ThenFallsBack(t *testing.T) {
+func TestPreferredSmokeFailureClosesQwen3AndDegrades(t *testing.T) {
+	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	_, gp := prefModels(t, true, true)
 	spy := &loadSpy{qwenSmokeFail: true}
 	res, err := loadPreferredWith(spy.loaders(), gp, PreferredOptions{SmokeTest: true})
-	if err != nil || res.Family != FamilyGemma {
+	if err == nil || !IsNoop(res.Embedder) || spy.gemmaCalls != 0 {
 		t.Fatalf("got %+v err=%v", res, err)
 	}
 	if spy.qwen == nil || !spy.qwen.closed {
-		t.Fatal("failed qwen3 instance must be closed before gemma loads (never two models)")
+		t.Fatal("failed qwen3 instance must be closed")
+	}
+}
+
+func TestPreferredLoadPanicDegradesNotCrash(t *testing.T) {
+	hardenStubs(t)
+	t.Setenv(EmbedModelEnv, "")
+	t.Setenv(EmbedModelPathEnv, "")
+	_, gp := prefModels(t, true, false)
+	ld := modelLoaders{qwen3: func(string) (Embedder, error) { panic("corrupt tensor table") }}
+	res, err := loadPreferredWith(ld, gp, PreferredOptions{})
+	if err == nil || !IsNoop(res.Embedder) || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("got %+v err=%v", res, err)
 	}
 }
 
 func TestPreferredGemmaPinnedSkipsQwen3(t *testing.T) {
+	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "gemma")
 	_, gp := prefModels(t, true, true)
 	spy := &loadSpy{}
@@ -151,6 +191,7 @@ func TestPreferredGemmaPinnedSkipsQwen3(t *testing.T) {
 }
 
 func TestPreferredNoFilesIsNoop(t *testing.T) {
+	hardenStubs(t)
 	t.Setenv(EmbedModelEnv, "")
 	t.Setenv(EmbedModelPathEnv, "")
 	_, gp := prefModels(t, false, false)
@@ -165,7 +206,7 @@ func TestPreferredNoFilesIsNoop(t *testing.T) {
 }
 
 // Real GGUFs (MACLAW_TEST_MODELS_DIR containing both files): Qwen3 is loaded
-// and Gemma is not; with the Qwen3 path pointed at a missing file, Gemma.
+// and Gemma is not; with Qwen3 unresolvable the result is noop (no Gemma).
 func TestPreferredRealModels(t *testing.T) {
 	dir := os.Getenv("MACLAW_TEST_MODELS_DIR")
 	if dir == "" {
@@ -182,13 +223,19 @@ func TestPreferredRealModels(t *testing.T) {
 		t.Fatalf("want qwen3, got %s", res)
 	}
 	res.Embedder.Close()
-	t.Setenv(EmbedModelPathEnv, filepath.Join(dir, "missing-qwen3.gguf"))
-	res, err = LoadPreferredEmbedder(gp, PreferredOptions{SmokeTest: true})
+	// Gemma slot in a directory without the Qwen3 file: noop, never Gemma.
+	other := t.TempDir()
+	if b, err := os.ReadFile(gp); err == nil {
+		os.WriteFile(filepath.Join(other, DefaultModelFilename), b, 0o644)
+	}
+	oExe := executableFn
+	executableFn = func() (string, error) { return filepath.Join(other, "maclaw"), nil }
+	defer func() { executableFn = oExe }()
+	res, err = LoadPreferredEmbedder(filepath.Join(other, DefaultModelFilename), PreferredOptions{SmokeTest: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := res.Embedder.(*GemmaEmbedder); !ok || !res.Fallback || res.Embedder.Dim() != 768 {
-		t.Fatalf("want gemma fallback, got %s", res)
+	if !IsNoop(res.Embedder) || res.Fallback {
+		t.Fatalf("want noop (no gemma fallback), got %s", res)
 	}
-	res.Embedder.Close()
 }

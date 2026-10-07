@@ -5,9 +5,19 @@ package gguf
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"strings"
 	"unsafe"
 )
+
+// NoMmapEnv=1 skips mmap and reads the whole file into the heap (diagnostic /
+// rollback switch for hosts where file mapping misbehaves).
+const NoMmapEnv = "MACLAW_GGUF_NO_MMAP"
+
+// mmapFileFn is swappable in tests to simulate a mapping failure.
+var mmapFileFn = mmapFile
 
 // MmapFile holds a memory-mapped GGUF file.
 type MmapFile struct {
@@ -15,7 +25,12 @@ type MmapFile struct {
 	data   []byte   // mmap region covering the entire file
 	handle uintptr  // OS handle for cleanup (Windows: HANDLE from CreateFileMapping)
 	osFile *os.File // kept open for the mapping lifetime
+	heap   bool     // data is a heap copy (mmap failed or was disabled)
 }
+
+// Heap reports whether the file content was read into the heap because
+// mapping failed or was disabled (NoMmapEnv). Release is a no-op then.
+func (mf *MmapFile) Heap() bool { return mf != nil && mf.heap }
 
 // OpenMmap opens a GGUF file using memory mapping.
 // The returned MmapFile must be closed with CloseMmap.
@@ -35,16 +50,35 @@ func OpenMmap(path string) (*MmapFile, error) {
 		return nil, fmt.Errorf("gguf: empty file")
 	}
 
-	data, handle, err := mmapFile(f, int(size))
+	var (
+		data   []byte
+		handle uintptr
+		heap   bool
+	)
+	if v := strings.TrimSpace(os.Getenv(NoMmapEnv)); v == "1" || strings.EqualFold(v, "true") {
+		err = fmt.Errorf("disabled by %s", NoMmapEnv)
+	} else {
+		data, handle, err = mmapFileFn(f, int(size))
+	}
 	if err != nil {
-		f.Close()
-		return nil, fmt.Errorf("gguf: mmap: %w", err)
+		// Fallback: read the file into the heap. Costs RSS (the whole file
+		// becomes anonymous memory) but keeps the model usable on hosts where
+		// mapping fails (address-space limits, odd filesystems, AV hooks).
+		mapErr := err
+		data, err = readAllAt(f, size)
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("gguf: mmap: %v; heap read fallback: %w", mapErr, err)
+		}
+		log.Printf("[gguf] mmap unavailable for %s (%v); loaded %d bytes into heap", path, mapErr, size)
+		handle, heap = 0, true
 	}
 
 	mf := &MmapFile{
 		data:   data,
 		handle: handle,
 		osFile: f,
+		heap:   heap,
 	}
 	mf.File.Meta = make(map[string]MetaValue)
 	mf.File.Tensors = make(map[string]*TensorInfo)
@@ -60,7 +94,9 @@ func OpenMmap(path string) (*MmapFile, error) {
 // CloseMmap releases the memory mapping and closes the file.
 func (mf *MmapFile) CloseMmap() {
 	if mf.data != nil {
-		munmapFile(mf.data, mf.handle)
+		if !mf.heap {
+			munmapFile(mf.data, mf.handle)
+		}
 		mf.data = nil
 	}
 	if mf.osFile != nil {
@@ -120,7 +156,9 @@ func (mf *MmapFile) TensorF32(name string) ([]float32, error) {
 // e.g. a tensor already copied elsewhere) are no longer needed in memory.
 // Content is unchanged; pages fault back in if read again.
 func (mf *MmapFile) Release(b []byte) {
-	if mf == nil || len(b) == 0 || len(mf.data) == 0 {
+	if mf == nil || mf.heap || len(b) == 0 || len(mf.data) == 0 {
+		// Heap copies must never be madvise(DONTNEED)'d: anonymous pages
+		// would read back as zeros.
 		return
 	}
 	lo := uintptr(unsafe.Pointer(unsafe.SliceData(mf.data)))
@@ -129,4 +167,21 @@ func (mf *MmapFile) Release(b []byte) {
 		return // not ours (heap copy)
 	}
 	releasePages(b)
+}
+
+// readAllAt reads the whole file into a fresh heap buffer.
+func readAllAt(f *os.File, size int64) (buf []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil { // make() of a huge buffer can panic on 32-bit / OOM-limited hosts
+			buf, err = nil, fmt.Errorf("allocate %d bytes: %v", size, r)
+		}
+	}()
+	if int64(int(size)) != size {
+		return nil, fmt.Errorf("file too large for this platform (%d bytes)", size)
+	}
+	buf = make([]byte, int(size))
+	if _, err := io.ReadFull(io.NewSectionReader(f, 0, size), buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
