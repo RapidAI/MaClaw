@@ -167,6 +167,13 @@ screen `1440x900`.
   once the Hub desktop service record points at `maclaw-gui:2`. Private
   volumes (`/desktops`, `/home/desktop`, `/opt`, `/usr/local`) are kept; a
   v1-based `:state` image is set aside as `:prev`.
+- Public prebuilt image: `ghcr.io/rapidai/maclaw-gui:2` (anonymous pull; also
+  `2-<shortsha>` and `@sha256:` pins), built by `.github/workflows/desktop-image.yml`.
+  desktopd pulls it, checks it, and tags it `maclaw-gui:2` when that image is
+  missing on the host (`DESKTOPD_IMAGE_SOURCE`, default the ghcr image, `off`
+  to disable; `DESKTOPD_IMAGE_PULL_TIMEOUT`, default `30m`); it never replaces a
+  local image. Deploys can skip the host build with `DESKTOPD_IMAGE_FROM=pull`
+  or `auto` (pull, then build on failure); the default stays `build`.
 - Screenshots: desktopd `GET|POST /v1/desktops/screenshot` (PNG, same Bearer
   key as the other `/v1` calls), Hub `POST /api/v1/desktop-services/screenshot`,
   and MaClawSrv `desktop` tool `action=screenshot` (image attached for

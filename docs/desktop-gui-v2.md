@@ -10,6 +10,52 @@ desktopd 服务本身的说明见 [desktopd/README.md](../desktopd/README.md)。
 
 ![maclaw-gui:2 桌面](images/desktop-gui-v2.png)
 
+## 公开镜像(快速开始)
+
+`maclaw-gui:2` 有公开的预构建镜像,**匿名即可拉取**,不需要登录 GHCR:
+
+| 镜像 | 说明 |
+| --- | --- |
+| `ghcr.io/rapidai/maclaw-gui:2` | 当前 v2,随 main 上 `desktopd/image/**` 的改动更新 |
+| `ghcr.io/rapidai/maclaw-gui:2-<短sha>` | 固定到某次提交(如 `2-cc24156`),不会再变 |
+| `ghcr.io/rapidai/maclaw-gui:latest` | 与 main 上最新的 `2` 相同 |
+| `ghcr.io/rapidai/maclaw-gui@sha256:<digest>` | 按内容固定,docker 拉取时校验 |
+
+由 `.github/workflows/desktop-image.yml` 构建(`debian:bookworm` + deb.debian.org,仅 linux/amd64),
+推送前先过镜像契约检查和镜像文件系统的密钥扫描。包页面:
+<https://github.com/orgs/RapidAI/packages/container/package/maclaw-gui>。
+首个公开版本:`2-cc24156` = `sha256:4078a47c8712c61486702e7c5623a77166b9551b1fe31407809bff936afbfed6`
+(压缩后约 783MB,解压约 1.85GB)。
+
+```sh
+docker pull ghcr.io/rapidai/maclaw-gui:2
+docker tag ghcr.io/rapidai/maclaw-gui:2 maclaw-gui:2      # desktopd 和 Hub 配置用的本地名
+# 固定 digest(生产推荐;digest 见包页面或 docker inspect --format '{{index .RepoDigests 0}}')
+docker pull ghcr.io/rapidai/maclaw-gui@sha256:4078a47c8712c61486702e7c5623a77166b9551b1fe31407809bff936afbfed6
+```
+
+验证匿名拉取(不需要任何凭据,返回 `HTTP 200` 和 `docker-content-digest`):
+
+```sh
+T=$(curl -s "https://ghcr.io/token?scope=repository:rapidai/maclaw-gui:pull" | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -sI -H "Authorization: Bearer $T" \
+  -H 'Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.index.v1+json' \
+  https://ghcr.io/v2/rapidai/maclaw-gui/manifests/2 | grep -Ei '^HTTP|docker-content-digest'
+```
+
+**desktopd 自动拉取**:desktopd 发现本机没有 `maclaw-gui:2` 时(启动时在后台检查一次,打开桌面时
+按需再检查),会拉取 `DESKTOPD_IMAGE_SOURCE`(默认 `ghcr.io/rapidai/maclaw-gui:2`),跑一遍镜像契约检查,
+通过后再打成本地 tag `maclaw-gui:2`。本机**已有**这个镜像时什么都不做:不会重新拉取,也不会自动替换。
+关闭:`DESKTOPD_IMAGE_SOURCE=off`。细节见 [3.1](#31-desktopd-自动拉取与部署脚本的镜像来源)。
+
+**中国大陆**:从 ghcr.io 拉取可能很慢甚至超时。可以:
+
+- 继续在主机上构建(生产做法,腾讯云自动使用腾讯镜像源,见第 3 节);
+- 把 `DESKTOPD_IMAGE_SOURCE` 指向可访问的 ghcr.io 代理/镜像仓库(例如自建的 registry,内容按 digest
+  固定以防被替换),如 `DESKTOPD_IMAGE_SOURCE=registry.example.cn/rapidai/maclaw-gui@sha256:<digest>`;
+- 在海外机器上 `docker pull` 后 `docker save ghcr.io/rapidai/maclaw-gui:2 | zstd > gui2.tar.zst`,传到主机
+  `zstd -dc gui2.tar.zst | docker load`,再 `docker tag` 成 `maclaw-gui:2`。
+
 ## 1. 镜像提供什么
 
 | 能力 | 说明 |
@@ -92,27 +138,55 @@ docker build -f desktopd/image/Dockerfile.v2 \
 部署脚本(`desktopd/remote_deploy.sh`)会在主机上先构建到临时 tag,检查镜像契约后才打
 `maclaw-gui:2`,失败不覆盖旧镜像;能访问腾讯云元数据服务时自动用上面的腾讯镜像源。
 覆盖变量:`DESKTOPD_BASE_IMAGE`、`DESKTOPD_APT_MIRROR`(`none` = deb.debian.org)、
-`DESKTOPD_SKIP_IMAGE_BUILD=1`。不要删除或重新打 tag `maclaw-gui:1`,迁移和回滚都依赖它。
+`DESKTOPD_SKIP_IMAGE_BUILD=1`;不想构建时用公开镜像(`DESKTOPD_IMAGE_FROM=pull|auto`,见 3.1)。不要删除或重新打 tag `maclaw-gui:1`,迁移和回滚都依赖它。
 
-### 3.1 使用预构建镜像(GHCR)
+### 3.1 desktopd 自动拉取与部署脚本的镜像来源
 
-GitHub Actions(`.github/workflows/desktop-image.yml`)在 `desktopd/image/**` 有改动推到 main、
-推 `maclaw-gui-v*` tag 或手动触发时构建 `Dockerfile.v2`(`debian:bookworm` + deb.debian.org,
-仅 linux/amd64),先跑镜像契约检查和镜像文件系统的密钥扫描,通过后才推送到
-`ghcr.io/rapidai/maclaw-gui`。tag:`2`、`2-<短 sha>`(固定版本)、`latest`。
+**desktopd 运行时**(`desktopd/image_source.go`):
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `DESKTOPD_IMAGE_SOURCE` | `ghcr.io/rapidai/maclaw-gui:2` | 本地 `maclaw-gui:2` 缺失时从哪里拉。可写 `@sha256:` digest;`off`/`none` 关闭;多个镜像用 `本地名=引用,...`,如 `maclaw-gui:2=ghcr.io/rapidai/maclaw-gui:2-cc24156` |
+| `DESKTOPD_IMAGE_PULL_TIMEOUT` | `30m` | 单次拉取超时(Go duration,如 `45m`) |
+
+- 启动时在后台检查(不阻塞 `/v1/health` 和管理面板);打开桌面(含迁移重建前的“新镜像必须存在”检查)
+  时按需检查。同一镜像同时只有一个拉取,其他请求等待同一个结果;调用方超时(Hub 约 2 分钟)不会
+  中断拉取,下次请求直接用拉好的镜像。
+- 顺序:`docker pull <source>` → 契约检查(与 `remote_deploy.sh` 相同的工具清单)→ 再确认本地仍没有
+  `maclaw-gui:2`(期间有人构建了就保留本地的)→ `docker tag <镜像ID> maclaw-gui:2`。
+- 失败(网络不通、超时、契约不通过):不打 tag、不碰现有容器,迁移不会开始,用户的旧桌面保持原样;
+  1 分钟内不重复拉取;日志提示改为在主机上构建。配置了来源的镜像不会再退回 `docker pull maclaw-gui:2`
+  (那会去 Docker Hub)。没有配置来源的其他镜像名保持原来的直接 `docker pull`。
+- 管理面板“镜像来源”一行显示状态:本地已有或未触发 / 拉取中 / 已拉取 / 拉取失败(含原因)。
+- 日志关键字:`image maclaw-gui:2 is missing; pulling`、`ready from`、`failed after`、`is present; not pulling`。
+
+**部署脚本**(`remote_deploy.sh`、`deploy_desktopd.cmd`、`deploy/linux/rollout_*`):
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `DESKTOPD_IMAGE_FROM` | `build` | `build`:主机上 `docker build`(生产默认,不变);`pull`:拉 `DESKTOPD_IMAGE_SOURCE`、契约检查、打 tag,失败则部署失败且旧镜像不变;`auto`:先拉(受超时限制),失败再构建 |
+| `DESKTOPD_IMAGE_SOURCE` | `ghcr.io/rapidai/maclaw-gui:2` | 同上;显式传入时同时写进主机 `.env`,desktopd 运行时也用它 |
+| `DESKTOPD_IMAGE_PULL_TIMEOUT` | `30m` | 脚本里用 coreutils `timeout`(`30m`、`1800s`);显式传入时写进 `.env` |
+| `DESKTOPD_SKIP_IMAGE_BUILD` | `0` | `1` = 不构建也不拉取,要求镜像已存在 |
 
 ```sh
-docker pull ghcr.io/rapidai/maclaw-gui:2          # 或固定到 ghcr.io/rapidai/maclaw-gui:2-<sha>
-docker tag ghcr.io/rapidai/maclaw-gui:2 maclaw-gui:2   # desktopd 与 Hub 配置用的名字
-# 部署 desktopd 时跳过主机上的构建(要求 maclaw-gui:2 已存在):
-DESKTOPD_SKIP_IMAGE_BUILD=1 deploy/linux/rollout_desktop_gui2.sh deploy-desktopd
+# 海外/能访问 ghcr 的主机:直接用公开镜像,按 digest 固定
+DESKTOPD_IMAGE_FROM=pull \
+DESKTOPD_IMAGE_SOURCE=ghcr.io/rapidai/maclaw-gui@sha256:4078a47c8712c61486702e7c5623a77166b9551b1fe31407809bff936afbfed6 \
+  deploy/linux/rollout_desktop_gui2.sh deploy-desktopd
+# 先试拉 10 分钟,不行再构建
+DESKTOPD_IMAGE_FROM=auto DESKTOPD_IMAGE_PULL_TIMEOUT=10m deploy/linux/rollout_desktop_gui2.sh deploy-desktopd
 ```
 
-- 中国大陆主机从 ghcr.io 拉取可能很慢或超时;生产(腾讯云)继续在主机上用腾讯镜像源本地构建
-  (第 3 节),不依赖 GHCR。
-- desktopd 比较的是镜像**名**:重新 pull 并覆盖 `maclaw-gui:2` 不会触发已有用户重建;
-  只有新建的容器会用到新镜像。要让所有人换新版,改用新的镜像名并修改 Hub 配置(第 6 节)。
-- `DESKTOPD_SKIP_IMAGE_BUILD=1` 只跳过构建,不会拉取;镜像不存在时部署直接失败,不会改动现有服务。
+```bat
+:: Windows
+set DESKTOPD_IMAGE_FROM=pull
+deploy_desktopd.cmd docker-host.example
+```
+
+与构建一样,部署脚本的 `pull`/`auto` 是运维显式操作,会把 `maclaw-gui:2` 指向新拉的镜像;desktopd
+运行时只补缺失的镜像,从不替换。desktopd 比较的是镜像**名**:`maclaw-gui:2` 指向新内容后,已有用户
+不会因此重建,只有新建/重建的容器用新内容;要让所有人换新版,用新的镜像名并修改 Hub 配置(第 6 节)。
 
 ## 4. 部署
 
@@ -157,6 +231,7 @@ CONFIRM=1 deploy/linux/rollout_desktop_gui2.sh switch-image   # 改 Hub 配置�
 | `REMOTE_TMP` | `/tmp/maclaw_gui2_rollout` | 主机上的上传目录 |
 | `DESKTOPD_ADVERTISE_HOST` | `REMOTE_HOST` | 仅首次部署写入 `.env`;已有值保留 |
 | `DESKTOPD_BASE_IMAGE` / `DESKTOPD_APT_MIRROR` / `DESKTOPD_SKIP_IMAGE_BUILD` | 自动 | 同第 3 节 |
+| `DESKTOPD_IMAGE_FROM` / `DESKTOPD_IMAGE_SOURCE` / `DESKTOPD_IMAGE_PULL_TIMEOUT` | `build` / ghcr / `30m` | 镜像来源,见 3.1 |
 | `DESKTOP_IMAGE` / `DESKTOP_MEMORY` / `DESKTOP_CPUS` / `DESKTOP_SHM` | `maclaw-gui:2` / `3g` / `1.5` / `1g` | `switch-image` 写入 Hub 的值 |
 | `DESKTOP_SERVER_ID` | 空 = 全部服务 | 只切换某一个 Docker 服务 |
 | `BACKUP_TS` | 上次 backup 的时间戳 | `rollback` 用 |
@@ -332,7 +407,9 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
   `StandardOutput=append:`,日志看 `journalctl -u maclaw-desktopd` / `-u maclawsrv`;sqlite 3.22 没有
   UPSERT,`hub_desktop_settings.py` 用 UPDATE/INSERT。
 - **上行慢的部署机**:二进制压缩后仍有几十 MB。用 `rollout_desktop_gui2.sh upload`(rsync `--partial`
-  断点续传)或在离主机近的机器上编译;镜像在主机上构建,不要上传镜像。
+  断点续传)或在离主机近的机器上编译;镜像在主机上构建或从 ghcr.io 拉取,不要上传镜像。
+- **新主机首次启动 desktopd**:本机没有 `maclaw-gui:2` 时会在后台从 ghcr.io 拉取约 800MB;大陆主机可能
+  很慢,在拉完之前打开桌面会返回“still being pulled”。不需要时设 `DESKTOPD_IMAGE_SOURCE=off` 并在主机上构建。
 - **Hub 未设 `MACLAW_DESKTOP_API_TOKEN`**:`/api/v1/desktop-services/*` 全部 401,MaClawSrv 远程截图
   和远程桌面会失败;Hub 管理页不受影响。
 - 截图只截已在运行的 display;桌面没开时返回错误而不是启动桌面。
@@ -355,6 +432,8 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
 | 路径 | 用途 |
 | --- | --- |
 | `desktopd/image/Dockerfile.v2` | maclaw-gui:2 镜像 |
+| `desktopd/image_source.go` | 缺失镜像时从公开来源拉取、检查、打 tag |
+| `desktopd/deploy/desktopd.env.example` | desktopd `.env` 全部变量示例 |
 | `.github/workflows/desktop-image.yml` | CI 构建、检查并发布 `ghcr.io/rapidai/maclaw-gui` |
 | `desktopd/image/desktop_supervisor.py` | 容器内 supervisor(XFCE/fcitx5/D-Bus/gate) |
 | `desktopd/image/close_range_shim.c` | close_range EPERM→ENOSYS 垫片 |

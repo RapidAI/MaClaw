@@ -30,8 +30,16 @@ Linux/macOS 上用 `deploy/linux/rollout_desktop_gui2.sh`(编译、打包、断�
 | `DESKTOPD_STATE_DIR` | 管理面板的状态目录(部署脚本指向 `<部署目录>/state`);`off` 完全禁用面板 |
 | `DESKTOPD_MAX_IDLE` | 可选空闲回收,如 `24h`;超时的桌面会被停止(登录态先落盘) |
 | `DESKTOPD_ALLOW_REMOTE_SETUP` | 设为 `1` 时允许从非 loopback 来源执行一次性的面板初始化 |
+| `DESKTOPD_IMAGE_SOURCE` | 本机缺少 `maclaw-gui:2` 时拉取的公开镜像,默认 `ghcr.io/rapidai/maclaw-gui:2`;可写 `@sha256:` digest;`off` 关闭。已有的本地镜像从不被拉取覆盖 |
+| `DESKTOPD_IMAGE_PULL_TIMEOUT` | 上面那次拉取的超时,默认 `30m` |
+
+全部变量的示例见 [`deploy/desktopd.env.example`](deploy/desktopd.env.example)。
 
 ## 桌面镜像 maclaw-gui:2
+
+公开预构建镜像:`docker pull ghcr.io/rapidai/maclaw-gui:2`(匿名可拉,另有 `2-<短sha>` 和 `@sha256:` 固定版本,
+见 [docs/desktop-gui-v2.md](../docs/desktop-gui-v2.md#公开镜像快速开始))。desktopd 发现本机没有 `maclaw-gui:2`
+时会自动拉取它、做契约检查并打成本地 tag(`DESKTOPD_IMAGE_SOURCE=off` 关闭)。
 
 默认镜像是 `maclaw-gui:2`(`desktopd/image/Dockerfile.v2`):Debian 12 + XFCE
 完整桌面(面板、Thunar、终端、Mousepad)、Chromium、fcitx5 拼音、Noto CJK 字体、
@@ -57,7 +65,8 @@ tag、检查镜像契约(supervisor、Xvfb、x11vnc、websockify、xdotool、chr
 XFCE、import、noVNC)后才打上 `maclaw-gui:2`,构建失败不会覆盖现有镜像;
 在腾讯云上(元数据服务可达)自动使用腾讯镜像源。可用 `DESKTOPD_BASE_IMAGE`、
 `DESKTOPD_APT_MIRROR`(`none` = deb.debian.org)、`DESKTOPD_SKIP_IMAGE_BUILD=1`
-覆盖。旧的 `image/Dockerfile` 只用于 `maclaw-gui:1`,不要把它的构建结果标成 `:2`。
+覆盖;`DESKTOPD_IMAGE_FROM=pull`(拉公开镜像,检查后打 tag)或 `auto`(先拉,失败再构建)可以不在主机上构建,
+默认仍是 `build`。旧的 `image/Dockerfile` 只用于 `maclaw-gui:1`,不要把它的构建结果标成 `:2`。
 
 注意:
 
@@ -128,7 +137,9 @@ Hub 侧配置(管理页"桌面服务"标签页或 `POST /api/admin/desktop-servi
 - `systemctl status maclaw-desktopd`;手动起:`systemctl restart maclaw-desktopd`。
 - token 不生效:先确认 `.env` 的 `DESKTOPD_TOKEN` 与 Hub 配置一致;面板
   删除 key 会立即生效。
-- 首次建容器慢:镜像不存在时 desktopd 会 `docker pull`,可能超过调用方 2 分钟
-  超时;`maclaw-gui:2` 是本地构建的镜像,先在主机上构建好(见上)。
+- 首次建容器慢:本机没有 `maclaw-gui:2` 时 desktopd 从 `DESKTOPD_IMAGE_SOURCE` 拉取(启动时已在后台开始),
+  可能超过调用方 2 分钟超时,此时返回 “still being pulled”,拉完后重试即可;管理面板“镜像来源”显示进度/失败原因。
+  拉不下来(大陆主机访问 ghcr 慢)就在主机上构建(见上)或设 `DESKTOPD_IMAGE_SOURCE=off`。
+  日志:`image maclaw-gui:2 is missing; pulling ...`、`ready from ...`、`failed after ...`。
 - 迁移日志:`desktopd: recreating ... (image changed from maclaw-gui:1 to maclaw-gui:2)`、
   `... keeping it as ...:prev`,在 `desktopd.err.log`(log 包写 stderr)。
