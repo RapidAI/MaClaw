@@ -44,7 +44,11 @@ func (a *App) localModelFetcher() *embedding.ModelFetcher {
 		qp := embedding.PreferredQwen3Path(gemmaSlot)
 		spec := embedding.Qwen3ModelSpec
 		spec.Filename = filepath.Base(qp)
+		// GitHub release Model_Release first, then the hub mirror — the same
+		// order as the Gemma/ASR/YOLO/OCR downloads (app_embedding.go:311).
+		spec = spec.WithHubFallback(a.modelHubURL())
 		f := embedding.NewModelFetcher(filepath.Dir(qp), spec)
+		f.Logf = log.Printf
 		f.OnProgress = func(s embedding.FetchStatus) {
 			pct := s.Percent()
 			if pct < 0 {
@@ -88,6 +92,7 @@ func (a *App) startLocalModelFetch() bool {
 	if f == nil {
 		return false
 	}
+	a.startHeadAssetFetch()
 	f.Start(context.Background(), func(path string) {
 		if !a.vectorSearchConfiguredEnabled() {
 			log.Printf("[embedding] local model ready at %s (vector search disabled: not loading)", path)
@@ -122,4 +127,41 @@ func qwen3UpgradeAvailable(cur embedding.Embedder, gemmaSlot string) bool {
 	spec := embedding.Qwen3ModelSpec
 	spec.Filename = filepath.Base(qp)
 	return embedding.VerifyModelFile(qp, spec) == nil
+}
+
+func (a *App) modelHubURL() string {
+	if cfg, err := a.LoadConfig(); err == nil {
+		return strings.TrimRight(cfg.RemoteHubURL, "/")
+	}
+	return ""
+}
+
+var headAssetFetchOnce sync.Once
+
+// startHeadAssetFetch downloads the intent / tool heads named in
+// embedding.ReleaseAssets into <models>/intent_heads and <models>/tool_heads
+// (GitHub release, then hub; size+sha verified). Existing local heads are
+// kept. When a head lands after the embedder is already live, it is attached
+// immediately (attachLocalL3 / attachToolHead are idempotent).
+func (a *App) startHeadAssetFetch() {
+	headAssetFetchOnce.Do(func() {
+		dir := embedding.DefaultModelsDir()
+		if dir == "" {
+			return
+		}
+		hub := a.modelHubURL()
+		for _, asset := range embedding.ReleaseAssets() {
+			if asset.Kind == "model" {
+				continue
+			}
+			f := embedding.NewReleaseAssetFetcher(dir, asset, hub)
+			f.Logf = log.Printf
+			f.Start(context.Background(), func(path string) {
+				if emb := a.activeInterruptEmbedder(); emb != nil && !embedding.IsNoop(emb) {
+					a.attachLocalL3(emb)
+					a.attachToolHead(emb)
+				}
+			})
+		}
+	})
 }

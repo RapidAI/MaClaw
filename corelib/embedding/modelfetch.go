@@ -33,22 +33,12 @@ type ModelSpec struct {
 	SHA256   string   // lowercase hex (""= unchecked)
 }
 
-// Qwen3ModelSpec is the shipped embedding model. Size / SHA-256 are the
-// Hugging Face LFS values of Qwen/Qwen3-Embedding-0.6B-GGUF
-// Qwen3-Embedding-0.6B-Q8_0.gguf (639,150,592 bytes), identical to the file
-// the local evals used. The GitHub Model_Release mirror (same layout as the
-// Gemma URL) is listed first; it must be uploaded before release — until then
-// the fetcher falls through to Hugging Face / hf-mirror.
-var Qwen3ModelSpec = ModelSpec{
-	Filename: Qwen3ModelFilename,
-	URLs: []string{
-		"https://github.com/RapidAI/MaClaw/releases/download/Model_Release/" + Qwen3ModelFilename,
-		"https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/" + Qwen3ModelFilename,
-		"https://hf-mirror.com/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/" + Qwen3ModelFilename,
-	},
-	Size:   639150592,
-	SHA256: "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
-}
+// Qwen3ModelSpec is the shipped embedding model, hosted on the GitHub
+// release Model_Release (see release_assets.json; same URL form as the Gemma
+// DefaultModelDownloadURL). Callers append the hub mirror
+// (<hub>/api/v1/models/<file>) with WithHubFallback. Size / SHA-256 equal the
+// Hugging Face LFS values of Qwen/Qwen3-Embedding-0.6B-GGUF.
+var Qwen3ModelSpec = mustReleaseAsset(Qwen3ModelFilename)
 
 // ModelURLEnv overrides the download URL list (comma separated).
 const ModelURLEnv = "MACLAW_EMBED_MODEL_URL"
@@ -88,6 +78,7 @@ type FetchStatus struct {
 	Total      int64
 	Attempt    int
 	Err        string
+	Source     string // URL the verified file came from ("" = already on disk)
 }
 
 // Percent returns 0..100 (or -1 when the total is unknown).
@@ -183,6 +174,11 @@ type ModelFetcher struct {
 	Backoff time.Duration
 	// OnProgress, if set, is called (throttled to ~1%/step) with snapshots.
 	OnProgress func(FetchStatus)
+	// KeepExisting: an existing non-empty final file is used as-is even if
+	// its hash differs (heads recalibrated locally must never be overwritten).
+	KeepExisting bool
+	// Logf, if set, receives one line per source outcome (which source won).
+	Logf func(format string, args ...any)
 
 	mu      sync.Mutex
 	status  FetchStatus
@@ -281,6 +277,13 @@ func (f *ModelFetcher) Start(ctx context.Context, onReady func(path string)) {
 // "<file>.corrupt" and re-downloaded; a corrupt .part restarts from zero.
 func (f *ModelFetcher) Ensure(ctx context.Context) (string, error) {
 	final := f.Path()
+	if fi, err := os.Stat(final); err == nil && f.KeepExisting && fi.Mode().IsRegular() && fi.Size() > 0 {
+		if verr := VerifyModelFile(final, f.spec); verr != nil && f.Logf != nil {
+			f.Logf("[embedding] %s: keeping local file (differs from release: %v)", f.spec.Filename, verr)
+		}
+		f.set(func(s *FetchStatus) { s.State = FetchReady; s.Downloaded = s.Total })
+		return final, nil
+	}
 	if _, err := os.Stat(final); err == nil {
 		f.set(func(s *FetchStatus) { s.State = FetchVerifying; s.Err = "" })
 		if err := VerifyModelFile(final, f.spec); err == nil {
@@ -316,6 +319,9 @@ func (f *ModelFetcher) Ensure(ctx context.Context) (string, error) {
 			if err == nil {
 				f.set(func(s *FetchStatus) { s.State = FetchVerifying })
 				if verr := VerifyModelFile(f.PartPath(), f.spec); verr != nil {
+					if f.Logf != nil {
+						f.Logf("[embedding] %s from %s failed verification: %v (trying next source)", f.spec.Filename, u, verr)
+					}
 					_ = os.Remove(f.PartPath())
 					_ = os.Remove(f.PartPath() + ".verified")
 					last = verr
@@ -327,8 +333,15 @@ func (f *ModelFetcher) Ensure(ctx context.Context) (string, error) {
 					continue
 				}
 				_ = VerifyModelFile(final, f.spec) // writes the marker for the final name
-				f.set(func(s *FetchStatus) { s.State = FetchReady; s.Downloaded = s.Total; s.Err = "" })
+				src := u
+				f.set(func(s *FetchStatus) { s.State = FetchReady; s.Downloaded = s.Total; s.Err = ""; s.Source = src })
+				if f.Logf != nil {
+					f.Logf("[embedding] %s downloaded and verified from %s", f.spec.Filename, src)
+				}
 				return final, nil
+			}
+			if f.Logf != nil {
+				f.Logf("[embedding] %s: source %s failed: %v (trying next source)", f.spec.Filename, u, err)
 			}
 			last = err
 		}
