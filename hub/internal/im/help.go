@@ -17,6 +17,7 @@ func BuildHelpMessage(machineCount int, selectedMachine string, llmEnabled bool)
 		b.WriteString("可用命令：\n\n")
 	}
 
+	b.WriteString("/machines  — 查看在线设备列表（/m）\n")
 	b.WriteString("/call <昵称>  — 切换到指定设备\n")
 	b.WriteString("  例: /call MacBook-Pro\n")
 
@@ -24,10 +25,12 @@ func BuildHelpMessage(machineCount int, selectedMachine string, llmEnabled bool)
 		b.WriteString("\n/call all  — 进入群聊模式（所有设备同时回复）\n")
 		b.WriteString("\n/discuss <话题>  — 发起多设备 AI 讨论\n")
 		b.WriteString("  例: /discuss 如何优化性能\n")
+		b.WriteString("/rounds <1-20>  — 调整讨论轮数\n")
 	}
 
 	b.WriteString("\n/stop  — 停止当前讨论 / 退出会议\n")
 	b.WriteString("/cancel  — 取消当前正在执行的 Agent 任务\n")
+	b.WriteString("/queue  — 查看任务队列状态\n")
 	b.WriteString("/workflow  — 查看/管理工作流（转发到设备处理）\n")
 	b.WriteString("/ask <设备名> <消息>  — 一次性跨空间交互（不影响当前状态）\n")
 	b.WriteString("/context  — 查看对话上下文\n")

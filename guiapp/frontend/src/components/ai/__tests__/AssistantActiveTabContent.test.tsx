@@ -52,6 +52,8 @@ describe("AssistantActiveTabContent", () => {
         );
 
         expect(screen.getByText("hello from A")).toBeTruthy();
+        expect(screen.getByRole("heading", { name: "Agent A" })).toBeTruthy();
+        expect(screen.getByRole("status").textContent).toContain("Online");
         fireEvent.change(screen.getByLabelText("Message Agent A"), { target: { value: "draft for A" } });
 
         rerender(

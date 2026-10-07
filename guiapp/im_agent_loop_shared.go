@@ -361,8 +361,17 @@ func (h *IMMessageHandler) executeSharedTurn(
 	}
 	if strings.TrimSpace(loopID) == "" {
 		loopID = fmt.Sprintf("shared-%d", time.Now().UnixNano())
-		log.Printf("[InFlightTask] generated missing shared run id user=%q run=%q", userID, loopID)
+		log.Printf("[InFlightTask] generated missing shared loop id user=%q loop=%q", userID, loopID)
 	}
+	// Recovery identity is per turn. loopID stays the context kind for logs
+	// and event scope; reusing it as the checkpoint run id made every chat
+	// turn share in_flight_run:chat.
+	recoveryRunID := newInFlightRecoveryRunID()
+	// Closed when this turn returns. The refresh goroutine starts only after a
+	// checkpoint exists; a turn that never commits recoverable work does not
+	// spawn one.
+	leaseStop := make(chan struct{})
+	defer close(leaseStop)
 	runtimeSink := events
 	if runtimeSink == nil {
 		runtimeSink = runtimeEventSinkForLoop(ctx)
@@ -374,8 +383,8 @@ func (h *IMMessageHandler) executeSharedTurn(
 	var loopStats struct {
 		tools, iters int
 	}
-	log.Printf("[agent-loop] shared start owner=%q request_id=%q loop=%q kind=%s platform=%q text_len=%d attachments=%d",
-		userID, requestID, loopID, kind, platform, len([]rune(userText)), len(attachments))
+	log.Printf("[agent-loop] shared start owner=%q request_id=%q loop=%q recovery_run=%q kind=%s platform=%q text_len=%d attachments=%d",
+		userID, requestID, loopID, recoveryRunID, kind, platform, len([]rune(userText)), len(attachments))
 	// Trajectory cleanup after recover so panic turns stamp error status before Flush.
 	var (
 		trajRecorder  *TrajectoryRecorder
@@ -493,7 +502,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		userID:            userID,
 		userText:          userText,
 		checkpointHistory: append(append([]agent.ConversationEntry(nil), history...), agent.ConversationEntry{Role: "user", Content: userContent}),
-		checkpointRunID:   loopID,
+		checkpointRunID:   recoveryRunID,
 		checkpointProject: projectPath,
 		hasLocalFileWork:  len(attachments) > 0 || hasCurrentLocalFileWork(userText),
 		platform:          platform, // pin turn platform for tool rewrites (not only loopCtx)
@@ -514,6 +523,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		httpClient:        startState.HTTPClient,
 		eventSequence:     &eventSequence,
 	}
+	cb.leaseStop = leaseStop
 	if startupEventErr != nil {
 		cb.recordRuntimeEventError(startupEventErr)
 	}
@@ -589,7 +599,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		}
 		// A crash never reaches this branch. User stop drops the marker here;
 		// every other cancel keeps it.
-		return h.sharedLoopCancelResponse(ctx, userID, loopID, outHistory, userText, cb.hasPendingToolBatch)
+		return h.sharedLoopCancelResponse(ctx, userID, recoveryRunID, outHistory, userText, cb.hasPendingToolBatch)
 	}
 	// ask_user intentionally pauses before the core loop can append its tool
 	// result. Reuse the legacy pause finalizer to atomically persist the paired
@@ -614,9 +624,9 @@ func (h *IMMessageHandler) executeSharedTurn(
 		// Persist the paired interactive history and retire the temporary pre-tool
 		// marker in one write. A split save/clear can leave an old marker on disk
 		// and incorrectly show crash recovery after a normal interactive pause.
-		if err := h.persistSharedInteractivePause(userID, loopID, askUserOutcome.History); err != nil {
+		if err := h.persistSharedInteractivePause(userID, recoveryRunID, askUserOutcome.History); err != nil {
 			cb.semanticDurabilityBlocked = true
-			log.Printf("[InFlightTask] shared ask-user finalization flush failed user=%q run=%q err=%v", userID, loopID, err)
+			log.Printf("[InFlightTask] shared ask-user finalization flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
 			// The paired question only becomes resumable state after its history and
 			// marker transition reach disk together. Do not leave an in-memory
 			// pending answer that can disappear on restart while the old pre-tool
@@ -685,8 +695,8 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// latest successful checkpoint for crash recovery. User cancel already
 	// retired its marker above.
 	if cb.checkpointCommitted && loopResult.Error == "" && loopResult.AskUser == nil && loopResult.RecordAudio == nil {
-		if err := h.memory.CompleteInFlightCheckpointForRun(userID, loopID); err != nil {
-			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, loopID, err)
+		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
+			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
 		}
 	}
 
@@ -780,7 +790,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		}
 	}
 	telemetry.InputBreakdown = cb.inputBreakdown
-	telemetry.Attach(resp)
+	attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
 	if onStreamDone != nil {
 		onStreamDone()
 	}
@@ -1340,6 +1350,11 @@ type sharedAgentLoopCallbacks struct {
 	checkpointRunID     string
 	checkpointProject   string
 	checkpointCommitted bool
+	// leaseStop ends the background lease refresh started after the first
+	// durable checkpoint. Token callbacks must not refresh the lease themselves:
+	// that takes the conversation lock on the stream path.
+	leaseStop <-chan struct{}
+	leaseOnce sync.Once
 	// contextCheckpointReader is set when this request's conversation contains
 	// a checkpoint handle. The handle is a user message, not a tool result, so
 	// the spill overlay cannot see it in checkpointHistory. The reader has to
@@ -2558,6 +2573,11 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if c == nil {
 		return nil
 	}
+	if petCompanionToolsDisabled(c.userID) {
+		c.semanticSurface = nil
+		c.setVisibleToolDefinitions(nil)
+		return nil
+	}
 	if c.semanticSurface != nil {
 		c.maybeOverlaySQLDatabaseForTurn(userText)
 		c.maybeOverlayDocumentContinuationForTurn(userText)
@@ -3449,7 +3469,7 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if isLegacyModelMCPGateway(name) {
 		return legacyModelMCPGatewayDeniedText()
 	}
-	if isLegacyModelManageSkillGateway(name, argsJSON) {
+	if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 		return legacyModelManageSkillGatewayDeniedText()
 	}
 	if c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
@@ -3494,7 +3514,7 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 			result = agent.ToolExecutionResult{Result: legacyToolSurfaceDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && isLegacyModelMCPGateway(name) {
 			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
-		} else if c != nil && isLegacyModelManageSkillGateway(name, argsJSON) {
+		} else if c != nil && legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
 			result = agent.ToolExecutionResult{Result: legacyAdapterCatalogDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
@@ -3518,7 +3538,7 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 			}
 		} else if isLegacyModelMCPGateway(name) {
 			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
-		} else if isLegacyModelManageSkillGateway(name, argsJSON) {
+		} else if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 		} else {
 			result = c.ExecuteToolStructured(name, argsJSON)
@@ -3925,9 +3945,25 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	// The executor admits the signed grant, loads durable predecessor facts,
 	// acquires a conditional selection run record, then invokes the immutable
 	// adapter. No callback-local completion map may manufacture DAG progress.
-	execResult, selection, err := c.semanticSurface.executor.Execute(grant, c.semanticSurface.scope, c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
-		return c.executeBoundSemanticSelection(selection, argsJSON)
-	})
+	invoke := func(active tool.InvocationGrant) (tool.SelectionExecutionResult, tool.PlannedSelection, error) {
+		return c.semanticSurface.executor.Execute(active, semanticGrantValidateScope(c.semanticSurface.scope, active.Scope), c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
+			return c.executeBoundSemanticSelection(selection, argsJSON)
+		})
+	}
+	if renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant); renewErr != nil {
+		return semanticGrantRejectMessage(renewErr.Error())
+	} else {
+		grant = renewed
+	}
+	execResult, selection, err := invoke(grant)
+	if invocationGrantExpired(err) {
+		renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
+		if renewErr != nil {
+			log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+			return semanticGrantRejectMessage(err.Error())
+		}
+		execResult, selection, err = invoke(renewed)
+	}
 	if err != nil {
 		return semanticGrantRejectMessage(err.Error())
 	}
@@ -4007,6 +4043,13 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	requestDigest := "invalid:" + tool.SchemaDigest([]byte(argsJSON))
 	if err == nil {
 		requestDigest = canonicalArgs.Digest
+		// Bind the journal to the successor. Renewing after MarkAdmitted
+		// would record the revoked nonce while the executor consumes the new one.
+		renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant)
+		if renewErr != nil {
+			return semanticGrantRejectMessage(renewErr.Error())
+		}
+		grant = renewed
 	}
 	identity := tool.HostCallIdentity{Protocol: "agent-loop/v1", ConnectionID: c.semanticHostConnectionID(), CallID: strings.TrimSpace(callID), SurfaceEpoch: strings.TrimSpace(surfaceEpoch)}
 	fingerprint := c.semanticSurface.issuer.Fingerprint(grant)
@@ -4073,8 +4116,16 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		// same-tool failure counter and the no-progress breaker.
 		return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
 	}
-	if _, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, c.semanticSurface.scope, c.semanticSurface.plan, c.semanticSurface.completed); err != nil {
-		return semanticGrantRejectMessage(err.Error())
+	if _, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, semanticGrantValidateScope(c.semanticSurface.scope, grant.Scope), c.semanticSurface.plan, c.semanticSurface.completed); err != nil {
+		if !invocationGrantExpired(err) {
+			return semanticGrantRejectMessage(err.Error())
+		}
+		renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
+		if renewErr != nil {
+			log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+			return semanticGrantRejectMessage(err.Error())
+		}
+		grant = renewed
 	}
 	// A prepared delivery intent is scoped to exactly one adapter invocation.
 	// Never let a prior selection's transient projection influence a later
@@ -4246,9 +4297,14 @@ func semanticSelectionByID(plan tool.ToolPlan, selectionID string) (tool.Planned
 }
 
 func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName string, grant tool.InvocationGrant, canonicalArgs tool.CanonicalRequest) string {
-	execResult, selection, err := c.semanticSurface.executor.Execute(grant, c.semanticSurface.scope, c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
-		return c.executeBoundSemanticSelectionCanonical(selection, canonicalArgs)
-	})
+	invoke := func(active tool.InvocationGrant) (tool.SelectionExecutionResult, tool.PlannedSelection, error) {
+		return c.semanticSurface.executor.Execute(active, semanticGrantValidateScope(c.semanticSurface.scope, active.Scope), c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
+			return c.executeBoundSemanticSelectionCanonical(selection, canonicalArgs)
+		})
+	}
+	// The journal path renews before Acquire. A second renewal here would
+	// consume a successor the host-call row does not name.
+	execResult, selection, err := invoke(grant)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
@@ -4354,6 +4410,11 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 	if c == nil || c.semanticSurface == nil {
 		return "", fmt.Errorf("semantic tool surface is unavailable")
 	}
+	// A successful file edit leaves the next write on the following request.
+	// Waiting for the model to call a name that has already left the surface
+	// is the usage-limit denial: the tool vanished, the model called it, and
+	// the reply said this turn was finished.
+	c.ensureNextObligationFileWrite(selectionID)
 	var err error
 	if c.semanticHoldDependantIssue {
 		// Hold only the host-owned generate unlock. Same-family repeats
@@ -4380,6 +4441,107 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 		c.loopCtx.noteSemanticResidueUse(selection.FitProof.MatchedCapability)
 	}
 	return semanticSpentBudgetNote(c.semanticSurface, selectionID), nil
+}
+
+// ensureNextObligationFileWrite appends one fs.write.local sibling when the
+// call that just succeeded spent the published wave. The following refresh
+// lists it. A baseline or archetype companion stays at the wave it was given.
+// An unissued sibling already in the plan is left to that refresh.
+func (c *sharedAgentLoopCallbacks) ensureNextObligationFileWrite(selectionID string) {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, selectionID)
+	if !found || !obligationLocalFileWrite(c.semanticSurface.plan, selection) {
+		return
+	}
+	if familyHasUnissuedSibling(c.semanticSurface, selection, selectionID) {
+		return
+	}
+	var updated tool.ToolPlan
+	var err error
+	if c.semanticSurface.coordinator != nil {
+		updated, err = c.semanticSurface.coordinator.AppendRepeatSibling(c.semanticSurface.scope, selectionID, time.Now().UTC())
+	} else {
+		var opened bool
+		updated, _, opened = tool.AppendRepeatSibling(c.semanticSurface.plan, selectionID)
+		if !opened {
+			err = fmt.Errorf("repeat sibling unavailable")
+		}
+	}
+	if err != nil {
+		log.Printf("[semantic] next file write was not listed: %v", err)
+		return
+	}
+	c.semanticSurface.plan = updated
+}
+
+func obligationLocalFileWrite(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
+	if !tool.IterativeLocalFileWrite(selection) {
+		return false
+	}
+	family := tool.RepeatFamilyID(selection.NeedID)
+	if family == "" {
+		family = tool.RepeatFamilyID(selection.ID)
+	}
+	if family == "" {
+		return false
+	}
+	for _, other := range plan.Selections {
+		otherFamily := tool.RepeatFamilyID(other.NeedID)
+		if otherFamily == "" {
+			otherFamily = tool.RepeatFamilyID(other.ID)
+		}
+		if otherFamily != family {
+			continue
+		}
+		if !companionPlannedSelection(other) {
+			return true
+		}
+	}
+	return false
+}
+
+func companionPlannedSelection(selection tool.PlannedSelection) bool {
+	if strings.Contains(selection.NeedID, "zz-baseline:") || strings.Contains(selection.ID, "zz-baseline:") {
+		return true
+	}
+	for _, evidence := range selection.EvidenceIDs {
+		if evidence == "intent:baseline_workspace" || evidence == "intent:archetype_bundle" {
+			return true
+		}
+	}
+	return false
+}
+
+func familyHasUnissuedSibling(surface *semanticCallSurface, prototype tool.PlannedSelection, exceptID string) bool {
+	if surface == nil {
+		return false
+	}
+	family := tool.RepeatFamilyID(prototype.NeedID)
+	if family == "" {
+		family = tool.RepeatFamilyID(prototype.ID)
+	}
+	if family == "" {
+		return false
+	}
+	for _, other := range surface.plan.Selections {
+		if other.ID == exceptID {
+			continue
+		}
+		otherFamily := tool.RepeatFamilyID(other.NeedID)
+		if otherFamily == "" {
+			otherFamily = tool.RepeatFamilyID(other.ID)
+		}
+		if otherFamily != family {
+			continue
+		}
+		if surface.completed[other.ID] || surface.materialized[other.ID] {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func hostOwnedGenerateSelection(selection tool.PlannedSelection) bool {
@@ -4480,6 +4642,111 @@ func semanticSelectionOutcomeUnknown(result string) bool {
 // user to re-authorize tools that this turn cannot run.
 func semanticGrantRejectMessage(code string) string {
 	return agentruntime.GrantRejectMessage(code)
+}
+
+// invocationGrantExpired reports the wall-clock failure exactly. A longer code
+// such as invocation_grant_not_expired must not take the renewal path.
+func invocationGrantExpired(err error) bool {
+	return err != nil && err.Error() == "invocation_grant_expired"
+}
+
+// semanticGrantWindowPassed reports that the wall clock is at or past the
+// signed expiry. A zero expiry stays on the admission path.
+func semanticGrantWindowPassed(expiresAt time.Time) bool {
+	expiresAt = expiresAt.UTC()
+	return !expiresAt.IsZero() && !time.Now().UTC().Before(expiresAt)
+}
+
+// semanticGrantValidateScope is the scope a signed grant is checked against.
+// Compatibility already binds the turn. The signed scope is then used so a
+// route snapshot filled in at renewal still matches the signature. Two
+// different turns keep the host scope and fail that check.
+func semanticGrantValidateScope(host, signed tool.InvocationScope) tool.InvocationScope {
+	if tool.InvocationScopesCompatible(host, signed) {
+		return signed
+	}
+	return host
+}
+
+// renewExpiredGrantIfClock renews a live grant once its signed window has
+// passed, before a host-call journal is bound to the fingerprint. A grant
+// still inside its window is returned unchanged. Any other validation
+// failure is left for admission.
+func (c *sharedAgentLoopCallbacks) renewExpiredGrantIfClock(functionName string, grant tool.InvocationGrant) (tool.InvocationGrant, error) {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil || !semanticGrantWindowPassed(grant.ExpiresAt) {
+		return grant, nil
+	}
+	_, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, semanticGrantValidateScope(c.semanticSurface.scope, grant.Scope), c.semanticSurface.plan, c.semanticSurface.completed)
+	if err == nil || !invocationGrantExpired(err) {
+		return grant, nil
+	}
+	renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
+	if renewErr != nil {
+		log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+		return tool.InvocationGrant{}, err
+	}
+	return renewed, nil
+}
+
+// renewExpiredLiveGrant mints a successor for the live map's current unconsumed
+// grant after its signed window has passed, then continues this same call.
+// A retired, consumed, revoked, completed, or cancelled turn is left unchanged.
+// One attempt: the caller does not loop.
+func (c *sharedAgentLoopCallbacks) renewExpiredLiveGrant(functionName string, previous tool.InvocationGrant) (tool.InvocationGrant, error) {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_expired")
+	}
+	if c.loopCtx != nil && c.loopCtx.IsCancelled() {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_expired")
+	}
+	surface := c.semanticSurface
+	live, ok := surface.grants[functionName]
+	if !ok || live.Nonce != previous.Nonce || live.Token != previous.Token {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_not_live")
+	}
+	if surface.completed[previous.SelectionID] {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	now := time.Now().UTC()
+	var successor tool.InvocationGrant
+	var err error
+	if surface.coordinator != nil {
+		successor, err = surface.coordinator.CommitExpiredRenewal(surface.issuer, surface.scope, previous, semanticInvocationGrantTTL, now, surface.completed)
+	} else {
+		successor, err = surface.issuer.RenewExpired(previous, surface.scope, surface.plan, semanticInvocationGrantTTL, now, surface.completed)
+		if err == nil && surface.routeState != nil {
+			if _, retireErr := surface.routeState.RetireMaterialization(surface.scope, surface.plan.ID, previous.Token, now); retireErr != nil {
+				log.Printf("[semantic-routing] retire expired materialization for %s selection %s: %v", functionName, previous.SelectionID, retireErr)
+			}
+			if _, recordErr := surface.routeState.RecordMaterialization(surface.scope, surface.plan.ID, tool.RouteMaterialization{
+				FunctionName: successor.Token, Grant: successor, State: tool.RouteMaterializationExposed,
+			}, now); recordErr != nil {
+				log.Printf("[semantic-routing] record renewed materialization for %s selection %s: %v", functionName, previous.SelectionID, recordErr)
+			}
+		}
+	}
+	if err != nil {
+		return tool.InvocationGrant{}, err
+	}
+	if !tool.InvocationScopesCompatible(surface.scope, successor.Scope) {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_scope_mismatch")
+	}
+	if err := tool.InstallRenewedGrant(surface.grants, functionName, previous, successor); err != nil {
+		return tool.InvocationGrant{}, err
+	}
+	if _, err := surface.issuer.ValidateWithCanonicalScope(successor, successor.Scope, surface.plan, surface.completed); err != nil {
+		return tool.InvocationGrant{}, err
+	}
+	// Stable names (bash, read_file, write_file, build_verify) keep the same
+	// model function. Re-rendering the catalog would only repeat the list
+	// the current request already holds. A token-named tool changes key.
+	if tool.RenderedSemanticFunctionName(successor.AdapterName, successor.Token) != functionName {
+		if syncErr := c.syncSemanticToolSurface(); syncErr != nil {
+			log.Printf("[semantic-routing] sync after grant renewal for %s selection %s: %v", functionName, previous.SelectionID, syncErr)
+		}
+	}
+	log.Printf("[semantic-routing] renewed unconsumed grant for tool %s selection %s", functionName, previous.SelectionID)
+	return successor, nil
 }
 
 // semanticSelectionRequiresReceipt is derived from the immutable planned
@@ -5348,11 +5615,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelectio
 	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
 		return "[system rejected] canonical_file_read_arguments_invalid"
 	}
-	path, query, filePattern, err := semanticTrustedFileReadArgsAllowed(args)
+	path, query, filePattern, startLine, err := semanticTrustedFileReadArgsAllowed(args)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
-	result, err := c.handler.readTrustedFile(c.semanticPrincipalID(), path, query, filePattern)
+	result, err := c.handler.readTrustedFile(c.semanticPrincipalID(), path, query, filePattern, startLine)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
@@ -6385,7 +6652,7 @@ func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
 			}
 		}
 		if telemetry != nil {
-			telemetry.Attach(resp)
+			attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
 		}
 		if onStreamDone != nil {
 			onStreamDone()
@@ -6409,7 +6676,7 @@ func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
 		ResponseSource: "shared_agent_loop",
 	}
 	if telemetry != nil {
-		telemetry.Attach(resp)
+		attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
 	}
 	if onStreamDone != nil {
 		onStreamDone()
@@ -6463,7 +6730,7 @@ func (h *IMMessageHandler) interruptedSharedLoopResultResponse(
 				telemetry.Route = route
 			}
 		}
-		telemetry.Attach(resp)
+		attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
 	}
 	if onStreamDone != nil {
 		onStreamDone()
@@ -6560,7 +6827,7 @@ func (h *IMMessageHandler) finalizeSharedLoopAskUser(
 		}
 	}
 	if telemetry != nil {
-		telemetry.Attach(resp)
+		attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
 	}
 	if onStreamDone != nil {
 		onStreamDone()
@@ -6770,6 +7037,26 @@ func (c *sharedAgentLoopCallbacks) OnToken(delta string) {
 	c.emitRuntimeEvent(agentruntime.EventAssistantDelta, map[string]any{"delta": delta})
 }
 
+// ensureInFlightLeaseRefresh starts one background refresh for this turn.
+// It runs off the token path so a long model call or a silent tool still
+// counts as the owner being alive, without taking the conversation lock on
+// every delta.
+func (c *sharedAgentLoopCallbacks) ensureInFlightLeaseRefresh() {
+	if c == nil || c.leaseStop == nil || c.handler == nil || c.handler.memory == nil {
+		return
+	}
+	runID := strings.TrimSpace(c.checkpointRunID)
+	if runID == "" {
+		return
+	}
+	memory := c.handler.memory
+	userID := c.userID
+	stop := c.leaseStop
+	c.leaseOnce.Do(func() {
+		startInFlightLeaseRefresh(stop, memory, userID, runID)
+	})
+}
+
 // OnLLMNewRound implements agent.LLMRoundNotifier. A live-steer replacement
 // uses the same stream-generation boundary as an ordinary next tool round.
 func (c *sharedAgentLoopCallbacks) OnLLMNewRound() {
@@ -6859,6 +7146,7 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.Conversatio
 	}
 	c.checkpointCommitted = true
 	c.hasPendingToolBatch = true
+	c.ensureInFlightLeaseRefresh()
 	return nil
 }
 
@@ -6903,6 +7191,7 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchCommitted(delta []agent.Conversati
 	}
 	c.checkpointCommitted = true
 	c.hasPendingToolBatch = false
+	c.ensureInFlightLeaseRefresh()
 	// A dependant becomes model-visible only after the complete paired batch is
 	// durably checkpointed. Releasing before persistRecoveryCheckpoint succeeds
 	// would expose authority derived from a batch that recovery still treats as

@@ -576,9 +576,11 @@ export function isRemoteMaintenanceTaskTags(tags?: string[] | null): boolean {
     return !!tags?.some((tag) => String(tag || "").trim() === "source:remote_ops_diagnosis");
 }
 
+const defaultRemoteSSHPort = 22;
+
 /** Parse non-sensitive remote SSH metadata from task tags (password is never stored). */
 export function remoteCodingMetaFromTaskTags(tags?: string[] | null): RemoteCodingMetaFromTags {
-    const meta: RemoteCodingMetaFromTags = { host: "", user: "", port: 22, workDir: "" };
+    const meta: RemoteCodingMetaFromTags = { host: "", user: "", port: defaultRemoteSSHPort, workDir: "" };
     if (!tags?.length) return meta;
     for (const raw of tags) {
         const t = String(raw || "").trim();
@@ -596,25 +598,54 @@ export function remoteCodingMetaFromTaskTags(tags?: string[] | null): RemoteCodi
     return meta;
 }
 
-/** Sidebar-compatible remote location: `host:workDir`, or whichever part exists. */
-export function remoteWorkspaceLocationLabel(host?: string | null, workDir?: string | null): string {
+function usableRemotePort(port?: number | null): number | undefined {
+    const p = Number(port);
+    if (Number.isInteger(p) && p > 0 && p < 65536) return p;
+    return undefined;
+}
+
+/** IPv6 literals contain more than one colon, so they are bracketed before `:port`. */
+function remoteAuthority(host: string, port?: number | null): string {
+    const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    const literal = bare.split(":").length > 2 ? `[${bare}]` : bare;
+    const p = usableRemotePort(port);
+    if (p && p !== defaultRemoteSSHPort) return `${literal}:${p}`;
+    return literal;
+}
+
+/**
+ * Remote location shown on the task header: `host/dir/path`.
+ * A non-default SSH port is inserted as `host:port/dir/path`. Port 22 is omitted.
+ */
+export function remoteWorkspaceLocationLabel(host?: string | null, workDir?: string | null, port?: number | null): string {
     const h = String(host || "").trim();
     const d = String(workDir || "").trim();
-    if (h && d) return `${h}:${d}`;
-    return h || d;
+    const authority = h ? remoteAuthority(h, port) : "";
+    if (authority && d) {
+        const path = d.startsWith("/") ? d : `/${d}`;
+        return `${authority}${path}`;
+    }
+    return authority || d;
 }
 
 /** Prefer live SSH status, then the tab host, then durable task tags. */
 export function pickRemoteWorkspaceLocation(opts: {
     liveHost?: string | null;
     liveWorkDir?: string | null;
+    livePort?: number | null;
     tabHost?: string | null;
     tags?: string[] | null;
-}): { host: string; workDir: string } {
+}): { host: string; workDir: string; port: number } {
     const fromTags = remoteCodingMetaFromTaskTags(opts.tags);
+    const liveHost = String(opts.liveHost || "").trim();
+    const liveWorkDir = String(opts.liveWorkDir || "").trim();
+    const livePort = usableRemotePort(opts.livePort);
     return {
-        host: String(opts.liveHost || "").trim() || String(opts.tabHost || "").trim() || fromTags.host,
-        workDir: String(opts.liveWorkDir || "").trim() || fromTags.workDir,
+        host: liveHost || String(opts.tabHost || "").trim() || fromTags.host,
+        workDir: liveWorkDir || fromTags.workDir,
+        // Port 22 is both the SSH default and the value stored when status omits a port.
+        // Only a live non-default port replaces the port recorded on the task.
+        port: liveHost && livePort && livePort !== defaultRemoteSSHPort ? livePort : fromTags.port,
     };
 }
 
@@ -631,17 +662,19 @@ export function resolveRemoteWorkspaceDisplay(args: {
     isLive: boolean;
     liveHost?: string | null;
     liveWorkDir?: string | null;
+    livePort?: number | null;
     tabHost?: string | null;
     tags?: string[] | null;
-}): { workspace: { host: string; workDir: string }; label: string } {
-    if (!args.isRemoteCodingDev) return { workspace: { host: "", workDir: "" }, label: "" };
+}): { workspace: { host: string; workDir: string; port: number }; label: string } {
+    if (!args.isRemoteCodingDev) return { workspace: { host: "", workDir: "", port: defaultRemoteSSHPort }, label: "" };
     const workspace = pickRemoteWorkspaceLocation({
         liveHost: args.isLive ? args.liveHost : "",
         liveWorkDir: args.isLive ? args.liveWorkDir : "",
+        livePort: args.isLive ? args.livePort : undefined,
         tabHost: args.tabHost,
         tags: args.tags,
     });
-    return { workspace, label: remoteWorkspaceLocationLabel(workspace.host, workspace.workDir) };
+    return { workspace, label: remoteWorkspaceLocationLabel(workspace.host, workspace.workDir, workspace.port) };
 }
 
 export function isPureCodingTaskTags(tags?: string[] | null): boolean {

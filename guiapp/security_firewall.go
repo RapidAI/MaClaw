@@ -217,6 +217,17 @@ func userIDFromSecurityContext(ctx *SecurityCallContext) string {
 }
 
 func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interface{}, risk security.RiskAssessment, action security.PolicyAction, result, sessionID, userID string) {
+	f.recordAuditFromSource(toolName, args, risk, action, result, sessionID, userID, "")
+}
+
+// recordAuditFromSource is recordAudit plus the provenance of the decision.
+//
+// Source is what makes a device-made decision auditable (plan N1-6 requirement
+// 3). The same "agent_view_approval_approved" result means something very
+// different when it came from the desktop review panel and when it came from a
+// button pressed on a terminal in another room, and the trail has to be able to
+// tell the two apart without parsing prose out of Result.
+func (f *SecurityFirewall) recordAuditFromSource(toolName string, args map[string]interface{}, risk security.RiskAssessment, action security.PolicyAction, result, sessionID, userID, source string) {
 	if f.audit == nil {
 		return
 	}
@@ -232,6 +243,7 @@ func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interfac
 		RiskLevel:    risk.Level,
 		PolicyAction: action,
 		Result:       result,
+		Source:       strings.TrimSpace(source),
 	})
 }
 

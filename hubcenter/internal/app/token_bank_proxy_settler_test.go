@@ -223,8 +223,40 @@ func TestTokenBankProxySettlerUsesPriceBookUnits(t *testing.T) {
 	if view.UnitInputPer10K != 7 || view.UnitOutputPer10K != 9 {
 		t.Fatalf("units = %v/%v, want 7/9 from the price book", view.UnitInputPer10K, view.UnitOutputPer10K)
 	}
+	// The rule left cache blank, which is stored as 0. That must not wipe the
+	// platform cache defaults, or cached tokens are billed at the input rate.
+	defaults := sqlite.DefaultTokenBankSettings()
+	if view.UnitCachedReadPer10K != defaults.DefaultUnitCachedReadPer10K ||
+		view.UnitCacheWritePer10K != defaults.DefaultUnitCacheWritePer10K {
+		t.Fatalf("cache units = %v/%v, want defaults %v/%v",
+			view.UnitCachedReadPer10K, view.UnitCacheWritePer10K,
+			defaults.DefaultUnitCachedReadPer10K, defaults.DefaultUnitCacheWritePer10K)
+	}
 	if view.PriceBookID != "rule-llama" {
 		t.Fatalf("PriceBookID = %q, want rule-llama", view.PriceBookID)
+	}
+
+	if _, err := repo.UpsertPriceRule(ctx, sqlite.TokenBankPriceRule{
+		ID: "rule-llama", ModelPattern: "llama-3.3-*",
+		UnitInputPer10K: 7, UnitOutputPer10K: 9,
+		UnitCachedReadPer10K: 1.25, UnitCacheWritePer10K: 2.5,
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("UpsertPriceRule cache: %v", err)
+	}
+	view, found, err = settler.TokenBankShareForPublish(ctx, "share-1", "llama-3.3-70b")
+	if err != nil || !found {
+		t.Fatalf("TokenBankShareForPublish with cache rates: found=%v err=%v", found, err)
+	}
+	if view.UnitCachedReadPer10K != 1.25 || view.UnitCacheWritePer10K != 2.5 {
+		t.Fatalf("cache units = %v/%v, want 1.25/2.5 from the price book", view.UnitCachedReadPer10K, view.UnitCacheWritePer10K)
+	}
+	fallback, ok, err := settler.(*tokenBankProxySettler).TokenBankFallbackPrice(ctx, "llama-3.3-70b")
+	if err != nil || !ok {
+		t.Fatalf("TokenBankFallbackPrice: ok=%v err=%v", ok, err)
+	}
+	if fallback.UnitInputPer10K != 7 || fallback.UnitCachedReadPer10K != 1.25 || fallback.UnitCacheWritePer10K != 2.5 {
+		t.Fatalf("fallback units = %v/%v/%v, want 7/1.25/2.5",
+			fallback.UnitInputPer10K, fallback.UnitCachedReadPer10K, fallback.UnitCacheWritePer10K)
 	}
 }
 
@@ -328,5 +360,171 @@ func TestPauseTokenBankShareRecordsTheCap(t *testing.T) {
 	}
 	if !strings.Contains(share.PausedReason, "token cap: daily") || !strings.Contains(share.LastError, "token cap: daily") {
 		t.Fatalf("paused_reason/last_error = %q/%q", share.PausedReason, share.LastError)
+	}
+}
+
+func TestPauseTokenBankShareIgnoresUsageSpike(t *testing.T) {
+	repo, st := newSettlerTestRepo(t, "tbk-settler-spike.db")
+	ctx := context.Background()
+	createShare(t, repo, "share-1", "owner-1", "s", "llama", "mid", 1.0)
+	raw := newTokenBankProxySettler(repo, st.System)
+	settler, ok := raw.(*tokenBankProxySettler)
+	if !ok {
+		t.Fatalf("settler type = %T", raw)
+	}
+	if err := settler.PauseTokenBankShare(ctx, "share-1", "anomaly"); err != nil {
+		t.Fatalf("PauseTokenBankShare: %v", err)
+	}
+	share, err := repo.LoadShare(ctx, "share-1", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if share.Status == sqlite.TokenBankShareStatusPaused || share.PausedReason != "" {
+		t.Fatalf("status/reason = %q/%q, want the share left unpaused", share.Status, share.PausedReason)
+	}
+}
+
+func TestResumeSharesPausedForUsageSpikeLeavesOtherPauses(t *testing.T) {
+	repo, _ := newSettlerTestRepo(t, "tbk-settler-resume-spike.db")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"spike", "daily", "manual"} {
+		createShare(t, repo, id, "owner-1", id, "llama", "mid", 1.0)
+	}
+	if err := repo.SetSharePaused(ctx, "spike", "", "token cap: anomaly", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.NoteShareModelError(ctx, "spike", "glm-5", "token cap: anomaly"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetSharePaused(ctx, "daily", "", "token cap: daily", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetSharePaused(ctx, "manual", "", "manual", true, now); err != nil {
+		t.Fatal(err)
+	}
+
+	resumeSharesPausedForUsageSpike(ctx, repo, nil)
+
+	spike, err := repo.LoadShare(ctx, "spike", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spike.Status != sqlite.TokenBankShareStatusActive || spike.PausedReason != "token cap: anomaly" || spike.LastError != "" {
+		t.Fatalf("spike = status %q reason %q last_error %q, want active, spike note kept, last_error clear", spike.Status, spike.PausedReason, spike.LastError)
+	}
+	for _, id := range []string{"daily", "manual"} {
+		share, err := repo.LoadShare(ctx, id, "owner-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if share.Status != sqlite.TokenBankShareStatusPaused {
+			t.Fatalf("%s status = %q, want paused", id, share.Status)
+		}
+	}
+
+	resumeSharesPausedForUsageSpike(ctx, repo, nil)
+	again, err := repo.LoadShare(ctx, "spike", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Status != sqlite.TokenBankShareStatusActive {
+		t.Fatalf("second resume status = %q, want active", again.Status)
+	}
+}
+
+func TestResumeUsageSpikePauseResumesRegistryMembers(t *testing.T) {
+	repo, st := newSettlerTestRepo(t, "tbk-settler-resume-members.db")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	createShare(t, repo, "spike", "owner-1", "spike", "llama", "mid", 1.0)
+	createShare(t, repo, "daily", "owner-1", "daily", "llama", "mid", 1.0)
+	if err := repo.SetSharePaused(ctx, "spike", "", "token cap: anomaly", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.NoteShareModelError(ctx, "spike", "llama", "token cap: anomaly"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetSharePaused(ctx, "daily", "", "token cap: daily", true, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := llmservice.NewService(st.System)
+	if err := svc.EnsureTokenBankArrays(ctx); err != nil {
+		t.Fatal(err)
+	}
+	spikeID := llmservice.TokenBankMemberID("spike", "llama")
+	dailyID := llmservice.TokenBankMemberID("daily", "llama")
+	specs := []llmservice.TokenBankPublishSpec{
+		{
+			ShareID:     "spike",
+			OwnerUserID: "owner-1",
+			DisplayName: "spike",
+			Model:       "llama",
+			ArrayID:     llmservice.TokenBankArrayForTier("mid"),
+			APIURL:      "https://upstream.example/v1",
+			APIKey:      "sk-test",
+			Protocol:    "openai",
+			SharePaused: true,
+		},
+		{
+			ShareID:     "daily",
+			OwnerUserID: "owner-1",
+			DisplayName: "daily",
+			Model:       "llama",
+			ArrayID:     llmservice.TokenBankArrayForTier("mid"),
+			APIURL:      "https://upstream.example/v1",
+			APIKey:      "sk-daily",
+			Protocol:    "openai",
+			SharePaused: true,
+		},
+	}
+	if _, err := svc.PublishTokenBankShare(ctx, specs); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{spikeID, dailyID} {
+		paused, err := svc.GetProvider(ctx, id)
+		if err != nil || paused == nil || !paused.Paused {
+			t.Fatalf("published member %s = %+v err=%v, want paused", id, paused, err)
+		}
+	}
+
+	resumeSharesPausedForUsageSpike(ctx, repo, svc)
+
+	share, err := repo.LoadShare(ctx, "spike", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if share.Status != sqlite.TokenBankShareStatusActive || share.PausedReason != "token cap: anomaly" || share.LastError != "" {
+		t.Fatalf("share = status %q reason %q last_error %q, want active, spike note kept, last_error clear", share.Status, share.PausedReason, share.LastError)
+	}
+	live, err := svc.GetProvider(ctx, spikeID)
+	if err != nil || live == nil || live.Paused {
+		t.Fatalf("spike member after resume = %+v err=%v, want unpaused", live, err)
+	}
+	if _, err := svc.SetTokenBankSharePaused(ctx, "spike", true); err != nil {
+		t.Fatal(err)
+	}
+	resumeSharesPausedForUsageSpike(ctx, repo, svc)
+	again, err := svc.GetProvider(ctx, spikeID)
+	if err != nil || again == nil || again.Paused {
+		t.Fatalf("spike member after registry clobber = %+v err=%v, want unpaused", again, err)
+	}
+	share, err = repo.LoadShare(ctx, "spike", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if share.Status != sqlite.TokenBankShareStatusActive || share.PausedReason != "token cap: anomaly" {
+		t.Fatalf("share after clobber = status %q reason %q, want active with the spike note", share.Status, share.PausedReason)
+	}
+	dailyShare, err := repo.LoadShare(ctx, "daily", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dailyShare.Status != sqlite.TokenBankShareStatusPaused {
+		t.Fatalf("daily status = %q, want paused", dailyShare.Status)
+	}
+	dailyMember, err := svc.GetProvider(ctx, dailyID)
+	if err != nil || dailyMember == nil || !dailyMember.Paused {
+		t.Fatalf("daily member after resume = %+v err=%v, want still paused", dailyMember, err)
 	}
 }

@@ -262,7 +262,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         };
         const maybeReloadNonStream = (event: any) => {
             const kind = eventDiscussionKind(event);
-            if (kind === "stream_chunk" || kind === "stream_end") return;
+            if (kind === "stream_chunk" || kind === "stream_end" || kind === "stream_status") return;
             maybeReload(event);
         };
         const offDiscussion = EventsOn("ve-event", maybeReloadNonStream);
@@ -516,6 +516,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
 
         [...detailMessages, ...pendingOptimisticMessages].forEach((m, idx) => {
             const kind = String(m.kind || "").trim().toLowerCase();
+            if (kind === "stream_status") return;
             if (kind === "stream_end") {
                 lastStreamFrom = "";
                 lastStreamIndex = -1;

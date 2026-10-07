@@ -207,6 +207,18 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(document.activeElement).toBe(selector);
     });
 
+    it("shows this-task command allowance without changing the mode button", () => {
+        renderLeft({ permissionMode: "workspace", taskCommandAllowed: true, showWorkspacePermissionOption: true });
+        expect(screen.getByTestId("ai-permission-mode").textContent).toContain("工作区信任");
+        expect(screen.getByTestId("ai-task-command-allowed").textContent).toContain("本任务已以后允许");
+    });
+
+    it("hides this-task command allowance while full control is selected", () => {
+        renderLeft({ permissionMode: "full", taskCommandAllowed: true });
+        expect(screen.getByTestId("ai-permission-mode").textContent).toContain("完全控制");
+        expect(screen.queryByTestId("ai-task-command-allowed")).toBeNull();
+    });
+
     it("marks the trigger as dangerous red when full control is selected", () => {
         renderLeft({ permissionMode: "full" });
 

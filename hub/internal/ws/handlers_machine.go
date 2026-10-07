@@ -1797,6 +1797,19 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 			return false, nil
 		}
 	}
+	// A structured event (plan N1-3). Like ambient, clientId="*" means "every
+	// device under this machine", so the fan-out is finished here and the reply
+	// must not also be handed to the single-client delivery path below.
+	if event, ok := payload.Reply["event"].(map[string]any); ok {
+		if updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineEvent(string, map[string]any)
+		}); ok {
+			updater.UpdateMachineEvent(ctx.MachineID, event)
+		}
+		if payload.ClientID == "*" {
+			return false, nil
+		}
+	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "pet_profile") {
 		petSkin, _ := payload.Reply["pet_skin"].(string)
 		motionEnabled, _ := payload.Reply["pet_motion_enabled"].(bool)

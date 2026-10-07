@@ -3,6 +3,12 @@ import {
     MICROCREDITS_PER_CREDIT,
     countProbeProgress,
     creditsToMicro,
+    defaultTokenBankWithdrawAmount,
+    MIN_TOKEN_BANK_WITHDRAW_MICRO,
+    normalizeCreditInput,
+    tokenBankWithdrawAmountIssue,
+    withdrawFailureDetail,
+    withdrawFailureNeedsReplay,
     describeAutoWithdraw,
     displayProviderLabel,
     extractTokenBankGiftLinks,
@@ -10,6 +16,7 @@ import {
     extractTokenBankModels,
     extractTokenBankShares,
     extractTokenBankWithdrawals,
+    isAutomaticTokenBankWithdrawal,
     fingerprintProviderKey,
     matchTokenBankShareCredential,
     modelsMissingFromShare,
@@ -24,6 +31,8 @@ import {
     giftClaimTarget,
     giftCodeFromInput,
     isShareLive,
+    shareCapNoteKind,
+    shareCapPauseKind,
     newWithdrawRequestID,
     normalizeTokenBankShare,
     normalizeTokenBankSummary,
@@ -156,6 +165,45 @@ describe('hubcenterTokenBank share status', () => {
         expect(toShareStatus('available')).toBeNull();
         expect(toShareStatus('')).toBeNull();
     });
+
+    it('recognizes an automatic token-cap pause and ignores a manual one', () => {
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'token cap: anomaly',
+            last_error: 'token cap: anomaly',
+        })).toBe('anomaly');
+        expect(shareCapPauseKind({ status: 'paused', paused_reason: 'Token Cap: Daily' })).toBe('daily');
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'token cap: daily',
+            last_error: 'glm-5: token cap: anomaly',
+        })).toBe('daily');
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'token cap: daily ... token cap: anomaly',
+        })).toBe('anomaly');
+        expect(shareCapNoteKind('glm-5.3-flash: token cap: monthly')).toBe('monthly');
+        expect(shareCapNoteKind('token cap: daily ... token cap: anomaly')).toBe('anomaly');
+        expect(shareCapNoteKind('token cap: anomaly extra')).toBeNull();
+        // A leftover cap sentence is not the current pause.
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: '',
+            last_error: 'token cap: anomaly',
+        })).toBeNull();
+        expect(shareCapPauseKind({
+            status: 'paused',
+            last_error: 'glm-5.3-flash: token cap: monthly',
+        })).toBeNull();
+        expect(shareCapPauseKind({
+            status: 'paused',
+            paused_reason: 'manual',
+            last_error: 'upstream timeout',
+        })).toBeNull();
+        expect(shareCapPauseKind({ status: 'active', paused_reason: 'token cap: daily', last_error: 'token cap: anomaly' })).toBeNull();
+        expect(shareCapPauseKind(null)).toBeNull();
+        expect(shareCapPauseKind(undefined)).toBeNull();
+    });
 });
 
 describe('hubcenterTokenBank credit formatting', () => {
@@ -183,6 +231,45 @@ describe('hubcenterTokenBank credit formatting', () => {
         expect(creditsToMicro('')).toBeNull();
         expect(creditsToMicro('abc')).toBeNull();
         expect(creditsToMicro('-5')).toBeNull();
+    });
+
+    it('defaults a manual withdrawal to the automatic cap, clamped to the balance', () => {
+        expect(MIN_TOKEN_BANK_WITHDRAW_MICRO).toBe(10_000_000);
+        expect(defaultTokenBankWithdrawAmount(500_000_000, 6_971_760_000)).toBe('500');
+        expect(defaultTokenBankWithdrawAmount(0, 25_000_000)).toBe('25');
+        expect(defaultTokenBankWithdrawAmount(800_000_000, 80_000_000)).toBe('80');
+        expect(tokenBankWithdrawAmountIssue('9', 100_000_000)).toBe('below_minimum');
+        expect(tokenBankWithdrawAmountIssue('10', 100_000_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('101', 100_000_000)).toBe('above_balance');
+        expect(tokenBankWithdrawAmountIssue('', 100_000_000)).toBe('empty');
+        expect(tokenBankWithdrawAmountIssue('abc', 100_000_000)).toBe('invalid');
+        expect(tokenBankWithdrawAmountIssue('10', 8_000_000)).toBe('insufficient_balance');
+        expect(tokenBankWithdrawAmountIssue('1e2', 200_000_000)).toBe('invalid');
+        expect(normalizeCreditInput('\uFF15\uFF10\uFF10')).toBe('500');
+        expect(tokenBankWithdrawAmountIssue('\uFF15\uFF10\uFF10', 6_971_760_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('6,971.76', 6_971_760_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('6,971.77', 6_971_760_000)).toBe('above_balance');
+        expect(tokenBankWithdrawAmountIssue('100', 200_000_000, 50_000_000)).toBe('pending_amount');
+        expect(tokenBankWithdrawAmountIssue('50', 200_000_000, 50_000_000)).toBeNull();
+        expect(tokenBankWithdrawAmountIssue('50', 0, 50_000_000)).toBeNull();
+        expect(withdrawFailureNeedsReplay('credits are reserved for this Hub; retry this withdrawal to finish the grant')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"GRANT_PENDING","message":"token bank grant was not confirmed; retry the same request id"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"SERVICE_GROUP_MISSING"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center token bank request failed"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"Post \\"https://center.example/token-bank/withdraw\\": context deadline exceeded"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"decode hub center token bank response: invalid character"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"http2: server sent GOAWAY and closed the connection"}')).toBe(true);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center token bank: service_group_not_token_bank: not a token bank group"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center client is not configured"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('HubCenter rejected the request: {"code":"unauthorized","message":"session expired or invalid"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('HubCenter rejected the request: {"code":"token_bank_unavailable","message":"token bank is not available on this node"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('HubCenter rejected the request: {"code":"withdraw_failed","message":"begin tx: disk I/O error"}')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Hub rejected the withdrawal: 502 Bad Gateway')).toBe(true);
+        expect(withdrawFailureNeedsReplay('please sign in to HubCenter to use the Token Bank')).toBe(false);
+        expect(withdrawFailureNeedsReplay('Post "https://hub.example/api/token-bank/withdraw": context deadline exceeded')).toBe(true);
+        expect(withdrawFailureDetail('Hub rejected the withdrawal: {"code":"SERVICE_GROUP_MISSING","message":"choose a service group"}')).toBe('choose a service group');
+        expect(withdrawFailureDetail('credits are reserved for this Hub; retry this withdrawal to finish the grant: Hub rejected the withdrawal: {"message":"retry the same request id"}')).toBe('credits are reserved for this Hub; retry this withdrawal to finish the grant: Hub rejected the withdrawal: retry the same request id');
+        expect(withdrawFailureDetail('dial tcp: connection refused')).toBe('dial tcp: connection refused');
     });
 });
 
@@ -220,6 +307,16 @@ describe('hubcenterTokenBank withdraw helpers', () => {
 
     it('returns an empty hint without a summary', () => {
         expect(describeAutoWithdraw(null)).toBe('');
+    });
+
+    it('marks an automatic withdrawal from the request id or the flag', () => {
+        expect(isAutomaticTokenBankWithdrawal({ request_id: 'tbk-auto:hub:a@b.c:paid:0' })).toBe(true);
+        expect(isAutomaticTokenBankWithdrawal({ request_id: 'req-manual', automatic: true })).toBe(true);
+        expect(isAutomaticTokenBankWithdrawal({ request_id: 'req-manual' })).toBe(false);
+        const [row] = extractTokenBankWithdrawals({
+            withdrawals: [{ id: 'w1', request_id: 'tbk-auto:hub:a@b.c:paid:1', amount_micro: 1 }],
+        });
+        expect(row.automatic).toBe(true);
     });
 });
 

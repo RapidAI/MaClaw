@@ -34,7 +34,14 @@ type ScheduledTask struct {
 	ID string `json:"id"`
 	// BotProfileID owns a task created by a profile-bound Lansenger agent.
 	// It scopes task execution and management; empty is a legacy/desktop task.
-	BotProfileID    string `json:"bot_profile_id,omitempty"`
+	BotProfileID string `json:"bot_profile_id,omitempty"`
+	// InstanceID binds a MaClawSrv task to one agent instance. Instances of
+	// the same user do not share tasks. Empty is a legacy unbound task.
+	InstanceID string `json:"instance_id,omitempty"`
+	// OwnerTenantID and OwnerUserID identify the instance owner used when
+	// the task fires. They are not chosen by the model.
+	OwnerTenantID   string `json:"owner_tenant_id,omitempty"`
+	OwnerUserID     string `json:"owner_user_id,omitempty"`
 	Name            string `json:"name"`
 	Action          string `json:"action"`                     // what the agent should do (natural language)
 	Hour            int    `json:"hour"`                       // 0-23

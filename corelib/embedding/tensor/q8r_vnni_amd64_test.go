@@ -13,6 +13,9 @@ import (
 // per-block VNNI path's error).
 
 func TestQ8RK512VNNI_PlainMatchesRowDots(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)
@@ -44,6 +47,9 @@ func TestQ8RK512VNNI_PlainMatchesRowDots(t *testing.T) {
 }
 
 func TestQ8RK512VNNI_OutPlainN512(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)
@@ -70,6 +76,9 @@ func TestQ8RK512VNNI_OutPlainN512(t *testing.T) {
 }
 
 func TestQ8RK512VNNI_ReLUMatchesRowDots(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("no VNNI")
+	}
 	SetFusedK512VNNIForTest(true)
 	t.Cleanup(func() { SetFusedK512VNNIForTest(false) })
 	SetK512VNNILayerGatesForTest(true, true, true)

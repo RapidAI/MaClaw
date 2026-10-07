@@ -5,8 +5,10 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -671,6 +673,80 @@ func TestSanitizeCodingWorkbenchDownloadName(t *testing.T) {
 	}
 }
 
+func TestCompactRemoteSSHErrorDropsReadDumpAndShellPrompt(t *testing.T) {
+	raw := strings.Join([]string{
+		"[ssh_znsoft@spark] 状态: running",
+		"$ python3 -c \"$(printf 'abc' | base64 -d)\"",
+		"16\t*.out",
+		"17\tsysinfo",
+		"18\t",
+		"19\t# Editor / IDE",
+		"20\t.vscode/",
+		"21\t.idea/",
+		"22\t*.swp",
+		"znsoft@spark-3b9f:~/prj$",
+	}, "\n")
+	if got := compactRemoteSSHError(raw); got != "remote SSH command failed" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCompactRemoteSSHErrorKeepsDirectoryDiagnostic(t *testing.T) {
+	raw := "path is not a directory\nznsoft@spark-3b9f:~/prj$\n"
+	if got := compactRemoteSSHError(raw); got != "path is not a directory" {
+		t.Fatalf("got %q", got)
+	}
+	glued := "16 *.out 17 sysinfo 18 19 # Editor / IDE 20 .vscode/ 21 .idea/ 22 *.swp znsoft@spark-3b9f:~/prj$"
+	if got := compactRemoteSSHError(glued); got != "remote SSH command failed" {
+		t.Fatalf("glued prompt = %q", got)
+	}
+	kept := "ls: cannot access 'prj8': No such file or directory\n404 Not Found\n连接状态: 失败\nwrite failed for user@host"
+	if got := compactRemoteSSHError(kept); got != kept {
+		t.Fatalf("diagnostic = %q", got)
+	}
+	mention := "the file says \"truncated\" but this is not a listing"
+	if _, _, saw := parseCodingWorkbenchRemoteDirectoryRecords(mention, ""); saw {
+		t.Fatal("the word truncated without the JSON record must not count as a listing")
+	}
+}
+
+func TestRemoteWorkbenchFilePreviewCommandIsOneProcess(t *testing.T) {
+	cmd := remoteWorkbenchFilePreviewCommand("/home/znsoft/prj8", "/home/znsoft/prj8/CMakeLists.txt")
+	if strings.Contains(cmd, "&&") || strings.Contains(cmd, "CMakeLists.txt") {
+		t.Fatalf("preview command chains processes or leaks the path: %s", cmd)
+	}
+	const marker = "printf '%s' '"
+	start := strings.Index(cmd, marker)
+	if start < 0 {
+		t.Fatalf("missing payload: %s", cmd)
+	}
+	rest := cmd[start+len(marker):]
+	end := strings.Index(rest, "'")
+	if end < 0 {
+		t.Fatalf("missing payload end: %s", cmd)
+	}
+	raw, err := base64.StdEncoding.DecodeString(rest[:end])
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	for _, want := range []string{
+		"path outside remote work_dir",
+		"path is not a file",
+		"os.path.lexists(fd_path)",
+		"/proc/self/fd/",
+		"[remote read_file truncated:",
+		"[remote read_file binary/non-UTF8:",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "@@") {
+		t.Fatalf("placeholder left in script:\n%s", script)
+	}
+}
+
 func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(t *testing.T) {
 	raw := strings.Join([]string{
 		"$ python3 -c '<hidden>'",
@@ -679,8 +755,8 @@ func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(
 		`{"name":"main.go","is_dir":false}`,
 		"---EXIT_CODE:0---",
 	}, "\n")
-	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
-	if !truncated || len(entries) != 2 {
+	entries, truncated, sawMarker := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
+	if !sawMarker || !truncated || len(entries) != 2 {
 		t.Fatalf("truncated=%v entries=%v, want true and two entries", truncated, entries)
 	}
 	if entries[0].Name != "src" || !entries[0].IsDir || entries[1].Path != "main.go" {
@@ -696,8 +772,8 @@ func TestParseCodingWorkbenchRemoteDirectoryRecordsSkipsHiddenNames(t *testing.T
 		`{"name":"hello.cpp","is_dir":false}`,
 		`{"name":"build","is_dir":true}`,
 	}, "\n")
-	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
-	if truncated || len(entries) != 2 {
+	entries, truncated, sawMarker := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
+	if !sawMarker || truncated || len(entries) != 2 {
 		t.Fatalf("truncated=%v entries=%v, want visible items only", truncated, entries)
 	}
 	if entries[0].Name != "build" || entries[1].Name != "hello.cpp" {
@@ -1368,6 +1444,401 @@ func TestGetCodingWorkbenchDirectoryListsExplicitReadOnlyCache(t *testing.T) {
 	assertCloudWorkspaceFileDeleted(t, hub, readonly.LocalPath, "notes.md")
 	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "writer-only.md")); err != nil {
 		t.Fatalf("writer decoy must stay: %v", err)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryAcquiresLeaseForBrowseCache(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-browse"}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_browse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_browse", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_browse", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.SyncCloudWorkspaceFiles("cws_delete_browse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := lookupHeldCloudWorkspace("cws_delete_browse")
+	if mount == nil || !mount.ReadOnly || !mount.isolatedReadOnly || strings.TrimSpace(mount.LeaseID) != "" {
+		t.Fatalf("browse mount = %+v", mount)
+	}
+	hub.mu.Lock()
+	hub.requireManifestLease = true
+	acquires, releases := hub.leaseAcquires, hub.leaseReleases
+	hub.mu.Unlock()
+	if err := app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "gone.md"); err != nil {
+		t.Fatalf("delete browse cache: %v", err)
+	}
+	assertCloudWorkspaceFileDeleted(t, hub, readonly.LocalPath, "gone.md")
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.leaseAcquires != acquires+1 || hub.leaseReleases != releases+1 {
+		t.Fatalf("acquires %d->%d releases %d->%d", acquires, hub.leaseAcquires, releases, hub.leaseReleases)
+	}
+	if hub.manifestSession != hub.leaseID || hub.manifestFencing == "" {
+		t.Fatalf("manifest lease session=%q fencing=%q lease=%q", hub.manifestSession, hub.manifestFencing, hub.leaseID)
+	}
+	mount.mu.Lock()
+	defer mount.mu.Unlock()
+	if !mount.ReadOnly || strings.TrimSpace(mount.LeaseID) != "" || mount.FencingToken != 0 {
+		t.Fatalf("browse mount adopted the delete lease: readOnly=%v lease=%q token=%d", mount.ReadOnly, mount.LeaseID, mount.FencingToken)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryBrowseSkipsLeaseWhenManifestAlreadyDropped(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-dropped"}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_dropped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_dropped", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_dropped", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.SyncCloudWorkspaceFiles("cws_delete_dropped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	kept := make([]cloudWorkspaceManifestEntry, 0, len(hub.entries))
+	for _, entry := range hub.entries {
+		if entry.Path != "gone.md" {
+			kept = append(kept, entry)
+		}
+	}
+	hub.entries = kept
+	acquires, releases := hub.leaseAcquires, hub.leaseReleases
+	hub.mu.Unlock()
+	if err := app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "gone.md"); err != nil {
+		t.Fatalf("delete already-dropped file: %v", err)
+	}
+	assertCloudWorkspaceFileDeleted(t, hub, readonly.LocalPath, "gone.md")
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.leaseAcquires != acquires || hub.leaseReleases != releases {
+		t.Fatalf("already-dropped delete acquires %d->%d releases %d->%d", acquires, hub.leaseAcquires, releases, hub.leaseReleases)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryReleasesBeforeHeartbeatInterval(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-hb-stop", requireManifestLease: true}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_hb_stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_hb_stop", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_hb_stop", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.SyncCloudWorkspaceFiles("cws_delete_hb_stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldInterval := cloudWorkspaceHeartbeatIntervalValue
+	cloudWorkspaceBackgroundDisabled = false
+	cloudWorkspaceHeartbeatIntervalValue = time.Hour
+	t.Cleanup(func() {
+		cloudWorkspaceBackgroundDisabled = true
+		cloudWorkspaceHeartbeatIntervalValue = oldInterval
+	})
+	hub.mu.Lock()
+	acquires, releases, beats := hub.leaseAcquires, hub.leaseReleases, hub.heartbeats
+	hub.mu.Unlock()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "gone.md")
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("delete browse cache: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("file delete blocked on the heartbeat interval instead of releasing the lease")
+	}
+	assertCloudWorkspaceFileDeleted(t, hub, readonly.LocalPath, "gone.md")
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.leaseAcquires != acquires+1 || hub.leaseReleases != releases+1 {
+		t.Fatalf("acquires %d->%d releases %d->%d", acquires, hub.leaseAcquires, releases, hub.leaseReleases)
+	}
+	if hub.heartbeats != beats {
+		t.Fatalf("delete heartbeat fired before its interval: %d -> %d", beats, hub.heartbeats)
+	}
+	if hub.manifestSession != hub.leaseID || hub.manifestFencing == "" {
+		t.Fatalf("manifest lease session=%q fencing=%q lease=%q", hub.manifestSession, hub.manifestFencing, hub.leaseID)
+	}
+}
+
+func TestHeartbeatCloudWorkspaceDeleteLeaseSendsEphemeralSession(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-hb-hdr", leaseID: "cwl_live", fencingToken: 4}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_hb_hdr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_hb_hdr", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_hb_hdr", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SyncCloudWorkspaceFiles("cws_delete_hb_hdr"); err != nil {
+		t.Fatal(err)
+	}
+	mount := lookupHeldCloudWorkspace("cws_delete_hb_hdr")
+	if mount == nil {
+		t.Fatal("browse mount missing")
+	}
+	mount.mu.Lock()
+	mount.LeaseID = "cwl_stale"
+	mount.FencingToken = 99
+	mount.mu.Unlock()
+	hub.mu.Lock()
+	before := hub.heartbeats
+	hub.mu.Unlock()
+	if !app.heartbeatCloudWorkspaceDeleteLease(context.Background(), "cws_delete_hb_hdr", "cwl_live", 4) {
+		t.Fatal("ephemeral heartbeat failed")
+	}
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if app.heartbeatCloudWorkspaceDeleteLease(stopped, "cws_delete_hb_hdr", "cwl_live", 4) {
+		t.Fatal("cancelled heartbeat must not be sent")
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.heartbeats != before+1 {
+		t.Fatalf("heartbeats %d -> %d", before, hub.heartbeats)
+	}
+	if hub.heartbeatSession != "cwl_live" || hub.heartbeatFencing != "4" {
+		t.Fatalf("heartbeat session=%q fencing=%q", hub.heartbeatSession, hub.heartbeatFencing)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryBrowseReleasesLeaseWhenManifestPutFails(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-put-fail", requireManifestLease: true}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_put_fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_put_fail", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_put_fail", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.SyncCloudWorkspaceFiles("cws_delete_put_fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	hub.failPush = true
+	acquires, releases := hub.leaseAcquires, hub.leaseReleases
+	hub.mu.Unlock()
+	if err := app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "gone.md"); err == nil {
+		t.Fatal("expected manifest delete to fail")
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "gone.md")); err != nil {
+		t.Fatalf("writer cache must stay when the browse manifest replace fails: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.leaseAcquires != acquires+1 || hub.leaseReleases != releases+1 {
+		t.Fatalf("failed manifest delete acquires %d->%d releases %d->%d", acquires, hub.leaseAcquires, releases, hub.leaseReleases)
+	}
+	for _, entry := range hub.entries {
+		if entry.Path == "gone.md" {
+			return
+		}
+	}
+	t.Fatal("failed manifest delete removed the remote file")
+}
+
+func TestReleaseEphemeralCloudWorkspaceLeaseRetriesUnavailable(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, leaseID: "cwl_ephemeral", fencingToken: 3, releaseFailures: 1}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	app.releaseEphemeralCloudWorkspaceLease("cws_ephemeral_retry", "cwl_ephemeral", 3)
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.releaseFailures != 0 || hub.leaseReleases != 1 || !hub.deleted {
+		t.Fatalf("failures=%d releases=%d deleted=%v", hub.releaseFailures, hub.leaseReleases, hub.deleted)
+	}
+}
+
+func TestReleaseEphemeralCloudWorkspaceLeaseClearsStaleMountFencing(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-fence"}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	if _, err := app.SyncCloudWorkspaceFiles("cws_ephemeral_fence"); err != nil {
+		t.Fatal(err)
+	}
+	mount := lookupHeldCloudWorkspace("cws_ephemeral_fence")
+	if mount == nil {
+		t.Fatal("browse mount missing")
+	}
+	mount.mu.Lock()
+	mount.LeaseID = "cwl_stale"
+	mount.FencingToken = 99
+	mount.mu.Unlock()
+	app.releaseEphemeralCloudWorkspaceLease("cws_ephemeral_fence", "cwl_new", 0)
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.releaseSession != "cwl_new" || hub.releaseFencing != "" {
+		t.Fatalf("release session=%q fencing=%q", hub.releaseSession, hub.releaseFencing)
+	}
+	if hub.leaseReleases != 1 {
+		t.Fatalf("releases=%d", hub.leaseReleases)
+	}
+}
+
+func TestReleaseEphemeralCloudWorkspaceLeaseSurvivesAppCancel(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, leaseID: "cwl_ephemeral", fencingToken: 3}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prev := app.ctx
+	appCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = appCtx
+	t.Cleanup(func() { app.ctx = prev })
+	app.releaseEphemeralCloudWorkspaceLease("cws_ephemeral_release", "cwl_ephemeral", 3)
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.leaseReleases != 1 {
+		t.Fatalf("cancelled app context suppressed the lease release, releases=%d", hub.leaseReleases)
+	}
+}
+
+func TestHeartbeatCloudWorkspaceDeleteLeaseRetriesTransientFailure(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, leaseID: "cwl_live", fencingToken: 4, heartbeatStatus: http.StatusServiceUnavailable}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	if !app.heartbeatCloudWorkspaceDeleteLease(context.Background(), "cws_delete_hb_retry", "cwl_live", 4) {
+		t.Fatal("a 503 heartbeat must stay in the loop")
+	}
+	hub.mu.Lock()
+	hub.heartbeatStatus = http.StatusConflict
+	hub.mu.Unlock()
+	if app.heartbeatCloudWorkspaceDeleteLease(context.Background(), "cws_delete_hb_retry", "cwl_live", 4) {
+		t.Fatal("a 409 heartbeat must stop the loop")
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.heartbeats != 2 {
+		t.Fatalf("heartbeats=%d", hub.heartbeats)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryBrowseSkipsLeaseWhenRemoteUnchanged(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-same"}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_same", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_same", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.SyncCloudWorkspaceFiles("cws_delete_same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	acquires, releases := hub.leaseAcquires, hub.leaseReleases
+	hub.mu.Unlock()
+	if err := app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "missing.md"); err != nil {
+		t.Fatalf("delete absent file: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.leaseAcquires != acquires || hub.leaseReleases != releases {
+		t.Fatalf("unchanged delete acquires %d->%d releases %d->%d", acquires, hub.leaseAcquires, releases, hub.leaseReleases)
+	}
+	for _, entry := range hub.entries {
+		if entry.Path == "gone.md" {
+			return
+		}
+	}
+	t.Fatal("unrelated remote file was removed")
+}
+
+func TestDeleteCodingWorkbenchEntryBrowseDoesNotStealLease(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-busy"}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_busy", prepared.LocalPath, "gone.md", "drop")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_delete_busy", false); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := app.SyncCloudWorkspaceFiles("cws_delete_busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	hub.conflictUntilForce = true
+	hub.mu.Unlock()
+	err = app.DeleteCodingWorkbenchEntry(readonly.LocalPath, "gone.md")
+	if err == nil || !strings.Contains(err.Error(), "占用中") {
+		t.Fatalf("delete err = %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.forceCount != 0 {
+		t.Fatalf("file delete stole the lease %d times", hub.forceCount)
+	}
+	for _, entry := range hub.entries {
+		if entry.Path == "gone.md" {
+			return
+		}
+	}
+	t.Fatal("remote file was removed without a lease")
+}
+
+func TestDeleteCodingWorkbenchEntryKeepsOpenWriterLease(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-writer", requireManifestLease: true}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_writer", prepared.LocalPath, "gone.md", "drop")
+	hub.mu.Lock()
+	acquires, releases := hub.leaseAcquires, hub.leaseReleases
+	hub.mu.Unlock()
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "gone.md"); err != nil {
+		t.Fatalf("delete writer cache: %v", err)
+	}
+	assertCloudWorkspaceFileDeleted(t, hub, prepared.LocalPath, "gone.md")
+	hub.mu.Lock()
+	if hub.leaseAcquires != acquires || hub.leaseReleases != releases {
+		t.Fatalf("writer delete acquires %d->%d releases %d->%d", acquires, hub.leaseAcquires, releases, hub.leaseReleases)
+	}
+	hub.mu.Unlock()
+	mount := lookupHeldCloudWorkspace("cws_delete_writer")
+	if mount == nil {
+		t.Fatal("writer mount dropped")
+	}
+	mount.mu.Lock()
+	defer mount.mu.Unlock()
+	if mount.ReadOnly || strings.TrimSpace(mount.LeaseID) == "" || mount.FencingToken <= 0 {
+		t.Fatalf("writer lease lost: readOnly=%v lease=%q token=%d", mount.ReadOnly, mount.LeaseID, mount.FencingToken)
 	}
 }
 

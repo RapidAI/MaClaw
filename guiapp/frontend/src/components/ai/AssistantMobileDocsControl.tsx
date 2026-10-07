@@ -17,7 +17,7 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     handler();
 };
 
-/** AI title-bar entry for shared Hub Mobile document library. */
+/** AI title-bar entry for the shared cloud drive. */
 export function AssistantMobileDocsControl({ lang, theme: t, inline }: Props) {
     const [open, setOpen] = useState(false);
     useEffect(() => {
@@ -32,9 +32,9 @@ export function AssistantMobileDocsControl({ lang, theme: t, inline }: Props) {
     }, []);
     const title = localizeText(
         lang,
-        "Mobile documents (shared Hub library)",
-        "Mobile 文稿（与手机共享的 Hub 文库）",
-        "Mobile 文稿（與手機共享的 Hub 文庫）",
+        "Cloud drive (shared with the phone)",
+        "云盘（与手机端共享）",
+        "雲端硬碟（與手機端共享）",
     );
     return (
         <>

@@ -59,6 +59,8 @@ export interface AssistantInputComposerProps {
     lang: string;
     pendingAttachments: AttachmentInfo[];
     permissionMode?: AssistantPermissionMode;
+    /** Current task chose 以后允许; the mode button itself stays unchanged. */
+    taskCommandAllowed?: boolean;
     /** Hide the generic coding-agent permission selector for constrained chat surfaces. */
     showPermissionMode?: boolean;
     showWorkspacePermissionOption?: boolean;

@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -554,4 +555,81 @@ func TestHandleIMMessageWithProgressAndStream_CancelPendingConfirmation(t *testi
 
 func testNow() time.Time {
 	return time.Now()
+}
+
+// TestExecutionConfirmationGateJudgesOnStrippedTextButStoresFullText covers
+// the same 2026-10-06 injection class on the confirmation-gate path: the
+// desktop file picker appends a "[用户选择的本地文件路径]" block (paths +
+// English tool-routing boilerplate) to msg.Text. Intent classification and
+// the LLM-written card summary must be judged on the user-authored text
+// only, while the stored pending item must keep the FULL text so approval
+// re-executes with the attachment paths intact.
+func TestExecutionConfirmationGateJudgesOnStrippedTextButStoresFullText(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+
+	var intentBodies, understandingBodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "用户请求：") {
+			understandingBodies = append(understandingBodies, string(body))
+			_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"task_type\":\"coding\",\"summary\":\"定位登录缺陷根因、修补认证逻辑并运行回归测试\",\"execution_plan\":[\"定位缺陷\",\"修改代码\",\"回归测试\"]}"}}]}`)
+			return
+		}
+		intentBodies = append(intentBodies, string(body))
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"coding\",\"confidence\":0.9,\"reason\":\"code task\"}"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: server.URL, Model: "test-model", Protocol: "openai", IsCustom: true, AuthType: "none", ContextLength: 16000}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, "Custom1"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+
+	const filePath = "C:\\Users\\ma139\\.maclaw\\temp\\paste_gate_regression.png"
+	msg := IMUserMessage{UserID: "u1", Platform: "wecom", Text: "fix the login bug" +
+		"\n\n[用户选择的本地文件路径]\n" + filePath +
+		"\nFor image files, the host sends them directly to a vision-capable model when available. " +
+		"Analyze attached images first; do not re-capture them or use read_file on image bytes."}
+	resp, handled := h.handleExecutionConfirmationGate(true, msg, msg.Text, http.DefaultClient)
+	if !handled || resp == nil {
+		t.Fatalf("coding fresh task with meaningful understanding must produce a confirmation card, handled=%v resp=%+v", handled, resp)
+	}
+
+	for _, b := range understandingBodies {
+		if strings.Contains(b, "do not re-capture") {
+			t.Fatalf("understanding prompt must be judged on stripped text, got boilerplate: %.200q", b)
+		}
+	}
+	if len(intentBodies) > 0 {
+		for _, b := range intentBodies {
+			if strings.Contains(b, "do not re-capture") {
+				t.Fatalf("intent classification payload must use stripped text, got boilerplate: %.200q", b)
+			}
+		}
+	}
+
+	item := h.confirmationStore.get("u1")
+	if item == nil {
+		t.Fatal("confirmation card was not stored")
+	}
+	if !strings.Contains(item.OriginalText, filePath) {
+		t.Fatalf("OriginalText must keep the attachment path for re-execution, got: %q", item.OriginalText)
+	}
 }

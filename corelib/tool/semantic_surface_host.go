@@ -151,6 +151,32 @@ func BindIssuedGrant(grant InvocationGrant, table map[string]InvocationGrant) (s
 	return name, nil
 }
 
+// InstallRenewedGrant replaces the live entry for one unconsumed grant with its
+// successor. The previous nonce and token must still be the entry under name.
+// The old key is removed before the successor is bound, so a stable host name
+// can keep its slot. A successor whose rendered name is already held by a
+// different grant is refused and the previous entry is restored.
+func InstallRenewedGrant(live map[string]InvocationGrant, name string, previous, successor InvocationGrant) error {
+	if live == nil {
+		return fmt.Errorf("grant table is unavailable")
+	}
+	current, ok := live[name]
+	if !ok || current.Nonce != previous.Nonce || current.Token != previous.Token {
+		return fmt.Errorf("invocation_grant_not_live")
+	}
+	rendered := RenderedSemanticFunctionName(successor.AdapterName, successor.Token)
+	if rendered == "" {
+		return fmt.Errorf("semantic grant %q has no model function name", successor.SelectionID)
+	}
+	delete(live, name)
+	if existing, exists := live[rendered]; exists && (existing.Nonce != successor.Nonce || existing.Token != successor.Token) {
+		live[name] = previous
+		return fmt.Errorf("function-name collision for grant %q", successor.SelectionID)
+	}
+	live[rendered] = successor
+	return nil
+}
+
 // BindIssuedGrants inserts a batch of grants. The first collision or unnamed
 // grant fails the whole batch; earlier inserts in this call remain.
 func BindIssuedGrants(grants []InvocationGrant, table map[string]InvocationGrant) error {

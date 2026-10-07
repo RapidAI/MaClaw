@@ -439,6 +439,19 @@ func TestApplyContentWindowUsesRuneOffsets(t *testing.T) {
 	}
 }
 
+func TestApplyContentWindowFinishedReadEndsAtTotal(t *testing.T) {
+	full := &FetchResult{Content: "abcde"}
+	applyContentWindow(full, 0, 0)
+	if full.Truncated || full.HasMore || full.NextOffset != 5 || full.TotalChars != 5 || full.Content != "abcde" {
+		t.Fatalf("full window = content %q truncated %t hasMore %t next %d total %d", full.Content, full.Truncated, full.HasMore, full.NextOffset, full.TotalChars)
+	}
+	last := &FetchResult{Content: "abcde"}
+	applyContentWindow(last, 3, 10)
+	if last.Content != "de" || last.Truncated || last.HasMore || last.NextOffset != 5 || last.TotalChars != 5 {
+		t.Fatalf("last window = content %q truncated %t hasMore %t next %d total %d", last.Content, last.Truncated, last.HasMore, last.NextOffset, last.TotalChars)
+	}
+}
+
 func TestFetchFTPCtxReturnsCancelledBeforeDial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

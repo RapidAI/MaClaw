@@ -108,13 +108,13 @@ func TestRuntimeSlotResumeRunsProbeWithoutBindingConversationContinuation(t *tes
 }
 
 func TestEnsureGUIRemoteGitBaselineRejectsIncompleteBinding(t *testing.T) {
-	if err := ensureGUIRemoteGitBaseline(context.Background(), nil, "ssh-1", "/srv/repo", "sha256:target"); err == nil || !strings.Contains(err.Error(), "incomplete") {
+	if _, err := ensureGUIRemoteGitBaseline(context.Background(), nil, "ssh-1", "/srv/repo", "sha256:target"); err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("nil handler err=%v", err)
 	}
-	if err := ensureGUIRemoteGitBaseline(context.Background(), &IMMessageHandler{}, "", "/srv/repo", "sha256:target"); err == nil {
+	if _, err := ensureGUIRemoteGitBaseline(context.Background(), &IMMessageHandler{}, "", "/srv/repo", "sha256:target"); err == nil {
 		t.Fatal("empty session should fail")
 	}
-	if err := ensureGUIRemoteGitBaseline(context.Background(), &IMMessageHandler{}, "ssh-1", "relative", "sha256:target"); err == nil || !strings.Contains(err.Error(), "absolute POSIX path") {
+	if _, err := ensureGUIRemoteGitBaseline(context.Background(), &IMMessageHandler{}, "ssh-1", "relative", "sha256:target"); err == nil || !strings.Contains(err.Error(), "absolute POSIX path") {
 		t.Fatalf("relative project err=%v", err)
 	}
 }

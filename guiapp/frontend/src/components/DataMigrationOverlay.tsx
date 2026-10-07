@@ -54,7 +54,7 @@ export const DataMigrationOverlay = () => {
             justifyContent: 'center',
             background: 'var(--theme-overlay-strong, rgba(15, 23, 42, 0.88))',
             // Backdrop is a hardcoded dark scrim, so text must stay white —
-            // --theme-on-primary flips to dark (#0f141b) under dark schemes and
+            // --theme-on-primary flips to dark (#0a0a0a) under dark schemes and
             // would render dark-on-dark here.
             color: 'var(--theme-overlay-text, #ffffff)',
             fontFamily: 'system-ui, -apple-system, sans-serif',

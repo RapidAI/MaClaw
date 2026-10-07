@@ -1315,6 +1315,9 @@ describe('CodingAgentProgressStatus', () => {
         expect(rows).toHaveLength(3);
         expect(rows[0].textContent).toContain('gui/a.go');
         expect(rows[0].querySelector('[data-testid="coding-agent-file-change-stat"]')?.textContent).toBe('+12-3');
+        const rowStat = rows[0].querySelectorAll('[data-testid="coding-agent-file-change-stat"] span');
+        expect(rowStat[0]?.getAttribute('style')).toContain('rgb(47, 122, 88)');
+        expect(rowStat[1]?.getAttribute('style')).toContain('rgb(196, 56, 56)');
         expect(rows[1].textContent).toContain('gui/b.go');
         expect(rows[1].querySelector('[data-testid="coding-agent-file-change-stat"]')?.textContent).toBe('-2');
         expect(rows[2].textContent).toContain('gui/new.go');
@@ -1576,6 +1579,17 @@ describe('CodingAgentProgressStatus', () => {
             event: 'diff_updated',
             detail: 'Edited D:/workprj/My App/hello world.cpp (+8 -0)',
         })).toBe('Edited My App/hello world.cpp (+8 -0)');
+        const longName = `${"segment-".repeat(12)}hello.cpp`;
+        expect(codingAgentEditedFileDetailText({
+            phase: 'running',
+            title: '',
+            event: 'tool_finished',
+            detail: 'write_file',
+            files: [longName],
+            added: 8,
+            removed: 3,
+            fileChanges: [{ path: longName, added: 8, removed: 3 }],
+        }, 28)).toMatch(/… \(\+8 -3\)$/);
         const { container } = render(
             <>
                 {renderCodingAgentActivityFeed(
@@ -1589,7 +1603,42 @@ describe('CodingAgentProgressStatus', () => {
             </>,
         );
         expect(container.querySelector('[data-testid="coding-agent-tool-line"]')?.textContent).toContain('hello_world.cpp (+8 -0)');
+        expect(container.querySelector('[data-testid="coding-agent-line-added"]')?.getAttribute('style')).toContain('rgb(47, 122, 88)');
+        expect(container.querySelector('[data-testid="coding-agent-line-removed"]')?.getAttribute('style')).toContain('rgb(107, 114, 128)');
         expect(container.querySelector('[data-testid="coding-agent-assistant-note"]')?.textContent).toBe('Compiling the new hello world.');
+    });
+
+    it('colors a visible edit delta green for additions and red for deletions', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"diff_updated","phase":"running","task_id":"T1","title":"Fix","detail":"apply_patch","files":["src/sysinfo.cpp"],"added":0,"removed":1,"file_changes":[{"path":"src/sysinfo.cpp","added":0,"removed":1}]}')],
+                    { text: '#111827', fieldLabel: '#6b7280', isDark: false },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const line = screen.getByTestId('coding-agent-tool-line');
+        expect(line.textContent).toContain('src/sysinfo.cpp (+0 -1)');
+        const added = line.querySelector('[data-testid="coding-agent-line-added"]');
+        const removed = line.querySelector('[data-testid="coding-agent-line-removed"]');
+        expect(added?.getAttribute('style')).toContain('rgb(107, 114, 128)');
+        expect(removed?.getAttribute('style')).toContain('rgb(196, 56, 56)');
+    });
+
+    it('does not color a command that happens to contain a line-count shape', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","detail":"bash","outcome":"success","command":"echo (+8 -1)"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+        const line = screen.getByTestId('coding-agent-tool-line');
+        expect(line.querySelector('[data-testid="coding-agent-line-added"]')).toBeNull();
+        expect(line.textContent).toContain('(+8 -1)');
     });
 
     it('opens the preview when a trail file card is clicked', () => {

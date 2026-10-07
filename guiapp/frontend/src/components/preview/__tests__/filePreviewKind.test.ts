@@ -21,6 +21,9 @@ describe('filePreviewKindFromName', () => {
         expect(filePreviewKindFromName('brief.docx')).toBe('docx');
         expect(filePreviewKindFromName('sheet.xlsx')).toBe('office');
         expect(filePreviewKindFromName('old.ppt')).toBe('office');
+        expect(filePreviewKindFromName('合同.wps')).toBe('office');
+        expect(filePreviewKindFromName('表.et')).toBe('office');
+        expect(filePreviewKindFromName('稿.dps')).toBe('office');
         expect(filePreviewKindFromName('main.go')).toBe('code');
         expect(filePreviewKindFromName('paper.tex')).toBe('latex');
         expect(filePreviewKindFromName('paper.latex')).toBe('latex');

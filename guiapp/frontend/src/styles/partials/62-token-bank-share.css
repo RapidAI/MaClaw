@@ -228,6 +228,26 @@
     margin-right: auto;
 }
 
+.tbk-withdraw-dialog {
+    width: min(420px, 92vw);
+}
+
+.tbk-withdraw-dialog input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+}
+
+.tbk-withdraw-dialog__error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--theme-danger);
+}
+
 .tbk-model-picker {
     list-style: none;
     margin: 0;

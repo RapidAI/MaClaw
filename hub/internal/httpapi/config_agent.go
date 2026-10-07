@@ -157,8 +157,8 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 		tools := []string{
 			"llm.providers.get", "llm.services.list", "system_free.get",
 			"registration_auth.get", "mail.sender_name.get", "smart_route_all.get",
-			"feishu.config.get", "wecom.config.get", "dingtalk.config.get", "qqbot.config.get", "openclaw_im.config.get",
-			"content_audit.config.get", "bridge.channels.list", "migration.settings.get", "feishu.auto_enroll.get",
+			"feishu.config.get", "wecom.config.get", "dingtalk.config.get", "qqbot.config.get",
+			"content_audit.config.get", "migration.settings.get", "feishu.auto_enroll.get",
 			"card_store.config.get", "digital_assets.settings.get", "ve.config.get", "security.settings.get",
 			"security.default_group.get", "security.approval_roles.get", "referrals.config.get", "capability_market.policy.get",
 		}
@@ -931,32 +931,6 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 		}
 	}
 
-	// Intent: OpenClaw IM
-	if strings.Contains(lower, "openclaw") || strings.Contains(msg, "OpenClaw") {
-		if looksLikeIMUpdate(msg, lower) {
-			url := firstMatchGroup(msg, `(?i)(https?://[^\s,，;；]+)`)
-			secret := firstMatchGroup(msg, `(?i)(?:secret|密钥)\s*[:：=]?\s*([A-Za-z0-9_\-\.]+)`)
-			enabled := parseEnableFlag(msg, lower, true)
-			return &configAgentPlan{
-				Intent: "openclaw_im.config.update", Summary: "Update OpenClaw IM bridge config", RiskLevel: "medium",
-				Steps: []configAgentStep{{
-					StepID: "s1", Tool: "openclaw_im.config.update", Mode: "write",
-					Args:       map[string]any{"enabled": enabled, "webhook_url": url, "secret": secret},
-					APIPreview: defaultAPIPreviewForTool("openclaw_im.config.update"),
-				}},
-				Planner: "rule",
-			}
-		}
-		return &configAgentPlan{
-			Intent: "openclaw_im.config.get", Summary: "Show OpenClaw IM bridge config", RiskLevel: "low",
-			Steps: []configAgentStep{{
-				StepID: "s1", Tool: "openclaw_im.config.get", Mode: "read",
-				APIPreview: defaultAPIPreviewForTool("openclaw_im.config.get"),
-			}},
-			Planner: "rule",
-		}
-	}
-
 	// Intent: QQ Bot
 	if strings.Contains(lower, "qqbot") || strings.Contains(lower, "qq bot") || strings.Contains(msg, "QQ机器人") || strings.Contains(msg, "QQ 机器人") || (strings.Contains(msg, "QQ") && (strings.Contains(msg, "机器人") || strings.Contains(lower, "bot"))) {
 		if looksLikeIMUpdate(msg, lower) {
@@ -988,57 +962,6 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				APIPreview: defaultAPIPreviewForTool("qqbot.config.get"),
 			}},
 			Planner: "rule",
-		}
-	}
-
-	// Intent: bridge channels
-	if strings.Contains(lower, "bridge") || strings.Contains(msg, "桥接") ||
-		((strings.Contains(lower, "telegram") || strings.Contains(lower, "discord") || strings.Contains(lower, "slack")) &&
-			(strings.Contains(lower, "channel") || strings.Contains(msg, "频道") || strings.Contains(msg, "通道"))) {
-		// save/enable specific channel
-		channelID := extractBridgeChannelID(msg, lower)
-		if channelID != "" && looksLikeIMUpdate(msg, lower) {
-			token := firstMatchGroup(msg, `(?i)(?:bot[_\s-]?token|token)\s*[:：=]?\s*([A-Za-z0-9:_\-\.]+)`)
-			fields := map[string]string{}
-			if token != "" {
-				fields["botToken"] = token
-			}
-			// discord application id
-			if appID := firstMatchGroup(msg, `(?i)(?:application[_\s-]?id)\s*[:：=]?\s*([A-Za-z0-9_\-]+)`); appID != "" {
-				fields["applicationId"] = appID
-			}
-			if appToken := firstMatchGroup(msg, `(?i)(?:app[_\s-]?token)\s*[:：=]?\s*([A-Za-z0-9_\-\.]+)`); appToken != "" {
-				fields["appToken"] = appToken
-			}
-			enabled := parseEnableFlag(msg, lower, true)
-			installNPM := strings.Contains(lower, "install") || strings.Contains(msg, "安装")
-			return &configAgentPlan{
-				Intent: "bridge.channels.save", Summary: "Save bridge channel " + channelID, RiskLevel: "medium",
-				Assumptions: []string{
-					"Channel config is saved to Hub settings",
-					"npm install runs only when install_npm=true (user said install/安装)",
-					"bridge config.json is regenerated when shared bridge dir is available",
-				},
-				Steps: []configAgentStep{{
-					StepID: "s1", Tool: "bridge.channels.save", Mode: "write",
-					Args: map[string]any{
-						"id": channelID, "enabled": enabled, "fields": fields,
-						"install_npm": installNPM,
-					},
-					APIPreview: defaultAPIPreviewForTool("bridge.channels.save"),
-				}},
-				Planner: "rule",
-			}
-		}
-		if strings.Contains(lower, "list") || strings.Contains(msg, "列表") || strings.Contains(msg, "查看") || strings.Contains(lower, "show") || channelID == "" {
-			return &configAgentPlan{
-				Intent: "bridge.channels.list", Summary: "List OpenClaw bridge channels", RiskLevel: "low",
-				Steps: []configAgentStep{{
-					StepID: "s1", Tool: "bridge.channels.list", Mode: "read",
-					APIPreview: defaultAPIPreviewForTool("bridge.channels.list"),
-				}},
-				Planner: "rule",
-			}
 		}
 	}
 
@@ -1300,22 +1223,6 @@ func parseEnableFlag(msg, lower string, defaultEnabled bool) bool {
 		return true
 	}
 	return defaultEnabled
-}
-
-func extractBridgeChannelID(msg, lower string) string {
-	known := []string{"telegram", "discord", "slack", "wechatwork", "dingtalk"}
-	for _, id := range known {
-		if strings.Contains(lower, id) {
-			return id
-		}
-	}
-	if strings.Contains(msg, "企微") || strings.Contains(msg, "企业微信") {
-		return "wechatwork"
-	}
-	if strings.Contains(msg, "钉钉") {
-		return "dingtalk"
-	}
-	return firstMatchGroup(msg, `(?i)(?:channel|频道|通道)\s*[:：]?\s*([A-Za-z0-9_\-]+)`)
 }
 
 func splitKeywords(raw string) []string {
@@ -1960,10 +1867,6 @@ func recomputeMissingFields(plan *configAgentPlan) []string {
 				if isBlankConfigArg(args["app_secret"]) {
 					missing = append(missing, "app_secret")
 				}
-			}
-		case "bridge.channels.save":
-			if isBlankConfigArg(args["id"]) {
-				missing = append(missing, "channel_id")
 			}
 		case "mail.sender_name.update":
 			if isBlankConfigArg(args["from_name"]) {

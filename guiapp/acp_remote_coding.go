@@ -665,23 +665,71 @@ func compactRemoteSSHError(raw string) string {
 	if raw == "" {
 		return "remote SSH command failed"
 	}
-	// Keep last non-empty lines for diagnostics.
+	// Keep the last diagnostic lines. The shared login PTY also echoes the
+	// agent's ssh_read_file dump ("<lineno>\t<text>") and the next shell prompt
+	// (user@host:path$). Those are not the command's error, and showing them
+	// made the preview banner look like a broken .gitignore.
 	lines := strings.Split(raw, "\n")
 	var useful []string
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "$ ") || strings.Contains(line, "base64 -d") {
+		line = strings.TrimRight(line, "\r")
+		if remoteSSHErrorLineIsNoise(line) {
 			continue
 		}
-		useful = append(useful, line)
+		useful = append(useful, strings.TrimSpace(line))
 	}
 	if len(useful) == 0 {
-		return truncateRunesV2(raw, 400)
+		return "remote SSH command failed"
 	}
 	if len(useful) > 8 {
 		useful = useful[len(useful)-8:]
 	}
 	return strings.Join(useful, "\n")
+}
+
+// remoteSSHErrorLineIsNoise reports PTY scaffolding and ssh_read_file body
+// lines that must not be shown as a workbench error. Chinese diagnostics that
+// merely contain "状态:" stay visible; that word is not shell noise by itself.
+func remoteSSHErrorLineIsNoise(line string) bool {
+	text := strings.TrimSpace(remoteCodingStripSimpleANSI(line))
+	if text == "" {
+		return true
+	}
+	if strings.HasPrefix(text, "$ ") || strings.HasPrefix(text, "[ssh_") {
+		return true
+	}
+	if strings.Contains(text, "base64 -d") || strings.Contains(text, "__maclaw_") {
+		return true
+	}
+	if subAgentIsExitMarkerLine(text) {
+		return true
+	}
+	if remoteSSHErrorLineIsPrompt(text) {
+		return true
+	}
+	i := 0
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	// A blank numbered line is only the line number after trailing-tab trim.
+	// "404 Not Found" and other spaced diagnostics are not file dumps.
+	return i == len(text) || text[i] == '\t'
+}
+
+// remoteSSHErrorLineIsPrompt matches a login prompt such as
+// znsoft@spark-3b9f:~/prj$. An address that merely contains @ is kept.
+func remoteSSHErrorLineIsPrompt(text string) bool {
+	if !strings.HasSuffix(text, "$") && !strings.HasSuffix(text, "#") {
+		return false
+	}
+	at := strings.LastIndex(text, "@")
+	if at < 0 || at+1 >= len(text) {
+		return false
+	}
+	return strings.ContainsAny(text[at+1:], ":~")
 }
 
 func acpStripSSHEnvelope(raw string) string {

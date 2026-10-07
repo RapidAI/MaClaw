@@ -1006,3 +1006,190 @@ func TestPullTokenBankForAdmissionShortfallNothingToWithdraw(t *testing.T) {
 		t.Fatal("empty token bank must not look like a pull")
 	}
 }
+
+func TestPullTokenBankForAdmissionShortfallStopsAtTheLocalCap(t *testing.T) {
+	var amounts []int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/hubs/hub-auto/token-bank/withdraw":
+			var body struct {
+				AmountMicro int64 `json:"amount_micro"`
+				Manual      bool  `json:"manual"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode withdraw: %v", err)
+			}
+			if body.Manual {
+				t.Errorf("automatic pull set manual")
+			}
+			amounts = append(amounts, body.AmountMicro)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok", "created": true, "request_id": "tbk-auto", "amount_micro": body.AmountMicro, "state": "issued", "hub_id": "hub-auto",
+			})
+		case r.URL.Path == "/api/hubs/hub-auto/token-bank/grants":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub-auto", HubSecret: "secret",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := llmservice.SaveRegistry(context.Background(), settings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
+		Grants: []llmservice.Grant{{
+			ID: "card", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 1, Permanent: true, StartsAt: now, ExpiresAt: now.AddDate(1, 0, 0),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), "token_bank_auto_withdraw", `{"enabled":true,"service_group_id":"paid","max_per_withdraw_micro":2500000}`); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, settings)
+	pulled, err := svc.PullTokenBankForAdmissionShortfall(context.Background(), "user-1", "owner@example.com", []string{"paid"}, currentTokenBankSpend(t, settings, "user-1", "owner@example.com", []string{"paid"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || len(amounts) != 1 || amounts[0] != 2_500_000 {
+		t.Fatalf("pulled=%v amounts=%v, want one pull of 2500000", pulled, amounts)
+	}
+}
+
+func TestPullTokenBankForAdmissionShortfallUsesTheBankShareWhenTheLocalCapIsHigher(t *testing.T) {
+	var amounts []int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/hubs/hub-auto/token-bank/grants" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+			return
+		}
+		if r.URL.Path != "/api/hubs/hub-auto/token-bank/withdraw" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			AmountMicro int64 `json:"amount_micro"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode withdraw: %v", err)
+		}
+		amounts = append(amounts, body.AmountMicro)
+		if body.AmountMicro == 9_000_000 {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    "insufficient_credits",
+				"message": "token bank: insufficient available credits: requested 9000000, allowed 1000000",
+			})
+			return
+		}
+		// The retry must name the share from the refusal. Amount 0 would take
+		// a later 1/N that can sit above the local ceiling.
+		if body.AmountMicro != 1_000_000 {
+			t.Errorf("retry amount %d, want the named share 1000000", body.AmountMicro)
+			http.Error(w, "unexpected amount", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok", "created": true, "request_id": "tbk-auto", "amount_micro": 1_000_000, "state": "issued", "hub_id": "hub-auto",
+		})
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub-auto", HubSecret: "secret",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := llmservice.SaveRegistry(context.Background(), settings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
+		Grants: []llmservice.Grant{{
+			ID: "card", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 1, Permanent: true, StartsAt: now, ExpiresAt: now.AddDate(1, 0, 0),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), "token_bank_auto_withdraw", `{"enabled":true,"service_group_id":"paid","max_per_withdraw_micro":9000000}`); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, settings)
+	pulled, err := svc.PullTokenBankForAdmissionShortfall(context.Background(), "user-1", "owner@example.com", []string{"paid"}, currentTokenBankSpend(t, settings, "user-1", "owner@example.com", []string{"paid"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pulled || len(amounts) != 2 || amounts[0] != 9_000_000 || amounts[1] != 1_000_000 {
+		t.Fatalf("pulled=%v amounts=%v, want the ceiling then the named share", pulled, amounts)
+	}
+}
+
+func TestPullTokenBankForAdmissionShortfallSkipsTheRetryWhenTheShareIsZero(t *testing.T) {
+	var amounts []int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/hubs/hub-auto/token-bank/withdraw" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			AmountMicro int64 `json:"amount_micro"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode withdraw: %v", err)
+		}
+		amounts = append(amounts, body.AmountMicro)
+		w.WriteHeader(http.StatusPaymentRequired)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":    "insufficient_credits",
+			"message": "token bank: insufficient available credits: requested 2500000, allowed 0",
+		})
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub-auto", HubSecret: "secret",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := llmservice.SaveRegistry(context.Background(), settings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
+		Grants: []llmservice.Grant{{
+			ID: "card", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 1, Permanent: true, StartsAt: now, ExpiresAt: now.AddDate(1, 0, 0),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), "token_bank_auto_withdraw", `{"enabled":true,"service_group_id":"paid","max_per_withdraw_micro":2500000}`); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, settings)
+	pulled, err := svc.PullTokenBankForAdmissionShortfall(context.Background(), "user-1", "owner@example.com", []string{"paid"}, currentTokenBankSpend(t, settings, "user-1", "owner@example.com", []string{"paid"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulled || len(amounts) != 1 || amounts[0] != 2_500_000 {
+		t.Fatalf("pulled=%v amounts=%v, want one refusal and no second withdraw", pulled, amounts)
+	}
+}

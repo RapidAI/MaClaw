@@ -47,7 +47,9 @@ func filterLegacyModelDynamicGatewayDefinitions(defs []map[string]interface{}) [
 	}
 	filtered := make([]map[string]interface{}, 0, len(defs))
 	for _, def := range defs {
-		if tool.IsLegacyModelDynamicGateway(extractToolName(def)) {
+		// call_mcp_tool selects its provider in the arguments. manage_skill
+		// names an installed local skill; the full-surface baseline pins it.
+		if extractToolName(def) == "call_mcp_tool" {
 			continue
 		}
 		filtered = append(filtered, def)

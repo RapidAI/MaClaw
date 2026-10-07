@@ -24,7 +24,8 @@ export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) =>
                     navTab === 'tutorial' ? t('tutorial') :
                         navTab === 'gossip' ? t('gossip') :
                             navTab === 'remote' ? (lang === 'zh-Hans' ? zhHans.taskManagement : lang === 'zh-Hant' ? zhHant.taskManagement : 'Task Monitor') :
-                            navTab === 'files' ? (lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents') :
+                                navTab === 'bots' ? (lang === 'en' ? 'Bot management' : 'Bot 管理') :
+                            navTab === 'files' ? (lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive') :
                                 navTab === 'api-store' ? t('apiStore') :
                                     navTab === 'mcp' ? 'MCP' :
                                         navTab === 'settings' ? (settingsTab === 'knowledge' ? (lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base') : t('globalSettings')) :

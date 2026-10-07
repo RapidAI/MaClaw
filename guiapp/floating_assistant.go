@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,18 +16,20 @@ const defaultPetSize = 88
 // FloatingAssistantManager manages the MaClaw desktop pet window lifecycle.
 // The pet is independent from the main window and is configured from Settings > Pet.
 type FloatingAssistantManager struct {
-	app     *App
-	visible bool
-	posX    int
-	posY    int
-	mu      sync.Mutex
-	window  floatingWindow
+	app       *App
+	visible   bool
+	posX      int
+	posY      int
+	mu        sync.Mutex
+	window    floatingWindow
+	companion *PetCompanionSession
 }
 
 // NewFloatingAssistantManager creates a new FloatingAssistantManager.
 func NewFloatingAssistantManager(app *App) *FloatingAssistantManager {
 	m := &FloatingAssistantManager{
-		app: app,
+		app:       app,
+		companion: newPetCompanionSession(app),
 	}
 	m.window = newFloatingWindow(app)
 	return m
@@ -37,7 +40,10 @@ func NewFloatingAssistantManager(app *App) *FloatingAssistantManager {
 // On window creation failure, logs error silently and does not affect main window functionality.
 func (m *FloatingAssistantManager) ShowFloatingButton() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer func() {
+		m.mu.Unlock()
+		m.syncCompanion()
+	}()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -101,7 +107,10 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 // HideFloatingButton hides and destroys the desktop pet window.
 func (m *FloatingAssistantManager) HideFloatingButton() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer func() {
+		m.mu.Unlock()
+		m.syncCompanion()
+	}()
 
 	if m.window != nil {
 		m.window.Destroy()
@@ -113,7 +122,10 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 // pet skin, size, and interaction changes immediately.
 func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer func() {
+		m.mu.Unlock()
+		m.syncCompanion()
+	}()
 
 	if !config.PetEnabled {
 		if m.window != nil {
@@ -208,21 +220,44 @@ func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfi
 	return x, y
 }
 
-// OnFloatingButtonClicked handles a left-click on the desktop pet.
-// It shows the main window and switches to the AI panel while keeping the pet visible.
-func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
-	if m == nil || m.app == nil || m.app.ctx == nil {
+func (m *FloatingAssistantManager) syncCompanion() {
+	if m == nil || m.companion == nil {
 		return
 	}
-
-	voiceRequested := false
-	if m.app != nil {
-		if config, err := m.app.LoadConfig(); err == nil && config.PetEnabled && config.PetVoiceInput {
-			switch config.PetConversationMode {
-			case "voice-turn", "continuous":
-				voiceRequested = true
-			}
+	m.mu.Lock()
+	visible := m.visible
+	app := m.app
+	m.mu.Unlock()
+	cfg := corelib.AppConfig{}
+	if app != nil {
+		loaded, err := app.LoadConfig()
+		if err != nil {
+			m.companion.Stop()
+			return
 		}
+		cfg = loaded
+	}
+	if visible && petVoiceCompanionArmed(cfg) {
+		m.companion.Start()
+		return
+	}
+	m.companion.Stop()
+}
+
+// OnFloatingButtonClicked handles a left-click on the desktop pet.
+// Voice companion mode treats the click as a wake. Otherwise it opens the main window.
+func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
+	if m == nil || m.app == nil {
+		return
+	}
+	if config, err := m.app.LoadConfig(); err == nil && petVoiceCompanionArmed(config) {
+		if m.companion != nil {
+			m.companion.Poke()
+		}
+		return
+	}
+	if m.app.ctx == nil {
+		return
 	}
 
 	// Show main window and bring to front. The desktop pet remains visible.
@@ -234,7 +269,7 @@ func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
 	// for voice conversation, also request the panel to open voice input.
 	m.app.emitEvent("switch-to-ai-panel", map[string]any{
 		"source": "pet",
-		"voice":  voiceRequested,
+		"voice":  false,
 	})
 }
 
@@ -281,6 +316,21 @@ func isPetMotionEnabled(config corelib.AppConfig) bool {
 
 func petMotionSoundEnabled(config corelib.AppConfig) bool {
 	return config.PetMotionSound == nil || *config.PetMotionSound
+}
+
+// petMotionSoundHeard is false while the microphone is hot or the pet is speaking,
+// so a motion tone cannot be heard as the wake word or sit on top of the voice.
+// Quiet mode and reduced motion stay silent too.
+func petMotionSoundHeard(enabled, quiet, reduced bool, state string) bool {
+	if !enabled || quiet || reduced {
+		return false
+	}
+	switch petpack.NormalizeState(state) {
+	case petpack.StateSpeaking, petpack.StateAlert, petpack.StateListening, petpack.StateThinking:
+		return false
+	default:
+		return true
+	}
 }
 
 func petMotionSoundPreset(config corelib.AppConfig) string {
@@ -353,6 +403,13 @@ func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 	return oldConfig.PetEnabled != newConfig.PetEnabled ||
 		oldConfig.PetSkin != newConfig.PetSkin ||
 		oldConfig.PetSize != newConfig.PetSize
+}
+
+// floatingVoiceCompanionChanged is true when the mic should open or close
+// without rebuilding the pet window. Quiet mode only changes readback.
+func floatingVoiceCompanionChanged(oldConfig, newConfig corelib.AppConfig) bool {
+	return oldConfig.PetVoiceInput != newConfig.PetVoiceInput ||
+		strings.TrimSpace(oldConfig.PetConversationMode) != strings.TrimSpace(newConfig.PetConversationMode)
 }
 
 // floatingMotionChanged identifies settings that can be applied to an existing
@@ -484,6 +541,7 @@ func (m *FloatingAssistantManager) QuitApp() {
 	}
 	m.visible = false
 	m.mu.Unlock()
+	m.syncCompanion()
 
 	// Quit on a separate goroutine - runtime.Quit triggers the Wails
 	// shutdown sequence which must not run on the WebView's JS callback

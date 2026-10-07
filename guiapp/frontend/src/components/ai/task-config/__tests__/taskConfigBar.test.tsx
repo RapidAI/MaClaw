@@ -951,6 +951,38 @@ describe('RemoteServerForm', () => {
     });
 });
 
+describe('TaskConfigBar lead icons', () => {
+    it('puts a representative svg before each default dimension, including the default directory', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true });
+        expect(screen.getByTestId('task-config-chip-type-label').querySelector('[data-icon="chat"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-expert-label').querySelector('[data-icon="robot"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workflow-label').querySelector('[data-icon="ban"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-label').querySelector('[data-icon="monitor"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-value').querySelector('[data-icon="home"]')).toBeTruthy();
+        expect(screen.getByTestId('workspace-badge-local')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace').textContent).toContain('默认');
+    });
+
+    it('uses spark once a workflow is chosen', () => {
+        renderBar(withWorkflow(defaultTaskDraft(), 'wf-table'), vi.fn());
+        expect(screen.getByTestId('task-config-chip-workflow-label').querySelector('[data-icon="spark"]')).toBeTruthy();
+    });
+
+    it('switches the type mark to code and drops the home mark when a directory is required', () => {
+        const draft = { ...defaultTaskDraft(), taskType: 'coding' as const };
+        renderBar(draft, vi.fn(), { defaultExpanded: true });
+        expect(screen.getByTestId('task-config-chip-type-label').querySelector('[data-icon="code"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-value').querySelector('[data-icon="home"]')).toBeNull();
+    });
+
+    it('keeps the workspace dimension mark distinct from the kind badge', () => {
+        renderBar(withCloudWorkspace(defaultTaskDraft(), 'c1', '数据分析环境'), vi.fn());
+        expect(screen.getByTestId('task-config-chip-workspace-label').querySelector('[data-icon="monitor"]')).toBeTruthy();
+        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-value').querySelector('[data-icon="home"]')).toBeNull();
+    });
+});
+
 describe('TaskConfigBar variant', () => {
     it('chip variant (default) renders bordered chips with pill radius', () => {
         renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true });
@@ -979,7 +1011,11 @@ describe('TaskConfigBar variant', () => {
         // jsdom 将十六进制颜色规范化为 rgb()。
         expect(typeChip.style.color).toBe('rgb(23, 105, 232)');
         const workspaceChip = screen.getByTestId('task-config-chip-workspace');
-        const valueSpans = workspaceChip.querySelectorAll('span');
-        expect(valueSpans[1].style.color).toBe('rgb(239, 68, 68)');
+        expect(screen.getByTestId('task-config-chip-workspace-value').style.color).toBe('rgb(239, 68, 68)');
+        const labelIcon = workspaceChip.querySelector('[data-testid="task-config-chip-workspace-label"] [data-icon="monitor"]') as SVGElement;
+        expect(labelIcon).toBeTruthy();
+        expect(labelIcon.style.color).toBe('rgb(138, 148, 166)');
+        const typeIcon = typeChip.querySelector('[data-icon="code"]') as SVGElement;
+        expect(typeIcon.style.color).toBe('rgb(138, 148, 166)');
     });
 });

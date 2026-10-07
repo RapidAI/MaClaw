@@ -17,10 +17,11 @@ export function searchSurfaceRootStyle(theme: Theme): CSSProperties {
 
 const SEARCH_DISMISS_EXEMPT_SELECTOR = [
     "[data-testid='ai-title-bar']",
+    ".mc-task-pane__search",
     ".mc-header-search-wrap",
 ].join(", ");
 
-/** Title-bar chrome (search field, window controls) must not dismiss the full-pane search. */
+/** Task-pane search and title-bar chrome must not dismiss the results surface. */
 export function isSearchDismissExemptTarget(target: EventTarget | null): boolean {
     return target instanceof Element && !!target.closest(SEARCH_DISMISS_EXEMPT_SELECTOR);
 }

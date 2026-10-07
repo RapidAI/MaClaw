@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -20,7 +22,11 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
+
+// errMacLawSrvRuntimeReport is the base of every failed runtime report call.
+var errMacLawSrvRuntimeReport = errors.New("maclawsrv runtime report failed")
 
 // veGroupConfig holds the hub-level digital employee group chat configuration.
 type veGroupConfig struct {
@@ -919,6 +925,10 @@ func loadMacLawSrvRuntimePresence(ctx context.Context, system store.SystemSettin
 	}
 	report, err := fetchMacLawSrvRuntimeReport(ctx, runtime, tenantID)
 	if err != nil {
+		// This report decides who shows up as "runtime missing". Without the
+		// reason, a wrong admin secret or a wrong URL is invisible: the list
+		// just looks empty. The failure cache keeps the log rate bounded.
+		log.Printf("[ve] maclawsrv runtime report unavailable: %s", upstream.Message(err, errMacLawSrvRuntimeReport.Error()))
 		presence := emptyMacLawSrvRuntimePresence()
 		setCachedMacLawSrvRuntimePresence(cacheKey, presence, time.Now().Add(1*time.Second))
 		return presence
@@ -1042,8 +1052,10 @@ func fetchMacLawSrvRuntimeReport(ctx context.Context, runtime macLawSrvRuntimeEn
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return report, fmt.Errorf("maclawsrv runtime report status %d", resp.StatusCode)
+		// Keep what MaClawSrv said: a bare status cannot tell a bad admin
+		// secret from a missing route.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return report, upstream.NewStatusError(errMacLawSrvRuntimeReport, resp.StatusCode, body)
 	}
 	var wire macLawSrvRuntimeReportWire
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&wire); err != nil {

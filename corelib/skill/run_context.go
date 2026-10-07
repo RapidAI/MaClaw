@@ -292,8 +292,8 @@ func addStepPlaceholderKeys(dst map[string]bool, step *corelib.NLSkillStep, seen
 		return
 	}
 	seen[step] = true
-	extractPlaceholdersFromParams(step.Params, func(key string) {
-		if key = canonicalRunVarKey(key); key != "" {
+	extractPlaceholdersFromParams(step.Params, func(pk PlaceholderKey) {
+		if key := canonicalRunVarKey(pk.Key); key != "" {
 			dst[key] = true
 		}
 	})

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 )
@@ -29,6 +30,16 @@ func recordAudioAssetMiddleware(app *App, next http.Handler) http.Handler {
 			} else if app != nil {
 				if stage == "react" {
 					app.markFrontendReactReady()
+				} else if stage == "input" {
+					// Input-liveness report from the frontend input watchdog
+					// agent (frontend_input_watch.go). Unknown stage values
+					// must still fall through to the html-ready default below,
+					// so input is matched explicitly here.
+					var ts int64
+					if v, err := strconv.ParseInt(req.URL.Query().Get("ts"), 10, 64); err == nil {
+						ts = v
+					}
+					noteFrontendInputEvent(ts)
 				} else if stage == "app" {
 					bootLog("react App render ping")
 				} else {

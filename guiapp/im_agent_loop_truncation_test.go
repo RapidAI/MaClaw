@@ -51,10 +51,62 @@ func TestAttemptPartialWriteFileDoesNotOverwriteExistingFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	raw := `{"path":"existing.txt","content":"partial replacement`
+	raw := `{"path":"existing.txt","content":"partial replacement that is a different document and longer than the file`
 
 	if result := attemptPartialWriteFile(raw, dir); result != nil {
-		t.Fatalf("expected partial overwrite of existing file to be rejected, got %#v", result)
+		t.Fatalf("unrelated file must stay untouched, got %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("existing file was modified: %q", string(data))
+	}
+}
+
+func TestAttemptPartialWriteFileExtendsPrefixAndKeepsCoveredBody(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "partial.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	extended := `{"path":"partial.txt","content":"hello world!!"}`
+	result := attemptPartialWriteFile(extended, dir)
+	if result == nil || result.BytesWritten != len("hello world!!") {
+		t.Fatalf("prefix extension = %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "hello world!!" {
+		t.Fatalf("extended content = %q", string(data))
+	}
+
+	covered := `{"path":"partial.txt","content":"hello world"}`
+	if result = attemptPartialWriteFile(covered, dir); result != nil {
+		t.Fatalf("file already contains this body, got %#v", result)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "hello world!!" {
+		t.Fatalf("covered file changed: %q", string(data))
+	}
+}
+
+func TestAttemptPartialWriteFileWithoutContentLeavesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "references.bib")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	raw := `{"path":"references.bib","old_string":"original","new_string":"@article{new}"}`
+
+	if result := attemptPartialWriteFile(raw, dir); result != nil {
+		t.Fatalf("edit-shaped args have no partial content body, got %#v", result)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -69,6 +69,18 @@ func ConfigureLogging(dir string) error {
 	return nil
 }
 
+// closeHubLogFiles releases the process-lifetime log file handles. Production
+// never calls it (log.SetOutput must stay valid), but tests need it before
+// removing their temp logging dir — Windows refuses RemoveAll on open files.
+func closeHubLogFiles() {
+	hubLogFiles.mu.Lock()
+	defer hubLogFiles.mu.Unlock()
+	for _, f := range hubLogFiles.files {
+		_ = f.Close()
+	}
+	hubLogFiles.files = nil
+}
+
 // hubLogWriter mirrors GUI detailAwareLogWriter: independent sinks, registration tee.
 type hubLogWriter struct {
 	file    io.Writer

@@ -28,7 +28,7 @@ type IMUserMessage struct {
 	Type        string              `json:"type"`       // "im.user_message"
 	RequestID   string              `json:"request_id"` // Correlates with the agent response
 	UserID      string              `json:"user_id"`
-	Platform    string              `json:"platform"` // "feishu", "qbot", "openclaw"
+	Platform    string              `json:"platform"` // "feishu", "qbot", ...
 	Text        string              `json:"text"`
 	Lang        string              `json:"lang,omitempty"`        // User language ("zh", "en"); empty defaults to "zh"
 	Attachments []MessageAttachment `json:"attachments,omitempty"` // File/image attachments from user

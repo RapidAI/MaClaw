@@ -309,6 +309,29 @@ func TestRunnerFinalWorkspaceGateRequiresChangedReadOnlyProbe(t *testing.T) {
 	}
 }
 
+func TestRunnerFinalWorkspaceGateAcceptsHostFileActivityWhenPorcelainUnchanged(t *testing.T) {
+	store := NewMemoryStore()
+	probes := []*WorkspaceProbe{
+		{ProjectRef: "/home/prj8", Head: "abc", StatusHash: "untracked"},
+		{ProjectRef: "/home/prj8", Head: "abc", StatusHash: "untracked"},
+	}
+	runner := Runner{Store: store, LeaseOwner: "gui:test", WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+		probe := probes[0]
+		probes = probes[1:]
+		return probe, nil
+	})}
+	task, attempt, err := runner.Run(context.Background(), Task{ProjectRef: "/home/prj8", Mode: "remote"}, PolicySnapshot{ProjectRoot: "/home/prj8", Mode: "remote", RemoteTarget: "sha256:host", FinalWorkspaceGateRequired: true}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		return ExecutionResult{
+			Status:          TaskCompleted,
+			SideEffectState: SideEffectConfirmed,
+			Evidence:        []Evidence{{Type: "remote_file_activity", Digest: "sha256:edited-untracked"}},
+		}
+	}))
+	if err != nil || task.Status != TaskCompleted || attempt.Status != TaskCompleted || attempt.ErrorCode != "" {
+		t.Fatalf("task=%#v attempt=%#v err=%v", task, attempt, err)
+	}
+}
+
 func TestRunnerFinalWorkspaceGateAcceptsChangedReadOnlyProbe(t *testing.T) {
 	store := NewMemoryStore()
 	probes := []*WorkspaceProbe{

@@ -501,6 +501,46 @@ func (a *App) SpeakText(input string) {
 	go a.speakTextAsync(input)
 }
 
+// synthesizePetLine returns WAV bytes as base64, or empty when speech cannot start.
+// Stock phrases play from the cache without waiting to synthesize.
+func (a *App) synthesizePetLine(text string) string {
+	text = strings.TrimSpace(text)
+	if a == nil || text == "" {
+		return ""
+	}
+	if cached := a.cachedPetPhrase(text); cached != "" {
+		return cached
+	}
+	if !ttsSpeakMu.TryLock() {
+		return ""
+	}
+	defer ttsSpeakMu.Unlock()
+	cfg, err := a.LoadConfig()
+	if err != nil || !cfg.TTSEnabled {
+		return ""
+	}
+	if err := a.ensureTTSAssetsForUse(cfg.RemoteHubURL, false); err != nil {
+		return ""
+	}
+	manager := a.ensureTTSManagerForSynthesis()
+	if manager == nil {
+		return ""
+	}
+	if len([]rune(text)) > 80 {
+		text = string([]rune(text)[:80])
+	}
+	wav, err := manager.SynthesizeText(text)
+	if err != nil {
+		fmt.Printf("[tts] pet synthesize error: %v\n", err)
+		return ""
+	}
+	encoded := base64EncodeWAV(wav)
+	if petIsStockPhrase(text) {
+		a.storePetPhrase(text, encoded)
+	}
+	return encoded
+}
+
 // SpeakPlainText synthesizes a short sentence directly without task-summary wrapping.
 func (a *App) SpeakPlainText(input string) {
 	input = strings.TrimSpace(input)

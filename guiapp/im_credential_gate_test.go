@@ -36,7 +36,7 @@ func waitForCredentialCard(t *testing.T, h *IMMessageHandler, userID string) *pe
 	return nil
 }
 
-const credentialGateSecretArgs = `{"text":"驱网服务器 www.driverdevelop.com root sunion123"}`
+const credentialGateSecretArgs = `{"text":"驱网服务器 www.driverdevelop.com root Dummy_Pw2026"}`
 
 func TestCredentialGateToolMatcher(t *testing.T) {
 	for _, name := range []string{
@@ -73,7 +73,7 @@ func TestCredentialGateSecretPayloadSuspendsUntilApproved(t *testing.T) {
 	if card.TaskType != credentialCardTaskType {
 		t.Fatalf("card task type = %q, want %q", card.TaskType, credentialCardTaskType)
 	}
-	if strings.Contains(card.Summary, "sunion123") {
+	if strings.Contains(card.Summary, "Dummy_Pw2026") {
 		t.Fatalf("card summary must be redacted, got %q", card.Summary)
 	}
 	if !strings.Contains(card.Summary, "[REDACTED]") {
@@ -266,7 +266,7 @@ func TestCredentialGateSemanticIngestSuspendsUntilApproved(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		proceed, rejection := h.credentialGateSemanticIngest(nil, "u1", "", "服务器 root sunion123", "", "")
+		proceed, rejection := h.credentialGateSemanticIngest(nil, "u1", "", "服务器 root Dummy_Pw2026", "", "")
 		if !proceed {
 			done <- rejection
 			return

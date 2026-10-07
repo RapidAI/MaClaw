@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { attachBareHeadingMarkers, detachGluedMarkdownFences, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 
 describe("normalizeInlineListMarkers ordered markers", () => {
     it("does not split multi-digit ordered markers at the start of a line", () => {
@@ -93,6 +93,25 @@ describe("normalizeInlineListMarkers ordered markers", () => {
         expect(normalizeInlineListMarkers("line1\\nline2")).toBe("line1\nline2");
     });
 
+    it("does not let a fence line inside display math swallow the following list", () => {
+        expect(normalizeInlineListMarkers("$$\n```\nE = mc^2\n$$\nAfter：1. item")).toBe(
+            "$$\n```\nE = mc^2\n$$\nAfter：\n1. item",
+        );
+        expect(normalizeInlineListMarkers("\\[\n~~~\nx\n\\]\nAfter：1. item")).toBe(
+            "\\[\n~~~\nx\n\\]\nAfter：\n1. item",
+        );
+        // The fence after the formula is real code, and the ``` inside the
+        // formula must not consume its opener.
+        const fenced = "$$\n```\nx\n$$\n```\n完成。1. keep\n```\nAfter：1. change";
+        expect(normalizeInlineListMarkers(fenced)).toBe(
+            "$$\n```\nx\n$$\n```\n完成。1. keep\n```\nAfter：\n1. change",
+        );
+        const codeOwnsMath = "```\n$$\nAfter：1. keep\n$$\n```\nAfter：1. change";
+        expect(normalizeInlineListMarkers(codeOwnsMath)).toBe(
+            "```\n$$\nAfter：1. keep\n$$\n```\nAfter：\n1. change",
+        );
+    });
+
     it("preserves serialized line-break-like TeX commands inside display math", () => {
         const displayMath = "$$\n\\newline\nx + y\n$$\nAfter：1. item";
         expect(normalizeInlineListMarkers(displayMath)).toBe("$$\n\\newline\nx + y\n$$\nAfter：\n1. item");
@@ -125,6 +144,73 @@ describe("normalizeInlineListMarkers ordered markers", () => {
     it("leaves pure prose without ordered-marker shapes unchanged", () => {
         const input = "今天天气不错，适合出行。没有列表。";
         expect(normalizeInlineListMarkers(input)).toBe(input);
+    });
+});
+
+describe("detachGluedMarkdownFences", () => {
+    it("moves an opening fence glued to a heading onto its own line", () => {
+        const input = [
+            "### `maclaw-hub` CPU 占用偏高```",
+            "PID 20787",
+            "```",
+            "- 持续占用 **半个核心**",
+            "",
+            "### 内存占用最重",
+            "```",
+            "PID 20740",
+            "```",
+            "- 单进程占用 **1.39G 内存**",
+        ].join("\n");
+        expect(detachGluedMarkdownFences(input)).toBe([
+            "### `maclaw-hub` CPU 占用偏高",
+            "```",
+            "PID 20787",
+            "```",
+            "- 持续占用 **半个核心**",
+            "",
+            "### 内存占用最重",
+            "```",
+            "PID 20740",
+            "```",
+            "- 单进程占用 **1.39G 内存**",
+        ].join("\n"));
+        expect(normalizeInlineListMarkers(input)).toBe(detachGluedMarkdownFences(input));
+    });
+
+    it("keeps a triple-backtick inline span on the same line", () => {
+        expect(normalizeInlineListMarkers("See ```code``` then stop")).toBe("See ```code``` then stop");
+        expect(normalizeInlineListMarkers("See ```code```")).toBe("See ```code```");
+    });
+
+    it("leaves a spaced fence mention on the prose line", () => {
+        expect(normalizeInlineListMarkers("Type ```")).toBe("Type ```");
+        expect(normalizeInlineListMarkers("Type ``` to start")).toBe("Type ``` to start");
+    });
+
+    it("detaches a language fence and a closer glued to the last code line", () => {
+        expect(normalizeInlineListMarkers("run```bash\nls\n```")).toBe("run\n```bash\nls\n```");
+        expect(normalizeInlineListMarkers("```\necho ok```\n- next")).toBe("```\necho ok\n```\n- next");
+        expect(normalizeInlineListMarkers("note~~~\nkeep\n~~~\nAfter：1. yes")).toBe("note\n~~~\nkeep\n~~~\nAfter：\n1. yes");
+    });
+
+    it("does not treat a quoted backtick run inside a fence as a closer", () => {
+        const input = "```\nprint(\"```\")\n```\nAfter：1. item";
+        expect(normalizeInlineListMarkers(input)).toBe("```\nprint(\"```\")\n```\nAfter：\n1. item");
+    });
+
+    it("leaves a well-formed fence and formula source untouched", () => {
+        const fenced = "Before\n```ts\nconst x = 1;\n```\nAfter";
+        expect(detachGluedMarkdownFences(fenced)).toBe(fenced);
+        const math = "$$\nx + y```\n$$\nAfter：1. item";
+        expect(detachGluedMarkdownFences(math)).toBe(math);
+        expect(normalizeInlineListMarkers(math)).toBe("$$\nx + y```\n$$\nAfter：\n1. item");
+        // A formula opener that itself ends in a fence run stays one line.
+        const opener = "$$ x```\nhello\n$$\nAfter：1. item";
+        expect(detachGluedMarkdownFences(opener)).toBe(opener);
+        expect(normalizeInlineListMarkers(opener)).toBe("$$ x```\nhello\n$$\nAfter：\n1. item");
+        const bracket = "\\[ x```\nhello\n\\]\nAfter：1. item";
+        expect(detachGluedMarkdownFences(bracket)).toBe(bracket);
+        expect(normalizeInlineListMarkers(bracket)).toBe("\\[ x```\nhello\n\\]\nAfter：\n1. item");
     });
 });
 

@@ -126,9 +126,11 @@ func (m *knowledgeStoreManager) UseSharedAIModels(aiModels *srvAIModelManager, c
 		oldEmb.Close()
 	}
 	aiModels.setEmbeddingReadyHook(func() {
+		attachSrvIntentEmbedder(adapter)
 		m.backfillEmbeddingsAsync("shared embedding model ready")
 	})
 	if exists, _ := modelFileReady(aiModels.modelPath(embedding.DefaultModelFilename)); exists {
+		attachSrvIntentEmbedder(adapter)
 		m.backfillEmbeddingsAsync("shared embedding model already ready")
 	}
 	log.Printf("[knowledge] embedding uses shared AI model manager")

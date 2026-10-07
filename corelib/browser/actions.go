@@ -36,7 +36,7 @@ func (s *BrowserAgentSession) observeWithRecovery() (*BrowserObservation, error)
 		s.recoverMu.Unlock()
 		return nil, err
 	}
-	if attachErr := attachSessionToRecoverablePage(session, policy, currentID); attachErr != nil {
+	if attachErr := reattachAfterTargetGone(session, policy, currentID); attachErr != nil {
 		s.recoverMu.Unlock()
 		if isPolicyDenied(attachErr) {
 			return nil, attachErr
@@ -80,7 +80,10 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	if url == "" {
 		return nil, fmt.Errorf("missing url")
 	}
-	if err := validateNavigationPolicy(s.Policy, url, currentDomainFromSession(s)); err != nil {
+	if kept := s.keptLoggedInDocument(url); kept != nil {
+		return kept, nil
+	}
+	if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil {
 		return policyBlockResult(s, "browser_navigate", err)
 	}
 	if _, err := s.session.Navigate(url); err != nil {
@@ -96,6 +99,46 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 		"url":   obs.Snapshot.URL,
 		"title": obs.Snapshot.Title,
 	}, true)), nil
+}
+
+// loggedInNavigationPolicy lets the agent open another host of the site the
+// person just signed into. The default policy treats that host as a new
+// origin and would stop the task even though the login cookie is for the site.
+func (s *BrowserAgentSession) loggedInNavigationPolicy(url string) BrowserPolicy {
+	policy := BrowserPolicy{}
+	if s != nil {
+		policy = s.Policy
+	}
+	if s == nil || s.session == nil {
+		return policy
+	}
+	href, ok := s.session.loggedInDocumentURL()
+	if ok && sameLoggedInSite(href, url) {
+		policy.AllowCrossOriginNavigation = true
+	}
+	return policy
+}
+
+// keptLoggedInDocument stops a navigation that would replace the page where
+// the person just signed in. Later clicks in the same batch use refs from
+// the old page, so the batch stops and the agent probes this document.
+func (s *BrowserAgentSession) keptLoggedInDocument(url string) *BrowserActionResult {
+	if s == nil || s.session == nil {
+		return nil
+	}
+	href, ok := s.session.loggedInDocumentURL()
+	if !ok || desktopPageAlreadyOpen(href, url) || sameLoggedInSite(href, url) {
+		return nil
+	}
+	display := fmt.Sprintf("logged-in page is already open: %s\nStay on this site and continue there. Opening another site would leave the website login behind.", href)
+	result := s.completeAction("browser_navigate", display, href, nil, map[string]interface{}{
+		"url":            href,
+		"logged_in_page": true,
+		"requested_url":  url,
+	}, false)
+	result.batchStop = true
+	result.batchStopReason = "logged_in_page"
+	return result
 }
 
 func (s *BrowserAgentSession) waitForActionSettle(timeout, quiet time.Duration) {

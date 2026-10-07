@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
 class ResizeObserverMock {
     observe() { }
@@ -73,6 +73,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListSkillEvolutionAudit: vi.fn(async () => []),
     ListSkillEvolutionCompensations: vi.fn(async () => []),
     ListSkillMaintenanceDrafts: vi.fn(async () => []),
+    ListSkillRepairDrafts: vi.fn(async () => []),
     ListSkillYAMLBackups: vi.fn(async () => []),
     LoadConfig: vi.fn(async () => ({})),
     OpenFileOrShowInFolder: vi.fn(async () => undefined),
@@ -92,7 +93,9 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-import { SkillsManagementPanel, getLearnedSkillDescriptionPreview, hubSourceFilterMatches, skillDescriptionTooltip, LOCAL_SKILLS_DESCRIPTION_COL_PX } from '../SkillsManagementPanel';
+import { EventsOn } from '../../../../wailsjs/runtime';
+
+import { SkillsManagementPanel, getLearnedSkillDescriptionPreview, hubSourceFilterMatches, skillDescriptionTooltip, SKILL_CARD_COLUMNS, SKILL_CARD_PAGE_SIZE } from '../SkillsManagementPanel';
 import { getSkillSourceLabel, getSkillSourceTooltip } from '../SkillSourceBadge';
 import { DialogProvider } from '../../CustomDialog';
 import { ToastProvider } from '../../Toast';
@@ -226,7 +229,7 @@ describe('SkillsManagementPanel execution class', () => {
         renderPanel();
 
         await waitFor(() => {
-            expect(screen.getByText('类型')).toBeTruthy();
+            expect(screen.getByText('paper_digest')).toBeTruthy();
         });
 
         expect(ListNLSkillsMock).toHaveBeenCalled();
@@ -383,18 +386,195 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText(getLearnedSkillDescriptionPreview(longDescription))).toBeTruthy();
         expect(screen.queryByText(longDescription)).toBeNull();
         expect(screen.getByTitle(longDescription)).toBeTruthy();
+        expect(screen.queryByRole('button', { name: '上一页' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '下一页' })).toBeNull();
     });
-    it('caps the description column so later columns stay in the table viewport', async () => {
+    it('shows four skill cards per row and twenty per page', async () => {
+        expect(SKILL_CARD_COLUMNS).toBe(4);
+        expect(SKILL_CARD_PAGE_SIZE).toBe(20);
+        const many = Array.from({ length: SKILL_CARD_PAGE_SIZE + 1 }, (_, index) => ({
+            name: `skill_${index}`,
+            description: `description ${index}`,
+            triggers: ['skill'],
+            steps: [{ action: 'run_skill', params: {}, on_error: 'stop' }],
+            status: 'active',
+            created_at: '2026-04-09T00:00:00Z',
+            source: 'manual',
+            execution_class: 'native_skill',
+            usage_count: 0,
+            success_rate: 0,
+        }));
+        ListNLSkillsMock.mockResolvedValue(many);
         renderPanel();
-        await waitFor(() => expect(ListNLSkillsMock).toHaveBeenCalled());
 
-        const descriptionHeader = screen.getByRole('columnheader', { name: '描述' });
-        expect(descriptionHeader.style.width).toBe(`${LOCAL_SKILLS_DESCRIPTION_COL_PX}px`);
-        expect(descriptionHeader.style.maxWidth).toBe(`${LOCAL_SKILLS_DESCRIPTION_COL_PX}px`);
-        const table = descriptionHeader.closest('table');
-        expect(table?.style.width).toBe('100%');
-        expect(table?.style.tableLayout).toBe('fixed');
-        expect((table?.parentElement as HTMLElement | null)?.style.overflowX).toBe('hidden');
+        await waitFor(() => expect(screen.getByText('skill_0')).toBeTruthy());
+        const grid = screen.getByTestId('skill-card-grid');
+        expect(grid.style.gridTemplateColumns).toBe(`repeat(${SKILL_CARD_COLUMNS}, minmax(0, 1fr))`);
+        expect(screen.getAllByTestId('skill-card')).toHaveLength(SKILL_CARD_PAGE_SIZE);
+        expect(screen.queryByText('skill_20')).toBeNull();
+
+        const scroller = screen.getByTestId('skills-tab-scroll');
+        scroller.scrollTop = 48;
+        fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+        expect(scroller.scrollTop).toBe(0);
+        expect(screen.getByText('skill_20')).toBeTruthy();
+        expect(screen.queryByText('skill_0')).toBeNull();
+        expect(screen.getAllByTestId('skill-card')).toHaveLength(1);
+
+        ListNLSkillsMock.mockResolvedValue(many.slice(0, 5));
+        fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+        await waitFor(() => expect(screen.getByText('skill_0')).toBeTruthy());
+        expect(screen.queryByText('skill_20')).toBeNull();
+        expect(screen.queryByRole('button', { name: '下一页' })).toBeNull();
+        expect(screen.getAllByTestId('skill-card')).toHaveLength(5);
+    });
+    it('keeps the visible catalog while a refresh is in flight', async () => {
+        const many = Array.from({ length: SKILL_CARD_PAGE_SIZE + 1 }, (_, index) => ({
+            name: `skill_${index}`,
+            description: `description ${index}`,
+            triggers: ['skill'],
+            steps: [{ action: 'run_skill', params: {}, on_error: 'stop' }],
+            status: 'active',
+            created_at: '2026-04-09T00:00:00Z',
+            source: 'manual',
+            execution_class: 'native_skill',
+            usage_count: 0,
+            success_rate: 0,
+        }));
+        let releaseRefresh: (skills: typeof many) => void = () => {};
+        let calls = 0;
+        ListNLSkillsMock.mockImplementation(() => {
+            calls += 1;
+            if (calls === 1) return Promise.resolve(many);
+            return new Promise<typeof many>((resolve) => {
+                releaseRefresh = resolve;
+            });
+        });
+        renderPanel();
+        await waitFor(() => expect(screen.getByText('skill_0')).toBeTruthy());
+        fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+        expect(screen.getByText('skill_20')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+        expect(screen.getByText('skill_20')).toBeTruthy();
+        expect(screen.queryByText('加载中...')).toBeNull();
+
+        await act(async () => {
+            releaseRefresh(many.slice(0, 5));
+        });
+        await waitFor(() => expect(screen.getByText('skill_0')).toBeTruthy());
+        expect(screen.queryByText('skill_20')).toBeNull();
+        expect(screen.getAllByTestId('skill-card')).toHaveLength(5);
+    });
+    it('keeps skill settings tabs above the scroller', () => {
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: '设置' }));
+        const scroller = screen.getByTestId('skills-tab-scroll');
+        const settingsTabs = screen.getByRole('tablist', { name: '技能设置' });
+        expect(scroller.contains(settingsTabs)).toBe(false);
+        expect(settingsTabs.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(screen.getByRole('tab', { name: '自进化' }).getAttribute('aria-selected')).toBe('true');
+    });
+    it('keeps the suite member dialog outside the scroller', async () => {
+        ListSkillSuitesMock.mockResolvedValue([{
+            id: 'suite-1',
+            name: 'Research Suite',
+            description: 'Papers and notes',
+            members: [
+                { name: 'paper_digest', required: true },
+                { name: 'local_helper', required: false },
+            ],
+        }]);
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: '能力市场' }));
+        fireEvent.click(await screen.findByRole('button', { name: '详情' }));
+        const dialog = screen.getByRole('dialog');
+        const scroller = screen.getByTestId('skills-tab-scroll');
+        expect(scroller.contains(dialog)).toBe(false);
+        expect(screen.getByRole('button', { name: '全选' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '安装' })).toBeTruthy();
+    });
+    it('scrolls capability market rows under the search field', async () => {
+        GetHubRecommendationsMock.mockResolvedValue(Array.from({ length: 3 }, (_, index) => ({
+            id: `hub-${index}`,
+            name: `hub_skill_${index}`,
+            description: 'market row',
+            tags: [],
+            source: 'hubcenter',
+            source_label: 'Hub / HubCenter',
+            avg_rating: 0,
+            rating_count: 0,
+            downloads: 0,
+            score: 0,
+            price: 0,
+            installed: false,
+            can_update: false,
+            has_update: false,
+        })));
+        renderPanel();
+        const outer = screen.getByTestId('skills-tab-scroll');
+        expect(outer.style.overflowY).toBe('scroll');
+
+        fireEvent.click(screen.getByRole('button', { name: '能力市场' }));
+        const search = await screen.findByPlaceholderText('搜索 Hub Skill...');
+        const list = await screen.findByTestId('hub-catalog-scroll');
+        expect(await screen.findByText('hub_skill_2')).toBeTruthy();
+        expect(list.contains(search)).toBe(false);
+        expect(list.contains(screen.getByText('hub_skill_0'))).toBe(true);
+        expect(list.contains(screen.getByText('热门 Skill'))).toBe(false);
+        expect(list.style.overflowY).toBe('scroll');
+        expect(list.style.flexBasis).toBe('0%');
+        expect(list.style.scrollbarGutter).toBe('stable');
+        expect(list.style.scrollbarColor).toBe('auto');
+        expect(outer.style.overflowY).toBe('auto');
+        expect(outer.contains(list)).toBe(true);
+        const catalog = list.parentElement as HTMLElement;
+        expect(catalog.style.flexShrink).toBe('1');
+        expect(catalog.style.flexBasis).toBe('0%');
+        expect(catalog.style.minHeight).toBe('180px');
+        expect(catalog.contains(search)).toBe(true);
+        expect(catalog.contains(screen.getByText('热门 Skill'))).toBe(true);
+
+        list.scrollTop = 40;
+        fireEvent.change(search, { target: { value: 'pdf' } });
+        fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+        expect(list.scrollTop).toBe(0);
+    });
+    it('does not scroll Market when the skill catalog page clamps', async () => {
+        const handlers = new Map<string, () => void>();
+        vi.mocked(EventsOn).mockImplementation((event: string, handler: () => void) => {
+            handlers.set(event, handler);
+            return () => undefined;
+        });
+        const many = Array.from({ length: SKILL_CARD_PAGE_SIZE + 1 }, (_, index) => ({
+            name: `skill_${index}`,
+            description: `description ${index}`,
+            triggers: ['skill'],
+            steps: [{ action: 'run_skill', params: {}, on_error: 'stop' }],
+            status: 'active',
+            created_at: '2026-04-09T00:00:00Z',
+            source: 'manual',
+            execution_class: 'native_skill',
+            usage_count: 0,
+            success_rate: 0,
+        }));
+        ListNLSkillsMock.mockResolvedValue(many);
+        try {
+            renderPanel();
+            await waitFor(() => expect(screen.getByText('skill_0')).toBeTruthy());
+            fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+            expect(screen.getByText('skill_20')).toBeTruthy();
+            fireEvent.click(screen.getByRole('button', { name: '能力市场' }));
+            const scroller = screen.getByTestId('skills-tab-scroll');
+            scroller.scrollTop = 72;
+            ListNLSkillsMock.mockResolvedValue(many.slice(0, 5));
+            await act(async () => {
+                handlers.get('skill:index_refreshed')?.();
+            });
+            expect(scroller.scrollTop).toBe(72);
+        } finally {
+            vi.mocked(EventsOn).mockImplementation(() => () => undefined);
+        }
     });
     it('does not show the obsolete MaClaw App upload action in the filtered category', async () => {
         UploadNLSkillToMarketMock.mockResolvedValue('submission-app-1');

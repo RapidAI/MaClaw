@@ -18,6 +18,7 @@ func TestProductionMemoryWritesUseCorelibHelpers(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	allowedFiles := map[string]bool{
 		filepath.ToSlash(filepath.Join("corelib", "memory", "manual.go")):             true,
+		filepath.ToSlash(filepath.Join("corelib", "memory", "fact_supersede.go")):     true,
 		filepath.ToSlash(filepath.Join("corelib", "memory", "store.go")):              true,
 		filepath.ToSlash(filepath.Join("corelib", "memory", "upsert.go")):             true,
 		filepath.ToSlash(filepath.Join("corelib", "memory", "artifact.go")):           true,
@@ -127,6 +128,8 @@ func TestCoreMemoryDirectEntryWritesStayInAllowedBoundaries(t *testing.T) {
 			"(*Store).replaceEntriesAndRebuildAsync":  true,
 			"(*Store).insertPreparedEntryLocked":      true,
 			"(*Store).applyEntryEmbeddingIfReady":     true,
+			"(*Store).applyEntryEmbeddingLocked":      true,
+			"(*Store).applyCompactFormIfReady":        true,
 		},
 	}
 
@@ -178,7 +181,7 @@ func TestHostAdaptersUseCorelibMemoryStoreFactory(t *testing.T) {
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	allowedFactoryCallers := map[string]bool{
-		filepath.ToSlash(filepath.Join("gui", "app.go")):                                     true,
+		filepath.ToSlash(filepath.Join("guiapp", "app.go")):                                  true,
 		filepath.ToSlash(filepath.Join("tui", "app.go")):                                     true,
 		filepath.ToSlash(filepath.Join("tui", "pipe_mode.go")):                               true,
 		filepath.ToSlash(filepath.Join("tui", "commands", "memory.go")):                      true,
@@ -188,7 +191,7 @@ func TestHostAdaptersUseCorelibMemoryStoreFactory(t *testing.T) {
 	factory := regexp.MustCompile(`\b(?:memory|corememory)\.NewStoreWithMode(?:AndLegacyJSON)?\s*\(`)
 
 	var findings []string
-	for _, root := range []string{"gui", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
+	for _, root := range []string{"guiapp", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, filepath.FromSlash(root)), func(path string, d os.DirEntry, err error) error {
 			if err != nil && os.IsNotExist(err) {
 				return nil
@@ -238,7 +241,7 @@ func TestHostAdaptersUseCorelibMemoryMaintenance(t *testing.T) {
 	forbidden := regexp.MustCompile(`\b(?:memory|corememory)\.(?:NewCompressor|NewPipeline|NewSynthesizer|NewConsolidator|NewProfileConsolidator|NewOnlineExtractor|NewRecallGating|NewKnowledgeExtractor(?:WithConsolidator)?)\s*\(`)
 
 	var findings []string
-	for _, root := range []string{"gui", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
+	for _, root := range []string{"guiapp", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, filepath.FromSlash(root)), func(path string, d os.DirEntry, err error) error {
 			if err != nil && os.IsNotExist(err) {
 				return nil
@@ -322,7 +325,7 @@ func TestGUIMemoryRuntimeUsesMaintenanceFacade(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "gui", "app.go"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "guiapp", "app.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +349,7 @@ func TestHostManualMemorySaveUsesCorelibManualHelper(t *testing.T) {
 		filepath.Join("tui", "commands", "memory.go"): {
 			"store.SaveManualMemory", "memory.HandleTool(store, map[string]interface{}{\n\t\t\"action\":   \"save\"",
 		},
-		filepath.Join("gui", "app_wails_bindings.go"): {
+		filepath.Join("guiapp", "app_wails_bindings.go"): {
 			"a.memoryStore.SaveManualMemory", "memory.HandleTool(a.memoryStore, map[string]interface{}{\n\t\t\"action\":   \"save\"",
 		},
 	}
@@ -375,7 +378,7 @@ func TestHostMemoryDeleteUsesCorelibToolAction(t *testing.T) {
 		filepath.Join("tui", "commands", "memory.go"): {
 			"memory.HandleTool(store", "\"action\": \"delete\"", "store.Delete(id)",
 		},
-		filepath.Join("gui", "app_wails_bindings.go"): {
+		filepath.Join("guiapp", "app_wails_bindings.go"): {
 			"memory.HandleTool(a.memoryStore", "\"action\": \"delete\"", "a.memoryStore.Delete(id)",
 		},
 	}
@@ -399,7 +402,7 @@ func TestGUIInferenceDiagnosticsUseCorelibProjection(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "gui", "app_wails_bindings.go"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "guiapp", "app_wails_bindings.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +479,7 @@ func TestHostMemoryInspectionUsesCorelibToolFacades(t *testing.T) {
 	}
 
 	var findings []string
-	for _, root := range []string{"gui", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
+	for _, root := range []string{"guiapp", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, filepath.FromSlash(root)), func(path string, d os.DirEntry, err error) error {
 			if err != nil && os.IsNotExist(err) {
 				return nil
@@ -522,7 +525,7 @@ func TestGUIWailsCompressionControlsUseMaintenanceFacade(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "gui", "app_wails_bindings.go"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "guiapp", "app_wails_bindings.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +569,7 @@ func TestGUIMemoryCompressorIsCorelibAdapter(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "gui", "memory_compressor.go"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "guiapp", "memory_compressor.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -61,17 +61,22 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), h.routingMissFloorDefinitions(), ctx)
 	lookupCatalog := h.filterPolicyRejectedSurfaceTools(catalog)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
-	tools = h.pinClassifierTimeoutExecutionFloor(userID, ctx, tools, lookupCatalog)
+	tools = h.pinExecutionBaseline(userID, ctx, tools, lookupCatalog)
 	directMode := h.mainLoopInDirectMode(userID, ctx)
-	if loopContextHasClassifierTimeoutLookup(ctx) && executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
-		// The floor pin reopens bash/read_file/write_file/edit_file. Skill
-		// search and truncation still belong to this round; an empty phase
-		// would publish the tools those policies just removed.
-		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, nil)
+	if executionSurfaceIsFull(executionProfileFromLoop(ctx)) && !operationalExecutionProfile(executionProfileFromLoop(ctx)) {
+		// The baseline pin reopens the execution floor. Skill search and
+		// truncation still belong to this round. A timeout injection had no
+		// router result and may ensure from the host catalog; an ordinary
+		// injection only narrows the tools it already holds.
+		var bound []map[string]interface{}
+		if !loopContextHasClassifierTimeoutLookup(ctx) {
+			bound = boundFloorCatalog(tools)
+		}
+		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, bound)
 	} else {
-		// A non-timeout supplement does not pin the floor, but the fresh
-		// route and workflow ensure can still bring back bash or a tool
-		// this round already blocked.
+		// Light and operational supplements do not seal the baseline. The
+		// fresh route and workflow ensure can still bring back bash or a
+		// tool this round already blocked.
 		tools = applySkillPreferenceSurface(tools, phase)
 		if directMode {
 			tools = filterDirectModeAllowedTools(tools)

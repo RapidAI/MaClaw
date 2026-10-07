@@ -1525,6 +1525,10 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleDeviceGatewayPlaybackReceipt(msg)
 		case hubInboundMessageDeviceGatewayDevices:
 			c.handleDeviceGatewayDevices(msg)
+		case hubInboundMessageDeviceGatewayEventAck:
+			// In a goroutine: an approval ack can end in a real tool execution,
+			// and the read loop must keep draining the socket while it runs.
+			go c.handleDeviceGatewayEventAck(msg)
 		}
 	}
 }
@@ -1642,6 +1646,35 @@ func (c *RemoteHubClient) handleDeviceGatewayDevices(msg inboundHubEnvelope) {
 	}
 	err := json.Unmarshal(msg.Payload, &payload)
 	c.completeHardwareDeviceList(msg.RequestID, payload.Devices, payload.MaxDevices, payload.BoundCount, err)
+}
+
+// handleDeviceGatewayEventAck routes a decision made on a paired terminal to the
+// pending approval it answers (plan N1-6, Hub side:
+// im.DeviceGateway.handleEventAck).
+//
+// The envelope is pushed to the machine rather than to a client id: the
+// decision belongs to the GUI that raised the approval, not to the device that
+// carried the card.
+func (c *RemoteHubClient) handleDeviceGatewayEventAck(msg inboundHubEnvelope) {
+	var payload struct {
+		ClientID  string `json:"clientId"`
+		EventID   string `json:"eventId"`
+		Status    string `json:"status"`
+		ActionID  string `json:"actionId"`
+		DecidedBy string `json:"decidedBy"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[hub-client] device event ack parse error: %v", err)
+		return
+	}
+	handler := c.ensureIMHandler()
+	if handler == nil {
+		log.Printf("[hub-client] device event ack dropped: no IM handler")
+		return
+	}
+	log.Printf("[hub-client] device event ack received: client=%s event=%s status=%s decidedBy=%s",
+		payload.ClientID, payload.EventID, payload.Status, payload.DecidedBy)
+	handler.applyDeviceEventAck(payload.EventID, payload.Status, payload.ActionID, payload.DecidedBy)
 }
 
 func (c *RemoteHubClient) completeHardwareDeviceList(requestID string, devices []HardwareDeviceBinding, maxDevices, boundCount int, err error) {
@@ -3414,6 +3447,30 @@ func (c *RemoteHubClient) SendDeviceGatewayAmbient(summary string, temperatureC 
 		ambient["glyphs"] = glyphs
 	}
 	reply := map[string]any{"reply_type": "ambient", "ambient": ambient}
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
+}
+
+// SendDeviceGatewayEvent publishes one structured event to every hardware
+// surface paired with this GUI (Hub side: im.DeviceGateway.UpdateMachineEvent).
+//
+// clientId="*" is the machine-scoped fan-out convention already used by
+// SendDeviceGatewayAmbient: the Hub delivers the event to every device under
+// this machine and finishes the reply there instead of routing it to a single
+// client. The Hub validates the payload against the plan section 4.1 contract
+// and drops a malformed event, so this call is fire-and-forget -- the returned
+// error only reports a transport failure, never a rejected event. Callers must
+// therefore build a complete event (eventId/category/severity/title, plus
+// ttlSec + requiresAck + persist when category is "approval").
+func (c *RemoteHubClient) SendDeviceGatewayEvent(event map[string]any) error {
+	if len(event) == 0 {
+		return fmt.Errorf("device event is empty")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	reply := map[string]any{"reply_type": "event", "event": event}
 	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 

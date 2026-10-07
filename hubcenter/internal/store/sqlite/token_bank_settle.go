@@ -21,11 +21,22 @@ import (
 //
 // The formula is §5 and it is applied exactly once per call:
 //
-//	base  = Σ ceil(tokens / 10000 × unit_per_10k × 1e6)
+//	billable input = input − priced cache read − priced cache write
+//	base  = Σ ceil(billable_tokens / 10000 × unit_per_10k × 1e6)
 //	gross = round(base × tier_multiplier)
 //	fee   = round(gross × fee_rate)          (default 10%)
 //	net   = gross − fee
 //	net   = max(0, min(net, charged))        (anti-inversion, §5 ⑥)
+//
+// Measured input already includes cache read and cache write, the same
+// boundary consumer billing uses. The cache units here are already resolved:
+// a price-book cache field of 0 is replaced by the platform default before
+// this formula runs. A resolved unit above 0 prices that subset at the cache
+// rate and takes it off the input leg. A resolved unit of 0, which only
+// happens when the platform default is also 0, keeps those tokens on the
+// input rate. Adding a positive cache leg on top of the full input charges
+// those tokens twice, and that double charge is what pushed list-price gross
+// above the consumer charge on cached calls.
 
 // TokenBankSettlement is one settled call.
 type TokenBankSettlement struct {
@@ -93,8 +104,8 @@ type TokenBankSettlementResult struct {
 	// Applied reports whether this call settled the usage. False means the
 	// request was already settled (an idempotent replay).
 	Applied bool
-	// CapHit is "daily", "monthly", or "anomaly" when this insert crossed a
-	// share limit. A replay leaves it empty.
+	// CapHit is "daily" or "monthly" when this insert crossed an owner-configured
+	// share limit. A replay leaves it empty. A usage spike does not set it.
 	CapHit string
 }
 
@@ -102,10 +113,19 @@ type TokenBankSettlementResult struct {
 // the same arithmetic is reachable from tests and from the detail view that
 // shows the owner the calculation, without a second implementation.
 func ComputeTokenBankSettlement(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, unitIn, unitOut, unitCachedRead, unitCacheWrite, tierMultiplier, feeRate float64) (gross, fee, net int64) {
-	base := tokenBankTokenCostMicro(inputTokens, unitIn) +
-		tokenBankTokenCostMicro(outputTokens, unitOut) +
-		tokenBankTokenCostMicro(cachedInputTokens, unitCachedRead) +
-		tokenBankTokenCostMicro(cacheWriteTokens, unitCacheWrite)
+	gross, fee, net, _, _, _, _ = tokenBankSettlementQuote(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, unitIn, unitOut, unitCachedRead, unitCacheWrite, tierMultiplier, feeRate)
+	return gross, fee, net
+}
+
+// tokenBankSettlementQuote prices one call and returns the token split that
+// produced the quote. Settlement stores that split in formula_json, so the
+// explanation and the money come from one call.
+func tokenBankSettlementQuote(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, unitIn, unitOut, unitCachedRead, unitCacheWrite, tierMultiplier, feeRate float64) (gross, fee, net, normalInput, cacheRead, cacheWrite, output int64) {
+	normalInput, cacheRead, cacheWrite, output = tokenBankBillableTokens(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, unitCachedRead, unitCacheWrite)
+	base := tokenBankTokenCostMicro(normalInput, unitIn) +
+		tokenBankTokenCostMicro(output, unitOut) +
+		tokenBankTokenCostMicro(cacheRead, unitCachedRead) +
+		tokenBankTokenCostMicro(cacheWrite, unitCacheWrite)
 	if tierMultiplier <= 0 {
 		tierMultiplier = 1
 	}
@@ -121,7 +141,44 @@ func ComputeTokenBankSettlement(inputTokens, outputTokens, cachedInputTokens, ca
 	if net < 0 {
 		net = 0
 	}
-	return gross, fee, net
+	return gross, fee, net, normalInput, cacheRead, cacheWrite, output
+}
+
+// tokenBankBillableTokens splits one measured call the way consumer billing
+// does. Cache read and cache write are a subset of input: a count past input
+// is clamped, and the two subsets cannot overlap. The units are the resolved
+// prices, after a blank price-book cache field has fallen back to the
+// platform default. A resolved unit above 0 prices that subset at the cache
+// rate and takes it off the input leg. A resolved unit at or below 0 keeps
+// those tokens on the input rate. The two directions are independent: an
+// unset read rate still leaves room for a positive write rate, and the write
+// stays clamped to the input that remains after the measured read.
+func tokenBankBillableTokens(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, unitCachedRead, unitCacheWrite float64) (normalInput, cacheRead, cacheWrite, output int64) {
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+	if cachedInputTokens < 0 {
+		cachedInputTokens = 0
+	}
+	if cacheWriteTokens < 0 {
+		cacheWriteTokens = 0
+	}
+	if cachedInputTokens > inputTokens {
+		cachedInputTokens = inputTokens
+	}
+	if cacheWriteTokens > inputTokens-cachedInputTokens {
+		cacheWriteTokens = inputTokens - cachedInputTokens
+	}
+	if unitCachedRead <= 0 {
+		cachedInputTokens = 0
+	}
+	if unitCacheWrite <= 0 {
+		cacheWriteTokens = 0
+	}
+	return inputTokens - cachedInputTokens - cacheWriteTokens, cachedInputTokens, cacheWriteTokens, outputTokens
 }
 
 // tokenBankTokenCostMicro is ceil(tokens / 10000 × unitPer10K) in microcredits.
@@ -193,7 +250,7 @@ func (r *TokenBankRepo) SettleTokenBankUsage(ctx context.Context, in TokenBankSe
 		in.TierMultiplier = 1
 	}
 
-	gross, fee, net := ComputeTokenBankSettlement(
+	gross, fee, net, normalInput, cacheRead, cacheWrite, pricedOutput := tokenBankSettlementQuote(
 		in.InputTokens, in.OutputTokens, in.CachedInputTokens, in.CacheWriteTokens,
 		in.UnitInputPer10K, in.UnitOutputPer10K, in.UnitCachedReadPer10K, in.UnitCacheWritePer10K,
 		in.TierMultiplier, in.FeeRate)
@@ -217,23 +274,27 @@ func (r *TokenBankRepo) SettleTokenBankUsage(ctx context.Context, in TokenBankSe
 	now := in.CreatedAt.UTC()
 	stamp := now.Format(time.RFC3339)
 	formula, _ := json.Marshal(map[string]any{
-		"input_tokens":             in.InputTokens,
-		"output_tokens":            in.OutputTokens,
-		"cached_input_tokens":      in.CachedInputTokens,
-		"cache_write_tokens":       in.CacheWriteTokens,
-		"unit_in_per_10k":          in.UnitInputPer10K,
-		"unit_out_per_10k":         in.UnitOutputPer10K,
-		"unit_cached_read_per_10k": in.UnitCachedReadPer10K,
-		"unit_cache_write_per_10k": in.UnitCacheWritePer10K,
-		"tier":                     in.Tier,
-		"tier_multiplier":          in.TierMultiplier,
-		"fee_rate":                 in.FeeRate,
-		"gross_micro":              gross,
-		"fee_micro":                fee,
-		"net_micro":                net,
-		"charged_micro":            in.ChargedMicro,
-		"net_clamped":              clamped,
-		"self_use":                 in.SelfUse,
+		"input_tokens":              in.InputTokens,
+		"output_tokens":             in.OutputTokens,
+		"cached_input_tokens":       in.CachedInputTokens,
+		"cache_write_tokens":        in.CacheWriteTokens,
+		"billable_input_tokens":     normalInput,
+		"priced_cached_tokens":      cacheRead,
+		"priced_cache_write_tokens": cacheWrite,
+		"priced_output_tokens":      pricedOutput,
+		"unit_in_per_10k":           in.UnitInputPer10K,
+		"unit_out_per_10k":          in.UnitOutputPer10K,
+		"unit_cached_read_per_10k":  in.UnitCachedReadPer10K,
+		"unit_cache_write_per_10k":  in.UnitCacheWritePer10K,
+		"tier":                      in.Tier,
+		"tier_multiplier":           in.TierMultiplier,
+		"fee_rate":                  in.FeeRate,
+		"gross_micro":               gross,
+		"fee_micro":                 fee,
+		"net_micro":                 net,
+		"charged_micro":             in.ChargedMicro,
+		"net_clamped":               clamped,
+		"self_use":                  in.SelfUse,
 	})
 
 	tx, err := r.write.BeginTx(ctx, nil)

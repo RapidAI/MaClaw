@@ -73,7 +73,7 @@ func builtinSensitivePatterns() []sensitivePattern {
 				},
 			},
 
-			// --- user + password pair, e.g. "root sunion123". The value must
+			// --- user + password pair, e.g. "root Dummy_Pw2026". The value must
 			// contain a digit or special character (validated in code — RE2 has
 			// no lookahead) so plain phrases like "root directory" or
 			// "admin panel" do not match.

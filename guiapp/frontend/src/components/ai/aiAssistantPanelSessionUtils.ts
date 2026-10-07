@@ -150,6 +150,13 @@ export function assistantTabTypeFromTaskTags(tags?: string[] | null): string {
     return "";
 }
 
+/** Sidebar rows minted for a digital-employee chat. Those chats are not local tasks. */
+export function isVEAssistantTabTaskItem(item: { tags?: unknown } | null | undefined): boolean {
+    if (!item || typeof item !== "object") return false;
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => String(tag)) : [];
+    return assistantTabTypeFromTaskTags(tags) === "ve";
+}
+
 /** Sidebar snapshot/list rows created for VS Code Mode B. */
 export function isAutoACPAssistantTabTaskItem(item: { project_path?: unknown; tags?: unknown; name?: unknown } | null | undefined): boolean {
     if (!item || typeof item !== "object") return false;
@@ -250,12 +257,15 @@ export function isACPAssistantSessionKey(sessionKey?: string | null): boolean {
 }
 
 /**
- * VE / discussion tabs must not open if their sidebar row cannot be saved.
- * ACP is a VS Code connection: a dismissed or missing sidebar row must not
- * block the mirror tab, or a deleted "VS Code / ACP" task would hide the chat.
+ * Discussion tabs must not open if their sidebar row cannot be saved.
+ * A digital-employee chat has no task-list row, so a missing registration must
+ * not block the conversation. ACP is a VS Code connection: a dismissed or
+ * missing sidebar row must not block the mirror tab, or a deleted
+ * "VS Code / ACP" task would hide the chat.
  */
 export function shouldBlockAssistantTabOpenOnTaskRegistration(tabType?: string | null): boolean {
-    return String(tabType || "").trim().toLowerCase() !== "acp";
+    const type = String(tabType || "").trim().toLowerCase();
+    return type !== "acp" && type !== "ve";
 }
 
 /** Reverse of expertSessionKey: extract the expert id, or "" for non-expert keys. */

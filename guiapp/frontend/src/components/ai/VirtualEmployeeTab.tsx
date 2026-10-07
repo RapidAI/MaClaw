@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
+import { primaryFilledButtonStyle, relativeLuminance, type Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
+import { VEStatusDot } from "./VEStatusDot";
+import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 // --- Types ---
@@ -60,14 +62,17 @@ export function truncateText(text: string, maxLen: number): string {
     return text.slice(0, maxLen) + "\u2026";
 }
 
-/** Map access_policy to a short icon/label. */
-export function policyIcon(policy: string): string {
+/** Icon identifier for an access policy, rendered by VEPolicyIcon. */
+export type PolicyIconName = "pub" | "allow" | "block" | "ask" | "unknown";
+
+/** Map access_policy to a policy icon name. */
+export function policyIcon(policy: string): PolicyIconName {
     switch (policy) {
-        case "public": return "[pub]";
-        case "whitelist": return "[allow]";
-        case "blacklist": return "[block]";
-        case "per_request": return "[ask]";
-        default: return "[?]";
+        case "public": return "pub";
+        case "whitelist": return "allow";
+        case "blacklist": return "block";
+        case "per_request": return "ask";
+        default: return "unknown";
     }
 }
 
@@ -80,6 +85,70 @@ export function policyLabel(policy: string, lang?: string): string {
         case "per_request": return isZh ? "首次访问需同意" : "Approval required";
         default: return isZh ? "未知策略" : "Unknown policy";
     }
+}
+
+const POLICY_ICON_TONES: Record<PolicyIconName, { light: string; dark: string }> = {
+    pub: { light: "#3f7060", dark: "#7dbfa8" },
+    allow: { light: "#2f5f98", dark: "#8db4d8" },
+    block: { light: "#c43d34", dark: "#e07b72" },
+    ask: { light: "#a8641f", dark: "#e0a44c" },
+    unknown: { light: "#7a8592", dark: "#a2aeb9" },
+};
+
+const FAVORITE_STAR_TONE = { light: "#c08a1e", dark: "#e0b64c" };
+
+/** Shield/globe SVG glyphs for access policies — replaces the old "[pub]" text badges. */
+export function VEPolicyIcon({ name, size = 14, isDark }: { name: PolicyIconName; size?: number; isDark?: boolean }) {
+    const tone = POLICY_ICON_TONES[name];
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+            style={{ color: isDark ? tone.dark : tone.light, display: "block", flexShrink: 0 }}
+        >
+            {name === "pub" && (
+                <>
+                    <circle {...stroke} cx="12" cy="12" r="7.6" />
+                    <path {...stroke} d="M4.4 12h15.2" />
+                    <path {...stroke} d="M12 4.4a11.5 11.5 0 0 1 0 15.2" />
+                    <path {...stroke} d="M12 4.4a11.5 11.5 0 0 0 0 15.2" />
+                </>
+            )}
+            {name !== "pub" && <path {...stroke} d="M12 3.4 18.6 5.9v5.2c0 4.5-2.7 7.7-6.6 9.5-3.9-1.8-6.6-5-6.6-9.5V5.9Z" />}
+            {name === "allow" && <path {...stroke} d="m9.1 12 2 2 3.9-4.4" />}
+            {name === "block" && <path {...stroke} d="M9.8 9.8l4.4 4.4M14.2 9.8l-4.4 4.4" />}
+            {name === "ask" && (
+                <>
+                    <path {...stroke} d="M10 10a2 2 0 1 1 3.4 1.4c-.7.7-1.4 1-1.4 2" />
+                    <path {...stroke} d="M12 16.4h.01" />
+                </>
+            )}
+            {name === "unknown" && <circle cx="12" cy="12" r="1.5" fill="currentColor" />}
+        </svg>
+    );
+}
+
+/** Context-menu glyphs, matching the app's rounded stroke icon style. */
+function VEMenuGlyph({ name, filled }: { name: "chat" | "star" | "pencil" | "info"; filled?: boolean }) {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+    return (
+        <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            {name === "chat" && <path {...stroke} d="M20 5.2H4a1 1 0 0 0-1 1v9.6a1 1 0 0 0 1 1h3.2v3.4l4.4-3.4H20a1 1 0 0 0 1-1V6.2a1 1 0 0 0-1-1Z" />}
+            {name === "star" && <path {...stroke} fill={filled ? "currentColor" : "none"} d="M12 4.2l2.3 4.7 5.2.7-3.8 3.7.9 5.1-4.6-2.4-4.6 2.4.9-5.1-3.8-3.7 5.2-.7Z" />}
+            {name === "pencil" && <path {...stroke} d="M16.6 3.6a2.1 2.1 0 0 1 2.9 2.9L7.2 18.8l-4 1 1-4L16.6 3.6Z" />}
+            {name === "info" && (
+                <>
+                    <circle {...stroke} cx="12" cy="12" r="7.6" />
+                    <path {...stroke} d="M12 11.2v4.8" />
+                    <path {...stroke} d="M12 8.1h.01" />
+                </>
+            )}
+        </svg>
+    );
 }
 
 function EmployeeAvatar({ ve, displayName }: { ve: VirtualEmployeeEntry; displayName: string }) {
@@ -147,6 +216,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     const [renameValue, setRenameValue] = useState("");
     const [renameSaving, setRenameSaving] = useState(false);
     const [renameError, setRenameError] = useState("");
+    const [searchFocused, setSearchFocused] = useState(false);
 
     const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pollTimerRef = useRef<number | null>(null);
@@ -155,6 +225,9 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     const requestSeqRef = useRef(0);
     const consecutiveRefreshFailuresRef = useRef(0);
     const isZh = !lang || lang.startsWith("zh");
+    // Sidebar dark schemes do not set Theme.isDark — infer from the panel background,
+    // honoring an explicit flag when a caller provides one.
+    const darkSurface = theme.isDark ?? ((relativeLuminance(theme.bg) ?? 1) < 0.5);
 
     // Resolve the list function - use injected or dynamically import Wails binding
     const listFnRef = useRef<(() => Promise<VirtualEmployeeEntry[]>) | null>(listVirtualEmployees || null);
@@ -302,12 +375,19 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         };
     }, [scheduleNextPoll, throttledRefresh]);
 
-    // Close context menu on outside click
+    // Close context menu on outside click or Escape
     useEffect(() => {
         if (!contextMenu) return;
         const handler = () => setContextMenu(null);
+        const keyHandler = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setContextMenu(null);
+        };
         document.addEventListener("click", handler);
-        return () => document.removeEventListener("click", handler);
+        document.addEventListener("keydown", keyHandler);
+        return () => {
+            document.removeEventListener("click", handler);
+            document.removeEventListener("keydown", keyHandler);
+        };
     }, [contextMenu]);
 
     // Clamp context menu position to viewport bounds
@@ -409,33 +489,54 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     zIndex: 2,
                     display: "flex",
                     alignItems: "center",
-                    gap: 6,
-                    padding: "6px 8px 6px 16px",
-                    background: theme.bg,
+                    gap: 8,
+                    padding: "8px 10px 8px 12px",
+                    // Match the hosting pane surface (--theme-page-bg) so the sticky
+                    // bar doesn't draw a lighter stripe over dark schemes.
+                    background: `var(--theme-page-bg, ${theme.bg})`,
                     borderBottom: `1px solid ${theme.divider}`,
                     boxSizing: "border-box",
                     width: "100%",
                 }}
             >
-                <input
-                    data-testid="ve-search-input"
-                    aria-label={searchLabel}
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder={searchPlaceholder}
-                    style={{
-                        flex: 1,
-                        minWidth: 0,
-                        height: 26,
-                        borderRadius: 6,
-                        border: `1px solid ${theme.divider}`,
-                        background: theme.fieldBg,
-                        color: theme.text,
-                        padding: "0 8px",
-                        fontSize: 12,
-                        outline: "none",
-                    }}
-                />
+                <div style={{ flex: 1, position: "relative", minWidth: 0, display: "flex", alignItems: "center" }}>
+                    <span
+                        aria-hidden="true"
+                        style={{
+                            position: "absolute",
+                            left: 8,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            display: "inline-flex",
+                            color: theme.textMuted,
+                            pointerEvents: "none",
+                        }}
+                    >
+                        <TitleBarToolIcon name="search" />
+                    </span>
+                    <input
+                        data-testid="ve-search-input"
+                        aria-label={searchLabel}
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        onFocus={() => setSearchFocused(true)}
+                        onBlur={() => setSearchFocused(false)}
+                        placeholder={searchPlaceholder}
+                        style={{
+                            flex: 1,
+                            minWidth: 0,
+                            height: 28,
+                            borderRadius: 8,
+                            border: `1px solid ${searchFocused ? theme.btnColor : theme.divider}`,
+                            background: theme.fieldBg,
+                            color: theme.text,
+                            padding: "0 9px 0 27px",
+                            fontSize: 12,
+                            outline: "none",
+                            transition: "border-color 0.15s",
+                        }}
+                    />
+                </div>
                 <button
                     type="button"
                     data-testid="ve-refresh-button"
@@ -444,9 +545,9 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     disabled={refreshing}
                     onClick={() => fetchList({ showLoading: false, force: true })}
                     style={{
-                        width: 26,
-                        height: 26,
-                        borderRadius: 6,
+                        width: 28,
+                        height: 28,
+                        borderRadius: 8,
                         border: `1px solid ${theme.divider}`,
                         background: theme.bg,
                         color: theme.textMuted,
@@ -468,20 +569,58 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         (e.currentTarget as HTMLElement).style.color = theme.textMuted;
                     }}
                 >
-                    <span aria-hidden="true" style={{ fontSize: 15, lineHeight: 1, transform: refreshing ? "rotate(20deg)" : undefined }}>
-                        {"\u21bb"}
+                    <span aria-hidden="true" className={refreshing ? "vet-spinning" : undefined} style={{ display: "inline-flex", lineHeight: 1 }}>
+                        <TitleBarToolIcon name="refresh" />
                     </span>
                 </button>
             </div>
-            <div style={options?.center ? { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100% - 39px)", padding: "0 12px 12px" } : undefined}>
+            <div style={options?.center ? { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100% - 45px)", padding: "0 12px 12px" } : undefined}>
                 {children}
             </div>
         </div>
     );
 
+    const emptyStatePanel = (icon: "search" | "book", text: string, textTestId?: string) => (
+        <div
+            data-testid={textTestId}
+            style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 10,
+                padding: "36px 16px",
+                color: theme.textMuted,
+                fontSize: 12,
+                textAlign: "center",
+            }}
+        >
+            <span
+                aria-hidden="true"
+                style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: "50%",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: theme.fieldBg,
+                    border: `1px solid ${theme.divider}`,
+                    color: theme.textMuted,
+                    opacity: 0.9,
+                }}
+            >
+                <TitleBarToolIcon name={icon} />
+            </span>
+            <span>{text}</span>
+        </div>
+    );
+
     if (loading) {
         return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 12, color: theme.textMuted, fontSize: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 16, color: theme.textMuted, fontSize: 12 }}>
+                <span className="vet-spinning" aria-hidden="true" style={{ display: "inline-flex", color: theme.btnColor }}>
+                    <TitleBarToolIcon name="refresh" />
+                </span>
                 <span data-testid="ve-loading">{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</span>
             </div>
         );
@@ -489,18 +628,14 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
     if (error === "hub_unavailable") {
         return renderShell(
-            <div style={{ color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-hub">
-                <span>{isZh ? "Hub \u4e0d\u53ef\u7528\uff0c\u65e0\u6cd5\u83b7\u53d6\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Hub unavailable"}</span>
-            </div>,
+            emptyStatePanel("book", isZh ? "Hub \u4e0d\u53ef\u7528\uff0c\u65e0\u6cd5\u83b7\u53d6\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Hub unavailable", "ve-empty-hub"),
             { testId: "ve-error-container", center: true }
         );
     }
 
     if (visibleEmployees.length === 0) {
         return renderShell(
-            <div style={{ color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-list">
-                <span>{emptyListText}</span>
-            </div>,
+            emptyStatePanel("search", emptyListText, "ve-empty-list"),
             { testId: "ve-empty-container", center: true }
         );
     }
@@ -516,6 +651,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     data-testid={`ve-item-${ve.id}`}
                     role="button"
                     tabIndex={0}
+                    title={ve.skill_description || displayName}
                     onClick={() => onStartConversation(displayEmployee)}
                     onKeyDown={(e) => {
                         if (e.key !== "Enter" && e.key !== " ") return;
@@ -526,12 +662,11 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         e.preventDefault();
                         setContextMenu({ x: e.clientX, y: e.clientY, ve, displayName });
                     }}
-                    title={ve.skill_description || displayName}
                     style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 8,
-                        padding: "8px 12px",
+                        gap: 10,
+                        padding: "10px 12px",
                         cursor: "pointer",
                         borderBottom: `1px solid ${theme.divider}`,
                         transition: "background 0.15s",
@@ -541,49 +676,52 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                 >
                     <span className="vet-avatar-wrap">
                         <EmployeeAvatar ve={ve} displayName={displayName} />
-                        <span
-                            data-testid={`ve-status-${ve.id}`}
-                            style={{
-                                position: "absolute",
-                                right: -1,
-                                bottom: -1,
-                                width: 8,
-                                height: 8,
-                                borderRadius: "50%",
-                                background: isVirtualEmployeeOnline(ve) ? "#4f7f6f" : "#9ca3af",
-                                border: `1.5px solid ${theme.bg}`,
-                                boxSizing: "border-box",
-                            }}
-                        />
+                        <span style={{ position: "absolute", right: -1, bottom: -1 }}>
+                            <VEStatusDot
+                                status={isVirtualEmployeeOnline(ve) ? "online" : "offline"}
+                                size={8}
+                                variant="badge"
+                                dataTestId={`ve-status-${ve.id}`}
+                                title={isVirtualEmployeeOnline(ve) ? (isZh ? "在线" : "Online") : (isZh ? "离线" : "Offline")}
+                            />
+                        </span>
                     </span>
 
                     {/* Name + skill description */}
                     <div className="vet-row-text">
                         <div className="vet-row-name-line">
-                            <span style={{ color: theme.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
+                            <span style={{ color: theme.text, fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
                                 {truncateText(displayName, 20)}
                             </span>
-                            <span className="vet-policy-icon" title={policyLabel(ve.access_policy, lang)}>{policyIcon(ve.access_policy)}</span>
+                            <span
+                                className="vet-policy-icon"
+                                role="img"
+                                aria-label={policyLabel(ve.access_policy, lang)}
+                                title={policyLabel(ve.access_policy, lang)}
+                            >
+                                <VEPolicyIcon name={policyIcon(ve.access_policy)} isDark={darkSurface} />
+                            </span>
                             {ve.access_policy === "per_request" && (
                                 <span
                                     data-testid={`ve-badge-${ve.id}`}
                                     title={policyLabel(ve.access_policy, lang)}
                                     style={{
                                         fontSize: 10,
-                                        padding: "1px 4px",
-                                        borderRadius: 3,
+                                        padding: "1px 6px",
+                                        borderRadius: 999,
                                         background: theme.errorBg || "#fbf1f0",
                                         color: theme.errorText || "#c43d34",
                                         border: `1px solid ${theme.errorBorder || "rgba(196, 61, 52, 0.24)"}`,
                                         whiteSpace: "nowrap",
                                         flexShrink: 0,
+                                        fontWeight: 600,
                                     }}
                                 >
                                     {isZh ? "需同意" : "Needs approval"}
                                 </span>
                             )}
                         </div>
-                        <div style={{ color: theme.textMuted, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left" }}>
+                        <div style={{ color: theme.textMuted, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", marginTop: 1 }}>
                             {truncateText(ve.skill_description, 50)}
                         </div>
                     </div>
@@ -606,11 +744,11 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         top: menuPos.y,
                         background: theme.bg,
                         border: `1px solid ${theme.divider}`,
-                        borderRadius: 6,
-                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        borderRadius: 10,
+                        boxShadow: "0 12px 32px rgba(15, 23, 42, 0.18)",
                         zIndex: 9999,
-                        minWidth: 160,
-                        padding: "4px 0",
+                        minWidth: 172,
+                        padding: "4px",
                     }}
                 >
                     {/* 对话 */}
@@ -618,11 +756,13 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         data-testid="ve-menu-conversation"
                         role="menuitem"
                         onClick={() => { onStartConversation({ ...contextMenu.ve, name: contextMenu.displayName }); setContextMenu(null); }}
-                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", cursor: "pointer", fontSize: 13, color: theme.text, borderRadius: 8 }}
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: "0", color: theme.textMuted, flexShrink: 0 }}>Chat</span>
+                        <span className="vet-menu-icon" style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: theme.textMuted }}>
+                            <VEMenuGlyph name="chat" />
+                        </span>
                         <span>{isZh ? "对话" : "Chat"}</span>
                     </div>
                     {/* Favorite toggle - only when callbacks are wired */}
@@ -638,11 +778,16 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 }
                                 setContextMenu(null);
                             }}
-                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", cursor: "pointer", fontSize: 13, color: theme.text, borderRadius: 8 }}
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            <span style={{ minWidth: 28, textAlign: "center", fontSize: 11, fontWeight: 700, flexShrink: 0, color: theme.textMuted }}>{isFav ? "SET" : "FAV"}</span>
+                            <span
+                                className="vet-menu-icon"
+                                style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: isFav ? (darkSurface ? FAVORITE_STAR_TONE.dark : FAVORITE_STAR_TONE.light) : theme.textMuted }}
+                            >
+                                <VEMenuGlyph name="star" filled={isFav} />
+                            </span>
                             <span>{isFav ? (isZh ? "取消常用" : "Remove from favorites") : (isZh ? "设为常用" : "Set as favorite")}</span>
                         </div>
                     )}
@@ -651,11 +796,13 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             data-testid="ve-menu-rename"
                             role="menuitem"
                             onClick={() => openRenameDialog(contextMenu.ve)}
-                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", cursor: "pointer", fontSize: 13, color: theme.text, borderRadius: 8 }}
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            <span className="vet-menu-key">EDIT</span>
+                            <span className="vet-menu-icon" style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: theme.textMuted }}>
+                                <VEMenuGlyph name="pencil" />
+                            </span>
                             <span>{isZh ? "\u6539\u540d" : "Rename"}</span>
                         </div>
                     )}
@@ -664,11 +811,13 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         data-testid="ve-menu-view-info"
                         role="menuitem"
                         onClick={() => { setViewInfoVE({ ve: contextMenu.ve, displayName: contextMenu.displayName }); setContextMenu(null); }}
-                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", cursor: "pointer", fontSize: 13, color: theme.text, borderRadius: 8 }}
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        <span className="vet-menu-key">INFO</span>
+                        <span className="vet-menu-icon" style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: theme.textMuted }}>
+                            <VEMenuGlyph name="info" />
+                        </span>
                         <span>{isZh ? "\u67e5\u770b\u4fe1\u606f" : "View Info"}</span>
                     </div>
                 </div>
@@ -721,7 +870,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             {renameError && <span role="alert" style={{ color: theme.errorText || "#c43d34", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
                         </label>
                         <div className="vet-dialog-actions">
-                            <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700 }}>
+                            <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700, cursor: renameSaving ? "default" : "pointer" }}>
                                 {isZh ? "\u53d6\u6d88" : "Cancel"}
                             </button>
                             <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={primaryFilledButtonStyle(theme, { minWidth: 72, minHeight: 40, borderRadius: 8, font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55, cursor: renameValue.trim() && !renameSaving ? "pointer" : "default" })}>
@@ -777,12 +926,13 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                         {viewInfoVE.displayName.trim().slice(0, 2).toUpperCase() || "D"}
                                     </span>
                                 )}
-                                <span style={{
-                                    position: "absolute", bottom: 2, right: 2,
-                                    width: 14, height: 14, borderRadius: "50%",
-                                    background: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#4f7f6f" : "#9ca3af",
-                                    border: `2.5px solid ${theme.bg}`,
-                                }} />
+                                <span style={{ position: "absolute", bottom: 2, right: 2 }}>
+                                    <VEStatusDot
+                                        status={isVirtualEmployeeOnline(viewInfoVE.ve) ? "online" : "offline"}
+                                        size={10}
+                                        variant="badge"
+                                    />
+                                </span>
                             </div>
                             <h2 id="ve-info-title" style={{ margin: 0, fontSize: 18, fontWeight: 700, color: theme.text, textAlign: "center" }}>
                                 {viewInfoVE.displayName}
@@ -799,7 +949,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             {/* Status */}
                             <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
-                                <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? (theme.isDark ? "#7aa89a" : "#4f7f6f") : (theme.isDark ? "#a8b8c8" : "#9ca3af"), fontWeight: 600 }}>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? (darkSurface ? "#7aa89a" : "#4f7f6f") : (darkSurface ? "#a8b8c8" : "#9ca3af"), fontWeight: 600 }}>
+                                    <VEStatusDot status={isVirtualEmployeeOnline(viewInfoVE.ve) ? "online" : "offline"} size={7} />
                                     {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
                                 </span>
                             </div>
@@ -817,7 +968,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             {/* Access policy */}
                             <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u8bbf\u95ee\u7b56\u7565" : "Access Policy"}</span>
-                                <span style={{ fontSize: 13, color: theme.text }}>
+                                <span style={{ fontSize: 13, color: theme.text, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                    <VEPolicyIcon name={policyIcon(viewInfoVE.ve.access_policy)} size={13} isDark={darkSurface} />
                                     {policyLabel(viewInfoVE.ve.access_policy, lang)}
                                 </span>
                             </div>

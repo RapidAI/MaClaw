@@ -217,7 +217,11 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		u.embeddingGeneration++
 		generation := u.embeddingGeneration
 		go func() {
-			warmed, err := warmupAnchors(embedder, anchors)
+			warmed, err := warmAnchorsRecovering(embedder, anchors, func() bool {
+				u.mu.RLock()
+				defer u.mu.RUnlock()
+				return u.embeddingGeneration == generation && sameAnchorSnapshot(u.anchors, anchors)
+			})
 			if err != nil {
 				log.Printf("[UnifiedIntentClassifier] Layer 2 remains unavailable: %v", err)
 				return
@@ -240,6 +244,25 @@ func New(cfg Config) *UnifiedIntentClassifier {
 	}
 
 	return u
+}
+
+// warmAnchorsRecovering retries one transient model-open failure. Opening the
+// weights can fail while a download is still publishing the file; a single
+// retry is enough for that, and a second SetEmbedder makes stillCurrent false
+// so the old attempt does not load the model again.
+func warmAnchorsRecovering(embedder embedding.Embedder, anchors []intentAnchor, stillCurrent func() bool) ([]intentAnchor, error) {
+	warmed, err := warmupAnchors(embedder, anchors)
+	if err == nil || stillCurrent == nil || !stillCurrent() {
+		return warmed, err
+	}
+	log.Printf("[UnifiedIntentClassifier] anchor warmup failed, retrying once: %v", err)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	<-timer.C
+	if !stillCurrent() {
+		return nil, err
+	}
+	return warmupAnchors(embedder, anchors)
 }
 
 // sameAnchorSnapshot reports whether two anchor slices still refer to the same
@@ -1188,7 +1211,11 @@ func (u *UnifiedIntentClassifier) SetEmbedder(emb embedding.Embedder) {
 	u.InvalidateCache()
 
 	go func() {
-		warmed, err := warmupAnchors(emb, newAnchors)
+		warmed, err := warmAnchorsRecovering(emb, newAnchors, func() bool {
+			u.mu.RLock()
+			defer u.mu.RUnlock()
+			return u.embeddingGeneration == generation
+		})
 		if err != nil {
 			log.Printf("[UnifiedIntentClassifier] SetEmbedder: Layer 2 remains unavailable: %v", err)
 			return

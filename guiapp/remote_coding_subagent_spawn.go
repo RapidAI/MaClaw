@@ -34,7 +34,7 @@ var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 		// gates ssh_bash the same way as local bash). The prompt promises shell
 		// checks, so the surface must actually admit them — and only through the
 		// whitelist. The explorer map stays shell-free by design.
-		"ssh_bash": true,
+		"ssh_bash":             true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true,
@@ -287,6 +287,7 @@ func (parent *RemoteCodingSubAgent) newReadOnlyNestedRemoteCodingAgent(spec codi
 	// trusted runtime-to-semantic anchor for its own Attempt; never copy the
 	// parent's dynamic identity into this constructor.
 	child.nestDepth, child.role = parent.nestDepth+1, spec.Role
+	child.permissionOwnerID = parent.taskPermissionOwnerID()
 	// The child receives its own Attempt later in ExecuteReadOnlyChild; the
 	// store is shared solely for cancellation/lease observation during that
 	// fresh attempt, never to resume the parent's old loop.
@@ -511,9 +512,7 @@ func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnS
 	// admitted child resolves its own anchor at runtime start.
 	child.nestDepth = parent.nestDepth + 1
 	child.role = spec.Role
-	if spec.Role == codingRoleWorker {
-		child.setNestedRemoteWorkerApproval(nil)
-	}
+	child.permissionOwnerID = parent.taskPermissionOwnerID()
 	child.codingKB = parent.codingKB
 	child.generalKB = parent.generalKB
 	// Nested agents must not inherit the root preview lifecycle: workers write
@@ -527,9 +526,13 @@ func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnS
 	if onProgress == nil {
 		onProgress = parent.onProgress
 	}
+	if spec.Role == codingRoleWorker {
+		child.setNestedRemoteWorkerApproval(nestedTaskCommandApprovalCallback(parent.handler, child.loopCtx, child.taskPermissionOwnerID(), onProgress, true, parent.maintenance))
+	}
 	child.SetCallbacks(nil, onProgress)
+	inheritRemoteTaskCommandAllowance(parent, child)
 
-	taskCtx := codingSpawnRolePromptHint(spec.Role)
+	taskCtx := remoteCodingSpawnRolePromptHint(spec.Role)
 	if parentCB != nil && strings.TrimSpace(parentCB.taskContext) != "" {
 		taskCtx += "\n\n## Parent remote task context\n" + truncateRunesForSubAgent(parentCB.taskContext, 1500)
 	}

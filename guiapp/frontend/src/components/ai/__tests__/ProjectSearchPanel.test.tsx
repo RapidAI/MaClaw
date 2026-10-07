@@ -5,6 +5,7 @@ import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
 import { DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeTask } from "../../../../wailsjs/go/main/App";
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT } from "../../../utils/fileLibraryNavigation";
+import { clearParkedCloudWorkspaceFileOpen, peekParkedCloudWorkspaceFileOpen } from "../cloudWorkspaceFileOpen";
 import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT } from "../../../utils/knowledgeSearchNavigation";
 import { OPEN_SETTINGS_EVENT } from "../../../utils/settingsNavigation";
 import { EVENT_OPEN_NEW_TASK_WIZARD } from "../../../constants/events";
@@ -68,6 +69,7 @@ afterEach(() => {
     vi.clearAllMocks();
     consumePendingFileLibraryOpen();
     consumePendingKnowledgeSearch();
+    clearParkedCloudWorkspaceFileOpen();
 });
 
 describe("ProjectSearchPanel", () => {
@@ -103,6 +105,80 @@ describe("ProjectSearchPanel", () => {
             expect.objectContaining({ autoSend: false }),
         ));
         expect(ResumeTask).not.toHaveBeenCalled();
+    });
+
+    it("opens a cloud workspace file into that workspace task", async () => {
+        const search = makeSearch([]);
+        search.cloudResults = [{
+            id: "cws_a/papers/brief.md",
+            workspaceId: "cws_a",
+            workspaceName: "经营材料",
+            projectPath: "D:/tasks/notes",
+            relativePath: "papers/brief.md",
+            title: "brief.md",
+            preview: "经营材料 · papers/brief.md",
+            match: "name",
+            tags: ["cloud_workspace:cws_a", "remote_coding_dev"],
+        }];
+        const onCreateProjectTab = vi.fn();
+
+        renderPanel(search, { onCreateProjectTab });
+        expect(screen.getByTestId("search-cloud-section").textContent).toContain("Cloud workspace");
+        fireEvent.click(screen.getByTestId("search-cloud-row"));
+
+        expect(search.close).toHaveBeenCalled();
+        expect(peekParkedCloudWorkspaceFileOpen()).toEqual({
+            projectPath: "D:/tasks/notes",
+            relativePath: "papers/brief.md",
+            workspaceId: "cws_a",
+            fileName: "brief.md",
+        });
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/tasks/notes",
+            "经营材料",
+            expect.objectContaining({
+                autoSend: false,
+                agentMode: "coding_dev",
+                tags: expect.arrayContaining(["cloud_workspace:cws_a"]),
+            }),
+        ));
+    });
+
+    it("opens a data directory workspace file into that task", async () => {
+        const search = makeSearch([]);
+        search.dataDirResults = [{
+            id: "notes-1/papers/brief.md",
+            taskName: "经营材料",
+            projectPath: "D:/data/tasks/notes-1",
+            relativePath: "papers/brief.md",
+            title: "brief.md",
+            preview: "经营材料 · 竞品分析",
+            match: "content",
+            tags: ["coding_dev", "task_management"],
+        }];
+        const onCreateProjectTab = vi.fn();
+
+        renderPanel(search, { onCreateProjectTab });
+        expect(screen.getByTestId("search-data-section").textContent).toContain("Data directory");
+        fireEvent.click(screen.getByTestId("search-data-row"));
+
+        expect(search.close).toHaveBeenCalled();
+        expect(peekParkedCloudWorkspaceFileOpen()).toEqual({
+            projectPath: "D:/data/tasks/notes-1",
+            relativePath: "papers/brief.md",
+            workspaceId: "",
+            fileName: "brief.md",
+            source: "data",
+        });
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/data/tasks/notes-1",
+            "经营材料",
+            expect.objectContaining({
+                autoSend: false,
+                agentMode: "coding_dev",
+                tags: expect.arrayContaining(["coding_dev"]),
+            }),
+        ));
     });
 
     it("opens pure coding tasks with coding agentMode from tags", async () => {
@@ -208,13 +284,38 @@ describe("ProjectSearchPanel", () => {
         renderPanel(search);
 
         const panel = screen.getByTestId("project-search-panel");
-        expect(panel.getAttribute("role")).toBe("dialog");
-        expect(panel.getAttribute("aria-modal")).toBe("true");
+        expect(panel.getAttribute("role")).toBe("region");
+        expect(panel.getAttribute("aria-modal")).toBeNull();
         expect(panel.style.position).toBe("absolute");
         expect(["0", "0px"]).toContain(panel.style.inset);
         const results = screen.getByTestId("project-search-results");
         expect(results.style.maxHeight).toBe("");
         expect(results.className).toContain("psp-results");
+    });
+
+    it("moves between results with the arrow keys and closes on escape without the key reaching the window", () => {
+        const search = makeSearch([
+            { id: "a", name: "Alpha", project_path: "D:/p/a" },
+            { id: "b", name: "Beta", project_path: "D:/p/b" },
+        ]);
+        const seen: string[] = [];
+        const onWindow = (event: KeyboardEvent) => { if (event.key === "Escape") seen.push(event.key); };
+        window.addEventListener("keydown", onWindow);
+        try {
+            renderPanel(search);
+            const rows = Array.from(document.querySelectorAll<HTMLElement>(".psp-row"));
+            expect(rows).toHaveLength(2);
+            rows[0].focus();
+            fireEvent.keyDown(rows[0], { key: "ArrowDown" });
+            expect(document.activeElement).toBe(rows[1]);
+            fireEvent.keyDown(rows[1], { key: "ArrowUp" });
+            expect(document.activeElement).toBe(rows[0]);
+            fireEvent.keyDown(rows[0], { key: "Escape" });
+            expect(search.close).toHaveBeenCalledTimes(1);
+            expect(seen).toEqual([]);
+        } finally {
+            window.removeEventListener("keydown", onWindow);
+        }
     });
 
     it("does not dismiss when clicking title-bar chrome", () => {
@@ -229,27 +330,28 @@ describe("ProjectSearchPanel", () => {
         expect(search.close).not.toHaveBeenCalled();
     });
 
-    it("does not steal focus from the header search field", () => {
+    it("does not steal focus from the task pane search field", () => {
         const search = makeSearch([{ id: "out", name: "Saved output", project_path: "D:/p/output", has_output: true }]);
         search.open = false;
         const { rerender } = render(
             <div>
-                <span className="mc-header-search-wrap"><input data-testid="header-q" /></span>
+                <label className="mc-task-pane__search"><input data-testid="task-pane-search" /></label>
             </div>,
         );
-        const header = screen.getByTestId("header-q");
+        const header = screen.getByTestId("task-pane-search");
         header.focus();
         expect(document.activeElement).toBe(header);
 
         search.open = true;
         rerender(
             <div>
-                <span className="mc-header-search-wrap"><input data-testid="header-q" /></span>
+                <label className="mc-task-pane__search"><input data-testid="task-pane-search" /></label>
                 <ProjectSearchPanel search={search} lang="en" theme={lightTheme} inline onProjectSwitch={vi.fn()} />
             </div>,
         );
         expect(document.activeElement).toBe(header);
-        expect(screen.getByTestId("project-search-input")).not.toBe(document.activeElement);
+        expect(screen.queryByTestId("project-search-input")).toBeNull();
+        expect(screen.getByText("Search results")).toBeTruthy();
     });
 
     it("dismisses when clicking outside the search surface and title bar", () => {
@@ -401,7 +503,8 @@ describe("ProjectSearchPanel", () => {
         window.addEventListener(OPEN_FILE_LIBRARY_EVENT, listener);
         try {
             renderPanel(search);
-            expect(screen.getByTestId("search-files-section")).toBeTruthy();
+            expect(screen.getByTestId("search-files-section").textContent).toBe("Cloud drive");
+            expect(screen.getByTestId("search-file-row").textContent).toContain("FILE");
             fireEvent.click(screen.getByText("Quarterly report"));
             expect(search.close).toHaveBeenCalled();
             expect(seen).toEqual([expect.objectContaining({ documentId: "doc-1" })]);
@@ -409,6 +512,15 @@ describe("ProjectSearchPanel", () => {
         } finally {
             window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, listener);
         }
+    });
+
+    it("labels cloud-drive hits in traditional Chinese", () => {
+        const search = makeSearch([]);
+        search.query = "report";
+        search.fileResults = [{ id: "doc-1", title: "Quarterly report", preview: "Q3 summary", type: "document" }];
+        renderPanel(search, { lang: "zh-Hant" });
+        expect(screen.getByTestId("search-files-section").textContent).toBe("雲端硬碟");
+        expect(screen.getByTestId("search-file-row").textContent).toContain("檔案");
     });
 
     it("opens knowledge search from mixed search results", () => {

@@ -6,7 +6,7 @@ srv	search	sel	information.search.web|freshness=reference|host_information_searc
 srv	search	first	information.search.web|freshness=reference|host_information_search_web
 srv	live_data	sel	information.search.web|freshness=current|host_information_search_web|execution|n=5
 srv	live_data	first	information.search.web|freshness=current|host_information_search_web
-srv	office	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=3
+srv	office	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=32
 srv	office	sel	document.write.office|format=spreadsheet|host_document_write_office|execution|n=8
 srv	office	sel	fs.read.local|-|host_fs_read_local|execution
 srv	office	sel	knowledge.read.local|-|host_knowledge_read_local|execution
@@ -16,7 +16,7 @@ srv	office	first	document.write.office|format=spreadsheet|host_document_write_of
 srv	office	first	fs.read.local|-|host_fs_read_local
 srv	office	first	knowledge.read.local|-|host_knowledge_read_local
 srv	office	first	memory.recall.agent|-|host_memory_recall_agent
-srv	office_live_data	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=3
+srv	office_live_data	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=32
 srv	office_live_data	sel	document.write.office|format=spreadsheet|host_document_write_office|execution|n=8
 srv	office_live_data	sel	fs.read.local|-|host_fs_read_local|execution
 srv	office_live_data	sel	information.search.web|freshness=current|host_information_search_web|execution|n=5
@@ -28,14 +28,14 @@ srv	office_live_data	first	fs.read.local|-|host_fs_read_local
 srv	office_live_data	first	information.search.web|freshness=current|host_information_search_web
 srv	office_live_data	first	knowledge.read.local|-|host_knowledge_read_local
 srv	office_live_data	first	memory.recall.agent|-|host_memory_recall_agent
-srv	document_generate	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=3
+srv	document_generate	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=32
 srv	document_generate	sel	document.generate.file|format=pdf|host_document_generate_file|execution
 srv	document_generate	sel	fs.read.local|-|host_fs_read_local|execution
 srv	document_generate	first	artifact.acquire.remote|-|host_artifact_acquire_remote
 srv	document_generate	first	document.generate.file|format=pdf|host_document_generate_file
 srv	document_generate	first	fs.read.local|-|host_fs_read_local
 srv	document_generate	unmet	artifact.deliver.current_channel|no_feasible_provider
-srv	document_generate_live_data	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=3
+srv	document_generate_live_data	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=32
 srv	document_generate_live_data	sel	document.generate.file|format=pdf|host_document_generate_file|execution
 srv	document_generate_live_data	sel	fs.read.local|-|host_fs_read_local|execution
 srv	document_generate_live_data	sel	information.search.web|freshness=current|host_information_search_web|execution|n=5

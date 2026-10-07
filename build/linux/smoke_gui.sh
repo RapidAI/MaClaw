@@ -42,7 +42,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "$WORKDIR" ]; then
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/maclaw-gui-smoke.XXXXXX")"
-  trap 'rm -rf "$WORKDIR"' EXIT
+  # The GUI spawns long-lived children (coding CLI bootstrap, WebKitWebProcess)
+  # that outlive the TERM kill and keep writing under the workdir, racing the
+  # cleanup rm ("Directory not empty"). Cleanup must never mask the smoke result.
+  trap 'pkill -KILL -f "$WORKDIR" 2>/dev/null || true; rm -rf "$WORKDIR" 2>/dev/null || true' EXIT
 fi
 mkdir -p "$WORKDIR"
 chmod +x "$APPIMAGE"
@@ -170,34 +173,54 @@ echo "--- xvfb start (hold ${HOLD_SECONDS}s) ---"
 export LIBGL_ALWAYS_SOFTWARE=1
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
-set +e
-timeout --signal=TERM --kill-after=5 "${HOLD_SECONDS}" \
-  xvfb-run -a --server-args='-screen 0 1280x720x24' \
-  "$ROOT/AppRun" > "$WORKDIR/xvfb.out" 2>"$WORKDIR/xvfb.err"
-xvfb_rc=$?
-set -e
-
-# timeout(1) returns 124 when the process was still running — that is success.
-if [ "$xvfb_rc" -eq 124 ]; then
-  echo "GUI stayed up under xvfb for ${HOLD_SECONDS}s: OK"
-  exit 0
-fi
+# Isolated HOME: a remote host starts with no ~/.maclaw state, and the app
+# redirects its log output into that home (initLogFile), so a crash's only
+# evidence would otherwise be lost with the ephemeral runner home.
+SMOKE_HOME="$WORKDIR/home"
+mkdir -p "$SMOKE_HOME"
+# The window-start hold is timing-sensitive on ephemeral CI runners (first-run
+# bootstrap races the 8s window, GTK pet-window creation can lose a race with
+# the event loop). Retry the hold a few times before declaring the artifact
+# dead; attempts share SMOKE_HOME so only attempt 1 pays the first-run cost.
+XVFB_ATTEMPTS="${MACLAW_GUI_SMOKE_ATTEMPTS:-3}"
+xvfb_rc=1
+for attempt in $(seq 1 "$XVFB_ATTEMPTS"); do
+  set +e
+  timeout --signal=TERM --kill-after=5 "${HOLD_SECONDS}" \
+    env HOME="$SMOKE_HOME" \
+    xvfb-run -a --server-args='-screen 0 1280x720x24' \
+    "$ROOT/AppRun" > "$WORKDIR/xvfb.$attempt.out" 2>"$WORKDIR/xvfb.$attempt.err"
+  xvfb_rc=$?
+  # Reap children the TERM did not reach (bootstrap npm/node, WebKitWebProcess)
+  # so they cannot race the EXIT-trap cleanup or leak onto the runner.
+  pkill -TERM -f "$WORKDIR" 2>/dev/null || true
+  sleep 1
+  pkill -KILL -f "$WORKDIR" 2>/dev/null || true
+  set -e
+  if [ "$xvfb_rc" -eq 124 ]; then
+    echo "GUI stayed up under xvfb for ${HOLD_SECONDS}s (attempt $attempt/$XVFB_ATTEMPTS): OK"
+    exit 0
+  fi
+  echo "attempt $attempt/$XVFB_ATTEMPTS exited $xvfb_rc"
+  [ "$attempt" -lt "$XVFB_ATTEMPTS" ] && sleep 2
+done
 
 if [ "$xvfb_rc" -eq 0 ]; then
   echo "FAIL: GUI exited 0 immediately instead of staying up" >&2
-  cat "$WORKDIR/xvfb.out" >&2 || true
-  cat "$WORKDIR/xvfb.err" >&2 || true
-  exit 1
+else
+  echo "xvfb start failed after $XVFB_ATTEMPTS attempts (process did not stay up)"
 fi
-
-# Some headless agents cannot initialize GTK/WebKit even with xvfb (no DRI,
-# missing dbus). The artifact is still remote-runnable; --version + bundled
-# WebKit already proved the linker/runtime. Keep this as a hard failure on
-# GitHub-hosted Linux (MACLAW_GUI_SMOKE_REQUIRE_XVFB=1, set by the workflow).
-echo "xvfb start exited $xvfb_rc (process did not stay up)"
-if [ -s "$WORKDIR/xvfb.err" ]; then
-  echo "--- xvfb stderr ---"
-  cat "$WORKDIR/xvfb.err"
+for attempt in $(seq 1 "$XVFB_ATTEMPTS"); do
+  echo "--- attempt $attempt stdout ---"
+  cat "$WORKDIR/xvfb.$attempt.out" || true
+  echo "--- attempt $attempt stderr ---"
+  cat "$WORKDIR/xvfb.$attempt.err" || true
+done
+# The app redirects log.SetOutput into its home's logs dir; without this dump
+# an early log.Fatal (gtk/webkit init, asset server) is invisible on stderr.
+if [ -d "$SMOKE_HOME/.maclaw/logs" ]; then
+  echo "--- app log files ($SMOKE_HOME/.maclaw/logs) ---"
+  find "$SMOKE_HOME/.maclaw/logs" -type f -exec sh -c 'echo "=== $1 ==="; tail -n 100 "$1"' _ {} \; 2>/dev/null || true
 fi
 if [ "${MACLAW_GUI_SMOKE_REQUIRE_XVFB:-0}" = "1" ]; then
   echo "FAIL: xvfb window smoke is required in this environment" >&2

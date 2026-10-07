@@ -16,7 +16,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1958,6 +1957,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Account aggregator usage with aggregator config (sticky model → force after).
 		if resp != nil && resp.Usage != nil {
 			round := TurnUsageFromLLM(aggCFG, resp.Usage)
+			if resp.LocalCacheHit {
+				// A client cache replay did not debit the grant again.
+				round.CreditsDeducted = 0
+				round.CreditsReported = false
+			}
 			usage.Add(round)
 			// Prefer aggregator as the turn's primary model label (sticky first-write).
 			if usage.Model == "" || usage.Requests == 1 || strings.TrimSpace(aggCFG.Model) != "" {
@@ -2067,20 +2071,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// This converts a failed call into a partially successful one.
 			var recoveryPrompt string
 			if rawArgs := truncatedToolArgsLookup(choice.TruncatedToolArgs, "write_file"); rawArgs != "" {
-				if pw := attemptLoopPartialWriteFile(rawArgs); pw != nil {
-					recoveryPrompt = buildLoopPartialWriteRecovery(pw)
-					// Made progress — reset drift/failure counters.
-					consecutiveSame = 0
-					consecutiveSameToolFailures = 0
-					lastFailedTool = ""
-					sameToolFailureGuidanceInjected = false
-				} else {
-					// Partial write not possible. If file already exists from a
-					// previous partial write, instruct LLM to use mode=append.
-					if absPath := resolvePartialWritePath(rawArgs); absPath != "" {
-						if info, statErr := os.Stat(absPath); statErr == nil && info.Size() > 0 {
-							recoveryPrompt = buildLoopPartialWriteAppendHint(absPath, info.Size())
-						}
+				if prompt, saved := partialWriteRecoveryPrompt(rawArgs); prompt != "" {
+					recoveryPrompt = prompt
+					if saved {
+						// Made progress — reset drift/failure counters.
+						consecutiveSame = 0
+						consecutiveSameToolFailures = 0
+						lastFailedTool = ""
+						sameToolFailureGuidanceInjected = false
 					}
 				}
 			}

@@ -4,6 +4,19 @@ import { EventsOn } from '../../../wailsjs/runtime';
 
 export type HubRankingSnapshot = { tokenRank: number; durationRank: number };
 
+export function buildUserRankingURL(hubURL: string, tenantID?: string) {
+    const base = (hubURL || '').replace(/\/+$/, '');
+    if (!base) return '';
+    try {
+        const url = new URL(base + '/user-ranking');
+        const tid = String(tenantID || '').trim();
+        if (tid) url.searchParams.set('tenant_id', tid);
+        return url.toString();
+    } catch {
+        return '';
+    }
+}
+
 const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
 const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as const;
 

@@ -346,6 +346,7 @@ func TestBuildRemoteCodingPlanStepTextStopsAtCurrentStep(t *testing.T) {
 		"开发一个系统信息查看软件",
 		"",
 		nil,
+		nil,
 	)
 
 	// Local-parity stop constraints.
@@ -394,6 +395,7 @@ func TestBuildRemoteCodingPlanStepTextUnplannedKeepsFullPlanContext(t *testing.T
 		"keep improving remote",
 		"previous summary here",
 		[]string{"/home/app/main.py"},
+		nil,
 	)
 	for _, want := range []string{
 		"fix remote project",
@@ -433,6 +435,7 @@ func TestBuildRemoteCodingPlanStepTextLaterStepUsesOwnDescriptionOnly(t *testing
 		"",
 		carry,
 		[]string{"/home/a.txt"},
+		nil,
 	)
 	if !strings.Contains(text, "[Plan step T2/2] 实现功能") {
 		t.Fatalf("expected current step header, got:\n%s", text)

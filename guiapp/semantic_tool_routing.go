@@ -2297,6 +2297,12 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	applyBaseline := semanticApplyBaselineWorkspace(requestCtx, planning, slimOffice)
 	if applyBaseline {
 		needs = agentservice.ExpandBaselineWorkspaceNeeds(registry, imSemanticIntentRuleSet, planning, true, needs)
+	} else if shortDocumentEdit {
+		// Slim office drops the baseline bundle so a short "继续" does not
+		// grow shell and read companions. The write the turn kept is still
+		// the edit, so it keeps the iterative floor instead of the one-shot
+		// file_write rule.
+		needs = agentservice.RaiseExistingLocalFileWriteFloor(needs, planning.Confidence)
 	}
 	remaining := semanticResidueRemaining(requestCtx)
 	if lookupContinuationOpenCeiling(requestCtx) || lookupContinuationFetches(requestCtx) {
@@ -3457,14 +3463,11 @@ func closedManagedSemanticDefinitionsKeeping(defs []map[string]interface{}, surf
 	if surface == nil {
 		return nil
 	}
-	closed := tool.ClosedManagedDefinitions(defs, surface.grants)
-	if !light {
-		return closed
-	}
-	filtered := tool.FilterLightPromptSafeDefinitions(closed, surface.plan, surface.grants)
+	filtered := tool.ClosedManagedDefinitionsForProfile(defs, surface.plan, surface.grants, light)
 	if keep == nil {
 		return filtered
 	}
+	closed := tool.ClosedManagedDefinitions(defs, surface.grants)
 	have := make(map[string]bool, len(filtered))
 	for _, def := range filtered {
 		have[extractToolName(def)] = true

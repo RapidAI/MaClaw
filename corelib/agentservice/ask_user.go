@@ -24,7 +24,11 @@ func buildEffectiveUserContent(sess Session, raw string) (string, *agent.AskUser
 	options := parsePendingAskUserOptions(sess.Metadata[sessionMetaPendingAskUserOptions])
 	answer := resolveAskUserAnswer(raw, options)
 	req := &agent.AskUserRequest{Question: question, InputType: inputType, Options: options}
-	return fmt.Sprintf("The user is answering your previous follow-up question.\nQuestion: %s\nUser answer: %s", question, answer), req
+	text := agent.FormatPendingAskUserAnswerHint(question, answer, "")
+	if strings.Contains(question, "登录状态会留在这个浏览器里") {
+		text += "\nContinue the original task in that same browser. If this site opens a window, continue there; the website login stays in this browser. Do not open another site, profile, or browser."
+	}
+	return text, req
 }
 
 func parsePendingAskUserOptions(raw string) []string {

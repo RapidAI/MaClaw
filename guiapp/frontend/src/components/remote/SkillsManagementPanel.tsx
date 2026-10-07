@@ -7,5 +7,6 @@ export {
     getLearnedSkillDescriptionPreview,
     skillDescriptionTooltip,
     hubSourceFilterMatches,
-    LOCAL_SKILLS_DESCRIPTION_COL_PX,
+    SKILL_CARD_COLUMNS,
+    SKILL_CARD_PAGE_SIZE,
 } from "./SkillsManagementPanelView";

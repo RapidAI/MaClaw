@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -1677,6 +1678,145 @@ func TestExecutePreparedIMEntryCodingWorkbenchSkipsUICWhenRetryOwnsTurn(t *testi
 	}
 	if !strings.Contains(resp.Text, "不在编码执行阶段") && !strings.Contains(strings.ToLower(resp.Text), "not in the coding execution") {
 		t.Fatalf("retry without an active workflow must not fall into the shared loop, got %q", resp.Text)
+	}
+}
+
+func TestUnarmedRemoteCodingTurnDoesNotEnterDesktopAgent(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "DESKTOP_LOOP_RAN"})
+	userID := "unarmed-remote-coding-user"
+	handler.clearStickyCodingEnvironment(userID)
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.rapidaltech",
+		RemoteUser:    "ra",
+		RemoteWorkDir: "/home/ra/clamav",
+	})
+
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:   IMUserMessage{UserID: userID, Text: "开发一套基于 clamav 的安全检测工具", Platform: "desktop"},
+		Trimmed:   "开发一套基于 clamav 的安全检测工具",
+		FreshTask: true,
+	})
+	if resp == nil {
+		t.Fatal("unarmed remote coding turn must return a host response")
+	}
+	if strings.Contains(resp.Text, "DESKTOP_LOOP_RAN") {
+		t.Fatal("unarmed remote coding turn entered the desktop agent loop")
+	}
+	if !strings.Contains(resp.Text, "ra@home.rapidaltech") || !strings.Contains(resp.Text, "/home/ra/clamav") {
+		t.Fatalf("reconnect response = %q, want the bound remote environment", resp.Text)
+	}
+	if resp.ResponseSource != "remote_coding_reconnect" {
+		t.Fatalf("ResponseSource = %q", resp.ResponseSource)
+	}
+}
+
+func TestRemoteCodingReconnectTextIncludesNonstandardPort(t *testing.T) {
+	got := remoteCodingReconnectRequiredText(stickyCodingWorkbenchMemory{
+		RemoteHost:    "home.rapidaltech",
+		RemoteUser:    "ra",
+		RemotePort:    2222,
+		RemoteWorkDir: "/home/ra/clamav",
+	})
+	if !strings.Contains(got, "ra@home.rapidaltech:2222") || !strings.Contains(got, "/home/ra/clamav") {
+		t.Fatalf("reconnect text = %q", got)
+	}
+}
+
+func TestUnarmedRemoteReconnectKeepsTaskAndLoopState(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.memory = agent.NewConversationMemory()
+	userID := "remote-reconnect-keeps-task"
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.rapidaltech",
+		RemoteWorkDir: "/home/ra/clamav",
+	})
+	resp, blocked := handler.finishUnarmedRemoteCodingTurn(
+		IMUserMessage{UserID: userID, Text: "开发 clamav 检测工具", Platform: "desktop"},
+		false, false,
+	)
+	if !blocked || resp == nil {
+		t.Fatal("unarmed remote turn must be blocked")
+	}
+	history := handler.memory.Load(userID)
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want user request plus reconnect reply", len(history))
+	}
+	userText, _ := history[0].Content.(string)
+	assistantText, _ := history[1].Content.(string)
+	if !strings.Contains(userText, "clamav") || !strings.Contains(assistantText, "home.rapidaltech") {
+		t.Fatalf("history = %#v", history)
+	}
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+	if !strings.Contains(mem.SessionPlan, "clamav") || !strings.Contains(mem.LastUserText, "clamav") {
+		t.Fatalf("sticky plan = %q last = %q", mem.SessionPlan, mem.LastUserText)
+	}
+	if mem.TurnCount != 0 {
+		t.Fatalf("reconnect must not count as a coding turn, TurnCount=%d", mem.TurnCount)
+	}
+	if strings.TrimSpace(mem.LastSummary) != "" {
+		t.Fatalf("reconnect must not become the previous coding result, LastSummary=%q", mem.LastSummary)
+	}
+	if mem.RemoteHost != "home.rapidaltech" || mem.RemoteWorkDir != "/home/ra/clamav" {
+		t.Fatalf("sticky binding changed: %#v", mem)
+	}
+}
+
+func TestLocalCodingTurnIsNotReconnectBlocked(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "local-coding-not-reconnect"
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:        "local",
+		ProjectPath: `D:\workprj\clamav`,
+	})
+	if text, blocked := handler.unarmedRemoteCodingDesktopTurn(userID); blocked {
+		t.Fatalf("local coding workbench must keep the local engine, got %q", text)
+	}
+}
+
+func TestRemoteSessionWithLocalPendingIsStillReconnectBlocked(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "DESKTOP_LOOP_RAN"})
+	userID := "remote-with-local-pending"
+	handler.clearStickyCodingEnvironment(userID)
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.rapidaltech",
+		RemoteUser:    "ra",
+		RemoteWorkDir: "/home/ra/clamav",
+	})
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, `D:\workprj\clamav`)
+
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:   IMUserMessage{UserID: userID, Text: "开发 clamav 检测工具", Platform: "desktop"},
+		Trimmed:   "开发 clamav 检测工具",
+		FreshTask: true,
+	})
+	if resp == nil || strings.Contains(resp.Text, "DESKTOP_LOOP_RAN") {
+		t.Fatalf("local pending path must not run the desktop agent, resp=%#v", resp)
+	}
+	if resp.ResponseSource != "remote_coding_reconnect" {
+		t.Fatalf("ResponseSource = %q", resp.ResponseSource)
+	}
+}
+
+func TestArmedRemoteCodingTurnIsNotReconnectBlocked(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "armed-remote-coding-user"
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.rapidaltech",
+		RemoteWorkDir: "/home/ra/clamav",
+	})
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
+		SessionID:  "ssh-live",
+		WorkDir:    "/home/ra/clamav",
+		ProjectDir: "/home/ra/clamav",
+	})
+	if text, blocked := handler.unarmedRemoteCodingDesktopTurn(userID); blocked {
+		t.Fatalf("armed remote session must stay on RemoteCodingSubAgent, got %q", text)
 	}
 }
 

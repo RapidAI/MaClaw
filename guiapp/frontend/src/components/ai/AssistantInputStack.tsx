@@ -59,6 +59,7 @@ interface AssistantInputStackProps {
     lang: string;
     pendingAttachments: AttachmentInfo[];
     permissionMode?: AssistantPermissionMode;
+    taskCommandAllowed?: boolean;
     showPermissionMode?: boolean;
     showWorkspacePermissionOption?: boolean;
     onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
@@ -104,7 +105,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
         inputLocked, hardLockInput = false, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, flushBottom = false, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
-        pendingAttachmentsTestId, permissionMode, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
+        pendingAttachmentsTestId, permissionMode, taskCommandAllowed, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
         showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
         themeMode, toolbarEndContent, toolbarTestId, trailingToolbarContent, updateInputValue, voiceInput,
@@ -209,6 +210,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     pendingAttachments={pendingAttachments}
                     pendingAttachmentsTestId={pendingAttachmentsTestId}
                     permissionMode={permissionMode}
+                    taskCommandAllowed={taskCommandAllowed}
                     showPermissionMode={showPermissionMode}
                     showWorkspacePermissionOption={showWorkspacePermissionOption}
                     onPermissionModeChange={onPermissionModeChange}

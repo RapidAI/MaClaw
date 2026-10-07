@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     clearRemoteSSHPassword,
     loadRemoteSSHPassword,
+    recallRemoteSSHPassword,
     loadWelcomeCodingEnv,
     loadWelcomeFieldValues,
     loadWelcomeRecentEntries,
@@ -28,6 +29,11 @@ import { SCENARIO_TABS } from "../welcomeScenarioTasks";
 describe("welcomeTaskMemory", () => {
     beforeEach(() => {
         localStorage.clear();
+        delete (globalThis as { go?: unknown }).go;
+    });
+
+    afterEach(() => {
+        delete (globalThis as { go?: unknown }).go;
     });
 
     it("saves and loads field values by task key and label", () => {
@@ -115,8 +121,15 @@ describe("welcomeTaskMemory", () => {
             },
         };
         expect(mergeWelcomeStoredCodingEnv(preferred, sameHost)?.remote?.password).toBe("secret");
+        expect(mergeWelcomeStoredCodingEnv(
+            { remote: { host: "DB.Example", port: 22, user: "ubuntu", workDir: "/app" } },
+            { remote: { host: "db.example", port: 22, user: "ubuntu", workDir: "/old", password: "secret" } },
+        )?.remote?.password).toBe("secret");
         expect(mergeWelcomeStoredCodingEnv(preferred, {
             remote: { host: "10.0.0.1", port: 22, user: "ubuntu", workDir: "/app", password: "secret" },
+        })?.remote?.password).toBeUndefined();
+        expect(mergeWelcomeStoredCodingEnv(preferred, {
+            remote: { host: "192.168.1.10", port: 2222, user: "ubuntu", workDir: "/app", password: "other-port" },
         })?.remote?.password).toBeUndefined();
         expect(stripCodingEnvPassword(sameHost)?.remote?.password).toBeUndefined();
         expect(stripCodingEnvPassword(sameHost)?.remote?.host).toBe("192.168.1.10");
@@ -140,6 +153,7 @@ describe("welcomeTaskMemory", () => {
         saveRemoteSSHPassword("a.example", "root", "pw-a2", 22, "/home2");
         expect(loadRemoteSSHPassword("A.example", "root", 22)).toBe("pw-a2"); // host case-insensitive
         expect(remoteSSHPasswordVaultKey("A.example", "root", 22)).toBe("root@a.example:22");
+        expect(remoteSSHPasswordVaultKey("[DB.Example]", "root", 22)).toBe("root@db.example:22");
         // Different host is last-used (b) — vault update for a must not clobber b in last-used env.
         expect(loadWelcomeCodingEnv().remote?.host).toBe("b.example");
         expect(loadWelcomeCodingEnv().remote?.password).toBe("pw-b");
@@ -154,6 +168,125 @@ describe("welcomeTaskMemory", () => {
         });
         expect(loadRemoteSSHPassword("b.example", "ops", 22)).toBe("");
         expect(loadWelcomeCodingEnv().remote?.password).toBeUndefined();
+    });
+
+    it("restores a password from the OS keyring after local storage is cleared", async () => {
+        const remember = vi.fn().mockResolvedValue(undefined);
+        const forget = vi.fn().mockResolvedValue(undefined);
+        const recall = vi.fn().mockResolvedValue("from-keyring");
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: remember,
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: forget,
+                },
+            },
+        };
+        saveRemoteSSHPassword("home.rapidai.tech", "root", "kept-secret", 55, "/home/rapidrec");
+        await vi.waitFor(() => expect(remember).toHaveBeenCalledWith("home.rapidai.tech", "root", "kept-secret", 55));
+        localStorage.clear();
+        expect(loadRemoteSSHPassword("home.rapidai.tech", "root", 55)).toBe("");
+        await expect(recallRemoteSSHPassword("[Home.RapidAI.tech]", "root", 55)).resolves.toBe("from-keyring");
+        expect(recall).toHaveBeenCalledWith("home.rapidai.tech", "root", 55);
+        expect(loadRemoteSSHPassword("home.rapidai.tech", "root", 55)).toBe("from-keyring");
+        clearRemoteSSHPassword("home.rapidai.tech", "root", 55);
+        await vi.waitFor(() => expect(forget).toHaveBeenCalledWith("home.rapidai.tech", "root", 55));
+        expect(loadRemoteSSHPassword("home.rapidai.tech", "root", 55)).toBe("");
+    });
+
+    it("does not overwrite a newer keyring password with a stale local copy", async () => {
+        const remember = vi.fn().mockResolvedValue(undefined);
+        const recall = vi.fn().mockResolvedValue("newer-secret");
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: remember,
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        localStorage.setItem(REMOTE_SSH_PASSWORD_VAULT_KEY, JSON.stringify({
+            "root@db.example:22": "old-secret",
+        }));
+        localStorage.setItem(WELCOME_CODING_ENV_KEY, JSON.stringify({
+            remote: { host: "db.example", port: 22, user: "root", workDir: "/srv", password: "old-secret" },
+        }));
+        expect(loadRemoteSSHPassword("db.example", "root", 22)).toBe("old-secret");
+        await expect(recallRemoteSSHPassword("db.example", "root", 22)).resolves.toBe("newer-secret");
+        expect(remember).not.toHaveBeenCalled();
+        expect(loadRemoteSSHPassword("db.example", "root", 22)).toBe("newer-secret");
+        expect(loadWelcomeCodingEnv().remote?.password).toBe("newer-secret");
+    });
+
+    it("stores a pasted password without its surrounding whitespace", () => {
+        saveRemoteSSHPassword("paste.example", "root", "  secret\n", 22, "/home");
+        expect(loadRemoteSSHPassword("paste.example", "root", 22)).toBe("secret");
+        saveRemoteSSHPassword("paste.example", "root", "my secret", 22, "/home");
+        expect(loadRemoteSSHPassword("paste.example", "root", 22)).toBe("my secret");
+    });
+
+    it("does not delete a password saved after a clear was queued", async () => {
+        const remember = vi.fn().mockResolvedValue(undefined);
+        const forget = vi.fn().mockResolvedValue(undefined);
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: remember,
+                    RecallRemoteSSHPassword: vi.fn().mockResolvedValue(""),
+                    ForgetRemoteSSHPassword: forget,
+                },
+            },
+        };
+        clearRemoteSSHPassword("keep.example", "root", 22);
+        saveRemoteSSHPassword("keep.example", "root", "new-secret", 22, "/home");
+        await vi.waitFor(() => expect(remember).toHaveBeenCalledWith("keep.example", "root", "new-secret", 22));
+        expect(forget).not.toHaveBeenCalled();
+        expect(loadRemoteSSHPassword("keep.example", "root", 22)).toBe("new-secret");
+    });
+
+    it("does not write a password that was cleared before the keyring save started", async () => {
+        const remember = vi.fn().mockResolvedValue(undefined);
+        const forget = vi.fn().mockResolvedValue(undefined);
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: remember,
+                    RecallRemoteSSHPassword: vi.fn().mockResolvedValue(""),
+                    ForgetRemoteSSHPassword: forget,
+                },
+            },
+        };
+        saveRemoteSSHPassword("drop.example", "root", "kept-secret", 22, "/home");
+        clearRemoteSSHPassword("drop.example", "root", 22);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(remember).not.toHaveBeenCalled();
+        expect(forget).toHaveBeenCalledWith("drop.example", "root", 22);
+        expect(loadRemoteSSHPassword("drop.example", "root", 22)).toBe("");
+    });
+
+    it("does not restore a password that was cleared while the keyring read was in flight", async () => {
+        let resolveRecall: (password: string) => void = () => {};
+        const recall = vi.fn().mockImplementation(() => new Promise<string>((resolve) => {
+            resolveRecall = resolve;
+        }));
+        (globalThis as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        saveRemoteSSHPassword("gate.example", "root", "kept-secret", 22, "/home");
+        const pending = recallRemoteSSHPassword("gate.example", "root", 22);
+        await vi.waitFor(() => expect(recall).toHaveBeenCalledTimes(1));
+        clearRemoteSSHPassword("gate.example", "root", 22);
+        resolveRecall("kept-secret");
+        await expect(pending).resolves.toBe("");
+        expect(loadRemoteSSHPassword("gate.example", "root", 22)).toBe("");
     });
 
     it("promotes legacy welcome-env password into the multi-host vault on load", () => {

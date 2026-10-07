@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
@@ -400,7 +401,10 @@ func llmProviderMonitorNotifyEmail(ctx context.Context, svc *llmservice.Service)
 }
 
 // collectLLMProviderMonitorFailures tests every non-paused provider that has
-// at least one configured model and returns only the ones that failed.
+// at least one configured model and returns only the ones that failed. A
+// provider outside its serve windows is off duty by design, not a failure:
+// probing it would alert on every cycle and the fallback path could even
+// dial the time-limited upstream it is meant to avoid.
 func collectLLMProviderMonitorFailures(ctx context.Context, svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig) ([]llmProviderMonitorFailure, error) {
 	reg, err := svc.LoadRegistry(ctx)
 	if err != nil {
@@ -410,8 +414,12 @@ func collectLLMProviderMonitorFailures(ctx context.Context, svc *llmservice.Serv
 		return nil, nil
 	}
 	var failures []llmProviderMonitorFailure
+	now := time.Now()
 	for _, provider := range reg.Providers {
 		if provider.Paused {
+			continue
+		}
+		if !llmpool.ServeWindowsAllows(provider.ServeWindows, now) {
 			continue
 		}
 		if len(provider.Models) == 0 {

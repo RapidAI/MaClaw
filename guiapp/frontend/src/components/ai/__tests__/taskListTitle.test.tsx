@@ -139,16 +139,31 @@ describe("TaskExecutionHeading", () => {
                 status={status}
                 taskCreatedLabel="10/03 05:15"
                 workingDirPath="C:\\Users\\me\\.maclaw\\data\\tasks\\你好呀-1\\workspace"
-                remoteWorkspace={{ host: "www.driverdevelopment.com", workDir: "/home/ubuntu/app" }}
-                remoteWorkspaceLabel="www.driverdevelopment.com:/home/ubuntu/app"
+                remoteWorkspace={{ host: "www.driverdevelopment.com", workDir: "/home/ubuntu/app", port: 2222 }}
+                remoteWorkspaceLabel="www.driverdevelopment.com:2222/home/ubuntu/app"
                 title="你好呀"
             />,
         );
         const remoteMeta = screen.getByTestId("task-execution-meta");
-        expect(remoteMeta.textContent).toContain("www.driverdevelopment.com");
-        expect(remoteMeta.textContent).not.toContain("/home/ubuntu/app");
+        expect(remoteMeta.textContent).toContain("www.driverdevelopment.com:2222/home/ubuntu/app");
         expect(remoteMeta.textContent).not.toContain("你好呀-1");
-        expect(remoteMeta.getAttribute("title")).toBe("由你创建 · 10/03 05:15 · www.driverdevelopment.com:/home/ubuntu/app");
+        expect(remoteMeta.getAttribute("title")).toBe("由你创建 · 10/03 05:15 · www.driverdevelopment.com:2222/home/ubuntu/app");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={{ ...tab, type: "project" }}
+                lang="zh-CN"
+                status={status}
+                taskCreatedLabel="10/03 05:15"
+                workingDirPath="C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant\\cws_abc"
+                remoteWorkspace={{ host: "home.rapidai.tech", workDir: "/home/rapidrec", port: 55 }}
+                remoteWorkspaceLabel="home.rapidai.tech:55/home/rapidrec"
+                title="远程目录"
+            />,
+        );
+        const remoteOverCloud = screen.getByTestId("task-execution-meta");
+        expect(remoteOverCloud.textContent).toContain("home.rapidai.tech:55/home/rapidrec");
+        expect(remoteOverCloud.textContent).not.toMatch(/cloud-workspaces|云端工作区/);
 
         rememberCloudWorkspaceDisplayName("cws_abc", "标书项目");
         try {

@@ -11,6 +11,7 @@
 #include "configuration_service.h"
 #include "fall_detection_service.h"
 #include "services/command_service.h"
+#include "services/gateway_event_ack_service.h"
 #include "services/interaction_service.h"
 #include "services/meeting_service.h"
 #include "services/reply_service.h"
@@ -22,6 +23,21 @@ static const char *TAG = "maclaw_client";
 
 static input_binding_host_t s_host;
 static bool s_host_installed;
+
+/* The only place that knows which gesture answers an approval card.  Keeping
+ * the mapping here is what lets the decision module stay host-compilable: it
+ * takes an abstract primary/secondary input, so a board with different
+ * controls can remap the gestures without touching the safety rules. */
+static event_decision_input_t approval_gesture_for(app_intent_type_t action) {
+    switch (action) {
+        case APP_INTENT_PRIMARY_ACTIVATE:
+            return EVENT_DECISION_INPUT_PRIMARY;
+        case APP_INTENT_SECONDARY_ACTIVATE:
+            return EVENT_DECISION_INPUT_SECONDARY;
+        default:
+            return EVENT_DECISION_INPUT_COUNT;
+    }
+}
 
 void input_binding_handle_event(const app_intent_event_t *event) {
     if (!event || event->struct_size != sizeof(*event) ||
@@ -264,6 +280,20 @@ void input_binding_handle_event(const app_intent_event_t *event) {
     }
     if (meeting_service_is_active()) {
         ESP_LOGW(TAG, "button ignored: meeting transition/upload active");
+        return;
+    }
+    /* A pending approval card is a foreground surface with a deadline, so the
+     * gesture answers it instead of starting voice or a meeting (plan N1-6).
+     *
+     * Deliberately placed *after* the provisioning, configuration and meeting
+     * branches rather than before them: those own the screen while they run, so
+     * a press meant to stop a recording would otherwise be read as "approve" --
+     * and silently approving a high-risk operation is far worse than making the
+     * user stop the recording first.  Placed before the voice/cancel branches
+     * below, which is the one thing a tap on the card must not start. */
+    if (gateway_event_ack_service_handle_input(approval_gesture_for(action))) {
+        ESP_LOGI(TAG, "approval gesture consumed: source=%d action=%d",
+                 (int)source, (int)action);
         return;
     }
     if (action == APP_INTENT_SECONDARY_ACTIVATE) {

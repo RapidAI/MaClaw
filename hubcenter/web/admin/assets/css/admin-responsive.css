@@ -235,6 +235,29 @@
    with a panel fill and a soft shadow. min-width:0 lets a long model name
    ellipsize inside the grid instead of widening the share row. */
 #tab-tokenbank .tbk-model-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:6px;min-width:0}
+/* Transfer cards are the whole row, four across and twenty to a page.
+   .item is included so the record-row rules above do not stretch each card
+   to the full panel width. */
+#tab-tokenbank .tbk-gift-grid,#tab-tokenbank .tbk-margin-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;min-width:0}
+#tab-tokenbank .tbk-gift-card.item{margin:0;min-width:0;min-height:0;padding:10px 12px;gap:4px;border-radius:12px;background:#fff!important;border:1px solid #e6e8ef;box-shadow:none!important}
+#tab-tokenbank .tbk-gift-card.item::after{display:none}
+#tab-tokenbank .tbk-gift-card.item+.item{margin-top:0}
+#tab-tokenbank .tbk-gift-card.item .item-title{margin:0;min-width:0;font-size:13px;line-height:1.3}
+#tab-tokenbank .tbk-gift-card.item .item-meta{margin:0;font-size:11px;line-height:1.35;overflow-wrap:anywhere}
+#tab-tokenbank .tbk-gift-card.item .tbk-gift-reason{font-size:12px;line-height:1.4;font-weight:650}
+#tab-tokenbank .tbk-gift-card.item .inline-actions{gap:4px;margin-top:auto}
+#tab-tokenbank .tbk-gift-card.item .inline-actions button{height:26px;min-height:26px!important;min-width:0!important;padding:0 8px;font-size:12px;border-radius:7px}
+#tab-tokenbank .tbk-margin-card.item{margin:0;min-width:0;min-height:0;padding:10px 12px;gap:4px;border-radius:12px;background:#fff!important;border:1px solid #e6e8ef;box-shadow:none!important}
+#tab-tokenbank .tbk-margin-card.item::after{display:none}
+#tab-tokenbank .tbk-margin-card.item+.item{margin-top:0}
+#tab-tokenbank .tbk-margin-card.item .item-title{margin:0;min-width:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
+#tab-tokenbank .tbk-margin-card.item .item-title::before{display:none}
+#tab-tokenbank .tbk-margin-card.item .item-meta{margin:0;font-size:11px;line-height:1.35;overflow-wrap:anywhere}
+#tab-tokenbank .tbk-margin-hot{color:var(--danger);font-weight:650}
+#tab-tokenbank .tbk-margin-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0}
+#tab-tokenbank .tbk-margin-stats span{display:block;min-width:0;font-size:10px;line-height:1.2;color:var(--muted)}
+#tab-tokenbank .tbk-margin-stats strong{display:block;min-width:0;margin:0;font-size:12px;line-height:1.3;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-tokenbank #tbkCreditSharesBody>.inline-actions{gap:6px;margin-top:8px}
 #tab-tokenbank .tbk-model-card.item{margin:0;min-width:0;padding:6px 8px;gap:3px;border-radius:8px;background:#f7f8fb!important;border:1px solid #e6e8ef;box-shadow:none!important}
 #tab-tokenbank .tbk-model-card.item+.item{margin-top:0}
 #tab-tokenbank .tbk-model-card.item .item-title{margin:0;min-width:0;max-width:100%;font-size:12px;line-height:1.25;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -253,6 +276,6 @@
 #tab-tokenbank input:not([type=checkbox]):not([type=radio]),#tab-tokenbank select{height:38px}
 #tab-tokenbank .inline-actions select{width:auto;flex:0 1 auto;min-width:9em}
 #tab-tokenbank .inline-actions input{width:auto;flex:1 1 12em;min-width:0}
-@media(max-width:1100px){#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-model-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:720px){#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-settings,#tab-tokenbank .tbk-price-fields,#tab-tokenbank .tbk-model-grid{grid-template-columns:1fr}}
+@media(max-width:1100px){#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-model-grid,#tab-tokenbank .tbk-gift-grid,#tab-tokenbank .tbk-margin-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){#tab-tokenbank .tbk-metrics,#tab-tokenbank .tbk-settings,#tab-tokenbank .tbk-price-fields,#tab-tokenbank .tbk-model-grid,#tab-tokenbank .tbk-gift-grid,#tab-tokenbank .tbk-margin-grid{grid-template-columns:1fr}}
 

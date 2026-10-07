@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// tokenBankCapHit reports which limit this share crossed, including the usage
-// row just inserted in the same transaction. Zero caps are unlimited. Anomaly
-// is today's tokens above five times the mean of the previous seven days.
+// tokenBankCapHit reports which owner-configured limit this share crossed,
+// including the usage row just inserted in the same transaction. Zero caps
+// are unlimited. A spike versus earlier days is not a limit.
 func tokenBankCapHit(ctx context.Context, tx *sql.Tx, shareID string, now time.Time) (string, error) {
 	var dailyCap, monthlyCap int64
 	err := tx.QueryRowContext(ctx,
@@ -39,18 +39,6 @@ func tokenBankCapHit(ctx context.Context, tx *sql.Tx, shareID string, now time.T
 		if month > monthlyCap {
 			return "monthly", nil
 		}
-	}
-	prevStart := dayStart.AddDate(0, 0, -7)
-	prev, err := tokenBankUsageTokens(ctx, tx, shareID, prevStart, dayStart)
-	if err != nil {
-		return "", err
-	}
-	today, err := tokenBankUsageTokens(ctx, tx, shareID, dayStart, time.Time{})
-	if err != nil {
-		return "", err
-	}
-	if prev > 0 && today*7 > prev*5 {
-		return "anomaly", nil
 	}
 	return "", nil
 }
@@ -221,9 +209,11 @@ type TokenBankMarginRow struct {
 	// ClampedCount counts rows where §5 ⑥ reduced the payout because even after
 	// the fee it still exceeded what the consumer paid.
 	ClampedCount int64 `json:"clamped_count"`
-	// ShortfallMicro is what the platform would have overpaid had the clamp not
-	// existed: sum(gross - charged) over inverted rows. This is the number that
-	// turns "inversions happen" into "inversions cost us N credits".
+	// ShortfallMicro is the sharer payout the clamp held back: sum of
+	// (gross - fee - net) where that difference is positive. The fee stays with
+	// the platform, so a list-price gap the fee already absorbs is not an
+	// overpay. A positive shortfall is what the platform would have paid the
+	// sharer above the recorded net had §5 ⑥ not capped it.
 	ShortfallMicro int64 `json:"shortfall_micro"`
 }
 
@@ -290,7 +280,7 @@ func (r *TokenBankRepo) UsageMargins(ctx context.Context, days int, group TokenB
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN gross_micro > charged_micro THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(net_clamped), 0),
-			COALESCE(SUM(CASE WHEN gross_micro > charged_micro THEN gross_micro - charged_micro ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN gross_micro - fee_micro > net_micro THEN gross_micro - fee_micro - net_micro ELSE 0 END), 0)
 		   FROM token_bank_usage
 		  WHERE created_at >= ?`
 

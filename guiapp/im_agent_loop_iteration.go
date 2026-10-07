@@ -123,6 +123,46 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 	return conversation, injectedText
 }
 
+// pendingSteerInjectionNote peeks queued mid-run steering for the user
+// WITHOUT consuming it, and returns a user-facing note when anything is still
+// waiting to be applied. Round-end callers use it so a turn that died
+// mid-plan (e.g. a transient LLM 403 before the fix) — or a round that
+// completed without ever reaching an iteration boundary — does not silently
+// swallow the user's adjustment: the injection survives for the next round,
+// and the user must know it was not part of this round's work.
+func (h *IMMessageHandler) pendingSteerInjectionNote(userID string) string {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return ""
+	}
+	var texts []string
+	if pending, ok := h.pendingInjection.Load(userID); ok {
+		if raw, _ := pending.(string); raw != "" {
+			for _, item := range splitPendingInjections(raw) {
+				text := item
+				if isGuideLaunchReferenceInjection(item) {
+					text = stripInjectionPrefix(item)
+				}
+				if text = strings.TrimSpace(text); text != "" {
+					texts = append(texts, text)
+				}
+			}
+		}
+	}
+	if pre, ok := h.pendingPreLoopGuide.Load(userID); ok {
+		if entry, isEntry := pre.(*preLoopGuideEntry); isEntry && entry != nil {
+			if time.Since(entry.CreatedAt) <= preLoopGuideMaxAge {
+				if text := strings.TrimSpace(entry.Text); text != "" {
+					texts = append(texts, text)
+				}
+			}
+		}
+	}
+	if len(texts) == 0 {
+		return ""
+	}
+	return "注意：你本轮发送的调整「" + truncateRunesV2(strings.Join(texts, "；"), 120) + "」尚未生效，将在下一轮对话自动带入。"
+}
+
 // buildLiveSteerUserMessage gives the model the user's actual interruption and
 // conversational intent. The transport/UI deliberately does not synthesize an
 // acknowledgement: the next real model response should demonstrate that it

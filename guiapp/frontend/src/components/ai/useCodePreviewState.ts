@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { cloudWorkspaceIdFromPath, isCloudWorkspacePath } from "./codingTaskMode";
 
@@ -58,13 +58,29 @@ export function splitCodeFileLines(text: string): string[] {
 /**
  * Bag-of-lines delta for tab / breadcrumb badges.
  * Reads are always 0/0. Creates (or missing original) count every line as added.
+ *
+ * The result is cached per file object: tab bar, file list and the overview
+ * totals all ask for the same file repeatedly, and a miss re-splits both
+ * versions of it. Preview state is immutable — every update installs a fresh
+ * CodeFile — so keying on object identity cannot serve a stale delta.
  */
 export function computeCodeFileLineDelta(
     file: Pick<CodeFile, "opType" | "content" | "original">,
 ): CodeFileLineDelta {
-    if (file.opType === "read") {
-        return { added: 0, removed: 0 };
-    }
+    if (file.opType === "read") return NO_LINE_DELTA;
+    const cached = lineDeltaCache.get(file);
+    if (cached) return cached;
+    const delta = countCodeFileLineDelta(file);
+    lineDeltaCache.set(file, delta);
+    return delta;
+}
+
+const NO_LINE_DELTA: CodeFileLineDelta = { added: 0, removed: 0 };
+const lineDeltaCache = new WeakMap<object, CodeFileLineDelta>();
+
+function countCodeFileLineDelta(
+    file: Pick<CodeFile, "opType" | "content" | "original">,
+): CodeFileLineDelta {
     const next = splitCodeFileLines(file.content || "");
     if (file.opType === "create" || file.original === undefined) {
         return { added: next.length, removed: 0 };
@@ -228,6 +244,18 @@ export function shouldAcceptCodeEventForProject(eventProjectPath?: string, activ
 /** A task result is a file the task created or rewrote. A read is exploration. */
 export function isTaskResultWrite(opType?: string | null): boolean {
     return opType === "create" || opType === "modify";
+}
+
+/**
+ * Whether a file event should surface in the preview pane (select the file,
+ * notify the host panel). Always true for create/modify; a read only when the
+ * backend explicitly asked the pane to show it (force_open / auto_open_preview)
+ * — plain reads fill background tabs and never open or focus the pane.
+ */
+export function fileEventSurfacesPreview(
+    file: Pick<CodeFile, 'opType' | 'forceOpen' | 'autoOpenPreview'>,
+): boolean {
+    return file.opType !== 'read' || file.forceOpen === true || file.autoOpenPreview === true;
 }
 
 /** Mark a create or rewrite so it survives leaving a programming workflow. */
@@ -559,10 +587,11 @@ export function applyFileUpdate(
     }
 
     const shouldAutoOpen = file.forceOpen || (file.autoOpenPreview && !state.userClosed);
-    // Auto-select: always for create/modify, but for read only when panel
-    // is first opening (no active file yet). This prevents rapid tab-switching
-    // during the SubAgent's initial file exploration phase.
-    const shouldAutoSelect = file.opType !== 'read' || !state.activeFilePath;
+    // Select and notify share one rule (fileEventSurfacesPreview): always for
+    // create/modify; a read only when the backend explicitly surfaced it —
+    // plain reads stay background tabs so exploration never yanks the view,
+    // and never pops the panel open at all.
+    const shouldAutoSelect = fileEventSurfacesPreview(file);
     const nextActive = shouldAutoSelect ? file.filePath : state.activeFilePath;
     const nextSessionID = file.sessionID || state.sessionID;
     const nextSessionActive = file.forceOpen && file.sessionID ? true : state.sessionActive;
@@ -1156,9 +1185,19 @@ export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIS
 export function useCodePreviewState(
     activeTabProjectPath?: string,
     previewEnabled = true,
-    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string; latexResultTab?: boolean; taskResultTab?: boolean; expertId?: string; markTaskResult?: boolean },
+    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string; latexResultTab?: boolean; taskResultTab?: boolean; expertId?: string; markTaskResult?: boolean; onAgentFileWrite?: (file: CodeFile) => void },
 ) {
+    // Held in a ref so an inline callback does not re-subscribe the event
+    // listeners on every render.
+    const onAgentFileWriteRef = useRef(scope?.onAgentFileWrite);
+    onAgentFileWriteRef.current = scope?.onAgentFileWrite;
     const [state, setState] = useState<CodePreviewUIState>(initialState);
+    // Last rendered state, used to probe whether an incoming write will
+    // actually land before notifying the host panel. Assigned during render
+    // (sync updates only here), so it matches the `prev` the next event's
+    // updater starts from except within same-tick event bursts.
+    const appliedStateRef = useRef(state);
+    appliedStateRef.current = state;
     const belongingPath = scope?.belongingPath || activeTabProjectPath;
     const cloudWorkspaceTab = scope?.cloudWorkspaceTab === true;
     const latexResultTab = scope?.latexResultTab === true;
@@ -1220,6 +1259,26 @@ export function useCodePreviewState(
             if (latexResult) file = prepareLatexResultFile(file, activeTabProjectPath);
             file = withTaskResultMark(file, markTaskResult);
             const expertWrite = taskResultTab && data.force_open === true && isTaskResultWrite(opType) && isExpertResultSession(data.session_id, expertId);
+            // A write that actually lands in the preview is worth surfacing:
+            // the host panel focuses the file body (content + diff) instead of
+            // leaving the directory tree selected. A read surfaces only when
+            // the backend explicitly asked the pane to show it; plain reads
+            // stay background tabs and never open the pane. A probe against
+            // the last rendered state (same pure function the updater runs, so
+            // no drift) keeps session-blocked events, identical re-reads of
+            // the selected file, and identical redeliveries from yanking the
+            // view.
+            const surfaces = fileEventSurfacesPreview(file);
+            if (surfaces) {
+                const belongs = file.latexWorkbench || expertWrite
+                    || codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);
+                // Probe only past the cheap ownership gate: applyFileUpdate
+                // copies the whole state tree, so probing events the updater
+                // would reject anyway is wasted work.
+                if (belongs && applyFileUpdate(appliedStateRef.current, file) !== appliedStateRef.current) {
+                    onAgentFileWriteRef.current?.(file);
+                }
+            }
 
             setState(prev => {
                 if (!file.latexWorkbench && !expertWrite && !codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {

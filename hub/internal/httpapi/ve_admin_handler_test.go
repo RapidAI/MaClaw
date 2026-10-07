@@ -23,6 +23,7 @@ import (
 	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -4672,5 +4673,27 @@ func TestLoadVERegistryNormalizesLegacyPlatformOnlineStatusOffline(t *testing.T)
 	}
 	if strings.Contains(raw, `"online_status":"platform"`) {
 		t.Fatalf("legacy online status was not repaired in storage: %s", raw)
+	}
+}
+
+func TestMacLawSrvRuntimeReportKeepsUpstreamReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	_, err := fetchMacLawSrvRuntimeReport(context.Background(), macLawSrvRuntimeEntry{
+		BaseURL:     srv.URL,
+		AdminSecret: "wrong-secret",
+	}, "tenant-a")
+	if err == nil {
+		t.Fatal("expected the failed report to return an error")
+	}
+	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("error = %q want status and body", err.Error())
+	}
+	if !strings.Contains(upstream.Message(err, "report failed"), "HTTP 401") {
+		t.Fatalf("message = %q", upstream.Message(err, "report failed"))
 	}
 }

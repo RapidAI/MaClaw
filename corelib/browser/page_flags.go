@@ -171,6 +171,9 @@ func (s *BrowserAgentSession) lastSnapshotFlags() (BrowserPageFlags, bool) {
 }
 
 func (s *BrowserAgentSession) peekPageFlags() (BrowserPageFlags, error) {
+	if s != nil && s.peekFlags != nil {
+		return s.peekFlags()
+	}
 	if s == nil || s.session == nil {
 		return BrowserPageFlags{}, fmt.Errorf("browser session not connected")
 	}

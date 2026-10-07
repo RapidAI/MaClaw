@@ -172,6 +172,78 @@ func (a *App) TokenBankListWithdrawals() (map[string]interface{}, error) {
 	return a.tokenBankClientDo(http.MethodGet, "/api/v1/token-bank/credits/withdrawals?limit=500", nil)
 }
 
+// TokenBankGetAutoSettings reads this machine's ceiling for one automatic
+// pull. max_per_withdraw_micro 0 means no local ceiling.
+func (a *App) TokenBankGetAutoSettings() (map[string]interface{}, error) {
+	return a.tokenBankHubSettings(http.MethodGet, nil)
+}
+
+// TokenBankSaveAutoSettings stores the ceiling. Zero clears it. A positive
+// value is microcredits, the same unit as a withdrawal.
+func (a *App) TokenBankSaveAutoSettings(maxPerWithdrawMicro int64) (map[string]interface{}, error) {
+	if maxPerWithdrawMicro < 0 {
+		return nil, fmt.Errorf("automatic withdrawal cap must not be negative")
+	}
+	return a.tokenBankHubSettings(http.MethodPut, map[string]any{
+		"max_per_withdraw_micro": maxPerWithdrawMicro,
+	})
+}
+
+func (a *App) tokenBankHubSettings(method string, body any) (map[string]interface{}, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	token := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || token == "" {
+		return nil, fmt.Errorf("connect to this Hub before changing automatic Token Bank withdrawal")
+	}
+	result, status, callErr := a.tokenBankHubCall(method, hubURL+"/api/token-bank/auto", token, body)
+	// An older hub has no /api/token-bank/auto route. Its 404 body is often
+	// plain text, which fails JSON decoding, so the status has to win over
+	// that decode error. The bank page stays usable without this setting.
+	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+		return nil, errTokenBankAutoCapUnsupported
+	}
+	if callErr != nil {
+		return nil, callErr
+	}
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		return result, nil
+	}
+	action := "load"
+	if method == http.MethodPut {
+		action = "save"
+	}
+	return nil, fmt.Errorf("could not %s the automatic withdrawal cap: %s", action, tokenBankSettingsDetail(result, status))
+}
+
+// errTokenBankAutoCapUnsupported is the stable sentence the Token Bank page
+// matches when this hub build cannot store the ceiling.
+var errTokenBankAutoCapUnsupported = errors.New("this Hub does not support the automatic withdrawal cap yet")
+
+func tokenBankSettingsDetail(result map[string]interface{}, status int) string {
+	code := tokenBankJSONCode(result)
+	message := ""
+	if result != nil {
+		message, _ = result["message"].(string)
+		message = strings.TrimSpace(message)
+	}
+	switch {
+	case code != "" && message != "":
+		return code + ": " + message
+	case code != "":
+		return code
+	case message != "":
+		return message
+	case status > 0:
+		return http.StatusText(status)
+	default:
+		return "request failed"
+	}
+}
+
 // TokenBankShareWindowInput is when one shared model may be dialed.
 // Days use Go weekday numbers: 0=Sunday ... 6=Saturday. Empty Days means
 // every day. Start and End are Asia/Shanghai "HH:MM". End is exclusive, and
@@ -779,8 +851,13 @@ func (a *App) TokenBankCreateGiftLink(credits int64, creditsMicro int64) (map[st
 // claim code on purpose: the code is shown once, from the create response.
 //
 // GET /api/v1/credits/share-links
+//
+// The desktop pages twenty cards at a time, so it asks for the server maximum
+// (tokenBankMaxListLimit). A missing limit would stop at the default 100 and
+// hide older links behind a pager that looks complete. This same limit also
+// caps claimed_links on the response.
 func (a *App) TokenBankListGiftLinks() (map[string]interface{}, error) {
-	return a.tokenBankClientDo(http.MethodGet, "/api/v1/credits/share-links", nil)
+	return a.tokenBankClientDo(http.MethodGet, "/api/v1/credits/share-links?limit=500", nil)
 }
 
 // TokenBankRevokeGiftLink unfreezes a link the caller sent while the credits

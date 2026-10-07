@@ -306,3 +306,24 @@ func TestMutationPathUsesDialectWhereScan(t *testing.T) {
 		t.Fatalf("subquery WHERE accepted as the statement clause: %v", err)
 	}
 }
+
+// The go-mssqldb URL path is the INSTANCE name. A database placed in the path
+// silently connects to the login default database (master) instead of the
+// configured one, so Inspect/fixtures miss every table.
+func TestSQLServerConnectURLPutsDatabaseInQuery(t *testing.T) {
+	u := sqlServerConnectURL("127.0.0.1:1433", "sa", "P@ss w0rd", "dbtest")
+	if u.Path != "" {
+		t.Fatalf("sqlserver URL must not carry the database in the path (it names the instance): %q", u.Path)
+	}
+	if got := u.Query().Get("database"); got != "dbtest" {
+		t.Fatalf("database query param = %q, want dbtest", got)
+	}
+	if user := u.User.Username(); user != "sa" {
+		t.Fatalf("userinfo user = %q, want sa", user)
+	}
+	// TLS settings must still merge onto the same query string.
+	applySQLServerTLS(u, TLSSettings{Mode: "require"})
+	if got := u.Query().Get("database"); got != "dbtest" {
+		t.Fatalf("TLS application dropped the database param: %q", got)
+	}
+}

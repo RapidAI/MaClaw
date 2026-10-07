@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
-import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, TokenBankIcon } from './SidebarNavIcons';
+import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
+import { BotRailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, InviteGiftIcon, CheckinRailIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
-import { GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
-import { systemRankingLabel, useSidebarHubRanking } from './sidebarHubRanking';
+import { buildUserRankingURL, systemRankingLabel, useSidebarHubRanking } from './sidebarHubRanking';
+import { useSidebarHubAccess } from './useSidebarHubAccess';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
+import type { SidebarHubCheckin } from '../../types/appShell';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
@@ -41,13 +42,13 @@ type SidebarNavRailProps = {
     runningTaskCount?: number;
     /** Opens System > Monitor with the background-task view selected. */
     onOpenBackgroundTasks?: () => void;
+    /** Tenant daily check-in policy; absent/undefined hides the button. */
+    hubCheckin?: SidebarHubCheckin;
+    /** Performs the daily check-in; resolves after the reward is granted. */
+    onHubCheckin?: () => Promise<void> | void;
+    /** True while a check-in request is in flight. */
+    hubCheckinPending?: boolean;
 };
-
-const HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS = 30_000;
-
-function InviteGiftIcon() {
-    return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"/><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"/></svg>;
-}
 
 const zhHans = {
     aiAssistant: 'AI \u52a9\u624b',
@@ -58,19 +59,6 @@ const zhHant = {
     aiAssistant: 'AI \u52a9\u624b',
     system: '\u7cfb\u7d71',
 };
-
-function buildUserRankingURL(hubURL: string, tenantID?: string) {
-    const base = (hubURL || '').replace(/\/+$/, '');
-    if (!base) return '';
-    try {
-        const url = new URL(base + '/user-ranking');
-        const tid = String(tenantID || '').trim();
-        if (tid) url.searchParams.set('tenant_id', tid);
-        return url.toString();
-    } catch {
-        return '';
-    }
-}
 
 // Guard anchor: left-nav-item--ai lives in SidebarPrimaryNav.
 export const SidebarNavRail = ({
@@ -84,12 +72,6 @@ export const SidebarNavRail = ({
     t,
     gossipAllowed,
     config,
-    favoriteEmployees = [],
-    veAuthorized = false,
-    onStartVEConversation = () => {},
-    onReorderFavorites = () => {},
-    onRemoveFavorite = () => {},
-    onRenameFavorite = () => {},
     showAppEntry = false,
     showUtilitiesEntry = true,
     showToolsEntry = false,
@@ -97,6 +79,9 @@ export const SidebarNavRail = ({
     settingsTab,
     runningTaskCount = 0,
     onOpenBackgroundTasks,
+    hubCheckin,
+    onHubCheckin,
+    hubCheckinPending = false,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
     const systemMenuOpenerRef = useRef<HTMLElement | null>(null);
@@ -109,54 +94,18 @@ export const SidebarNavRail = ({
     const [proMenuOpen, setProMenuOpen] = useState(false);
     const [proMenuTop, setProMenuTop] = useState(0);
     const proMenuOpenerRef = useRef<HTMLElement | null>(null);
-    const [invitationEnabled, setInvitationEnabled] = useState(false);
-    const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
     const rankingURL = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
     const showRanking = config?.show_hub_ranking !== false && !!rankingURL;
     const ranking = useSidebarHubRanking(showRanking, !!remoteActivationStatus?.activated);
     const rankingLabel = systemRankingLabel(lang, ranking, t('ranking'));
-    const invitationRequestSeqRef = useRef(0);
-
-    // The server is authoritative: a disabled tenant deliberately renders no
-    // invitation button or separator, rather than a disabled-looking control.
-    // Hub administrators can change the switch while MaClaw is open, so refresh
-    // when the window returns to the foreground and on a short interval.
-    useEffect(() => {
-        if (!remoteActivationStatus?.activated) {
-            invitationRequestSeqRef.current += 1;
-            setInvitationEnabled(false);
-            setInvitationDialogOpen(false);
-            return;
-        }
-        let cancelled = false;
-        const refreshInvitationStatus = () => {
-            // A foreground event performs an immediate refresh, so polling
-            // while the desktop app is hidden only wastes Hub requests.
-            if (document.visibilityState === 'hidden') return;
-            const requestSeq = ++invitationRequestSeqRef.current;
-            GetHubUserInvitationStatus().then((result: { enabled?: boolean; error?: string } | null) => {
-                if (cancelled || requestSeq !== invitationRequestSeqRef.current) return;
-                const enabled = !!result?.enabled && !result?.error;
-                setInvitationEnabled(enabled);
-                if (!enabled) setInvitationDialogOpen(false);
-            }).catch(() => {
-                if (cancelled || requestSeq !== invitationRequestSeqRef.current) return;
-                setInvitationEnabled(false);
-                setInvitationDialogOpen(false);
-            });
-        };
-        const onVisibilityChange = () => {
-            if (document.visibilityState === 'visible') refreshInvitationStatus();
-        };
-        refreshInvitationStatus();
-        const interval = window.setInterval(refreshInvitationStatus, HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS);
-        document.addEventListener('visibilitychange', onVisibilityChange);
-        return () => {
-            cancelled = true;
-            window.clearInterval(interval);
-            document.removeEventListener('visibilitychange', onVisibilityChange);
-        };
-    }, [remoteActivationStatus?.activated, config?.remote_hub_url, config?.remote_viewer_token, config?.remote_tenant_id]);
+    const { invitationEnabled, invitationDialogOpen, setInvitationDialogOpen, openBots, botAllowed } = useSidebarHubAccess({
+        activated: !!remoteActivationStatus?.activated,
+        navTab,
+        switchTool,
+        remoteHubUrl: config?.remote_hub_url,
+        remoteViewerToken: config?.remote_viewer_token,
+        remoteTenantId: config?.remote_tenant_id,
+    });
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = miniAppShortLabel(lang);
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflows';
@@ -173,12 +122,19 @@ export const SidebarNavRail = ({
     // the Tasks entry, so the two readouts can never disagree.
     const runningTaskTotal = Math.max(0, Math.trunc(Number(runningTaskCount) || 0));
     const extensionsLabel = lang === 'zh-Hans' ? '扩展' : lang === 'zh-Hant' ? '擴展' : 'Extensions';
+    // Check-in copy: highlighted (amber) until today's reward is claimed, then gray.
+    const checkinLabel = lang === 'zh-Hans' ? '签到' : lang === 'zh-Hant' ? '簽到' : 'Check-in';
+    const checkinCredits = Math.round((Number(hubCheckin?.credits) || 0) * 100) / 100;
+    const checkinTitle = hubCheckin?.checkedInToday
+        ? (lang === 'zh-Hans' ? '今日已签到' : lang === 'zh-Hant' ? '今日已簽到' : 'Checked in today')
+        : (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分` : `Check in for ${checkinCredits} credits`);
+    const inviteLabel = lang === 'zh-Hans' ? '推荐' : lang === 'zh-Hant' ? '推薦' : 'Referral';
+    const inviteTitle = lang === 'zh-Hans' ? '推荐好友注册' : lang === 'zh-Hant' ? '推薦好友註冊' : 'Refer friends';
     const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
-    const mobileDocsLabel = lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents';
+    const mobileDocsLabel = lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive';
     const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
     const latexTemplatesLabel = lang === 'zh-Hans' ? 'Latex模板' : lang === 'zh-Hant' ? 'Latex 模板' : 'LaTeX templates';
-    const tokenBankLabel = lang === 'zh-Hans' ? 'Token 银行' : lang === 'zh-Hant' ? 'Token 銀行' : 'Token Bank';
     const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
     // The LaTeX template library is one of the library entries, so the rail item
     // stays highlighted while the page is open.
@@ -196,17 +152,9 @@ export const SidebarNavRail = ({
         }
         switchTool(id);
     };
-    const selectExtensionsMenuItem = (id: string) => {
-        if (id === 'tokenbank') {
-            openSettingsTab('tokenBank');
-            return;
-        }
-        switchTool(id);
-    };
     const extensionsMenuItems: SystemMenuItem[] = [
         { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
         { id: 'mcp', icon: <MCPIcon />, label: connectorsLabel, visible: true },
-        { id: 'tokenbank', icon: <TokenBankIcon />, label: tokenBankLabel, visible: true },
     ];
     const libraryMenuItems: SystemMenuItem[] = [
         { id: 'documents', icon: <MobileDocsIcon />, label: mobileDocsLabel, visible: true },
@@ -252,25 +200,48 @@ export const SidebarNavRail = ({
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
             <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} />
-            {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
-                <div
-                    aria-hidden="true"
-                    className="snr-divider"
-                />
-            )}
-            <FavoriteEmployeeButtons
-                slots={favoriteEmployees}
-                veAuthorized={veAuthorized}
-                onStartConversation={(veId) => {
-                    switchTool('ai');
-                    onStartVEConversation(veId);
-                }}
-                onReorder={onReorderFavorites}
-                onRemove={onRemoveFavorite}
-                onRename={onRenameFavorite}
-                lang={lang}
-            />
             <div className="snr-spacer" />
+            {hubCheckin?.enabled && (
+                <button
+                    type="button"
+                    className={'sidebar-item left-nav-item left-nav-item--checkin' + (hubCheckin.checkedInToday ? ' checked-in' : '')}
+                    data-testid="sidebar-checkin-nav"
+                    aria-label={checkinTitle}
+                    title={checkinTitle}
+                    disabled={hubCheckin.checkedInToday || hubCheckinPending || !onHubCheckin}
+                    onClick={() => { void onHubCheckin?.(); }}
+                >
+                    <span className="sidebar-icon"><span className={'checkin-nav-icon-badge' + (hubCheckin.checkedInToday ? ' checkin-nav-icon-badge--done' : '')}><CheckinRailIcon /></span></span>
+                    <span className="bot-nav-label">{checkinLabel}</span>
+                </button>
+            )}
+            {botAllowed && (
+                <button
+                    type="button"
+                    className={'sidebar-item left-nav-item left-nav-item--bot' + (navTab === 'bots' ? ' active' : '')}
+                    data-testid="sidebar-bot-nav"
+                    aria-label="Bot"
+                    aria-current={navTab === 'bots' ? 'page' : undefined}
+                    title={lang === 'en' ? 'Bot. Each bot is an instance of this MaClawSrv user. They share this user\'s cloud desktop.' : 'Bot。每个 Bot 是当前用户在 MaClawSrv 上的一个实例，共用云端桌面。'}
+                    onClick={openBots}
+                >
+                    <span className="sidebar-icon"><span className="bot-nav-icon-badge"><BotRailIcon /></span></span>
+                    <span className="bot-nav-label">Bot</span>
+                </button>
+            )}
+            {invitationEnabled && (
+                <button
+                    type="button"
+                    className="sidebar-item left-nav-item left-nav-item--invite"
+                    data-testid="sidebar-invite-nav"
+                    aria-label={inviteTitle}
+                    title={inviteTitle}
+                    onClick={() => setInvitationDialogOpen(true)}
+                >
+                    <span className="sidebar-icon"><span className="invite-nav-icon-badge"><InviteGiftIcon /></span></span>
+                    <span className="bot-nav-label">{inviteLabel}</span>
+                </button>
+            )}
             <div className="mc-legacy-rail-footer">
                 <div
                     className={'sidebar-item left-nav-item ' + (systemMenuOpen || systemPageActive ? 'active' : '')}
@@ -284,22 +255,6 @@ export const SidebarNavRail = ({
                     <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen || systemPageActive ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
                     <span className="snr-system-label">{systemLabel}</span>
                 </div>
-                {invitationEnabled && (
-                    <>
-                        <div aria-hidden="true" className="snr-invite-divider" />
-                        <button
-                            type="button"
-                            className="sidebar-item left-nav-item"
-                            onClick={() => setInvitationDialogOpen(true)}
-                            title={lang === 'zh-Hans' ? '邀请好友' : lang === 'zh-Hant' ? '邀請好友' : 'Invite friends'}
-                            style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '2px', border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', position: 'relative' }}
-                        >
-                            <span className="sidebar-icon snr-invite-icon"><InviteGiftIcon /></span>
-                            <span className="snr-invite-label">{lang === 'en' ? 'Invite' : '邀请'}</span>
-                            <span aria-hidden="true" className="snr-invite-dot" />
-                        </button>
-                    </>
-                )}
             </div>
             <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} title={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" aria-current={systemPageActive ? 'page' : undefined} onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
                 <span className="mc-profile-rail__avatar mc-profile-rail__avatar--system" aria-hidden="true"><SystemIcon /></span>
@@ -316,7 +271,7 @@ export const SidebarNavRail = ({
             {extensionsMenuOpen && (
                 <SystemPopupMenu
                     items={extensionsMenuItems}
-                    onSelect={selectExtensionsMenuItem}
+                    onSelect={switchTool}
                     onClose={() => setExtensionsMenuOpen(false)}
                     returnFocus={() => extensionsMenuOpenerRef.current}
                     ariaLabel={extensionsLabel}

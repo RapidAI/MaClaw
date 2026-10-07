@@ -238,6 +238,93 @@ export const remoteInfoPanelStyle: CSSProperties = {
     fontSize: "0.76rem",
 };
 
+/** Flat instrument chrome: hairline, 6px corner, card surface. */
+export const consoleSectionStyle: CSSProperties = {
+    border: `1px solid ${colors.border}`,
+    borderRadius: "6px",
+    background: colors.surface,
+    overflow: "hidden",
+    // overflow:hidden zeroes a flex item's minimum size. Sections in the skills
+    // scroller keep their height so the scroller overflows instead of clipping.
+    // The market catalog overrides this and scrolls its own rows.
+    flexShrink: 0,
+};
+
+export const consoleSectionHeadStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    minHeight: "30px",
+    padding: "0 10px",
+    background: colors.surfaceMuted,
+    borderBottom: `1px solid ${colors.borderLight}`,
+    fontSize: "0.72rem",
+    fontWeight: 600,
+    color: colors.text,
+};
+
+/** Header for a console section that already has 8px 10px padding. */
+export const consoleInsetHeadStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "8px",
+    rowGap: "4px",
+    minHeight: "30px",
+    margin: "-8px -10px 8px",
+    padding: "4px 10px",
+    background: colors.surfaceMuted,
+    borderBottom: `1px solid ${colors.borderLight}`,
+    fontSize: "0.72rem",
+    fontWeight: 600,
+    color: colors.text,
+};
+
+export const consolePropRowStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "minmax(128px, 196px) minmax(0, 1fr)",
+    columnGap: "12px",
+    alignItems: "center",
+    minHeight: "32px",
+    padding: "2px 10px",
+    borderTop: `1px solid ${colors.borderLight}`,
+    fontSize: "0.74rem",
+    color: colors.text,
+};
+
+export const consoleMetricGridStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+};
+
+export const consoleMetricCellStyle: CSSProperties = {
+    padding: "5px 10px 6px",
+    borderTop: `1px solid ${colors.borderLight}`,
+    minWidth: 0,
+};
+
+export const consoleMetricLabelStyle: CSSProperties = {
+    fontSize: "0.64rem",
+    lineHeight: 1.2,
+    color: colors.textMuted,
+    letterSpacing: "0.02em",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+};
+
+export const consoleMetricValueStyle: CSSProperties = {
+    marginTop: "1px",
+    fontSize: "0.78rem",
+    fontWeight: 600,
+    fontVariantNumeric: "tabular-nums",
+    color: colors.text,
+    lineHeight: 1.2,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+};
+
 export const remoteModalCardStyle: CSSProperties = {
     background: colors.surface,
     borderRadius: "16px",

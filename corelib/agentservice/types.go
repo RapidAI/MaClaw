@@ -971,6 +971,10 @@ type PostMessageInput struct {
 	RefineTask bool `json:"refine_task,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
+	// OnToolCall and OnToolResult report tool progress for live chat status.
+	// They are host callbacks and are not serialized.
+	OnToolCall   func(name string)         `json:"-"`
+	OnToolResult func(name, result string) `json:"-"`
 	// DatabaseApproval is injected by a trusted host after its approval flow;
 	// HTTP/JSON clients and model output cannot populate this field. It is
 	// copied into ExecuteRequest and then converted to a request context by the
@@ -1008,6 +1012,9 @@ type SendMessageInput struct {
 	MoAPreset string `json:"moa_preset,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
+	// OnToolCall and OnToolResult report tool progress for live chat status.
+	OnToolCall   func(name string)         `json:"-"`
+	OnToolResult func(name, result string) `json:"-"`
 	// DatabaseApproval is host-only and is forwarded to PostMessage. Wire
 	// clients/model output cannot provide an approval token through this type.
 	DatabaseApproval *database.ApprovalContext `json:"-"`

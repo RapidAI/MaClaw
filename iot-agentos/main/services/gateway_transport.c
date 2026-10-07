@@ -393,7 +393,8 @@ static gateway_capability_flags_t local_gateway_capabilities(void) {
            GATEWAY_CAPABILITY_MEETING_RECORDER |
            GATEWAY_CAPABILITY_VOLUME_CONTROL |
            GATEWAY_CAPABILITY_BRIGHTNESS_CONTROL |
-           GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL;
+           GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL |
+           GATEWAY_CAPABILITY_EVENT_PUSH;
 }
 
 static bool add_local_gateway_capabilities(cJSON *capabilities) {
@@ -490,6 +491,7 @@ static bool add_local_gateway_capabilities(cJSON *capabilities) {
         {"volumeControl", GATEWAY_CAPABILITY_VOLUME_CONTROL},
         {"brightnessControl", GATEWAY_CAPABILITY_BRIGHTNESS_CONTROL},
         {"screenSleepControl", GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL},
+        {"eventPush", GATEWAY_CAPABILITY_EVENT_PUSH},
     };
     if (!features) return false;
     for (size_t i = 0; i < sizeof(feature_flags) / sizeof(feature_flags[0]); ++i) {
@@ -576,6 +578,7 @@ static bool parse_accepted_gateway_capabilities(
         {"volumeControl", GATEWAY_CAPABILITY_VOLUME_CONTROL},
         {"brightnessControl", GATEWAY_CAPABILITY_BRIGHTNESS_CONTROL},
         {"screenSleepControl", GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL},
+        {"eventPush", GATEWAY_CAPABILITY_EVENT_PUSH},
     };
     for (size_t i = 0; i < sizeof(feature_flags) / sizeof(feature_flags[0]); ++i) {
         cJSON *feature = features

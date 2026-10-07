@@ -465,6 +465,7 @@ func commandPrecheckLines(command string) []string {
 func commandPrecheckLinesForShell(command, shell string) []string {
 	var lines []string
 	var heredocEnd string
+	var psHereEnd string
 	var continued strings.Builder
 	var quoted strings.Builder
 	var multilineQuote rune
@@ -476,6 +477,27 @@ func commandPrecheckLinesForShell(command, shell string) []string {
 				heredocEnd = ""
 			}
 			continue
+		}
+		if psHereEnd != "" {
+			rest, closed := powerShellHereStringClose(line, psHereEnd)
+			if !closed {
+				continue
+			}
+			psHereEnd = ""
+			if rest == "" {
+				continue
+			}
+			line = rest
+			trimmed = strings.TrimSpace(rest)
+		}
+		if quoted.Len() == 0 && continued.Len() == 0 {
+			if kept, end, opened := consumePowerShellHereString(line); opened {
+				psHereEnd = end
+				if strings.TrimSpace(kept) == "" {
+					continue
+				}
+				line = kept
+			}
 		}
 		logicalLine := line
 		if continued.Len() > 0 {
@@ -654,6 +676,91 @@ func isShellCommentStart(runes []rune, idx int) bool {
 	}
 	prev := runes[idx-1]
 	return unicode.IsSpace(prev) || isShellCommandSeparator(prev) || prev == '('
+}
+
+// consumePowerShellHereString drops a here-string opener. PowerShell requires
+// the newline immediately after @' or @", so a same-line @"path" is left alone.
+// opened is true when the terminator is on a later line.
+func consumePowerShellHereString(line string) (kept, endMarker string, opened bool) {
+	idx := indexUnquotedHereStringOpen(line)
+	if idx < 0 || strings.TrimSpace(line[idx+2:]) != "" {
+		return line, "", false
+	}
+	endMarker = "'@"
+	if strings.HasPrefix(line[idx:], `@"`) {
+		endMarker = `"@`
+	}
+	return line[:idx], endMarker, true
+}
+
+// powerShellHereStringClose reports a terminator at column 0. Indented
+// lookalikes stay inside the body. Text after the token is a new command.
+func powerShellHereStringClose(line, end string) (string, bool) {
+	raw := strings.TrimRight(line, "\r")
+	if !strings.HasPrefix(raw, end) {
+		return "", false
+	}
+	after := raw[len(end):]
+	if after != "" && after[0] != ' ' && after[0] != '\t' {
+		return "", false
+	}
+	return strings.TrimSpace(after), true
+}
+
+func isHereStringOpenBoundary(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '|', '&', ';', '(', '=':
+		return true
+	default:
+		return false
+	}
+}
+
+// hereStringOpenAt reports a PowerShell here-string opener. The token must be
+// at a command boundary and must end the line; @"..." on one line is not one.
+func hereStringOpenAt(command string, i int) bool {
+	if i > 0 && !isHereStringOpenBoundary(command[i-1]) {
+		return false
+	}
+	if !strings.HasPrefix(command[i:], "@'") && !strings.HasPrefix(command[i:], `@"`) {
+		return false
+	}
+	for j := i + 2; j < len(command); j++ {
+		switch command[j] {
+		case ' ', '\t', '\r':
+			continue
+		case '\n':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func indexUnquotedHereStringOpen(line string) int {
+	quote := byte(0)
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+			continue
+		}
+		if i > 0 && !isHereStringOpenBoundary(line[i-1]) {
+			continue
+		}
+		if strings.HasPrefix(line[i:], "@'") || strings.HasPrefix(line[i:], `@"`) {
+			return i
+		}
+	}
+	return -1
 }
 
 func shellHeredocEndMarker(line string) (string, bool) {

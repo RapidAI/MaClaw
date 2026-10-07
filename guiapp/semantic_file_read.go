@@ -34,7 +34,7 @@ func semanticTrustedFileReadDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedFileReadAdapter,
-			"description": "Inspect a workspace path. Empty path lists the workspace root; query searches contents; file_pattern locates files by name and narrows a query to the files it matches. File versus directory is decided by the filesystem.",
+			"description": "Inspect a workspace path. Empty path lists the workspace root; query searches contents; file_pattern locates files by name and narrows a query to the files it matches. start_line reads one host-sized page of a text file from that 1-based line; the page length is fixed. Do not combine start_line with query or file_pattern. File versus directory is decided by the filesystem.",
 			"parameters":  semanticTrustedFileReadInvocationSchema(),
 		},
 	}
@@ -51,20 +51,41 @@ func semanticTrustedFileReadInvocationSchema() map[string]interface{} {
 			// search_files knob of the same name, and it carries none of that
 			// tool's other arguments.
 			"file_pattern": map[string]interface{}{"type": "string"},
+			// start_line names an outcome path and query cannot reach: the
+			// text of a known file past the first page, or the page a compiler
+			// log already addressed by line. The page length stays host-fixed,
+			// so this is not the legacy lines/offset/end_line knob set.
+			// The catalog renderer replaces the function description with the
+			// capability summary, so this property description is what the model
+			// reads. Do not put the page length in it: a number there invites
+			// the model to pass the forbidden lines knob.
+			"start_line": map[string]interface{}{
+				"type":        "integer",
+				"description": "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern.",
+			},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
 	}
 }
 
-func semanticTrustedFileReadArgsAllowed(args map[string]interface{}) (path, query, filePattern string, err error) {
-	if len(args) > 3 {
-		return "", "", "", fmt.Errorf("trusted_file_read_arguments_rejected")
+func semanticTrustedFileReadArgsAllowed(args map[string]interface{}) (path, query, filePattern string, startLine int, err error) {
+	if len(args) > 4 {
+		return "", "", "", 0, fmt.Errorf("trusted_file_read_arguments_rejected")
 	}
 	for key, raw := range args {
+		switch key {
+		case "start_line":
+			line, ok := tool.PositiveSchemaInteger(raw)
+			if !ok {
+				return "", "", "", 0, fmt.Errorf("trusted_file_read_arguments_rejected")
+			}
+			startLine = line
+			continue
+		}
 		value, ok := raw.(string)
 		if !ok {
-			return "", "", "", fmt.Errorf("trusted_file_read_arguments_rejected")
+			return "", "", "", 0, fmt.Errorf("trusted_file_read_arguments_rejected")
 		}
 		switch key {
 		case "path":
@@ -74,10 +95,15 @@ func semanticTrustedFileReadArgsAllowed(args map[string]interface{}) (path, quer
 		case "file_pattern":
 			filePattern = strings.TrimSpace(value)
 		default:
-			return "", "", "", fmt.Errorf("trusted_file_read_arguments_rejected")
+			return "", "", "", 0, fmt.Errorf("trusted_file_read_arguments_rejected")
 		}
 	}
-	return path, query, filePattern, nil
+	// A line page and a search name two different reads. Picking one would
+	// hide the other.
+	if startLine > 0 && (query != "" || filePattern != "") {
+		return "", "", "", 0, fmt.Errorf("trusted_file_read_conflicting_fields")
+	}
+	return path, query, filePattern, startLine, nil
 }
 
 // trustedFileReadLocated turns a name walk into either its matches or a
@@ -95,7 +121,7 @@ func trustedFileReadLocated(found agent.SearchToolResult) (string, error) {
 	return found.Text, nil
 }
 
-func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern string) (string, error) {
+func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern string, startLine int) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("trusted_file_read_unavailable")
 	}
@@ -104,8 +130,13 @@ func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern
 		return "", fmt.Errorf("trusted_file_read_principal_required")
 	}
 	path, query, filePattern = strings.TrimSpace(path), strings.TrimSpace(query), strings.TrimSpace(filePattern)
+	// A line page and a search name two different reads. Rejecting here, before
+	// the hook, keeps a direct call from hiding one of them inside the other.
+	if startLine < 0 || (startLine > 0 && (query != "" || filePattern != "")) {
+		return "", fmt.Errorf("trusted_file_read_conflicting_fields")
+	}
 	if h.semanticTrustedFileRead != nil {
-		return h.semanticTrustedFileRead(principalID, path, query, filePattern)
+		return h.semanticTrustedFileRead(principalID, path, query, filePattern, startLine)
 	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	absPath, err := trustedFileReadResolvePath(workspace, path)
@@ -143,6 +174,9 @@ func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return "", fmt.Errorf("trusted_file_read_not_found")
+	}
+	if startLine > 0 {
+		return trustedFileReadFromStartLine(absPath, info, startLine)
 	}
 	display := trustedFileWriteDisplayPath(workspace, absPath, path)
 	if info.IsDir() {
@@ -219,18 +253,58 @@ func trustedFileReadList(absPath, display string) (string, error) {
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 
+func trustedFileReadFromStartLine(absPath string, info os.FileInfo, startLine int) (string, error) {
+	if info.IsDir() || trustedFileReadUsesDocumentReader(absPath) {
+		return "", fmt.Errorf("trusted_file_read_start_line_unsupported")
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", err
+	}
+	// A requested page is a text-file read. It overrides the .log tail default,
+	// including start_line=1, which is the head of the file.
+	return trustedFileReadWindow(string(data), startLine, false)
+}
+
 func trustedFileReadPage(content string, tail bool) string {
-	lines := strings.SplitAfter(content, "\n")
-	total := len(lines)
-	if total <= readFileMaxLines {
+	text, err := trustedFileReadWindow(content, 0, tail)
+	if err != nil {
 		return content
+	}
+	return text
+}
+
+// trustedFileReadWindow pages one text file. startLine 0 keeps the historical
+// head, or the tail for a log. A positive startLine is the 1-based page start;
+// the page length stays readFileMaxLines. The body is the file text itself, so
+// a later old_string copy is not prefixed with line numbers.
+func trustedFileReadWindow(content string, startLine int, tail bool) (string, error) {
+	lines := tool.SplitTextLines(content)
+	total := len(lines)
+	if startLine > 0 {
+		if startLine > total {
+			return "", fmt.Errorf("trusted_file_read_start_past_end")
+		}
+		window := lines[startLine-1:]
+		if len(window) <= readFileMaxLines {
+			if startLine == 1 {
+				return content, nil
+			}
+			return fmt.Sprintf("(lines %d-%d of %d)\n%s", startLine, total, total, strings.Join(window, "")), nil
+		}
+		end := startLine + readFileMaxLines - 1
+		chunk := strings.Join(window[:readFileMaxLines], "")
+		return chunk + fmt.Sprintf("\n... (total %d lines, showing %d-%d. Next: start_line=%d)", total, startLine, end, end+1), nil
+	}
+	if total <= readFileMaxLines {
+		return content, nil
 	}
 	if tail {
 		start := total - readFileMaxLines
-		return fmt.Sprintf("... (skipped first %d lines, showing last %d of %d total)\n%s", start, readFileMaxLines, total, strings.Join(lines[start:], ""))
+		return fmt.Sprintf("... (skipped first %d lines, showing last %d of %d total)\n%s", start, readFileMaxLines, total, strings.Join(lines[start:], "")), nil
 	}
 	chunk := strings.Join(lines[:readFileMaxLines], "")
-	return chunk + fmt.Sprintf("\n... (total %d lines, showing first %d)", total, readFileMaxLines)
+	return chunk + fmt.Sprintf("\n... (total %d lines, showing %d-%d. Next: start_line=%d)", total, 1, readFileMaxLines, readFileMaxLines+1), nil
 }
 
 func trustedFileReadUsesDocumentReader(path string) bool {
@@ -267,7 +341,11 @@ func semanticTrustedFileReadResultProjection(text string) (string, error) {
 	if strings.Contains(text, "[voice_base64") || strings.Contains(text, "[file_base64") {
 		return "", fmt.Errorf("trusted_file_read_delivery_token")
 	}
-	text = strings.TrimSpace(text)
+	// A page footer names absolute lines, and the body is what a later
+	// old_string copies. Trimming would drop a blank line and the final
+	// newline, so the text the model sees would no longer be those lines.
+	// Only a result that is empty is a failed read. A file of blank lines
+	// is still that file.
 	if text == "" {
 		return "", fmt.Errorf("trusted_file_read_empty")
 	}

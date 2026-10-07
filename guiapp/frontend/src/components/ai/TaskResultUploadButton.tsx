@@ -13,10 +13,10 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
     const [errorMsg, setErrorMsg] = React.useState("");
     const en = lang === "en";
     const title = status === "done"
-        ? (en ? "Uploaded to the mobile library. Phone app → Documents can open it." : "已上传到移动文稿库，手机端「文档」可直接打开。")
+        ? (en ? "Uploaded to the cloud drive. Phone app → Documents can open it." : "已上传到云盘，手机端「文档」可直接打开。")
         : status === "error"
             ? ((en ? "Upload failed" : "上传失败") + (errorMsg ? `: ${errorMsg}` : ""))
-            : (en ? "Upload to mobile library" : "上传到移动文稿库");
+            : (en ? "Upload to cloud drive" : "上传到云盘");
     const onClick = (event: React.MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
@@ -29,7 +29,7 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
                     setStatus("done");
                 } else {
                     setStatus("error");
-                    setErrorMsg(en ? "Hub did not return a document" : "Hub 未返回文稿");
+                    setErrorMsg(en ? "Hub did not return a file" : "Hub 未返回文件");
                 }
             })
             .catch((err: unknown) => {
@@ -42,7 +42,7 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
             type="button"
             className={`mc-task-result-card__upload mc-task-result-card__upload--${status}`}
             title={title}
-            aria-label={en ? "Upload to mobile library" : "上传到移动文稿库"}
+            aria-label={en ? "Upload to cloud drive" : "上传到云盘"}
             aria-busy={status === "uploading"}
             aria-live="polite"
             disabled={status === "uploading"}

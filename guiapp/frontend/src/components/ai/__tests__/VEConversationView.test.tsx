@@ -3,6 +3,7 @@ import { act, render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     VEConversationView,
+    veLiveActivityLabel,
     formatError,
     classifyAttachmentType,
     formatFileSize,
@@ -847,6 +848,62 @@ describe("VEConversationView", () => {
 
             expect(screen.queryByTestId("ve-thinking-indicator")).toBeNull();
             expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("First chunk");
+        });
+
+        it("shows live pipeline activity and keeps the composer ready for the next turn", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "Slow reply" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "accepted" });
+            });
+            expect(screen.getByTestId("ve-activity-status").textContent).toContain("正在准备回复");
+            expect(textarea.placeholder).toContain("可以继续输入");
+            expect((screen.getByTestId("ve-send-button") as HTMLButtonElement).disabled).toBe(true);
+
+            fireEvent.change(textarea, { target: { value: "下一条" } });
+            expect((screen.getByTestId("ve-send-button") as HTMLButtonElement).disabled).toBe(false);
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "先看到" });
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "tool_start", name: "knowledge_search" });
+            });
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("先看到");
+            expect(screen.getByTestId("ve-activity-status").textContent).toContain("正在查阅资料");
+            expect(veLiveActivityLabel("routing", "", false)).toBe("Connecting");
+        });
+
+        it("follows the streaming tail and leaves a reader who scrolled up", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Slow reply" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            const list = screen.getByTestId("ve-message-list");
+            Object.defineProperty(list, "scrollHeight", { configurable: true, value: 500 });
+            Object.defineProperty(list, "clientHeight", { configurable: true, value: 100 });
+            Object.defineProperty(list, "scrollTop", { configurable: true, writable: true, value: 0 });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "先看到" });
+            });
+            expect(list.scrollTop).toBe(500);
+
+            list.scrollTop = 0;
+            fireEvent.wheel(list, { deltaY: -40 });
+            fireEvent.scroll(list);
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "还在写" });
+            });
+            expect(list.scrollTop).toBe(0);
         });
 
         it("shows a timeout reason and releases the waiting state when the employee is silent", async () => {

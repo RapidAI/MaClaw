@@ -2,8 +2,6 @@ package guiapp
 
 import (
 	"testing"
-
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // --- helpers for building test fixtures ---
@@ -99,10 +97,18 @@ func TestToolDefinitionGeneratorDoesNotRenderDynamicGatewayDefinitions(t *testin
 		toolDef("call_mcp_tool", "dynamic MCP gateway", nil, nil),
 		toolDef("manage_skill", "dynamic Skill gateway", nil, nil),
 	})
+	sawSkill := false
 	for _, definition := range append(gen.Generate(), gen.GenerateDeferred()...) {
-		if coretool.IsLegacyModelDynamicGateway(extractToolName(definition)) {
-			t.Fatalf("legacy generator rendered dynamic gateway %q", extractToolName(definition))
+		name := extractToolName(definition)
+		if name == "call_mcp_tool" {
+			t.Fatal("legacy generator rendered call_mcp_tool")
 		}
+		if name == "manage_skill" {
+			sawSkill = true
+		}
+	}
+	if !sawSkill {
+		t.Fatal("manage_skill is the local skill runtime and must stay in the host catalog")
 	}
 }
 

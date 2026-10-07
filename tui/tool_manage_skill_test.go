@@ -708,6 +708,33 @@ func TestQuoteTUIRunValueForShellQuotesSpaces(t *testing.T) {
 	}
 }
 
+func TestQuoteTUIRunValueForStepMatchesResolvedShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("shell resolution differs by host")
+	}
+	copyQuote := quoteTUIRunValueForStep(corelib.NLSkillStep{
+		Params: map[string]interface{}{"command": `copy {{path}}`},
+	})("a'b")
+	if copyQuote != `"a'b"` {
+		t.Fatalf("copy step quote = %q, want cmd quotes", copyQuote)
+	}
+	psQuote := quoteTUIRunValueForStep(corelib.NLSkillStep{
+		Params: map[string]interface{}{"command": `Get-ChildItem {{path}}`},
+	})("a'b")
+	if psQuote != `'a''b'` {
+		t.Fatalf("cmdlet step quote = %q, want powershell quotes", psQuote)
+	}
+	forced := quoteTUIRunValueForStep(corelib.NLSkillStep{
+		Params: map[string]interface{}{
+			"command":         `Get-ChildItem {{path}}`,
+			"preferred_shell": "cmd",
+		},
+	})("a'b")
+	if forced != `"a'b"` {
+		t.Fatalf("preferred cmd quote = %q, want cmd quotes", forced)
+	}
+}
+
 func TestQuoteTUIRunValueForPreferredShell(t *testing.T) {
 	if got := quoteTUIRunValueForPreferredShell("a'b", "powershell"); got != "'a''b'" {
 		t.Fatalf("powershell quote = %q, want doubled single quote", got)
@@ -1672,7 +1699,13 @@ func tuiPipelineTestEchoParams() map[string]interface{} {
 }
 
 func tuiPipelineTestSlowParams() map[string]interface{} {
-	return map[string]interface{}{"command": `python -c "import time; time.sleep(1.2); print('slow-done')"`}
+	// No quotes and no shell syntax: the step must survive whichever shell
+	// ResolveStepShell picks (cmd, bash, or powershell) on every platform,
+	// and must outlast the pipeline's 1s GlobalTimeout.
+	if runtime.GOOS == "windows" {
+		return map[string]interface{}{"command": "ping -n 3 127.0.0.1"}
+	}
+	return map[string]interface{}{"command": "ping -c 3 127.0.0.1"}
 }
 
 func tuiPipelineTestFailCapturedParams() map[string]interface{} {

@@ -55,6 +55,9 @@ const (
 	taskSourceAssistantTabPrefix = taskSourceTagPrefix + "assistant_tab:"
 	// assistantTabACPType is the tabType used for VS Code Mode B connections.
 	assistantTabACPType = "acp"
+	// assistantTabVEType is a digital-employee chat. It stays a VE tab and must
+	// not become a local chat row in the task list.
+	assistantTabVEType = "ve"
 	// assistantTabACPIdentity is the stable ACP tab identity. Session ids change
 	// on every VS Code reconnect; hashing those created a new vs-code-acp-*
 	// sidebar row each time the GUI restarted.
@@ -315,31 +318,50 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	if limit <= 0 {
 		limit = 10
 	}
+	// Digital-employee chats and ACP mirrors are dropped below. Read past the
+	// caller's limit first so those rows cannot push a real project out of the
+	// window.
+	fetchLimit := limit
+	if limit <= maxTaskSearchLimit/2 {
+		fetchLimit = limit * 2
+	}
 
 	var records []memory.ProjectRecord
 	if query == "" {
-		records = pi.ListRecent(limit)
+		records = pi.ListRecent(fetchLimit)
 	} else {
-		records = pi.Search(query, limit)
+		records = pi.Search(query, fetchLimit)
 	}
 	records = collapseRecentTaskForkRecords(records)
 
-	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(limit * 2))
+	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(fetchLimit))
+	// One workflow load for the widened window. A per-row store read would run
+	// twice as often now that omitted digital-employee rows are read past.
+	var v2WorkflowStates map[string]*v2.WorkflowState
+	if len(records) > 0 {
+		v2WorkflowStates = a.v2WorkflowStatesByOwner()
+	}
 	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
+		if omittedFromTaskSidebar(rec) {
+			continue
+		}
 		result := a.projectRecordToSearchResult(pi, rec)
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
+		result.ActiveWorkflow = a.activeWorkflowForProjectFromCache(projectWorkflowProjectPathForRecord(rec), v2WorkflowStates)
 		if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
 			if runtimeState := activeCodingRuntimeWorkflowForTags(result.Tags, codingActiveByRef); runtimeState != nil {
 				result.ActiveWorkflow = runtimeState
 			}
 		}
 		results = append(results, result)
+		if len(results) == limit {
+			break
+		}
 	}
 
 	return results
@@ -476,7 +498,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		if isAutoACPAssistantTabRecord(rec) {
+		if omittedFromTaskSidebar(rec) {
 			continue
 		}
 		result := a.projectRecordToSearchResult(pi, rec)
@@ -512,7 +534,7 @@ func visibleProjectRecords(pi *memory.ProjectIndex, records []memory.ProjectReco
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		if isAutoACPAssistantTabRecord(rec) {
+		if omittedFromTaskSidebar(rec) {
 			continue
 		}
 		out = append(out, rec)
@@ -1044,7 +1066,11 @@ func (a *App) CreateTask(name, workingDir string) ProjectSearchResult {
 // optional execution mode. mode="coding_dev" / "remote_coding_dev" (or aliases)
 // tags the task for coding-agent routing when the GUI reopens it.
 func (a *App) CreateTaskWithMode(name, workingDir, mode string) ProjectSearchResult {
-	return a.createTaskWithMode(name, workingDir, mode, false)
+	result := a.createTaskWithMode(name, workingDir, mode, false)
+	if result.ProjectPath != "" {
+		a.scheduleTaskTitleSummarization(result.ProjectPath, taskNameForCreate(name, false))
+	}
+	return result
 }
 
 // createTaskWithMode keeps a non-empty explicit title when keepExplicit is set.
@@ -1545,14 +1571,16 @@ func (a *App) insertExpertTaskRecord(expertID, expertName, workingDir string) Pr
 // invariant so every UI entry point can use the same idempotent registration.
 //
 // If projectPath already identifies a visible task, that task is reused for
-// ordinary project/coding tabs. VE and group tabs keep their own durable
-// sidebar entry. ACP connections are not a task-list identity: the editor cwd
-// is not reused, and after the user deletes the VS Code / ACP row this method
-// returns empty so a reconnect cannot resurrect it.
+// ordinary project/coding tabs. Group discussions keep their own durable
+// sidebar entry. A digital-employee chat does not: opening or messaging a VE
+// must not mint a same-named local chat task. ACP connections are not a
+// task-list identity either: the editor cwd is not reused, and after the user
+// deletes the VS Code / ACP row this method returns empty so a reconnect
+// cannot resurrect it.
 func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath string) ProjectSearchResult {
 	tabType = strings.ToLower(strings.TrimSpace(tabType))
 	tabIdentity = canonicalAssistantTabIdentity(tabType, tabIdentity)
-	if tabType == "" || tabIdentity == "" {
+	if tabType == "" || tabIdentity == "" || tabType == assistantTabVEType {
 		return ProjectSearchResult{}
 	}
 	for _, r := range tabType {
@@ -1716,6 +1744,29 @@ func isAutoACPAssistantTabRecord(rec memory.ProjectRecord) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(rec.Name), "VS Code / ACP")
+}
+
+func isVEAssistantTabContent(content string) bool {
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "secondary ai assistant tab.") {
+		return false
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		if strings.TrimSpace(line) == "type: ve" {
+			return true
+		}
+	}
+	return false
+}
+
+func isVEAssistantTabRecord(rec memory.ProjectRecord) bool {
+	return assistantTabTypeFromTags(rec.Tags) == assistantTabVEType
+}
+
+// omittedFromTaskSidebar reports rows that must not appear as local tasks:
+// VS Code / ACP mirrors and digital-employee chats.
+func omittedFromTaskSidebar(rec memory.ProjectRecord) bool {
+	return isAutoACPAssistantTabRecord(rec) || isVEAssistantTabRecord(rec)
 }
 
 // reconcileDismissedACPAssistantTabTasks drops leftover VS Code / ACP rows so a
@@ -2444,7 +2495,9 @@ func (a *App) PrepareLocalCodingEnvironment(projectPath, executionDir string) er
 // a one-shot RemoteCodingSubAgent execution for the given task project path.
 // The next AI assistant message on that project session will run remote coding
 // with the right-hand source preview enabled (pure remote coding workbench).
-// Password is used only for this connect call and is not persisted.
+// A successful non-diagnosis connect also stores the password in the OS keyring
+// so the next reopen can reconnect without asking again. Diagnosis passwords
+// are not stored.
 func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int) error {
 	return a.prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, "")
 }
@@ -2519,6 +2572,13 @@ func (a *App) prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost
 		RequestKind: requestKind,
 		Maintenance: requestKind == codingRequestInquiry,
 	}, host, user, sshPort)
+	// Remember the password that just authenticated. Diagnosis stays explicit.
+	// A keyring failure must not undo a live SSH session.
+	if shouldRememberRemoteSSHPassword(requestKind) {
+		if err := rememberRemoteSSHPassword(host, user, password, sshPort); err != nil {
+			log.Printf("[remote-coding-env] remember ssh password failed host=%s user=%s: %v", host, user, err)
+		}
+	}
 	log.Printf("[remote-coding-env] prepared project=%s session=%s host=%s@%s:%d workdir=%s session_full_access=true", projectPath, sessionID, user, host, sshPort, remoteWorkDir)
 	return nil
 }
@@ -2531,7 +2591,10 @@ type CodingWorkbenchStatus struct {
 	TurnCount             int    `json:"turn_count"`
 	SessionFullAccess     bool   `json:"session_full_access"`
 	SessionHighRiskAccess bool   `json:"session_high_risk_access"`
-	SessionPlan           string `json:"session_plan,omitempty"`
+	// PermissionMode is the effective input tier: request, workspace, or full.
+	// The command-grant hint needs it from the same snapshot as SessionHighRiskAccess.
+	PermissionMode string `json:"permission_mode"`
+	SessionPlan    string `json:"session_plan,omitempty"`
 	// ExecutionPlan is the latest multi-step auto plan (markdown T1/T2…).
 	ExecutionPlan string `json:"execution_plan,omitempty"`
 	// RequirementRestatement is the host-owned paraphrase of the current ask.
@@ -2654,6 +2717,8 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	st.TurnCount = mem.TurnCount
 	st.SessionFullAccess = mem.SessionFullAccess
 	st.SessionHighRiskAccess = mem.SessionHighRiskAccess
+	globalFull := handler.app != nil && handler.app.isSubAgentFullAccessGranted()
+	st.PermissionMode = handler.codingWorkbenchPermissionMode(userID, globalFull)
 	st.SessionPlan = strings.TrimSpace(mem.SessionPlan)
 	st.ExecutionPlan = strings.TrimSpace(mem.ExecutionPlan)
 	st.RequirementRestatement = strings.TrimSpace(mem.RequirementRestatement)
@@ -2905,6 +2970,10 @@ func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchSta
 	kind := ""
 	taskTitle := ""
 	foundRecord := false
+	// Port is taken only from a port tag. remoteCodingMetaFromTaskTags
+	// defaults a missing tag to 22, and persisting that default would
+	// overwrite a host whose real port is not 22.
+	portFromTag := 0
 	a.ensureMemoryStore()
 	if a.memoryStore != nil {
 		if pi := a.memoryStore.ProjectIndex(); pi != nil {
@@ -2916,6 +2985,15 @@ func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchSta
 					kind = "remote"
 				case taskCodingDevTag:
 					kind = "local"
+				}
+				for _, tag := range rec.Tags {
+					tag = strings.TrimSpace(tag)
+					if !strings.HasPrefix(tag, taskRemotePortTagPrefix) {
+						continue
+					}
+					if p, err := strconv.Atoi(strings.TrimPrefix(tag, taskRemotePortTagPrefix)); err == nil && p > 0 && p < 65536 {
+						portFromTag = p
+					}
 				}
 			}
 		}
@@ -2950,45 +3028,64 @@ func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchSta
 		}
 	}
 
-	// Persist kind + remote meta into sticky so later cold-loads stay classified.
-	// Skip the disk write when nothing material changed (hot resume path).
-	// Important: do not interleave setSticky* helpers then storeSticky(mem) with a
-	// stale mem snapshot — that can clobber fields (e.g. Kind after RoutePref seed).
-	stickyDirty := mem.Kind != kind
-	mem.Kind = kind
+	// Persist kind + remote meta into the live sticky record. Merge under the
+	// per-user lock. Replacing the whole snapshot taken at function entry
+	// clobbers a session id that PrepareRemoteCodingEnvironment just bound.
+	th, tu, tw := "", "", ""
 	if kind == "remote" {
-		th, tu, tw, tp := a.remoteCodingMetaFromTaskTags(projectPath)
-		if strings.TrimSpace(mem.RemoteHost) == "" && th != "" {
-			mem.RemoteHost = th
-			stickyDirty = true
-		}
-		if strings.TrimSpace(mem.RemoteUser) == "" && tu != "" {
-			mem.RemoteUser = tu
-			stickyDirty = true
-		}
-		if strings.TrimSpace(mem.RemoteWorkDir) == "" && tw != "" {
-			mem.RemoteWorkDir = tw
-			mem.RemoteProjectDir = tw
-			stickyDirty = true
-		}
-		if mem.RemotePort <= 0 && tp > 0 {
-			mem.RemotePort = tp
-			stickyDirty = true
-		}
+		th, tu, tw, _ = a.remoteCodingMetaFromTaskTags(projectPath)
 	}
-	// Seed sticky route pref from global config when session never set one.
-	// Apply onto the local mem snapshot only (single store below).
+	routePref := ""
 	if strings.TrimSpace(mem.RoutePref) == "" {
 		if cfg, err := a.LoadConfig(); err == nil {
 			if raw := strings.TrimSpace(cfg.CodingRoutePref); raw != "" {
-				mem.RoutePref = normalizeCodingRoutePref(raw)
-				stickyDirty = true
+				routePref = normalizeCodingRoutePref(raw)
 			}
 		}
 	}
-	if stickyDirty {
-		handler.storeStickyCodingWorkbenchMemory(userID, mem)
+	stickyDirty := mem.Kind != kind || routePref != ""
+	if kind == "remote" {
+		if strings.TrimSpace(mem.RemoteHost) == "" && th != "" {
+			stickyDirty = true
+		}
+		if strings.TrimSpace(mem.RemoteUser) == "" && tu != "" {
+			stickyDirty = true
+		}
+		if strings.TrimSpace(mem.RemoteWorkDir) == "" && tw != "" {
+			stickyDirty = true
+		}
+		if mem.RemotePort <= 0 && portFromTag > 0 {
+			stickyDirty = true
+		}
 	}
+	if stickyDirty {
+		handler.updateStickyCodingWorkbenchMemory(userID, func(live *stickyCodingWorkbenchMemory) {
+			live.Kind = kind
+			if kind == "remote" {
+				if strings.TrimSpace(live.RemoteHost) == "" && th != "" {
+					live.RemoteHost = th
+				}
+				if strings.TrimSpace(live.RemoteUser) == "" && tu != "" {
+					live.RemoteUser = tu
+				}
+				if strings.TrimSpace(live.RemoteWorkDir) == "" && tw != "" {
+					live.RemoteWorkDir = tw
+					if strings.TrimSpace(live.RemoteProjectDir) == "" {
+						live.RemoteProjectDir = tw
+					}
+				}
+				if live.RemotePort <= 0 && portFromTag > 0 {
+					live.RemotePort = portFromTag
+				}
+			}
+			if strings.TrimSpace(live.RoutePref) == "" && routePref != "" {
+				live.RoutePref = routePref
+			}
+		})
+	}
+	// Arming reads the live binding. The snapshot from function entry does
+	// not include a session id stored while this call was classifying.
+	mem = handler.getStickyCodingWorkbenchMemory(userID)
 
 	switch kind {
 	case "remote":
@@ -3155,7 +3252,7 @@ func (a *App) SetCodingWorkbenchPermission(projectPath, mode string) error {
 		handler.setStickyCodingSessionPermissionMode(userID, "full", "", "")
 		a.persistSubAgentFullAccess()
 	case "workspace":
-		// Path trust only: clear global full-access and high-risk session grant.
+		// Path trust. Repeat workspace writes keep 以后允许; leaving 完全控制 drops it.
 		if a.isSubAgentFullAccessGranted() {
 			if err := a.clearSubAgentFullAccess(); err != nil {
 				log.Printf("[coding-env] clear global full access failed: %v", err)
@@ -3748,6 +3845,9 @@ func (a *App) SaveCurrentChatAsTask(name string) ProjectSearchResult {
 	if created.ProjectPath == "" {
 		return created
 	}
+	// The default name is the first user message (SuggestCurrentTaskName); let
+	// the async pass condense it when it is still a raw command.
+	a.scheduleTaskTitleSummarization(created.ProjectPath, taskName)
 	a.saveCurrentConversationForTask(created.ProjectPath, workingDir)
 	return created
 }
@@ -4272,7 +4372,9 @@ func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir str
 	}
 	// VS Code / ACP rows are session-cloned leftovers. Recovering them after
 	// DeleteTask is what made the sidebar task reappear on every GUI restart.
-	if isAutoACPAssistantTabTask(taskDir, content) {
+	// Digital-employee chats are not local tasks; recovering their task.md
+	// would put a same-named local chat back on the sidebar.
+	if isAutoACPAssistantTabTask(taskDir, content) || isVEAssistantTabContent(content) {
 		return false
 	}
 	title, extraTags := inferRecoveredTaskMetadata(taskDir, content)
@@ -4661,10 +4763,19 @@ func (a *App) activeWorkflowForProjectFromCache(projectPath string, v2Cache map[
 	return nil
 }
 
-// projectWorkflowSnapshotActive mirrors the frontend status bucketing: a
-// snapshot counts as live only while its status/phase says it is running.
+// projectWorkflowSnapshotActive reports a workflow the task list should keep
+// ahead of the coding-runtime ledger. A finished, failed, or cancelled status
+// is not live, even when its phase name contains "execute" or "active".
+// Paused and interrupted stay on the keyword check so a phase that is still
+// in progress is not replaced by an older ledger row.
 func projectWorkflowSnapshotActive(state *ProjectWorkflowState) bool {
 	if state == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Status)) {
+	case "completed", "complete", "success", "succeeded", "done", "passed",
+		"failed", "failure", "error", "blocked",
+		"cancelled", "canceled":
 		return false
 	}
 	raw := strings.ToLower(strings.TrimSpace(state.Status) + " " + strings.TrimSpace(state.Phase))
@@ -4764,12 +4875,18 @@ func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]st
 	switch codingruntime.TaskStatus(status) {
 	case codingruntime.TaskRunning, codingruntime.TaskQueued, codingruntime.TaskWaitingChild:
 		return &ProjectWorkflowState{Status: string(codingruntime.TaskRunning)}
-	case codingruntime.TaskWaitingApproval, codingruntime.TaskBlocked:
-		// Approval/blocked runs are alive but need the user. "waiting_review"
-		// (not "blocked") keeps the surfaces consistent: the chat header maps
-		// the substring "blocked" to 失败, while the sidebar files
-		// pending_review rows as 待处理.
+	case codingruntime.TaskCompleted:
+		// A finished write that an older ledger still marks non-terminal is
+		// projected here so the task list can show 已完成.
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskCompleted)}
+	case codingruntime.TaskWaitingApproval:
+		// Only an approval is waiting on the user. There is a concrete decision.
 		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true}
+	case codingruntime.TaskBlocked:
+		// A gate block is not something the user can confirm. Surface it as a
+		// failure. "failed" (not "blocked") matches the header and the sidebar
+		// danger tone without the header's broader "blocked" substring.
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskFailed)}
 	case codingruntime.TaskInterrupted:
 		return &ProjectWorkflowState{Status: string(codingruntime.TaskInterrupted), PendingReview: true}
 	default:
@@ -6198,10 +6315,13 @@ func (a *App) projectTabIndexCodingMetadata(projectPath string) (agentMode, remo
 	}
 }
 
-func (a *App) projectRecordCodingMode(projectPath string) string {
+// lookupProjectCodingMode reads the open project index without initializing it.
+// found is false when the store or the row is not visible yet. An ordinary
+// chat row is found with an empty mode; that is not the same as a missing row.
+func (a *App) lookupProjectCodingMode(projectPath string) (mode string, found bool) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
-		return ""
+		return "", false
 	}
 	// Read the already-open store only. The send path must not call
 	// ensureMemoryStore — that takes memoryStoreMu and can init on a miss.
@@ -6209,13 +6329,21 @@ func (a *App) projectRecordCodingMode(projectPath string) string {
 	ms := a.memoryStore
 	a.memoryStoreMu.Unlock()
 	if ms == nil || ms.ProjectIndex() == nil {
-		return ""
+		return "", false
 	}
 	rec := ms.ProjectIndex().Get(projectPath)
 	if rec == nil {
+		return "", false
+	}
+	return codingModeForProjectRecord(*rec), true
+}
+
+func (a *App) projectRecordCodingMode(projectPath string) string {
+	mode, found := a.lookupProjectCodingMode(projectPath)
+	if !found {
 		return ""
 	}
-	return codingModeForProjectRecord(*rec)
+	return mode
 }
 
 func (a *App) projectPathIsCodingWorkbench(projectPath string) bool {
@@ -7135,8 +7263,8 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 				log.Printf("[LoadProjectTabIndex] skip closed task tab=%q project=%q", entry.ID, entry.ProjectPath)
 				continue
 			}
-			if rec := projectIndex.Get(entry.ProjectPath); rec != nil && isAutoACPAssistantTabRecord(*rec) {
-				log.Printf("[LoadProjectTabIndex] skip ACP assistant tab=%q project=%q", entry.ID, entry.ProjectPath)
+			if rec := projectIndex.Get(entry.ProjectPath); rec != nil && omittedFromTaskSidebar(*rec) {
+				log.Printf("[LoadProjectTabIndex] skip assistant tab=%q project=%q", entry.ID, entry.ProjectPath)
 				continue
 			} else if rec == nil && isAutoACPAssistantTabDirName(entry.ProjectPath) {
 				log.Printf("[LoadProjectTabIndex] skip leftover ACP tab=%q project=%q", entry.ID, entry.ProjectPath)

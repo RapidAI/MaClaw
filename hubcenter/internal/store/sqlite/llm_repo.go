@@ -338,10 +338,16 @@ func EnsureLLMTables(db *sql.DB) error {
 			expires_at         TEXT NOT NULL DEFAULT '',
 			created_at         TEXT NOT NULL,
 			claimed_at         TEXT NOT NULL DEFAULT '',
-			revoked_at         TEXT NOT NULL DEFAULT ''
+			revoked_at         TEXT NOT NULL DEFAULT '',
+			revoked_by         TEXT NOT NULL DEFAULT '',
+			revoke_reason      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_share_code ON credit_share_links(code)`,
 		`CREATE INDEX IF NOT EXISTS idx_credit_share_sender_status ON credit_share_links(sender_user_id, status)`,
+		// The audit list is ordered by created_at, then id. Without this index
+		// every page sorts the whole table. id is the tie-break that keeps a
+		// row from appearing on two pages when two links share a timestamp.
+		`CREATE INDEX IF NOT EXISTS idx_credit_share_created ON credit_share_links(created_at, id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -377,6 +383,31 @@ func EnsureLLMTables(db *sql.DB) error {
 	}
 	if err := ensureTokenBankP2Columns(db); err != nil {
 		return err
+	}
+	if err := ensureCreditShareRevokeReasonColumns(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureCreditShareRevokeReasonColumns records who froze a transfer link and
+// the note they typed. CREATE TABLE covers a new database. A database created
+// before the audit showed a reason has the table and not the columns, so the
+// list query would fail closed and the page would render empty.
+func ensureCreditShareRevokeReasonColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "credit_share_links")
+	if err != nil {
+		return err
+	}
+	if !columns["revoked_by"] {
+		if _, err := db.Exec(`ALTER TABLE credit_share_links ADD COLUMN revoked_by TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure credit_share_links.revoked_by: %w", err)
+		}
+	}
+	if !columns["revoke_reason"] {
+		if _, err := db.Exec(`ALTER TABLE credit_share_links ADD COLUMN revoke_reason TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure credit_share_links.revoke_reason: %w", err)
+		}
 	}
 	return nil
 }

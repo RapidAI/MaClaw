@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,6 +120,11 @@ func (s *Service) tokenBankCenterCall(ctx context.Context, method, suffix string
 		if env.Code == "insufficient_credits" {
 			// Over the 1/N cap. Distinct from an empty balance so the desktop
 			// can authorize a manual withdrawal and replay this request id.
+			// The allowed share stays on the error so an automatic pull can
+			// skip a second call when that share is already zero.
+			if allowed, ok := parseTokenBankAllowedMicro(env.Message); ok {
+				return zero, &tokenBankCapRefusal{allowed: allowed}
+			}
 			return zero, llmservice.ErrTokenBankInsufficient
 		}
 		message := strings.TrimSpace(env.Message)
@@ -167,9 +173,10 @@ func (s *Service) tokenBankCenterOnce(ctx context.Context, method, rawURL, secre
 
 // RunTokenBankAutoOnce pulls for every local user who has no spendable
 // credits left, including a new-user period window. It is the default-on
-// background path. Amount zero and manual false ask HubCenter for the 1/N cap.
-// A positive remainder does not top up here. A request that cannot start on
-// that remainder pulls through PullTokenBankForAdmissionShortfall instead.
+// background path. A local ceiling, when set, is the most one pull takes.
+// With no ceiling, amount zero and manual false ask HubCenter for the 1/N
+// cap. A positive remainder does not top up here. A request that cannot start
+// on that remainder pulls through PullTokenBankForAdmissionShortfall instead.
 //
 // An automatic id whose grant is already stored is confirmed here, including
 // while other credits remain. The confirm calls Finish only. A withdraw of
@@ -234,7 +241,7 @@ func (s *Service) RunTokenBankAutoOnce(ctx context.Context) error {
 		if !open {
 			continue
 		}
-		_, pullErr := llmservice.PullTokenBankGrant(ctx, s.settings, s, user.ID, user.Email, groupID, requestID, 0, false, "self", "")
+		_, pullErr := s.pullAutomaticTokenBank(ctx, user.ID, user.Email, groupID, requestID, cfg.MaxPerWithdrawMicro)
 		if pullErr != nil {
 			if !errors.Is(pullErr, llmservice.ErrTokenBankNothingToWithdraw) {
 				errs = append(errs, fmt.Errorf("%s: %w", user.Email, pullErr))
@@ -326,14 +333,17 @@ func firstOpenAutoRequest(reg *llmservice.Registry, hubID, email, groupID string
 	return 0, "", false
 }
 
-// PullTokenBankForAdmissionShortfall withdraws one automatic 1/N share into
-// the configured token-bank group. The caller has already decided that this
-// user's charged balance cannot start the request. The heartbeat still does
-// not top up a positive balance. The group must be one this request charges.
+// PullTokenBankForAdmissionShortfall withdraws one automatic share into the
+// configured token-bank group. The caller has already decided that this
+// user's charged balance cannot start the request. The amount is the local
+// ceiling when one is set, and otherwise the HubCenter 1/N share. The
+// heartbeat still does not top up a positive balance. The group must be one
+// this request charges.
 // A mismatch returns ErrTokenBankGroupNotCharged without contacting the bank,
-// so another model on the same request can still be tried. Amount zero and
-// manual false ask HubCenter for the cap. Nothing left and an over-cap reply
-// are an empty result, not a failure the request should surface.
+// so another model on the same request can still be tried. With no local
+// ceiling, amount zero and manual false ask HubCenter for the 1/N cap. A
+// ceiling above that share is retried as the share. Nothing left and an
+// over-cap reply are an empty result, not a failure the request should surface.
 //
 // An automatic id whose grant is already stored has delivered its credits,
 // whether or not they have since been spent. Replaying it cannot fund this
@@ -392,7 +402,7 @@ func (s *Service) PullTokenBankForAdmissionShortfall(ctx context.Context, userID
 		}
 		return false, nil
 	}
-	_, err = llmservice.PullTokenBankGrant(ctx, s.settings, s, userID, email, groupID, requestID, 0, false, "self", "")
+	_, err = s.pullAutomaticTokenBank(ctx, userID, email, groupID, requestID, cfg.MaxPerWithdrawMicro)
 	if err != nil {
 		if errors.Is(err, llmservice.ErrTokenBankNothingToWithdraw) || errors.Is(err, llmservice.ErrTokenBankInsufficient) {
 			return false, nil
@@ -415,6 +425,90 @@ func (s *Service) PullTokenBankForAdmissionShortfall(ctx context.Context, userID
 		}
 	}
 	return true, nil
+}
+
+// tokenBankCapRefusal is a 1/N refusal. It still matches
+// ErrTokenBankInsufficient, and Error() stays that sentinel so a manual
+// withdrawal keeps the same text. allowed is the share HubCenter would have
+// debited; the refusal itself inserts no row.
+type tokenBankCapRefusal struct {
+	allowed int64
+}
+
+func (e *tokenBankCapRefusal) Error() string {
+	return llmservice.ErrTokenBankInsufficient.Error()
+}
+
+func (e *tokenBankCapRefusal) Unwrap() error {
+	return llmservice.ErrTokenBankInsufficient
+}
+
+func tokenBankAllowedShare(err error) (int64, bool) {
+	var refusal *tokenBankCapRefusal
+	if !errors.As(err, &refusal) || refusal == nil {
+		return 0, false
+	}
+	return refusal.allowed, true
+}
+
+// parseTokenBankAllowedMicro reads the "allowed N" share from a HubCenter
+// refusal. A body that does not say the share returns false, and the caller
+// keeps the older retry.
+func parseTokenBankAllowedMicro(message string) (int64, bool) {
+	const marker = "allowed "
+	idx := strings.LastIndex(message, marker)
+	if idx < 0 {
+		return 0, false
+	}
+	tail := strings.TrimSpace(message[idx+len(marker):])
+	end := 0
+	if end < len(tail) && tail[0] == '-' {
+		end = 1
+	}
+	for end < len(tail) && tail[end] >= '0' && tail[end] <= '9' {
+		end++
+	}
+	if end == 0 || (len(tail) > 0 && tail[0] == '-' && end == 1) {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(tail[:end], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// pullAutomaticTokenBank debits one automatic share.
+//
+// maxMicro is this machine's ceiling. Zero means there is no local ceiling,
+// and HubCenter applies the 1/N share. A positive ceiling is asked for as an
+// exact amount. When that figure is above the 1/N share, HubCenter refuses
+// before it inserts a row. The same request id is safe because that refusal
+// left no debit. The retry asks for the share named in the refusal, which is
+// already under this ceiling. Amount 0 would take whatever 1/N is on the
+// second call, including a larger share if another machine left in between.
+// Amount 0 remains only when the refusal does not name a share. A named
+// share of zero is an empty bank: the second call would only hear that
+// there is nothing left.
+func (s *Service) pullAutomaticTokenBank(ctx context.Context, userID, email, groupID, requestID string, maxMicro int64) (llmservice.TokenBankPullResult, error) {
+	if maxMicro < 0 {
+		maxMicro = 0
+	}
+	result, err := llmservice.PullTokenBankGrant(ctx, s.settings, s, userID, email, groupID, requestID, maxMicro, false, "self", "")
+	if err == nil || maxMicro == 0 || !errors.Is(err, llmservice.ErrTokenBankInsufficient) {
+		return result, err
+	}
+	allowed, ok := tokenBankAllowedShare(err)
+	if !ok {
+		return llmservice.PullTokenBankGrant(ctx, s.settings, s, userID, email, groupID, requestID, 0, false, "self", "")
+	}
+	if allowed <= 0 {
+		return result, llmservice.ErrTokenBankNothingToWithdraw
+	}
+	if allowed > maxMicro {
+		return result, err
+	}
+	return llmservice.PullTokenBankGrant(ctx, s.settings, s, userID, email, groupID, requestID, allowed, false, "self", "")
 }
 
 // tokenBankChargedSpendableMicro is the charged card before holds, in the

@@ -138,7 +138,7 @@ Useful modes:
 The script defaults to:
 
 - SSH user: `root`
-- SSH password: `sunion123` when `REMOTE_PASS` is not set
+- SSH password: prompted at runtime when `REMOTE_PASS` is not set (never write it into the repository)
 - 3 HA nodes: `hubs.mypapers.top`, `hubs.maclaw.top`, `hubs2.maclaw.top`
 
 After deployment, you can manually verify again with:
@@ -148,3 +148,39 @@ After deployment, you can manually verify again with:
   -CenterUrls @('https://hubs.mypapers.top','https://hubs.maclaw.top','https://hubs2.maclaw.top') `
   -ClusterSecret '//8kbfllmLrjilq0gXkkJ84oEHcThxNi9uQP6mb5eOwcjV2DeQF0AMQNGh4k40S+'
 ```
+
+## Cloud Desktop Service (desktopd)
+
+`deploy_desktopd.cmd [mypapers|maclaw|<host>]` deploys desktopd and builds the
+per-user desktop image `maclaw-gui:2` on the Docker host from
+`desktopd/image/Dockerfile.v2` (Debian 12 + XFCE, Chromium, fcitx5 pinyin,
+CJK fonts, noVNC; CPU-only). Defaults: memory `3g`, CPUs `1.5`, shm `1g`,
+screen `1440x900`.
+
+- The image is built under a temporary tag and only tagged `maclaw-gui:2`
+  after a contract check, so a failed build never replaces the running image.
+- On Tencent Cloud the build uses `mirror.ccs.tencentyun.com` and
+  `mirrors.tencentyun.com` automatically; override with
+  `DESKTOPD_BASE_IMAGE` / `DESKTOPD_APT_MIRROR` (`none` = deb.debian.org), or
+  skip the build with `DESKTOPD_SKIP_IMAGE_BUILD=1`.
+- Existing users move from `maclaw-gui:1` the next time their desktop opens,
+  once the Hub desktop service record points at `maclaw-gui:2`. Private
+  volumes (`/desktops`, `/home/desktop`, `/opt`, `/usr/local`) are kept; a
+  v1-based `:state` image is set aside as `:prev`.
+- Public prebuilt image: `ghcr.io/rapidai/maclaw-gui:2` (anonymous pull; also
+  `2-<shortsha>` and `@sha256:` pins), built by `.github/workflows/desktop-image.yml`.
+  desktopd pulls it, checks it, and tags it `maclaw-gui:2` when that image is
+  missing on the host (`DESKTOPD_IMAGE_SOURCE`, default the ghcr image, `off`
+  to disable; `DESKTOPD_IMAGE_PULL_TIMEOUT`, default `30m`); it never replaces a
+  local image. Deploys can skip the host build with `DESKTOPD_IMAGE_FROM=pull`
+  or `auto` (pull, then build on failure); the default stays `build`.
+- Screenshots: desktopd `GET|POST /v1/desktops/screenshot` (PNG, same Bearer
+  key as the other `/v1` calls), Hub `POST /api/v1/desktop-services/screenshot`,
+  and MaClawSrv `desktop` tool `action=screenshot` (image attached for
+  vision-capable models).
+
+Details, build commands, and the migration rules: `desktopd/README.md`.
+
+On Linux/macOS use `deploy/linux/rollout_desktop_gui2.sh` (build, package,
+resumable upload, backup, deploy desktopd/Hub/MaClawSrv, verify, rollback).
+Full operations manual (Chinese): [desktop-gui-v2.md](desktop-gui-v2.md).

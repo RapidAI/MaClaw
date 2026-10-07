@@ -22,6 +22,7 @@ export interface SessionWorkingDirChipProps {
     /** Remote coding: tooltip and copy use SSH host + remote directory. The chip text stays 远程. */
     remoteHost?: string;
     remoteWorkDir?: string;
+    remotePort?: number;
 }
 
 interface DirState {
@@ -60,11 +61,11 @@ function keepPathTail(path: string, maxLen: number): string {
     return ellipsis + path.slice(-keep);
 }
 
-/** Header location: local path, remote server, or cloud workspace name. */
+/** Header location: local path, `host[:port]/dir`, or cloud workspace name. */
 export function workingDirDisplayLabel(
     path: string,
     lang?: string,
-    remote?: { host?: string; workDir?: string } | null,
+    remote?: { host?: string; workDir?: string; port?: number } | null,
     cloudName?: string,
 ): string {
     if (isCloudWorkspacePath(path)) {
@@ -74,9 +75,8 @@ export function workingDirDisplayLabel(
         return localizeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
     }
     const host = String(remote?.host || "").trim();
-    if (host) return host;
     const remoteDir = String(remote?.workDir || "").trim();
-    if (remoteDir) return truncatePathMiddle(remoteDir, 42);
+    if (host || remoteDir) return remoteWorkspaceLocationLabel(host, remoteDir, remote?.port);
     return truncatePathMiddle(path, 42);
 }
 
@@ -84,7 +84,7 @@ export function workingDirDisplayLabel(
 export function composerWorkspaceKindLabel(
     path: string,
     lang?: string,
-    remote?: { host?: string; workDir?: string } | null,
+    remote?: { host?: string; workDir?: string; port?: number } | null,
 ): string {
     if (isCloudWorkspacePath(path)) {
         return localizeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
@@ -113,7 +113,7 @@ export function useCloudWorkspaceDisplayName(workspaceId: string): string {
  * Click the chip to open a menu: open the directory, switch it, or copy that location.
  * Cloud and remote workspaces hide directory switching.
  */
-export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir }: SessionWorkingDirChipProps) {
+export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir, remotePort }: SessionWorkingDirChipProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const cloudWorkspaceId = isCloudWorkspacePath(dirState?.path) ? cloudWorkspaceIdFromPath(dirState?.path) : "";
     const cloudName = useCloudWorkspaceDisplayName(cloudWorkspaceId);
@@ -286,7 +286,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
         : isCloud
             ? (cloudName || kindLabel)
             : isRemote
-                ? (remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir) || kindLabel)
+                ? (remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir, remotePort) || kindLabel)
                 : dirState.path;
 
     const handleCopyPath = useCallback(() => {

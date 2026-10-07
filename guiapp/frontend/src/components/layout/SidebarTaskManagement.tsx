@@ -8,7 +8,7 @@ import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore }
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
-import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import { TaskWorkspaceTransferDialog, type TaskTransferCloudWorkspace, type TaskTransferDirection, type TaskTransferTarget } from './TaskWorkspaceTransferDialog';
@@ -87,7 +87,9 @@ const TASK_WORKFLOW_STATUS_COLORS: Record<TaskWorkflowStatusTone, { border: stri
     info: { border: 'color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)' },
     warning: { border: 'color-mix(in srgb, var(--theme-warning, #d97706) 48%, transparent)', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-warning, #d97706) 12%, transparent)' },
     danger: { border: 'color-mix(in srgb, var(--theme-danger, #dc2626) 46%, transparent)', color: 'color-mix(in srgb, var(--theme-danger, #dc2626) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-danger, #dc2626) 10%, transparent)' },
-    success: { border: 'color-mix(in srgb, var(--theme-success, #16a34a) 44%, transparent)', color: 'color-mix(in srgb, var(--theme-success, #16a34a) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-success, #16a34a) 10%, transparent)' },
+    // Settled tasks use the shared neutral blue-gray (--mc-done) instead of the
+    // old standalone green: it matches the shell's primary-tinted surface language.
+    success: { border: 'color-mix(in srgb, var(--theme-primary) 26%, transparent)', color: 'var(--mc-done, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary)))', background: 'var(--mc-done-bg, color-mix(in srgb, var(--theme-primary) 7%, transparent))' },
     neutral: { border: 'color-mix(in srgb, var(--theme-text-muted) 42%, transparent)', color: 'var(--theme-text-muted)', background: 'color-mix(in srgb, var(--theme-text-muted) 9%, transparent)' },
 };
 
@@ -233,6 +235,14 @@ export function workflowStatusForTask(
     if (status === WorkflowStatus.Completed) {
         return { label: textForLang(lang, 'Completed', '已完成', '已完成'), detail, tone: 'success' };
     }
+    // A coding-runtime gate failure is terminal. It is not a request for the
+    // user to confirm or repair anything.
+    if (String(workflow.status || '').trim().toLowerCase() === 'failed') {
+        return { label: textForLang(lang, 'Failed', '失败', '失敗'), detail, tone: 'danger' };
+    }
+    if (String(workflow.status || '').trim().toLowerCase() === 'interrupted') {
+        return { label: textForLang(lang, 'Interrupted', '已中断', '已中斷'), detail, tone: 'warning' };
+    }
     // Paused must not fall through to "in progress" and start the spinner.
     if (workflowLooksPaused(workflow)) {
         return { label: textForLang(lang, 'Paused', '已暂停', '已暫停'), detail, tone: 'warning' };
@@ -314,15 +324,17 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
 const STATUS_MARK_STROKE = {
     fill: 'none',
     stroke: 'currentColor',
-    strokeWidth: 1.7,
+    strokeWidth: 1.8,
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
 };
 
 /** Row status glyph. In progress is a spinning ring; the other states keep
  * the same outer size but a different mark, so they stay distinct from the
- * task-type icon beside them. No title here: the row tooltip already carries
- * the status plus the path. */
+ * task-type icon beside them. The svg is 16px on a 16-unit viewBox so one
+ * user unit equals one CSS pixel — the previous 14px viewport scaled every
+ * stroke to ~1.5 physical px at 100% DPI and the ring read as a smear.
+ * No title here: the row tooltip already carries the status plus the path. */
 const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
     <span
         className="mc-task-status"
@@ -332,36 +344,36 @@ const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: stri
         aria-label={label}
     >
         {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
-            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                 {kind === 'completed' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
                     </>
                 )}
                 {kind === 'pending' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M8 4.35V8.15l2.45 1.5" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.35V8.15l2.45 1.5" />
                     </>
                 )}
                 {kind === 'failed' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M8 4.55v3.85" />
-                        <circle cx="8" cy="11.15" r="0.85" fill="currentColor" stroke="none" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.55v3.85" />
+                        <circle cx="8" cy="11.15" r="0.9" fill="currentColor" stroke="none" />
                     </>
                 )}
                 {kind === 'paused' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
                     </>
                 )}
                 {kind === 'cancelled' && (
                     <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="m4.15 11.85 7.7-7.7" />
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="m4.15 11.85 7.7-7.7" />
                     </>
                 )}
             </svg>
@@ -387,7 +399,7 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
             data-testid={kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
             style={{ flexShrink: 0, width: '16px', height: '16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: iconColor, opacity: 0.92, alignSelf: 'center' }}
         >
-            <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
+            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
                 {kind === 'pin' && (
                     <>
                         <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
@@ -440,15 +452,6 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
         </span>
     );
 };
-
-const CreateTaskIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
-        <path {...CREATE_TASK_ICON_PROPS} d="M7 4h7l4 4v12H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M14 4v5h5" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M9 14h6" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M12 11v6" />
-    </svg>
-);
 
 const CloudComputingIcon = ({ size = 16 }: { size?: number } = {}) => (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
@@ -680,13 +683,24 @@ export type TaskStatusFilter = 'all' | 'running' | 'pending' | 'completed' | 'pa
 
 type TaskStatusBucket = Exclude<TaskStatusFilter, 'all' | 'shared'> | 'other';
 
-/** Bucket a durable task row into one status filter. Paused is checked first
- * so a paused run never counts as in progress. */
+/** Bucket a durable task row into one status filter. A paused status is
+ * checked before phase keywords, so a paused run never counts as in progress. */
 export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'>): TaskStatusBucket {
     const raw = `${task.active_workflow?.status || ''} ${task.active_workflow?.phase || ''}`.toLowerCase();
+    const status = String(task.active_workflow?.status || '').trim().toLowerCase();
+    if (/^(paused|pause|已暂停|暂停)$/.test(status)) return 'paused';
+    // Judge the status word before the phase text. A phase named review,
+    // execute, or pause must not file a finished run as pending or in progress.
+    if (/^(complete|completed|finish|finished|success|succeeded|done|passed)$/.test(status)) return 'completed';
+    if (status === 'cancelled' || status === 'canceled') return 'other';
+    if (status === 'interrupted') return 'pending';
+    if (/(fail|error|blocked|失败|错误|阻塞)/.test(status)) return 'other';
     if (workflowLooksPaused(task.active_workflow)) return 'paused';
     if (/(running|execut|active|processing)/.test(raw)) return 'running';
     if (task.active_workflow?.pending_review || /(review|confirm|approval|pending|待)/.test(raw)) return 'pending';
+    // A fatal gate or runtime failure is not a finished success, even when an
+    // earlier turn already produced output.
+    if (/(fail|error|blocked|失败|错误|阻塞)/.test(raw)) return 'other';
     if (/(complete|finish|success|done)/.test(raw) || task.has_output === true) return 'completed';
     return 'other';
 }
@@ -701,11 +715,13 @@ export function taskListStatusKind(input: {
     tone?: TaskWorkflowStatusTone | null;
 }): TaskListStatusKind {
     if (input.liveRunning) return 'running';
+    // A finished workflow stays completed even when its phase name contains
+    // "review" or "pause" and the bucket was filed from that phase.
+    if (input.tone === 'success' || input.bucket === 'completed') return 'completed';
     if (input.bucket === 'paused') return 'paused';
     if (input.bucket === 'pending' || input.tone === 'warning') return 'pending';
     if (input.tone === 'danger') return 'failed';
     if (input.tone === 'neutral') return 'cancelled';
-    if (input.tone === 'success' || input.bucket === 'completed') return 'completed';
     if (input.tone === 'info' || input.bucket === 'running') return 'running';
     return 'idle';
 }
@@ -1223,11 +1239,12 @@ function TaskFilterRow<K extends string>({
     onChange: (key: K) => void;
     testIdPrefix: string;
     titleFor?: (chip: TaskFilterChip<K>) => string | undefined;
-    /** `grid` keeps status chips in two equal columns. */
-    layout?: 'flow' | 'grid';
+    /** `line` keeps chips on one compact single-line row; `grid` stacks them in two equal columns. */
+    layout?: 'flow' | 'grid' | 'line';
 }) {
+    const layoutClass = layout === 'grid' ? ' mc-task-filter-row--grid' : layout === 'line' ? ' mc-task-filter-row--line' : '';
     return (
-        <div className={layout === 'grid' ? 'mc-task-filter-row mc-task-filter-row--grid' : 'mc-task-filter-row'} role="group" aria-label={ariaLabel}>
+        <div className={`mc-task-filter-row${layoutClass}`} role="group" aria-label={ariaLabel}>
             {chips.map(chip => (
                 <TaskFilterBtn
                     key={chip.key}
@@ -2060,6 +2077,37 @@ export const SidebarTaskManagement = ({
     // backs the two triggers. OR-ing the states means neither path can clear
     // the other's in-flight state.
     const cloudSyncInProgress = cloudRestorePending || cloudTasksLoading;
+    const [taskSearchQuery, setTaskSearchQuery] = useState('');
+    const [taskSearchOpen, setTaskSearchOpen] = useState(false);
+    const taskSearchComposingRef = useRef(false);
+    const taskSearchInputRef = useRef<HTMLInputElement>(null);
+    const taskSearchEpochRef = useRef(0);
+    const lastPublishedQueryRef = useRef<string | null>(null);
+    const publishTaskSearch = useCallback((value: string) => {
+        if (typeof window === 'undefined') return;
+        const query = value.trim();
+        if (query === lastPublishedQueryRef.current) return;
+        lastPublishedQueryRef.current = query;
+        if (!query) {
+            setTaskSearchOpen(false);
+            window.dispatchEvent(new CustomEvent('maclaw:close-task-search'));
+            return;
+        }
+        setTaskSearchOpen(true);
+        taskSearchEpochRef.current += 1;
+        window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query, epoch: taskSearchEpochRef.current } }));
+    }, []);
+    useEffect(() => {
+        const onClosed = (event: Event) => {
+            const epoch = (event as CustomEvent<{ epoch?: number }>).detail?.epoch;
+            if (typeof epoch === 'number' && epoch !== taskSearchEpochRef.current) return;
+            lastPublishedQueryRef.current = '';
+            setTaskSearchOpen(false);
+            setTaskSearchQuery('');
+        };
+        window.addEventListener('maclaw:task-search-closed', onClosed);
+        return () => window.removeEventListener('maclaw:task-search-closed', onClosed);
+    }, []);
     const [taskFilter, setTaskFilter] = useState<TaskStatusFilter>('all');
     const [workspaceFilter, setWorkspaceFilter] = useState<'all' | TaskWorkspaceKind>('all');
     const workspaceFilterCounts = useMemo(() => {
@@ -2165,8 +2213,9 @@ export const SidebarTaskManagement = ({
         return chips;
     }, [lang, taskFilter, visibleTasks.length, taskFilterCounts]);
     const workspaceFilterChips = useMemo(() => {
+        // No "all" chip here: the status row's 全部 already shows the total, and
+        // a selected workspace chip toggles back off to "all" on a second click.
         const chips: { key: 'all' | TaskWorkspaceKind; label: string; count: number }[] = [
-            { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
             { key: 'local', label: workspaceKindLabel('local', lang), count: workspaceFilterCounts.local },
             { key: 'cloud', label: workspaceKindLabel('cloud', lang), count: workspaceFilterCounts.cloud },
             { key: 'remote', label: workspaceKindLabel('remote', lang), count: workspaceFilterCounts.remote },
@@ -3804,6 +3853,8 @@ export const SidebarTaskManagement = ({
         }
     };
 
+    const taskSearchFieldLabel = textForLang(lang, 'Search tasks, cloud, knowledge…', '搜索任务、云盘、知识库等', '搜尋任務、雲端硬碟、知識庫等');
+
     return (
     <div className="mc-task-pane stsm-pane" data-execution-sidebar={activeAssistantTask ? 'true' : 'false'} data-sidebar-mode={activeAssistantTask ? 'execution' : 'home'}>
         {!activeAssistantTask && (
@@ -3812,6 +3863,67 @@ export const SidebarTaskManagement = ({
             </div>
         )}
         <div className="mc-task-pane__header stsm-pane-header">
+            <label className="mc-task-pane__search">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.2-3.2" /></svg>
+                <input
+                    ref={taskSearchInputRef}
+                    data-testid="task-pane-search"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={taskSearchQuery}
+                    placeholder={taskSearchFieldLabel}
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-label={taskSearchFieldLabel}
+                    aria-controls="project-search-panel"
+                    aria-expanded={taskSearchOpen}
+                    onChange={(event) => {
+                        const value = event.target.value;
+                        setTaskSearchQuery(value);
+                        if (!taskSearchComposingRef.current) publishTaskSearch(value);
+                    }}
+                    onCompositionStart={() => { taskSearchComposingRef.current = true; }}
+                    onCompositionEnd={(event) => {
+                        taskSearchComposingRef.current = false;
+                        const value = event.currentTarget.value;
+                        setTaskSearchQuery(value);
+                        publishTaskSearch(value);
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing || taskSearchComposingRef.current) return;
+                        if (event.key === 'ArrowDown') {
+                            const first = document.querySelector<HTMLElement>("#project-search-panel .psp-row, #project-search-panel .pslr-row");
+                            if (!first) return;
+                            event.preventDefault();
+                            first.focus();
+                            first.scrollIntoView?.({ block: "nearest" });
+                            return;
+                        }
+                        if (event.key !== 'Escape') return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setTaskSearchQuery('');
+                        publishTaskSearch('');
+                    }}
+                />
+                {taskSearchQuery ? (
+                    <button
+                        type="button"
+                        className="mc-task-pane__search-clear"
+                        aria-label={textForLang(lang, 'Clear search', '清除搜索', '清除搜尋')}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                            setTaskSearchQuery('');
+                            publishTaskSearch('');
+                            taskSearchInputRef.current?.focus();
+                        }}
+                    >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                ) : null}
+            </label>
+            <div className="mc-task-pane__toolbar">
             <button
                 type="button"
                 className="mc-task-pane__create-group"
@@ -3820,11 +3932,11 @@ export const SidebarTaskManagement = ({
                 disabled={creatingTask}
                 title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
             >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg>
                 <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
-                <span className="mc-task-pane__create-mark" aria-hidden="true">
-                    <CreateTaskIcon />
-                </span>
             </button>
+            <span className="mc-task-pane__toolbar-end">
+                <span className="mc-task-pane__toolbar-divider" aria-hidden="true" />
             <span className="mc-task-pane__tool-group">
                 <button
                     type="button"
@@ -3861,6 +3973,8 @@ export const SidebarTaskManagement = ({
                     </button>
                 )}
             </span>
+            </span>
+            </div>
             <span className="mc-task-pane__save-group stsm-header-group stsm-header-group--save">
                 <span>{textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}</span>
                 <button
@@ -3885,23 +3999,24 @@ export const SidebarTaskManagement = ({
                         : textForLang(lang, 'Creating task…', '正在创建任务…', '正在建立任務…')}
             />
         )}
-        <div className="mc-task-section-label">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
         <div className="mc-task-filter-stack">
+            <div className="mc-task-filter-panel__title">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
             <TaskFilterRow
                 ariaLabel={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')}
                 chips={taskFilterChips}
                 value={taskFilter}
                 onChange={setTaskFilter}
                 testIdPrefix="task-filter-"
-                layout="grid"
+                layout="line"
             />
             <TaskFilterRow
                 ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
                 chips={workspaceFilterChips}
                 value={workspaceFilter}
-                onChange={setWorkspaceFilter}
+                onChange={key => setWorkspaceFilter(key === workspaceFilter ? 'all' : key)}
                 testIdPrefix="task-workspace-filter-"
                 titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
+                layout="line"
             />
         </div>
         <div ref={taskListRef} className="mc-task-list stsm-task-list" data-testid="sidebar-task-list">
@@ -3980,28 +4095,29 @@ export const SidebarTaskManagement = ({
             const statusHover = secondaryStatusLabel
                 ? secondaryStatusLabel
                 : [statusMarkLabel, workflowStatus?.detail].filter(Boolean).join(' · ');
+            // Workspace row line (设计 §5): badge (📁 local / ☁ cloud / 🖧 remote)
+            // plus the matching value — local working dir, cloud workspace name,
+            // or remote host[:port]/dir. Remote host/port/workDir come from the
+            // durable task tags; without a host the row falls back to a generic label.
+            const workspaceKind = workspaceKindForTask(proj);
+            const remoteMeta = workspaceKind === 'remote' ? remoteCodingMetaFromTaskTags(proj.tags) : null;
+            const remoteLocation = remoteMeta?.host
+                ? remoteWorkspaceLocationLabel(remoteMeta.host, remoteMeta.workDir, remoteMeta.port)
+                : '';
             const rowPathHint = cloudWorkspace
                 ? cloudSafePathLabel(proj.working_dir || proj.project_path, taskSecondaryLabel || 'cloud')
-                : (proj.working_dir || proj.execution_dir || proj.project_path);
+                : (remoteLocation || proj.working_dir || proj.execution_dir || proj.project_path);
             const taskTitleText = listedTaskTitle(proj)
                 || (cloudWorkspace ? (taskSecondaryLabel || cloudFallback || rowPathHint) : proj.project_path);
             const storedTaskName = String(proj.name || '').trim();
             const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText && taskSecondaryLabel !== storedTaskName ? taskSecondaryLabel : '';
-            // Workspace row line (设计 §5): badge (📁 local / ☁ cloud / 🖧 remote)
-            // plus the matching value — local working dir, cloud workspace name,
-            // or remote host:workDir. Remote host/workDir come from the durable
-            // task tags; without them the row falls back to a generic label.
-            const workspaceKind = workspaceKindForTask(proj);
-            const remoteMeta = workspaceKind === 'remote' ? remoteCodingMetaFromTaskTags(proj.tags) : null;
             // Local tasks surface their working directory under the subtitle;
             // cloud workspace rows keep the existing compact layout.
             const localWorkingDir = cloudWorkspace ? '' : String(proj.working_dir || proj.execution_dir || proj.project_path || '').trim();
             const workspaceValue = workspaceKind === 'cloud'
                 ? taskSecondaryLabel
                 : workspaceKind === 'remote'
-                    ? (remoteMeta?.host
-                        ? (remoteMeta.workDir ? `${remoteMeta.host}:${remoteMeta.workDir}` : remoteMeta.host)
-                        : textForLang(lang, 'Remote server', '远程服务器', '遠端伺服器'))
+                    ? (remoteLocation || textForLang(lang, 'Remote server', '远程服务器', '遠端伺服器'))
                     : localWorkingDir;
             const workspaceValueText = workspaceKind === 'local'
                 ? localWorkspaceFolderName(workspaceValue)
@@ -4055,11 +4171,11 @@ export const SidebarTaskManagement = ({
                                             borderRadius: '999px',
                                             border: isRemoteCodingTask(proj)
                                                 ? '1px solid color-mix(in srgb, var(--theme-primary) 48%, transparent)'
-                                                : '1px solid color-mix(in srgb, var(--theme-success) 48%, transparent)',
-                                            color: isRemoteCodingTask(proj) ? 'var(--theme-primary-strong)' : 'var(--theme-success)',
+                                                : '1px solid color-mix(in srgb, var(--theme-primary) 26%, transparent)',
+                                            color: isRemoteCodingTask(proj) ? 'var(--theme-primary-strong)' : 'var(--mc-done, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary)))',
                                             background: isRemoteCodingTask(proj)
                                                 ? 'color-mix(in srgb, var(--theme-primary) 12%, transparent)'
-                                                : 'color-mix(in srgb, var(--theme-success) 12%, transparent)',
+                                                : 'color-mix(in srgb, var(--theme-primary) 7%, transparent)',
                                             fontSize: '0.58rem',
                                             fontWeight: 700,
                                             lineHeight: 1.35,
@@ -4082,7 +4198,7 @@ export const SidebarTaskManagement = ({
                             >
                                 <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
                                 {workspaceValueText ? (
-                                    <span className="stsm-workspace-value">{workspaceValueText}</span>
+                                    <span className="stsm-workspace-value" title={workspaceKind === 'remote' ? workspaceValueText : undefined}>{workspaceValueText}</span>
                                 ) : null}
                             </span>
                         ) : null}

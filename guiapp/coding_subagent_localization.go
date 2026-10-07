@@ -507,24 +507,51 @@ func codingWebResearchResultLooksFailed(result string) bool {
 }
 
 func codingWebFetchResultLooksFailed(result string) bool {
+	if remoteHostDownloadSaved(result) || remoteWebFetchPageRetrieved(result) {
+		return false
+	}
+	if remoteWebFetchHostFailure(result) || remoteWebFetchToolEnvelopeFailed(result) {
+		return true
+	}
 	trimmed := strings.TrimSpace(result)
 	lower := strings.ToLower(trimmed)
 	if lower == "" {
 		return true
 	}
-	for _, marker := range []string{
-		"web_fetch unavailable", "web_fetch failed", "fetch failed", "request failed",
-		"timed out", "timeout", "抓取失败", "缺少 url 参数",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
+	if codingWebFetchEnvelopeHasFailureMarker(trimmed) {
+		return true
 	}
 	// A successful page extraction contains enough title/body material to audit.
 	// Tiny acknowledgements such as "ok" or a bare URL do not prove that the
 	// declared source was actually read.
 	if utf8.RuneCountInString(trimmed) < 24 {
 		return true
+	}
+	return false
+}
+
+// codingWebFetchEnvelopeHasFailureMarker matches role refusals in the opening
+// line. The phrases are the tool's own wording, not a general "read-only" sentence.
+func codingWebFetchEnvelopeHasFailureMarker(result string) bool {
+	head := result
+	if i := strings.IndexAny(head, "\r\n"); i >= 0 {
+		head = head[:i]
+	}
+	runes := []rune(head)
+	if len(runes) > 120 {
+		head = string(runes[:120])
+	}
+	lower := strings.ToLower(head)
+	for _, marker := range []string{
+		"is not allowed for a read-only coding child",
+		"is not allowed for this coding-agent role",
+		"is not available for nested role",
+		"is unavailable for a read-only repository inquiry",
+		"is unavailable for a run/build/demo request",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
 	}
 	return false
 }
@@ -673,6 +700,8 @@ func localizationHTTPURLTokens(text string) []string {
 const localizationIncompleteReportGuidance = ` If this is exploration or new-feature work, stop calling report_localization and continue with read/search/edit. Bug-fix reports need ALL of: root_cause_file, causal_path (string array), reproduction, supporting_evidence (string array), research_decision (searched|not_needed|unavailable), research_reason, confidence (number in (0,1]). Example: {"root_cause_file":"src/foo.cpp","causal_path":["caller","foo.bar"],"reproduction":"command X fails with Y","supporting_evidence":["src/foo.cpp:12 takes the failing branch"],"research_decision":"not_needed","research_reason":"failure is fully visible in repository control flow","confidence":0.8}`
 
 const localizationReportNotRequiredMessage = "report_localization skipped: this task is not a bug-fix of existing code. Do not retry this tool. Continue exploring or implementing with read/search/edit tools."
+
+const localizationReportOptionalMessage = "report_localization skipped: a localization report is not required for this turn. Do not retry this tool. Continue with the edit."
 
 func localizationInvalidEvidenceMessage(err error) string {
 	if err == nil {
@@ -1783,6 +1812,10 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 	if c == nil {
 		return codingToolExecutionResult{Text: "localization state unavailable", Outcome: codingToolOutcomeFailed}
 	}
+	if !c.codingQualityGateOn() {
+		log.Printf("[coding-localization] report skipped stage=quality_gate_off task=%d", taskDisplayNumber(c.task))
+		return codingToolExecutionResult{Text: localizationReportOptionalMessage, Outcome: codingToolOutcomeSuccess}
+	}
 	text := ""
 	if c.task != nil {
 		text = c.task.Title + "\n" + c.task.Description
@@ -1813,7 +1846,7 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 }
 
 func (c *codingSubAgentCallbacks) requireLocalizationBeforeExistingBugEdit(path string, created bool) string {
-	if c == nil || created || c.task == nil || (c.subagent != nil && c.subagent.horizonPosture) || !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
+	if c == nil || created || (c.subagent != nil && c.subagent.horizonPosture) || !c.codingQualityGateOn() || c.task == nil || !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		return ""
 	}
 	e := c.localizationForCurrentControlPlaneRevision()
@@ -1844,6 +1877,10 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 	if c == nil {
 		return "localization state unavailable"
 	}
+	if !c.remoteQualityGateEnabled() {
+		log.Printf("[remote-localization] report skipped stage=quality_gate_off project=%q", remoteLocalizationLogProject(c))
+		return localizationReportOptionalMessage
+	}
 	taskText := c.task + "\n" + c.taskContext
 	if strings.TrimSpace(taskText) != "" && !codingTaskNeedsLocalization(taskText) {
 		log.Printf("[remote-localization] report skipped stage=not_bug project=%q", remoteLocalizationLogProject(c))
@@ -1872,7 +1909,7 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 }
 
 func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[string]interface{}, definitelyExisting bool) string {
-	if c == nil || !codingTaskNeedsLocalization(c.task+"\n"+c.taskContext) {
+	if c == nil || !c.remoteQualityGateEnabled() || !codingTaskNeedsLocalization(c.task+"\n"+c.taskContext) {
 		return ""
 	}
 	path := remoteArgStr(args, "path")
@@ -1889,7 +1926,7 @@ func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[
 		if !tracked {
 			log.Printf("[remote-localization] edit blocked stage=existence project=%q path=%q error=%q",
 				remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300), "target existence is unknown")
-			return "bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before rewriting existing code"
+			return "bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before editing existing code"
 		}
 		if !exists {
 			log.Printf("[remote-localization] edit exempt reason=new_file project=%q path=%q",

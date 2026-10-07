@@ -20,8 +20,8 @@ var (
 	reFunctionEqOpenToEnd = regexp.MustCompile(`(?is)<function=[A-Za-z0-9_.-]+>.*\z`)
 	reCodexToolCallBlock  = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>.*?</turn>\s*`)
 	rePlainToolCallTail   = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*\{.*\}\s*`)
-	reDSMLToolCallBlock   = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\s*>.*?</\|DSML\|(?:tool_calls|function_calls)>\s*`)
-	reDSMLToolCallOpen    = regexp.MustCompile(`(?is)<\|DSML\|[A-Za-z_]+\b.*\z`)
+	reDSMLToolCallBlock   = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlBlockTags + `)\s*>.*?</\|DSML\|(?:` + dsmlBlockTags + `)>\s*`)
+	reDSMLToolCallOpen    = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlTagTail + `).*\z`)
 	reDSMLInvokeBlock     = regexp.MustCompile(`(?is)<\|DSML\|invoke\b[^>]*>.*?</\|DSML\|invoke>\s*`)
 )
 
@@ -50,6 +50,11 @@ func StripXMLToolCalls(s string) string {
 	s = reDSMLToolCallBlock.ReplaceAllString(s, "")
 	s = reDSMLInvokeBlock.ReplaceAllString(s, "")
 	s = reDSMLToolCallOpen.ReplaceAllString(s, "")
+	// The stream drops a trailing fence that never became a tag. The stored
+	// message uses this strip, so the same tail must not reappear there.
+	if n := dsmlOpenSuffixLen(s); n > 0 && strings.HasPrefix(collapseDSMLFence(s[len(s)-n:]), "<|") {
+		s = s[:len(s)-n]
+	}
 	if idx := leakedLineOrientedToolMarkerIndex(s); idx >= 0 {
 		s = s[:idx]
 	}

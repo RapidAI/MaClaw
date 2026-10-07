@@ -22,6 +22,7 @@ export function ProgrammingToolsSettingsPanel({ config, setConfig, lang }: Props
     const enabled = (cfgVal(config, 'acp_host_enabled', true) as boolean) !== false;
     const mirrorUI = (cfgVal(config, 'acp_host_mirror_ui', true) as boolean) !== false;
     const port = Number(cfgVal(config, 'acp_host_port', 0)) || 0;
+    const qualityGate = cfgVal<boolean>(config, 'coding_quality_gate_enabled', false);
 
     const refresh = () => {
         void GetACPHostStatus().then((next) => { setStatus(next || null); setStatusError(''); })
@@ -37,6 +38,16 @@ export function ProgrammingToolsSettingsPanel({ config, setConfig, lang }: Props
 
     return (
         <div className="settings-content settings-content--stacked">
+            <section className="prog-tools__card">
+                <div className="prog-tools__section-title">{t(lang, 'Coding', '编程')}</div>
+                <div className="prog-tools__field">
+                    <div>
+                        <label htmlFor="coding-quality-gate"><strong>{t(lang, 'Quality gate', '质量门', '質量門')}</strong></label>
+                        <div className="settings-help-text">{t(lang, 'When on, a finished coding task fails if exploration, verification commands, or the git diff self-check do not pass, and a bug-fix edit waits for an accepted localization report. Off by default.', '开启后，编程任务结束时会检查探索、验证命令和 git diff，不通过会把任务判为失败；修复已有代码时，未通过定位报告也不能改文件。默认关闭。', '開啟後，程式任務結束時會檢查探索、驗證命令和 git diff，不通過會把任務判為失敗；修復既有程式時，未通過定位報告也不能改檔案。預設關閉。')}</div>
+                    </div>
+                    <input id="coding-quality-gate" type="checkbox" checked={qualityGate} onChange={(e) => patch({ coding_quality_gate_enabled: e.target.checked })} />
+                </div>
+            </section>
             <section className="prog-tools__card">
                 <div className="prog-tools__section-title">{t(lang, 'Built-in coding agent', '内置编程子 Agent')}</div>
                 <div className="prog-tools__field">

@@ -833,7 +833,7 @@ export function codingAgentEditedFileDetailText(progress: CodingAgentProgress, m
             ),
         );
     }
-    return text ? truncateCodingAgentInlineText(text, maxRunes) : undefined;
+    return text ? truncateCodingAgentFileCard(text, maxRunes) : undefined;
 }
 
 function codingAgentToolLooksLikeFileEdit(progress: CodingAgentProgress): boolean {
@@ -1023,7 +1023,43 @@ function renderCodingAgentAssistantNote(
 /** One terminal-style tool/activity line (used inside the feed panel). */
 const CODING_AGENT_FILE_TABLE_PREVIEW = 8;
 const codingAgentAddColor = { light: "#2f7a58", dark: "#5dba8a" };
-const codingAgentDelColor = { light: "#b45309", dark: "#f0b35a" };
+const codingAgentDelColor = { light: "#c43838", dark: "#f07178" };
+
+const codingAgentLineDeltaPattern = /\(\+(\d+)\s+-(\d+)\)/u;
+
+/** `path (+12 -3)`: additions green, deletions red. A zero side stays muted. */
+function CodingAgentInlineLineDelta({
+    text,
+    muted,
+    isDark,
+}: {
+    text: string;
+    muted: string;
+    isDark?: boolean;
+}): React.ReactElement {
+    const match = text.match(codingAgentLineDeltaPattern);
+    if (!match || match.index == null) return <>{text}</>;
+    const added = Number(match[1]);
+    const removed = Number(match[2]);
+    if (added <= 0 && removed <= 0) return <>{text}</>;
+    const addColor = added > 0 ? (isDark ? codingAgentAddColor.dark : codingAgentAddColor.light) : muted;
+    const delColor = removed > 0 ? (isDark ? codingAgentDelColor.dark : codingAgentDelColor.light) : muted;
+    const start = match.index;
+    const end = start + match[0].length;
+    return (
+        <>
+            {text.slice(0, start)}
+            <span data-testid="coding-agent-line-delta">
+                (
+                <span data-testid="coding-agent-line-added" style={{ color: addColor, fontWeight: 650 }}>+{added}</span>
+                {" "}
+                <span data-testid="coding-agent-line-removed" style={{ color: delColor, fontWeight: 650 }}>-{removed}</span>
+                )
+            </span>
+            {text.slice(end)}
+        </>
+    );
+}
 
 function renderCodingAgentFileChangeTable(
     progress: CodingAgentProgress,
@@ -1199,6 +1235,13 @@ function CodingAgentFileChangeTable({
     );
 }
 
+const codingAgentToolLineColumns: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "12px minmax(52px, 72px) minmax(0, 1fr) auto",
+    alignItems: "baseline",
+    columnGap: 6,
+};
+
 function CodingAgentToolLine({
     progress,
     t,
@@ -1229,8 +1272,56 @@ function CodingAgentToolLine({
     const command = (progress.command || "").trim();
     const showCmdPreview = !!codingAgentCommandPreviewText(progress, lang);
     const running = codingAgentLineIsRunning(progress);
-    const canCollapse = codingAgentToolLineCanCollapse(progress);
     const [expanded, setExpanded] = React.useState(false);
+    const colorFileDelta = codingAgentToolLooksLikeFileEdit(progress) && !command && !!detail;
+    if (colorFileDelta && detail) {
+        return (
+            <div
+                data-testid="coding-agent-tool-line"
+                data-tool-running={running ? "true" : "false"}
+                data-tool-collapsed="false"
+                style={{
+                    ...codingAgentToolLineColumns,
+                    padding: "0",
+                    fontSize: 11,
+                    lineHeight: 1.4,
+                    color: t.text,
+                    opacity: running ? 0.9 : 1,
+                }}
+            >
+                <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, fontFamily: monoFont, textAlign: "center", fontSize: 11, width: 12 }}>
+                    {mark.glyph}
+                </span>
+                <span style={{ color: tone.accent, fontFamily: monoFont, fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
+                    {toolName}
+                </span>
+                <span
+                    data-testid={canOpenPreview ? "coding-agent-preview-link" : undefined}
+                    role={canOpenPreview ? "button" : undefined}
+                    tabIndex={canOpenPreview ? 0 : undefined}
+                    data-preview-path={canOpenPreview ? previewPath : undefined}
+                    aria-label={canOpenPreview
+                        ? `${lang.startsWith("zh") ? "打开预览" : "Open preview"}: ${compactCodingTrailPath(previewPath) || previewPath}`
+                        : undefined}
+                    title={detail}
+                    onClick={canOpenPreview ? () => onOpenPreviewFile?.(previewPath) : undefined}
+                    onKeyDown={canOpenPreview ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onOpenPreviewFile?.(previewPath);
+                        }
+                    } : undefined}
+                    style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: canOpenPreview ? "pointer" : undefined }}
+                >
+                    <CodingAgentInlineLineDelta text={detail} muted={t.fieldLabel} isDark={t.isDark} />
+                </span>
+                <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, flexShrink: 0, opacity: 0.85, fontVariantNumeric: "tabular-nums" }}>
+                    {duration || ""}
+                </span>
+            </div>
+        );
+    }
+    const canCollapse = codingAgentToolLineCanCollapse(progress);
     const collapsed = canCollapse && !expanded;
     const collapseLabel = lang.startsWith("zh") ? "已完成，展开详情" : "Completed, show details";
     const expandedLabel = lang.startsWith("zh") ? "收起工具详情" : "Collapse tool details";
@@ -1252,10 +1343,7 @@ function CodingAgentToolLine({
             <summary
                 aria-label={collapsed ? collapseLabel : expandedLabel}
                 style={{
-                    display: "grid",
-                    gridTemplateColumns: "12px minmax(52px, 72px) minmax(0, 1fr) auto",
-                    alignItems: "baseline",
-                    columnGap: 6,
+                    ...codingAgentToolLineColumns,
                     cursor: canCollapse ? "pointer" : "default",
                     listStyle: "none",
                 }}
@@ -1766,6 +1854,22 @@ function truncateCodingAgentInlineText(text: string, maxRunes: number): string {
     const chars = Array.from(text.replace(/\s+/g, " ").trim());
     if (chars.length <= maxRunes) return chars.join("");
     return `${chars.slice(0, Math.max(1, maxRunes - 1)).join("")}\u2026`;
+}
+
+/** Keep `(+added -removed)` intact so a long path cannot clip the colored counts. */
+function truncateCodingAgentFileCard(text: string, maxRunes: number): string {
+    const match = text.match(codingAgentLineDeltaPattern);
+    if (!match || match.index == null || match.index === 0) return truncateCodingAgentInlineText(text, maxRunes);
+    const delta = match[0];
+    const head = text.slice(0, match.index).trimEnd();
+    const reserve = Array.from(delta).length + 1;
+    if (reserve >= maxRunes) return truncateCodingAgentInlineText(text, maxRunes);
+    const headBudget = maxRunes - reserve;
+    const headChars = Array.from(head);
+    const shownHead = headChars.length <= headBudget
+        ? head
+        : `${headChars.slice(0, Math.max(1, headBudget - 1)).join("")}\u2026`;
+    return `${shownHead} ${delta}`;
 }
 
 function codingAgentCountMetaText(progress: CodingAgentProgress, lang: string): string {

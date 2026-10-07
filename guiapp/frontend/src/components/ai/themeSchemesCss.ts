@@ -1,6 +1,6 @@
 import {
     assistantDarkSchemes,
-    graphiteDarkScheme,
+    onyxDarkScheme,
     type AssistantDarkScheme,
 } from "./assistantDarkSchemes";
 import {
@@ -32,7 +32,7 @@ const ONBOARDING_COMMENT = `/* ── Onboarding Wizard dark theme ──
  */`;
 
 const CLASSIC_COMMENT = `/* Classic Slate keeps the pre-2026-08 dark palette. The base dark blocks above
-   now hold the default (graphite) navy palette, so classic needs its own
+   now hold the default (onyx) black-gray palette, so classic needs its own
    override block to stay pixel-identical for users who selected it. */`;
 
 const LIGHT_HEADER_COMMENT = `/* ── Light Mode Palette Schemes ── */
@@ -86,10 +86,10 @@ function renderSchemeVars(vars: AssistantDarkScheme["cssVars"] | AssistantLightS
 export function renderThemeSchemesCss(): string {
     const blocks: string[] = [];
 
-    // Base dark block (onboarding wizard portal + default graphite chrome),
+    // Base dark block (onboarding wizard portal + default onyx chrome),
     // plus the dark-mode shadow scale that only exists on this block.
     blocks.push(
-        `${ONBOARDING_COMMENT}\n[data-ai-theme='dark'] {\n${renderSchemeVars(graphiteDarkScheme.cssVars)}\n${DARK_SHADOWS}\n}`
+        `${ONBOARDING_COMMENT}\n[data-ai-theme='dark'] {\n${renderSchemeVars(onyxDarkScheme.cssVars)}\n${DARK_SHADOWS}\n}`
     );
 
     for (const scheme of assistantDarkSchemes) {

@@ -39,8 +39,11 @@ type agentLoopBonusRoundOptions struct {
 	RecordToolResult       func(id string, content interface{}, toolName, outcome string)
 	AttachLLMTelemetry     func(*IMAgentResponse)
 	AttachVisibleArtifacts func(*IMAgentResponse)
-	SendProgress           func(string)
-	Debug                  bool
+	// NoteUsage runs before the Turn chip is rendered so a bonus debit is
+	// included in the same official credits total as the main rounds.
+	NoteUsage    func(llmUsageSnapshot)
+	SendProgress func(string)
+	Debug        bool
 }
 
 type agentLoopBonusRoundResult struct {
@@ -84,6 +87,9 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 		result.OutputTokens = usage.Output
 		result.CacheReadTokens = usage.CacheRead
 		result.CacheWriteTokens = usage.CacheWrite
+		if opts.NoteUsage != nil {
+			opts.NoteUsage(usage)
+		}
 		if opts.StreamDone {
 			result.UsageElapsed = time.Since(usageStartedAt)
 			result.UsageDone = true

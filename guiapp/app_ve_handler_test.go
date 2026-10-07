@@ -152,6 +152,51 @@ func TestVEAgentCallbacksOfficeUsesLoopContextBudget(t *testing.T) {
 	}
 }
 
+func TestVEPromptGroundsLiveLookupInHostClock(t *testing.T) {
+	prompt := (&veAgentCallbacks{}).BuildSystemPrompt("北京天气", false)
+	if strings.Contains(prompt, "access the network") {
+		t.Fatalf("prompt still forbids public lookup:\n%s", prompt)
+	}
+	for _, want := range []string{
+		"web_search",
+		"Host clock: " + time.Now().Format("2006-01-02"),
+		"Writing web_search(...) or web_fetch(...) in the reply does not run the tool",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("VE prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestVEBuildToolsAlwaysExposesLiveLookup(t *testing.T) {
+	tools := (&veAgentCallbacks{}).BuildTools("北京天气")
+	names := extractToolNames(tools)
+	for _, name := range []string{"web_search", "web_fetch", "current_datetime"} {
+		if !names[name] {
+			t.Fatalf("VE tool surface missing %s: %#v", name, names)
+		}
+	}
+	for _, def := range tools {
+		if extractToolName(def) != "web_search" {
+			continue
+		}
+		fn, _ := def["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if !strings.Contains(desc, "Host date is "+time.Now().Format("2006-01-02")) {
+			t.Fatalf("web_search description missing host date: %q", desc)
+		}
+		return
+	}
+	t.Fatal("web_search definition not found")
+}
+
+func TestVEExecuteCurrentDateTimeUsesHostClock(t *testing.T) {
+	got := executeVERemoteTool(nil, "current_datetime", `{}`)
+	if !strings.Contains(got, time.Now().Format("2006-01-02")) {
+		t.Fatalf("current_datetime = %q", got)
+	}
+}
+
 func TestVEKnowledgePromptAdvertisesImageSearchAndDisplay(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
@@ -495,6 +540,49 @@ func TestVEMessageHandler_TimeoutMechanism(t *testing.T) {
 	handler.CloseSession("timeout-session")
 	if handler.ActiveSessionCount() != 0 {
 		t.Errorf("expected 0 sessions after close, got %d", handler.ActiveSessionCount())
+	}
+}
+
+func TestSessionTurnsDoNotOverlap(t *testing.T) {
+	handler := NewVEMessageHandler(&App{})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		unlock := handler.lockSessionTurn("session-a")
+		close(started)
+		<-release
+		unlock()
+	}()
+	<-started
+
+	secondEntered := make(chan struct{})
+	go func() {
+		unlock := handler.lockSessionTurn("session-a")
+		close(secondEntered)
+		unlock()
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("second turn entered before the first finished")
+	case <-time.After(40 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second turn did not start after the first finished")
+	}
+
+	otherEntered := make(chan struct{})
+	go func() {
+		unlock := handler.lockSessionTurn("session-b")
+		close(otherEntered)
+		unlock()
+	}()
+	select {
+	case <-otherEntered:
+	case <-time.After(time.Second):
+		t.Fatal("a different session should not wait")
 	}
 }
 
@@ -1100,4 +1188,91 @@ func TestProperty8_SystemPromptCapabilityDeclaration_EmptyDirs(t *testing.T) {
 			t.Fatalf("system prompt must NOT contain '文件发送能力' section when dirs are empty.\ndirs=%v\nprompt=%s", dirs, prompt)
 		}
 	})
+}
+
+func TestPendingStreamTextHoldsAShortTailUntilClose(t *testing.T) {
+	pending := newPendingStreamText()
+	pending.add("A")
+	chunk, closed := pending.take(1)
+	if chunk != "A" || closed {
+		t.Fatalf("first take=%q closed=%v", chunk, closed)
+	}
+	pending.add("B")
+	pending.add("C")
+	chunk, closed = pending.take(2048)
+	if chunk != "" || closed {
+		t.Fatalf("short tail was sent early: %q closed=%v", chunk, closed)
+	}
+	pending.close()
+	chunk, closed = pending.take(2048)
+	if chunk != "BC" || !closed {
+		t.Fatalf("closed take=%q closed=%v", chunk, closed)
+	}
+}
+
+func TestBatchStreamDeltasPaintsFirstTokenThenCoalesces(t *testing.T) {
+	ch := make(chan string, 4)
+	var mu sync.Mutex
+	var got []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		batchStreamDeltas(ch, 40*time.Millisecond, 64, func(chunk string) {
+			mu.Lock()
+			got = append(got, chunk)
+			mu.Unlock()
+		})
+	}()
+	ch <- "A"
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		first := ""
+		if n > 0 {
+			first = got[0]
+		}
+		mu.Unlock()
+		if n >= 1 {
+			if first != "A" {
+				t.Fatalf("first flush=%q, want the first token alone", first)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first token was not flushed immediately")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ch <- "B"
+	ch <- "C"
+	close(ch)
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(got, "") != "ABC" {
+		t.Fatalf("flushed %q, want ABC", strings.Join(got, ""))
+	}
+	if len(got) < 2 {
+		t.Fatal("later tokens were merged into the first paint")
+	}
+}
+
+func TestVEResponseTimeoutMatchesChatWait(t *testing.T) {
+	h := &VEMessageHandler{}
+	if got := h.responseTimeout(); got != time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second {
+		t.Fatalf("responseTimeout=%s, want the chat default %ds", got, corelib.DefaultAgentTimeoutSec)
+	}
+}
+
+func TestCoalesceActivityNoticeKeepsNewestStatusPerSession(t *testing.T) {
+	pending := coalesceActivityNotice(nil, veActivityNotice{sessionID: "a", body: "accepted"})
+	pending = coalesceActivityNotice(pending, veActivityNotice{sessionID: "b", body: "accepted"})
+	pending = coalesceActivityNotice(pending, veActivityNotice{sessionID: "a", body: "tool"})
+	if len(pending) != 2 {
+		t.Fatalf("len=%d, want one notice per session", len(pending))
+	}
+	if pending[0].sessionID != "a" || pending[0].body != "tool" || pending[1].sessionID != "b" {
+		t.Fatalf("pending=%+v", pending)
+	}
 }

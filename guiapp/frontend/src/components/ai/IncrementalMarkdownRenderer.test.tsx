@@ -39,6 +39,26 @@ describe("renderContentIncremental", () => {
         expect(state.lastTailContent).toContain("~~~mermaid");
     });
 
+    it("does not freeze inside a code fence whose opener is glued to the previous line", () => {
+        const state = createIncrementalRenderState();
+        const completed = "Completed paragraph.\n\n".repeat(80);
+        const inside = "more code that stays fenced\n\n".repeat(30);
+        const glued = `Heading\`\`\`\ncode line\n\n${inside}\`\`\`\n\nAfter the block.\n\n${"Tail paragraph.\n\n".repeat(20)}`;
+        const content = completed + glued;
+
+        renderContentIncremental(content, lightTheme, state);
+
+        const upTo = state.frozen?.contentUpTo ?? 0;
+        expect(upTo).toBeGreaterThan(0);
+        const frozen = content.slice(0, upTo);
+        const tail = content.slice(upTo);
+        if (frozen.includes("Heading```")) {
+            expect(frozen).toContain("\n```\n");
+        }
+        expect(tail.startsWith("more code")).toBe(false);
+        expect(tail.startsWith("code line")).toBe(false);
+    });
+
     it("does not freeze inside an unfinished longer code fence", () => {
         const state = createIncrementalRenderState();
         const completed = "Completed paragraph.\n\n".repeat(120);
@@ -48,6 +68,24 @@ describe("renderContentIncremental", () => {
 
         expect(state.frozen?.contentUpTo).toBe(completed.length);
         expect(state.lastTailContent).toContain("\`\`\`\`mermaid");
+    });
+
+    it("does not let backticks inside a display formula open a fence", () => {
+        const state = createIncrementalRenderState();
+        const completed = "Completed paragraph.\n\n".repeat(120);
+        // A standalone closer after the opener would end a false fence, and the
+        // blank lines below would then freeze in the middle of the formula.
+        const openFormula = `$$ x\`\`\`\n\`\`\`\n${"E = mc^2\n\n".repeat(48)}`;
+
+        renderContentIncremental(`${completed}${openFormula}`, lightTheme, state);
+
+        expect(state.frozen?.contentUpTo).toBe(completed.length);
+
+        const resolved = `${completed}${openFormula}$$\n\n${"Later paragraph.\n\n".repeat(24)}Active tail`;
+        const { container } = render(<div>{renderContentIncremental(resolved, lightTheme, state)}</div>);
+
+        expect(container.querySelectorAll('[data-testid="assistant-display-math"]')).toHaveLength(1);
+        expect(container.textContent).not.toContain("$$");
     });
 
     it("keeps a display formula in the active tail until its closing delimiter arrives", () => {

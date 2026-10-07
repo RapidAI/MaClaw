@@ -84,6 +84,25 @@ func cloneAppConfigForMutation(cfg corelib.AppConfig) corelib.AppConfig {
 			out.LLMProfileTokenUsage[k] = &cp
 		}
 	}
+	if cfg.LLMTokenUsageByDay != nil {
+		out.LLMTokenUsageByDay = make(map[string]map[string]*corelib.TokenUsageStat, len(cfg.LLMTokenUsageByDay))
+		for date, rows := range cfg.LLMTokenUsageByDay {
+			if rows == nil {
+				out.LLMTokenUsageByDay[date] = nil
+				continue
+			}
+			copied := make(map[string]*corelib.TokenUsageStat, len(rows))
+			for k, v := range rows {
+				if v == nil {
+					copied[k] = nil
+					continue
+				}
+				cp := *v
+				copied[k] = &cp
+			}
+			out.LLMTokenUsageByDay[date] = copied
+		}
+	}
 	if cfg.ModelRoutes != nil {
 		out.ModelRoutes = make(map[string]corelib.ModelRouteConfig, len(cfg.ModelRoutes))
 		for k, v := range cfg.ModelRoutes {

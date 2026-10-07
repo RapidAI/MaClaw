@@ -208,6 +208,7 @@ func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig 
 		out[i].AllowedNodeIDs = append([]string(nil), p.AllowedNodeIDs...)
 		out[i].CreditMultiplierSchedule = cloneCreditWindows(p.CreditMultiplierSchedule)
 		out[i].TokenBankShareWindow.Days = append([]int(nil), p.TokenBankShareWindow.Days...)
+		out[i].ServeWindows = cloneShareWindows(p.ServeWindows)
 		out[i].ModelMap = cloneStringMap(p.ModelMap)
 	}
 	return out
@@ -229,6 +230,18 @@ func cloneCreditWindows(in []llmpool.CreditMultiplierWindow) []llmpool.CreditMul
 		return nil
 	}
 	out := make([]llmpool.CreditMultiplierWindow, len(in))
+	for i, w := range in {
+		out[i] = w
+		out[i].Days = append([]int(nil), w.Days...)
+	}
+	return out
+}
+
+func cloneShareWindows(in []llmpool.TokenBankShareWindow) []llmpool.TokenBankShareWindow {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.TokenBankShareWindow, len(in))
 	for i, w := range in {
 		out[i] = w
 		out[i].Days = append([]int(nil), w.Days...)
@@ -390,6 +403,21 @@ func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
 	if provider.QueueTimeoutMS <= 0 {
 		provider.QueueTimeoutMS = defaultProviderQueueTimeoutMS
 	}
+}
+
+// normalizeProviderServeWindows canonicalizes the provider's dial windows.
+// A broken clock is rejected, not dropped: silently dropping a window would
+// widen the provider's availability beyond the hours the operator asked for.
+func normalizeProviderServeWindows(provider *llmpool.ProviderConfig) error {
+	if provider == nil {
+		return nil
+	}
+	windows, ok := llmpool.NormalizeServeWindows(provider.ServeWindows)
+	if !ok {
+		return fmt.Errorf("serve_windows must use HH:MM clock times (24:00 only as the end of the day) with days 0..6, 0=Sunday")
+	}
+	provider.ServeWindows = windows
+	return nil
 }
 
 func normalizeProviderSequences(reg *Registry) {
@@ -741,6 +769,9 @@ func (s *Service) AddProvider(ctx context.Context, provider llmpool.ProviderConf
 	provider.ArrayID = joinedArrayID
 	provider.ArrayIndependent = false
 	provider.NormalizeBilling()
+	if err := normalizeProviderServeWindows(&provider); err != nil {
+		return err
+	}
 	if provider.Sequence <= 0 {
 		provider.Sequence = nextProviderSequence(reg)
 	}
@@ -781,6 +812,13 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	}
 	if incoming.AllowedNodeIDs == nil {
 		incoming.AllowedNodeIDs = append([]string(nil), existing.AllowedNodeIDs...)
+	}
+	// serve_windows written by the admin editor and the import API is a plain
+	// list. A nil list was omitted by the caller, so keep the stored windows:
+	// clearing them must be an explicit [] or the next import would reopen the
+	// provider around the clock.
+	if incoming.ServeWindows == nil {
+		incoming.ServeWindows = cloneShareWindows(existing.ServeWindows)
 	}
 	if strings.TrimSpace(incoming.ArrayID) == "" {
 		incoming.ArrayID = existing.ArrayID
@@ -859,6 +897,9 @@ func (s *Service) UpdateProvider(ctx context.Context, provider llmpool.ProviderC
 	independent := provider.ArrayIndependent
 	provider = mergeUnspecifiedProviderFields(existing, provider)
 	provider.NormalizeBilling()
+	if err := normalizeProviderServeWindows(&provider); err != nil {
+		return err
+	}
 	provider.ArrayIndependent = false
 	if independent {
 		provider.ArrayID = independentProviderArrayID(reg, existing)

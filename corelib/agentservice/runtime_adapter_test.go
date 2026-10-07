@@ -413,3 +413,23 @@ type runtimeToolInvokerStub struct{}
 func (runtimeToolInvokerStub) InvokeRuntimeTool(context.Context, string, map[string]any) (string, bool, error) {
 	return "handled result", true, nil
 }
+
+type runtimeImageInvokerStub struct{}
+
+func (runtimeImageInvokerStub) InvokeRuntimeTool(context.Context, string, map[string]any) (string, bool, error) {
+	return agentruntime.AttachModelImage("screenshot 1440x900", "image/png", "iVBORw0KGgo="), true, nil
+}
+
+func TestCoreAgentCallbacksPassesRuntimeToolImagesToTheModel(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		runtimeToolInvoker: runtimeImageInvokerStub{},
+	}
+	result := cb.ExecuteToolCall("desktop", `{"action":"screenshot"}`, "call-1")
+	if result.Outcome != agent.ToolExecutionOutcomeOK || result.Result != "screenshot 1440x900" {
+		t.Fatalf("runtime tool result=%#v", result)
+	}
+	if len(result.ModelImages) != 1 || result.ModelImages[0].MIME != "image/png" || result.ModelImages[0].Base64 != "iVBORw0KGgo=" {
+		t.Fatalf("model images=%#v", result.ModelImages)
+	}
+}

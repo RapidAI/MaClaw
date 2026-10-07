@@ -16,6 +16,7 @@ import {
     mergeWelcomeStoredCodingEnv,
     normalizeWelcomeSshPassword,
     normalizeWelcomeSshPort,
+    recallRemoteSSHPassword,
     saveWelcomeCodingEnv,
     saveWelcomeFieldValues,
     saveWelcomePreviewOpen,
@@ -211,6 +212,8 @@ export function WelcomePromptParamDialog({
     const [selectingDir, setSelectingDir] = useState(false);
     const [saveNote, setSaveNote] = useState("");
     const firstFieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+    /** One keyring fill per host while the dialog is open, so clearing the field stays cleared. */
+    const remotePasswordRecallKeyRef = useRef("");
     const dialogRef = useRef<HTMLDivElement | null>(null);
     /** Prevent double primary-click from firing onSubmit twice. */
     const submitLockRef = useRef(false);
@@ -231,11 +234,12 @@ export function WelcomePromptParamDialog({
         setRemoteHost(saved.remote?.host || "");
         setRemotePort(String(saved.remote?.port || 22));
         setRemoteUser(saved.remote?.user || "");
-        setRemotePassword(saved.remote?.password || "");
+        // Diagnosis stays explicit even when this host was used for development.
+        setRemotePassword(isRemoteDiagnosis ? "" : (saved.remote?.password || ""));
         setRemoteWorkDir(saved.remote?.workDir || "");
         setEnvError("");
         setSelectingDir(false);
-    }, [initialCodingEnv]);
+    }, [initialCodingEnv, isRemoteDiagnosis]);
 
     useEffect(() => {
         if (!open) {
@@ -256,6 +260,36 @@ export function WelcomePromptParamDialog({
         }, 30);
         return () => window.clearTimeout(timer);
     }, [open, fields, template, taskKey, clipboardPrefill, clipboardPrefillLabel, resetCodingEnvFromMemory]);
+
+    // localStorage often loses the password. Fill it from the OS keyring when
+    // the form already knows which host it is reconnecting to. Diagnosis stays
+    // explicit and must not pick up a remembered development password.
+    useEffect(() => {
+        if (!open) {
+            remotePasswordRecallKeyRef.current = "";
+            return;
+        }
+        if (!isRemote || isRemoteDiagnosis) return;
+        const host = remoteHost.trim();
+        const user = remoteUser.trim();
+        if (!host || !user) return;
+        const recallKey = `${host}\n${user}\n${normalizeWelcomeSshPort(remotePort)}`;
+        if (remotePasswordRecallKeyRef.current === recallKey) return;
+        remotePasswordRecallKeyRef.current = recallKey;
+        const prefilled = remotePassword;
+        let cancelled = false;
+        void recallRemoteSSHPassword(host, user, normalizeWelcomeSshPort(remotePort)).then((pw) => {
+            if (cancelled || !pw) return;
+            setRemotePassword((current) => {
+                // A cleared field stays empty. An untouched memory prefill can
+                // still be replaced by the newer keyring password.
+                if (prefilled && !current) return current;
+                if (!current || current === prefilled) return pw;
+                return current;
+            });
+        });
+        return () => { cancelled = true; };
+    }, [open, isRemote, isRemoteDiagnosis, remoteHost, remoteUser, remotePort, remotePassword]);
 
     useEffect(() => {
         if (!open) return;

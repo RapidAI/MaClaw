@@ -30,6 +30,11 @@ enum {
     GATEWAY_CAPABILITY_VOLUME_CONTROL = 1u << 10,
     GATEWAY_CAPABILITY_BRIGHTNESS_CONTROL = 1u << 11,
     GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL = 1u << 12,
+    /* Structured event push (plan N1-2).  Mirrors the desktop/Hub
+     * `Features.eventPush` flag: without it the Hub refuses to fan an `event`
+     * reply out to this device, so a firmware that renders events but never
+     * declares them would receive none. */
+    GATEWAY_CAPABILITY_EVENT_PUSH = 1u << 13,
 };
 
 #define GATEWAY_CAPABILITY_KNOWN_MASK \
@@ -41,7 +46,8 @@ enum {
      GATEWAY_CAPABILITY_MEETING_RECORDER | \
      GATEWAY_CAPABILITY_VOLUME_CONTROL | \
      GATEWAY_CAPABILITY_BRIGHTNESS_CONTROL | \
-     GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL)
+     GATEWAY_CAPABILITY_SCREEN_SLEEP_CONTROL | \
+     GATEWAY_CAPABILITY_EVENT_PUSH)
 
 typedef enum {
     GATEWAY_CAPABILITY_HEALTH_UNKNOWN = 0,

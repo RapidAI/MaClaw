@@ -114,7 +114,7 @@ export function reasoningCodeBlockStyle(t: Theme): React.CSSProperties {
         ...fenceBox,
         background: t.bg,
         color: t.text,
-        border: `1px solid ${inkOnPaper(t, 28)}`,
+        border: `1px solid ${t.codeBlockBorder}`,
         borderRadius: "8px",
         padding: "8px 10px",
         margin: "6px 0",

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ type tokenBankRepoView interface {
 	ClaimGiftLink(ctx context.Context, code, claimerUserID, claimerEmail string, now time.Time) (*sqlite.TokenBankGiftLink, error)
 	RevokeGiftLink(ctx context.Context, linkID, senderUserID string, now time.Time) error
 	ExpireGiftLinks(ctx context.Context, now time.Time) (int, error)
-	ListGiftLinks(ctx context.Context, senderUserID, status string, limit int) ([]sqlite.TokenBankGiftLink, error)
+	ListGiftLinks(ctx context.Context, senderUserID, status string, limit, offset int) ([]sqlite.TokenBankGiftLink, error)
 	GiftLinkByCode(ctx context.Context, code string) (*sqlite.TokenBankGiftLink, error)
 	CountGiftLinksSince(ctx context.Context, senderUserID string, since time.Time) (int, error)
 	CountUserHubs(ctx context.Context, userID string) (int, error)
@@ -328,8 +329,24 @@ func (h *SkillMarketHandlers) TokenBankListWithdrawals(w http.ResponseWriter, r 
 			tbError(w, http.StatusInternalServerError, "list_failed", err.Error())
 			return
 		}
-		items = appendUnboundGiftWithdrawals(items, pending)
+		items = appendWithdrawalsByRequestID(items, pending)
 	}
+	// A debit taken on another node is in this ledger and not in this
+	// withdrawal table. Append it after the local rows so a gift that still
+	// needs its grant keeps the richer record when both name the same request.
+	if lister, ok := repo.(tokenBankOrphanWithdrawalLister); ok {
+		orphans, err := lister.ListOrphanWithdrawals(r.Context(), user.ID, hubID, limit)
+		if err != nil {
+			tbError(w, http.StatusInternalServerError, "list_failed", err.Error())
+			return
+		}
+		items = appendWithdrawalsByRequestID(items, orphans)
+	}
+	// The history page is newest-first. A gift debit fetched past that page
+	// is appended, so sort again before the client pages twenty rows.
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].Created.After(items[j].Created)
+	})
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		out = append(out, map[string]any{
@@ -342,6 +359,10 @@ func (h *SkillMarketHandlers) TokenBankListWithdrawals(w http.ResponseWriter, r 
 			"link_id":      item.LinkID,
 			"state":        item.Status,
 			"created_at":   item.Created.UTC().Format(time.RFC3339),
+			// tbk-auto: is the hub's automatic request id. A manual pull uses
+			// another id, so the history can name an automatic withdrawal
+			// without a second stored column.
+			"automatic": strings.HasPrefix(strings.TrimSpace(item.RequestID), "tbk-auto:"),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"withdrawals": out})
@@ -513,7 +534,7 @@ func (h *SkillMarketHandlers) TokenBankListGiftLinks(w http.ResponseWriter, r *h
 		return
 	}
 	limit := tokenBankListLimit(r)
-	links, err := repo.ListGiftLinks(r.Context(), user.ID, strings.TrimSpace(r.URL.Query().Get("status")), limit)
+	links, err := repo.ListGiftLinks(r.Context(), user.ID, strings.TrimSpace(r.URL.Query().Get("status")), limit, 0)
 	if err != nil {
 		tbError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
@@ -752,9 +773,17 @@ type tokenBankUnboundGiftWithdrawalLister interface {
 	ListUnboundGiftWithdrawals(ctx context.Context, userID, hubID string, limit int) ([]sqlite.TokenBankWithdrawal, error)
 }
 
-// appendUnboundGiftWithdrawals keeps a gift debit that the history page
-// already dropped. Rows already on the page stay where they are.
-func appendUnboundGiftWithdrawals(items, pending []sqlite.TokenBankWithdrawal) []sqlite.TokenBankWithdrawal {
+// tokenBankOrphanWithdrawalLister is optional. The ledger line for a pull is
+// replicated; the withdrawal row is not. History on this node still has to
+// name a debit the balance already includes.
+type tokenBankOrphanWithdrawalLister interface {
+	ListOrphanWithdrawals(ctx context.Context, userID, hubID string, limit int) ([]sqlite.TokenBankWithdrawal, error)
+}
+
+// appendWithdrawalsByRequestID keeps extra rows the history page dropped or
+// that live only in the replicated ledger. Rows already on the page stay
+// where they are.
+func appendWithdrawalsByRequestID(items, pending []sqlite.TokenBankWithdrawal) []sqlite.TokenBankWithdrawal {
 	if len(pending) == 0 {
 		return items
 	}

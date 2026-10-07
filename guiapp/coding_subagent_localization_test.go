@@ -877,6 +877,19 @@ func TestLocalizationResearchRejectsDuplicateAndGappedFetchPages(t *testing.T) {
 	}
 }
 
+func TestLocalizationWebFetchPaginationAcceptsFinishedPage(t *testing.T) {
+	result := "标题: docs\nURL: https://vendor.example/docs\n已读取: 0-10 / 10 字符\ntruncated: false | has_more: false | next_offset: 10\n\nbody"
+	offset, next, total, more, known := localizationWebFetchPagination("web_fetch", nil, result)
+	if !known || offset != 0 || next != 10 || total != 10 || more {
+		t.Fatalf("finished page = (%d,%d,%d,%t,%t)", offset, next, total, more, known)
+	}
+	last := "标题: docs\nURL: https://vendor.example/docs\n已读取: 100-300 / 300 字符\ntruncated: false | has_more: false | next_offset: 300\n\nbody"
+	offset, next, total, more, known = localizationWebFetchPagination("web_fetch", nil, last)
+	if !known || offset != 100 || next != 300 || total != 300 || more {
+		t.Fatalf("last page = (%d,%d,%d,%t,%t)", offset, next, total, more, known)
+	}
+}
+
 func TestLocalizationWebFetchPaginationAudit(t *testing.T) {
 	result := "标题: docs\nURL: https://vendor.example/docs\n已读取: 100-200 / 300 字符\ntruncated: true | has_more: true | next_offset: 200\n\nbody"
 	offset, next, total, more, known := localizationWebFetchPagination("web_fetch", map[string]interface{}{"offset": float64(100)}, result)

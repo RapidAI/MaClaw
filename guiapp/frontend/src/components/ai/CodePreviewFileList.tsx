@@ -1,10 +1,51 @@
 import { useEffect, useMemo, useState } from "react";
-import { getDisplayFilePaths, type CodeFile } from "./useCodePreviewState";
+import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, type CodeFile } from "./useCodePreviewState";
 import { formatCodeLanguageLabel } from "./codePreviewFindHelpers";
-import { extractFileName, type CodePreviewTheme } from "./FileTabBar";
+import { extractFileName, getOpTypeIndicator, type CodePreviewTheme } from "./FileTabBar";
 
 /** Rows listed before the "show more" expansion. */
 const FILE_LIST_PAGE_SIZE = 5;
+
+/**
+ * `NEW +12` / `MOD +4 -1` marker: the list doubles as a change overview so the
+ * user can spot which artifacts the agent actually touched.
+ */
+function FileChangeBadge({ file, theme }: { file: CodeFile | undefined; theme: CodePreviewTheme }) {
+    if (!file || file.opType === 'read') return null;
+    const delta = computeCodeFileLineDelta(file);
+    if (!codeFileLineDeltaHasChange(delta)) return null;
+    const isNew = file.opType === 'create' || file.original === undefined;
+    return (
+        <span
+            data-testid="code-preview-file-list-change"
+            data-change-kind={isNew ? 'add' : 'modify'}
+            style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                marginLeft: 'auto',
+                flexShrink: 0,
+                fontSize: 10,
+                fontWeight: 700,
+                fontVariantNumeric: 'tabular-nums',
+            }}
+        >
+            <span
+                style={{
+                    padding: '0 4px',
+                    borderRadius: 3,
+                    border: `1px solid ${isNew ? theme.diffAddText : theme.textMuted}`,
+                    color: isNew ? theme.diffAddText : theme.textMuted,
+                    lineHeight: '15px',
+                }}
+            >
+                {isNew ? 'NEW' : getOpTypeIndicator(file.opType)}
+            </span>
+            <span style={{ color: theme.diffAddText }}>+{delta.added}</span>
+            {delta.removed > 0 && <span style={{ color: theme.diffDeleteText }}>-{delta.removed}</span>}
+        </span>
+    );
+}
 
 export interface CodePreviewFileListButtonProps {
     files: Map<string, CodeFile>;
@@ -27,6 +68,19 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
     const [pinned, setPinned] = useState(false);
     const [showAll, setShowAll] = useState(false);
     const paths = useMemo(() => getDisplayFilePaths(files, pinnedPaths), [files, pinnedPaths]);
+    // Overview totals: how many lines the session added / removed in total.
+    const totals = useMemo(() => {
+        let added = 0;
+        let removed = 0;
+        for (const filePath of paths) {
+            const file = files.get(filePath);
+            if (!file || file.opType === 'read') continue;
+            const delta = computeCodeFileLineDelta(file);
+            added += delta.added;
+            removed += delta.removed;
+        }
+        return { added, removed };
+    }, [files, paths]);
 
     useEffect(() => {
         if (!open) return;
@@ -145,8 +199,26 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                                 ⌖
                             </button>
                         </div>
-                        <div style={{ padding: "2px 14px 6px", fontSize: 11, fontWeight: 600, color: theme.textMuted }}>
-                            {isZh ? `产物 (${paths.length})` : `Artifacts (${paths.length})`}
+                        <div
+                            data-testid="code-preview-file-list-totals"
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                padding: "2px 14px 6px",
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: theme.textMuted,
+                            }}
+                        >
+                            <span>{isZh ? `产物 (${paths.length})` : `Artifacts (${paths.length})`}</span>
+                            {(totals.added > 0 || totals.removed > 0) && (
+                                <span style={{ marginLeft: "auto", fontWeight: 700 }}>
+                                    <span style={{ color: theme.diffAddText }}>+{totals.added}</span>
+                                    {' '}
+                                    <span style={{ color: theme.diffDeleteText }}>-{totals.removed}</span>
+                                </span>
+                            )}
                         </div>
                         <div className="cpfl-list">
                             {visiblePaths.map(filePath => {
@@ -195,6 +267,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                                         <span className="cpfl-name">
                                             {extractFileName(filePath)}
                                         </span>
+                                        <FileChangeBadge file={file} theme={theme} />
                                     </button>
                                 );
                             })}

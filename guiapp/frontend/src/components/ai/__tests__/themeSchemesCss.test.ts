@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { AI_THEME_MODE_STORAGE_KEY } from "../aiAssistantPanelTheme";
-import { assistantDarkSchemes, graphiteDarkScheme, ASSISTANT_DARK_SCHEME_STORAGE_KEY } from "../assistantDarkSchemes";
+import { assistantDarkSchemes, onyxDarkScheme, ASSISTANT_DARK_SCHEME_STORAGE_KEY } from "../assistantDarkSchemes";
 import { assistantLightSchemes, DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, ASSISTANT_LIGHT_SCHEME_STORAGE_KEY } from "../assistantLightSchemes";
 import {
     BOOT_THEME_MODE_STORAGE_KEY,
@@ -71,11 +71,11 @@ describe("theme schemes CSS (generated)", () => {
         }
     });
 
-    it("base dark block matches graphite plus the dark shadow scale", () => {
+    it("base dark block matches onyx (default) plus the dark shadow scale", () => {
         const css = renderThemeSchemesCss();
         const vars = parseBlockVars(css, "[data-ai-theme='dark']");
         for (const [key, cssVar] of Object.entries(tokenToCssVar)) {
-            expect(vars[cssVar], `base ${cssVar}`).toBe(graphiteDarkScheme.cssVars[key as keyof typeof graphiteDarkScheme.cssVars]);
+            expect(vars[cssVar], `base ${cssVar}`).toBe(onyxDarkScheme.cssVars[key as keyof typeof onyxDarkScheme.cssVars]);
         }
         for (const shadow of ["--shadow-sm", "--shadow-md", "--shadow-lg", "--shadow-xl"]) {
             expect(vars[shadow], shadow).toBeTruthy();
@@ -106,7 +106,7 @@ describe("boot theme palette", () => {
         for (const scheme of assistantLightSchemes) {
             expect(palette.light[scheme.storageValue], scheme.id).toBe(scheme.cssVars.pageBg);
         }
-        expect(palette.defaultDark).toBe(graphiteDarkScheme.cssVars.pageBg);
+        expect(palette.defaultDark).toBe(onyxDarkScheme.cssVars.pageBg);
         expect(palette.defaultLight).toBe(
             assistantLightSchemes.find((s) => s.id === DEFAULT_ASSISTANT_LIGHT_SCHEME_ID)!.cssVars.pageBg,
         );

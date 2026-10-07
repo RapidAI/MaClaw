@@ -1175,6 +1175,28 @@ describe('CodePreviewWorkspace context menu', () => {
         expect(screen.getByTestId('code-preview-workspace-root-label').textContent).toBe('/remote/empty');
     });
 
+    it('hides the empty-directory status while a listing error is showing', async () => {
+        getDirectory.mockResolvedValueOnce({ root: '/home/znsoft/prj8', entries: [] });
+        const first = render(<CodePreviewWorkspace projectPath="remote-task" lang="zh-CN" theme={theme} onOpenFile={vi.fn()} />);
+        await screen.findByTestId('code-preview-workspace-empty');
+        first.unmount();
+
+        getDirectory.mockRejectedValueOnce(new Error('remote SSH command failed'));
+        render(<CodePreviewWorkspace projectPath="remote-task" lang="zh-CN" theme={theme} onOpenFile={vi.fn()} />);
+        const alert = await screen.findByRole('alert');
+        expect(alert.textContent).toContain('远程 SSH 命令失败');
+        expect(screen.queryByTestId('code-preview-workspace-empty')).toBeNull();
+    });
+
+    it('localizes remote path and session failures', () => {
+        expect(workspaceErrorMessage(new Error("[Errno 2] No such file or directory: '/home/znsoft/prj8'"), false, 'zh-CN')).toContain('路径不存在');
+        expect(workspaceErrorMessage(new Error('[Errno 13] Permission denied: \'/home/znsoft/prj8\''), false, 'zh-CN')).toContain('没有权限读取该路径');
+        expect(workspaceErrorMessage(new Error('ssh session spark is closed'), false, 'zh-CN')).toContain('远程 SSH 会话已断开');
+        expect(workspaceErrorMessage(new Error('SSH session not connected; re-attach remote coding with password'), false, 'en')).toContain('SSH session not connected');
+        expect(workspaceErrorMessage(new Error('ssh exec channel: command timed out after 15s'), false, 'zh-CN')).toContain('远程命令超时');
+        expect(workspaceErrorMessage(new Error('404 Not Found'), false, 'zh-CN')).toBe('404 Not Found');
+    });
+
     it('retries immediately after reconnect even if the old SSH directory request is still pending', async () => {
         let resolveOld: ((value: unknown) => void) | undefined;
         getDirectory

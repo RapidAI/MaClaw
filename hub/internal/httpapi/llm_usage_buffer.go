@@ -40,6 +40,9 @@ type pendingCreditCharge struct {
 	serviceGroupMultiplier float64
 	pricing                *llmpool.ResolvedTokenPricing
 	meta                   llmservice.OfficialForwardMeta
+	// deductedApplied is set only after flushCreditChargesDetailed has replaced
+	// credits with the durable grant debit.
+	deductedApplied bool
 }
 
 type llmUsageAccumulator struct {
@@ -69,16 +72,19 @@ func enqueueLLMUsageForUserID(system store.SystemSettingsRepository, providerID 
 }
 
 func enqueueLLMUsageRecord(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta) {
-	enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, "", 0, 0, 0, nil, nil)
+	_, _ = enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, "", 0, 0, 0, nil, nil)
 }
 
-func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing, reportServiceGroupIDs []string, billingProviderIDs ...string) {
+// enqueueLLMUsageRecordWithBilling applies the charge immediately and returns
+// the credits the flush actually deducted. settled is false when the debit was
+// not durable; callers must not display the requested quote in that case.
+func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing, reportServiceGroupIDs []string, billingProviderIDs ...string) (deducted float64, settled bool) {
 	if system == nil {
-		return
+		return 0, false
 	}
 	if isRemoteCodingToolUsageProviderID(providerID) {
 		log.Printf("[llm-usage] ignoring remote coding tool provider %q; remote tool tokens are session diagnostics, not Hub LLM usage", providerID)
-		return
+		return 0, false
 	}
 	// Empty responses (all directional and aggregate token counters zero) are
 	// not billable, even when an admission reservation or a legacy caller passed
@@ -132,7 +138,7 @@ func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, pro
 	}
 	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, requestID, breakdown)
 	if charge == nil {
-		return
+		return 0, false
 	}
 	charge.requestID = strings.TrimSpace(requestID)
 	charge.providerID = strings.TrimSpace(providerID)
@@ -156,9 +162,16 @@ func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, pro
 	if err != nil {
 		log.Printf("[llm-usage] immediate credit charge failed: %v", err)
 		globalLLMUsageAccumulator.requeue(system, &pendingSystemUsage{creditCharges: map[string]*pendingCreditCharge{chargeKey: charge}})
-		return
+		return 0, false
 	}
 	globalLLMUsageAccumulator.applySettledCreditAdjustment(system, charge)
+	// flushCreditChargesDetailed replaces charge.credits with the applied debit
+	// (or the existing ledger's DeductedCredits on replay) only after the
+	// registry save is durable. A skipped charge must not be reported as settled.
+	if !charge.deductedApplied {
+		return 0, false
+	}
+	return charge.credits, true
 }
 
 func settledUsageCreditBreakdown(usage corelib.TokenUsageStat, credits, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing) *llmUsageCreditBreakdown {
@@ -687,6 +700,7 @@ func flushCreditChargesDetailed(ctx context.Context, system store.SystemSettings
 	for key, credits := range settledCredits {
 		if charge := chargeMap[key]; charge != nil {
 			charge.credits = credits
+			charge.deductedApplied = true
 		}
 	}
 	// The registry remains the balance authority during migration. Write the

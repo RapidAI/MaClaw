@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,6 +96,11 @@ func DiscoverTargetsContext(ctx context.Context, cdpHTTP string) ([]TargetInfo, 
 	if err != nil {
 		return nil, fmt.Errorf("discover targets: %w", err)
 	}
+	// The desktop gate token travels as URL userinfo. Set the Bearer header
+	// explicitly so the gate accepts the discovery request.
+	if bearer := bearerFromEndpoint(cdpHTTP); bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("discover targets: %w", err)
@@ -111,7 +117,49 @@ func DiscoverTargetsContext(ctx context.Context, cdpHTTP string) ([]TargetInfo, 
 	if err := json.Unmarshal(body, &targets); err != nil {
 		return nil, fmt.Errorf("parse targets: %w body_len=%d", err, len(body))
 	}
+	for i := range targets {
+		targets[i].WebSocketDebugURL = cdpSocketOnEndpoint(cdpHTTP, targets[i].WebSocketDebugURL)
+	}
 	return targets, nil
+}
+
+// cdpSocketOnEndpoint points Chrome's debugger socket at the address we
+// actually reached. Inside the desktop container Chrome advertises
+// 127.0.0.1. Dialing that address opens a different browser, and the website
+// login stays in the one the person just used. The desktop gate token in the
+// endpoint's userinfo is carried over so the WebSocket dial passes the gate.
+func cdpSocketOnEndpoint(cdpHTTP, wsURL string) string {
+	wsURL = strings.TrimSpace(wsURL)
+	if wsURL == "" {
+		return ""
+	}
+	base, err := url.Parse(strings.TrimSpace(cdpHTTP))
+	if err != nil || base.Host == "" {
+		return wsURL
+	}
+	parsed, err := url.Parse(wsURL)
+	if err != nil || parsed.Host == "" || parsed.Path == "" {
+		return wsURL
+	}
+	switch strings.ToLower(base.Scheme) {
+	case "https", "wss":
+		parsed.Scheme = "wss"
+	default:
+		parsed.Scheme = "ws"
+	}
+	parsed.Host = base.Host
+	parsed.User = base.User
+	return parsed.String()
+}
+
+// bearerFromEndpoint extracts the gate token stored as URL userinfo.
+func bearerFromEndpoint(endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.User == nil {
+		return ""
+	}
+	password, _ := parsed.User.Password()
+	return password
 }
 
 // TargetInfo describes a browser target (page, worker, etc.).
@@ -129,10 +177,19 @@ var cdpEventBufferSize = 256
 
 // ConnectCDP connects to a CDP WebSocket endpoint.
 func ConnectCDP(wsURL string) (*CDPClient, error) {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+	return connectCDP(wsURL, 10*time.Second)
+}
+
+func connectCDP(wsURL string, handshake time.Duration) (*CDPClient, error) {
+	if handshake <= 0 {
+		handshake = 10 * time.Second
 	}
-	conn, _, err := dialer.Dial(wsURL, nil)
+	dialer := websocket.Dialer{HandshakeTimeout: handshake}
+	headers := http.Header{}
+	if bearer := bearerFromEndpoint(wsURL); bearer != "" {
+		headers.Set("Authorization", "Bearer "+bearer)
+	}
+	conn, _, err := dialer.Dial(wsURL, headers)
 	if err != nil {
 		return nil, fmt.Errorf("cdp dial: %w", err)
 	}

@@ -81,6 +81,13 @@ func BaselineWorkspaceLabels() []intent.IntentLabel {
 const baselineWorkspaceEvidence = "intent:baseline_workspace"
 const archetypeBundleEvidence = "intent:archetype_bundle"
 
+// localFileWriteRepeatFloor is how many fs.write.local nodes a turn that is
+// itself editing a file publishes up front. It is the same floor the baseline
+// bundle already uses. It is not a usage cap: a later call can still append a
+// sibling. A one-shot file_write rule, or a slim document turn that skips the
+// rest of the baseline bundle, would otherwise leave a single node.
+const localFileWriteRepeatFloor = 8
+
 // ExpandArchetypeBundleNeeds adds optional companion needs for the turn's
 // archetype. Delivery legs are never offered here: they stay on the producing
 // label's own rule and unlock through the plan DAG.
@@ -113,7 +120,11 @@ func ExpandBaselineWorkspaceNeeds(registry *coretool.CapabilityRegistry, rules m
 				if template.MaxInvocations < 12 {
 					template.MaxInvocations = 12
 				}
-			case coretool.CapabilityFSWriteLocal, coretool.CapabilityShellExecuteLocal:
+			case coretool.CapabilityFSWriteLocal:
+				if template.MaxInvocations < localFileWriteRepeatFloor {
+					template.MaxInvocations = localFileWriteRepeatFloor
+				}
+			case coretool.CapabilityShellExecuteLocal:
 				if template.MaxInvocations < 8 {
 					template.MaxInvocations = 8
 				}
@@ -128,6 +139,44 @@ func ExpandBaselineWorkspaceNeeds(registry *coretool.CapabilityRegistry, rules m
 		intent.LabelFileRead: templates,
 	}
 	return expandCompanionLabelNeeds(registry, synthetic, result, managed, needs, []intent.IntentLabel{intent.LabelFileRead}, baselineWorkspaceEvidence, "")
+}
+
+// RaiseExistingLocalFileWriteFloor extends an fs.write.local family the turn
+// already declared up to localFileWriteRepeatFloor. It does not add a read,
+// a shell, or a second write family. A slim document continuation keeps only
+// the file it is editing; that file is still iterative. Production 2026-10-04
+// planned one write for "继续" on a bibliography and then told the model
+// write_file had reached this turn's usage limit.
+func RaiseExistingLocalFileWriteFloor(needs []coretool.CapabilityNeed, confidence float64) []coretool.CapabilityNeed {
+	if len(needs) == 0 {
+		return needs
+	}
+	start, count := -1, 0
+	ambiguous := false
+	for index, need := range needs {
+		if need.Capability != coretool.CapabilityFSWriteLocal {
+			continue
+		}
+		if start < 0 {
+			start = index
+			count = 1
+			continue
+		}
+		if coretool.RepeatFamilyID(needs[start].ID) != coretool.RepeatFamilyID(need.ID) {
+			ambiguous = true
+		}
+		count++
+	}
+	if start < 0 || ambiguous || count >= localFileWriteRepeatFloor {
+		return needs
+	}
+	extra := coretool.ExtendRepeatFamily(needs[start], count, localFileWriteRepeatFloor, confidence, needs[start].EvidenceIDs)
+	if len(extra) == 0 {
+		return needs
+	}
+	out := make([]coretool.CapabilityNeed, len(needs), len(needs)+len(extra))
+	copy(out, needs)
+	return append(out, extra...)
 }
 
 func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed, companions []intent.IntentLabel, evidence string, bundleKey intent.IntentLabel) []coretool.CapabilityNeed {
@@ -189,7 +238,7 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			if evidence == archetypeBundleEvidence && addedArchetypeFamilies >= maxArchetypeCompanionFamilies {
 				continue
 			}
-					idPrefix := "need:"
+			idPrefix := "need:"
 			if evidence == baselineWorkspaceEvidence {
 				idPrefix = "need:zz-baseline:"
 			}

@@ -85,6 +85,10 @@ type IMAgentResponse struct {
 	RequestID       string `json:"request_id,omitempty"`
 	SessionKey      string `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
 	EventScopeID    string `json:"event_scope_id,omitempty"`
+	// DesktopHandoffURL is the noVNC page for this user's cloud desktop.
+	DesktopHandoffURL string `json:"desktop_handoff_url,omitempty"`
+	// DesktopUserControl is true when the bot paused and the person operates the desktop.
+	DesktopUserControl bool `json:"desktop_user_control,omitempty"`
 	// CodingRuntimeTaskID / CodingRuntimeAttemptID are opaque ledger references
 	// for hosts such as ACP. They are projection metadata only: clients cannot
 	// use them to replay a prior model or tool invocation.
@@ -104,6 +108,9 @@ type IMAgentResponse struct {
 	CacheWriteTokens       int    `json:"cache_write_tokens,omitempty"`
 	// EstCostRMB is a local default-price estimate for this turn (optional).
 	EstCostRMB float64 `json:"est_cost_rmb,omitempty"`
+	// CreditsDeducted is the Maclaw official grant debit for this turn.
+	// Nil means the turn did not use that provider or settlement was not durable.
+	CreditsDeducted *float64 `json:"credits_deducted,omitempty"`
 	// PromptProfile is the adaptive system-prompt thickness (full|light).
 	PromptProfile string `json:"prompt_profile,omitempty"`
 	// PromptFullTokens / PromptLightTokens are dual-build estimates when light.

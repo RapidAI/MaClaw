@@ -2,6 +2,7 @@ import {
     CancelGitHubCopilotOAuth,
     CancelKimiCodeOAuth,
     CancelOpenAIOAuth,
+    CancelQoderOAuth,
     CancelWorkBuddyOAuth,
     CancelXAIOAuth,
     CompleteAnthropicOAuth,
@@ -9,15 +10,23 @@ import {
     StartGitHubCopilotOAuth,
     StartKimiCodeOAuth,
     StartOpenAIOAuth,
+    StartQoderOAuth,
     StartWorkBuddyOAuth,
     StartXAIOAuth,
     WaitGitHubCopilotOAuth,
     WaitKimiCodeOAuth,
+    WaitQoderOAuth,
 } from "../../../wailsjs/go/main/App";
 import { copyKimiCodeUserCode } from "./LLMConfigOAuthFields";
-import { isKimiCodeProvider, isWorkBuddyProvider } from "./providerLogos";
+import { isKimiCodeProvider, isQoderProvider, isWorkBuddyProvider } from "./providerLogos";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
+
+/** Edition sent to StartQoderOAuth for the 国内/国际 pair. */
+export function qoderEdition(providerName?: string): string | null {
+    if (!isQoderProvider(providerName)) return null;
+    return providerName === "Qoder 国际版" ? "global" : "cn";
+}
 
 export function cancelNamedProviderOAuth(providerName?: string) {
     if (providerName === "GitHub Copilot") {
@@ -36,6 +45,10 @@ export function cancelNamedProviderOAuth(providerName?: string) {
         void CancelKimiCodeOAuth();
         return;
     }
+    if (isQoderProvider(providerName)) {
+        void CancelQoderOAuth();
+        return;
+    }
     CancelOpenAIOAuth();
 }
 
@@ -44,6 +57,7 @@ export function cancelAllNativeOAuth() {
     void CancelXAIOAuth();
     void CancelWorkBuddyOAuth();
     void CancelKimiCodeOAuth();
+    void CancelQoderOAuth();
 }
 
 export function oauthBrowserHelp(name: string, t: Translate): string {
@@ -56,6 +70,9 @@ export function oauthBrowserHelp(name: string, t: Translate): string {
     if (isKimiCodeProvider(name)) {
         return t("Click below to authorize with your Kimi Code account in the browser.", "点击下方按钮，将在浏览器中完成 Kimi Code 账号授权。");
     }
+    if (isQoderProvider(name)) {
+        return t("Click below to authorize with your Qoder account in the browser. After you approve, MaClaw finishes automatically.", "点击下方按钮，将在浏览器中打开 Qoder 授权页。登录并允许后这里会自动完成，无需复制验证码。");
+    }
     return t("Click below to authorize with your OpenAI account in the browser.", "点击下方按钮，将在浏览器中完成 OpenAI 账号授权。");
 }
 
@@ -63,6 +80,7 @@ export function oauthSignInLabel(name: string, t: Translate): string {
     if (name === "xAI-Grok") return t("Sign in with xAI", "使用 xAI 账号登录");
     if (isWorkBuddyProvider(name)) return t("Sign in with WorkBuddy", "使用 WorkBuddy 账号登录");
     if (isKimiCodeProvider(name)) return t("Sign in with Kimi Code", "使用 Kimi Code 账号登录");
+    if (isQoderProvider(name)) return t("Sign in with Qoder", "使用 Qoder 账号登录");
     return t("Sign in with OpenAI", "使用 OpenAI 账号登录");
 }
 
@@ -84,6 +102,23 @@ export async function promptKimiCodeDeviceLogin(t: Translate, onHint: (hint: str
         : t("The browser did not open. Open this page:", "浏览器未能自动打开，请打开此页面：");
     onHint(`${opened}\n${manualURL}\n${t("Code", "验证码")}: ${deviceInfo.user_code}${copied ? `\n${t("The code is on the clipboard.", "验证码已复制。")}` : ""}`);
     return WaitKimiCodeOAuth();
+}
+
+/**
+ * Runs the Qoder browser device login. The approval page opens on its own;
+ * the hint carries the URL for when the browser could not be opened. Resolves
+ * with the login message once WaitQoderOAuth completes.
+ */
+export async function promptQoderBrowserLogin(providerName: string, t: Translate, onHint: (hint: string) => void): Promise<string> {
+    const edition = qoderEdition(providerName);
+    if (!edition) throw new Error(t("Unknown Qoder edition", "未知的 Qoder 版本"));
+    const info = await StartQoderOAuth(edition);
+    const manualURL = info.auth_url || "";
+    const opened = info.browser_opened
+        ? t("The browser is open. Confirm the Qoder login.", "已打开浏览器，请确认 Qoder 登录。")
+        : t("The browser did not open. Open this page:", "浏览器未能自动打开，请打开此页面：");
+    onHint(`${opened}\n${manualURL}`);
+    return WaitQoderOAuth();
 }
 
 type OAuthTestResult = { ok: boolean; msg: string; retryable?: boolean };
@@ -150,6 +185,9 @@ export async function runProviderOAuthLogin(options: {
     }
     if (isKimiCodeProvider(providerName)) {
         return promptKimiCodeDeviceLogin(t, onDeviceHint);
+    }
+    if (isQoderProvider(providerName)) {
+        return promptQoderBrowserLogin(providerName, t, onDeviceHint);
     }
     return StartOpenAIOAuth();
 }

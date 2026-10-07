@@ -11,5 +11,6 @@ func isIsolatedAssistantSessionUserID(userID string) bool {
 	return isLansengerGroupConversationUserID(userID) ||
 		isProjectTabUserID(userID) ||
 		isACPAssistantSessionUserID(userID) ||
+		isPetCompanionUser(userID) ||
 		expertIDFromUserID(userID) != ""
 }

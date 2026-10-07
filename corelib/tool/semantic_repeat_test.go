@@ -256,6 +256,46 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	if _, _, opened := AppendRepeatSibling(oneShot, "selection:once"); opened {
 		t.Fatal("a one-shot tool opened another invocation")
 	}
+	writeBase := "need:fs.write.local:abc123def456"
+	singleWrite := ToolPlan{Selections: []PlannedSelection{{
+		ID:       "selection:" + writeBase,
+		NeedID:   writeBase,
+		FitProof: FitProof{MatchedCapability: CapabilityFSWriteLocal},
+	}}}
+	extendedWrite, writeID, openedWrite := AppendRepeatSibling(singleWrite, singleWrite.Selections[0].ID)
+	if !openedWrite {
+		t.Fatal("a single local file write must extend when the model asks again")
+	}
+	if len(extendedWrite.Selections) != 2 || !strings.Contains(writeID, "#02") {
+		t.Fatalf("extended write id=%q selections=%d", writeID, len(extendedWrite.Selections))
+	}
+	capped := ToolPlan{}
+	for index := 0; index < MaxRepeatFamilyInvocations; index++ {
+		needID := RepeatSiblingNeedID(writeBase, index)
+		capped.Selections = append(capped.Selections, PlannedSelection{
+			ID:       "selection:" + needID,
+			NeedID:   needID,
+			FitProof: FitProof{MatchedCapability: CapabilityFSWriteLocal},
+		})
+	}
+	if _, _, openedCap := AppendRepeatSibling(capped, capped.Selections[0].ID); openedCap {
+		t.Fatal("file write extended past the turn cap")
+	}
+	mismatched := ToolPlan{Selections: []PlannedSelection{{
+		ID:       "selection:" + writeBase,
+		NeedID:   writeBase,
+		FitProof: FitProof{MatchedCapability: CapabilityFSReadLocal},
+	}}}
+	if _, _, openedMismatch := AppendRepeatSibling(mismatched, mismatched.Selections[0].ID); openedMismatch {
+		t.Fatal("a read proof must not extend because its id mentions fs.write.local")
+	}
+	unproven := ToolPlan{Selections: []PlannedSelection{{
+		ID:     "selection:" + writeBase,
+		NeedID: writeBase,
+	}}}
+	if _, _, openedUnproven := AppendRepeatSibling(unproven, unproven.Selections[0].ID); !openedUnproven {
+		t.Fatal("a file-write need with no fit proof must still extend")
+	}
 	file := ArtifactContract{Kind: "file", MIMEType: "application/octet-stream", Required: true}
 	withEdge := ToolPlan{Selections: []PlannedSelection{
 		{ID: "selection:" + base, NeedID: base, AdapterName: "download_file", Produces: []ArtifactContract{file}},

@@ -161,12 +161,11 @@ func legacyAdapterCandidateAllowed(name string, now time.Time) bool {
 	return legacyAdapterFallbackAllowed(name, now)
 }
 
-// IsLegacyModelDynamicGateway reports host-implemented transport functions
-// whose model arguments select a mutable provider/resource identity. They are
-// intentionally not legacy model capabilities: a caller must use the managed
-// semantic catalog, where the binding and contract are observed and frozen
-// outside model arguments. Host-controlled entrypoints may still invoke the
-// registered implementation directly.
+// IsLegacyModelDynamicGateway reports names retrieval ranking must not spend
+// a slot on. call_mcp_tool is also omitted from the host catalog, because its
+// arguments select the provider. manage_skill stays in the catalog and is
+// pinned onto full surfaces: the model names an installed local skill, and
+// the desktop executor binds that name to the local skill registry.
 func IsLegacyModelDynamicGateway(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "call_mcp_tool", "manage_skill":
@@ -174,6 +173,13 @@ func IsLegacyModelDynamicGateway(name string) bool {
 	default:
 		return false
 	}
+}
+
+// omittedFromHostToolCatalog is the provider-picking gateway. manage_skill is
+// a dynamic gateway for retrieval ranking, but its definition stays in the
+// host catalog: a full surface pins it as the local skill runtime.
+func omittedFromHostToolCatalog(name string) bool {
+	return strings.TrimSpace(name) == "call_mcp_tool"
 }
 
 // LegacyAdapterCatalogIncomplete reports that a name has no live reviewed
@@ -250,6 +256,12 @@ var legacyAdapterProvisions = mustLegacyAdapterProvisions([]LegacyAdapterProvisi
 	{ToolName: "get_session_output", Capability: "session.output.read", Owner: "agent-runtime", AdapterContract: "legacy-session-output-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "get_session_events", Capability: "session.events.read", Owner: "agent-runtime", AdapterContract: "legacy-session-events-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "bash", Capability: "workspace.command.run", Owner: "coding-runtime", AdapterContract: "legacy-workspace-command-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	// manage_skill is the host-bound local skill runtime. The model names an
+	// installed skill; it does not pick a provider or endpoint. That is the
+	// same shape as bash naming a command, so a full surface can keep it as
+	// an execution baseline. call_mcp_tool stays unprovisioned: its arguments
+	// select the provider.
+	{ToolName: "manage_skill", Capability: "skill.run.local", Owner: "skill-platform", AdapterContract: "legacy-skill-run-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "read_file", Capability: "workspace.file.read", Owner: "coding-runtime", AdapterContract: "legacy-workspace-read-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "read_tool_result", Capability: "tool-result.read", Owner: "agent-runtime", AdapterContract: "legacy-tool-result-read-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "FileRead", Capability: "workspace.file.read", Owner: "coding-runtime", AdapterContract: "legacy-workspace-fileread-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},

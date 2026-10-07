@@ -4077,6 +4077,29 @@ describe('useAIAssistant property tests', () => {
         ]);
     });
 
+    it('appends settled official credits to the synthesized turn chip', async () => {
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: [],
+            actions: null,
+            input_tokens: 1000,
+            output_tokens: 804,
+            credits_deducted: 1.25,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show deducted credits');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Turn', value: 'in=1.0k out=804 · credits=1.25' },
+        ]);
+    });
+
     it('hides internal cost fields from the assistant response chips', async () => {
         mockSendResponse = {
             text: 'done',

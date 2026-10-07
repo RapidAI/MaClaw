@@ -348,6 +348,12 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 						// implementation was already satisfied. Record only its digest;
 						// never persist the model explanation or raw tool output.
 						_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "final_workspace_no_change_accepted", strings.TrimSpace(result.NoWorkspaceChangeEvidenceDigest), r.now())
+					} else if digest, ok := hostFileActivityEvidence(result); ok {
+						// git status does not change when an already-untracked file is
+						// edited, and the host forbids an unsolicited commit. The
+						// adapter's file-activity digest is the write evidence. Do not
+						// turn that into a confirmation the user cannot answer.
+						_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "final_workspace_file_activity_accepted", digest, r.now())
 					} else if strings.TrimSpace(result.NoWorkspaceChangeEvidenceDigest) != "" {
 						result.Status = TaskBlocked
 						result.SideEffectState = SideEffectObserved
@@ -420,6 +426,21 @@ func (r Runner) blockBeforeExecution(created *Task, attempt *Attempt, code, summ
 		return created, finished, err
 	}
 	return updated, finished, nil
+}
+
+// hostFileActivityEvidence is the adapter's record that this attempt wrote
+// or created files. Porcelain status cannot see a content edit inside a file
+// that was already untracked, so that digest is the change evidence.
+func hostFileActivityEvidence(result ExecutionResult) (string, bool) {
+	for _, evidence := range result.Evidence {
+		switch strings.TrimSpace(evidence.Type) {
+		case "file_activity", "remote_file_activity":
+			if digest := strings.TrimSpace(evidence.Digest); digest != "" {
+				return digest, true
+			}
+		}
+	}
+	return "", false
 }
 
 // noChangeEvidenceAccepted checks the paired host-quality assertion required

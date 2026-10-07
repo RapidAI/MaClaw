@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -1054,6 +1055,20 @@ func (s *coreDynamicSemanticSurface) Execute(ctx context.Context, principal Prin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// The admission path below already validates the signature. Check the
+	// wall clock first so a grant that is still inside its window does not
+	// pay that HMAC twice. A window that has passed still classifies the
+	// error: only invocation_grant_expired is renewed.
+	if ctx.Err() == nil && s.routing.Issuer != nil && dynamicGrantWindowPassed(grant.ExpiresAt) {
+		if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, dynamicGrantValidateScope(s.scope, grant.Scope), s.plan, s.withTrustedFacts(s.completed)); err != nil && err.Error() == "invocation_grant_expired" {
+			renewed, renewErr := s.renewExpiredLiveGrant(functionName, grant)
+			if renewErr != nil {
+				log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+				return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
+			}
+			grant = renewed
+		}
+	}
 	selection, ok := dynamicSemanticSelectionByID(s.plan, grant.SelectionID)
 	if !ok {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] invocation_grant_selection_not_found", ReasonCode: "invocation_grant_selection_not_found"}, true
@@ -1082,7 +1097,7 @@ func (s *coreDynamicSemanticSurface) Execute(ctx context.Context, principal Prin
 	if _, err := s.hostCalls.MarkAdmitted(identity, fingerprint, requestDigest, time.Now().UTC()); err != nil {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
 	}
-	result, selected, err := s.executor.Execute(grant, s.scope, s.plan, s.trustedFacts, func(selected coretool.PlannedSelection) coretool.SelectionExecutionResult {
+	result, selected, err := s.executor.Execute(grant, dynamicGrantValidateScope(s.scope, grant.Scope), s.plan, s.trustedFacts, func(selected coretool.PlannedSelection) coretool.SelectionExecutionResult {
 		return s.catalog.ExecuteSelectionWithEffects(ctx, s.scope, principal, mcpProvider, skillProvider, s.routing.EffectCoordinator, selected, argsJSON)
 	})
 	if err != nil {
@@ -1125,7 +1140,7 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 	}
 	if canonicalErr != nil {
 		result := "[system rejected] parameter_schema_invalid"
-		if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, s.scope, s.plan, s.withTrustedFacts(s.completed)); err != nil {
+		if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, dynamicGrantValidateScope(s.scope, grant.Scope), s.plan, s.withTrustedFacts(s.completed)); err != nil {
 			return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
 		}
 		admission := coretool.SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: requestDigest, Scope: s.scope, Selection: selection, Now: time.Now().UTC()}
@@ -1143,7 +1158,7 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 		}
 		return coretool.SelectionExecutionResult{Result: result, ReasonCode: "parameter_schema_invalid"}, true
 	}
-	if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, s.scope, s.plan, s.withTrustedFacts(s.completed)); err != nil {
+	if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, dynamicGrantValidateScope(s.scope, grant.Scope), s.plan, s.withTrustedFacts(s.completed)); err != nil {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
 	}
 	admission := coretool.SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: canonical.Digest, Scope: s.scope, Selection: selection, Now: time.Now().UTC()}
@@ -1225,6 +1240,78 @@ func (s *coreDynamicSemanticSurface) retireGrant(grant coretool.InvocationGrant)
 		_, err := s.routeState.RetireMaterialization(s.scope, s.plan.ID, grant.Token, time.Now().UTC())
 		return err
 	})
+}
+
+// dynamicGrantWindowPassed reports that the wall clock is at or past the
+// signed expiry. A zero expiry is left to the admission validator.
+func dynamicGrantWindowPassed(expiresAt time.Time) bool {
+	expiresAt = expiresAt.UTC()
+	return !expiresAt.IsZero() && !time.Now().UTC().Before(expiresAt)
+}
+
+// dynamicGrantValidateScope checks a signed grant against the scope it was
+// signed for when that scope is the same turn as the host. The signature
+// check still has to succeed. A different turn keeps the host scope.
+func dynamicGrantValidateScope(host, signed coretool.InvocationScope) coretool.InvocationScope {
+	if coretool.InvocationScopesCompatible(host, signed) {
+		return signed
+	}
+	return host
+}
+
+// renewExpiredLiveGrant replaces the live map's unconsumed grant after its
+// signed window passes. The successor is consumed by this same call. A grant
+// that lives only in retiredGrants is not renewed.
+func (s *coreDynamicSemanticSurface) renewExpiredLiveGrant(name string, previous coretool.InvocationGrant) (coretool.InvocationGrant, error) {
+	if s == nil || s.routing.Issuer == nil {
+		return coretool.InvocationGrant{}, fmt.Errorf("invocation_grant_expired")
+	}
+	live, ok := s.grants[name]
+	if !ok || live.Nonce != previous.Nonce || live.Token != previous.Token {
+		return coretool.InvocationGrant{}, fmt.Errorf("invocation_grant_not_live")
+	}
+	if s.completed[previous.SelectionID] {
+		return coretool.InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	now := time.Now().UTC()
+	ttl := coretool.NormalizeGrantTTL(s.routing.GrantTTL)
+	satisfied := s.withTrustedFacts(s.completed)
+	var successor coretool.InvocationGrant
+	var err error
+	if s.routing.Coordinator != nil {
+		successor, err = s.routing.Coordinator.CommitExpiredRenewal(s.routing.Issuer, s.scope, previous, ttl, now, satisfied)
+	} else {
+		successor, err = s.routing.Issuer.RenewExpired(previous, s.scope, s.plan, ttl, now, satisfied)
+		if err == nil && s.routeState != nil {
+			if _, retireErr := s.routeState.RetireMaterialization(s.scope, s.plan.ID, previous.Token, now); retireErr != nil {
+				log.Printf("[semantic-routing] retire expired materialization for %s selection %s: %v", name, previous.SelectionID, retireErr)
+			}
+			if _, recordErr := s.routeState.RecordMaterialization(s.scope, s.plan.ID, coretool.RouteMaterialization{
+				FunctionName: successor.Token, Grant: successor, State: coretool.RouteMaterializationExposed,
+			}, now); recordErr != nil {
+				log.Printf("[semantic-routing] record renewed materialization for %s selection %s: %v", name, previous.SelectionID, recordErr)
+			}
+		}
+	}
+	if err != nil {
+		return coretool.InvocationGrant{}, err
+	}
+	if !coretool.InvocationScopesCompatible(s.scope, successor.Scope) {
+		return coretool.InvocationGrant{}, fmt.Errorf("invocation_grant_scope_mismatch")
+	}
+	if err := coretool.InstallRenewedGrant(s.grants, name, previous, successor); err != nil {
+		return coretool.InvocationGrant{}, err
+	}
+	if _, err := s.routing.Issuer.ValidateWithCanonicalScope(successor, successor.Scope, s.plan, satisfied); err != nil {
+		return coretool.InvocationGrant{}, err
+	}
+	// A stable model name does not change the tool list. Token-named dynamic
+	// tools must be rendered again under the successor token.
+	if coretool.RenderedSemanticFunctionName(successor.AdapterName, successor.Token) != name {
+		s.refreshPending = true
+	}
+	log.Printf("[semantic-routing] renewed unconsumed grant for tool %s selection %s", name, previous.SelectionID)
+	return successor, nil
 }
 
 // retireAfterAttempt requests a new host surface even when the provider or

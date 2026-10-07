@@ -587,6 +587,313 @@ func TestExpireStaleInFlightPreservesPendingSlot(t *testing.T) {
 	}
 }
 
+func TestCompleteInFlightCheckpointForRunRetiresSameRunLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "chat")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun("user", "chat"); err != nil {
+		t.Fatalf("CompleteInFlightCheckpointForRun() error = %v", err)
+	}
+	if slot := cm.GetUnfinishedSlot("user"); slot != nil {
+		t.Fatalf("finished run left its lease slot: %#v", slot)
+	}
+}
+
+func TestCompleteInFlightCheckpointForRunKeepsOtherRunMarkerWhenRetiringLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "chat")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	cm.SetInFlightTaskForRun("user", "newer task", "/latex", "run-new")
+	if err := cm.CompleteInFlightCheckpointForRun("user", "chat"); err != nil {
+		t.Fatalf("CompleteInFlightCheckpointForRun() error = %v", err)
+	}
+	if slot := cm.GetUnfinishedSlot("user"); slot != nil {
+		t.Fatalf("finished run left its lease slot: %#v", slot)
+	}
+	task, projectPath := cm.ConsumeInFlightTask("user")
+	if task != "newer task" || projectPath != "/latex" {
+		t.Fatalf("completion cleared a newer run: task=%q project=%q", task, projectPath)
+	}
+}
+
+func TestPersistInFlightCheckpointSupersedesSameRunLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "chat")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	err := cm.PersistInFlightCheckpoint(
+		"user",
+		[]ConversationEntry{{Role: "user", Content: "继续"}},
+		"继续", "/latex", "chat",
+		InFlightCheckpoint{Sequence: 2, LastToolName: "write_file", SideEffectState: "local_committed"},
+	)
+	if err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	if slot := cm.GetUnfinishedSlot("user"); slot != nil {
+		t.Fatalf("live run did not supersede its own lease slot: %#v", slot)
+	}
+	task, _ := cm.ConsumeInFlightTask("user")
+	if task != "继续" {
+		t.Fatalf("marker = %q, want the continuing run", task)
+	}
+}
+
+func TestPersistInFlightCheckpointKeepsExternalSendEvidenceFromLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "发到微信", "/latex", "run-send")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightLastTool = "im_message"
+	sh.sessions["user"].inFlightSideEffect = "external_uncertain"
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	err := cm.PersistInFlightCheckpoint(
+		"user",
+		[]ConversationEntry{{Role: "user", Content: "发到微信"}},
+		"发到微信", "/latex", "run-send",
+		InFlightCheckpoint{Sequence: 2, LastToolName: "read_file", SideEffectState: "none"},
+	)
+	if err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	if slot := cm.GetUnfinishedSlot("user"); slot != nil {
+		t.Fatalf("continuing run left the lease slot: %#v", slot)
+	}
+	recovered := cm.ConsumeInFlightRecovery("user")
+	if recovered.LastToolName != "im_message" || recovered.SideEffectState != "external_uncertain" {
+		t.Fatalf("lease slot evidence was replaced: %#v", recovered)
+	}
+}
+
+func TestPersistInFlightCheckpointKeepsOtherRunLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "older task", "/latex", "run-old")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	err := cm.PersistInFlightCheckpoint(
+		"user",
+		[]ConversationEntry{{Role: "user", Content: "new task"}},
+		"new task", "/latex", "run-new",
+		InFlightCheckpoint{Sequence: 1, LastToolName: "write_file", SideEffectState: "local_committed"},
+	)
+	if err == nil {
+		t.Fatal("a different run's lease slot must still block a new checkpoint")
+	}
+	slot := cm.GetUnfinishedSlot("user")
+	if slot == nil || slot.LastTask != "older task" {
+		t.Fatalf("other run's lease slot = %#v", slot)
+	}
+	if task, _ := cm.ConsumeInFlightTask("user"); task != "" {
+		t.Fatalf("blocked checkpoint still wrote a marker: %q", task)
+	}
+}
+
+func TestRefreshInFlightTaskForRunDoesNotExtendAnotherRun(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "chat")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskRenewInterval - time.Second)
+	sh.mu.Unlock()
+
+	if cm.RefreshInFlightTaskForRun("user", "other-run") {
+		t.Fatal("refresh extended a run that does not own the marker")
+	}
+	if !cm.RefreshInFlightTaskForRun("user", "chat") {
+		t.Fatal("refresh missed the owning run")
+	}
+	if expired := cm.ExpireStaleInFlightTasks(now.Add(InFlightTaskLease/2), InFlightTaskLease); expired != 0 {
+		t.Fatalf("renewed run expired: %d", expired)
+	}
+}
+
+func TestRefreshInFlightTaskForRunDoesNotRewriteStoreForLeaseBump(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "conversation.json")
+	cm := NewPersistentConversationMemory(storePath)
+	defer cm.Stop()
+
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "run-1")
+	if err := cm.FlushNow(); err != nil {
+		t.Fatalf("FlushNow() error = %v", err)
+	}
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = time.Now().Add(-InFlightTaskRenewInterval - time.Second)
+	sh.mu.Unlock()
+	cm.persistStateMu.Lock()
+	cm.dirty = false
+	cm.persistStateMu.Unlock()
+
+	if !cm.RefreshInFlightTaskForRun("user", "run-1") {
+		t.Fatal("refresh missed the owning run")
+	}
+	cm.persistStateMu.Lock()
+	dirty := cm.dirty
+	cm.persistStateMu.Unlock()
+	if dirty {
+		t.Fatal("lease bump scheduled a full conversation rewrite")
+	}
+}
+
+func TestRefreshInFlightTaskForRunReclaimsSameRunLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "run-1")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.sessions["user"].inFlightLastTool = "im_message"
+	sh.sessions["user"].inFlightSideEffect = "external_uncertain"
+	sh.sessions["user"].activeSlotID = "older-bound"
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	if !cm.RefreshInFlightTaskForRun("user", "run-1") {
+		t.Fatal("refresh did not reclaim the same run's lease slot")
+	}
+	sh.mu.Lock()
+	activeID := sh.sessions["user"].activeSlotID
+	sh.mu.Unlock()
+	if activeID != "older-bound" {
+		t.Fatalf("reclaim cleared an unrelated binding: %q", activeID)
+	}
+	if slot := cm.GetUnfinishedSlot("user"); slot != nil {
+		t.Fatalf("reclaimed run left its lease slot: %#v", slot)
+	}
+	recovered := cm.ConsumeInFlightRecovery("user")
+	if recovered.Task != "继续" || recovered.ProjectPath != "/latex" || recovered.LastToolName != "im_message" || recovered.SideEffectState != "external_uncertain" {
+		t.Fatalf("reclaim dropped checkpoint evidence: %#v", recovered)
+	}
+}
+
+func TestRefreshInFlightTaskForRunDoesNotReclaimOverAnotherRun(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	now := time.Now()
+	cm.SetInFlightTaskForRun("user", "继续", "/latex", "run-1")
+	sh := cm.shard("user")
+	sh.mu.Lock()
+	sh.sessions["user"].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	cm.SetInFlightTaskForRun("user", "other task", "/other", "run-2")
+	if cm.RefreshInFlightTaskForRun("user", "run-1") {
+		t.Fatal("refresh reclaimed a slot while another run owned the marker")
+	}
+	if slot := cm.GetUnfinishedSlot("user"); slot == nil || slot.EvidenceScopeKey != inFlightRunScopeKey("run-1") {
+		t.Fatalf("other run's marker displaced the lease slot: %#v", slot)
+	}
+	task, projectPath := cm.ConsumeInFlightTask("user")
+	if task != "other task" || projectPath != "/other" {
+		t.Fatalf("reclaim overwrote the other run: task=%q project=%q", task, projectPath)
+	}
+}
+
+func TestClearInFlightTaskForRunIgnoresEmptyRunID(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	cm.SetInFlightTaskForRun("user", "active task", "/project", "run-1")
+	cm.ClearInFlightTaskForRun("user", " ")
+	task, projectPath := cm.ConsumeInFlightTask("user")
+	if task != "active task" || projectPath != "/project" {
+		t.Fatalf("empty run id cleared the marker: task=%q project=%q", task, projectPath)
+	}
+}
+
+func TestClearInFlightTaskForRunKeepsUnrelatedActiveSlotID(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	userID := "desktop-user"
+	runID := "loop-1"
+	now := time.Now()
+	cm.SetInFlightTaskForRun(userID, "long task", "/project", runID)
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	sh.sessions[userID].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expected 1 expired in-flight task, got %d", expired)
+	}
+	sh.mu.Lock()
+	sh.sessions[userID].activeSlotID = "older-bound"
+	sh.mu.Unlock()
+	cm.ClearInFlightTaskForRun(userID, runID)
+	sh.mu.Lock()
+	activeID := sh.sessions[userID].activeSlotID
+	sh.mu.Unlock()
+	if activeID != "older-bound" {
+		t.Fatalf("clearing the lease slot unbound a different slot: %q", activeID)
+	}
+	if slot := cm.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("expected matching synthetic recovery slot to be cleared, got %#v", slot)
+	}
+}
+
+func TestCompleteInFlightCheckpointForRunIgnoresEmptyRunID(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	cm.SetInFlightTaskForRun("user", "active task", "/project", "run-1")
+	if err := cm.CompleteInFlightCheckpointForRun("user", ""); err != nil {
+		t.Fatalf("CompleteInFlightCheckpointForRun() error = %v", err)
+	}
+	task, projectPath := cm.ConsumeInFlightTask("user")
+	if task != "active task" || projectPath != "/project" {
+		t.Fatalf("empty run id cleared the marker: task=%q project=%q", task, projectPath)
+	}
+}
+
 func TestCompleteInFlightCheckpointForRunDoesNotClearNewerRun(t *testing.T) {
 	cm := NewConversationMemory()
 	defer cm.Stop()

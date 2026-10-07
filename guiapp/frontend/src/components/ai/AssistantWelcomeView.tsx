@@ -417,6 +417,8 @@ export interface WelcomeComposerProps {
     onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     pendingAttachments: AttachmentInfo[];
     permissionMode?: AssistantPermissionMode;
+    /** Current task chose 以后允许; the mode button itself stays unchanged. */
+    taskCommandAllowed?: boolean;
     showWorkspacePermissionOption?: boolean;
     onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     ready: boolean;
@@ -1624,6 +1626,7 @@ export function AssistantWelcomeView({
                     onPlusMenuAction={cp.onPlusMenuAction}
                     pendingAttachments={cp.pendingAttachments}
                     permissionMode={cp.permissionMode}
+                    taskCommandAllowed={cp.taskCommandAllowed}
                     showWorkspacePermissionOption={cp.showWorkspacePermissionOption}
                     onPermissionModeChange={cp.onPermissionModeChange}
                     placeholderText={

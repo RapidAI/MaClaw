@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget, resolveTaskExecutionStatus } from "../assistantTaskExecutionChrome";
+import { codingStepsAllPassed, executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget, resolveTaskExecutionStatus } from "../assistantTaskExecutionChrome";
 
 describe("executionSecondaryChromeStyle", () => {
     it("clips leftover title-bar chrome out of hit-testing", () => {
@@ -73,6 +73,145 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
             pendingUnfinishedStatus: "",
         });
         expect(status).toEqual({ label: "已完成", tone: "completed" });
+    });
+
+    it("shows a finished coding run as completed when the only leftover is a review word", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "waiting_review passed passed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 2,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "已完成", tone: "completed" });
+    });
+
+    it("keeps a live approval pending after the coding steps passed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "waiting_review passed",
+            pendingReview: true,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "待处理", tone: "pending" });
+    });
+
+    it("keeps a real workflow review pending after the coding steps passed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "waiting_review passed",
+            pendingReview: true,
+            awaitingUserReview: true,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: true,
+            codingStepCount: 1,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "待处理", tone: "pending" });
+    });
+
+    it("shows a fatal runtime failure instead of a confirmation", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "failed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "失败", tone: "failed" });
+        expect(codingStepsAllPassed([{ status: "passed" }, { status: "passed" }])).toBe(true);
+        expect(codingStepsAllPassed([{ status: "passed" }, { status: "pending" }])).toBe(false);
+    });
+
+    it("keeps a paused run paused when a phase follows the status", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "paused implement",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "已暂停", tone: "pending" });
+    });
+
+    it("does not treat a later pause phase as a paused run", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "completed pause",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "已完成", tone: "completed" });
+    });
+
+    it("shows an interrupted run as interrupted after the coding steps passed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "interrupted passed",
+            pendingReview: true,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "已中断", tone: "pending" });
+    });
+
+    it("keeps a stop in progress visible after every coding step has passed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "passed passed",
+            pendingReview: false,
+            cancelPending: true,
+            busy: true,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 2,
+            codingStepsAllPassed: true,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "正在停止", tone: "pending" });
     });
 
     it("treats data-window-no-drag action chrome, including padding, as a control", () => {

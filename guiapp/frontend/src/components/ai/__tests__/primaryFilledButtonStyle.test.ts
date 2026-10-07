@@ -46,7 +46,7 @@ describe("contrastingInkOnFill", () => {
 
 describe("primaryFilledButtonStyle / resolvePrimaryFilledColors", () => {
     it("pairs sendBtnBg fill with sendBtnColor label across all dark schemes", () => {
-        for (const id of ["graphite", "classic", "aurora", "ember", "violet"] as const) {
+        for (const id of ["onyx", "graphite", "classic", "aurora", "ember", "violet"] as const) {
             const t = getAssistantDarkScheme(id).assistantTheme;
             const style = primaryFilledButtonStyle(t);
             expect(style.background).toBe(t.sendBtnBg);
@@ -55,6 +55,10 @@ describe("primaryFilledButtonStyle / resolvePrimaryFilledColors", () => {
             expect(style.color).toBe(resolved.fg);
             if (t.btnColor !== t.sendBtnBg) {
                 expect(style.background).not.toBe(t.btnColor);
+            }
+            if (id === "onyx") {
+                expect(style.background).toBe("#b3b3b3");
+                expect(style.color).toBe("#0a0a0a");
             }
             if (id === "graphite") {
                 expect(style.background).toBe("#7ea8e0");

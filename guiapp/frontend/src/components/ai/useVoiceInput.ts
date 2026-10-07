@@ -25,7 +25,7 @@
  * layer of noise filtering.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText, SetDesktopPetState } from "../../../wailsjs/go/main/App";
+import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText, SetDesktopPetState, NotifyDesktopPetMicBusy } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { normalizeASRText, resolveNormalizedVoiceText, shouldDispatchASRText } from "./asrTextUtils";
 
@@ -1241,6 +1241,7 @@ export function useVoiceInput(
         if (sourceRef.current) { sourceRef.current.disconnect(); sourceRef.current = null; }
         if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
         if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+        void NotifyDesktopPetMicBusy(false).catch(() => {});
     }, []);
 
     useEffect(() => () => {
@@ -1338,6 +1339,7 @@ export function useVoiceInput(
             }, 500);
 
             setState("listening");
+            void NotifyDesktopPetMicBusy(true).catch(() => {});
             emitPetState("listening", holdModeRef.current ? "asr:hold" : "asr:continuous");
             voiceDebug("listening started", {
                 sampleRate: ctx.sampleRate,

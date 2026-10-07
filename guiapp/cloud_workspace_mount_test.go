@@ -23,30 +23,39 @@ import (
 )
 
 type fakeCloudWorkspaceHub struct {
-	mu                  sync.Mutex
-	leaseID             string
-	leaseExpiresAt      string
-	fencingToken        int64
-	acquired            string
-	conflictUntilForce  bool
-	forceCount          int
-	leaseAcquires       int
-	heartbeats          int
-	heartbeatStatus     int
-	deleted             bool
-	failPush            bool
-	failAfterOperations int
-	operationCount      int
-	revision            string
-	entries             []cloudWorkspaceManifestEntry
-	objects             map[string][]byte
-	chunks              map[string]map[int][]byte
-	sidecars            map[string][]byte
-	sidecarGets         int
-	sidecarGetsByName   map[string]int
-	events              []cloudWorkspaceEvent
-	failEvents          bool
-	entitlement         *CloudWorkspaceEntitlement
+	mu                   sync.Mutex
+	leaseID              string
+	leaseExpiresAt       string
+	fencingToken         int64
+	acquired             string
+	conflictUntilForce   bool
+	forceCount           int
+	leaseAcquires        int
+	heartbeats           int
+	heartbeatStatus      int
+	heartbeatSession     string
+	heartbeatFencing     string
+	deleted              bool
+	failPush             bool
+	failAfterOperations  int
+	operationCount       int
+	revision             string
+	entries              []cloudWorkspaceManifestEntry
+	objects              map[string][]byte
+	chunks               map[string]map[int][]byte
+	sidecars             map[string][]byte
+	sidecarGets          int
+	sidecarGetsByName    map[string]int
+	events               []cloudWorkspaceEvent
+	failEvents           bool
+	entitlement          *CloudWorkspaceEntitlement
+	requireManifestLease bool
+	manifestSession      string
+	manifestFencing      string
+	leaseReleases        int
+	releaseFailures      int
+	releaseSession       string
+	releaseFencing       string
 }
 
 func TestCloudWorkspaceProcessLockExcludesConcurrentWriters(t *testing.T) {
@@ -497,6 +506,8 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/heartbeat"):
 		h.heartbeats++
+		h.heartbeatSession = r.Header.Get("X-Cloud-Workspace-Session")
+		h.heartbeatFencing = r.Header.Get("X-Cloud-Workspace-Fencing")
 		w.WriteHeader(h.heartbeatStatus)
 		if h.heartbeatStatus == http.StatusConflict {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "CLOUD_WORKSPACE_IN_USE"})
@@ -504,6 +515,15 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"lease_id": h.leaseID, "expires_at": h.leaseExpiresAt})
 	case r.Method == http.MethodDelete && strings.Contains(path, "/leases/"):
+		h.releaseSession = r.Header.Get("X-Cloud-Workspace-Session")
+		h.releaseFencing = r.Header.Get("X-Cloud-Workspace-Fencing")
+		if h.releaseFailures > 0 {
+			h.releaseFailures--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_FAILED", "message": "unavailable"})
+			return
+		}
+		h.leaseReleases++
 		h.deleted = true
 		_ = json.NewEncoder(w).Encode(map[string]any{"released": true})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/manifest"):
@@ -570,6 +590,13 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"events": events})
 	case r.Method == http.MethodPut && strings.HasSuffix(path, "/manifest"):
+		h.manifestSession = r.Header.Get("X-Cloud-Workspace-Session")
+		h.manifestFencing = r.Header.Get("X-Cloud-Workspace-Fencing")
+		if h.requireManifestLease && (h.manifestSession == "" || h.manifestFencing == "" || h.manifestSession != h.leaseID) {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_LEASE_REQUIRED", "message": "cloud workspace lease required"})
+			return
+		}
 		if h.failPush {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_FAILED", "message": "push failed"})

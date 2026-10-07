@@ -313,6 +313,39 @@ const filePathPromptPrefix = "[用户选择的本地文件路径]"
 // the current one.
 const filePathPromptPrefixHistorical = "[之前选择的本地文件路径（仅供参考，非本次上传）]"
 
+// stripHostAttachmentSections removes host-injected attachment content from a
+// user message, returning the user-authored text for interrupt-scheduling
+// signals. Three injection sources must never reach DetectNegation or the
+// length/relevance signals:
+//
+//  1. Desktop file picker block ("[用户选择的本地文件路径]" + paths + English
+//     tool-routing boilerplate containing "do not re-capture"). Hit in the
+//     2026-10-06 incident: "改进界面风格，现在太厚重了" + screenshot was
+//     misrouted to cancel-and-replace and killed the running task.
+//  2. Image OCR note bodies — the recognized text of a user screenshot is
+//     arbitrary content (may contain English "cancel"/"do not").
+//  3. Auto-extracted document bodies — same arbitrary-content risk.
+//
+// OCR/extract bodies are replaced with short placeholders (same treatment as
+// history turns), so the "user attached a file" signal survives without the
+// content polluting negation detection.
+func stripHostAttachmentSections(text string) string {
+	// 1. File picker block: everything from the marker on is host-appended.
+	cut := -1
+	for _, marker := range []string{filePathPromptPrefix, filePathPromptPrefixHistorical} {
+		if idx := strings.Index(text, marker); idx >= 0 && (cut < 0 || idx < cut) {
+			cut = idx
+		}
+	}
+	if cut >= 0 {
+		text = text[:cut]
+	}
+	// 2/3. OCR note bodies and auto-extract document bodies.
+	text = agent.StripImageOCRNotes(text)
+	text = agent.StripAutoExtractBodies(text)
+	return strings.TrimSpace(text)
+}
+
 // stripHistoryAttachments processes a conversation message from history and
 // removes base64 image data from multimodal content blocks, replacing them
 // with a lightweight text placeholder. It also annotates the

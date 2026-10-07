@@ -108,12 +108,12 @@ function interactionModeLabel(lang: Lang, id: string): string {
 function conversationModeLabel(lang: Lang, id: string): string {
     switch (id) {
         case 'voice-turn':
-            return text(lang, '语音轮次', '語音輪次', 'Voice Turn');
+            return text(lang, '说一句就停', '說一句就停', 'One line, then stop');
         case 'continuous':
-            return text(lang, '连续对话', '連續對話', 'Continuous');
+            return text(lang, '接着聊', '接著聊', 'Keep talking');
         case 'text-first':
         default:
-            return text(lang, '文字优先', '文字優先', 'Text First');
+            return text(lang, '不说话', '不說話', "Don't talk");
     }
 }
 

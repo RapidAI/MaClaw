@@ -1,6 +1,6 @@
 import type { Theme } from "./aiAssistantPanelTheme";
 
-export type AssistantDarkSchemeId = "graphite" | "classic" | "aurora" | "ember" | "violet";
+export type AssistantDarkSchemeId = "onyx" | "graphite" | "classic" | "aurora" | "ember" | "violet";
 
 export type AssistantDarkScheme = {
     id: AssistantDarkSchemeId;
@@ -34,6 +34,86 @@ export type AssistantDarkScheme = {
 };
 
 export const ASSISTANT_DARK_SCHEME_STORAGE_KEY = "maclaw.ai.darkScheme";
+
+export const onyxDarkScheme: AssistantDarkScheme = {
+    id: "onyx",
+    storageValue: "onyx",
+    label: {
+        en: "Onyx",
+        zhHans: "\u7eaf\u9ed1\u7070",
+        zhHant: "\u7d14\u9ed1\u7070",
+    },
+    description: {
+        en: "True black surfaces with neutral gray text. Default dark palette.",
+        zhHans: "\u7eaf\u9ed1\u80cc\u666f\u642d\u914d\u4e2d\u6027\u7070\u6587\u5b57\uff0c\u9ed8\u8ba4\u6697\u9ed1\u914d\u8272\u3002",
+        zhHant: "\u7d14\u9ed1\u80cc\u666f\u642d\u914d\u4e2d\u6027\u7070\u6587\u5b57\uff0c\u9810\u8a2d\u6697\u9ed1\u914d\u8272\u3002",
+    },
+    cssVars: {
+        pageBg: "#050505",
+        surface: "#101010",
+        surfaceMuted: "#151515",
+        primary: "#a8a8a8",
+        primaryStrong: "#c6c6c6",
+        primarySoft: "rgba(255, 255, 255, 0.10)",
+        textPrimary: "#c9c9c9",
+        textSecondary: "#9e9e9e",
+        textMuted: "#7d7d7d",
+        border: "#2e2e2e",
+        borderSubtle: "#232323",
+        success: "#5c9e6e",
+        successBg: "rgba(92, 158, 110, 0.13)",
+        warning: "#c2a86a",
+        warningBg: "rgba(194, 168, 106, 0.12)",
+        danger: "#e07a72",
+        dangerBg: "rgba(224, 122, 114, 0.12)",
+        linkColor: "#b3b3b3",
+        infoBg: "rgba(255, 255, 255, 0.08)",
+        onPrimary: "#0a0a0a",
+    },
+    assistantTheme: {
+        bg: "#050505",
+        titleBarBg: "#0d0d0d",
+        titleBarBorder: "#2e2e2e",
+        titleText: "#c9c9c9",
+        text: "#c9c9c9",
+        textMuted: "#7d7d7d",
+        inputBarBg: "#111111",
+        inputBarBorder: "#2e2e2e",
+        inputText: "#c9c9c9",
+        codeBg: "#161616",
+        codeText: "#a8a8a8",
+        codeBlockBg: "#0a0a0a",
+        codeBlockBorder: "#2a2a2a",
+        codeBlockLang: "#8a8a8a",
+        borderLeft: "#2e2e2e",
+        responseBorderLeft: "#6e6e6e",
+        headingColor: "#d4d4d4",
+        linkColor: "#b3b3b3",
+        pathColor: "#b3b3b3",
+        promptColor: "#a8a8a8",
+        userColor: "#bdbdbd",
+        divider: "#1f1f1f",
+        fieldBg: "#141414",
+        fieldBorder: "#3a3a3a",
+        fieldLabel: "#b8b8b8",
+        errorText: "#e07a72",
+        errorBg: "rgba(224, 122, 114, 0.10)",
+        errorBorder: "#b85c56",
+        emptyHint: "#6a6a6a",
+        boldColor: "#e6e6e6",
+        italicColor: "#c2c2c2",
+        bulletColor: "#7d7d7d",
+        quoteBorder: "#4a4a4a",
+        quoteText: "#a3a3a3",
+        actionBtnColor: "#9a9a9a",
+        closeBtnColor: "#9a9a9a",
+        btnColor: "#b3b3b3",
+        btnBorder: "#4a4a4a",
+        sendBtnColor: "#0a0a0a",
+        sendBtnBorder: "#b3b3b3",
+        sendBtnBg: "#b3b3b3",
+    },
+};
 
 export const graphiteDarkScheme: AssistantDarkScheme = {
     id: "graphite",
@@ -435,23 +515,23 @@ export const violetDarkScheme: AssistantDarkScheme = {
     },
 };
 
-export const assistantDarkSchemes = [graphiteDarkScheme, classicDarkScheme, auroraDarkScheme, emberDarkScheme, violetDarkScheme] as const;
+export const assistantDarkSchemes = [onyxDarkScheme, graphiteDarkScheme, classicDarkScheme, auroraDarkScheme, emberDarkScheme, violetDarkScheme] as const;
 
 export function isAssistantDarkSchemeId(value: unknown): value is AssistantDarkSchemeId {
-    return value === "graphite" || value === "classic" || value === "aurora" || value === "ember" || value === "violet";
+    return value === "onyx" || value === "graphite" || value === "classic" || value === "aurora" || value === "ember" || value === "violet";
 }
 
 export function getAssistantDarkScheme(id: unknown): AssistantDarkScheme {
-    return assistantDarkSchemes.find((scheme) => scheme.id === id) || graphiteDarkScheme;
+    return assistantDarkSchemes.find((scheme) => scheme.id === id) || onyxDarkScheme;
 }
 
 export function readStoredAssistantDarkSchemeId(): AssistantDarkSchemeId {
-    if (typeof window === "undefined") return "graphite";
+    if (typeof window === "undefined") return "onyx";
     try {
         const stored = window.localStorage.getItem(ASSISTANT_DARK_SCHEME_STORAGE_KEY);
-        return isAssistantDarkSchemeId(stored) ? stored : "graphite";
+        return isAssistantDarkSchemeId(stored) ? stored : "onyx";
     } catch {
-        return "graphite";
+        return "onyx";
     }
 }
 

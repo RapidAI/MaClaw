@@ -6,6 +6,7 @@ import { HistoryGroupDiscussionTab } from "./HistoryGroupDiscussionTab";
 import { VEConversationView, type VEConversationHandle, type VEMessage } from "./VEConversationView";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
+import { VEConversationTitleBar, type VEConversationChrome } from "./VEConversationTitleBar";
 
 type AssistantActiveTabContentProps = {
     activeTab: AITab;
@@ -20,6 +21,8 @@ type AssistantActiveTabContentProps = {
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
     /** Add a remote digital employee to an existing live group tab. */
     onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
+    /** Window and tab controls for the conversation title bar. */
+    conversationChrome?: VEConversationChrome;
 };
 
 /**
@@ -29,7 +32,7 @@ type AssistantActiveTabContentProps = {
  * (sharing the same AssistantConversationBody + AssistantInputStack layout but
  * with independent state). This component only handles VE and group tab types.
  */
-export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState, onAddParticipantToTab }: AssistantActiveTabContentProps) {
+export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState, onAddParticipantToTab, conversationChrome }: AssistantActiveTabContentProps) {
     const contentTabs = useMemo(() => {
         const sourceTabs = tabs && tabs.length > 0 ? tabs : [activeTab];
         return sourceTabs.filter(tab =>
@@ -50,6 +53,8 @@ export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, i
                     getTabState={getTabState}
                     saveTabState={saveTabState}
                     onAddParticipantToTab={onAddParticipantToTab}
+                    conversationChrome={conversationChrome}
+                    tabs={tabs && tabs.length > 0 ? tabs : [activeTab]}
                 />
             ))}
         </>
@@ -68,6 +73,8 @@ type AssistantTabContentPaneProps = {
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
     onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
+    conversationChrome?: VEConversationChrome;
+    tabs?: AITab[];
 };
 
 const mentionLabelFromName = (value: string): string =>
@@ -83,7 +90,7 @@ const readableParticipantName = (name: string | undefined, id: string, index: nu
     return friendlyParticipantName(index, lang);
 };
 
-function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTabState, onAddParticipantToTab }: AssistantTabContentPaneProps) {
+function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTabState, onAddParticipantToTab, conversationChrome, tabs }: AssistantTabContentPaneProps) {
     let content: React.ReactNode = null;
 
     if (tab.type === "ve" && tab.veId) {
@@ -99,6 +106,8 @@ function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTa
                 saveTabState={saveTabState}
                 onAddParticipantToTab={onAddParticipantToTab}
                 active={active}
+                conversationChrome={conversationChrome}
+                tabs={tabs}
             />
         );
     } else if (tab.type === "group") {
@@ -132,6 +141,8 @@ function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTa
                     saveTabState={saveTabState}
                     onAddParticipantToTab={onAddParticipantToTab}
                     active={active}
+                    conversationChrome={conversationChrome}
+                    tabs={tabs}
                 />
             );
         } else {
@@ -216,9 +227,11 @@ interface UnifiedVEGroupWrapperProps {
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
     onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
     active?: boolean;
+    conversationChrome?: VEConversationChrome;
+    tabs?: AITab[];
 }
 
-function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, onAddParticipantToTab, active = true }: UnifiedVEGroupWrapperProps) {
+function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, onAddParticipantToTab, active = true, conversationChrome, tabs }: UnifiedVEGroupWrapperProps) {
     const veRef = useVEStatePersistence(tab.id, saveTabState);
 
     const savedState = getTabState?.(tab.id);
@@ -301,8 +314,10 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
     return (
         <div
             data-testid="live-group-tab"
-            className="aatc-live-row"
+            className="aatc-live-shell"
         >
+            <VEConversationTitleBar tab={tab} tabs={tabs} lang={lang} participantCount={panelParticipants.length} chrome={conversationChrome} />
+            <div className="aatc-live-row">
             <div className="aatc-live-col">
                 <VEConversationView
                     ref={veRef}
@@ -337,6 +352,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
                     onTalkTo={handleTalkTo}
                 />
             )}
+            </div>
         </div>
     );
 }

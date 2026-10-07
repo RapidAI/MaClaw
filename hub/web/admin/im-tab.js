@@ -3,12 +3,8 @@
  * ASCII only.
  */
 (function(global) {
-  var IM_SUBS = { feishu: true, openclaw: true, qqbot: true, wecom: true, dingtalk: true, contentaudit: true };
-  var IM_SUB_ORDER = ['feishu', 'openclaw', 'qqbot', 'wecom', 'dingtalk', 'contentaudit'];
-  function imState() {
-    if (!global.__imAdminState) global.__imAdminState = { bridgeChannelsCache: [] };
-    return global.__imAdminState;
-  }
+  var IM_SUBS = { feishu: true, qqbot: true, wecom: true, dingtalk: true, contentaudit: true };
+  var IM_SUB_ORDER = ['feishu', 'qqbot', 'wecom', 'dingtalk', 'contentaudit'];
 
   function bindingCard(title, meta, actionText, onclickExpr) {
     return '<div class="item" style="margin-bottom:6px;padding:10px 12px;border-radius:12px;box-shadow:none"><div class="item-head" style="align-items:center;gap:8px"><div style="min-width:0;flex:1"><div class="item-title" style="font-size:13px">' + escapeHtml(title || '') + '</div><div class="item-meta mono" style="margin-top:2px;font-size:11px">' + escapeHtml(meta || '') + '</div></div><button class="btn-danger" style="height:30px;font-size:11px;padding:0 10px;flex-shrink:0" onclick="' + onclickExpr + '">' + escapeHtml(actionText || '') + '</button></div></div>';
@@ -119,140 +115,11 @@
     const pane = document.getElementById('im-pane-' + sub);
     if (pane) pane.classList.add('active');
     if (sub === 'feishu') loadFeishuConfig();
-    if (sub === 'openclaw') { global.loadOpenclawImConfig(); global.loadBridgeChannels(); }
     if (sub === 'qqbot') global.loadQQBotConfig();
     if (sub === 'wecom') global.loadWeComConfig();
     if (sub === 'dingtalk') global.loadDingTalkConfig();
     if (sub === 'contentaudit' && typeof loadContentAuditConfig === 'function') loadContentAuditConfig();
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
-  };
-
-  global.loadOpenclawImConfig = async function loadOpenclawImConfig() {
-    try {
-      const data = await api('/api/admin/settings/openclaw_im');
-      document.getElementById('openclawImEnabled').checked = !!data.enabled;
-      document.getElementById('openclawImWebhookUrl').value = data.webhook_url || 'http://127.0.0.1:3210/outbound';
-      document.getElementById('openclawImSecret').value = data.secret || '';
-    } catch (err) {
-      const msg = ocim('loadFailed', { error: err.message });
-      setOutput(msg);
-      showToast(msg, 'error');
-    }
-  };
-
-  global.saveOpenclawImConfig = async function saveOpenclawImConfig() {
-    try {
-      const payload = {
-        enabled: document.getElementById('openclawImEnabled').checked,
-        webhook_url: document.getElementById('openclawImWebhookUrl').value.trim(),
-        secret: document.getElementById('openclawImSecret').value
-      };
-      const data = await api('/api/admin/settings/openclaw_im', { method: 'POST', body: JSON.stringify(payload) });
-      document.getElementById('openclawImEnabled').checked = !!data.enabled;
-      document.getElementById('openclawImWebhookUrl').value = data.webhook_url || '';
-      document.getElementById('openclawImSecret').value = data.secret || '';
-      const msg = ocim('saved');
-      setOutput(msg);
-      showToast(msg, 'success');
-    } catch (err) {
-      const msg = ocim('saveFailed', { error: err.message });
-      setOutput(msg);
-      showToast(msg, 'error');
-    }
-  };
-
-  global.testOpenclawImWebhook = async function testOpenclawImWebhook() {
-    const btn = document.getElementById('openclawImTestBtn');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = ocim('testing');
-    }
-    try {
-      await global.saveOpenclawImConfig();
-      const data = await api('/api/admin/settings/openclaw_im/test', { method: 'POST' });
-      const msg = data.ok ? ocim('testSuccess', { status: String(data.status) }) : ocim('testFailed', { message: data.message || ocim('unknownError') });
-      setOutput(msg);
-      showToast(msg, data.ok ? 'success' : 'error');
-    } catch (err) {
-      const msg = ocim('testFailed', { message: err.message });
-      setOutput(msg);
-      showToast(msg, 'error');
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = ocim('testWebhook');
-      }
-    }
-  };
-
-  global.loadBridgeChannels = async function loadBridgeChannels() {
-    try {
-      const data = await Promise.all([api('/api/admin/bridge/channels'), api('/api/admin/bridge/status')]);
-      const channels = data[0];
-      const status = data[1];
-      imState().bridgeChannelsCache = channels.channels || [];
-      const badge = document.getElementById('bridgeStatusBadge');
-      if (badge) {
-        const running = !!status.running;
-        badge.textContent = running ? ocim('bridgeRunning') : ocim('bridgeStopped');
-        badge.className = 'badge ' + (running ? 'ok' : 'warn');
-      }
-      global.renderBridgeChannels();
-    } catch (err) {
-      const msg = ocim('channelsLoadFailed', { error: err.message });
-      setOutput(msg);
-      showToast(msg, 'error');
-    }
-  };
-
-  global.renderBridgeChannels = function renderBridgeChannels() {
-    const root = document.getElementById('bridgeChannelsList');
-    if (!root) return;
-    const channels = imState().bridgeChannelsCache;
-    const lang = (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en')) ? currentLang : ((global.currentLang === 'zh' || global.currentLang === 'en') ? global.currentLang : 'en');
-    if (!channels.length) {
-      root.innerHTML = '<div class="hint">' + ocim('noChannelsAvailable') + '</div>';
-      return;
-    }
-    root.innerHTML = channels.map(function(ch) {
-      const name = escapeHtml(lang === 'zh' ? (ch.name_zh || ch.name) : ch.name);
-      const desc = escapeHtml(lang === 'zh' ? (ch.desc_zh || ch.description) : ch.description);
-      const installedBadge = ch.installed ? '<span class="badge ok" style="font-size:11px">' + ocim('channelInstalled') + '</span>' : '<span class="badge warn" style="font-size:11px">' + ocim('channelNotInstalled') + '</span>';
-      const enabledChecked = ch.enabled ? 'checked' : '';
-      const fields = (ch.fields || []).map(function(f) {
-        const label = escapeHtml(lang === 'zh' ? (f.label_zh || f.label) : f.label);
-        const val = escapeHtml((ch.config && ch.config[f.key]) || '');
-        const inputType = f.type === 'password' ? 'password' : 'text';
-        return '<div><label style="font-size:11px;font-weight:600;color:var(--muted)">' + label + '</label><input id="bridge_' + escapeHtml(ch.id) + '_' + escapeHtml(f.key) + '" type="' + inputType + '" value="' + val + '" placeholder="' + escapeHtml(f.placeholder || '') + '" style="font-size:11px"></div>';
-      }).join('');
-      return '<div class="item" style="margin-bottom:8px;padding:10px 12px;border-radius:12px;box-shadow:none"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap"><div style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:11px;font-weight:700;min-width:0"><input type="checkbox" id="bridge_' + escapeHtml(ch.id) + '_enabled" ' + enabledChecked + '> <span style="word-break:break-word">' + name + '</span></label>' + installedBadge + '</div><button class="btn-primary" style="height:30px;font-size:11px;padding:0 12px" onclick="saveBridgeChannel(' + JSON.stringify(String(ch.id || '')) + ')">' + ocim('channelSave') + '</button></div><div class="item-meta" style="margin-bottom:8px;font-size:11px">' + desc + '</div><div class="grid2" style="gap:6px">' + fields + '</div></div>';
-    }).join('');
-  };
-
-  global.saveBridgeChannel = async function saveBridgeChannel(channelId) {
-    const ch = imState().bridgeChannelsCache.find(function(item) { return item.id === channelId; });
-    if (!ch) return;
-    const enabledEl = document.getElementById('bridge_' + channelId + '_enabled');
-    const enabled = enabledEl ? !!enabledEl.checked : false;
-    const fields = {};
-    (ch.fields || []).forEach(function(f) {
-      const el = document.getElementById('bridge_' + channelId + '_' + f.key);
-      if (el) fields[f.key] = el.value.trim();
-    });
-    try {
-      const data = await api('/api/admin/bridge/channels', { method: 'POST', body: JSON.stringify({ id: channelId, enabled: enabled, fields: fields }) });
-      const name = currentLang === 'zh' ? (ch.name_zh || ch.name) : ch.name;
-      let msg = ocim('channelSaved', { name: name });
-      if (data.install_msg) msg += ' ' + data.install_msg;
-      if (data.config_err) msg += ' ' + ocim('configJsonError', { error: data.config_err });
-      setOutput(msg);
-      showToast(msg, data.config_err ? 'error' : 'success');
-      await global.loadBridgeChannels();
-    } catch (err) {
-      const msg = ocim('channelSaveFailed', { error: err.message });
-      setOutput(msg);
-      showToast(msg, 'error');
-    }
   };
 
   global.loadQQBotConfig = async function loadQQBotConfig() {

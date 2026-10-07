@@ -6210,4 +6210,22 @@ func TestBuildRequestBodies_ConfigTemperature(t *testing.T) {
 	if _, ok := req["temperature"]; ok {
 		t.Fatalf("anthropic thinking temperature = %#v, want absent", req["temperature"])
 	}
+
+	// Kimi Code rejects every explicit temperature, including ExtraBody 0.
+	_, body, err = BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", Temperature: &tmp},
+		msgs, OpenAIChatRequestOptions{ExtraBody: map[string]interface{}{"temperature": 0, "top_p": 1}})
+	if err != nil {
+		t.Fatalf("kimi: %v", err)
+	}
+	chat = nil
+	if err := json.Unmarshal(body, &chat); err != nil {
+		t.Fatalf("kimi parse: %v", err)
+	}
+	if _, ok := chat["temperature"]; ok {
+		t.Fatalf("kimi temperature = %#v, want absent", chat["temperature"])
+	}
+	if _, ok := chat["top_p"]; ok {
+		t.Fatalf("kimi top_p = %#v, want absent", chat["top_p"])
+	}
 }

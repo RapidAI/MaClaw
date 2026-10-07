@@ -2,8 +2,9 @@ package guiapp
 
 // Phase 2 ToolDispatcher convergence pilot on the coding-workbench subagent
 // host, mirroring the IM/TUI pilots: coding turns run CodingSubAgent.
-// ExecuteTask → codingagent.Run → agent.RunLoop (corelib/codingagent/
-// codingagent.go), so the core loop's dispatcher-first chain is live here.
+// ExecuteTask → codingagent.Run → agent.RunLoop in
+// corelib/codingagent/codingagent.go, so the core loop's dispatcher-first
+// chain is live here.
 // codingSubAgentCallbacks implements agent.ToolCallContextExecutor
 // (ExecuteToolCallWithContext, coding_dynamic_surface.go:412) — the
 // highest-priority legacy executor — and a published dispatcher takes

@@ -112,7 +112,7 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
         if (!enabled) return;
         const refreshNonStream = (event: any) => {
             const kind = eventDiscussionKind(event);
-            if (kind === 'stream_chunk' || kind === 'stream_end') return;
+            if (kind === 'stream_chunk' || kind === 'stream_end' || kind === 'stream_status') return;
             scheduleLoadItems();
         };
         const applyRename = (event: any) => {

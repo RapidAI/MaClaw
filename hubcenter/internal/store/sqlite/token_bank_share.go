@@ -493,19 +493,48 @@ func (r *TokenBankRepo) Overview(ctx context.Context) (TokenBankOverview, error)
 // empty, restricts the update to that owner — a user may pause their own share,
 // an admin omits it. A cross-owner update reports not-found rather than
 // forbidden so the endpoint cannot be used to enumerate share ids.
+//
+// Unpause clears last_error when that text is the pause note, the same note
+// with a model prefix, or an automatic "token cap:" note. SQLite reads the
+// original paused_reason inside this UPDATE, so clearing the reason in the
+// same statement still matches. An unrelated upstream error stays. Pausing
+// does not touch last_error; the settler writes the cap note afterwards.
 func (r *TokenBankRepo) SetSharePaused(ctx context.Context, shareID, scopeOwner, reason string, paused bool, now time.Time) error {
 	shareID = strings.TrimSpace(shareID)
 	if shareID == "" {
 		return ErrTokenBankShareNotFound
 	}
-	status := TokenBankShareStatusActive
-	pausedAt := ""
+	updated := now.UTC().Format(time.RFC3339)
+	var query string
+	var args []any
 	if paused {
-		status = TokenBankShareStatusPaused
-		pausedAt = strings.TrimSpace(reason)
+		query = `UPDATE token_bank_shares SET status = ?, paused_reason = ?, updated_at = ? WHERE id = ?`
+		args = []any{TokenBankShareStatusPaused, strings.TrimSpace(reason), updated, shareID}
+	} else {
+		query = `UPDATE token_bank_shares
+		    SET status = ?,
+		        paused_reason = '',
+		        last_error = CASE
+		            WHEN (
+		                paused_reason <> '' AND (
+		                    last_error = paused_reason OR
+		                    last_error LIKE (
+		                        '%: ' || REPLACE(REPLACE(REPLACE(paused_reason, '\', '\\'), '%', '\%'), '_', '\_')
+		                    ) ESCAPE '\'
+		                )
+		            ) OR last_error LIKE 'token cap: daily'
+		              OR last_error LIKE 'token cap: monthly'
+		              OR last_error LIKE 'token cap: anomaly'
+		              OR last_error LIKE '%: token cap: daily'
+		              OR last_error LIKE '%: token cap: monthly'
+		              OR last_error LIKE '%: token cap: anomaly'
+		            THEN ''
+		            ELSE last_error
+		        END,
+		        updated_at = ?
+		  WHERE id = ?`
+		args = []any{TokenBankShareStatusActive, updated, shareID}
 	}
-	query := `UPDATE token_bank_shares SET status = ?, paused_reason = ?, updated_at = ? WHERE id = ?`
-	args := []any{status, pausedAt, now.UTC().Format(time.RFC3339), shareID}
 	if owner := strings.TrimSpace(scopeOwner); owner != "" {
 		query += ` AND owner_user_id = ?`
 		args = append(args, owner)
@@ -522,6 +551,118 @@ func (r *TokenBankRepo) SetSharePaused(ctx context.Context, shareID, scopeOwner,
 		return ErrTokenBankShareNotFound
 	}
 	return nil
+}
+
+// tokenBankUsageSpikePauseNote is the retired automatic pause. New settlements
+// do not write it. ReleaseUsageSpikePause leaves it on the row so a later
+// registry snapshot that pauses the members can be undone.
+const tokenBankUsageSpikePauseNote = "token cap: anomaly"
+
+// UsageSpikePauseHeld reports whether this share still carries the retired
+// usage-spike note. rowPaused is true when that row is still paused. An active
+// row keeps the note so startup can resume members again. The read uses the
+// write connection so it matches the following ReleaseUsageSpikePause.
+func (r *TokenBankRepo) UsageSpikePauseHeld(ctx context.Context, shareID string) (marked bool, rowPaused bool, err error) {
+	if r == nil || r.write == nil {
+		return false, false, nil
+	}
+	shareID = strings.TrimSpace(shareID)
+	if shareID == "" {
+		return false, false, nil
+	}
+	var status, reason string
+	err = r.write.QueryRowContext(ctx,
+		`SELECT status, paused_reason FROM token_bank_shares WHERE id = ?`, shareID).Scan(&status, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("load usage-spike pause %s: %w", shareID, err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(reason), tokenBankUsageSpikePauseNote) {
+		return false, false, nil
+	}
+	switch status {
+	case TokenBankShareStatusPaused:
+		return true, true, nil
+	case TokenBankShareStatusActive:
+		return true, false, nil
+	default:
+		return false, false, nil
+	}
+}
+
+// ListUsageSpikePausedShareIDs returns shares whose pause note is the retired
+// usage spike. That includes rows already made active: the note stays so a
+// later registry snapshot can be undone. Other pause reasons are not included.
+func (r *TokenBankRepo) ListUsageSpikePausedShareIDs(ctx context.Context) ([]string, error) {
+	if r == nil || r.write == nil {
+		return nil, nil
+	}
+	rows, err := r.write.QueryContext(ctx,
+		`SELECT id FROM token_bank_shares
+		  WHERE status IN (?, ?) AND lower(trim(paused_reason)) = ?
+		  ORDER BY id`,
+		TokenBankShareStatusPaused, TokenBankShareStatusActive, tokenBankUsageSpikePauseNote)
+	if err != nil {
+		return nil, fmt.Errorf("list usage-spike pauses: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
+
+// ReleaseUsageSpikePause makes one share active when it is still paused for
+// the retired usage-spike note. The note itself stays, so the next start can
+// tell this share from one the owner paused. A changed reason matches nothing
+// and stays paused. True means this call made the row active.
+func (r *TokenBankRepo) ReleaseUsageSpikePause(ctx context.Context, shareID string, now time.Time) (bool, error) {
+	if r == nil || r.write == nil {
+		return false, nil
+	}
+	shareID = strings.TrimSpace(shareID)
+	if shareID == "" {
+		return false, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	res, err := r.write.ExecContext(ctx, `UPDATE token_bank_shares
+		    SET status = ?,
+		        last_error = CASE
+		            WHEN (
+		                paused_reason <> '' AND (
+		                    last_error = paused_reason OR
+		                    last_error LIKE (
+		                        '%: ' || REPLACE(REPLACE(REPLACE(paused_reason, '\', '\\'), '%', '\%'), '_', '\_')
+		                    ) ESCAPE '\'
+		                )
+		            ) OR last_error LIKE 'token cap: anomaly'
+		              OR last_error LIKE '%: token cap: anomaly'
+		            THEN ''
+		            ELSE last_error
+		        END,
+		        updated_at = ?
+		  WHERE id = ? AND status = ? AND lower(trim(paused_reason)) = ?`,
+		TokenBankShareStatusActive, now.UTC().Format(time.RFC3339), shareID,
+		TokenBankShareStatusPaused, tokenBankUsageSpikePauseNote)
+	if err != nil {
+		return false, fmt.Errorf("release usage-spike pause %s: %w", shareID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // TakeOutShare removes a share: it deletes the models and the share row itself

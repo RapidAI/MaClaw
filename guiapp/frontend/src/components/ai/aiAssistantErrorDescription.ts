@@ -36,15 +36,34 @@ export function describeAIAssistantError(localized: string, lang?: string | null
         const held = creditNumbers[3] ?? creditNumbers[6] ?? '';
         const heldEn = held ? ` (${held} held by in-flight requests)` : '';
         const heldZh = held ? `，其中 ${held} 被在途请求冻结` : '';
-        return {
-            title: localizeText(lang, "Insufficient credits", "额度不足", "額度不足"),
-            detail: localizeText(
+        const availableNow = Number(String(available).replace(/,/g, ""));
+        const heldNow = Number(String(held).replace(/,/g, ""));
+        // Nothing is free because in-flight requests froze the card. Ask for a
+        // retry. Telling the user to redeem would spend a new card on a hold
+        // that is about to release.
+        const waitingOnHold = held !== "" && Number.isFinite(availableNow) && availableNow <= 0 && Number.isFinite(heldNow) && heldNow > 0;
+        const needNow = Number(String(need).replace(/,/g, ""));
+        // Eligibility reports the hold itself as the request cost, because no
+        // quote exists yet. When that number matches the frozen balance, say
+        // the card is occupied instead of inventing a price.
+        const holdIsTheQuotedNeed = waitingOnHold && Number.isFinite(needNow) && Math.abs(needNow - heldNow) < 0.0005;
+        const detail = holdIsTheQuotedNeed
+            ? localizeText(
+                lang,
+                `${held} credits are held by in-flight requests; none are free right now.`,
+                `其中 ${held} Credits 被在途请求冻结，当前没有可用额度。`,
+                `其中 ${held} Credits 被在途請求凍結，目前沒有可用額度。`,
+            )
+            : localizeText(
                 lang,
                 `This request needs ${need} credits, but only ${available} are available${heldEn}.`,
                 `本次请求需要 ${need} Credits，当前可用 ${available} Credits${heldZh}。`,
                 `本次請求需要 ${need} Credits，目前可用 ${available} Credits${held ? `，其中 ${held} 被在途請求凍結` : ''}。`,
-            ),
-            hint: creditHint(),
+            );
+        return {
+            title: localizeText(lang, "Insufficient credits", "额度不足", "額度不足"),
+            detail,
+            hint: waitingOnHold ? retryHint() : creditHint(),
         };
     }
 

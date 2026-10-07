@@ -23,7 +23,7 @@ function workflowEvidenceState(workflow: NonNullable<ProjectSceneDetail['active_
     if (status === WorkflowStatus.Completed) {
         return {
             label: textForLang(lang, 'Workflow completed', '流程已完成', '流程已完成'),
-            color: 'var(--theme-success)',
+            color: 'var(--mc-done, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary)))',
             canContinue: false,
         };
     }

@@ -130,10 +130,20 @@ export interface CodePreviewViewPrefs {
     fontSize: number;
     /** Right-edge document minimap (thumbnail + page locator). Default on. */
     minimap: boolean;
+    /** Diff layout: 'split' shows 旧 | 新 side by side, 'inline' one column. */
+    diffMode: 'split' | 'inline';
+    /** Diff hides unchanged context lines, listing changed rows only. */
+    diffOnlyChanges: boolean;
 }
 
 export function defaultCodePreviewViewPrefs(): CodePreviewViewPrefs {
-    return { wordWrap: false, fontSize: CODE_PREVIEW_FONT_DEFAULT, minimap: true };
+    return {
+        wordWrap: false,
+        fontSize: CODE_PREVIEW_FONT_DEFAULT,
+        minimap: true,
+        diffMode: 'split',
+        diffOnlyChanges: false,
+    };
 }
 
 /** Load wrap/font prefs from localStorage (safe for SSR / restricted storage). */
@@ -152,6 +162,9 @@ export function loadCodePreviewViewPrefs(): CodePreviewViewPrefs {
             ),
             // Missing key (older prefs) keeps the minimap on.
             minimap: parsed.minimap !== false,
+            // Older prefs: keep the side-by-side diff (most legible for review).
+            diffMode: parsed.diffMode === 'inline' ? 'inline' : 'split',
+            diffOnlyChanges: parsed.diffOnlyChanges === true,
         };
     } catch {
         return fallback;
@@ -168,6 +181,8 @@ export function saveCodePreviewViewPrefs(prefs: CodePreviewViewPrefs): void {
                 wordWrap: !!prefs.wordWrap,
                 fontSize: clampCodePreviewFontSize(prefs.fontSize),
                 minimap: prefs.minimap !== false,
+                diffMode: prefs.diffMode === 'inline' ? 'inline' : 'split',
+                diffOnlyChanges: prefs.diffOnlyChanges === true,
             }),
         );
     } catch {

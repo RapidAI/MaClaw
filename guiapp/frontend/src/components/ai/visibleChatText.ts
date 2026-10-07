@@ -40,6 +40,8 @@ export function visibleHistoryMessageContent(kind: string, ...values: unknown[])
         case "stream_chunk":
         case "stream_end":
             return visibleVEStreamContent(raw);
+        case "stream_status":
+            return "";
         default:
             return sanitizeVisibleChatText(raw);
     }

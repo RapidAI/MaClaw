@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -209,5 +211,44 @@ func TestMobileBootstrapPushPaths(t *testing.T) {
 	}
 	if body["push"] == nil {
 		t.Fatal("want push transport summary")
+	}
+}
+
+// stubTransport answers every request with a canned response so the FCM and
+// webhook transports can be exercised without reaching Google.
+type stubTransport struct {
+	status int
+	body   string
+}
+
+func (s stubTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: s.status,
+		Body:       io.NopCloser(strings.NewReader(s.body)),
+		Header:     http.Header{},
+	}, nil
+}
+
+func TestMobilePushFCMCountsFailuresReportedInBody(t *testing.T) {
+	previous := mobilePushHTTPClient
+	defer func() { mobilePushHTTPClient = previous }()
+
+	mobilePushHTTPClient = &http.Client{Transport: stubTransport{status: http.StatusOK,
+		body: `{"success":0,"failure":1,"results":[{"error":"NotRegistered"}]}`}}
+	err := mobilePushSendFCMLegacy(context.Background(), "server-key", "device-token", mobilePushPendingItem{Title: "t", Body: "b"})
+	if err == nil || !strings.Contains(err.Error(), "NotRegistered") {
+		t.Fatalf("body failure was treated as success: err=%v", err)
+	}
+
+	mobilePushHTTPClient = &http.Client{Transport: stubTransport{status: http.StatusUnauthorized,
+		body: `{"error":"Unauthorized"}`}}
+	err = mobilePushSendFCMLegacy(context.Background(), "bad-key", "device-token", mobilePushPendingItem{Title: "t"})
+	if err == nil || !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "Unauthorized") {
+		t.Fatalf("status failure lost the reason: err=%v", err)
+	}
+
+	mobilePushHTTPClient = &http.Client{Transport: stubTransport{status: http.StatusOK, body: `{"success":1,"failure":0}`}}
+	if err := mobilePushSendFCMLegacy(context.Background(), "server-key", "device-token", mobilePushPendingItem{Title: "t"}); err != nil {
+		t.Fatalf("healthy send reported an error: %v", err)
 	}
 }

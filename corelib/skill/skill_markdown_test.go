@@ -1690,6 +1690,11 @@ func TestStripBashCommentLines(t *testing.T) {
 			input: "# header\n  python script.py\n# footer",
 			want:  "  python script.py",
 		},
+		{
+			name:  "preserves hash lines inside a quoted string",
+			input: "python -c \"\n# keep\nprint(1)\n\"",
+			want:  "python -c \"\n# keep\nprint(1)\n\"",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

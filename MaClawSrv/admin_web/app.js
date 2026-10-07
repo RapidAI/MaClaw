@@ -137,6 +137,44 @@ const zh = {
   "redactions": "脱敏项",
   "dataRoot": "数据根目录",
   "overviewHint": "运行状态、就绪状态、调度器和异步任务",
+  "guideTitle": "快速操作手册",
+  "guideIntro": "MaClawSrv 是多用户的数据与能力服务后台。管理员通常按“建账号 - 配默认能力 - 导入知识 - 验证运行”的顺序使用。",
+  "guideBadgeAdmin": "管理员",
+  "guideBadgeService": "数据服务",
+  "guideFlowAccount": "账号",
+  "guideFlowConfig": "配置",
+  "guideFlowKnowledge": "知识",
+  "guideFlowVerify": "验证",
+  "guideCoreConcepts": "核心概念",
+  "guideRecommendedSteps": "推荐步骤",
+  "guideConceptTenant": "租户",
+  "guideConceptTenantDesc": "一组用户、知识和策略的隔离边界。先建租户，再在租户下建用户。",
+  "guideConceptUser": "用户",
+  "guideConceptUserDesc": "真实使用 MaClawSrv 的账号。用户会拥有自己的会话、知识、凭据和客户端默认配置。",
+  "guideConceptAPI": "API 凭据",
+  "guideConceptAPIDesc": "给外部程序调用 MaClawSrv API 的密钥。普通后台管理不需要创建。",
+  "guideConceptKnowledge": "知识",
+  "guideConceptKnowledgeDesc": "用户或公用知识库中可检索的资料。权限决定某个用户能读到哪些知识范围。",
+  "guideConceptSkill": "技能来源",
+  "guideConceptSkillDesc": "助手查找和安装技能的渠道，不是知识库。优先级是用户策略 > 租户策略 > 全局默认。",
+  "guideConceptClient": "客户端配置",
+  "guideConceptClientDesc": "所有用户共用的搜索、代理、MCP、SSH、技能市场和界面默认值，保存后按运行时配置生效。",
+  "guideConceptService": "服务配置",
+  "guideConceptServiceDesc": "服务进程自己的配置。保存草稿后通常还要校验、导出方案、应用到 .env/systemd 并重启。",
+  "guideConceptSandbox": "沙箱",
+  "guideConceptSandboxDesc": "限制工具运行权限的安全边界。用于减少文件、网络和进程操作风险。",
+  "guideStep1": "先看总览",
+  "guideStep1Desc": "确认运行时、就绪状态、任务和安全风险是否正常。",
+  "guideStep2": "创建租户和用户",
+  "guideStep2Desc": "进入租户与用户，先创建租户，再创建普通用户；需要外部调用时再创建 API 凭据。",
+  "guideStep3": "配置用户侧默认值",
+  "guideStep3Desc": "进入客户端配置，设置联网搜索、代理、MCP/SSH、SkillHub 和界面默认值。",
+  "guideStep4": "导入或挂载知识",
+  "guideStep4Desc": "进入知识与技能来源，创建公用知识库、导入资料，并把知识范围挂到目标用户。",
+  "guideStep5": "调整技能来源",
+  "guideStep5Desc": "按全局、租户、用户三个层级设置技能市场来源；只在需要覆盖时启用租户或用户策略。",
+  "guideStep6": "做一次验证",
+  "guideStep6Desc": "回到总览看任务是否完成；到日志或运维里查错误、导出支持包或审计风险事件。",
   "sandboxHint": "检测、切换、诊断和安装指引",
   "logsHint": "已脱敏的服务日志尾部，支持来源和文本过滤",
   "runtimeLabel": "运行时",
@@ -286,6 +324,14 @@ const zh = {
   "latestSourceAt": "最近来源时间",
   "kind": "类型",
   "nextRunAt": "下次运行",
+  "tasks": "任务",
+  "push": "推送",
+  "pushWarn": "推送告警",
+  "query": "查询条件",
+  "listTargets": "目标列表",
+  "deliveryAudit": "投递审计",
+  "pause": "暂停",
+  "resume": "恢复",
   "lastError": "最近错误",
   "reportID": "报告 ID",
   "effectiveBackend": "生效后端",
@@ -593,6 +639,44 @@ const en = {
   "redactions": "Redactions",
   "dataRoot": "Data Root",
   "overviewHint": "Runtime, readiness, scheduler and async jobs",
+  "guideTitle": "Quick Start Manual",
+  "guideIntro": "MaClawSrv is a multi-user data and capability service. Admins usually follow: create accounts, configure shared capabilities, import knowledge, then verify runtime health.",
+  "guideBadgeAdmin": "Admin",
+  "guideBadgeService": "Data Server",
+  "guideFlowAccount": "Account",
+  "guideFlowConfig": "Config",
+  "guideFlowKnowledge": "Knowledge",
+  "guideFlowVerify": "Verify",
+  "guideCoreConcepts": "Core Concepts",
+  "guideRecommendedSteps": "Recommended Steps",
+  "guideConceptTenant": "Tenant",
+  "guideConceptTenantDesc": "An isolation boundary for users, knowledge, and policy. Create a tenant first, then create users under it.",
+  "guideConceptUser": "User",
+  "guideConceptUserDesc": "The account that actually uses MaClawSrv. A user has sessions, knowledge, credentials, and client defaults.",
+  "guideConceptAPI": "API Credential",
+  "guideConceptAPIDesc": "A key for external programs calling MaClawSrv APIs. Normal admin console work does not require one.",
+  "guideConceptKnowledge": "Knowledge",
+  "guideConceptKnowledgeDesc": "Retrievable material from user-owned or public knowledge bases. Permissions decide what a user can read.",
+  "guideConceptSkill": "Skill Sources",
+  "guideConceptSkillDesc": "Channels for finding and installing skills, not knowledge bases. Priority is user policy > tenant policy > global default.",
+  "guideConceptClient": "Client Config",
+  "guideConceptClientDesc": "Shared defaults for search, proxy, MCP, SSH, skill markets, and UI behavior. Saved values apply through runtime config.",
+  "guideConceptService": "Service Config",
+  "guideConceptServiceDesc": "Server-process configuration. After saving a draft, validate, export a plan, apply .env/systemd changes, and restart when required.",
+  "guideConceptSandbox": "Sandbox",
+  "guideConceptSandboxDesc": "A safety boundary for tool execution that reduces file, network, and process-operation risk.",
+  "guideStep1": "Check Overview first",
+  "guideStep1Desc": "Check runtime, readiness, jobs, and security risks.",
+  "guideStep2": "Create a tenant and users",
+  "guideStep2Desc": "Go to Tenants & Users. Create a tenant, then users. Create API credentials only for external callers.",
+  "guideStep3": "Configure user-side defaults",
+  "guideStep3Desc": "Open Client Config to set search, proxy, MCP/SSH, SkillHub, and UI defaults.",
+  "guideStep4": "Import or attach knowledge",
+  "guideStep4Desc": "Open Knowledge & Skill Sources, create public knowledge bases, import material, and attach scopes to users.",
+  "guideStep5": "Adjust skill sources",
+  "guideStep5Desc": "Configure skill sources at global, tenant, and user levels. Enable overrides only when needed.",
+  "guideStep6": "Do a verification pass",
+  "guideStep6Desc": "Return to Overview for job status. Use Logs or Ops for errors, support bundles, and risk-event audit.",
   "sandboxHint": "Detect, switch, diagnose and install guidance",
   "logsHint": "Redacted service log tail with source and text filters",
   "runtimeLabel": "Runtime",
@@ -741,6 +825,14 @@ const en = {
   "latestSourceAt": "Latest source",
   "kind": "Kind",
   "nextRunAt": "Next run",
+  "tasks": "Tasks",
+  "push": "Push",
+  "pushWarn": "Push warnings",
+  "query": "Query",
+  "listTargets": "List targets",
+  "deliveryAudit": "Delivery audit",
+  "pause": "Pause",
+  "resume": "Resume",
   "lastError": "Last error",
   "reportID": "Report ID",
   "effectiveBackend": "Effective backend",
@@ -1098,35 +1190,35 @@ const guideIcons={
 };
 function guideIcon(name){ return guideIcons[name] || guideIcons.overview; }
 const quickGuideConcepts=[
-  ["tenant","租户 Tenant","一组用户、知识和策略的隔离边界。先建租户，再在租户下建用户。","An isolation boundary for users, knowledge, and policy. Create a tenant first, then create users under it."],
-  ["user","用户 User","真实使用 MaClawSrv 的账号。用户会拥有自己的会话、知识、凭据和客户端默认配置。","The account that actually uses MaClawSrv. A user has sessions, knowledge, credentials, and client defaults."],
-  ["key","API 凭据 API Credential","给外部程序调用 MaClawSrv API 的密钥。普通后台管理不需要创建。","A key for external programs calling MaClawSrv APIs. Normal admin console work does not require one."],
-  ["knowledge","知识 Knowledge","用户或公用知识库中可检索的资料。权限决定某个用户能读到哪些知识范围。","Retrievable material from user-owned or public knowledge bases. Permissions decide what a user can read."],
-  ["skill","技能来源 Skill Sources","助手查找和安装技能的渠道，不是知识库。优先级是用户策略 > 租户策略 > 全局默认。","Channels for finding and installing skills, not knowledge bases. Priority is user policy > tenant policy > global default."],
-  ["client","客户端配置 Client Config","所有用户共用的搜索、代理、MCP、SSH、技能市场和界面默认值，保存后按运行时配置生效。","Shared defaults for search, proxy, MCP, SSH, skill markets, and UI behavior. Saved values apply through runtime config."],
-  ["service","服务配置 Service Config","服务进程自己的配置。保存草稿后通常还要校验、导出方案、应用到 .env/systemd 并重启。","Server-process configuration. After saving a draft, validate, export a plan, apply .env/systemd changes, and restart when required."],
-  ["sandbox","沙箱 Sandbox","限制工具运行权限的安全边界。用于减少文件、网络和进程操作风险。","A safety boundary for tool execution that reduces file, network, and process-operation risk."]
+  ["tenant","guideConceptTenant","guideConceptTenantDesc"],
+  ["user","guideConceptUser","guideConceptUserDesc"],
+  ["key","guideConceptAPI","guideConceptAPIDesc"],
+  ["knowledge","guideConceptKnowledge","guideConceptKnowledgeDesc"],
+  ["skill","guideConceptSkill","guideConceptSkillDesc"],
+  ["client","guideConceptClient","guideConceptClientDesc"],
+  ["service","guideConceptService","guideConceptServiceDesc"],
+  ["sandbox","guideConceptSandbox","guideConceptSandboxDesc"]
 ];
 const quickGuideSteps=[
-  ["overview","先看总览","确认运行时、就绪状态、任务和安全风险是否正常。","Check Overview first: runtime, readiness, jobs, and security risks.", "overview"],
-  ["tenant","创建租户和用户","进入租户与用户，先创建租户，再创建普通用户；需要外部调用时再创建 API 凭据。","Go to Tenants & Users. Create a tenant, then users. Create API credentials only for external callers.", "tenants"],
-  ["client","配置用户侧默认值","进入客户端配置，设置联网搜索、代理、MCP/SSH、SkillHub 和界面默认值。","Open Client Config to set search, proxy, MCP/SSH, SkillHub, and UI defaults.", "clientConfig"],
-  ["knowledge","导入或挂载知识","进入知识与技能来源，创建公用知识库、导入资料，并把知识范围挂到目标用户。","Open Knowledge & Skill Sources, create public knowledge bases, import material, and attach scopes to users.", "knowledge"],
-  ["skill","调整技能来源","按全局、租户、用户三个层级设置技能市场来源；只在需要覆盖时启用租户或用户策略。","Configure skill sources at global, tenant, and user levels. Enable overrides only when needed.", "knowledge"],
-  ["logs","做一次验证","回到总览看任务是否完成；到日志或运维里查错误、导出支持包或审计风险事件。","Return to Overview for job status. Use Logs or Ops for errors, support bundles, and risk-event audit.", "logs"]
+  ["overview","guideStep1","guideStep1Desc","overview"],
+  ["tenant","guideStep2","guideStep2Desc","tenants"],
+  ["client","guideStep3","guideStep3Desc","clientConfig"],
+  ["knowledge","guideStep4","guideStep4Desc","knowledge"],
+  ["skill","guideStep5","guideStep5Desc","knowledge"],
+  ["logs","guideStep6","guideStep6Desc","logs"]
 ];
-const quickGuideHeaderHTML=`<div class="quick-guide__head"><div class="quick-guide__title-wrap"><div class="quick-guide__hero-icon">${guideIcon("service")}</div><div><h2 id="quickGuideTitle">快速操作手册 / Quick Start Manual</h2><p>MaClawSrv 是多用户的数据与能力服务后台。管理员通常按“建账号 - 配默认能力 - 导入知识 - 验证运行”的顺序使用。</p><p>MaClawSrv is a multi-user data and capability service. Admins usually follow: create accounts, configure shared capabilities, import knowledge, then verify runtime health.</p></div></div><div class="quick-guide__status"><span>Admin</span><strong>Data Server</strong></div></div>`;
-const quickGuideFlowHTML=`<div class="quick-guide__flow" aria-hidden="true"><span>${guideIcon("tenant")}Account</span><i></i><span>${guideIcon("client")}Config</span><i></i><span>${guideIcon("knowledge")}Knowledge</span><i></i><span>${guideIcon("check")}Verify</span></div>`;
-const quickGuideConceptsHTML=quickGuideConcepts.map(([icon,term,cn,en])=>`<div><dt><span class="guide-mini-icon">${guideIcon(icon)}</span>${esc(term)}</dt><dd>${esc(cn)}<span>${esc(en)}</span></dd></div>`).join("");
+function quickGuideHeaderHTML(){ return `<div class="quick-guide__head"><div class="quick-guide__title-wrap"><div class="quick-guide__hero-icon">${guideIcon("service")}</div><div><h2 id="quickGuideTitle">${esc(t("guideTitle"))}</h2><p>${esc(t("guideIntro"))}</p></div></div><div class="quick-guide__status"><span>${esc(t("guideBadgeAdmin"))}</span><strong>${esc(t("guideBadgeService"))}</strong></div></div>`; }
+function quickGuideFlowHTML(){ return `<div class="quick-guide__flow" aria-hidden="true"><span>${guideIcon("tenant")}${esc(t("guideFlowAccount"))}</span><i></i><span>${guideIcon("client")}${esc(t("guideFlowConfig"))}</span><i></i><span>${guideIcon("knowledge")}${esc(t("guideFlowKnowledge"))}</span><i></i><span>${guideIcon("check")}${esc(t("guideFlowVerify"))}</span></div>`; }
+function quickGuideConceptsHTML(){ return quickGuideConcepts.map(([icon,term,desc])=>`<div><dt><span class="guide-mini-icon">${guideIcon(icon)}</span>${esc(t(term))}</dt><dd>${esc(t(desc))}</dd></div>`).join(""); }
 const quickGuideStepsHTMLCache=Object.create(null);
 function quickGuideStepsHTML(){
   const locale=String(state.locale || "zh-CN");
   if(locale in quickGuideStepsHTMLCache) return quickGuideStepsHTMLCache[locale];
-  quickGuideStepsHTMLCache[locale]=quickGuideSteps.map(([icon,title,cn,en,target],i)=>`<li><span class="step-index">${guideIcon(icon)}<b>${i+1}</b></span><div><strong>${esc(title)}</strong><p>${esc(cn)}</p><p>${esc(en)}</p><button type="button" class="secondary guide-link" data-guide-section="${esc(target)}">${esc(t(target))}</button></div></li>`).join("");
+  quickGuideStepsHTMLCache[locale]=quickGuideSteps.map(([icon,title,desc,target],i)=>`<li><span class="step-index">${guideIcon(icon)}<b>${i+1}</b></span><div><strong>${esc(t(title))}</strong><p>${esc(t(desc))}</p><button type="button" class="secondary guide-link" data-guide-section="${esc(target)}">${esc(t(target))}</button></div></li>`).join("");
   return quickGuideStepsHTMLCache[locale];
 }
 function quickStartGuide(){
-  return `<section class="quick-guide" aria-labelledby="quickGuideTitle">${quickGuideHeaderHTML}${quickGuideFlowHTML}<div class="quick-guide__grid"><div class="quick-guide__block"><h3>核心概念 / Core Concepts</h3><dl class="concept-list">${quickGuideConceptsHTML}</dl></div><div class="quick-guide__block"><h3>推荐步骤 / Recommended Steps</h3><ol class="step-list">${quickGuideStepsHTML()}</ol></div></div></section>`;
+  return `<section class="quick-guide" aria-labelledby="quickGuideTitle">${quickGuideHeaderHTML()}${quickGuideFlowHTML()}<div class="quick-guide__grid"><div class="quick-guide__block"><h3>${esc(t("guideCoreConcepts"))}</h3><dl class="concept-list">${quickGuideConceptsHTML()}</dl></div><div class="quick-guide__block"><h3>${esc(t("guideRecommendedSteps"))}</h3><ol class="step-list">${quickGuideStepsHTML()}</ol></div></div></section>`;
 }
 function optionText(parts){ return parts.filter(Boolean).join(" / "); }
 function displayWithID(label,id){ const text=String(label||"").trim(); const raw=String(id||"").trim(); if(!text||text===raw) return raw||"-"; return `${text} (${raw})`; }

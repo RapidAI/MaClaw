@@ -803,6 +803,43 @@ func TestPrepareAgentLoopToolsLightDoesNotExposeLegacyManageSkillGateway(t *test
 	}
 }
 
+// 2026-10-04 「北京天气，输出格式化pdf」: the tree timed out, the turn was a
+// full leftover, and the model could write a script but not run it. bash,
+// craft_tool, and manage_skill were absent. A full surface pins that
+// execution baseline even when the name router never selected it.
+func TestPrepareAgentLoopToolsFullDegradedPinsExecutionBaseline(t *testing.T) {
+	h := &IMMessageHandler{app: &App{}}
+	h.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("web_fetch", "fetch a page", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("edit_file", "edit", nil, nil),
+		toolDef("bash", "shell", nil, nil),
+		toolDef("craft_tool", "craft", nil, nil),
+		toolDef("manage_skill", "run an installed skill", nil, nil),
+	})
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime: RuntimeContext{
+			Execution: fullExecutionProfile("semantic classifier degraded"),
+			SemanticIntent: &intent.ClassificationResult{
+				Primary: intent.LabelUnknown, Confidence: 0.30, Layer: 2, Degraded: true,
+				Reason: "embedding ambiguous; tree classification unavailable (l2=live_data conf=0.78)",
+			},
+		},
+	}
+	got := h.prepareAgentLoopTools("desktop-user", "北京天气，输出格式化pdf", ctx, agentLoopPhase{})
+	names := map[string]bool{}
+	for _, def := range got.Tools {
+		names[extractToolName(def)] = true
+	}
+	for _, name := range []string{"bash", "read_file", "write_file", "edit_file", "craft_tool", "manage_skill"} {
+		if !names[name] {
+			t.Fatalf("full degraded surface missing %s: %v", name, names)
+		}
+	}
+}
+
 func TestFilterToolsForExecutionProfileLightWithoutExplicitContractsFallsBack(t *testing.T) {
 	tools := []map[string]interface{}{
 		toolDef("manage_skill", "manage skills", nil, nil),

@@ -18,9 +18,26 @@ if(DEFINED MACLAW_PROFILE AND NOT MACLAW_PROFILE STREQUAL "")
     idf_build_set_property(DEPENDENCIES_LOCK
                            "${CMAKE_CURRENT_SOURCE_DIR}/dependencies.lock.${MACLAW_PROFILE}")
 endif()
-# Profile-only managed dependencies live in source-free carrier components.
-# ESP-IDF discovers these before it can read Kconfig, so the selected build
-# entry point must pass their directory through EXTRA_COMPONENT_DIRS.
+# Profile-only managed dependencies live in source-free carrier components under
+# profile_components/<name>_deps (e.g. echoear_deps for the echoear-2st board).
+# ESP-IDF's Component Manager must see these manifests BEFORE Kconfig exists, so
+# the selected profile's carrier directory is registered here via
+# EXTRA_COMPONENT_DIRS. This was previously only described in a comment and never
+# wired, which made the manager resolve a manifest set that omitted the profile's
+# own components -- for EchoEar that dropped esp_lcd_st77916 (and its transitive
+# cmake_utilities), producing an incomplete dependencies.lock.<profile> and,
+# on the next build, a re-solve that tried to delete those managed components.
+set(_maclaw_carrier_dir "")
+if(MACLAW_PROFILE STREQUAL "echoear-2st")
+    set(_maclaw_carrier_dir "echoear_deps")
+elseif(MACLAW_PROFILE STREQUAL "fangtang-4g")
+    set(_maclaw_carrier_dir "fangtang_deps")
+elseif(MACLAW_PROFILE STREQUAL "waveshare-amoled-1.75c")
+    set(_maclaw_carrier_dir "waveshare_deps")
+endif()
+if(_maclaw_carrier_dir AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/profile_components/${_maclaw_carrier_dir}")
+    list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/profile_components/${_maclaw_carrier_dir}")
+endif()
 project(maclaw_esp32s3_client)
 # The sdkconfig.defaults in this project carries ESP-IDF 6.0.2-specific S3
 # stability workarounds (CONFIG_ESP_COEX_ENABLED=n, the two

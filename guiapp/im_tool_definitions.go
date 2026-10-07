@@ -205,14 +205,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
 		// --- 合并工具：定时任务 (create/list/run/pause/resume/delete/update) ---
-		toolDefFromCore("manage_schedule", "定时任务管理（所有本地 IM 通道可用）。仅当用户明确提出定时、计划或提醒需求时才能 action=create；普通文档转换和一次性工作绝不能创建定时任务。action: create/list/run/pause/resume/delete/update/list_targets。run 会立即在后台执行指定任务；pause/resume 暂停或恢复任务。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
+		toolDefFromCore("manage_schedule", "定时任务管理（所有本地 IM 通道可用）。仅当用户明确提出定时、计划或提醒需求时才能 action=create；普通文档转换和一次性工作绝不能创建定时任务。action: create/list/run/pause/resume/delete/update/list_targets。run 会立即在后台执行指定任务；pause/resume 暂停或恢复任务。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）、device（码卡龙设备，仅 self）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
 			map[string]interface{}{
 				"action":           map[string]string{"type": "string", "description": "create/list/run/pause/resume/delete/update/list_targets（execute/trigger/stop/enable/list_groups 等别名也可）"},
 				"mention_user_ids": map[string]string{"type": "string", "description": "群推送时可选 @ 的用户 ID，逗号分隔"},
 				"mention_all":      map[string]string{"type": "boolean", "description": "群推送时是否 @所有人"},
 			}),
 		// --- Immediate IM text push (independent of schedule) ---
-		toolDefFromCore("im_message", "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。用户要求「现在发到蓝信某群/微信」时用本工具；周期播报才用 manage_schedule+delivery。send_file 上传本机文件（目前仅蓝信 lansenger 支持），可同时带 text 作为说明文字。", nil),
+		toolDefFromCore("im_message", "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ、码卡龙设备）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。用户要求「现在发到蓝信某群/微信」时用本工具；周期播报才用 manage_schedule+delivery。send_file 上传本机文件（目前仅蓝信 lansenger 支持），可同时带 text 作为说明文字。", nil),
 	}
 
 	// ---------- MIS structured data and AgentView transaction workspace ----------

@@ -1,5 +1,6 @@
 import type { ChatMessage } from "./useAIAssistant";
 import { legacyMarkVisual } from "../remote/remoteStreamMarks";
+import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
 
 /**
  * Decorative pictograph ranges (no emoji literals in source).
@@ -83,7 +84,6 @@ export function stripLeadingEmojiCluster(text: string): string {
 
 /** Markdown structural prefixes that may sit before a decorative line-start pictograph. */
 const MD_LINE_PREFIX = /^(#{1,6}[ \t]+|[-*+][ \t]+|\d+\.[ \t]+|>[ \t]+)/;
-const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})([^\r\n]*)/;
 
 /**
  * Strip decorative pictograph clusters on a single line (leading + mid-sentence),
@@ -155,30 +155,50 @@ export function stripLineDecorativePictographs(line: string): string {
  * blocks; semantic status/star marks are preserved for SVG rendering.
  */
 export function prepareChatBodyLines(lines: string[]): string[] {
-    let fenceMarker = "";
-    let changed = false;
-    const out = lines.map((line) => {
-        const fenceMatch = line.match(FENCE_LINE);
-        if (fenceMatch) {
-            const marker = fenceMatch[1];
-            if (!fenceMarker) {
-                fenceMarker = marker;
-            } else if (
-                marker[0] === fenceMarker[0]
-                && marker.length >= fenceMarker.length
-                && !fenceMatch[2].trim()
-            ) {
-                fenceMarker = "";
-            }
-            return line;
+    // Fence and formula state only decide which lines keep their pictographs.
+    // A reply with none can return the same array. Streaming re-renders this
+    // on every flush.
+    let hasPictograph = false;
+    for (let i = 0; i < lines.length; i++) {
+        if (mayContainPictograph(lines[i])) {
+            hasPictograph = true;
+            break;
         }
-        if (fenceMarker) return line;
-        const cleaned = stripLineDecorativePictographs(line);
-        if (cleaned !== line) changed = true;
-        return cleaned;
-    });
-    // Preserve input array identity when nothing was stripped (streaming-friendly).
-    return changed ? out : lines;
+    }
+    if (!hasPictograph) return lines;
+
+    let fenceMarker = "";
+    let math: "$$" | "\\[" | "" = "";
+    // Copy only once a line actually changes, so status-mark-only replies keep
+    // the input array.
+    let out: string[] | null = null;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let next = line;
+        if (math) {
+            // Backticks inside a formula are TeX, so the following prose is
+            // still stripped. The formula lines themselves were stripped before.
+            math = displayMathAfterLine(line, math);
+            next = stripLineDecorativePictographs(line);
+        } else {
+            const nextFence = markdownFenceAfterLine(line, fenceMarker);
+            // A marker glued to prose (`title``` `) opens the fence too, so the
+            // following code body keeps its pictographs.
+            if (fenceMarker || nextFence) {
+                fenceMarker = nextFence;
+            } else {
+                math = displayMathAfterLine(line, "");
+                next = stripLineDecorativePictographs(line);
+            }
+        }
+        if (next !== line) {
+            if (!out) out = lines.slice(0, i);
+            out.push(next);
+        } else if (out) {
+            out.push(line);
+        }
+    }
+    return out ?? lines;
 }
 
 /** True when text may contain decorative pictograph bases (fast reject for clean text). */

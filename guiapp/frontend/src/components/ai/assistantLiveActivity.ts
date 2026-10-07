@@ -521,6 +521,20 @@ export function codingTimelineLiveThoughtIndex(
     return timeline[last]?.kind === "thinking" ? last : -1;
 }
 
+/** Latest reasoning node in a coding turn, even when a tool row follows it. Blank thoughts are skipped. */
+export function codingTimelineLastThoughtIndex(
+    timeline: Array<{ kind?: string; content?: string }> | undefined,
+): number {
+    if (!timeline?.length) return -1;
+    for (let index = timeline.length - 1; index >= 0; index--) {
+        const item = timeline[index];
+        if (item?.kind !== "thinking") continue;
+        if (typeof item.content === "string" && !item.content.trim()) continue;
+        return index;
+    }
+    return -1;
+}
+
 const GENERIC_CODING_LIVE_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
     "thinking",
     "preparing",

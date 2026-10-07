@@ -1795,10 +1795,11 @@ func cloneSkillRunArgs(runArgs map[string]interface{}) map[string]interface{} {
 	return dst
 }
 
-// detectImplicitRequiredArgs scans step commands for {{key}} placeholders
-// that are not provided in templateVars. Returns the list of missing keys.
-// This catches skills that use {{input}}/{{output}} without declaring
-// required_args in their frontmatter.
+// detectImplicitRequiredArgs scans step commands for missing template
+// parameters (explicit {{key}} declarations plus parameter-shaped {key}/${key}
+// references) that are not provided in templateVars. Returns the sorted list
+// of missing keys. This catches skills that use {{input}}/{{output}} without
+// declaring required_args in their frontmatter.
 func detectImplicitRequiredArgs(steps []corelib.NLSkillStep, vars map[string]string) []string {
 	result := cskill.DetectImplicitRequiredArgs(steps, vars)
 	slices.Sort(result)
@@ -3848,6 +3849,10 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 				// 1. Self-repair can extract the error class via extractErrorClass()
 				// 2. LLM receives actionable repair suggestions
 				skills[i].LastError = formatExecErrorForStorage(execErr)
+				// Auto-quarantine a machine-generated skill that has never
+				// succeeded: it is a defective artifact and every retry burns
+				// LLM calls until someone notices.
+				maybeQuarantineLearnedSkill(&skills[i], execErr)
 			}
 			saveStart := time.Now()
 			saveErr := r.executor.saveSkills(skills)
@@ -5211,29 +5216,12 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	if runtime.GOOS == "windows" {
 		// On Windows, prefer cmd.exe for direct script execution to avoid
 		// Git Bash subprocess restrictions that can block nested execFileSync.
-		// Explicit preferred_shell metadata wins; otherwise detect bash-only syntax.
+		// The same resolver the requirement precheck uses picks PowerShell for
+		// cmdlets and bash only for Unix syntax the cmd interpreter cannot run.
 		preferredShell, _ := params["preferred_shell"].(string)
-		preferredShell = strings.ToLower(strings.TrimSpace(preferredShell))
-		useBash := needsBashShell(command)
-		usePowerShell := false
-		shellReason := "default (cmd.exe)"
-		if useBash {
-			shellReason = "detected Unix-specific syntax in command"
-		}
-		switch preferredShell {
-		case "bash", "sh", "zsh":
-			useBash = true
-			usePowerShell = false
-			shellReason = "skill metadata preferred_shell=bash"
-		case "powershell", "pwsh", "ps", "ps1":
-			useBash = false
-			usePowerShell = true
-			shellReason = "skill metadata preferred_shell=powershell"
-		case "cmd", "cmd.exe", "windows", "win_cmd":
-			useBash = false
-			usePowerShell = false
-			shellReason = "skill metadata preferred_shell=cmd"
-		}
+		resolvedShell, shellReason := cskill.ResolveStepShell(command, preferredShell, runtime.GOOS)
+		useBash := resolvedShell == cskill.StepShellBash
+		usePowerShell := resolvedShell == cskill.StepShellPowerShell
 		if useBash {
 			if app != nil {
 				if shPath, err := app.findSh(); err == nil {
@@ -5632,77 +5620,6 @@ func lastNLines(text string, n int) []string {
 		return lines
 	}
 	return lines[len(lines)-n:]
-}
-
-// needsBashShell checks whether a command contains shell-specific
-// features that require bash/sh instead of cmd.exe on Windows.
-// Default: prefer cmd.exe for better subprocess nesting support
-// (e.g. node execFileSync calls to powershell).
-func needsBashShell(command string) bool {
-	// If command starts with known interpreters that run fine under cmd.exe,
-	// prefer cmd.exe for better subprocess nesting.
-	lower := strings.TrimSpace(strings.ToLower(command))
-
-	// Check for Unix shell builtins FIRST. These must use bash even if the
-	// command also contains .py/.js paths (e.g. "export FOO=bar && python x.py").
-	if strings.HasPrefix(lower, "export ") || strings.HasPrefix(lower, "source ") ||
-		strings.HasPrefix(lower, "#!/") {
-		log.Printf("[skill-runner] shell detection: found Unix shell builtin (export/source/shebang), needs bash")
-		return true
-	}
-	// Multi-line commands containing export lines or # comment lines.
-	// On Windows, cmd.exe treats # as a command, not a comment, so any
-	// script with # comments must be routed to bash.
-	for _, line := range strings.Split(command, "\n") {
-		trimmed := strings.TrimSpace(strings.ToLower(line))
-		if strings.HasPrefix(trimmed, "export ") {
-			log.Printf("[skill-runner] shell detection: found export in multi-line command, needs bash")
-			return true
-		}
-		if strings.HasPrefix(trimmed, "#") {
-			log.Printf("[skill-runner] shell detection: found # comment line in command, needs bash")
-			return true
-		}
-	}
-
-	for _, prefix := range []string{"node ", "python ", "python3 ", "java ", "npm ", "pip ", "npx ", "go run ", "cargo run ", "pnpm "} {
-		if strings.HasPrefix(lower, prefix) {
-			return false
-		}
-	}
-	// Direct script path invocation: cmd.exe handles this well.
-	if strings.Contains(lower, ".mjs") || strings.Contains(lower, ".js") ||
-		strings.Contains(lower, ".py") || strings.Contains(lower, ".bat") ||
-		strings.Contains(lower, ".cmd") {
-		return false
-	}
-	// Only use bash for genuine bash-specific syntax.
-	// Pipes, redirections, heredocs.
-	if strings.ContainsAny(command, "|<>") {
-		log.Printf("[skill-runner] shell detection: found pipe/redirect in command, needs bash")
-		return true
-	}
-	if strings.Contains(command, "&&") || strings.Contains(command, "||") {
-		log.Printf("[skill-runner] shell detection: found && or || in command, needs bash")
-		return true
-	}
-	// Command substitution.
-	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
-		log.Printf("[skill-runner] shell detection: found $() or backtick in command, needs bash")
-		return true
-	}
-	// Globbing with path separators.
-	if strings.Contains(command, "*/") || strings.Contains(command, "/*") {
-		log.Printf("[skill-runner] shell detection: found glob pattern in command, needs bash")
-		return true
-	}
-	// Tilde expansion (~/path).
-	if strings.Contains(command, "~/") {
-		log.Printf("[skill-runner] shell detection: found ~/ tilde expansion in command, needs bash")
-		return true
-	}
-	// Default: prefer cmd.exe for Windows subprocess compatibility.
-	return false
 }
 
 // winPathInCommandRe matches Windows absolute paths (e.g. C:\Users\...)

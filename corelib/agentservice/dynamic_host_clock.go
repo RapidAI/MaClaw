@@ -38,7 +38,7 @@ type reviewedHostWebSearcher interface {
 }
 
 type reviewedHostFileReader interface {
-	ReadReviewedHostFile(ctx context.Context, principal Principal, path, query, filePattern string) (string, error)
+	ReadReviewedHostFile(ctx context.Context, principal Principal, path, query, filePattern string, startLine int) (string, error)
 }
 
 type reviewedHostRepoInspector interface {

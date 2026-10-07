@@ -755,7 +755,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	r.Register(ToolEntry{
 		Name: "manage_schedule",
 		Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
-			"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self）。" +
+			"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self）、device（码卡龙设备，仅 self）。" +
 			"create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。" +
 			"day_of_week: -1=每天, 0=周日…6=周六。一次性任务将 start_date 与 end_date 都设为目标日期。" +
 			"即时发消息请用 im_message，不要用定时任务绕路。",
@@ -787,7 +787,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name: "im_message",
 		Description: "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。" +
 			"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。" +
-			"list_targets 的 channel：lansenger|weixin|telegram|qq；send 需 text + group_name/group_id/user_id。" +
+			"list_targets 的 channel：lansenger|weixin|telegram|qq|device；send 需 text + group_name/group_id/user_id（device 仅支持 user_id=self）。" +
 			"send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
 		Properties: map[string]interface{}{
 			"action":           map[string]string{"type": "string", "description": "list_targets、send 或 send_file；可省略并自动推断"},
@@ -795,7 +795,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"message":          map[string]string{"type": "string", "description": "text 别名"},
 			"path":             map[string]string{"type": "string", "description": "send_file：要发送的本机文件路径"},
 			"file_name":        map[string]string{"type": "string", "description": "send_file：发送时显示的文件名（可选）"},
-			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
+			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq|device（默认 lansenger）"},
 			"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
 			"group_name":       map[string]string{"type": "string", "description": "send/send_file：群名（自动解析）"},
 			"group_id":         map[string]string{"type": "string", "description": "send/send_file：群 ID"},

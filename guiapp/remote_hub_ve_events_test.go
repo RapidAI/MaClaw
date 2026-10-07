@@ -69,6 +69,25 @@ func TestHandleVEEventKeepsDiscoverableCacheForDiscussionMessage(t *testing.T) {
 	}
 }
 
+func TestDiscussionActivityFrontendPayloadFlattensHubFields(t *testing.T) {
+	got := discussionActivityFrontendPayload(map[string]any{
+		"session_id": "sess-1",
+		"from_id":    "ve-1",
+		"phase":      "tool_start",
+		"name":       "knowledge_search",
+	})
+	if got["session_id"] != "sess-1" || got["phase"] != "tool_start" || got["name"] != "knowledge_search" || got["from_id"] != "ve-1" {
+		t.Fatalf("payload=%v", got)
+	}
+}
+
+func TestStreamStatusFieldsReadsActivityJSON(t *testing.T) {
+	phase, name := streamStatusFields(`{"phase":"accepted","name":""}`)
+	if phase != "accepted" || name != "" {
+		t.Fatalf("phase=%q name=%q", phase, name)
+	}
+}
+
 func TestShouldClearDiscoverableVECacheForEvent(t *testing.T) {
 	tests := []struct {
 		eventType string

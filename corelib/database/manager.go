@@ -1190,7 +1190,7 @@ func openProfileWithTunnel(ctx context.Context, p Profile, resolve SecretResolve
 		if err != nil {
 			return nil, fmt.Errorf("connection: %w", err)
 		}
-		u := &url.URL{Scheme: "sqlserver", User: url.UserPassword(p.Username, secret), Host: addr, Path: "/" + p.Database}
+		u := sqlServerConnectURL(addr, p.Username, secret, p.Database)
 		applySQLServerTLS(u, p.TLS)
 		if profileUsesSSHTunnel(p) {
 			return openTunneledSQLAdapter("sqlserver", u.String(), p, secret, dial)

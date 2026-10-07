@@ -78,6 +78,8 @@ func (a *App) deliverScheduledTaskTarget(ctx context.Context, channel, botProfil
 		return a.deliverTelegramScheduledTarget(ctx, target, text)
 	case scheduler.DeliveryChannelQQ:
 		return a.deliverQQScheduledTarget(ctx, target, text)
+	case scheduler.DeliveryChannelDevice:
+		return a.deliverDeviceScheduledTarget(ctx, target, text)
 	default:
 		return "", fmt.Errorf("unsupported channel %q", channel)
 	}

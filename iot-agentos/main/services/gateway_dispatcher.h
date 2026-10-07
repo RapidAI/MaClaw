@@ -57,6 +57,18 @@ typedef struct {
                                    bool *out_handled, bool *out_permanently_invalid);
     void (*apply_glyphs)(const void *glyphs_node);
     void (*apply_ambient)(const void *ambient_node);
+    /* Structured event push (plan N1-2).  The node is the nested `event`
+     * object of a `type == "event"` message; the dispatcher has already
+     * confirmed this device declared the eventPush capability.
+     *
+     * Reports back like the other domain handlers rather than swallowing the
+     * outcome: `out_handled=false` keeps the message pending for a later poll
+     * (the admission matrix queues a soft event behind an active turn instead
+     * of replacing what the user is reading), while
+     * `out_permanently_invalid=true` ACKs it as failed so an event the device
+     * cannot render faithfully never pins the shared page cursor. */
+    void (*apply_event)(const void *event_node, bool *out_handled,
+                        bool *out_permanently_invalid);
     /* Server-audio policy and playback (audio domain seam). */
     bool (*audio_url_allowed)(const char *url);
     bool (*audio_mime_supported)(const char *mime);
@@ -77,6 +89,13 @@ typedef struct {
     /* Flushes one durable Tool-result envelope before another downlink page
      * is read. The root owns persistence and transport composition. */
     int32_t (*flush_tool_result_outbox)(void);
+    /* Flushes a pending approval decision (plan N1-6).  It is a separate hook
+     * from the tool-result outbox rather than a second record in it: a decision
+     * expires, so it must not queue behind a durable queue that may be stuck on
+     * one record the Hub keeps rejecting.  Called after the message ACK outbox,
+     * which owns the page-cursor ordering guarantee, and before the tool-result
+     * outbox for that reason. */
+    int32_t (*flush_event_ack)(void);
 } gateway_dispatcher_host_t;
 
 device_status_t gateway_dispatcher_init(const gateway_dispatcher_host_t *host);

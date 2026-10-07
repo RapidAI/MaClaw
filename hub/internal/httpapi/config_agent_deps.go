@@ -29,7 +29,6 @@ type ConfigAgentDeps struct {
 	DingTalk  *dingtalk.Plugin
 	QQBot     *qqbot.Plugin
 	IMRuntime TenantIMRuntimeReloader
-	BridgeDir string
 	// DigitalAssets gives the assistant access to the tenant-level feature and
 	// sync switches without exposing the underlying settings store directly.
 	DigitalAssets *digitalasset.Service

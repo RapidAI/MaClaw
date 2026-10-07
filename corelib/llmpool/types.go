@@ -64,6 +64,11 @@ type ProviderConfig struct {
 	CreditMultiplier         float64                  `json:"credit_multiplier,omitempty"` // default 1.0 when no schedule window matches
 	Timezone                 string                   `json:"timezone,omitempty"`          // IANA timezone for schedule windows; default Asia/Shanghai
 	CreditMultiplierSchedule []CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
+	// ServeWindows is when this provider may answer requests. Multiple windows
+	// are a union: one match opens the provider, and an empty list means
+	// always available. It is a dial gate, not a billing schedule, so it never
+	// changes what the consumer is charged.
+	ServeWindows []TokenBankShareWindow `json:"serve_windows,omitempty"`
 	// TokenPricing is the provider-wide directional token price. When it has a
 	// usable Credits price it is the authoritative settlement price for every
 	// route dispatched to this provider. Route pricing exists only as a legacy

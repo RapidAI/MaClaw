@@ -593,3 +593,94 @@ func TestListUnboundGiftWithdrawalsIgnoresTheHistoryPage(t *testing.T) {
 		t.Fatal("empty user id was accepted")
 	}
 }
+
+func TestListOrphanWithdrawalsShowsLedgerDebitsThisNodeDidNotInsert(t *testing.T) {
+	provider := newTokenBankTestProvider(t, filepath.Join(t.TempDir(), "tbk-orphan.db"))
+	repo := newTokenBankTestRepo(t, provider)
+	ctx := context.Background()
+	seedEarned(t, repo, "user-or", 20_000_000)
+	if _, _, err := repo.Withdraw(ctx, TokenBankWithdrawRequest{
+		RequestID: "local-manual", UserID: "user-or", HubID: "hub-1",
+		AmountMicro: 1_000_000, Manual: true,
+	}); err != nil {
+		t.Fatalf("Withdraw() error = %v", err)
+	}
+	postedAt := time.Date(2026, 10, 4, 1, 0, 0, 0, time.UTC)
+	if _, err := repo.AppendLedger(ctx, TokenBankLedgerEntry{
+		ID:          "wdledger-auto",
+		UserID:      "user-or",
+		Bucket:      TokenBankBucketWithdrawn,
+		AmountMicro: 2_500_000,
+		BizKey:      "withdraw:tbk-auto:hub-9:owner@example.com:paid:3",
+		RefType:     "withdrawal",
+		RefID:       "tbk-auto:hub-9:owner@example.com:paid:3",
+		Note:        "hub-9",
+		CreatedAt:   postedAt,
+	}); err != nil {
+		t.Fatalf("AppendLedger(orphan) error = %v", err)
+	}
+	if _, err := repo.AppendAdjustment(ctx, "user-or", TokenBankBucketWithdrawn, 500_000, "adjust:reconcile:user-or:1", "cross-end reconcile"); err != nil {
+		t.Fatalf("AppendAdjustment() error = %v", err)
+	}
+	// A replica that received the ledger line before the hub id was published
+	// still names the machine from the automatic request id.
+	bareID := "tbk-auto:hub_bare:owner@example.com:paid:5"
+	if _, err := repo.AppendLedger(ctx, TokenBankLedgerEntry{
+		ID:          "wdledger-bare",
+		UserID:      "user-or",
+		Bucket:      TokenBankBucketWithdrawn,
+		AmountMicro: 3_000_000,
+		BizKey:      "withdraw:" + bareID,
+		RefType:     "withdrawal",
+		RefID:       bareID,
+		CreatedAt:   postedAt.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("AppendLedger(bare) error = %v", err)
+	}
+
+	orphans, err := repo.ListOrphanWithdrawals(ctx, "user-or", "", 10)
+	if err != nil {
+		t.Fatalf("ListOrphanWithdrawals() error = %v", err)
+	}
+	if len(orphans) != 2 {
+		t.Fatalf("orphans = %+v, want the two replicated auto debits", orphans)
+	}
+	got := orphans[1]
+	if got.RequestID != "tbk-auto:hub-9:owner@example.com:paid:3" || got.HubID != "hub-9" || got.AmountMicro != 2_500_000 || got.Status != TokenBankWithdrawStatusPosted || got.Kind != "self" || got.GrantID != "" || !got.Created.Equal(postedAt) {
+		t.Fatalf("orphan = %+v", got)
+	}
+	if orphans[0].RequestID != bareID || orphans[0].HubID != "hub_bare" {
+		t.Fatalf("bare orphan = %+v, want hub id from the request id", orphans[0])
+	}
+	filtered, err := repo.ListOrphanWithdrawals(ctx, "user-or", "hub-1", 10)
+	if err != nil {
+		t.Fatalf("ListOrphanWithdrawals(hub-1) error = %v", err)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("hub-1 orphans = %+v, want none", filtered)
+	}
+	byNote, err := repo.ListOrphanWithdrawals(ctx, "user-or", "hub-9", 10)
+	if err != nil {
+		t.Fatalf("ListOrphanWithdrawals(hub-9) error = %v", err)
+	}
+	if len(byNote) != 1 || byNote[0].RequestID != "tbk-auto:hub-9:owner@example.com:paid:3" {
+		t.Fatalf("hub-9 orphans = %+v", byNote)
+	}
+	byRequest, err := repo.ListOrphanWithdrawals(ctx, "user-or", "hub_bare", 10)
+	if err != nil {
+		t.Fatalf("ListOrphanWithdrawals(hub_bare) error = %v", err)
+	}
+	if len(byRequest) != 1 || byRequest[0].RequestID != bareID || byRequest[0].HubID != "hub_bare" {
+		t.Fatalf("hub_bare orphans = %+v, want the blank-note automatic debit", byRequest)
+	}
+	shorter, err := repo.ListOrphanWithdrawals(ctx, "user-or", "hub_bar", 10)
+	if err != nil {
+		t.Fatalf("ListOrphanWithdrawals(hub_bar) error = %v", err)
+	}
+	if len(shorter) != 0 {
+		t.Fatalf("hub_bar orphans = %+v, want none", shorter)
+	}
+	if _, err := repo.ListOrphanWithdrawals(ctx, " ", "", 10); err == nil {
+		t.Fatal("empty user id was accepted")
+	}
+}

@@ -165,8 +165,8 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
         },
         {
             id: 'programmingTools' as const,
-            label: textForLang(lang, 'Coding Tools', '编程工具', '編程工具'),
-            desc: textForLang(lang, 'Built-in coding agent, ACP, and coding knowledge base', '内置编程子 Agent、ACP 与编程知识库', '內置編程子 Agent、ACP 與編程知識庫'),
+            label: textForLang(lang, 'Coding Settings', '编程设置', '編程設定'),
+            desc: textForLang(lang, 'Quality gate, built-in coding agent, ACP, and coding knowledge base', '质量门、内置编程子 Agent、ACP 与编程知识库', '質量門、內置編程子 Agent、ACP 與編程知識庫'),
             icon: settingsTabIcons.programmingTools,
         },
         {
@@ -245,7 +245,7 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
         {
             id: 'tokenBank' as const,
             label: textForLang(lang, 'Token Bank', 'Token 银行', 'Token 銀行'),
-            desc: textForLang(lang, 'Share models and manage the credits they earn', '共享模型，并管理由此赚取的积分', '共享模型，並管理由此賺取的積分'),
+            desc: textForLang(lang, 'Deposit provider token quota for credits that never expire and can be gifted', '存入服务商 Token 额度，换取终身有效、可转赠的积分', '存入服務商 Token 額度，換取終身有效、可轉贈的積分'),
             icon: settingsTabIcons.tokenBank,
         },
         {

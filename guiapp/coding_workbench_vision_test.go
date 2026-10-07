@@ -54,6 +54,10 @@ func TestShouldUseRemoteCodingIsolate(t *testing.T) {
 	if shouldUseRemoteCodingIsolate(codingWorktreeModeAuto, true, "implement JWT", "写代码", []int{1}) {
 		t.Fatal("auto chained should not isolate")
 	}
+	// Resume clears already-passed deps. Auto mode must still stay on the main tree.
+	if shouldUseRemoteCodingIsolate(codingWorktreeModeAuto, false, "implement JWT", "写代码", nil) {
+		t.Fatal("resume continuation must not open a new remote isolate")
+	}
 	if !shouldUseRemoteCodingIsolate(codingWorktreeModeAlways, false, "implement", "x", []int{1}) {
 		t.Fatal("always")
 	}
@@ -143,11 +147,23 @@ func TestRemoteConflictResolutionRequiresFrozenScope(t *testing.T) {
 func TestRemoteGitWorktreeMergeCommandIsFailClosed(t *testing.T) {
 	command := remoteGitWorktreeMergeCommand("/tmp/maclaw-wt-1", "/srv/repo", 7, []string{"internal/", "cmd/app/main.go"}, "BEGIN", "END")
 	for _, required := range []string{
-		"test \"$#\" -gt 0", "undeclared isolate write", "git status --porcelain", "git cherry-pick --allow-empty", "git cherry-pick --abort", "BEGIN", "END",
+		"test \"$#\" -gt 0", "undeclared isolate write", "git -c core.quotePath=false diff --name-only HEAD > \"$pending_file\"",
+		"git -c core.quotePath=false diff-tree --no-commit-id --name-only -r -m",
+		"git merge-base HEAD", "git rev-list --reverse",
+		"porcelain=$(git status --porcelain) || exit 1", "src_porcelain=$(git status --porcelain) || exit 1",
+		"primary HEAD changed during isolate merge", `git reset --hard "$src_head"`,
+		"GIT_INDEX_FILE=$tmp_index git read-tree HEAD",
+		"-c user.name=MaClaw", "git -c user.name=MaClaw -c user.email=maclaw@localhost -c commit.gpgsign=false cherry-pick --allow-empty \"$sha\" >&2", "git cherry-pick --abort >&2", "BEGIN", "END",
 	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("controlled remote merge command lacks %q: %s", required, command)
 		}
+	}
+	if strings.Contains(strings.ReplaceAll(command, "||", ""), "|") {
+		t.Fatalf("a pipeline hides the git exit status from set -e: %s", command)
+	}
+	if strings.Contains(command, "git add -A") || !strings.Contains(command, `git add -- "$path"`) || !strings.Contains(command, "no paths were admitted") {
+		t.Fatalf("merge must stage only admitted paths: %s", command)
 	}
 	for _, forbidden := range []string{"rsync -a", "cp -a"} {
 		if strings.Contains(command, forbidden) {

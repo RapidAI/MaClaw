@@ -106,6 +106,7 @@ func runServer(ctx context.Context) error {
 		RuntimeRateLimitBurst:       runtimeBurst,
 		RuntimeRateLimitTenantLimit: runtimeTenantLimit,
 		DistributedRateLimiter:      distributedLimiter,
+		RuntimeModules:              srvDesktopRuntimeModules(),
 	}, nil, executor)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
@@ -227,6 +228,7 @@ func runServer(ctx context.Context) error {
 			setSrvSchedulerManager(nil)
 			if executor != nil {
 				executor.ScheduleHandler = nil
+				executor.ScheduleHandlerContext = nil
 			}
 		}()
 	}

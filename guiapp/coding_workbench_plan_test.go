@@ -1,8 +1,10 @@
 package guiapp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -64,6 +66,57 @@ func TestResolveCodingRequestDecisionPlansModerateRewrite(t *testing.T) {
 	}
 }
 
+func TestImplementationSessionKeepsWriteContract(t *testing.T) {
+	written := stickyCodingWorkbenchMemory{FilesModified: []string{"/home/prj8/src/ui.cpp"}, TurnCount: 4}
+	got := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry, NeedsPlan: true, Acceptance: codingOperationalAcceptanceLaunch}, written)
+	if got.Kind != codingRequestImplementation || got.NeedsPlan || got.Acceptance != "" {
+		t.Fatalf("a session that already wrote files must keep the implementation contract, got %#v", got)
+	}
+	created := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry}, stickyCodingWorkbenchMemory{FilesCreated: []string{"/home/prj8/src/ui.h"}})
+	if created.Kind != codingRequestImplementation {
+		t.Fatalf("created files are an implementation trajectory, got %#v", created)
+	}
+	blank := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry}, stickyCodingWorkbenchMemory{FilesModified: []string{"  "}})
+	if blank.Kind != codingRequestInquiry {
+		t.Fatalf("blank file records must not count as an implementation trajectory, got %#v", blank)
+	}
+	fresh := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestInquiry}, stickyCodingWorkbenchMemory{TurnCount: 1, SessionPlan: "开发一套系统信息查看软件"})
+	if fresh.Kind != codingRequestInquiry {
+		t.Fatalf("a plan without written files must stay inquiry, got %#v", fresh)
+	}
+	operational := applyCodingSessionImplementationPosture(codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceLaunch}, written)
+	if operational.Kind != codingRequestOperational || operational.Acceptance != codingOperationalAcceptanceLaunch {
+		t.Fatalf("operational follow-up must not be rewritten, got %#v", operational)
+	}
+	if note := codingSessionWriteContractContext(codingRequestImplementation, written); !strings.Contains(note, "ssh_write_file") || !strings.Contains(note, "ssh_bash") {
+		t.Fatalf("an implementation turn in a session that already wrote files must carry the write contract, got %q", note)
+	}
+	if note := codingSessionWriteContractContext(codingRequestOperational, written); note != "" {
+		t.Fatalf("a run/build turn must not be told to edit source, got %q", note)
+	}
+	if note := codingSessionWriteContractContext(codingRequestInquiry, written); note != "" {
+		t.Fatalf("inquiry without the session upgrade must not carry the write contract, got %q", note)
+	}
+	if note := codingSessionWriteContractContext(codingRequestImplementation, stickyCodingWorkbenchMemory{}); note != "" {
+		t.Fatalf("a session with no written files has no write contract to carry, got %q", note)
+	}
+}
+
+func TestApplyRemoteCodingTurnFileAuditKeepsEarlierStepWrites(t *testing.T) {
+	result := &RemoteCodingSubAgentResult{FilesModified: []string{"/home/prj8/src/late.cpp"}}
+	applyRemoteCodingTurnFileAudit(result,
+		[]string{"/home/prj8/CMakeLists.txt", "  ", "/home/prj8/src/late.cpp"},
+		[]string{"/home/prj8/src/ui.cpp", "/home/prj8/src/ui.cpp"},
+	)
+	if strings.Join(result.FilesModified, ",") != "/home/prj8/CMakeLists.txt,/home/prj8/src/late.cpp" {
+		t.Fatalf("modified audit = %#v", result.FilesModified)
+	}
+	if strings.Join(result.FilesCreated, ",") != "/home/prj8/src/ui.cpp" {
+		t.Fatalf("created audit = %#v", result.FilesCreated)
+	}
+	applyRemoteCodingTurnFileAudit(nil, []string{"a"}, []string{"b"})
+}
+
 func TestApplyCodingRequestPlanFloorPromotesModerateImplementation(t *testing.T) {
 	got := applyCodingRequestPlanFloor(codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false}, "改为豪华版 hello world")
 	if !got.NeedsPlan {
@@ -86,6 +139,12 @@ func TestCodingRequestClassifierPromptTreatsWorkspaceClearAsImplementation(t *te
 	if !strings.Contains(codingRequestClassifierSystemPrompt, "clearing or emptying the current project directory is implementation") &&
 		!strings.Contains(codingRequestClassifierSystemPrompt, "Clearing or emptying the current project directory is implementation") {
 		t.Fatalf("classifier prompt must not treat workspace clear as operational: %s", codingRequestClassifierSystemPrompt)
+	}
+	if !strings.Contains(codingRequestClassifierSystemPrompt, `acceptance":"launch|command"`) {
+		t.Fatalf("classifier prompt must own the operational evidence contract: %s", codingRequestClassifierSystemPrompt)
+	}
+	if strings.Contains(codingRequestClassifierSystemPrompt, "actually run something is operational with acceptance launch") {
+		t.Fatal("classifier prompt must not treat every run request as a project launch")
 	}
 }
 
@@ -110,6 +169,26 @@ func TestParseCodingRequestDecision(t *testing.T) {
 		if _, ok := parseCodingRequestDecision(raw); ok {
 			t.Fatalf("invalid classifier response accepted: %q", raw)
 		}
+	}
+	decision, ok := parseCodingRequestDecision(`{"kind":"operational","needs_plan":false}`)
+	if !ok || decision.Acceptance != codingOperationalAcceptanceLaunch {
+		t.Fatalf("omitted operational acceptance must stay launch, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"operational","needs_plan":true,"acceptance":"Command"}`)
+	if !ok || decision.NeedsPlan || decision.Acceptance != codingOperationalAcceptanceCommand {
+		t.Fatalf("command acceptance = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"operational","needs_plan":false,"acceptance":"yes"}`)
+	if !ok || decision.Acceptance != codingOperationalAcceptanceLaunch {
+		t.Fatalf("unknown acceptance must not loosen the gate, got %#v", decision)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":true,"acceptance":"command"}`)
+	if !ok || decision.Acceptance != "" {
+		t.Fatalf("implementation must drop acceptance, got %#v", decision)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"inquiry","needs_plan":false,"acceptance":"COMMAND"}`)
+	if !ok || decision.Acceptance != "" {
+		t.Fatalf("inquiry must drop acceptance, got %#v", decision)
 	}
 }
 
@@ -264,6 +343,530 @@ func TestSummarizeOperationalSubAgentQuality(t *testing.T) {
 	}, agent.LoopResult{ToolCalls: 1})
 	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "failed") {
 		t.Fatalf("failed launch ops quality = %q %q %d", st, sum, n)
+	}
+}
+
+func TestOperationalCommandAcceptanceFollowsClassifierDecision(t *testing.T) {
+	commands := []CodingSubAgentCommandResult{
+		{Command: `cat /etc/os-release | head -5; echo "---"; uname -a`, Succeeded: true},
+		{Command: `which iostat 2>/dev/null && echo "iostat already installed" || echo "iostat NOT installed"`, Succeeded: true},
+		{Command: `apt-get install -y sysstat 2>&1 | tail -15`, Succeeded: true},
+		{Command: `iostat -V 2>&1 | head -3; echo "=== sample ==="; iostat 1 2 2>&1`, Succeeded: true},
+		{Command: `echo "load"; uptime; free -h; df -h`, Succeeded: true},
+	}
+	st, sum, n := summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, commands, len(commands), "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("host command contract should pass on a non-probe command, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeRemoteOperationalQuality(codingOperationalAcceptanceCommand, commands, len(commands))
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("remote host command contract should pass, got %q %q %d", st, sum, n)
+	}
+
+	// Wording is not a second classifier. An install sentence under the launch
+	// contract still fails, and a neutral title under the command contract passes.
+	st, sum, n = summarizeOperationalSubAgentQualityForTask(&TaskItem{
+		Title: "安装iostat", Description: "查看服务器状态", RequestKind: codingRequestOperational,
+	}, codingSubAgentAudit{AllCommandsRun: commands}, agent.LoopResult{ToolCalls: len(commands)})
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("task wording must not switch the launch contract, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalSubAgentQualityForTask(&TaskItem{
+		Title: "T1", RequestKind: codingRequestOperational, OperationalAcceptance: codingOperationalAcceptanceCommand,
+	}, codingSubAgentAudit{AllCommandsRun: commands}, agent.LoopResult{ToolCalls: len(commands)})
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("stored command contract should pass without reading the title, got %q %q %d", st, sum, n)
+	}
+
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, commands, len(commands), "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("package install must not pass a project launch, got %q %q %d", st, sum, n)
+	}
+
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: `which iostat || echo missing`, Succeeded: true},
+		{Command: "hostname", Succeeded: true},
+		{Command: "sudo hostname", Succeeded: true},
+		{Command: `cat /etc/os-release | head -5; uname -a`, Succeeded: true},
+	}, 4, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+		t.Fatalf("probes must not pass the command contract, got %q %q %d", st, sum, n)
+	}
+
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "sudo apt-get install -y sysstat", Succeeded: false, Summary: "permission denied"},
+		{Command: "true", Succeeded: true},
+		{Command: "printf ok", Succeeded: true},
+	}, 3, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "host command failed") {
+		t.Fatalf("a no-op must not hide a failed host command, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptance(" Command "), []CodingSubAgentCommandResult{
+		{Command: "command apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 {
+		t.Fatalf("command builtin wrapping a host action should pass, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "command -v iostat", Succeeded: true},
+		{Command: "sudo command -v iostat", Succeeded: true},
+		{Command: "test -x /usr/bin/iostat", Succeeded: true},
+	}, 3, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+		t.Fatalf("name lookup must not pass the command contract, got %q %q %d", st, sum, n)
+	}
+
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "uptime; free -h; df -h", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 {
+		t.Fatalf("non-probe status command should pass the command contract, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "df -h", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+		t.Fatalf("df alone must not pass the command contract, got %q %q %d", st, sum, n)
+	}
+
+	// A wrapper is not the action. The probe check has to see the program that
+	// runs, including when sudo keeps bash -c in the same segment.
+	for _, command := range []string{
+		"bash -c hostname",
+		"bash -lc hostname",
+		"sh -c hostname",
+		"sudo bash -c hostname",
+		"sudo -u root hostname",
+		"nice hostname",
+		"nice -n 19 hostname",
+		"nohup hostname",
+		"stdbuf -oL hostname",
+		"ionice -c 3 hostname",
+		"setsid hostname",
+		"sudo nice hostname",
+		"timeout 5 hostname",
+		"powershell -ExecutionPolicy Bypass -Command hostname",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("wrapped probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("wrapped probe %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		`bash -c "apt-get install -y sysstat"`,
+		`sudo bash -c "apt-get install -y sysstat"`,
+		"nice apt-get install -y sysstat",
+		"nohup iostat",
+		`bash -lc "iostat 1 2"`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+			t.Fatalf("wrapped host command %q should pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("wrapped host command %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: `bash -c "apt-get install -y sysstat"`, Succeeded: false, Summary: "permission denied"},
+		{Command: "true", Succeeded: true},
+	}, 2, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "host command failed") {
+		t.Fatalf("a wrapped failure must stay failed, got %q %q %d", st, sum, n)
+	}
+
+	// Privilege and su -c hide the program from a classifier that only looks at
+	// the first token. The launch contract has to see the program; a probe
+	// behind the same prefix stays a probe.
+	for _, command := range []string{
+		`sudo .\snake.exe`,
+		`sudo -u root .\snake.exe`,
+		`sudo -g wheel .\snake.exe`,
+		`sudo bash -c .\snake.exe`,
+		`su -c .\snake.exe`,
+		`su root -c .\snake.exe`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+			t.Fatalf("wrapped launch %q should pass, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: `sudo .\snake.exe`, Succeeded: false, Summary: "not found"},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "failed") {
+		t.Fatalf("failed wrapped launch should report the failure, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: "sudo dir", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "no launch/build command") {
+		t.Fatalf("sudo in front of a listing is still a listing, got %q %q %d", st, sum, n)
+	}
+	for _, command := range []string{
+		"sudo -g wheel hostname",
+		"sudo -p password hostname",
+		"su -c hostname",
+		"su root -c hostname",
+		"pkexec hostname",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("wrapped probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: `su -c "apt-get install -y sysstat"`, Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("su -c of a host command should pass, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: `su -c "apt-get install -y sysstat"`, Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("su -c of a package install must not pass a project launch, got %q %q %d", st, sum, n)
+	}
+	// The quoted payload is the command line, not one opaque program name.
+	for _, command := range []string{
+		`su -c "df -h"`,
+		`eval "df -h"`,
+		`sudo su -c "echo hi"`,
+		`su -c -- hostname`,
+		`eval "echo hi"`,
+		`su -c "hostname; df -h"`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("quoted probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		`eval "apt-get install -y sysstat"`,
+		`sudo su -c "apt-get install -y sysstat"`,
+		`su -c "echo start; apt-get install -y sysstat"`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+			t.Fatalf("quoted host command %q should pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("quoted host command %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		`su -c "go run ."`,
+		`eval "python app.py"`,
+		`su -c "C:\Program Files\snake.exe"`,
+		`su -c "C:\Program Files\snake.exe --debug"`,
+		`C:\Program Files\snake.exe`,
+		`C:/Program Files/snake.exe`,
+		`./snake src/test`,
+		`./snake src/echo`,
+		`.\snake src\test`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+			t.Fatalf("quoted launch %q should pass, got %q %q %d", command, st, sum, n)
+		}
+	}
+	// An absolute program plus an argument is not a path that contains a space.
+	// A spaced path is still one program, so hostname.exe stays a probe.
+	for _, command := range []string{
+		`su -c "/bin/echo hi"`,
+		`eval "/usr/bin/cat /etc/os-release"`,
+		`su -c "/bin/echo files\x"`,
+		`su -c "C:\Program Files\hostname.exe"`,
+		`C:\Program Files\hostname.exe`,
+		`C:/Program Files/hostname.exe`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("program path %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		`su -c "C:\Program Files\hostname.exe"`,
+		`C:\Program Files\hostname.exe`,
+		`C:/Program Files/hostname.exe`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("spaced hostname %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: `su -c "/usr/bin/apt-get install -y sysstat"`, Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("quoted absolute apt-get should pass the command contract, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: `su -c "/usr/bin/apt-get install -y sysstat"`, Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("quoted absolute apt-get must not pass a project launch, got %q %q %d", st, sum, n)
+	}
+
+	// An option value is not the program. bash -o pipefail -c still has to
+	// show the payload, and exec/eval are prefixes in the same way.
+	for _, command := range []string{
+		"bash -o pipefail -c hostname",
+		"sudo bash -o pipefail -c hostname",
+		"bash --rcfile /dev/null -c hostname",
+		"exec hostname",
+		"exec -a app hostname",
+		"exec -c hostname",
+		"eval hostname",
+		"eval -- hostname",
+		"sudo exec hostname",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("hidden probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("hidden probe %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		`bash -o pipefail -c "apt-get install -y sysstat"`,
+		"exec apt-get install -y sysstat",
+		"eval apt-get install -y sysstat",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+			t.Fatalf("hidden host command %q should pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("hidden host command %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		"$(hostname)",
+		"$(echo true)",
+		"(hostname)",
+		"{ hostname; }",
+		"builtin hostname",
+		"builtin -- hostname",
+		"command hostname",
+		`bash -c '$(hostname)'`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("syntax-wrapped probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+	}
+	for _, command := range []string{
+		"/usr/bin/hostname",
+		"/bin/echo hi",
+		"/usr/bin/cat /etc/os-release",
+		"/usr/bin/env hostname",
+		"./hostname",
+		`c:\windows\system32\hostname.exe`,
+		"hostname.exe",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("path probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") && !strings.Contains(sum, "no launch/build command") {
+			t.Fatalf("path probe %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	// /bin/echo and /usr/bin/cat are listings. hostname is not, so the launch
+	// failure stays the unknown-command message. Absolute apt-get is a host
+	// command, not a project launch.
+	for _, command := range []string{
+		"python.exe",
+		"py.exe",
+		"./python",
+		`c:\python\python.exe`,
+		"/usr/bin/python3",
+		"bash hostname.exe",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("bare interpreter %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: "/usr/bin/hostname", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("absolute hostname must stay a non-launch, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "/usr/bin/apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("absolute apt-get should pass the command contract, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: "/usr/bin/apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("absolute apt-get must not pass a project launch, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "/usr/bin/env apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("path-qualified env should reveal apt-get, got %q %q %d", st, sum, n)
+	}
+	// env -C is lowercased to -c before the option table runs. The directory
+	// is not the program.
+	for _, command := range []string{
+		"env -C /tmp hostname",
+		"sudo env -C /tmp hostname",
+		"/usr/bin/env -C /var hostname",
+		"env --chdir /tmp hostname",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("env chdir probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("env chdir probe %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "env -C /tmp apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("env chdir should reveal apt-get, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: "env -C /tmp apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("env chdir apt-get must not pass a project launch, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: `env -C /tmp .\snake.exe`, Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+		t.Fatalf("env chdir should reveal a launch, got %q %q %d", st, sum, n)
+	}
+	// A relative directory is still the chdir value, not the program.
+	for _, command := range []string{
+		"env -C build hostname",
+		"sudo env -C build hostname",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none performed the host action") {
+			t.Fatalf("relative env chdir probe %q must not pass the command contract, got %q %q %d", command, st, sum, n)
+		}
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+			t.Fatalf("relative env chdir probe %q must not pass a project launch, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+		{Command: "env -C build ./snake", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+		t.Fatalf("relative env chdir should reveal a launch, got %q %q %d", st, sum, n)
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "env -C build apt-get install -y sysstat", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("relative env chdir should reveal apt-get, got %q %q %d", st, sum, n)
+	}
+	if msg := rejectCodingOperationalShellCommand("env -C build rm -rf /tmp/app"); msg == "" {
+		t.Fatal("relative env chdir must not hide rm from the operational shell policy")
+	}
+	for _, command := range []string{
+		"/home/test4/app",
+		"/usr/bin/python3 app.py",
+		"./snake",
+		"snake.exe",
+		"build_and_run.bat",
+		"python.exe app.py",
+		"bash snake.exe",
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+			t.Fatalf("project launch %q should pass, got %q %q %d", command, st, sum, n)
+		}
+	}
+	st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceCommand, []CodingSubAgentCommandResult{
+		{Command: "$(apt-get install -y sysstat)", Succeeded: true},
+	}, 1, "")
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "host command evidence") {
+		t.Fatalf("substitution of a host command should pass, got %q %q %d", st, sum, n)
+	}
+	for _, command := range []string{
+		`bash -o pipefail -c .\snake.exe`,
+		`sudo bash -o pipefail -c .\snake.exe`,
+	} {
+		st, sum, n = summarizeOperationalShellQuality(codingOperationalAcceptanceLaunch, []CodingSubAgentCommandResult{
+			{Command: command, Succeeded: true},
+		}, 1, "")
+		if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+			t.Fatalf("shell option must not hide a launch %q, got %q %q %d", command, st, sum, n)
+		}
 	}
 }
 
@@ -745,18 +1348,45 @@ func TestGuardRemoteShellCommandMirrorsTheLocalGuardOrdering(t *testing.T) {
 	}
 }
 
-func TestRemoteTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
+func TestRemoteTaskModeGuardHonorsFullControl(t *testing.T) {
 	prompts := 0
 	state := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
 		prompts++
 		return ScopeApprovalDeny
 	}, true)
 
-	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg == "" {
-		t.Fatal("a sticky full-access grant must not silently satisfy a mode guardrail")
+	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg != "" {
+		t.Fatalf("full control must auto-allow a task-mode command, got %q", msg)
 	}
-	if prompts != 1 {
-		t.Fatalf("prompts = %d, want the user to be asked despite full access", prompts)
+	if prompts != 0 {
+		t.Fatalf("prompts = %d, full control must not ask", prompts)
+	}
+}
+
+func TestRemoteTaskModeGuardAlwaysAllowSkipsLaterPrompts(t *testing.T) {
+	prompts := 0
+	state := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		prompts++
+		return ScopeApprovalFullAccess
+	}, false)
+
+	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg != "" {
+		t.Fatalf("an allowed command should run, got %q", msg)
+	}
+	if msg := state.checkTaskModeGuard("npm install left-pad", "/srv/repo", "guarded"); msg != "" || prompts != 1 {
+		t.Fatalf("总是放行 must cover the next command, msg=%q prompts=%d", msg, prompts)
+	}
+
+	oncePrompts := 0
+	once := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		oncePrompts++
+		return ScopeApprovalAllowOnce
+	}, false)
+	if msg := once.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg != "" {
+		t.Fatalf("allow once should run this command, got %q", msg)
+	}
+	if msg := once.checkTaskModeGuard("npm install left-pad", "/srv/repo", "guarded"); msg != "" || oncePrompts != 2 {
+		t.Fatalf("allow once must ask again, msg=%q prompts=%d", msg, oncePrompts)
 	}
 }
 
@@ -774,10 +1404,7 @@ func TestRecursiveDeleteStillRequiresHighRiskApproval(t *testing.T) {
 	}
 }
 
-func TestTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
-	// A sticky "allow risky commands" answer is about danger, not about turning
-	// a run/build turn into something wider, so it must not silently widen the
-	// task mode without the user ever seeing a prompt.
+func TestTaskModeGuardHonorsStickyHighRiskGrant(t *testing.T) {
 	prompts := 0
 	state := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
 		prompts++
@@ -791,14 +1418,31 @@ func TestTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
 	if msg := state.checkHighRisk("bash", "git clean -fd", `D:\repo`, `D:\repo`, "high risk"); msg != "" || prompts != 1 {
 		t.Fatalf("sticky high-risk grant = %q after %d prompts", msg, prompts)
 	}
-	if msg := state.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" {
-		t.Fatalf("the user allowed it at the prompt, got %q", msg)
-	}
-	if prompts != 2 {
-		t.Fatalf("a task-mode guard must still prompt, prompts = %d", prompts)
+	if msg := state.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" || prompts != 1 {
+		t.Fatalf("a high-risk 总是放行 must also skip the task-mode prompt, msg=%q prompts=%d", msg, prompts)
 	}
 
-	// And a mode guard never installs a sticky grant of its own.
+	// 总是放行 on the task-mode prompt itself covers the next command.
+	guardPrompts := 0
+	guard := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		guardPrompts++
+		return ScopeApprovalFullAccess
+	}, false)
+	if msg := guard.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" || guardPrompts != 1 {
+		t.Fatalf("first task-mode allow = %q after %d prompts", msg, guardPrompts)
+	}
+	if msg := guard.checkTaskModeGuard("bash", "npm test", `D:\repo`, `D:\repo`, "guarded"); msg != "" || guardPrompts != 1 {
+		t.Fatalf("总是放行 must cover the next task-mode command, msg=%q prompts=%d", msg, guardPrompts)
+	}
+
+	full := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		t.Fatal("full control must not open a task-mode prompt")
+		return ScopeApprovalDeny
+	}, true)
+	if msg := full.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" {
+		t.Fatalf("full control must auto-allow a task-mode command, got %q", msg)
+	}
+
 	silent := newScopeApprovalState(nil, false)
 	if msg := silent.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "guarded" {
 		t.Fatalf("no approval channel must keep the guardrail, got %q", msg)
@@ -1426,6 +2070,211 @@ func TestClearStickyCodingExecutionPlanOnSimpleTurn(t *testing.T) {
 	}
 	if mem := h.getStickyCodingWorkbenchMemory(userID); mem.ExecutionPlan != "" {
 		t.Fatalf("stale execution plan should clear: %q", mem.ExecutionPlan)
+	}
+}
+
+func TestContinueResumesIncompleteCodingPlan(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	goal := "开发一个系统信息查看软件，c++版本"
+	full := []*v2.TaskItem{
+		{Index: 1, Title: "读取 OS 信息", Description: "用 uname 读取内核与发行版"},
+		{Index: 2, Title: "解析 CLI", Description: "实现 section 参数"},
+		{Index: 3, Title: "实现输出", Description: "按 OS CPU Memory Disk 输出"},
+		{Index: 4, Title: "编写 main.cpp", Description: "覆盖 scaffold 并调用 sysinfo"},
+		{Index: 5, Title: "验证构建", Description: "g++ 语法检查", DependsOn: []int{4}},
+	}
+	md := formatCodingWorkbenchPlanMarkdown(goal, full)
+	mem := stickyCodingWorkbenchMemory{
+		TurnCount:     1,
+		SessionPlan:   goal,
+		ExecutionPlan: md,
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "读取 OS 信息", Status: codingStepPassed},
+			{Index: 2, Title: "解析 CLI", Status: codingStepPassed},
+			{Index: 3, Title: "实现输出", Status: codingStepPassed},
+			{Index: 4, Title: "编写 main.cpp", Status: codingStepPassed},
+			{Index: 5, Title: "验证构建", Status: codingStepFailed, Summary: "insufficient credits"},
+		},
+	}
+	tasks, plan, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !planned || plan == "" {
+		t.Fatalf("continue should keep the plan, planned=%v plan=%q", planned, plan)
+	}
+	if len(tasks) != 1 || tasks[0].Index != 5 || tasks[0].Title != "验证构建" {
+		t.Fatalf("should rerun only the failed step, got %#v", tasks)
+	}
+	if strings.Contains(tasks[0].Description, "继续") || !strings.Contains(tasks[0].Description, "g++") {
+		t.Fatalf("resumed step lost its original brief: %q", tasks[0].Description)
+	}
+	if len(tasks[0].DependsOn) != 0 {
+		t.Fatalf("passed dependency must not block the resumed step: %v", tasks[0].DependsOn)
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID)
+	if !strings.Contains(stored.ExecutionPlan, "读取 OS 信息") || !strings.Contains(stored.ExecutionPlan, "验证构建") {
+		t.Fatalf("stored plan was replaced: %q", stored.ExecutionPlan)
+	}
+	if len(stored.StepStatuses) != 5 {
+		t.Fatalf("step checklist collapsed to %d", len(stored.StepStatuses))
+	}
+	if stored.StepStatuses[0].Status != codingStepPassed || stored.StepStatuses[4].Status != codingStepPending {
+		t.Fatalf("passed steps must stay passed and the failed step reopens, got %+v", stored.StepStatuses)
+	}
+	outline, total := codingPlanOutlineForPrompt(stored, tasks)
+	if total != 5 || len(outline) != 5 {
+		t.Fatalf("prompt outline total=%d steps=%d", total, len(outline))
+	}
+	prompt := buildRemoteCodingPlanStepText(tasks[0], 5, total, true, codingPlanResumeGoal("继续", mem), outline, 1, goal, "", nil, nil)
+	if !strings.Contains(prompt, "[Plan step T5/5]") || !strings.Contains(prompt, goal) || strings.Contains(prompt, "User request:\n继续") {
+		t.Fatalf("resumed prompt should stay on T5 of the original plan:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "读取 OS 信息 (already done)") || strings.Contains(prompt, "验证构建 (already done)") {
+		t.Fatalf("passed steps must be marked done and the current step must not:\n%s", prompt)
+	}
+}
+
+func TestContinueAfterFinishedPlanStartsFresh(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.setStickyCodingExecutionPlan(userID, "### T1: done\n### T2: also done")
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "done", Status: codingStepPassed},
+		{Index: 2, Title: "also done", Status: codingStepPassed},
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	mem.TurnCount = 2
+	if codingWorkbenchShouldResumeIncompletePlan("继续", mem) {
+		t.Fatal("a finished plan has nothing to resume")
+	}
+	_, _, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if planned {
+		t.Fatal("finished plan must not be re-executed by a bare continue")
+	}
+	if got := h.getStickyCodingWorkbenchMemory(userID).ExecutionPlan; got != "" {
+		t.Fatalf("finished plan should clear on a new turn: %q", got)
+	}
+}
+
+func TestResumePromptDropsFinishedClaim(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		TurnCount:     2,
+		SessionPlan:   "开发一个系统信息查看软件",
+		ExecutionPlan: "### T1: 读取\n描述: uname\n### T2: 验证\n描述: g++",
+		LastSummary:   "全部完成，系统信息工具已经可用",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepPassed, Title: "读取"},
+			{Index: 2, Status: codingStepFailed, Title: "验证"},
+		},
+	}
+	mem.LastUserText = "继续"
+	mem.RequirementRestatement = "在已有工作（系统信息查看）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。"
+	prompt := codingPlanResumePromptMemory(mem)
+	joined := strings.Join(prompt.prevOutputs(), "\n")
+	if strings.Contains(joined, "全部完成") || strings.Contains(joined, "### T1") || strings.Contains(joined, "继续") {
+		t.Fatalf("resume prompt replayed the finished claim, the full plan, or the continue cue:\n%s", joined)
+	}
+	if !strings.Contains(joined, "unfinished step") {
+		t.Fatalf("stop note missing:\n%s", joined)
+	}
+	if codingPlanResumeGoal("继续", mem) != mem.SessionPlan {
+		t.Fatal("goal must stay on the original memory")
+	}
+	if mem.ExecutionPlan == "" || !strings.Contains(mem.LastSummary, "全部完成") {
+		t.Fatal("prompt copy must not clear the stored plan")
+	}
+	if !strings.Contains(mem.RequirementRestatement, "上继续你这次提出的改动") {
+		t.Fatal("prompt copy must not clear the stored restatement")
+	}
+	dup := mem
+	dup.LastUserText = dup.SessionPlan
+	dup.RequirementRestatement = dup.SessionPlan
+	dupJoined := strings.Join(codingPlanResumePromptMemory(dup).prevOutputs(), "\n")
+	if strings.Count(dupJoined, dup.SessionPlan) != 1 {
+		t.Fatalf("goal repeated in resume prompt:\n%s", dupJoined)
+	}
+}
+
+func TestExecutionPlanPersistKeepsTheLastStep(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	var b strings.Builder
+	for i := 1; i <= codingWorkbenchPlanMaxTasks; i++ {
+		fmt.Fprintf(&b, "### T%d: step\n描述: %s\n\n", i, strings.Repeat("验", 320))
+	}
+	b.WriteString("TAIL-STEP-MARKER")
+	md := b.String()
+	if n := utf8.RuneCountInString(md); n <= 2000 {
+		t.Fatalf("fixture should exceed the old 2000-rune cap, got %d", n)
+	}
+	h.persistCodingWorkbenchPlans(userID, md, "")
+	got := h.getStickyCodingWorkbenchMemory(userID).ExecutionPlan
+	if !strings.Contains(got, "TAIL-STEP-MARKER") {
+		t.Fatalf("last step was truncated, stored runes=%d", utf8.RuneCountInString(got))
+	}
+}
+
+func TestResumeIncludesSkippedTailWithoutTheBillingError(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 5, Title: "验证构建", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+			{Index: 1, Title: "读取 OS 信息", Status: codingStepPassed},
+			{Index: 4, Title: "编写 main.cpp", Status: codingStepFailed, Summary: "LLM call failed: insufficient credits"},
+		},
+	}
+	tasks, ok := selectIncompleteCodingPlanTasks("继续", mem)
+	if !ok || len(tasks) != 2 {
+		t.Fatalf("tasks=%#v ok=%v", tasks, ok)
+	}
+	if tasks[0].Index != 4 || tasks[1].Index != 5 {
+		t.Fatalf("resume order = %d then %d", tasks[0].Index, tasks[1].Index)
+	}
+	for _, task := range tasks {
+		if strings.Contains(task.Description, "insufficient credits") || strings.Contains(task.Description, "skipped:") {
+			t.Fatalf("failure note leaked into the step brief: %q", task.Description)
+		}
+	}
+	_, total := codingPlanOutlineForPrompt(mem, tasks)
+	if total != 3 {
+		t.Fatalf("outline should keep the passed step, total=%d", total)
+	}
+	if got := codingPlanReportedStepTotal(true, len(tasks), total); got != 3 {
+		t.Fatalf("reported total=%d, want the original checklist", got)
+	}
+	if got := codingPlanReportedStepTotal(false, 1, 5); got != 1 {
+		t.Fatalf("a new single task must not inherit the old checklist length, got %d", got)
+	}
+}
+
+func TestContinueCueDoesNotMatchANewRequest(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		ExecutionPlan: "### T1: a\n描述: a\n### T2: b\n描述: b\n",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepPassed},
+			{Index: 2, Status: codingStepFailed},
+		},
+	}
+	if codingWorkbenchShouldResumeIncompletePlan("继续完善，加入图形界面", mem) {
+		t.Fatal("a new feature request must not resume the old plan")
+	}
+	if !codingWorkbenchShouldResumeIncompletePlan("继续执行", mem) {
+		t.Fatal("继续执行 should resume the unfinished plan")
+	}
+	if codingWorkbenchShouldResumeIncompletePlan("继续", stickyCodingWorkbenchMemory{
+		ExecutionPlan: mem.ExecutionPlan,
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepPending},
+			{Index: 2, Status: codingStepPending},
+		},
+	}) {
+		t.Fatal("an unstarted approval must not be treated as a stopped run")
 	}
 }
 

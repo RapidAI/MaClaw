@@ -1112,6 +1112,66 @@ func (a *App) syncLocalDispatchInputToHub(sessionID string, msg a2a.GroupDiscuss
 	}
 }
 
+// sendVEStreamPart forwards one streaming fragment. It must not retry or
+// recover the discussion: a failed fragment is disposable, and recovery would
+// open a new session in the middle of a reply.
+func (a *App) sendVEStreamPart(sessionID string, msg a2a.GroupDiscussionMessage) error {
+	if a == nil {
+		return fmt.Errorf("app is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || !a2a.GroupDiscussionMessageHasPayload(msg) {
+		return fmt.Errorf("stream part is empty")
+	}
+	client, cfg, err := a.veA2AHubClient()
+	if err != nil {
+		return err
+	}
+	sessionID = a.resolveRenewedVESession(sessionID)
+	if strings.TrimSpace(msg.FromID) == "" {
+		msg.FromID = groupDiscussionAgentID(cfg)
+	}
+	if strings.TrimSpace(msg.ID) == "" {
+		msg.ID = fmt.Sprintf("ve-stream-%d", time.Now().UnixNano())
+	}
+	msg.SessionID = sessionID
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return client.SendDiscussionMessage(ctx, sessionID, msg)
+}
+
+// sendVEActivityNotice forwards a live status to other participants. It must
+// not retry or recover the discussion: a failed status is disposable, and
+// recovery would open a new session as a side effect of a progress update.
+func (a *App) sendVEActivityNotice(sessionID, content string) error {
+	if a == nil {
+		return fmt.Errorf("app is nil")
+	}
+	content = strings.TrimSpace(content)
+	sessionID = strings.TrimSpace(sessionID)
+	if content == "" || sessionID == "" {
+		return fmt.Errorf("activity notice is empty")
+	}
+	client, cfg, err := a.veA2AHubClient()
+	if err != nil {
+		return err
+	}
+	sessionID = a.resolveRenewedVESession(sessionID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return client.SendDiscussionMessage(ctx, sessionID, a2a.GroupDiscussionMessage{
+		ID:        fmt.Sprintf("ve-status-%d", time.Now().UnixNano()),
+		FromID:    groupDiscussionAgentID(cfg),
+		SessionID: sessionID,
+		Kind:      a2a.MessageStreamStatus,
+		Content:   content,
+		CreatedAt: time.Now(),
+	})
+}
+
 func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage) error {
 	client, cfg, err := a.veA2AHubClient()
 	if err != nil {

@@ -492,8 +492,9 @@ func modelRouteResponseFields(d modelRouteDecision) []IMResponseField {
 
 // turnMetaResponseField returns a single always-on "Turn" chip for chat UI:
 // route tier + model + compact tokens + optional prompt profile/savings.
-// Estimated cost is intentionally not shown in the chat UI.
-func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, promptProfile string, promptSavedTokens int, promptUpgraded bool, promptABSample bool, promptSoftFull bool) []IMResponseField {
+// Estimated money cost is intentionally not shown. creditsDeducted, when set,
+// is the Maclaw official grant debit for this turn and is appended last.
+func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, promptProfile string, promptSavedTokens int, promptUpgraded bool, promptABSample bool, promptSoftFull bool, creditsDeducted *float64) []IMResponseField {
 	usage := agent.TurnUsage{
 		Model:        d.Model,
 		InputTokens:  input,
@@ -523,6 +524,7 @@ func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, p
 		PromptUpgraded:    promptUpgraded,
 		PromptABSample:    promptABSample,
 		PromptSoftFull:    promptSoftFull,
+		CreditsDeducted:   creditsDeducted,
 	})
 	if meta == "" {
 		return nil

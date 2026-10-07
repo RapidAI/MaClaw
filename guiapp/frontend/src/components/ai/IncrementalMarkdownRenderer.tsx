@@ -23,6 +23,7 @@
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { renderContentWithCodeBlocks, type ChatMarkdownRenderOptions } from "./aiAssistantMarkdown";
+import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
 
 // ─── 分割点检测 ─────────────────────────────────────────────────
 
@@ -53,37 +54,20 @@ function findBestSplitPointForward(
         if (nlIdx === -1 || nlIdx >= maxPos) break;
 
         const line = content.slice(i, nlIdx);
-        const trimmed = line.trim();
 
         // Match renderContentWithCodeBlocks: while a display formula is open,
         // every line is formula source until its own closing delimiter. Code
         // fences inside TeX are not Markdown fences.
         if (displayMathDelimiter) {
-            const closeDelimiter = displayMathDelimiter === "$$" ? "$$" : "\\]";
-            if (trimmed.endsWith(closeDelimiter)) displayMathDelimiter = "";
+            displayMathDelimiter = displayMathAfterLine(line, displayMathDelimiter);
         } else {
-            const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
-            if (fenceMatch) {
-                const marker = fenceMatch[1];
-                if (!fenceMarker) {
-                    fenceMarker = marker;
-                } else if (
-                    marker[0] === fenceMarker[0]
-                    && marker.length >= fenceMarker.length
-                    && !fenceMatch[2].trim()
-                ) {
-                    fenceMarker = "";
-                }
-            } else if (!fenceMarker) {
-                // Single-line formulas are already complete and are safe to
-                // freeze. Only retain state for an opener that has no closer
-                // on the same line, exactly as the markdown renderer does.
-                if (trimmed.startsWith("$$") && !(trimmed.endsWith("$$") && trimmed.length > 4)) {
-                    displayMathDelimiter = "$$";
-                } else if (trimmed.startsWith("\\[") && !(trimmed.endsWith("\\]") && trimmed.length > 4)) {
-                    displayMathDelimiter = "\\[";
-                }
-            }
+            const nextFence = markdownFenceAfterLine(line, fenceMarker);
+            // A glued opener (`heading``` `) must keep the following lines inside
+            // the fence. Treating only line-start markers as fences lets a blank
+            // line in that block freeze mid-code.
+            const fenceTouched = nextFence !== fenceMarker || fenceMarker !== "";
+            fenceMarker = nextFence;
+            if (!fenceTouched) displayMathDelimiter = displayMathAfterLine(line, "");
         }
 
         // 检查是否是 \n\n（当前行结束后紧跟空行）

@@ -13,11 +13,11 @@ import (
 )
 
 // DynamicToolBuilder builds legacy LLM tool definitions dynamically from the
-// Registry. Host-controlled dynamic gateways (for example manage_skill and
-// call_mcp_tool) are never emitted here: their provider/resource identity must
-// be bound by a managed surface before a model can invoke them. When the total
-// available tools exceed maxDirectTools, context-aware filtering keeps builtin
-// tools and fills the remaining slots with relevant static tools.
+// Registry. call_mcp_tool is never emitted: its arguments select the provider.
+// manage_skill is emitted so a full surface can pin the local skill runtime.
+// When the total available tools exceed maxDirectTools, context-aware
+// filtering keeps builtin tools and fills the remaining slots with relevant
+// static tools.
 type DynamicToolBuilder struct {
 	// mu serializes configuration changes with Build. Build mutates its cached
 	// BM25 index, so allowing activation to swap the registry or hybrid retriever
@@ -169,7 +169,7 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	tools := b.registry.ListAvailable()
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
-		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || IsLegacyModelDynamicGateway(t.Name) {
+		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || omittedFromHostToolCatalog(t.Name) {
 			continue
 		}
 		// Skip backward-compat aliases that have handler only, no definition.
@@ -195,7 +195,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	if len(tools) <= b.maxDirectTools {
 		out := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
-			if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || IsLegacyModelDynamicGateway(t.Name) {
+			if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || omittedFromHostToolCatalog(t.Name) {
 				continue
 			}
 			if t.Description == "" {
@@ -212,7 +212,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	// Split into builtin (always included), group-activated, and dynamic (scored).
 	var builtins, groupActivated, dynamic []RegisteredTool
 	for _, t := range tools {
-		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || IsLegacyModelDynamicGateway(t.Name) {
+		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || omittedFromHostToolCatalog(t.Name) {
 			continue
 		}
 		// Skip backward-compat aliases (handler only, no definition).

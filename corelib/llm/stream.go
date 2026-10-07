@@ -366,6 +366,43 @@ func partialThinkTagSuffixLen(s, tag string) int {
 	return 0
 }
 
+// mergeSSEUsage keeps token legs already seen when a later chunk only carries
+// the settled credit debit, and keeps that debit when a later chunk reports
+// tokens without repeating it.
+func mergeSSEUsage(prev, next *Usage) *Usage {
+	if next == nil {
+		return prev
+	}
+	if prev == nil {
+		return next
+	}
+	out := *prev
+	if next.InputReported || next.PromptTokens > 0 || next.InputTokens > 0 {
+		out.PromptTokens = next.PromptTokens
+		out.InputTokens = next.InputTokens
+		out.InputReported = next.InputReported
+	}
+	if next.OutputReported || next.CompletionTokens > 0 || next.OutputTokens > 0 {
+		out.CompletionTokens = next.CompletionTokens
+		out.OutputTokens = next.OutputTokens
+		out.OutputReported = next.OutputReported
+	}
+	if next.TotalTokens > 0 {
+		out.TotalTokens = next.TotalTokens
+	}
+	if next.CachedInputTokens > 0 {
+		out.CachedInputTokens = next.CachedInputTokens
+	}
+	if next.CacheWriteTokens > 0 {
+		out.CacheWriteTokens = next.CacheWriteTokens
+	}
+	if next.CreditsDeducted != nil {
+		credits := *next.CreditsDeducted
+		out.CreditsDeducted = &credits
+	}
+	return &out
+}
+
 // parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
 // forwards text and reasoning_content deltas as they arrive.  Reasoning must
 // not wait for the final [DONE] event: hosts use the live callback to keep the
@@ -419,7 +456,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 			}
 		}
 		if chunk.Usage != nil {
-			usage = chunk.Usage
+			usage = mergeSSEUsage(usage, chunk.Usage)
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -789,7 +826,15 @@ func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, 
 				tc.Function.Name, len(args), finishReason, err.Error(), tail)
 			continue
 		}
-		if missing := streamTruncatedRequiredField(tc.Function.Name, parsed); missing != "" && (isLengthTruncated || len(args) > 4000) {
+		// A missing field is a cut stream only when the generation itself was
+		// cut. finish_reason=tool_calls means the provider closed the call:
+		// write_file's edit shape and the text alias have no content field,
+		// and a 7KB passage edit is a real call. Dropping it as truncation
+		// (production 2026-10-04, LaTeX references.bib, 7397 bytes,
+		// finish_reason=tool_calls) throws the write away and the recovery
+		// prompt coaches the model into a prose loop that the agent then
+		// accepts as the finished answer. Argument mistakes stay with the tool.
+		if missing := streamTruncatedRequiredField(tc.Function.Name, parsed); missing != "" && streamOutputCut(finishReason, len(args)) {
 			truncatedNames = append(truncatedNames, tc.Function.Name)
 			if truncatedArgs == nil {
 				truncatedArgs = make(map[string]string)
@@ -819,25 +864,107 @@ func isStreamLengthFinishReason(reason string) bool {
 	}
 }
 
+// streamOutputCut reports that this argument object was cut by the output
+// budget. length/max_tokens is that signal. Some proxies report stop instead
+// of length once a large object is cut, so a missing field on a stop finish
+// still counts when the payload is large. A finish that closes the tool call
+// does not: the provider ended the call, and a missing content key is then
+// the tool's contract, not evidence the stream died mid-object.
+func streamOutputCut(finishReason string, argBytes int) bool {
+	if isStreamLengthFinishReason(finishReason) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(finishReason)) {
+	case "tool_calls", "function_call", "tool_use":
+		return false
+	default:
+		return argBytes > 4000
+	}
+}
+
+// FilterStreamTruncatedToolCalls is the one truncation rule for streamed and
+// non-stream tool calls. GUI chat and responses streams call it too; a second
+// copy drifts and will drop a finished write_file again.
+func FilterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, []string, map[string]string) {
+	return filterStreamTruncatedToolCalls(msg, finishReason)
+}
+
 var streamTruncatedRequiredFields = map[string][]string{
-	"write_file": {"path", "content"},
-	"edit_file":  {"path", "old_string", "new_string"},
 	"edit_lines": {"path", "operation", "start_line"},
 	"bash":       {"command"},
 }
 
 func streamTruncatedRequiredField(toolName string, parsed map[string]interface{}) string {
-	fields := streamTruncatedRequiredFields[strings.TrimSpace(toolName)]
-	for _, field := range fields {
+	name := strings.TrimSpace(toolName)
+	switch name {
+	case "write_file":
+		return writeFileStreamTruncatedField(parsed)
+	case "edit_file":
+		return editFileStreamTruncatedField(parsed)
+	}
+	for _, field := range streamTruncatedRequiredFields[name] {
 		value, ok := parsed[field]
 		if !ok {
 			return field
 		}
+		// bash and edit_lines treat a blank string as unsupplied. A closed
+		// empty write or edit is handled above: content "" clears a file,
+		// and new_string "" deletes a passage.
 		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
 			return field
 		}
 	}
 	return ""
+}
+
+// writeFileStreamTruncatedField follows the live write contract. A whole-file
+// write needs a path plus content; text is that same field. A passage edit
+// needs a path plus old_string and new_string. content "" clears the file and
+// new_string "" deletes the passage. Only a missing key is a cut: null, "",
+// whitespace, and a non-string were generated, and the tool accepts or rejects
+// them. Null does not select the edit shape, because the write path drops
+// nulls before it decides; a null old_string beside a real content is still
+// a whole-file write. A mix of content and a real edit pair stays with the
+// tool, which refuses it.
+func writeFileStreamTruncatedField(parsed map[string]interface{}) string {
+	if !streamKeyExists(parsed, "path") && !streamKeyExists(parsed, "file_path") {
+		return "path"
+	}
+	if streamArgNonNull(parsed, "old_string") || streamArgNonNull(parsed, "new_string") {
+		if !streamKeyExists(parsed, "old_string") {
+			return "old_string"
+		}
+		if !streamKeyExists(parsed, "new_string") {
+			return "new_string"
+		}
+		return ""
+	}
+	if !streamKeyExists(parsed, "content") && !streamKeyExists(parsed, "text") {
+		return "content"
+	}
+	return ""
+}
+
+// editFileStreamTruncatedField matches EditTextFile. new_string may be empty
+// because that deletes the matched passage. Whitespace is the text to match
+// or insert. A missing key is the cut; null was generated and the tool rejects it.
+func editFileStreamTruncatedField(parsed map[string]interface{}) string {
+	for _, field := range []string{"path", "old_string", "new_string"} {
+		if !streamKeyExists(parsed, field) {
+			return field
+		}
+	}
+	return ""
+}
+
+func streamKeyExists(parsed map[string]interface{}, key string) bool {
+	_, ok := parsed[key]
+	return ok
+}
+
+func streamArgNonNull(parsed map[string]interface{}, key string) bool {
+	value, ok := parsed[key]
+	return ok && value != nil
 }
 
 // looksLikeMaxTokensError checks if an API error is about max_tokens being too high.

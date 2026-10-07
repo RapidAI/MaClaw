@@ -279,10 +279,14 @@ export function normalizeWelcomeSshPort(port: unknown): number {
     return Number.isFinite(n) && n > 0 && n < 65536 ? Math.trunc(n) : 22;
 }
 
-/** Clamp password for local storage (no interior trim — spaces may be significant). */
+/**
+ * Clamp a password for storage.
+ * Ends are trimmed so a pasted newline matches the password SSH just used.
+ * Spaces inside the password stay.
+ */
 export function normalizeWelcomeSshPassword(password: unknown): string {
     if (typeof password !== "string" || !password) return "";
-    return password.slice(0, WELCOME_SSH_PASSWORD_MAX_LEN);
+    return password.trim().slice(0, WELCOME_SSH_PASSWORD_MAX_LEN);
 }
 
 /** Normalize a coding-env snapshot; drops empty/invalid values. Keeps non-empty password. */
@@ -328,8 +332,8 @@ export function stripCodingEnvPassword(
 
 /**
  * Merge preferred env over fallback. Password from preferred wins;
- * if preferred remote has no password, reuse fallback password only when
- * host+user match (never attach credentials to a different server).
+ * if preferred remote has no password, reuse fallback password only for the
+ * same host, user, and port.
  */
 export function mergeWelcomeStoredCodingEnv(
     preferred?: WelcomeStoredCodingEnv | null,
@@ -344,8 +348,14 @@ export function mergeWelcomeStoredCodingEnv(
         a?.remote
         && !a.remote.password
         && b?.remote?.password
-        && a.remote.host === b.remote.host
-        && a.remote.user === b.remote.user
+        && sameRemoteSSHTarget(
+            a.remote.host,
+            a.remote.user,
+            a.remote.port,
+            b.remote.host,
+            b.remote.user,
+            b.remote.port,
+        )
     ) {
         remote = { ...a.remote, password: b.remote.password };
     }
@@ -356,7 +366,7 @@ export function mergeWelcomeStoredCodingEnv(
  * Resolve coding env when saving a custom template.
  * - `input` omitted → keep `previous` (e.g. post-send "save as template" offer)
  * - `input.remote.password` is a string (incl. "") → treat as explicit; "" clears
- * - `input.remote.password` omitted → merge password from previous when host+user match
+ * - `input.remote.password` omitted → merge password from previous when host, user, and port match
  */
 export function resolveWelcomeCodingEnvForSave(
     input?: WelcomeStoredCodingEnv | null,
@@ -386,10 +396,24 @@ export const REMOTE_SSH_PASSWORD_VAULT_KEY = "maclaw:remote-ssh-passwords";
 /** Soft cap so the vault cannot grow without bound across many one-off hosts. */
 export const REMOTE_SSH_PASSWORD_VAULT_MAX = 40;
 
+/** Host is case-insensitive; unwrap [IPv6] so it matches the OS keyring key. */
+export function normalizeRemoteSSHHost(host: string): string {
+    let h = String(host || "").trim().toLowerCase();
+    if (h.length >= 2 && h.startsWith("[") && h.endsWith("]")) {
+        h = h.slice(1, -1).trim();
+    }
+    return h;
+}
+
+/** Drop control characters the backend tag sanitizer would also strip. */
+export function normalizeRemoteSSHUser(user: string): string {
+    return String(user || "").replace(/[\u0000-\u001f]/g, "").trim();
+}
+
 /** Stable identity key for vault + form binding (host lowercased). */
 export function remoteSSHPasswordVaultKey(host: string, user: string, port?: number): string {
-    const h = String(host || "").trim().toLowerCase();
-    const u = String(user || "").trim();
+    const h = normalizeRemoteSSHHost(host);
+    const u = normalizeRemoteSSHUser(user);
     const p = normalizeWelcomeSshPort(port);
     return `${u}@${h}:${p}`;
 }
@@ -404,10 +428,86 @@ function sameRemoteSSHTarget(
     bPort: number | undefined,
 ): boolean {
     return (
-        String(aHost || "").trim().toLowerCase() === String(bHost || "").trim().toLowerCase()
-        && String(aUser || "").trim() === String(bUser || "").trim()
+        normalizeRemoteSSHHost(aHost) === normalizeRemoteSSHHost(bHost)
+        && normalizeRemoteSSHUser(aUser) === normalizeRemoteSSHUser(bUser)
         && normalizeWelcomeSshPort(aPort) === normalizeWelcomeSshPort(bPort)
     );
+}
+
+type RemoteSSHPasswordKeyringAPI = {
+    RememberRemoteSSHPassword?: (host: string, user: string, password: string, port: number) => Promise<unknown> | unknown;
+    RecallRemoteSSHPassword?: (host: string, user: string, port: number) => Promise<string> | string;
+    ForgetRemoteSSHPassword?: (host: string, user: string, port: number) => Promise<unknown> | unknown;
+};
+
+function remoteSSHPasswordKeyringAPI(): RemoteSSHPasswordKeyringAPI | null {
+    const app = (globalThis as { go?: { main?: { App?: RemoteSSHPasswordKeyringAPI } } }).go?.main?.App;
+    if (!app || typeof app.RecallRemoteSSHPassword !== "function") return null;
+    return app;
+}
+
+/** Per-target queue so a slow forget cannot land after a newer remember. */
+const remoteSSHPasswordKeyringTail = new Map<string, Promise<void>>();
+/**
+ * Bumped on an authoritative local save or clear. An in-flight keyring read
+ * captures the revision and must not write an older password back afterward.
+ */
+const remoteSSHPasswordRevision = new Map<string, number>();
+
+function remoteSSHPasswordRevisionOf(key: string): number {
+    return remoteSSHPasswordRevision.get(key) ?? 0;
+}
+
+function bumpRemoteSSHPasswordRevision(key: string): void {
+    remoteSSHPasswordRevision.set(key, remoteSSHPasswordRevisionOf(key) + 1);
+}
+
+function enqueueRemoteSSHPasswordKeyring<T>(key: string, op: () => Promise<T>): Promise<T> {
+    const prev = remoteSSHPasswordKeyringTail.get(key) ?? Promise.resolve();
+    const result = prev.then(op, op);
+    const settled = result.then(() => undefined, () => undefined);
+    remoteSSHPasswordKeyringTail.set(key, settled);
+    void settled.then(() => {
+        if (remoteSSHPasswordKeyringTail.get(key) === settled) {
+            remoteSSHPasswordKeyringTail.delete(key);
+        }
+    });
+    return result;
+}
+
+export function remoteSSHPasswordKeyringReady(): boolean {
+    return typeof remoteSSHPasswordKeyringAPI()?.RecallRemoteSSHPassword === "function";
+}
+
+function syncRemoteSSHPasswordToKeyring(host: string, user: string, password: string, port?: number): void {
+    const api = remoteSSHPasswordKeyringAPI();
+    const pw = normalizeWelcomeSshPassword(password);
+    if (!api?.RememberRemoteSSHPassword || !pw) return;
+    const key = remoteSSHPasswordVaultKey(host, user, port);
+    const normalizedHost = normalizeRemoteSSHHost(host);
+    const normalizedUser = normalizeRemoteSSHUser(user);
+    const normalizedPort = normalizeWelcomeSshPort(port);
+    const revision = remoteSSHPasswordRevisionOf(key);
+    enqueueRemoteSSHPasswordKeyring(key, async () => {
+        // A clear or a newer save already owns this target.
+        if (remoteSSHPasswordRevisionOf(key) !== revision) return;
+        await api.RememberRemoteSSHPassword!(normalizedHost, normalizedUser, pw, normalizedPort);
+    });
+}
+
+function forgetRemoteSSHPasswordInKeyring(host: string, user: string, port?: number): void {
+    const api = remoteSSHPasswordKeyringAPI();
+    if (!api?.ForgetRemoteSSHPassword) return;
+    const key = remoteSSHPasswordVaultKey(host, user, port);
+    const normalizedHost = normalizeRemoteSSHHost(host);
+    const normalizedUser = normalizeRemoteSSHUser(user);
+    const normalizedPort = normalizeWelcomeSshPort(port);
+    const revision = remoteSSHPasswordRevisionOf(key);
+    enqueueRemoteSSHPasswordKeyring(key, async () => {
+        // A save that landed after this clear owns the keyring entry.
+        if (remoteSSHPasswordRevisionOf(key) !== revision) return;
+        await api.ForgetRemoteSSHPassword!(normalizedHost, normalizedUser, normalizedPort);
+    });
 }
 
 function readRemoteSSHPasswordVault(): Record<string, string> {
@@ -428,34 +528,44 @@ function upsertRemoteSSHPasswordVaultEntry(
     user: string,
     password: string,
     port?: number,
+    options?: { syncKeyring?: boolean },
 ): void {
-    const h = String(host || "").trim();
-    const u = String(user || "").trim();
+    const h = normalizeRemoteSSHHost(host);
+    const u = normalizeRemoteSSHUser(user);
     const pw = normalizeWelcomeSshPassword(password);
     if (!h || !u || !pw) return;
     const key = remoteSSHPasswordVaultKey(h, u, port);
+    if (options?.syncKeyring !== false) bumpRemoteSSHPasswordRevision(key);
     const map = readRemoteSSHPasswordVault();
     // Move key to "most recent" by re-inserting last (object key order is insertion order).
     if (key in map) delete map[key];
     map[key] = pw;
     const keys = Object.keys(map);
     if (keys.length > REMOTE_SSH_PASSWORD_VAULT_MAX) {
+        // Drop the local copy only. The OS keyring keeps older hosts so a
+        // long host list cannot make a still-used server look forgotten.
         for (const d of keys.slice(0, keys.length - REMOTE_SSH_PASSWORD_VAULT_MAX)) {
             delete map[d];
         }
     }
     writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+    if (options?.syncKeyring !== false) {
+        syncRemoteSSHPasswordToKeyring(h, u, pw, port);
+    }
 }
 
 function removeRemoteSSHPasswordVaultEntry(host: string, user: string, port?: number): void {
-    const h = String(host || "").trim();
-    const u = String(user || "").trim();
+    const h = normalizeRemoteSSHHost(host);
+    const u = normalizeRemoteSSHUser(user);
     if (!h || !u) return;
     const key = remoteSSHPasswordVaultKey(h, u, port);
+    bumpRemoteSSHPasswordRevision(key);
     const map = readRemoteSSHPasswordVault();
-    if (!(key in map)) return;
-    delete map[key];
-    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+    if (key in map) {
+        delete map[key];
+        writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+    }
+    forgetRemoteSSHPasswordInKeyring(h, u, port);
 }
 
 export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
@@ -545,9 +655,8 @@ export function loadRemoteSSHPassword(host: string, user: string, port?: number)
     const u = String(user || "").trim();
     if (!h || !u) return "";
     const p = normalizeWelcomeSshPort(port);
-    const fromVault = normalizeWelcomeSshPassword(
-        readRemoteSSHPasswordVault()[remoteSSHPasswordVaultKey(h, u, p)],
-    );
+    const vaultKey = remoteSSHPasswordVaultKey(h, u, p);
+    const fromVault = normalizeWelcomeSshPassword(readRemoteSSHPasswordVault()[vaultKey]);
     if (fromVault) return fromVault;
     const env = loadWelcomeCodingEnv();
     const rh = String(env.remote?.host || "").trim();
@@ -560,18 +669,72 @@ export function loadRemoteSSHPassword(host: string, user: string, port?: number)
     ) {
         const pw = normalizeWelcomeSshPassword(env.remote.password);
         if (pw) {
-            // Promote legacy single-env password into multi-host vault.
-            upsertRemoteSSHPasswordVaultEntry(h, u, pw, p);
+            // Promote into the vault only. A later keyring read decides whether
+            // this copy is still the one that should be remembered.
+            upsertRemoteSSHPasswordVaultEntry(h, u, pw, p, { syncKeyring: false });
             return pw;
         }
     }
     return "";
 }
 
+/** Cache a keyring password locally without writing it back to the keyring. */
+function adoptRemoteSSHKeyringPassword(host: string, user: string, password: string, port: number): void {
+    const key = remoteSSHPasswordVaultKey(host, user, port);
+    const local = normalizeWelcomeSshPassword(readRemoteSSHPasswordVault()[key]);
+    if (local !== password) {
+        upsertRemoteSSHPasswordVaultEntry(host, user, password, port, { syncKeyring: false });
+    }
+    const prev = loadWelcomeCodingEnv();
+    const remote = prev.remote;
+    if (!remote || remote.password === password) return;
+    if (!sameRemoteSSHTarget(String(remote.host || ""), String(remote.user || ""), remote.port, host, user, port)) return;
+    writeJson(WELCOME_CODING_ENV_KEY, {
+        ...prev,
+        remote: { ...remote, password },
+    });
+}
+
+export function recallRemoteSSHPassword(host: string, user: string, port?: number): Promise<string> {
+    const h = normalizeRemoteSSHHost(host);
+    const u = normalizeRemoteSSHUser(user);
+    if (!h || !u) return Promise.resolve("");
+    const p = normalizeWelcomeSshPort(port);
+    const api = remoteSSHPasswordKeyringAPI();
+    if (!api?.RecallRemoteSSHPassword) return Promise.resolve(loadRemoteSSHPassword(h, u, p));
+    const key = remoteSSHPasswordVaultKey(h, u, p);
+    const revision = remoteSSHPasswordRevisionOf(key);
+    return enqueueRemoteSSHPasswordKeyring(key, async () => {
+        let keyringPw = "";
+        try {
+            keyringPw = normalizeWelcomeSshPassword(await api.RecallRemoteSSHPassword!(h, u, p));
+        } catch {
+            keyringPw = "";
+        }
+        if (remoteSSHPasswordRevisionOf(key) !== revision) {
+            return normalizeWelcomeSshPassword(readRemoteSSHPasswordVault()[key]);
+        }
+        const local = normalizeWelcomeSshPassword(readRemoteSSHPasswordVault()[key]);
+        if (keyringPw) {
+            adoptRemoteSSHKeyringPassword(h, u, keyringPw, p);
+            return keyringPw;
+        }
+        if (!local) return "";
+        if (api.RememberRemoteSSHPassword) {
+            try {
+                await api.RememberRemoteSSHPassword(h, u, local, p);
+            } catch {
+                // The local copy is still usable for this reconnect.
+            }
+        }
+        return local;
+    });
+}
+
 /**
- * Remember an SSH password for reconnect (localStorage only).
- * Always writes the multi-host vault; updates last-used welcome env only when
- * identity matches or last-used remote is unset (avoids clobbering another host).
+ * Remember an SSH password for reconnect.
+ * Writes the multi-host vault and the OS keyring. Last-used welcome env updates
+ * only when identity matches or last-used remote is unset (avoids clobbering another host).
  */
 export function saveRemoteSSHPassword(
     host: string,

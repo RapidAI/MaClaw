@@ -20,6 +20,9 @@ type TaskSpec struct {
 	StepTimeout     time.Duration   `json:"step_timeout"` // default 30s
 	// FastBatch runs same-page steps without a full observe after each one.
 	FastBatch bool `json:"fast_batch,omitempty"`
+	// PauseForPerson stops a cloud-desktop batch when the page needs a human
+	// login or captcha. The local browser agent leaves this unset.
+	PauseForPerson bool `json:"-"`
 }
 
 // StepTargetSpec identifies the intended browsing context for a step.

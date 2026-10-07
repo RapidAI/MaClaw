@@ -640,6 +640,187 @@ func (a *App) deleteCloudWorkspaceLease(ctx context.Context, workspaceID, leaseI
 	return a.deleteCloudWorkspaceLeaseWithRevisionAndToken(ctx, workspaceID, leaseID, "", 0)
 }
 
+// cloudWorkspaceDeleteLease attaches a writer lease to ctx for one manifest
+// edit from the file manager. An already-open writable mount keeps its lease.
+// A browse cache does not: the short lease is released when the manifest
+// replace returns and is never stored on that mount, so the incomplete cache
+// cannot start pushing.
+func (a *App) cloudWorkspaceDeleteLease(ctx context.Context, workspaceID string) (context.Context, func(), error) {
+	noop := func() {}
+	if a == nil {
+		return ctx, noop, fmt.Errorf("cloud workspace sync unavailable")
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	if cloudWorkspaceWriterLeaseID(workspaceID) != "" {
+		return ctx, noop, nil
+	}
+	outcome, err := a.acquireCloudWorkspaceLease(ctx, workspaceID, false)
+	if err != nil {
+		log.Printf("[cloud_workspace] file delete lease acquire failed id=%s err=%v", workspaceID, err)
+		return ctx, noop, err
+	}
+	if outcome == nil || strings.TrimSpace(outcome.LeaseID) == "" {
+		return ctx, noop, fmt.Errorf("invalid cloud workspace lease response: missing lease_id")
+	}
+	leaseID := strings.TrimSpace(outcome.LeaseID)
+	if outcome.FencingToken <= 0 {
+		a.releaseEphemeralCloudWorkspaceLease(workspaceID, leaseID, 0)
+		return ctx, noop, fmt.Errorf("invalid cloud workspace lease response: missing fencing token")
+	}
+	if outcome.Acquired == cloudWorkspaceAcquiredRenewed && cloudWorkspaceWriterLeaseID(workspaceID) == leaseID {
+		return ctx, noop, nil
+	}
+	bound := withCloudWorkspaceLeaseOverride(ctx, workspaceID, leaseID, outcome.FencingToken)
+	parent := context.Background()
+	if a.ctx != nil {
+		parent = a.ctx
+	}
+	hbCtx, hbCancel := context.WithCancel(parent)
+	var hbDone chan struct{}
+	if !cloudWorkspaceBackgroundDisabled {
+		hbDone = make(chan struct{})
+		go func() {
+			defer close(hbDone)
+			a.keepCloudWorkspaceDeleteLease(hbCtx, workspaceID, leaseID, outcome.FencingToken)
+		}()
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			hbCancel()
+			if hbDone != nil {
+				<-hbDone
+			}
+			if cloudWorkspaceWriterLeaseID(workspaceID) == leaseID {
+				return
+			}
+			a.releaseEphemeralCloudWorkspaceLease(workspaceID, leaseID, outcome.FencingToken)
+		})
+	}
+	return bound, release, nil
+}
+
+// keepCloudWorkspaceDeleteLease extends a file-delete lease until release.
+// LeaseTTL is 90s and a max-size manifest upload can outlast that. Release
+// cancels this context and waits until the loop leaves, so a beat is not in
+// flight across the lease DELETE. A transport error or a 5xx does not stop
+// the loop. The loop does not touch the browse mount, so a failed beat cannot
+// fence that cache.
+func (a *App) keepCloudWorkspaceDeleteLease(ctx context.Context, workspaceID, leaseID string, fencingToken int64) {
+	interval := cloudWorkspaceHeartbeatIntervalValue
+	if interval <= 0 {
+		interval = cloudWorkspaceHeartbeatInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Both channels can be ready. A tick must not start a beat after cancel.
+			if ctx.Err() != nil {
+				return
+			}
+			if !a.heartbeatCloudWorkspaceDeleteLease(ctx, workspaceID, leaseID, fencingToken) {
+				return
+			}
+		}
+	}
+}
+
+// heartbeatCloudWorkspaceDeleteLease reports whether the loop should keep
+// waiting for the next tick. False means the parent was cancelled or the server
+// rejected this lease. A dropped connection or a 5xx is retried on the next tick
+// so one blip cannot let a long manifest upload outlive LeaseTTL.
+func (a *App) heartbeatCloudWorkspaceDeleteLease(parent context.Context, workspaceID, leaseID string, fencingToken int64) bool {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if parent.Err() != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, cloudWorkspaceRequestTimeout)
+	defer cancel()
+	headers := map[string]string{"X-Cloud-Workspace-Session": leaseID}
+	if fencingToken > 0 {
+		headers["X-Cloud-Workspace-Fencing"] = strconv.FormatInt(fencingToken, 10)
+	}
+	_, status, err := a.cloudWorkspaceHubDo(ctx, http.MethodPost, cloudWorkspaceLeaseHeartbeatPath(workspaceID, leaseID), cloudWorkspaceHTTPOptions{headers: headers, accept: "application/json"})
+	if parent.Err() != nil {
+		return false
+	}
+	if err != nil {
+		log.Printf("[cloud_workspace] file delete lease heartbeat failed id=%s err=%v status=%d", workspaceID, err, status)
+		return true
+	}
+	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+		log.Printf("[cloud_workspace] file delete lease heartbeat failed id=%s err=%v status=%d", workspaceID, err, status)
+		return true
+	}
+	if status >= 300 {
+		log.Printf("[cloud_workspace] file delete lease heartbeat failed id=%s err=%v status=%d", workspaceID, err, status)
+		return false
+	}
+	return true
+}
+
+func cloudWorkspaceWriterLeaseID(workspaceID string) string {
+	mount := lookupHeldCloudWorkspace(workspaceID)
+	if mount == nil {
+		return ""
+	}
+	mount.mu.Lock()
+	defer mount.mu.Unlock()
+	if mount.ReadOnly || mount.isolatedReadOnly || mount.releasing || mount.FencingToken <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(mount.LeaseID)
+}
+
+// releaseEphemeralCloudWorkspaceLease drops a lease taken only for a file
+// delete. It does not send the browse mount's last revision: that cache is
+// not a replica, and a mismatched revision would leave the lease held.
+func (a *App) releaseEphemeralCloudWorkspaceLease(workspaceID, leaseID string, fencingToken int64) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	leaseID = strings.TrimSpace(leaseID)
+	if a == nil || workspaceID == "" || leaseID == "" {
+		return
+	}
+	headers := map[string]string{
+		"Idempotency-Key":           cloudWorkspaceIdempotencyKey("lease-release-"+leaseID, []byte("ephemeral")),
+		"X-Cloud-Workspace-Session": leaseID,
+		// Always set fencing. An empty value clears a stale mount token that
+		// hubDo would otherwise keep, which makes this DELETE come back fenced.
+		"X-Cloud-Workspace-Fencing": "",
+	}
+	if fencingToken > 0 {
+		headers["X-Cloud-Workspace-Fencing"] = strconv.FormatInt(fencingToken, 10)
+	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		// Detach from the app context. Delete returns because that context was
+		// cancelled on shutdown, and this DELETE still has to drop the lease.
+		ctx, cancel := context.WithTimeout(context.Background(), cloudWorkspaceRequestTimeout)
+		data, status, err := a.cloudWorkspaceHubDo(ctx, http.MethodDelete, cloudWorkspaceLeasePath(workspaceID, leaseID), cloudWorkspaceHTTPOptions{headers: headers, accept: "application/json"})
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if status == http.StatusNotFound || status < 300 {
+			return
+		}
+		if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+			lastErr = cloudWorkspaceAPIError(status, data)
+			continue
+		}
+		log.Printf("[cloud_workspace] file delete lease release failed id=%s err=%v", workspaceID, cloudWorkspaceAPIError(status, data))
+		return
+	}
+	log.Printf("[cloud_workspace] file delete lease release failed id=%s err=%v", workspaceID, lastErr)
+}
+
 func (a *App) deleteCloudWorkspaceLeaseWithRevision(ctx context.Context, workspaceID, leaseID, lastRevision string) error {
 	return a.deleteCloudWorkspaceLeaseWithRevisionAndToken(ctx, workspaceID, leaseID, lastRevision, 0)
 }

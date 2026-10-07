@@ -323,6 +323,9 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 			IntervalMinutes: 0,
 			StartDate:       args.StartDate,
 			EndDate:         args.EndDate,
+			InstanceID:      strings.TrimSpace(c.instance.ID),
+			OwnerTenantID:   strings.TrimSpace(c.principal.TenantID),
+			OwnerUserID:     strings.TrimSpace(c.principal.UserID),
 		}
 		if args.HasMinute {
 			task.Minute = args.Minute
@@ -351,8 +354,7 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 		c.rememberAdministeredScheduleID(id)
 		return reviewedHostScheduleProjection("created", created), nil
 	case "update":
-		current := c.schedules.Get(args.ID)
-		if current == nil {
+		if _, ok := c.visibleSchedule(args.ID); !ok {
 			return "", fmt.Errorf("host_schedule_not_found")
 		}
 		patch := map[string]interface{}{}
@@ -405,6 +407,9 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 		c.rememberAdministeredScheduleID(args.ID)
 		return reviewedHostScheduleProjection("updated", updated), nil
 	case "delete":
+		if _, ok := c.visibleSchedule(args.ID); !ok {
+			return "", fmt.Errorf("host_schedule_not_found")
+		}
 		if c.scheduleDispatchBindings != nil {
 			c.scheduleDispatchBindings.Delete(args.ID)
 		}
@@ -416,7 +421,7 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 		}
 		return "定时任务已删除。", nil
 	default:
-		listed := c.schedules.List()
+		listed := c.schedulesForCaller()
 		if len(listed) == 0 {
 			return "当前没有定时任务。", nil
 		}
@@ -427,6 +432,39 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 		}
 		return strings.TrimRight(b.String(), "\n"), nil
 	}
+}
+
+func (c *coreAgentCallbacks) schedulesForCaller() []scheduler.ScheduledTask {
+	if c == nil || c.schedules == nil {
+		return nil
+	}
+	listed := c.schedules.List()
+	instanceID := strings.TrimSpace(c.instance.ID)
+	if instanceID == "" {
+		return listed
+	}
+	out := make([]scheduler.ScheduledTask, 0, len(listed))
+	for _, item := range listed {
+		if item.InstanceID == instanceID {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (c *coreAgentCallbacks) visibleSchedule(id string) (*scheduler.ScheduledTask, bool) {
+	if c == nil || c.schedules == nil {
+		return nil, false
+	}
+	task := c.schedules.Get(id)
+	if task == nil {
+		return nil, false
+	}
+	instanceID := strings.TrimSpace(c.instance.ID)
+	if instanceID != "" && task.InstanceID != instanceID {
+		return nil, false
+	}
+	return task, true
 }
 
 func reviewedHostScheduleProjection(kind string, task *scheduler.ScheduledTask) string {

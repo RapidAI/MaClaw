@@ -60,6 +60,9 @@ type adminSchedulerTaskBody struct {
 	FailOnError    *bool  `json:"fail_on_error"`
 	MentionAll     *bool  `json:"mention_all"`
 	MentionUserIDs string `json:"mention_user_ids"`
+	InstanceID     string `json:"instance_id"`
+	OwnerTenantID  string `json:"owner_tenant_id"`
+	OwnerUserID    string `json:"owner_user_id"`
 }
 
 func (s *HTTPServer) handleAdminSchedulerCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +123,9 @@ func (s *HTTPServer) handleAdminSchedulerCreateTask(w http.ResponseWriter, r *ht
 		DayOfWeek:       dow,
 		DayOfMonth:      dom,
 		IntervalMinutes: interval,
+		InstanceID:      strings.TrimSpace(body.InstanceID),
+		OwnerTenantID:   strings.TrimSpace(body.OwnerTenantID),
+		OwnerUserID:     strings.TrimSpace(body.OwnerUserID),
 	}
 	if body.StartDate != nil {
 		t.StartDate = strings.TrimSpace(*body.StartDate)

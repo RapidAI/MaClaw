@@ -170,11 +170,29 @@ describe('useAITabManager', () => {
         }));
 
         await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
-        expect(onEnsureAssistantTabTask).toHaveBeenCalledWith('ve', 'machine-ve', 'Machine VE');
+        expect(onEnsureAssistantTabTask).not.toHaveBeenCalled();
         expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online', 'data:image/jpeg;base64,/9j/', '');
     });
 
-    it('registers a continuable one-to-one discussion before opening its VE tab', async () => {
+    it('opens a continuable one-to-one discussion as a VE tab without a local task', async () => {
+        const createGroupTab = vi.fn();
+        const createVETab = vi.fn().mockReturnValue({ id: 've-disc-1', type: 've' });
+        const onEnsureAssistantTabTask = vi.fn().mockResolvedValue(undefined);
+
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab,
+            createGroupTab,
+            createProjectTab: vi.fn(),
+            pendingHistoryDiscussionOpen: { id: 'disc-1', topic: 'Vendor review', local_relation: 'initiated_by_me', participant_ids: ['ve-a'] },
+            onEnsureAssistantTabTask,
+        }));
+
+        await waitFor(() => expect(createVETab).toHaveBeenCalledWith('ve-a', 'Vendor review', 'disc-1', undefined, undefined, undefined, { allowIdentityReuse: false }));
+        expect(onEnsureAssistantTabTask).not.toHaveBeenCalled();
+        expect(createGroupTab).not.toHaveBeenCalled();
+    });
+
+    it('registers a discussion task only when a one-to-one chat cannot open a VE tab', async () => {
         const createGroupTab = vi.fn().mockReturnValue({ id: 'history-disc-1', type: 'group' });
         const createVETab = vi.fn().mockReturnValue(null);
         const onEnsureAssistantTabTask = vi.fn().mockResolvedValue(undefined);
@@ -208,7 +226,7 @@ describe('useAITabManager', () => {
         await waitFor(() => expect(createGroupTab).toHaveBeenCalled());
     });
 
-    it('does not open a pending VE tab when task registration fails', async () => {
+    it('opens a pending VE tab even when task registration would fail', async () => {
         const createVETab = vi.fn();
         const onHandled = vi.fn();
         renderHook(() => usePendingAssistantTabOpen({
@@ -223,7 +241,7 @@ describe('useAITabManager', () => {
         }));
 
         await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
-        expect(createVETab).not.toHaveBeenCalled();
+        expect(createVETab).toHaveBeenCalledWith('ve-failing', 'Failing VE', undefined, 'online', undefined, '');
     });
 
     it('registers a pending expert before opening its tab', async () => {

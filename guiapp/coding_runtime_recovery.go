@@ -186,20 +186,34 @@ func guiRecoveryWorkspaceProber(task codingruntime.Task) (codingruntime.Workspac
 // initialize a repository, so a gated remote writer must establish HEAD on the
 // already-verified SSH session before Runner starts. Failure is logged by the
 // caller; the existing probe then blocks the attempt instead of executing.
-func ensureGUIRemoteGitBaseline(ctx context.Context, handler *IMMessageHandler, sessionID, projectDir, expectedIdentity string) error {
+func ensureGUIRemoteGitBaseline(ctx context.Context, handler *IMMessageHandler, sessionID, projectDir, expectedIdentity string) (string, error) {
 	sessionID, projectDir, expectedIdentity = strings.TrimSpace(sessionID), strings.TrimSpace(projectDir), strings.TrimSpace(expectedIdentity)
 	if handler == nil || sessionID == "" || projectDir == "" || expectedIdentity == "" {
-		return fmt.Errorf("remote git baseline binding is incomplete")
+		return "", fmt.Errorf("remote git baseline binding is incomplete")
 	}
 	request, err := codingruntime.NewRemoteGitBaselineRequest(projectDir)
 	if err != nil {
-		return err
+		return "", err
 	}
-	output, err := handler.sshExecRuntimeBoundContext(ctx, sessionID, request.Command, 30, expectedIdentity, projectDir)
+	// Baseline is a process with an exit status, not a line typed into the
+	// login PTY. The PTY echoes that line, and a failing command there exits
+	// the verified shell.
+	mgr := handler.ensureSSHManager()
+	if mgr == nil {
+		return "", fmt.Errorf("remote coding runtime session manager is unavailable")
+	}
+	session, ok := mgr.Get(sessionID)
+	if !ok || !guiRuntimeSSHSessionAlive(session) || guiRemoteCodingTargetIdentity(handler, sessionID, projectDir) != expectedIdentity {
+		return "", fmt.Errorf("verified remote coding session is unavailable; no reconnect was attempted")
+	}
+	result, err := handler.runRemoteSetupCommand(ctx, sessionID, request.Command, 30*time.Second)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return request.Result(output)
+	if err := request.ExecResult(result.ExitCode, result.Stdout, result.Stderr); err != nil {
+		return "", err
+	}
+	return request.EffectiveWorkDir(result.Stdout, projectDir)
 }
 
 // newGUIRemoteWorkspaceProber checks the currently live SSH session before it
@@ -237,12 +251,25 @@ func newGUIRemoteWorkspaceProber(handler *IMMessageHandler, sessionID, workDir s
 		if err != nil {
 			return nil, err
 		}
-		command := "git -C " + remoteShellQuote(workDir) + " rev-parse HEAD; printf '\\n" + markerStart + "\\n'; git -C " + remoteShellQuote(workDir) + " status --porcelain=v1 --untracked-files=all; printf '\\n" + markerEnd + "\\n'"
-		output, err := handler.sshExecRuntimeBound(sessionID, command, 15, expected, workDir)
+		command, err := codingruntime.RemoteGitProbeCommand(workDir, markerStart, markerEnd)
 		if err != nil {
 			return nil, err
 		}
-		return guiRemoteWorkspaceProbeFromOutput(task, hostIdentity, workDir, output, markerStart, markerEnd, time.Now().UTC())
+		result, err := mgr.ExecCommandChannel(ctx, sessionID, command, 15*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if result.ExitCode != 0 {
+			return nil, codingruntime.RemoteProbeExecError(result.ExitCode, result.Stderr)
+		}
+		probe, err := guiRemoteWorkspaceProbeFromOutput(task, hostIdentity, workDir, result.Stdout, markerStart, markerEnd, time.Now().UTC())
+		if err != nil {
+			if detail := codingruntime.RemoteFailureLine(result.Stderr); detail != "" {
+				return nil, fmt.Errorf("%w: %s", err, detail)
+			}
+			return nil, err
+		}
+		return probe, nil
 	})
 }
 

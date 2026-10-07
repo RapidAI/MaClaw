@@ -2,6 +2,11 @@
 
 This directory contains architecture notes, design records, and operational guides.
 
+## Docker 桌面(desktopd)
+
+- [maclaw-gui:2 使用与运维手册](desktop-gui-v2.md)：XFCE + Chromium + fcitx5 拼音桌面镜像；架构（gate 鉴权、D-Bus、close_range 垫片）、构建、Windows/Linux 部署、Hub 配置、从 maclaw-gui:1 懒迁移、截图 API、冒烟、回滚、已知问题与安全建议。
+- [desktopd 服务说明](../desktopd/README.md)：环境变量、管理面板、与 Hub / MaClawSrv 的关系、排障。
+
 ## LLM 服务商调度
 
 - [同倍率服务商 Load Balance](design/llm-provider-multiplier-lb-zh.md)：Hub / HubCenter 按当前生效倍率自动成组，档内平滑加权 WRR，卡片 `LB · xN` 标志。

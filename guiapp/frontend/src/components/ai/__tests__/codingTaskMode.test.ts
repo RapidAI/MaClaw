@@ -501,9 +501,15 @@ describe("codingTaskMode", () => {
         });
     });
 
-    it("formats remote workspace as host:workDir", () => {
-        expect(remoteWorkspaceLocationLabel("www.driverdevelopment.com", "/srv/app")).toBe("www.driverdevelopment.com:/srv/app");
+    it("formats remote workspace as host/path and keeps a non-default port", () => {
+        expect(remoteWorkspaceLocationLabel("www.driverdevelopment.com", "/srv/app")).toBe("www.driverdevelopment.com/srv/app");
+        expect(remoteWorkspaceLocationLabel("www.driverdevelopment.com", "/srv/app", 22)).toBe("www.driverdevelopment.com/srv/app");
+        expect(remoteWorkspaceLocationLabel("home.rapidai.tech", "/home/rapidrec", 55)).toBe("home.rapidai.tech:55/home/rapidrec");
         expect(remoteWorkspaceLocationLabel("10.0.0.8", "")).toBe("10.0.0.8");
+        expect(remoteWorkspaceLocationLabel("10.0.0.8", "", 2222)).toBe("10.0.0.8:2222");
+        expect(remoteWorkspaceLocationLabel("2001:db8::1", "/home/ubuntu/app", 2222)).toBe("[2001:db8::1]:2222/home/ubuntu/app");
+        expect(remoteWorkspaceLocationLabel("2001:db8::1", "/home/ubuntu/app", 22)).toBe("[2001:db8::1]/home/ubuntu/app");
+        expect(remoteWorkspaceLocationLabel("[2001:db8::1]", "/home/ubuntu/app", 2222)).toBe("[2001:db8::1]:2222/home/ubuntu/app");
         expect(remoteWorkspaceLocationLabel("", "/srv/app")).toBe("/srv/app");
         expect(remoteWorkspaceLocationLabel("", "")).toBe("");
     });
@@ -512,15 +518,33 @@ describe("codingTaskMode", () => {
         expect(pickRemoteWorkspaceLocation({
             liveHost: "live.example.test",
             liveWorkDir: "/live",
+            livePort: 55,
             tabHost: "tab.example.test",
-            tags: ["remote_host:tag.example.test", "remote_workdir:/from-tags"],
-        })).toEqual({ host: "live.example.test", workDir: "/live" });
+            tags: ["remote_host:tag.example.test", "remote_port:2222", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "live.example.test", workDir: "/live", port: 55 });
         expect(pickRemoteWorkspaceLocation({
             tabHost: "tab.example.test",
-            tags: ["remote_host:tag.example.test", "remote_workdir:/from-tags"],
-        })).toEqual({ host: "tab.example.test", workDir: "/from-tags" });
+            tags: ["remote_host:tag.example.test", "remote_port:2222", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "tab.example.test", workDir: "/from-tags", port: 2222 });
         expect(pickRemoteWorkspaceLocation({
             tags: ["remote_host:tag.example.test", "remote_workdir:/from-tags"],
-        })).toEqual({ host: "tag.example.test", workDir: "/from-tags" });
+        })).toEqual({ host: "tag.example.test", workDir: "/from-tags", port: 22 });
+        expect(pickRemoteWorkspaceLocation({
+            liveWorkDir: "/home/rapidrec",
+            livePort: 22,
+            tags: ["remote_host:home.rapidai.tech", "remote_port:55", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "home.rapidai.tech", workDir: "/home/rapidrec", port: 55 });
+        expect(pickRemoteWorkspaceLocation({
+            liveHost: "home.rapidai.tech",
+            liveWorkDir: "/home/rapidrec",
+            livePort: 22,
+            tags: ["remote_host:home.rapidai.tech", "remote_port:55", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "home.rapidai.tech", workDir: "/home/rapidrec", port: 55 });
+        expect(pickRemoteWorkspaceLocation({
+            liveHost: "home.rapidai.tech",
+            liveWorkDir: "/home/rapidrec",
+            livePort: 2222,
+            tags: ["remote_host:home.rapidai.tech", "remote_port:55", "remote_workdir:/home/rapidrec"],
+        })).toEqual({ host: "home.rapidai.tech", workDir: "/home/rapidrec", port: 2222 });
     });
 });

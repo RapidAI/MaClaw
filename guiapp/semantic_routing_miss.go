@@ -14,20 +14,18 @@ const (
 )
 
 // routingMissPrivilegeTools expand power when a precise surface missed.
-// Parent invariant 11: a failed plan must not dump gateways, downloaders,
-// line-range editors or governed publishers. bash, read_file, write_file and
-// edit_file are the desktop assistant's basic floor. They stay available even
-// on a routing-miss leftover turn, so a degraded or offline planner never
-// leaves the agent unable to run a command, read a file, or change it.
-// Lexical pins (screenshot, office, IM) are not in this set; they stay if the
-// leftover router already selected them.
+// Parent invariant 11: a failed plan must not dump downloaders, line-range
+// editors, provider gateways, or governed publishers. bash, read_file,
+// write_file, edit_file, craft_tool, and manage_skill are the execution
+// baseline: a degraded planner must still be able to run a command, change
+// a file, run a one-off script, or invoke an installed skill. Lexical pins
+// (screenshot, office, IM) are not in this set; they stay if the leftover
+// router already selected them.
 var routingMissPrivilegeTools = map[string]bool{
 	"edit_lines":               true,
 	"download_file":            true,
 	"call_mcp_tool":            true,
-	"manage_skill":             true,
 	"search_and_install_skill": true,
-	"craft_tool":               true,
 	"task":                     true,
 	"goal":                     true,
 	// A document renderer performs a local mutation and publishes an artifact.

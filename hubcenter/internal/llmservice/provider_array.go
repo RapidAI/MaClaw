@@ -989,6 +989,26 @@ func arrayRouteCooling(reg *Registry, routeProviderID string, accept func(*llmpo
 	return true
 }
 
+// arrayRouteServeWindowClosed reports that this model still has configured
+// members and every one of them is outside its serve window. It ignores
+// pause, cooling, and quota so the diagnostic names the window instead of
+// hiding behind those states. acceptLiveProvider already drops closed
+// members from the dispatch list, so this runs on an any-member lookup.
+func arrayRouteServeWindowClosed(reg *Registry, routeProviderID string, model string) bool {
+	_, _, members := lookupProviderArray(reg, routeProviderID, func(provider *llmpool.ProviderConfig) bool { return provider != nil })
+	members = tokenBankMembersForModel(members, model)
+	if len(members) == 0 {
+		return false
+	}
+	now := time.Now()
+	for _, member := range members {
+		if member == nil || llmpool.ServeWindowsAllows(member.ServeWindows, now) {
+			return false
+		}
+	}
+	return true
+}
+
 func resolveProviderArrayID(reg *Registry, id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" || reg == nil {

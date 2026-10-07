@@ -281,14 +281,24 @@ func inferCommandRequirements(skill *corelib.NLSkillEntry) []Requirement {
 		if cmd == "" {
 			continue
 		}
-		for _, first := range extractCommandWords(cmd) {
+		preferred := ""
+		if step.Params != nil {
+			preferred, _ = step.Params["preferred_shell"].(string)
+		}
+		// The shell that will execute this step resolves its own builtins,
+		// cmdlets, and cmd internals. Those tokens are not installable PATH
+		// dependencies; LookPath would reject them and block a runnable skill.
+		// classifyStepShell tokenizes the command once for the shell choice and
+		// the command-word scan.
+		shell, _, words := classifyStepShell(cmd, preferred, runtime.GOOS)
+		for _, first := range words {
 			first = normalizeInferredCommandName(first)
 			seenKey := strings.ToLower(first)
 			if first == "" || seen[seenKey] {
 				continue
 			}
 			lower := strings.ToLower(first)
-			if shellBuiltins[lower] || coveredRuntimes[lower] || skipInferredCommand(first) {
+			if shellBuiltins[lower] || shellProvidesCommand(first, shell) || coveredRuntimes[lower] || skipInferredCommand(first) {
 				continue
 			}
 			seen[seenKey] = true

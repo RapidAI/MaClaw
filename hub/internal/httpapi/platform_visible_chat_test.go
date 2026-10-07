@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -30,6 +31,91 @@ func TestConsumeRuntimeSSEResponseUsesDoneMessageWhenContentIsTofu(t *testing.T)
 	}
 	if got != "Hello Kate" {
 		t.Fatalf("got %q, want message.content after tofu-only done content", got)
+	}
+}
+
+func TestConsumeRuntimeSSEResponseForwardsActivityWithoutTranscript(t *testing.T) {
+	s := platformAwareMachineSender{}
+	body := strings.NewReader("data: {\"status\":\"accepted\"}\n\ndata: {\"status\":\"tool_start\",\"name\":\"knowledge_search\"}\n\ndata: {\"chunk\":\"Hi\"}\n\ndata: {\"status\":\"tool_done\",\"name\":\"knowledge_search\"}\n\ndata: {\"status\":\"not-a-phase\"}\n\ndata: {\"done\":true,\"content\":\"Hi\"}\n\n")
+	var got []string
+	reply, err := s.consumeRuntimeSSEResponse(body, "tenant", digitalEmployeeEntry{ID: "ve-1"}, time.Now(), nil, func(phase, name string) {
+		got = append(got, phase+":"+name)
+	})
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if reply != "Hi" {
+		t.Fatalf("reply=%q, want Hi", reply)
+	}
+	want := "accepted:,tool_start:knowledge_search,tool_done:knowledge_search"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("activity=%q, want %s", strings.Join(got, ","), want)
+	}
+}
+
+func TestNormalizeRuntimeActivityRejectsUnknownPhase(t *testing.T) {
+	if _, _, ok := normalizeRuntimeActivity("thinking", "bash"); ok {
+		t.Fatal("unknown phase should be dropped")
+	}
+	phase, name, ok := normalizeRuntimeActivity("tool_start", "bash; rm")
+	if !ok || phase != "tool_start" || name != "" {
+		t.Fatalf("phase=%q name=%q ok=%v, dirty tool name must not be shown", phase, name, ok)
+	}
+	phase, name, ok = normalizeRuntimeActivity("tool_start", "knowledge_search")
+	if !ok || phase != "tool_start" || name != "knowledge_search" {
+		t.Fatalf("phase=%q name=%q ok=%v", phase, name, ok)
+	}
+}
+
+func TestVEStreamChunkCoalescerPaintsFirstTokenThenBatches(t *testing.T) {
+	var got []string
+	var live veStreamChunkCoalescer
+	push := func(chunk string) { got = append(got, chunk) }
+	live.add("A", push)
+	if len(got) != 1 || got[0] != "A" {
+		t.Fatalf("first flush=%q, want the first token alone", got)
+	}
+	live.add("B", push)
+	live.add("C", push)
+	if len(got) != 1 {
+		t.Fatalf("fast follow-up tokens were pushed immediately: %q", got)
+	}
+	live.add(strings.Repeat("x", veStreamPushMaxBytes), push)
+	if len(got) != 2 || got[0] != "A" || got[1] != "BC"+strings.Repeat("x", veStreamPushMaxBytes) {
+		t.Fatalf("full batch=%q, want A then the held tail plus the full batch", got)
+	}
+	live.flush(push)
+	time.Sleep(veStreamPushFlushInterval + 30*time.Millisecond)
+	if len(got) != 2 {
+		t.Fatalf("timer flushed again after close: %q", got)
+	}
+	var tail veStreamChunkCoalescer
+	var tailGot []string
+	tail.add("A", func(chunk string) { tailGot = append(tailGot, chunk) })
+	tail.add("Z", func(chunk string) { tailGot = append(tailGot, chunk) })
+	tail.flush(func(chunk string) { tailGot = append(tailGot, chunk) })
+	if strings.Join(tailGot, "") != "AZ" || len(tailGot) != 2 || tailGot[1] != "Z" {
+		t.Fatalf("end flush=%q, want A then Z", tailGot)
+	}
+}
+
+func TestVEStreamChunkCoalescerReleasesTailWhenTheModelPauses(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	var live veStreamChunkCoalescer
+	push := func(chunk string) {
+		mu.Lock()
+		got = append(got, chunk)
+		mu.Unlock()
+	}
+	live.add("A", push)
+	live.add("B", push)
+	live.add("C", push)
+	time.Sleep(veStreamPushFlushInterval + 40*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(got, "") != "ABC" || len(got) != 2 || got[1] != "BC" {
+		t.Fatalf("got %q, want A then BC without an explicit flush", got)
 	}
 }
 

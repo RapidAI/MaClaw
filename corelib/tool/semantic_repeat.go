@@ -79,8 +79,10 @@ func repeatSiblingIndex(suffix string) bool {
 
 // AppendRepeatSibling adds one more optional invocation of a repeat family
 // that has already published at least two siblings. One-shot tools stay
-// unchanged. The new node is ready on its own; the host issues it only when
-// the model asks for another call. False when the family is missing, is not
+// unchanged. A local file write continues from a single sibling: the
+// session ceiling can publish just one, and that one is not a one-shot.
+// The new node is ready on its own; the host issues it only when the model
+// asks for another call. False when the family is missing, is not
 // repeatable, or the turn cap is already reached.
 func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, string, bool) {
 	prototypeSelectionID = strings.TrimSpace(prototypeSelectionID)
@@ -104,7 +106,13 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 		return plan, "", false
 	}
 	count, nextIndex := repeatFamilyNextIndex(plan, family)
-	if count < 2 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 {
+	// A published wave of one is a one-shot: screenshot, send, generate.
+	// Local file write is not. A session ceiling can leave a single
+	// fs.write.local node (production 2026-10-04: references.bib stopped
+	// after one append and the model was told write_file had reached this
+	// turn's usage limit). That node is still the iterative capability, so
+	// the next call appends a sibling instead of ending the edit.
+	if count < 1 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 || (count < 2 && !IterativeLocalFileWrite(prototype)) {
 		return plan, "", false
 	}
 	needID := RepeatSiblingNeedID(family, nextIndex)
@@ -159,6 +167,22 @@ func repeatFamilyNextIndex(plan ToolPlan, family string) (count, nextIndex int) 
 		maxSuffix = 1
 	}
 	return count, maxSuffix
+}
+
+// IterativeLocalFileWrite reports a selection whose capability is local
+// file mutation. write_file and edit_file share fs.write.local. A recorded
+// fit proof is the authority: a read or send whose id happens to contain
+// the write capability text stays one-shot. The need id is only a fallback
+// when that proof was not copied onto the selection.
+func IterativeLocalFileWrite(selection PlannedSelection) bool {
+	if capability := strings.TrimSpace(string(selection.FitProof.MatchedCapability)); capability != "" {
+		return selection.FitProof.MatchedCapability == CapabilityFSWriteLocal
+	}
+	id := strings.TrimSpace(selection.NeedID)
+	if id == "" {
+		id = strings.TrimSpace(selection.ID)
+	}
+	return strings.Contains(id, string(CapabilityFSWriteLocal))
 }
 
 func repeatSiblingSuffixNumber(id string) int {

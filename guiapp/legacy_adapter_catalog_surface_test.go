@@ -297,22 +297,85 @@ func TestLegacyModelManageSkillGatewayRejectsDynamicActionBeforeHandlerDispatch(
 	}
 }
 
+func TestLegacyModelManageSkillRunAllowedOnlyForInstalledSkill(t *testing.T) {
+	installed := func(name string) bool { return name == "pdf-report" }
+	if !legacyModelManageSkillActionAllowed(`{"action":"list"}`, installed) {
+		t.Fatal("list does not name a skill and stays allowed")
+	}
+	if !legacyModelManageSkillActionAllowed(`{"action":"run","name":"pdf-report"}`, installed) {
+		t.Fatal("run of an installed local skill must reach the runner")
+	}
+	if !legacyModelManageSkillActionAllowed(`{"action":"info","name":"pdf-report"}`, installed) {
+		t.Fatal("info of an installed local skill is the parameter check before run")
+	}
+	if legacyModelManageSkillActionAllowed(`{"action":"run","name":"unbound-skill"}`, installed) {
+		t.Fatal("run of a skill that is not installed must stay denied")
+	}
+	if legacyModelManageSkillActionAllowed(`{"action":"info","name":"unbound-skill"}`, installed) {
+		t.Fatal("info of a skill that is not installed must stay denied")
+	}
+	for _, raw := range []string{
+		`{"action":"run"}`,
+		`{"action":"install","name":"pdf-report"}`,
+		`{"action":"search","query":"pdf"}`,
+		`{"action":"status","run_id":"run-1"}`,
+	} {
+		if legacyModelManageSkillActionAllowed(raw, installed) {
+			t.Fatalf("action must stay denied: %s", raw)
+		}
+	}
+	if legacyModelManageSkillActionAllowed(`{"action":"run","name":"pdf-report"}`, nil) {
+		t.Fatal("run without a local registry must stay denied")
+	}
+}
+
+func TestNarrowLegacyManageSkillSurfaceDropsRejectedActions(t *testing.T) {
+	original := toolDef("manage_skill", "Skill 管理（action: list/search/install/run）。", map[string]interface{}{
+		"action":   map[string]interface{}{"type": "string", "description": "list/search/install/run"},
+		"skill_id": map[string]interface{}{"type": "string", "description": "install 时必填"},
+		"name":     map[string]interface{}{"type": "string", "description": "Skill 名称"},
+	}, []string{"action"})
+	got := narrowLegacyManageSkillSurface([]map[string]interface{}{original})
+	fn, _ := got[0]["function"].(map[string]interface{})
+	desc, _ := fn["description"].(string)
+	if strings.Contains(desc, "install") || strings.Contains(desc, "search") {
+		t.Fatalf("published description still invites rejected actions: %s", desc)
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if _, ok := props["skill_id"]; ok {
+		t.Fatal("install field skill_id must not be on the legacy surface")
+	}
+	if _, ok := props["name"]; !ok {
+		t.Fatal("run still needs name")
+	}
+	if _, ok := props["args"]; !ok {
+		t.Fatal("run still needs args")
+	}
+	origFn, _ := original["function"].(map[string]interface{})
+	origParams, _ := origFn["parameters"].(map[string]interface{})
+	origProps, _ := origParams["properties"].(map[string]interface{})
+	if _, ok := origProps["skill_id"]; !ok {
+		t.Fatal("narrowing mutated the catalog definition")
+	}
+}
+
 func TestUnionMissFloorToolsForSurface(t *testing.T) {
 	base := []map[string]interface{}{
 		legacyReviewedDefinition("bash"),
 		legacyReviewedDefinition("write_file"),
 		legacyReviewedDefinition("edit_file"),
 	}
-	// Missing floor tools are appended from the base surface.
+	base = append(base, legacyReviewedDefinition("task"))
+	// Missing floor tools are appended from the base surface. task is not
+	// part of the execution baseline, so a recover must not pull it in.
 	got := unionMissFloorToolsForSurface([]map[string]interface{}{legacyReviewedDefinition("knowledge_search")}, base)
 	names := agentLoopToolNamesForLog(got)
-	if len(names) != 3 || names[0] != "knowledge_search" || names[1] != "bash" || names[2] != "write_file" {
-		t.Fatalf("union = %v, want knowledge_search + bash + write_file", names)
+	if len(names) != 4 || names[0] != "knowledge_search" || names[1] != "bash" || names[2] != "write_file" || names[3] != "edit_file" {
+		t.Fatalf("union = %v, want knowledge_search + bash + write_file + edit_file", names)
 	}
-	// Idempotent: existing floor tools are not duplicated, and non-floor base
-	// tools (edit_file) are never pulled in.
 	got = unionMissFloorToolsForSurface(got, base)
-	if names = agentLoopToolNamesForLog(got); len(names) != 3 {
+	if names = agentLoopToolNamesForLog(got); len(names) != 4 {
 		t.Fatalf("union not idempotent: %v", names)
 	}
 }

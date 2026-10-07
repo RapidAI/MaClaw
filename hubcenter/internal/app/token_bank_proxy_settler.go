@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
@@ -109,12 +111,14 @@ func (s *tokenBankProxySettler) TokenBankShareForPublish(ctx context.Context, sh
 	view.UnitOutputPer10K = settings.DefaultUnitOutputPer10K
 	view.UnitCachedReadPer10K = settings.DefaultUnitCachedReadPer10K
 	view.UnitCacheWritePer10K = settings.DefaultUnitCacheWritePer10K
-	if rule, ok, err := s.repo.ResolvePrice(ctx, matched.ModelName); err == nil && ok {
-		view.UnitInputPer10K = rule.UnitInputPer10K
-		view.UnitOutputPer10K = rule.UnitOutputPer10K
-		view.UnitCachedReadPer10K = rule.UnitCachedReadPer10K
-		view.UnitCacheWritePer10K = rule.UnitCacheWritePer10K
-		view.PriceBookID = rule.ID
+	rule, ok, err := s.repo.ResolvePrice(ctx, matched.ModelName)
+	if err != nil {
+		// A failed lookup must not settle at the defaults. The usage row is
+		// idempotent, so the wrong units would stick.
+		return llmservice.TokenBankShareSettlementView{}, false, err
+	}
+	if ok {
+		applyTokenBankPriceRule(&view, rule)
 	}
 	return view, true, nil
 }
@@ -186,17 +190,36 @@ func (s *tokenBankProxySettler) TokenBankFallbackPrice(ctx context.Context, mode
 		return view, false, err
 	}
 	if ok {
-		view.UnitInputPer10K = rule.UnitInputPer10K
-		view.UnitOutputPer10K = rule.UnitOutputPer10K
-		view.UnitCachedReadPer10K = rule.UnitCachedReadPer10K
-		view.UnitCacheWritePer10K = rule.UnitCacheWritePer10K
-		view.PriceBookID = rule.ID
+		applyTokenBankPriceRule(&view, rule)
 	}
 	return view, true, nil
 }
 
+// applyTokenBankPriceRule copies a matching price-book rule onto a view that
+// already holds the settings defaults. Input and output of 0 are real prices:
+// a free model. A cache unit of 0 is a blank field stored as 0, so it leaves
+// the default cache price in place. A positive cache unit replaces that
+// default. Settlement prices that positive unit on its own leg, and a resolved
+// cache unit that is still 0 on the input rate.
+func applyTokenBankPriceRule(view *llmservice.TokenBankShareSettlementView, rule sqlite.TokenBankPriceRule) {
+	view.UnitInputPer10K = rule.UnitInputPer10K
+	view.UnitOutputPer10K = rule.UnitOutputPer10K
+	if rule.UnitCachedReadPer10K > 0 {
+		view.UnitCachedReadPer10K = rule.UnitCachedReadPer10K
+	}
+	if rule.UnitCacheWritePer10K > 0 {
+		view.UnitCacheWritePer10K = rule.UnitCacheWritePer10K
+	}
+	view.PriceBookID = rule.ID
+}
+
 func (s *tokenBankProxySettler) PauseTokenBankShare(ctx context.Context, shareID, reason string) error {
 	if s == nil || s.repo == nil {
+		return nil
+	}
+	// The usage-spike brake is retired. Ignore a stale "anomaly" hit so a
+	// share cannot be paused for it again.
+	if strings.EqualFold(strings.TrimSpace(reason), "anomaly") {
 		return nil
 	}
 	note := "token cap: " + strings.TrimSpace(reason)
@@ -213,6 +236,103 @@ func (s *tokenBankProxySettler) PauseTokenBankShare(ctx context.Context, shareID
 		return err
 	})
 }
+
+// resumeSharesPausedForUsageSpike makes shares retired for a usage spike
+// routable again. Other pause reasons stay paused.
+//
+// Members are resumed before the row, inside the route lock. A republish of an
+// active row keeps a member pause, so clearing the row first and then failing
+// the member update would leave the share looking available while it stays
+// dark. The row stays paused until the member update succeeds, and the next
+// start retries it. The spike note stays on the row after it becomes active,
+// so a later registry snapshot that pauses the members is undone the next time
+// this runs.
+func resumeSharesPausedForUsageSpike(ctx context.Context, bank *sqlite.TokenBankRepo, svc *llmservice.Service) {
+	if bank == nil {
+		return
+	}
+	ids, err := bank.ListUsageSpikePausedShareIDs(ctx)
+	if err != nil {
+		log.Printf("[token-bank] list usage-spike pauses: %v", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, id := range ids {
+		if err := resumeOneUsageSpikePause(ctx, bank, svc, id, now); err != nil {
+			log.Printf("[token-bank] resume usage-spike pause %s: %v", id, err)
+		}
+	}
+}
+
+func resumeOneUsageSpikePause(ctx context.Context, bank *sqlite.TokenBankRepo, svc *llmservice.Service, shareID string, now time.Time) error {
+	if svc == nil {
+		released, err := bank.ReleaseUsageSpikePause(ctx, shareID, now)
+		if err != nil {
+			return err
+		}
+		if released {
+			log.Printf("[token-bank] resumed share %s after retiring the usage-spike pause", shareID)
+		}
+		return nil
+	}
+	return llmservice.WithTokenBankRouteLock(func() error {
+		marked, rowPaused, err := bank.UsageSpikePauseHeld(ctx, shareID)
+		if err != nil || !marked {
+			return err
+		}
+		if _, err := svc.SetTokenBankSharePaused(ctx, shareID, false); err != nil {
+			return err
+		}
+		if !rowPaused {
+			return nil
+		}
+		released, err := bank.ReleaseUsageSpikePause(ctx, shareID, now)
+		if err != nil || !released {
+			if _, revErr := svc.SetTokenBankSharePaused(ctx, shareID, true); revErr != nil {
+				log.Printf("[token-bank] share %s member resume revert failed: %v", shareID, revErr)
+			}
+			return err
+		}
+		log.Printf("[token-bank] resumed share %s after retiring the usage-spike pause", shareID)
+		return nil
+	})
+}
+
+// scheduleUsageSpikeResume runs the spike resume after a replicated registry
+// lands. One run at a time; an apply that arrives during a run schedules
+// another pass so that snapshot is not left in place.
+func scheduleUsageSpikeResume(ctx context.Context, bank *sqlite.TokenBankRepo, svc *llmservice.Service) {
+	if bank == nil || svc == nil {
+		return
+	}
+	usageSpikeResumeMu.Lock()
+	usageSpikeResumeWaiting = true
+	if usageSpikeResumeRunning {
+		usageSpikeResumeMu.Unlock()
+		return
+	}
+	usageSpikeResumeRunning = true
+	usageSpikeResumeMu.Unlock()
+	go func() {
+		for {
+			usageSpikeResumeMu.Lock()
+			if !usageSpikeResumeWaiting {
+				usageSpikeResumeRunning = false
+				usageSpikeResumeMu.Unlock()
+				return
+			}
+			usageSpikeResumeWaiting = false
+			usageSpikeResumeMu.Unlock()
+			resumeSharesPausedForUsageSpike(ctx, bank, svc)
+		}
+	}()
+}
+
+var (
+	usageSpikeResumeMu      sync.Mutex
+	usageSpikeResumeRunning bool
+	usageSpikeResumeWaiting bool
+)
 
 // currentSettings reads the platform Token Bank settings blob. Settlement must
 // agree with what the admin tab shows; both read the same blob through this

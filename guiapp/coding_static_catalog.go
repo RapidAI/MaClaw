@@ -101,11 +101,11 @@ func (e *codingStaticWorkspaceExecutor) ExecuteReadOnlySelection(selection tool.
 		if err != nil {
 			return "", err
 		}
-		path, query, filePattern, err := semanticTrustedFileReadArgsAllowed(canonical.Values)
+		path, query, filePattern, startLine, err := semanticTrustedFileReadArgsAllowed(canonical.Values)
 		if err != nil {
 			return "", err
 		}
-		return readTrustedCodingWorkspaceFile(workspace, path, query, filePattern)
+		return readTrustedCodingWorkspaceFile(workspace, path, query, filePattern, startLine)
 	case codingStaticRepoAdapter:
 		if selection.Provider.ImplementationID != codingStaticRepoImplementation || selection.Provider.ProviderID != "coding-workspace:"+e.binding.WorkspaceHandle || selection.FitProof.MatchedCapability != tool.CapabilityRepoInspectVCS {
 			return "", fmt.Errorf("coding_static_selection_binding_rejected")
@@ -123,8 +123,11 @@ func (e *codingStaticWorkspaceExecutor) ExecuteReadOnlySelection(selection tool.
 // takes a workspace directory obtained only from Coding's fixed adapter.  Do
 // not replace it with IMMessageHandler.readTrustedFile: that API resolves a
 // workspace from an IM principal and therefore has a different host binding.
-func readTrustedCodingWorkspaceFile(workspace, path, query, filePattern string) (string, error) {
+func readTrustedCodingWorkspaceFile(workspace, path, query, filePattern string, startLine int) (string, error) {
 	path, query, filePattern = strings.TrimSpace(path), strings.TrimSpace(query), strings.TrimSpace(filePattern)
+	if startLine < 0 || (startLine > 0 && (query != "" || filePattern != "")) {
+		return "", fmt.Errorf("trusted_file_read_conflicting_fields")
+	}
 	absPath, err := trustedFileReadResolvePath(workspace, path)
 	if err != nil {
 		return "", err
@@ -148,6 +151,9 @@ func readTrustedCodingWorkspaceFile(workspace, path, query, filePattern string) 
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return "", fmt.Errorf("trusted_file_read_not_found")
+	}
+	if startLine > 0 {
+		return trustedFileReadFromStartLine(absPath, info, startLine)
 	}
 	display := trustedFileWriteDisplayPath(workspace, absPath, path)
 	if info.IsDir() {

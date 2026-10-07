@@ -48,6 +48,20 @@ func TestTurnUsageFromLLM(t *testing.T) {
 	if TurnUsageFromLLM(corelib.MaclawLLMConfig{}, nil).Requests != 0 {
 		t.Fatal("nil usage should be empty")
 	}
+	credits := 1.25
+	zero := 0.0
+	withCredits := TurnUsageFromLLM(corelib.MaclawLLMConfig{ProviderName: "MaClaw官方"}, &llm.Usage{PromptTokens: 2, CreditsDeducted: &credits})
+	free := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{PromptTokens: 1, CreditsDeducted: &zero})
+	var sum TurnUsage
+	sum.Add(withCredits)
+	sum.Add(free)
+	if !sum.CreditsReported || sum.CreditsDeducted != 1.25 {
+		t.Fatalf("summed credits = %+v", sum)
+	}
+	plain := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{PromptTokens: 1})
+	if plain.CreditsReported {
+		t.Fatal("missing debit must stay unreported")
+	}
 }
 
 func TestTurnUsageFromLLMSeparatesPromptCacheCost(t *testing.T) {
@@ -109,6 +123,24 @@ func TestFormatTurnMeta(t *testing.T) {
 	})
 	if !strings.Contains(withSaved, "prompt=light(-3.8k)") {
 		t.Fatalf("expected savings tag in %q", withSaved)
+	}
+	credits := 1.25
+	withCredits := FormatTurnMetaOpts(TurnMetaOptions{
+		Route:           RouteDecision{TaskType: "fast", Source: "primary", Model: "auto"},
+		Usage:           TurnUsage{InputTokens: 1000, OutputTokens: 804},
+		PromptProfile:   string(PromptProfileLight),
+		CreditsDeducted: &credits,
+	})
+	if !strings.HasSuffix(withCredits, "credits=1.25") {
+		t.Fatalf("credits must be the last chip segment, got %q", withCredits)
+	}
+	zero := 0.0
+	free := FormatTurnMetaOpts(TurnMetaOptions{CreditsDeducted: &zero})
+	if free != "credits=0" {
+		t.Fatalf("settled zero = %q", free)
+	}
+	if FormatTurnMetaOpts(TurnMetaOptions{}) != "" {
+		t.Fatal("missing credits must stay hidden")
 	}
 	upgraded := FormatTurnMetaOpts(TurnMetaOptions{
 		Route:          RouteDecision{TaskType: "reasoning", Source: "primary", Model: "m1"},

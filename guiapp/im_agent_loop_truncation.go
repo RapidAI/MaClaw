@@ -102,33 +102,6 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 				pw.Path, pw.BytesWritten)
 			return result
 		}
-		// Partial write was not possible. If the file already exists (from a
-		// previous partial write), inject a targeted hint to use mode=append
-		// instead of falling through to the generic essential-tool hint.
-		extractedPath := extractJSONStringField(rawArgs, "path")
-		if extractedPath != "" {
-			resolvedPath, pathOK := resolveTruncationPartialWritePath(extractedPath, workingDir)
-			if pathOK {
-				if info, statErr := os.Stat(resolvedPath); statErr == nil && info.Size() > 0 {
-					phase.ConsecutiveNoTool = 0
-					hint := fmt.Sprintf(
-						"[system] write_file was truncated again. The file %q already exists (%d bytes from a previous partial write). "+
-							"Do NOT use mode=overwrite — use write_file(path=%q, mode=\"append\", content=\"...remaining...\") to continue from where you left off. "+
-							"Keep each chunk under 3000 characters.",
-						resolvedPath, info.Size(), resolvedPath)
-					systemMessagesStart := len(conversation)
-					conversation = append(conversation, map[string]string{
-						"role":    "system",
-						"content": hint,
-					})
-					recordSystemMessages(systemMessagesStart, conversation)
-					result.Conversation = conversation
-					log.Printf("[agent-loop] partial write refused (file exists %d bytes), injecting append hint for %s",
-						info.Size(), resolvedPath)
-					return result
-				}
-			}
-		}
 	}
 
 	if allTruncatedToolsPreservedAfterTruncation(choice.TruncatedToolNames) {
@@ -549,6 +522,9 @@ func attemptPartialWriteFile(rawArgs string, workingDir string) *truncationParti
 	// Extract "path" and "content" fields using best-effort JSON string extraction.
 	path := extractJSONStringField(rawArgs, "path")
 	if path == "" {
+		path = extractJSONStringField(rawArgs, "file_path")
+	}
+	if path == "" {
 		return nil
 	}
 	resolvedPath, ok := resolveTruncationPartialWritePath(path, workingDir)
@@ -559,6 +535,9 @@ func attemptPartialWriteFile(rawArgs string, workingDir string) *truncationParti
 	path = resolvedPath
 
 	content := extractJSONStringField(rawArgs, "content")
+	if content == "" {
+		content = extractJSONStringField(rawArgs, "text")
+	}
 	if content == "" {
 		return nil
 	}
@@ -574,13 +553,25 @@ func attemptPartialWriteFile(rawArgs string, workingDir string) *truncationParti
 	// Determine write mode from args (default: overwrite).
 	mode := extractJSONStringField(rawArgs, "mode")
 
+	contentBytes := []byte(content)
 	if mode != "append" {
-		if _, statErr := os.Stat(path); statErr == nil {
-			log.Printf("[agent-loop] partial write: refusing to overwrite existing file with truncated content: %q", path)
+		// Replace an existing file only when it is a prefix of this body.
+		existing, existingSize, exists, readErr := tool.ReadExistingPrefix(path, len(contentBytes))
+		if readErr != nil {
+			log.Printf("[agent-loop] partial write: cannot compare %q: %v", path, readErr)
 			return nil
-		} else if !os.IsNotExist(statErr) {
-			log.Printf("[agent-loop] partial write: failed to stat %q: %v", path, statErr)
-			return nil
+		}
+		if exists {
+			switch tool.ClassifyPartialWriteExisting(existing, contentBytes) {
+			case tool.PartialWriteExtendsExisting:
+				log.Printf("[agent-loop] partial write: extending previous partial %q (%d bytes) with %d bytes", path, existingSize, len(contentBytes))
+			case tool.PartialWriteAlreadyCovered:
+				log.Printf("[agent-loop] partial write: %q already contains this body (%d bytes >= %d); leaving it untouched", path, existingSize, len(contentBytes))
+				return nil
+			default:
+				log.Printf("[agent-loop] partial write: leaving unrelated file %q untouched", path)
+				return nil
+			}
 		}
 	}
 
@@ -592,7 +583,6 @@ func attemptPartialWriteFile(rawArgs string, workingDir string) *truncationParti
 	}
 
 	var err error
-	contentBytes := []byte(content)
 	if mode == "append" {
 		f, openErr := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if openErr != nil {

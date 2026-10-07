@@ -469,7 +469,7 @@ GlobalGetTenantSummary(ctx, tenantID)
 | 企业组织与策略 | Hub 级组织树 | 租户级组织树 | 每个租户一棵组织树和一套策略继承链 |
 | 模型服务 | Hub 级服务组/授权 | 租户级服务组，可继承 Hub 默认 | 服务组、兑换卡、授权诊断都要带 `tenant_id` |
 | Skill/MCP 策略 | Hub 级能力下发 | 租户级能力策略 | 能力策略、合规快照、导出带 `tenant_id` |
-| IM 插件绑定 | Hub 级绑定 | 租户级绑定 | 飞书/企微/钉钉/openclaw IM 绑定表增加 `tenant_id` |
+| IM 插件绑定 | Hub 级绑定 | 租户级绑定 | 飞书/企微/钉钉/QQBot IM 绑定表增加 `tenant_id` |
 | Gossip/公告/评论 | Hub 级内容 | 视产品定位决定全局或租户级 | 默认租户级；全局公告另设 `scope=global` |
 | 失败日志 | Hub 全局日志 | 全局日志 + 租户日志 | 租户管理员只能看本租户；全局管理员可跨租户筛选 |
 | 备份恢复 | Hub 整体备份 | Hub 整体备份，租户可导出 | V1 仍整体备份；V2 做租户级导出/恢复 |
@@ -792,7 +792,6 @@ multi_tenant:
 | 邮件 SMTP | V1 保持 Hub 全局 SMTP；租户可覆盖发件名称、模板、审批通知策略 |
 | 管理员密码 | 按管理员账号处理；租户管理员只改自己的密码 |
 | 模型文件下载 | Hub 全局运行时资源，不复制到租户 |
-| OpenClaw IM bridge 安装路径 | Hub 全局资源；绑定关系和可用范围按租户 |
 
 结论：系统设置里的“工作模式”必须按租户处理，否则同一个 Hub 内无法同时支持 A 租户开放注册、B 租户审批注册、C 租户仅手动绑定。
 
@@ -863,7 +862,6 @@ multi_tenant:
 | --- | --- |
 | 飞书/企微/钉钉/QQBot 配置 | 应区分连接配置和用户绑定；连接可全局或租户级，绑定必须租户级 |
 | IM 用户绑定 | 绑定表增加 `tenant_id`，按租户解析邮箱 |
-| OpenClaw IM webhook | webhook channel 绑定租户或携带租户签名 |
 | Chat/channel/message | 群、消息、文件、已读、presence 都要带 `tenant_id` |
 | 通知 | 按租户模板、租户管理员收件人发送 |
 
@@ -1499,7 +1497,6 @@ CREATE TABLE background_jobs (
 
 所有外部入口都要有租户绑定，不能只靠 URL token：
 
-- OpenClaw IM webhook。
 - 飞书/企微/钉钉/QQBot 回调。
 - workflow webhook trigger。
 - A2A 外部桥接。

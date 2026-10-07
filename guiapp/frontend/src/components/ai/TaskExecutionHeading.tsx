@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { CloudWorkspaceEntitlement } from "../../../wailsjs/go/main/App";
 import type { AITab } from "./AITabTypes";
-import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, rememberCloudWorkspaceDisplayNames } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, rememberCloudWorkspaceDisplayNames, remoteWorkspaceLocationLabel } from "./codingTaskMode";
 import { useCloudWorkspaceDisplayName, workingDirDisplayLabel } from "./SessionWorkingDirChip";
 import { localizeText } from "./aiAssistantI18n";
 
@@ -18,7 +18,7 @@ type Props = {
     status: { tone: string; label: string };
     taskCreatedLabel?: string;
     workingDirPath?: string;
-    remoteWorkspace?: { host?: string; workDir?: string } | null;
+    remoteWorkspace?: { host?: string; workDir?: string; port?: number } | null;
     remoteWorkspaceLabel?: string;
     /** Already resolved against the sidebar task list by the panel. */
     title?: string;
@@ -44,15 +44,20 @@ export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel
     }, [cloudId]);
     const executionTitle = String(title || "").trim() || localizeText(lang, "Current task", "当前任务", "目前任務");
     const createdBy = activeTab?.type === "local" ? "" : localizeText(lang, "Created by you", "由你创建", "由你建立");
-    const showLocation = !!(remoteWorkspaceLabel || workingDir);
-    const locationLabel = showLocation
-        ? workingDirDisplayLabel(workingDir, lang, remoteWorkspaceLabel ? remoteWorkspace : null, cloudName)
-        : "";
-    // Hover uses the full location. The visible line may be only the server or a shortened path.
+    // The panel already resolved host/port/directory. Format the workspace only
+    // when that string is missing, so a cloud cache path cannot replace it.
+    const suppliedRemote = String(remoteWorkspaceLabel || "").trim();
+    const remoteLabel = suppliedRemote
+        || ((remoteWorkspace?.host || remoteWorkspace?.workDir)
+            ? remoteWorkspaceLocationLabel(remoteWorkspace?.host, remoteWorkspace?.workDir, remoteWorkspace?.port)
+            : "");
+    const showLocation = !!(remoteLabel || workingDir);
+    const locationLabel = !showLocation
+        ? ""
+        : remoteLabel || workingDirDisplayLabel(workingDir, lang, null, cloudName);
     const fullLocation = !showLocation
         ? ""
-        : remoteWorkspaceLabel
-            || (isCloudWorkspacePath(workingDir) ? locationLabel : workingDir);
+        : remoteLabel || (isCloudWorkspacePath(workingDir) ? locationLabel : workingDir);
     const metaText = [createdBy, taskCreatedLabel, locationLabel].filter(Boolean).join(" · ");
     const metaTitle = [createdBy, taskCreatedLabel, fullLocation].filter(Boolean).join(" · ");
     return (

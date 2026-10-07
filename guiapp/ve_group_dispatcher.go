@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 const (
@@ -193,9 +194,15 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	var hubSyncCh chan a2a.GroupDiscussionMessage
 	var hubSyncDone chan struct{}
 	finishHubSync := func() {}
+	stopLocalStream := func() {}
+	var streamedAny int32
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[group-dispatcher] panic in routeToMainAgent for session %s: %v", sess.SessionID, r)
+			stopLocalStream()
+			if atomic.LoadInt32(&streamedAny) != 0 {
+				d.emitStreamToFrontend(sess.SessionID, "")
+			}
 			finishHubSync()
 		}
 	}()
@@ -254,15 +261,38 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	// hubSyncCh serializes Hub sync messages to avoid goroutine explosion and
 	// preserve final response ordering.
 
-	var streamedAny int32
+	var localPending *pendingStreamText
+	var localStreamDone chan struct{}
+	var stopLocalOnce sync.Once
+	stopLocalStream = func() {
+		if localPending == nil {
+			return
+		}
+		stopLocalOnce.Do(func() {
+			localPending.close()
+			<-localStreamDone
+		})
+	}
 	var onToken llm.TokenCallback
 	if localDispatch {
+		// Copy each token and return. Painting every token on the model
+		// callback stalls generation and rebuilds the transcript per character.
+		localPending = newPendingStreamText()
+		localStreamDone = make(chan struct{})
+		sessionID := sess.SessionID
+		go func() {
+			defer close(localStreamDone)
+			drainPendingStream(localPending, localStreamFlushInterval, localStreamMaxBytes, func(chunk string) {
+				d.emitStreamToFrontend(sessionID, chunk)
+			})
+		}()
 		onToken = func(delta string) {
+			delta = visibleVEStreamDelta(delta)
 			if delta == "" {
 				return
 			}
 			atomic.StoreInt32(&streamedAny, 1)
-			d.emitStreamToFrontend(sess.SessionID, delta)
+			localPending.add(delta)
 		}
 	}
 
@@ -280,8 +310,10 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	}()
 
 	resp := handler.HandleIMMessageWithExistingLoop(imMsg, loopCtx, nil, onToken, nil, nil)
+	// Flush the on-screen tail before stream_end. The model callback only copies text.
+	stopLocalStream()
 	if resp != nil {
-		chunk := strings.TrimSpace(resp.Text)
+		chunk := strings.TrimSpace(textutil.SanitizeVisibleChatText(resp.Text))
 		if chunk != "" {
 			if localDispatch {
 				// Only send the final response as a chunk if streaming didn't already

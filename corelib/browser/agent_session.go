@@ -52,7 +52,7 @@ func StartAgentSessionForOwner(ownerID, addr string, policy BrowserPolicy, reuse
 	lockWaitStart := time.Now()
 	startLock.Lock()
 	if waited := time.Since(lockWaitStart); waited > 100*time.Millisecond {
-		log.Printf("[browser] agent start lock waited owner=%q addr=%s mode=%s waited=%s", ownerID, requestedAddr, mode, waited.Round(time.Millisecond))
+		log.Printf("[browser] agent start lock waited owner=%q addr=%s mode=%s waited=%s", ownerID, redactUserInfo(requestedAddr), mode, waited.Round(time.Millisecond))
 	}
 	defer startLock.Unlock()
 	if existing := reusableBrowserAgentSessionForOwner(ownerID, requestedAddr, mode, policy, reuseExisting); existing != nil {
@@ -65,7 +65,7 @@ func StartAgentSessionForOwner(ownerID, addr string, policy BrowserPolicy, reuse
 		if err != nil {
 			status = "error"
 		}
-		log.Printf("[browser] agent start done owner=%q addr=%s mode=%s status=%s elapsed=%s err=%v", ownerID, requestedAddr, mode, status, elapsed.Round(time.Millisecond), err)
+		log.Printf("[browser] agent start done owner=%q addr=%s mode=%s status=%s elapsed=%s err=%v", ownerID, redactUserInfo(requestedAddr), mode, status, elapsed.Round(time.Millisecond), err)
 	}
 	return sess, err
 }
@@ -101,7 +101,7 @@ func reusableBrowserAgentSessionForOwner(ownerID, requestedAddr string, mode Ses
 		live.Policy = policy
 		live.UpdatedAt = time.Now()
 		live.mu.Unlock()
-		log.Printf("[browser] agent session reused id=%s owner=%q addr=%s mode=%s target=%s", live.ID, live.OwnerID, live.Addr, live.Mode, live.TargetID)
+		log.Printf("[browser] agent session reused id=%s owner=%q addr=%s mode=%s target=%s", live.ID, live.OwnerID, redactUserInfo(live.Addr), live.Mode, live.TargetID)
 		return live
 	}
 	return nil
@@ -145,7 +145,7 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 			return nil, err
 		}
 		if elapsed := time.Since(discoverStart); elapsed > 500*time.Millisecond {
-			log.Printf("[browser] discover_or_launch owner=%q mode=%s addr=%s elapsed=%s", ownerID, mode, cdpAddr, elapsed.Round(time.Millisecond))
+			log.Printf("[browser] discover_or_launch owner=%q mode=%s addr=%s elapsed=%s", ownerID, mode, redactUserInfo(cdpAddr), elapsed.Round(time.Millisecond))
 		}
 	}
 	if existing := reusableBrowserAgentSessionForOwner(ownerID, cdpAddr, mode, policy, reuseExisting); existing != nil {
@@ -158,7 +158,7 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 		return nil, err
 	}
 	if elapsed := time.Since(connectStart); elapsed > 500*time.Millisecond {
-		log.Printf("[browser] connect owner=%q addr=%s mode=%s elapsed=%s", ownerID, cdpAddr, mode, elapsed.Round(time.Millisecond))
+		log.Printf("[browser] connect owner=%q addr=%s mode=%s elapsed=%s", ownerID, redactUserInfo(cdpAddr), mode, elapsed.Round(time.Millisecond))
 	}
 	targetStart := time.Now()
 	if err := ensureDedicatedAgentTarget(session); err != nil {
@@ -166,17 +166,74 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 		return nil, err
 	}
 	if elapsed := time.Since(targetStart); elapsed > 500*time.Millisecond {
-		log.Printf("[browser] create_target owner=%q addr=%s mode=%s elapsed=%s", ownerID, cdpAddr, mode, elapsed.Round(time.Millisecond))
+		log.Printf("[browser] create_target owner=%q addr=%s mode=%s elapsed=%s", ownerID, redactUserInfo(cdpAddr), mode, elapsed.Round(time.Millisecond))
 	}
 	if browserAgentModeIsManaged(mode) {
 		if closed := session.PruneDuplicatePages(); closed > 0 {
-			log.Printf("[browser] pruned %d duplicate managed browser tabs owner=%q addr=%s mode=%s", closed, ownerID, cdpAddr, mode)
+			log.Printf("[browser] pruned %d duplicate managed browser tabs owner=%q addr=%s mode=%s", closed, ownerID, redactUserInfo(cdpAddr), mode)
 		}
 	}
 	if existing := reusableBrowserAgentSessionForOwner(ownerID, cdpAddr, mode, policy, reuseExisting); existing != nil {
 		session.closeClient()
 		return existing, nil
 	}
+	return finishAgentSession(ownerID, cdpAddr, policy, reuseExisting, mode, managedUserDataDir, session)
+}
+
+// StartSharedDesktopSession attaches to the browser already on a cloud desktop.
+// The person at noVNC and the agent use that same window. It does not launch
+// another browser or open another tab.
+func StartSharedDesktopSession(ownerID, addr string) (*BrowserAgentSession, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	addr = strings.TrimRight(strings.TrimSpace(addr), "/")
+	if addr == "" {
+		return nil, fmt.Errorf("desktop browser address is required")
+	}
+	mode := SessionModePersistent
+	policy := BrowserPolicy{}
+	if existing := liveSharedDesktopSession(ownerID, addr, mode, policy); existing != nil {
+		_ = focusAgentDesktopPage(existing)
+		return existing, nil
+	}
+	startLock := browserAgentStartLockForRequest(ownerID, addr, mode)
+	startLock.Lock()
+	defer startLock.Unlock()
+	if existing := liveSharedDesktopSession(ownerID, addr, mode, policy); existing != nil {
+		_ = focusAgentDesktopPage(existing)
+		return existing, nil
+	}
+	session, err := connectToAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	session.mu.Lock()
+	session.stayOnCurrentPage = true
+	session.mu.Unlock()
+	if err := focusSharedDesktopPage(session); err != nil {
+		log.Printf("[browser] shared desktop stayed on the current page addr=%s err=%v", redactUserInfo(addr), err)
+	}
+	if existing := liveSharedDesktopSession(ownerID, addr, mode, policy); existing != nil {
+		session.closeClient()
+		_ = focusAgentDesktopPage(existing)
+		return existing, nil
+	}
+	return finishAgentSession(ownerID, addr, policy, true, mode, "", session)
+}
+
+func liveSharedDesktopSession(ownerID, addr string, mode SessionMode, policy BrowserPolicy) *BrowserAgentSession {
+	for {
+		existing := reusableBrowserAgentSessionForOwner(ownerID, addr, mode, policy, true)
+		if existing == nil {
+			return nil
+		}
+		if existing.DesktopConnected() {
+			return existing
+		}
+		_ = StopAgentSession(existing.ID, false)
+	}
+}
+
+func finishAgentSession(ownerID, cdpAddr string, policy BrowserPolicy, reuseExisting bool, mode SessionMode, managedUserDataDir string, session *Session) (*BrowserAgentSession, error) {
 	targetID := activeTargetID(session)
 	now := time.Now()
 	agentSession := &BrowserAgentSession{
@@ -201,19 +258,416 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 	}
 	agentSession.startEventPump()
 	applySessionDownloadPolicy(session, policy, mode)
-	// Start inactivity timeout only for sessions attached to the user's own Chrome.
 	if browserAgentModeUsesUserChrome(mode) {
 		agentSession.startInactivityTimer()
-	}
-	// Audit log for user-chrome connections.
-	if browserAgentModeUsesUserChrome(mode) {
 		GetAuditLogger().LogConnect(agentSession.ID, cdpAddr)
 	}
 	browserAgentMu.Lock()
 	browserAgentSessions[agentSession.ID] = agentSession
 	browserAgentMu.Unlock()
-	log.Printf("[browser] agent session started id=%s owner=%q addr=%s mode=%s target=%s managed_dir=%q reuse=%v", agentSession.ID, ownerID, cdpAddr, mode, targetID, managedUserDataDir, reuseExisting)
+	log.Printf("[browser] agent session started id=%s owner=%q addr=%s mode=%s target=%s managed_dir=%q reuse=%v", agentSession.ID, ownerID, redactUserInfo(cdpAddr), mode, targetID, managedUserDataDir, reuseExisting)
 	return agentSession, nil
+}
+
+func activateVisiblePage(session *Session) error {
+	if session == nil {
+		return fmt.Errorf("browser session is not connected")
+	}
+	targetID := activeTargetID(session)
+	if targetID == "" {
+		return nil
+	}
+	session.mu.Lock()
+	client := session.client
+	session.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session is not connected")
+	}
+	_, err := client.Send("Target.activateTarget", map[string]interface{}{"targetId": targetID}, 5*time.Second)
+	return err
+}
+
+func focusAgentDesktopPage(sess *BrowserAgentSession) error {
+	if sess == nil {
+		return nil
+	}
+	sess.mu.RLock()
+	session := sess.session
+	sess.mu.RUnlock()
+	if err := focusSharedDesktopPage(session); err != nil {
+		return err
+	}
+	if id := activeTargetID(session); id != "" {
+		sess.mu.Lock()
+		sess.TargetID = id
+		sess.resetTargetGone()
+		sess.mu.Unlock()
+	}
+	// Switching tabs closes the previous CDP client. The event pump exits
+	// with it, and a login popup on the page the person just used would
+	// then be missed. A destroyed notice from the old tab must not make
+	// this logged-in page look gone.
+	sess.startEventPump()
+	return nil
+}
+
+// KeepLoggedInDocument keeps the next navigation from replacing the page
+// the person just signed into. The website login stays in that document.
+func KeepLoggedInDocument(sess *BrowserAgentSession, keep bool) {
+	if sess == nil {
+		return
+	}
+	sess.mu.RLock()
+	session := sess.session
+	sess.mu.RUnlock()
+	if session == nil {
+		return
+	}
+	session.mu.Lock()
+	session.stayOnLoggedInDocument = keep
+	session.mu.Unlock()
+}
+
+// chooseSharedDesktopPage keeps the page the person just logged into.
+// A blank tab is only used when the browser has no other page, so the website
+// login is not left behind on a second tab.
+// FocusDesktopAfterPerson moves the agent to the page the person just used.
+// The browser process and its cookies stay; only the attached tab changes.
+func FocusDesktopAfterPerson(sess *BrowserAgentSession) error {
+	if sess == nil {
+		return nil
+	}
+	sess.mu.RLock()
+	session := sess.session
+	sess.mu.RUnlock()
+	if session == nil {
+		return nil
+	}
+	session.mu.Lock()
+	addr := session.addr
+	active := session.activeTabID
+	session.mu.Unlock()
+	targets, err := DiscoverTargets(addr)
+	if err != nil {
+		return err
+	}
+	next := chooseDesktopPageAfterPerson(visibleDesktopPage(active, targets), targets)
+	if next == "" {
+		return activateVisiblePage(session)
+	}
+	if next != active {
+		if err := session.SwitchPage(next); err != nil {
+			return err
+		}
+	}
+	sess.mu.Lock()
+	sess.TargetID = next
+	sess.resetTargetGone()
+	sess.mu.Unlock()
+	sess.startEventPump()
+	return activateVisiblePage(session)
+}
+
+// chooseDesktopPageAfterPerson stays on the page the person is looking at.
+// That is the browser where they just finished logging in. A later tab is
+// used only when the visible page is blank or cannot be seen.
+func chooseDesktopPageAfterPerson(visibleID string, targets []TargetInfo) string {
+	if id := realDesktopPageID(visibleID, targets); id != "" {
+		return id
+	}
+	latest := ""
+	anyPage := ""
+	for _, target := range targets {
+		if target.Type != "page" || strings.TrimSpace(target.ID) == "" {
+			continue
+		}
+		anyPage = target.ID
+		if sharedDesktopRealPage(target.URL) {
+			latest = target.ID
+		}
+	}
+	if latest != "" {
+		return latest
+	}
+	return anyPage
+}
+
+func realDesktopPageID(id string, targets []TargetInfo) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	for _, target := range targets {
+		if target.ID == id && target.Type == "page" && sharedDesktopRealPage(target.URL) {
+			return id
+		}
+	}
+	return ""
+}
+
+func visibleDesktopPage(preferredID string, targets []TargetInfo) string {
+	// The page the person just used is on a remote display. A short probe
+	// misses it and the agent leaves the logged-in tab. Another window can
+	// still report itself as visible behind the one they are typing in.
+	// The window with focus is the login they are finishing. The others are
+	// checked together so one stalled tab cannot push that page past the wait.
+	preferredID = strings.TrimSpace(preferredID)
+	candidates := make([]TargetInfo, 0, len(targets))
+	for _, target := range targets {
+		if target.Type != "page" || !sharedDesktopRealPage(target.URL) || strings.TrimSpace(target.WebSocketDebugURL) == "" || strings.TrimSpace(target.ID) == "" {
+			continue
+		}
+		candidates = append(candidates, target)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	const budget = 1500 * time.Millisecond
+	var mu sync.Mutex
+	attention := make([]pageAttention, len(candidates))
+	answered := 0
+	done := make(chan struct{}, 1)
+	signal := func() {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
+	for i, target := range candidates {
+		go func(i int, wsURL string) {
+			att := pageAttentionWithin(wsURL, budget)
+			mu.Lock()
+			attention[i] = att
+			answered++
+			wake := att.focused || answered == len(candidates)
+			mu.Unlock()
+			if wake {
+				signal()
+			}
+		}(i, target.WebSocketDebugURL)
+	}
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+	// A probe that already stored its answer holds this lock until the write
+	// is visible. Choosing the timer in a select used to skip that answer and
+	// leave the agent on the previous tab.
+	mu.Lock()
+	snapshot := append([]pageAttention(nil), attention...)
+	mu.Unlock()
+	for i, att := range snapshot {
+		if att.focused {
+			return candidates[i].ID
+		}
+	}
+	for i, att := range snapshot {
+		if att.visible && candidates[i].ID == preferredID {
+			return preferredID
+		}
+	}
+	for i, att := range snapshot {
+		if att.visible {
+			return candidates[i].ID
+		}
+	}
+	return ""
+}
+
+func pageIsVisible(wsURL string) bool {
+	return pageIsVisibleWithin(wsURL, 400*time.Millisecond)
+}
+
+type pageAttention struct {
+	visible bool
+	focused bool
+}
+
+func pageAttentionWithin(wsURL string, budget time.Duration) pageAttention {
+	if budget <= 0 {
+		budget = 400 * time.Millisecond
+	}
+	client, err := connectCDP(wsURL, budget)
+	if err != nil {
+		return pageAttention{}
+	}
+	defer client.Close()
+	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    "JSON.stringify({v:document.visibilityState,f:document.hasFocus()})",
+		"returnByValue": true,
+	}, budget)
+	if err != nil {
+		return pageAttention{}
+	}
+	return attentionFromValue(extractStringValue(result))
+}
+
+func attentionFromValue(raw string) pageAttention {
+	raw = strings.TrimSpace(raw)
+	if raw == "visible" {
+		return pageAttention{visible: true}
+	}
+	if strings.HasPrefix(raw, "{") {
+		var parsed struct {
+			V string `json:"v"`
+			F bool   `json:"f"`
+		}
+		if json.Unmarshal([]byte(raw), &parsed) == nil {
+			return pageAttention{visible: parsed.V == "visible", focused: parsed.F}
+		}
+	}
+	return pageAttention{}
+}
+
+func pageIsVisibleWithin(wsURL string, budget time.Duration) bool {
+	if budget <= 0 {
+		budget = 400 * time.Millisecond
+	}
+	// One stalled tab must not hold the desktop. The person is logging back in
+	// on the page that answers; the rest can be skipped.
+	client, err := connectCDP(wsURL, budget)
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    "document.visibilityState",
+		"returnByValue": true,
+	}, budget)
+	if err != nil {
+		return false
+	}
+	return extractStringValue(result) == "visible"
+}
+
+func chooseSharedDesktopPage(activeID string, targets []TargetInfo) string {
+	currentURL := ""
+	fallback := ""
+	for _, target := range targets {
+		if target.Type != "page" || strings.TrimSpace(target.ID) == "" {
+			continue
+		}
+		if target.ID == activeID {
+			currentURL = target.URL
+		}
+		if sharedDesktopRealPage(target.URL) {
+			fallback = target.ID
+		}
+	}
+	if sharedDesktopRealPage(currentURL) || fallback == "" {
+		return activeID
+	}
+	return fallback
+}
+
+func preferredLoggedInPage(preferredID string, targets []TargetInfo) string {
+	preferredID = strings.TrimSpace(preferredID)
+	for _, target := range targets {
+		if target.Type != "page" || target.ID != preferredID {
+			continue
+		}
+		if sharedDesktopRealPage(target.URL) {
+			return preferredID
+		}
+	}
+	return ""
+}
+
+func desktopReconnectPage(preferredID, activeID string, targets []TargetInfo) string {
+	if page := preferredLoggedInPage(preferredID, targets); page != "" {
+		return page
+	}
+	return chooseSharedDesktopPage(activeID, targets)
+}
+
+// desktopPageAfterReconnect stays on the tab the person is looking at.
+// The previously attached tab can still be open behind it. Switching back
+// there covers the website login.
+func desktopPageAfterReconnect(preferredID, activeID string, targets []TargetInfo) string {
+	if visible := visibleDesktopPage(preferredID, targets); visible != "" {
+		return visible
+	}
+	return desktopReconnectPage(preferredID, activeID, targets)
+}
+
+func focusDesktopReconnect(session *Session, preferredID string) error {
+	if session == nil {
+		return fmt.Errorf("browser session is not connected")
+	}
+	session.mu.Lock()
+	addr := session.addr
+	active := session.activeTabID
+	session.mu.Unlock()
+	targets, err := DiscoverTargets(addr)
+	if err != nil {
+		return focusSharedDesktopPage(session)
+	}
+	next := desktopPageAfterReconnect(preferredID, active, targets)
+	if next != "" && next != active {
+		if err := session.SwitchPage(next); err != nil {
+			return err
+		}
+	}
+	return activateVisiblePage(session)
+}
+
+func sessionKeepsLoginPopup(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.stayOnCurrentPage
+}
+
+func shouldCloseUnsolicitedPopup(sharedDesktop bool, policyErr error) bool {
+	if sharedDesktop {
+		return false
+	}
+	return policyErr != nil
+}
+
+func reattachAfterTargetGone(session *Session, policy BrowserPolicy, currentID string) error {
+	if sessionKeepsLoginPopup(session) {
+		return focusDesktopReconnect(session, currentID)
+	}
+	return attachSessionToRecoverablePage(session, policy, currentID)
+}
+
+func sharedDesktopRealPage(raw string) bool {
+	url := strings.TrimSpace(raw)
+	// A data tab is only a place to receive a saved login. Staying on it
+	// leaves the website the person signed into in another tab.
+	return url != "" && url != "about:blank" && !strings.HasPrefix(strings.ToLower(url), "data:") && !strings.HasPrefix(url, "chrome://") && !strings.HasPrefix(url, "chrome-untrusted://")
+}
+
+func focusSharedDesktopPage(session *Session) error {
+	if session == nil {
+		return fmt.Errorf("browser session is not connected")
+	}
+	session.mu.Lock()
+	addr := session.addr
+	active := session.activeTabID
+	session.mu.Unlock()
+	targets, err := DiscoverTargets(addr)
+	if err != nil {
+		return activateVisiblePage(session)
+	}
+	next := chooseSharedDesktopPage(active, targets)
+	// The person logs in on the window they can see. The first tab in the
+	// browser list is often an older page, and operating there leaves the
+	// login behind.
+	if visible := visibleDesktopPage(active, targets); visible != "" {
+		next = visible
+	}
+	if next != "" && next != active {
+		if err := session.SwitchPage(next); err != nil {
+			return err
+		}
+	}
+	return activateVisiblePage(session)
 }
 
 func normalizeBrowserAgentMode(mode SessionMode) SessionMode {
@@ -331,9 +785,13 @@ func recoverAgentSessionConnection(sess *BrowserAgentSession) error {
 	policy := sess.Policy
 	sess.mu.RUnlock()
 	var client *CDPClient
+	shared := false
+	previousTab := ""
 	if old != nil {
 		old.mu.Lock()
 		client = old.client
+		shared = old.stayOnCurrentPage
+		previousTab = old.activeTabID
 		old.mu.Unlock()
 	}
 	if client != nil && client.IsAlive() {
@@ -346,7 +804,14 @@ func recoverAgentSessionConnection(sess *BrowserAgentSession) error {
 	if err != nil {
 		return err
 	}
-	if err := attachSessionToRecoverablePage(reconnected, policy, ""); err != nil {
+	if shared {
+		reconnected.mu.Lock()
+		reconnected.stayOnCurrentPage = true
+		reconnected.mu.Unlock()
+		if err := focusDesktopReconnect(reconnected, previousTab); err != nil {
+			log.Printf("[browser] shared desktop stayed on the current page addr=%s err=%v", redactUserInfo(addr), err)
+		}
+	} else if err := attachSessionToRecoverablePage(reconnected, policy, ""); err != nil {
 		reconnected.closeClient()
 		return err
 	}
@@ -389,9 +854,12 @@ func recoverAgentSessionTarget(sess *BrowserAgentSession) error {
 	policy := sess.Policy
 	currentID := sess.TargetID
 	sess.mu.RUnlock()
-	if err := attachSessionToRecoverablePage(session, policy, currentID); err != nil {
+	if err := reattachAfterTargetGone(session, policy, currentID); err != nil {
 		if isPolicyDenied(err) {
 			return err
+		}
+		if sessionKeepsLoginPopup(session) {
+			return fmt.Errorf("browser target gone and failed to attach to the logged-in page: %w", err)
 		}
 		return fmt.Errorf("browser target gone and failed to attach to new target: %w", err)
 	}
@@ -512,7 +980,7 @@ func StopAgentSession(sessionID string, closeBrowser bool) error {
 		GetAuditLogger().LogDisconnect(sessionID, "session_stop")
 	}
 	if session != nil {
-		log.Printf("[browser] closing CDP client session=%s owner=%q addr=%s mode=%s target=%s close_browser=%v", sessionID, ownerID, addr, mode, targetID, closeBrowser)
+		log.Printf("[browser] closing CDP client session=%s owner=%q addr=%s mode=%s target=%s close_browser=%v", sessionID, ownerID, redactUserInfo(addr), mode, targetID, closeBrowser)
 		session.closeClient()
 	}
 	if closeBrowser && browserAgentModeAllowsProcessKill(mode) {
@@ -850,7 +1318,7 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 		if json.Unmarshal(evt.Params, &payload) == nil && s.session != nil {
 			s.session.noteAttachedTarget(payload.SessionID, payload.TargetInfo.TargetID, payload.TargetInfo.Type, payload.TargetInfo.URL, payload.TargetInfo.OpenerID, payload.WaitingForDebugger)
 			if payload.TargetInfo.OpenerID != "" && payload.TargetInfo.Type == "page" {
-				if err := validatePopupPolicy(s.Policy); err != nil {
+				if err := validatePopupPolicy(s.Policy); shouldCloseUnsolicitedPopup(sessionKeepsLoginPopup(s.session), err) {
 					client := s.sessionClientLocked()
 					targetID := payload.TargetInfo.TargetID
 					if client != nil && targetID != "" {
@@ -859,6 +1327,8 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 						}()
 					}
 					s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "popup", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+				} else {
+					s.maybeFollowLoggedInPopup(payload.TargetInfo.TargetID, payload.TargetInfo.URL)
 				}
 			}
 		}
@@ -876,7 +1346,7 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 				s.session.notePopupTarget(payload.TargetInfo.TargetID, payload.TargetInfo.OpenerID, payload.TargetInfo.Type, payload.TargetInfo.URL)
 			}
 			if payload.TargetInfo.Type == "page" {
-				if err := validatePopupPolicy(s.Policy); err != nil {
+				if err := validatePopupPolicy(s.Policy); shouldCloseUnsolicitedPopup(sessionKeepsLoginPopup(s.session), err) {
 					if client := s.sessionClientLocked(); client != nil {
 						targetID := payload.TargetInfo.TargetID
 						go func() {
@@ -884,10 +1354,107 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 						}()
 					}
 					s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "popup", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+				} else {
+					s.maybeFollowLoggedInPopup(payload.TargetInfo.TargetID, payload.TargetInfo.URL)
 				}
 			}
 		}
+	case "Target.targetInfoChanged":
+		// A new window often starts blank and only then opens this site.
+		// Follow it once that page is visible, not while it is still empty.
+		var payload struct {
+			TargetInfo struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+				OpenerID string `json:"openerId"`
+			} `json:"targetInfo"`
+		}
+		if json.Unmarshal(evt.Params, &payload) != nil || payload.TargetInfo.Type != "page" || s.session == nil {
+			break
+		}
+		opener := payload.TargetInfo.OpenerID
+		if opener == "" && !s.session.isPopupTarget(payload.TargetInfo.TargetID) {
+			break
+		}
+		if opener != "" {
+			s.session.notePopupTarget(payload.TargetInfo.TargetID, opener, payload.TargetInfo.Type, payload.TargetInfo.URL)
+		}
+		if err := validatePopupPolicy(s.Policy); shouldCloseUnsolicitedPopup(sessionKeepsLoginPopup(s.session), err) {
+			break
+		}
+		s.maybeFollowLoggedInPopup(payload.TargetInfo.TargetID, payload.TargetInfo.URL)
 	}
+}
+
+// maybeFollowLoggedInPopup moves the agent into a window this site opened
+// after the person signed in. The caller's lock is held, so the switch runs
+// after that lock is released.
+func (s *BrowserAgentSession) maybeFollowLoggedInPopup(targetID, popupURL string) {
+	if s == nil || targetID == "" || !sharedDesktopRealPage(popupURL) {
+		return
+	}
+	go s.followLoggedInPopup(targetID, popupURL)
+}
+
+func (s *BrowserAgentSession) followLoggedInPopup(targetID, popupURL string) {
+	if s == nil || targetID == "" {
+		return
+	}
+	s.mu.RLock()
+	session := s.session
+	already := s.TargetID == targetID
+	s.mu.RUnlock()
+	if session == nil || already || !session.holdingLoggedInDocument() {
+		return
+	}
+	// The last probe can still be the page from before the person logged in.
+	// Compare with the page open now, so a new window is followed only when
+	// it is this same site.
+	current, err := session.currentHref()
+	if err != nil || !followLoggedInPopupPage(current, popupURL) {
+		return
+	}
+	// The new window is often missing from the page list for a moment.
+	// Giving up on that first miss leaves the website login in the window
+	// the person just used.
+	switched := false
+	for attempt := 0; attempt < 8; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+			s.mu.RLock()
+			session = s.session
+			already = s.TargetID == targetID
+			s.mu.RUnlock()
+			if session == nil || already || !session.holdingLoggedInDocument() {
+				return
+			}
+		}
+		if err := session.SwitchPage(targetID); err != nil {
+			continue
+		}
+		switched = true
+		break
+	}
+	if !switched {
+		return
+	}
+	s.mu.Lock()
+	if s.session == session {
+		s.TargetID = targetID
+		s.resetTargetGone()
+	}
+	s.mu.Unlock()
+	s.startEventPump()
+}
+
+func (s *Session) holdingLoggedInDocument() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stayOnLoggedInDocument
 }
 
 // signalTargetGone closes targetGoneCh to abort any in-flight operations waiting
@@ -925,6 +1492,26 @@ func (s *BrowserAgentSession) TargetGone() <-chan struct{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.targetGoneCh
+}
+
+// DesktopConnected reports whether this session can still drive the browser.
+// IsTargetAlive only remembers that the tab was not closed. After the desktop
+// container stops and starts again, that tab is gone and the login lives in
+// the new browser, so a dead connection must not be reused.
+func (s *BrowserAgentSession) DesktopConnected() bool {
+	if !s.IsTargetAlive() {
+		return false
+	}
+	s.mu.RLock()
+	session := s.session
+	s.mu.RUnlock()
+	if session == nil {
+		return false
+	}
+	session.mu.Lock()
+	client := session.client
+	session.mu.Unlock()
+	return client != nil && client.IsAlive()
 }
 
 // IsTargetAlive returns false if the active target has been destroyed or

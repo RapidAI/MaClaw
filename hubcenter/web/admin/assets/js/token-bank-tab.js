@@ -64,8 +64,8 @@
     users: { page: 0, size: 20, rows: [], total: null },
     shares: { page: 0, size: 20, rows: [], status: '', owner: '' },
     price: { rows: [], editing: null, draft: null },
-    creditShares: { rows: [], page: 0, size: 20 },
-    margins: { rows: [], days: 30, group: 'model' },
+    creditShares: { rows: [], page: 0, size: 20, more: false },
+    margins: { rows: [], days: 30, group: 'model', page: 0 },
     leaders: [],
     loadSeq: 0,
     // Bumps only when a settings PUT is accepted. A settings GET that started
@@ -109,9 +109,19 @@
   // late response is dropped, and the visible load owns the screen.
   function noteLoad() { return ++state.loadSeq; }
   function loadLive(seq) { return seq === state.loadSeq; }
+  function loadErrorText(err) {
+    var msg = String(err && err.message ? err.message : (err == null ? '' : err));
+    // A reverse proxy can return a full HTML status page. Dumping that into the
+    // card hides the failure; keep a short line the operator can read. A long
+    // plain API error stays intact.
+    if (/<\s*html[\s>]/i.test(msg) || /<\s*title[\s>]/i.test(msg) || /<\s*body[\s>]/i.test(msg)) {
+      msg = msg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+    }
+    return t('tbkLoadFailed', 'Failed: ') + msg;
+  }
   function showLoadError(seq, root, err) {
     if (!loadLive(seq) || !root) return;
-    root.innerHTML = '<div class="hint">' + esc(t('tbkLoadFailed', 'Failed: ') + (err && err.message ? err.message : err)) + '</div>';
+    root.innerHTML = '<div class="hint">' + esc(loadErrorText(err)) + '</div>';
   }
 
   // --- chrome ---------------------------------------------------------------
@@ -157,14 +167,19 @@
     }
   }
 
+  // Set when any init has started a sub-view load. openTab can call init once
+  // this file has assigned it, and the startup resume below can call it too.
+  // The flag keeps those two startup paths from each firing a request.
+  var startupLoadStarted = false;
   function initTokenBankTab() {
-    applyTokenBankI18n();
+    startupLoadStarted = true;
+    // switchTokenBankSubTab applies the tab dictionary itself.
     switchTokenBankSubTab(state.sub || 'overview');
   }
 
   // --- i18n -----------------------------------------------------------------
   function applyTokenBankI18n() {
-    var nodes = document.querySelectorAll('[data-tbk-i18n]');
+    var nodes = document.querySelectorAll('#tab-tokenbank [data-tbk-i18n]');
     for (var i = 0; i < nodes.length; i++) {
       var key = nodes[i].getAttribute('data-tbk-i18n');
       var text = t(key);
@@ -181,7 +196,16 @@
     var seq = noteLoad();
     busy('overview', true);
     var root = document.getElementById('tbkOverviewBody');
-    if (root) root.innerHTML = '<div class="hint">' + esc(t('tbkLoading')) + '</div>';
+    // The first visit has nothing to keep on screen. A later reload keeps the
+    // figures and dims them, so the click is visible without flashing 加载中….
+    if (root && state.overview == null) {
+      root.innerHTML = '<div class="hint">' + esc(t('tbkLoading')) + '</div>';
+      root.style.opacity = '';
+      root.removeAttribute('aria-busy');
+    } else if (root) {
+      root.setAttribute('aria-busy', 'true');
+      root.style.opacity = '0.55';
+    }
     try {
       var res = await apiGet('/api/admin/token-bank/overview');
       if (!loadLive(seq)) return;
@@ -190,15 +214,27 @@
       state.overviewCreditShareMaxRatio = res.credit_share_max_ratio;
       renderTokenBankOverview();
     } catch (e) {
-      showLoadError(seq, root, e);
+      // A failed refresh must not replace figures already on screen. The first
+      // visit still has nowhere else to put the error.
+      if (state.overview == null) showLoadError(seq, root, e);
+      else if (loadLive(seq)) toast(loadErrorText(e), 'error');
     } finally {
       if (loadLive(seq)) busy('overview', false);
+      if (loadLive(seq) && root) {
+        root.removeAttribute('aria-busy');
+        root.style.opacity = '';
+      }
     }
   }
 
   function metricCard(labelKey, value, hintKey) {
     return '<div class="item tbk-stat"><div class="item-title">' + esc(t(labelKey)) + '</div><strong>' + esc(value) +
       '</strong>' + (hintKey ? '<div class="item-meta">' + esc(t(hintKey)) + '</div>' : '') + '</div>';
+  }
+
+  function marginFigure(labelKey, value, extra) {
+    return '<div><span>' + esc(t(labelKey)) + '</span><strong title="' + esc(value) + '">' + esc(value) + '</strong>' +
+      (extra ? '<span>' + esc(extra) + '</span>' : '') + '</div>';
   }
 
   function renderTokenBankOverview() {
@@ -288,11 +324,13 @@
 
   function setTokenBankMarginDays(days) {
     state.margins.days = Number(days) || 30;
+    state.margins.page = 0;
     return loadTokenBankMargins();
   }
 
   function setTokenBankMarginGroup(group) {
     state.margins.group = group || 'model';
+    state.margins.page = 0;
     return loadTokenBankMargins();
   }
 
@@ -324,12 +362,14 @@
     // Shortfall is what the clamp absorbed, and it is what makes the risk
     // concrete: "we inverted 40 times" is unactionable without a cost.
     if (Number(sum.inverted_count) > 0) {
+      var invertedBody = t('tbkMarginInvertedBody')
+        .replace('{count}', num(sum.inverted_count, 0))
+        .replace('{clamped}', num(sum.clamped_count, 0));
+      if (Number(sum.shortfall_micro) > 0) {
+        invertedBody += t('tbkMarginInvertedOverpay').replace('{shortfall}', creditsFixed(sum.shortfall_micro, 2));
+      }
       html += '<div class="hint section-bottom"><span class="danger">' +
-        esc(t('tbkMarginInvertedTitle')) + '</span> ' +
-        esc(t('tbkMarginInvertedBody')
-          .replace('{count}', num(sum.inverted_count, 0))
-          .replace('{clamped}', num(sum.clamped_count, 0))
-          .replace('{shortfall}', creditsFixed(sum.shortfall_micro, 2))) + '</div>';
+        esc(t('tbkMarginInvertedTitle')) + '</span> ' + esc(invertedBody) + '</div>';
     }
 
     if (!groups.length) {
@@ -338,31 +378,60 @@
       return;
     }
 
-    // Cards, matching the users and shares views. Inversion is flagged in the
-    // title text rather than with a CSS class, so the view needs no stylesheet
-    // of its own to be readable.
-    html += '<div class="list">';
-    for (var i = 0; i < groups.length; i++) {
-      var r = groups[i] || {};
+    // Four cards a row, twenty a page. The summary above stays put; only this
+    // list pages, and a window or grouping change starts again at the first page.
+    var pageSize = 20;
+    var pages = Math.max(1, Math.ceil(groups.length / pageSize));
+    var page = state.margins.page || 0;
+    if (page > pages - 1) page = pages - 1;
+    if (page < 0) page = 0;
+    state.margins.page = page;
+    var slice = groups.slice(page * pageSize, page * pageSize + pageSize);
+    html += '<div class="tbk-margin-grid">';
+    for (var i = 0; i < slice.length; i++) {
+      var r = slice[i] || {};
       var inverted = Number(r.inverted_count) > 0;
-      html += '<div class="item">' +
-        '<div class="item-title">' + (inverted ? '<span class="danger">⚠ </span>' : '') + esc(r.key || '—') + '</div>' +
-        '<div class="item-meta">' +
-        esc(t('tbkMarginColCharged')) + ': ' + esc(creditsFixed(r.charged_micro, 2)) + ' · ' +
-        esc(t('tbkMarginColGross')) + ': ' + esc(creditsFixed(r.gross_micro, 2)) + ' · ' +
-        esc(t('tbkMarginColFee')) + ': ' + esc(creditsFixed(r.fee_micro, 2)) + ' · ' +
-        esc(t('tbkMarginColNet')) + ': ' + esc(creditsFixed(r.net_micro, 2)) +
+      var key = r.key || '';
+      var titleAttr = key ? ' title="' + esc(key) + '"' : '';
+      var invertedCount = esc(num(r.inverted_count, 0));
+      if (inverted) invertedCount = '<span class="tbk-margin-hot">' + invertedCount + '</span>';
+      html += '<div class="item tbk-margin-card">' +
+        '<div class="item-title"' + titleAttr + '>' + (inverted ? '<span class="tbk-margin-hot">⚠ </span>' : '') + esc(key || '—') + '</div>' +
+        '<div class="tbk-margin-stats">' +
+        marginFigure('tbkMarginColCharged', creditsFixed(r.charged_micro, 2)) +
+        marginFigure('tbkMarginColGross', creditsFixed(r.gross_micro, 2)) +
+        marginFigure('tbkMarginColMargin', creditsFixed(r.margin_micro, 2), pct(r.margin_rate)) +
         '</div>' +
         '<div class="item-meta">' +
-        esc(t('tbkMarginColMargin')) + ': ' + esc(creditsFixed(r.margin_micro, 2)) +
-        ' (' + esc(pct(r.margin_rate)) + ') · ' +
-        esc(t('tbkMarginColCalls')) + ': ' + esc(num(r.calls, 0)) + ' · ' +
-        esc(t('tbkMarginColInverted')) + ': ' + esc(num(r.inverted_count, 0)) + ' · ' +
-        esc(t('tbkMarginColClamped')) + ': ' + esc(num(r.clamped_count, 0)) +
+        esc(t('tbkMarginColFee')) + ' ' + esc(creditsFixed(r.fee_micro, 2)) + ' · ' +
+        esc(t('tbkMarginColNet')) + ' ' + esc(creditsFixed(r.net_micro, 2)) +
+        '</div>' +
+        '<div class="item-meta">' +
+        esc(t('tbkMarginColCalls')) + ' ' + esc(num(r.calls, 0)) + ' · ' +
+        esc(t('tbkMarginColInverted')) + ' ' + invertedCount + ' · ' +
+        esc(t('tbkMarginColClamped')) + ' ' + esc(num(r.clamped_count, 0)) +
+        (inverted && Number(r.shortfall_micro) > 0
+          ? ' · ' + esc(t('tbkMarginShortfall')) + ' ' + esc(creditsFixed(r.shortfall_micro, 2))
+          : '') +
         '</div></div>';
     }
     html += '</div>';
+    if (pages > 1) html += marginPager(page, pages);
     root.innerHTML = html;
+  }
+
+  function marginPager(page, pages) {
+    return '<div class="inline-actions section-gap">' +
+      '<button class="btn-ghost" type="button" onclick="tokenBankMarginsPage(-1)"' + (page <= 0 ? ' disabled' : '') + '>' + esc(t('tbkPrev')) + '</button>' +
+      '<span class="item-meta">' + esc(t('tbkPage')) + ' ' + esc(String(page + 1)) + ' / ' + esc(String(pages)) + '</span>' +
+      '<button class="btn-ghost" type="button" onclick="tokenBankMarginsPage(1)"' + (page >= pages - 1 ? ' disabled' : '') + '>' + esc(t('tbkNext')) + '</button>' +
+      '</div>';
+  }
+  function tokenBankMarginsPage(delta) {
+    var next = (state.margins.page || 0) + Number(delta || 0);
+    if (next < 0) return;
+    state.margins.page = next;
+    renderTokenBankMargins();
   }
 
   // --- settings -------------------------------------------------------------
@@ -427,6 +496,14 @@
   // replace a real zero with the default.
   function pick(value, fallback) {
     return value == null ? fallback : value;
+  }
+
+  // A stored cache unit of 0 is not the price settlement uses. The settler
+  // keeps the platform default for that direction, so the list must not print 0.
+  function cacheUnitLabel(value) {
+    var n = Number(value);
+    if (isFinite(n) && n > 0) return num(n, 4);
+    return t('tbkPriceUsesDefault');
   }
 
   // Kept in step with sqlite.DefaultTokenBankSettings().
@@ -798,8 +875,8 @@
         '<div class="item-title mono">' + esc(r.ModelPattern || r.model_pattern || '') + '</div>' +
         '<div class="item-meta">' + esc(t('tbkPriceIn')) + ': ' + esc(num(r.UnitInputPer10K, 4)) +
         ' · ' + esc(t('tbkPriceOut')) + ': ' + esc(num(r.UnitOutputPer10K, 4)) +
-        ' · ' + esc(t('tbkPriceCacheRead')) + ': ' + esc(num(r.UnitCachedReadPer10K, 4)) +
-        ' · ' + esc(t('tbkPriceCacheWrite')) + ': ' + esc(num(r.UnitCacheWritePer10K, 4)) + '</div>' +
+        ' · ' + esc(t('tbkPriceCacheRead')) + ': ' + esc(cacheUnitLabel(r.UnitCachedReadPer10K)) +
+        ' · ' + esc(t('tbkPriceCacheWrite')) + ': ' + esc(cacheUnitLabel(r.UnitCacheWritePer10K)) + '</div>' +
         '<div class="item-meta">' + esc(t('tbkPriceUpdated')) + ': ' + esc(fmtTime(r.UpdatedAt || r.updated_at)) + '</div>' +
         '<div class="inline-actions">' +
         '<button class="btn-ghost" type="button" onclick="deleteTokenBankPriceRule(' + jsArg(r.ID || r.id) + ')">' + esc(t('tbkDelete')) + '</button>' +
@@ -822,9 +899,10 @@
     busy('priceSave', true);
     try {
       // Empty is null, not 0. The server keeps the stored unit on update and
-      // treats null as 0 only for a pattern that does not exist yet. A typed 0
-      // is a free unit and must be sent as 0; `|| 0` cannot tell the two apart
-      // once the field is blank, and it used to wipe the other three prices.
+      // stores null as 0 only for a pattern that does not exist yet. A typed 0
+      // must be sent as 0. Input or output 0 is free. Cache 0 keeps the
+      // platform default cache price. `|| 0` cannot tell a blank field from a
+      // typed 0, and it used to wipe the other three prices.
       await apiSend('/api/admin/token-bank/price-book', 'POST', {
         model_pattern: pattern,
         unit_input_credits_per_10k: priceUnit(inEl),
@@ -861,9 +939,16 @@
     var root = document.getElementById('tbkCreditSharesBody');
     if (root) root.innerHTML = '<div class="hint">' + esc(t('tbkLoading')) + '</div>';
     try {
-      var res = await apiGet('/api/admin/token-bank/credit-shares');
+      // Ask for one extra row so a full page of 20 can tell "there is another
+      // page" from "this page is the last". Showing that extra row would make
+      // the grid 21 cards, and the next offset would repeat it.
+      var page = state.creditShares;
+      var q = '?limit=' + (page.size + 1) + '&offset=' + (page.page * page.size);
+      var res = await apiGet('/api/admin/token-bank/credit-shares' + q);
       if (!loadLive(seq)) return;
-      state.creditShares.rows = res.links || res.credit_shares || [];
+      var raw = res.links || res.credit_shares || [];
+      state.creditShares.more = raw.length > page.size;
+      state.creditShares.rows = raw.slice(0, page.size);
       renderTokenBankCreditShares();
     } catch (e) {
       showLoadError(seq, root, e);
@@ -876,36 +961,83 @@
     var root = document.getElementById('tbkCreditSharesBody');
     if (!root) return;
     var rows = state.creditShares.rows || [];
+    var note = '<div class="hint">' + esc(t('tbkCreditSharesNote')) + '</div>';
     if (!rows.length) {
-      root.innerHTML = '<div class="hint">' + esc(t('tbkCreditSharesEmpty')) + '</div>';
+      // Page 0 with nothing to show has no pager. A later empty page still
+      // does, or the operator cannot step back from past the last page.
+      var back = state.creditShares.page > 0 ? creditSharesPager() : '';
+      root.innerHTML = note + '<div class="hint">' + esc(t('tbkCreditSharesEmpty')) + '</div>' + back;
+      applyTokenBankI18n();
       return;
     }
     // This endpoint returns a purpose-built wire struct with snake_case tags
     // (unlike the shares/price views, which marshal store structs and therefore
     // come back PascalCase). The two spellings are read in that order so a tag
     // change on either side degrades to a blank cell rather than a wrong one.
-    var html = '<div class="hint">' + esc(t('tbkCreditSharesNote')) + '</div><div class="list">';
+    var html = note + '<div class="tbk-gift-grid">';
     rows.forEach(function (l) {
       var id = l.id || l.ID || '';
       var status = String(l.status || l.Status || '');
       var amountMicro = l.credits_micro != null ? l.credits_micro : (l.CreditsMicro != null ? l.CreditsMicro : l.amount_micro);
-      html += '<div class="item">' +
+      var reason = giftFreezeReason(l, status);
+      var revokedAt = l.revoked_at || l.RevokedAt || '';
+      html += '<div class="item tbk-gift-card">' +
         '<div class="item-title mono">' + esc(l.code || l.Code || id) +
         ' <span class="badge ' + giftStatusClass(status) + '">' + esc(giftStatusLabel(status)) + '</span></div>' +
+        (reason ? '<div class="item-meta tbk-gift-reason">' + esc(reason) + '</div>' : '') +
         '<div class="item-meta">' + esc(t('tbkColSender')) + ': ' + esc(l.sender_email_masked || l.SenderEmail || '') +
         ' → ' + esc(t('tbkColReceiver')) + ': ' + esc(l.claimed_by_email_masked || l.ClaimedByEmail || '—') + '</div>' +
         '<div class="item-meta">' + esc(t('tbkColAmount')) + ': ' + esc(creditsFixed(amountMicro, 6)) +
         ' · ' + esc(t('tbkColCreated')) + ': ' + esc(fmtTime(l.created_at || l.CreatedAt)) + '</div>' +
-        '<div class="inline-actions">' +
+        (status === 'revoked' && revokedAt ? '<div class="item-meta">' + esc(t('tbkGiftFrozenAt')) + ': ' + esc(fmtTime(revokedAt)) + '</div>' : '') +
         // Settled, expired, and already-revoked links are not revocable. A
         // claimed link still is, because the credits have not moved. Hiding
         // the button is how the server's `revocable` flag is honoured.
-        (l.revocable ? '<button class="btn-ghost" type="button" onclick="revokeTokenBankCreditShare(' + jsArg(id) + ')">' + esc(t('tbkRevoke')) + '</button>' : '') +
-        '</div></div>';
+        (l.revocable ? '<div class="inline-actions"><button class="btn-ghost" type="button" onclick="revokeTokenBankCreditShare(' + jsArg(id) + ')">' + esc(t('tbkRevoke')) + '</button></div>' : '') +
+        '</div>';
     });
-    html += '</div>';
+    html += '</div>' + creditSharesPager();
     root.innerHTML = html;
     applyTokenBankI18n();
+  }
+
+  function creditSharesPager() {
+    var page = state.creditShares.page;
+    var atEnd = !state.creditShares.more;
+    return '<div class="inline-actions section-bottom">' +
+      '<button class="btn-ghost" type="button" onclick="tokenBankCreditSharesPage(-1)"' + (page <= 0 ? ' disabled' : '') + ' data-tbk-i18n="tbkPrev"></button>' +
+      '<span class="item-meta">' + esc(t('tbkPage')) + ' ' + esc(String(page + 1)) + '</span>' +
+      '<button class="btn-ghost" type="button" onclick="tokenBankCreditSharesPage(1)"' + (atEnd ? ' disabled' : '') + ' data-tbk-i18n="tbkNext"></button>' +
+      '</div>';
+  }
+  function tokenBankCreditSharesPage(delta) {
+    var next = state.creditShares.page + Number(delta || 0);
+    if (next < 0) return;
+    state.creditShares.page = next;
+    loadTokenBankCreditShares();
+    var root = document.getElementById('tbkCreditSharesBody');
+    if (root) root.scrollIntoView({ block: 'nearest' });
+  }
+
+  function giftWasClaimed(row) {
+    if (!row) return false;
+    var email = String(row.claimed_by_email_masked || row.ClaimedByEmail || '').trim();
+    var at = row.claimed_at || row.ClaimedAt || '';
+    return !!(email || at);
+  }
+
+  // "已冻结" alone does not say whether the sender cancelled, an admin froze
+  // the link, or the row predates the reason column. A blank historical row
+  // still says whether anyone had claimed it, which is the only fact stored.
+  function giftFreezeReason(row, status) {
+    if (status !== 'revoked') return '';
+    var by = String((row && (row.revoked_by || row.RevokedBy)) || '');
+    var reason = String((row && (row.revoke_reason || row.RevokeReason)) || '').trim();
+    if (by === 'sender') return t('tbkGiftReasonSender');
+    if (by === 'admin') {
+      return t('tbkGiftReasonAdmin').replace('{reason}', reason || t('tbkGiftReasonMissing'));
+    }
+    return t(giftWasClaimed(row) ? 'tbkGiftReasonUnknownClaimed' : 'tbkGiftReasonUnknownOpen');
   }
 
   // Gift-link status is not the share status. Share "revoked" is 已取出; a
@@ -964,15 +1096,44 @@
     root.innerHTML = html;
   }
 
+  // Match tokenBankGiftRevokeReason: collapse whitespace, then count runes.
+  // The HTTP error is an English sentence, so an over-long note is refused
+  // here and the Chinese page can say why.
+  function giftRevokeNote(raw) {
+    return String(raw == null ? '' : raw).trim().split(/\s+/).filter(function (part) { return part; }).join(' ');
+  }
+
   async function revokeTokenBankCreditShare(id) {
-    if (!id) return;
-    if (!window.confirm(t('tbkRevokeConfirm'))) return;
+    // The button stays on the card until the reload. A second click during
+    // the request would open another dialog and then 409, because the first
+    // freeze already returned the credits.
+    if (!id || isBusy('creditRevoke')) return;
+    busy('creditRevoke', true);
     try {
-      await apiSend('/api/admin/token-bank/credit-shares/' + encodeURIComponent(id) + '/revoke', 'POST', {});
+      if (!window.confirm(t('tbkRevokeConfirm'))) return;
+      // Cancel leaves the link alone. A blank note is refused here so the
+      // request is not sent only to come back as reason_required.
+      var typed = window.prompt(t('tbkGiftReasonPrompt'));
+      if (typed == null) return;
+      var reason = giftRevokeNote(typed);
+      if (!reason) {
+        toast(t('tbkGiftReasonRequired'), 'error');
+        return;
+      }
+      if (Array.from(reason).length > 200) {
+        toast(t('tbkGiftReasonTooLong'), 'error');
+        return;
+      }
+      await apiSend('/api/admin/token-bank/credit-shares/' + encodeURIComponent(id) + '/revoke', 'POST', { reason: reason });
       toast(t('tbkRevoked'), 'ok');
       await loadTokenBankCreditShares();
     } catch (e) {
-      toast(t('tbkActionFailed', 'Failed: ') + (e && e.message ? e.message : e), 'error');
+      var code = e && e.code;
+      if (code === 'reason_too_long') toast(t('tbkGiftReasonTooLong'), 'error');
+      else if (code === 'reason_required') toast(t('tbkGiftReasonRequired'), 'error');
+      else toast(t('tbkActionFailed', 'Failed: ') + (e && e.message ? e.message : e), 'error');
+    } finally {
+      busy('creditRevoke', false);
     }
   }
 
@@ -1014,7 +1175,8 @@
       tbkMarginRate: 'Margin rate',
       tbkMarginRateHint: 'Gross margin ÷ consumer paid.',
       tbkMarginInvertedTitle: 'Billing inversion detected.',
-      tbkMarginInvertedBody: '{count} calls priced below the list price ({clamped} clamped to zero margin). Without the clamp the platform would have overpaid {shortfall} Credits.',
+      tbkMarginInvertedBody: '{count} calls priced below the list price ({clamped} clamped to zero margin).',
+      tbkMarginInvertedOverpay: ' Without the clamp the platform would have overpaid {shortfall} Credits.',
       tbkMarginColCharged: 'Paid',
       tbkMarginColGross: 'List',
       tbkMarginColFee: 'Fee',
@@ -1024,6 +1186,7 @@
       tbkMarginColCalls: 'Calls',
       tbkMarginColInverted: 'Inverted',
       tbkMarginColClamped: 'Clamped',
+      tbkMarginShortfall: 'Overpay',
       tbkMarginsEmpty: 'No settled usage in this window.',
       tbkLoading: 'Loading…',
       tbkLoadFailed: 'Failed to load: ',
@@ -1082,9 +1245,9 @@
       tbkDefaultUnitOut: 'Default output price',
       tbkDefaultUnitOutHint: 'Credits per 10K tokens, used when the price book has no match.',
       tbkDefaultUnitCacheRead: 'Default cache-read price',
-      tbkDefaultUnitCacheReadHint: 'Credits per 10K cached input tokens.',
+      tbkDefaultUnitCacheReadHint: 'Credits per 10K cached input tokens. 0 bills those tokens at the input price.',
       tbkDefaultUnitCacheWrite: 'Default cache-write price',
-      tbkDefaultUnitCacheWriteHint: 'Credits per 10K cache-write tokens.',
+      tbkDefaultUnitCacheWriteHint: 'Credits per 10K cache-write tokens. 0 bills those tokens at the input price.',
       tbkMaxSharesPerUser: 'Max shares per user',
       tbkMaxSharesPerUserHint: 'Upper bound on live shares one account may hold.',
       tbkCreditShareMaxRatio: 'Max transfer ratio',
@@ -1109,11 +1272,12 @@
       tbkGraded: 'Tier updated. New requests settle at the new rate.',
       tbkActionFailed: 'Action failed: ',
       tbkTakeOutConfirm: 'Take this share out? The registry member is removed immediately and the history is kept.',
-      tbkPriceNote: 'Prices are Credits per 10,000 tokens. An exact model name wins; otherwise the longest matching prefix wins. On an existing pattern, a blank unit keeps the saved price; a new pattern treats a blank unit as 0. Type 0 for a free unit.',
+      tbkPriceNote: 'Prices are Credits per 10,000 tokens. An exact model name wins; otherwise the longest matching prefix wins. On an existing pattern, a blank unit keeps the saved price; a new pattern stores a blank unit as 0. Input or output at 0 is free. Cache read or write at 0 keeps the platform default for that direction.',
       tbkPricePattern: 'Model pattern',
       tbkPricePatternHint: 'An exact model name, or a trailing-* prefix such as gpt-4o-*.',
       tbkPriceIn: 'Input / 10K',
       tbkPriceOut: 'Output / 10K',
+      tbkPriceUsesDefault: 'default',
       tbkPriceCacheRead: 'Cache read / 10K',
       tbkPriceCacheWrite: 'Cache write / 10K',
       tbkPriceUpdated: 'Updated',
@@ -1124,9 +1288,18 @@
       tbkPriceDeleteConfirm: 'Delete this price rule?',
       tbkDeleted: 'Deleted.',
       tbkCreditSharesEmpty: 'No transfer links yet.',
-      tbkCreditSharesNote: 'Frozen links still hold the sender\'s credits. Freeze a link to return them early.',
+      tbkCreditSharesNote: 'Unclaimed and claimed links still hold the sender\'s credits. Freeze a link to return them. The card keeps the reason.',
       tbkRevokeConfirm: 'Freeze this transfer link and return the credits to the sender?',
       tbkRevoked: 'Link frozen.',
+      tbkGiftReasonPrompt: 'Why is this link being frozen? The reason is shown on the card.',
+      tbkGiftReasonRequired: 'A freeze reason is required.',
+      tbkGiftReasonTooLong: 'A freeze reason can be at most 200 characters.',
+      tbkGiftReasonSender: 'Reason: the sender cancelled the link. Credits were returned.',
+      tbkGiftReasonAdmin: 'Reason: an admin froze the link. {reason}',
+      tbkGiftReasonMissing: '(no note)',
+      tbkGiftReasonUnknownOpen: 'Reason: not recorded. The link was frozen before anyone claimed it. Credits were returned to the sender.',
+      tbkGiftReasonUnknownClaimed: 'Reason: not recorded. The link was frozen after it was claimed and before withdrawal. Credits were returned to the sender.',
+      tbkGiftFrozenAt: 'Frozen at',
       tbkGift_active: 'Unclaimed',
       tbkGift_claimed: 'Claimed',
       tbkGift_revoked: 'Frozen',
@@ -1170,7 +1343,8 @@
       tbkMarginRate: '毛利率',
       tbkMarginRateHint: '平台毛利 ÷ 消费者实付。',
       tbkMarginInvertedTitle: '检测到计费倒挂。',
-      tbkMarginInvertedBody: '有 {count} 笔调用的定价低于定价表毛额（其中 {clamped} 笔已被夹到零毛利）。若无夹取，平台将多付 {shortfall} 积分。',
+      tbkMarginInvertedBody: '有 {count} 笔调用的定价低于定价表毛额（其中 {clamped} 笔已被夹到零毛利）。',
+      tbkMarginInvertedOverpay: '若无夹取，平台将多付 {shortfall} 积分。',
       tbkMarginColCharged: '实付',
       tbkMarginColGross: '毛额',
       tbkMarginColFee: '手续费',
@@ -1180,6 +1354,7 @@
       tbkMarginColCalls: '调用数',
       tbkMarginColInverted: '倒挂',
       tbkMarginColClamped: '夹取',
+      tbkMarginShortfall: '多付',
       tbkMarginsEmpty: '该窗口内没有已结算的用量。',
       tbkLoading: '加载中…',
       tbkLoadFailed: '加载失败：',
@@ -1238,9 +1413,9 @@
       tbkDefaultUnitOut: '默认输出单价',
       tbkDefaultUnitOutHint: '每 1 万 token 的积分；定价表无匹配时使用。',
       tbkDefaultUnitCacheRead: '默认缓存读单价',
-      tbkDefaultUnitCacheReadHint: '每 1 万缓存读 token 的积分。',
+      tbkDefaultUnitCacheReadHint: '每 1 万缓存读 token 的积分。填 0 则这些 token 按输入单价计。',
       tbkDefaultUnitCacheWrite: '默认缓存写单价',
-      tbkDefaultUnitCacheWriteHint: '每 1 万缓存写 token 的积分。',
+      tbkDefaultUnitCacheWriteHint: '每 1 万缓存写 token 的积分。填 0 则这些 token 按输入单价计。',
       tbkMaxSharesPerUser: '单用户最大分享数',
       tbkMaxSharesPerUserHint: '一个账号最多可持有的有效分享数量。',
       tbkCreditShareMaxRatio: '单笔转赠上限比例',
@@ -1265,11 +1440,12 @@
       tbkGraded: '档位已更新。新请求将按新倍率结算。',
       tbkActionFailed: '操作失败：',
       tbkTakeOutConfirm: '确认取出该分享？调度成员会立即移除，历史记录保留。',
-      tbkPriceNote: '单价单位为「每 1 万 token 的积分」。精确模型名优先，其次是最长匹配前缀。更新已有规则时，留空的单价保持原值；新规则的留空单价按 0。要设为免费，请填写 0。',
+      tbkPriceNote: '单价单位为「每 1 万 token 的积分」。精确模型名优先，其次是最长匹配前缀。更新已有规则时，留空的单价保持原值；新规则的留空单价按 0 保存。输入或输出填 0 为免费。缓存读或缓存写为 0 时，沿用平台默认的缓存单价。',
       tbkPricePattern: '模型匹配式',
       tbkPricePatternHint: '精确模型名，或结尾带 * 的前缀，例如 gpt-4o-*。',
       tbkPriceIn: '输入 / 1 万',
       tbkPriceOut: '输出 / 1 万',
+      tbkPriceUsesDefault: '默认',
       tbkPriceCacheRead: '缓存读 / 1 万',
       tbkPriceCacheWrite: '缓存写 / 1 万',
       tbkPriceUpdated: '更新时间',
@@ -1280,9 +1456,18 @@
       tbkPriceDeleteConfirm: '确认删除该定价规则？',
       tbkDeleted: '已删除。',
       tbkCreditSharesEmpty: '暂无转赠链接。',
-      tbkCreditSharesNote: '冻结中的链接仍占用发送方积分。冻结该链接可提前退回。',
+      tbkCreditSharesNote: '待领取或已领取的链接仍占用发送方积分。冻结会把积分退回，并在卡片上写明原因。',
       tbkRevokeConfirm: '确认冻结该转赠链接并把积分退回发送方？',
       tbkRevoked: '链接已冻结。',
+      tbkGiftReasonPrompt: '请填写冻结原因。原因会显示在这张卡片上。',
+      tbkGiftReasonRequired: '冻结必须填写原因。',
+      tbkGiftReasonTooLong: '冻结原因不能超过 200 字。',
+      tbkGiftReasonSender: '原因：发送方撤销，积分已退回。',
+      tbkGiftReasonAdmin: '原因：管理员冻结。{reason}',
+      tbkGiftReasonMissing: '（未填写说明）',
+      tbkGiftReasonUnknownOpen: '原因未记录。链接未被领取即被冻结，积分已退回发送方。',
+      tbkGiftReasonUnknownClaimed: '原因未记录。链接在领取后、提现前被冻结，积分已退回发送方。',
+      tbkGiftFrozenAt: '冻结时间',
       tbkGift_active: '待领取',
       tbkGift_claimed: '已领取',
       tbkGift_revoked: '已冻结',
@@ -1292,14 +1477,20 @@
     }
   };
 
-  // `tabMeta` and the `openTab` dispatch both live inside admin-core's IIFE and
-  // are wired there directly — an admin tab that only registers itself would
-  // fall back to the overview title and icon. The one thing worth re-asserting
-  // here is the i18n pass, which admin-core cannot know about.
+  // admin-core calls restoreTab() before this file runs, so a refresh that lands
+  // on Token 银行 shows the panel and the static 加载中… placeholder without
+  // ever calling initTokenBankTab. 重新加载 works only because the function
+  // exists by the time the user clicks. If a later restore does call init, the
+  // startup flag above makes this resume a no-op instead of a second request.
   function registerTokenBankTab() {
-    if (typeof window.initTokenBankTab === 'function' && document.getElementById('tab-tokenbank')) {
-      applyTokenBankI18n();
+    var panel = document.getElementById('tab-tokenbank');
+    if (!panel) return;
+    var signedIn = typeof window.token === 'function' && !!window.token();
+    if (panel.classList.contains('active') && signedIn) {
+      if (!startupLoadStarted) initTokenBankTab();
+      return;
     }
+    applyTokenBankI18n();
   }
 
   window.initTokenBankTab = initTokenBankTab;
@@ -1319,13 +1510,19 @@
   window.upsertTokenBankPriceRule = upsertTokenBankPriceRule;
   window.deleteTokenBankPriceRule = deleteTokenBankPriceRule;
   window.loadTokenBankCreditShares = loadTokenBankCreditShares;
+  window.tokenBankCreditSharesPage = tokenBankCreditSharesPage;
   window.revokeTokenBankCreditShare = revokeTokenBankCreditShare;
   window.loadTokenBankMargins = loadTokenBankMargins;
   window.loadTokenBankLeaderboard = loadTokenBankLeaderboard;
   window.setTokenBankMarginDays = setTokenBankMarginDays;
   window.setTokenBankMarginGroup = setTokenBankMarginGroup;
+  window.tokenBankMarginsPage = tokenBankMarginsPage;
 
-  if (document.readyState === 'loading') {
+  if (document.readyState === 'loading' || document.readyState === 'interactive') {
+    // Deferred scripts run at interactive, before DOMContentLoaded. Resume now
+    // so the overview request starts during startup, and once more on
+    // DOMContentLoaded in case the panel was activated after this file.
+    if (document.readyState !== 'loading') registerTokenBankTab();
     document.addEventListener('DOMContentLoaded', registerTokenBankTab);
   } else {
     registerTokenBankTab();

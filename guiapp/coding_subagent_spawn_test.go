@@ -530,6 +530,51 @@ func TestNestedWorkersReceiveChildScopedApprovals(t *testing.T) {
 	}
 }
 
+func TestNestedWorkerInheritsTaskCommandAllowanceWithoutPathTrust(t *testing.T) {
+	localParent := &CodingSubAgent{
+		projectPath:   t.TempDir(),
+		scopeApproval: newScopeApprovalState(nil, false),
+	}
+	localParent.scopeApproval.grantHighRiskFullAccess()
+	localChild := NewCodingSubAgent(nil, corelib.MaclawLLMConfig{}, nil, t.TempDir(), NewLoopContext("child", 0, nil))
+	localChild.nestDepth, localChild.role = 1, codingRoleWorker
+	localChild.setNestedWorkerScopeApproval(nil)
+	inheritLocalTaskCommandAllowance(localParent, localChild)
+	if !localChild.scopeApproval.highRiskApproved() {
+		t.Fatal("local worker must inherit the current task command allowance")
+	}
+	if localChild.scopeApproval.pathFullAccessGranted() {
+		t.Fatal("local worker must not inherit path full access")
+	}
+	ownerParent := &CodingSubAgent{permissionOwnerID: "task-tab-user", projectPath: t.TempDir()}
+	ownerChild := ownerParent.newReadOnlyNestedCodingAgent(codingSpawnSpec{Role: codingRoleExplorer}, nil)
+	if ownerChild.permissionOwnerID != "task-tab-user" {
+		t.Fatalf("nested child owner=%q", ownerChild.permissionOwnerID)
+	}
+	if ownerChild.loopCtx != nil && strings.TrimSpace(ownerChild.loopCtx.UserID) == "task-tab-user" {
+		t.Fatal("nested child loop must stay separate from the task tab owner")
+	}
+
+	remoteParent := &RemoteCodingSubAgent{highRiskApproval: newRemoteHighRiskApprovalState(nil, true)}
+	remoteChild := &RemoteCodingSubAgent{projectDir: "/isolated", nestDepth: 1, role: codingRoleWorker}
+	remoteChild.setNestedRemoteWorkerApproval(nil)
+	inheritRemoteTaskCommandAllowance(remoteParent, remoteChild)
+	if !remoteChild.highRiskApproval.highRiskApproved() {
+		t.Fatal("remote worker must inherit full-control command auto-allow")
+	}
+	if remoteChild.highRiskApproval.pathApproved() {
+		t.Fatal("remote worker must not inherit path full access")
+	}
+
+	askParent := &RemoteCodingSubAgent{highRiskApproval: newRemoteHighRiskApprovalState(nil, false)}
+	askChild := &RemoteCodingSubAgent{projectDir: "/isolated", nestDepth: 1, role: codingRoleWorker}
+	askChild.setNestedRemoteWorkerApproval(nil)
+	inheritRemoteTaskCommandAllowance(askParent, askChild)
+	if askChild.highRiskApproval.highRiskApproved() {
+		t.Fatal("ask mode without 以后允许 must still prompt the worker")
+	}
+}
+
 func TestReadOnlyChildAdmissionDoesNotRetainParentSemanticIdentity(t *testing.T) {
 	parentIdentity := &trustedCodingInvocationIdentity{
 		RootTaskID: "parent-root", TenantID: "tenant", PrincipalID: "principal", SessionID: "session",

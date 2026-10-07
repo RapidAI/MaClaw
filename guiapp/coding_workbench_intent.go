@@ -21,6 +21,7 @@ Rules:
 - 1 to 3 sentences.
 - Do not copy the user's wording. Paraphrase the goal, the expected deliverable, and any constraint you can infer.
 - If the request is a short follow-up, use the session context to name the current software and what will change.
+- If the session record says project files were already written, the workspace is not read-only. Do not describe it as unable to change files.
 - Do not invent features the user did not imply.
 - Write in the same language as the user request.
 - No markdown headings, no file lists, no step plan.`
@@ -483,7 +484,9 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 	if codingRequestLooksRunOnly(userText) {
 		return "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
 	}
-	if codingRequestLooksLikeQuestion(userText) {
+	// A session that already wrote project files keeps a writable contract.
+	// Do not announce a read-only turn from the wording of this message.
+	if codingRequestLooksLikeQuestion(userText) && !codingSessionHasImplementationTrajectory(mem) {
 		return "先只读查看相关代码，回答你这次想弄清的问题，不改文件。"
 	}
 	if prior != "" && utf8.RuneCountInString(userText) <= 48 {
@@ -508,6 +511,17 @@ func buildCodingUnderstandingUserPrompt(userText string, mem stickyCodingWorkben
 		b.WriteString("\n\nFiles created earlier: ")
 		b.WriteString(strings.Join(mem.FilesCreated, ", "))
 	}
+	if len(mem.FilesModified) > 0 {
+		files := uniqueSortedSubAgentStrings(mem.FilesModified)
+		if len(files) > 12 {
+			files = files[:12]
+		}
+		b.WriteString("\n\nFiles modified earlier: ")
+		b.WriteString(strings.Join(files, ", "))
+	}
+	if codingSessionHasImplementationTrajectory(mem) {
+		b.WriteString("\n\nSession record: project files were already written in this session. The workspace is not read-only. Restate only the current request.")
+	}
 	return b.String()
 }
 
@@ -521,6 +535,26 @@ func codingRestatementFallbackIsSpecific(userText string, mem stickyCodingWorkbe
 	}
 	_, ok := fallbackRewriteRestatement(userText, codingRequestPriorContext(mem))
 	return ok
+}
+
+// codingRequestUnderstandingKeepsHostFallback reports a host restatement that
+// must not be replaced by the restatement model. A run/build follow-up already
+// says the existing program will be launched without source edits. The session
+// record tells that model the workspace is not read-only, and it would
+// otherwise overwrite the launch constraint.
+func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodingWorkbenchMemory) bool {
+	if codingRestatementFallbackIsSpecific(userText, mem) || codingRequestLooksRunOnly(userText) {
+		return true
+	}
+	// A short follow-up already has a host restatement based on the session
+	// plan. The restatement model also sees the previous turn, which may
+	// describe a rejected inquiry as a read-only environment, and would
+	// replace that host text.
+	text := strings.TrimSpace(userText)
+	return codingSessionHasImplementationTrajectory(mem) &&
+		codingRequestPriorContext(mem) != "" &&
+		utf8.RuneCountInString(text) <= 48 &&
+		!codingRequestLooksLikeQuestion(text)
 }
 
 func (h *IMMessageHandler) llmCodingRequestRestatement(userText string, mem stickyCodingWorkbenchMemory) string {
@@ -572,7 +606,7 @@ func (h *IMMessageHandler) publishCodingRequestUnderstanding(userID, userText st
 }
 
 func (h *IMMessageHandler) refineCodingRequestUnderstanding(userID, userText string, mem stickyCodingWorkbenchMemory, decision codingRequestDecision) string {
-	if !codingRequestShouldRestate(decision, userText) || codingRestatementFallbackIsSpecific(userText, mem) {
+	if !codingRequestShouldRestate(decision, userText) || codingRequestUnderstandingKeepsHostFallback(userText, mem) {
 		return strings.TrimSpace(mem.RequirementRestatement)
 	}
 	got := h.llmCodingRequestRestatement(userText, mem)

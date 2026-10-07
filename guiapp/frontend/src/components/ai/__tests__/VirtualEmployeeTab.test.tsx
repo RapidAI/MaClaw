@@ -160,12 +160,12 @@ describe('VirtualEmployeeTab', () => {
     });
 
     describe('policyIcon', () => {
-        it('returns correct icons for each policy', () => {
-            expect(policyIcon("public")).toBe("[pub]");
-            expect(policyIcon("whitelist")).toBe("[allow]");
-            expect(policyIcon("blacklist")).toBe("[block]");
-            expect(policyIcon("per_request")).toBe("[ask]");
-            expect(policyIcon("unknown")).toBe("[?]");
+        it('returns correct icon names for each policy', () => {
+            expect(policyIcon("public")).toBe("pub");
+            expect(policyIcon("whitelist")).toBe("allow");
+            expect(policyIcon("blacklist")).toBe("block");
+            expect(policyIcon("per_request")).toBe("ask");
+            expect(policyIcon("unknown")).toBe("unknown");
         });
 
         it('returns readable labels for each policy', () => {
@@ -344,6 +344,34 @@ describe('VirtualEmployeeTab', () => {
             const onlineIndicator = screen.getByTestId("ve-status-ve-1");
             expect(onlineIndicator.style.background).toBe("rgb(79, 127, 111)"); // #4f7f6f
             expect(screen.queryByTestId("ve-status-ve-4")).toBeNull();
+        });
+
+        it('highlights the search input border while focused', async () => {
+            renderVETab();
+            await act(async () => { await Promise.resolve(); });
+            const input = screen.getByTestId("ve-search-input");
+            // jsdom normalizes hex colors to rgb()
+            expect(input.style.border).toBe("1px solid rgb(229, 231, 235)");
+            fireEvent.focus(input);
+            expect(input.style.border).toBe("1px solid rgb(99, 102, 241)");
+            fireEvent.blur(input);
+            expect(input.style.border).toBe("1px solid rgb(229, 231, 235)");
+        });
+
+        it('uses dark-tone policy icon colors on a dark panel background', async () => {
+            renderVETab({ theme: { ...mockTheme, bg: "#0b1220" } });
+            await act(async () => { await Promise.resolve(); });
+            const iconSvg = screen.getByTestId("ve-item-ve-1").querySelector<SVGElement>(".vet-policy-icon svg");
+            expect(iconSvg?.style.color).toBe("rgb(125, 191, 168)");
+        });
+
+        it('closes the context menu on Escape', async () => {
+            renderVETab();
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
+            expect(screen.getByTestId("ve-context-menu")).toBeTruthy();
+            fireEvent.keyDown(document, { key: "Escape" });
+            expect(screen.queryByTestId("ve-context-menu")).toBeNull();
         });
 
         it('shows "需同意" badge for per_request policy', async () => {

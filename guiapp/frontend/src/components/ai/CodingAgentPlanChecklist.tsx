@@ -2,7 +2,13 @@ import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import {
     codingStepGlyph,
+    codingStepIsActive,
+    codingStepIsDone,
+    codingStepIsFailed,
+    codingStepIsSkipped,
     codingStepStatusColor,
+    codingStepStatusLabel,
+    srOnlyStyle,
     type CodingBannerChrome,
     type CodingStepStatus,
 } from "./CodingWorkbenchControlPanel";
@@ -21,10 +27,10 @@ export type CodingAgentPlanChecklistProps = {
 };
 
 export function codingPlanProgressLabel(steps: CodingStepStatus[]): string {
-    const done = steps.filter((s) => {
-        const st = (s.status || "").toLowerCase();
-        return st === "passed" || st === "completed" || st === "skipped" || st === "cancelled";
-    }).length;
+    // Done or skipped advances the counter; a failed step deliberately does not
+    // (otherwise a failed plan could read "5/5"). `success`/`succeeded` count as
+    // finished alongside `passed`/`completed`.
+    const done = steps.filter((s) => codingStepIsDone(s.status) || codingStepIsSkipped(s.status)).length;
     return `${done}/${steps.length}`;
 }
 
@@ -44,11 +50,9 @@ export function CodingAgentPlanChecklist({
     if (!pendingApproval && steps.length === 0 && !restatement) {
         return null;
     }
-    const dark = !!theme.isDark;
-    const running = steps.find((s) => {
-        const st = (s.status || "").toLowerCase();
-        return st === "running" || st === "in_progress";
-    });
+    // Same predicate the step rows use, so a backend `started` lights up the row
+    // and the header badge together.
+    const running = steps.find((s) => codingStepIsActive(s.status));
     const title = pendingApproval
         ? localizeText(lang, "Plan", "计划", "計畫")
         : localizeText(lang, "Steps", "步骤", "步驟");
@@ -75,7 +79,7 @@ export function CodingAgentPlanChecklist({
                 </div>
                 {running ? (
                     <div data-testid="coding-agent-plan-current" style={{ color: chrome.accentStrong, fontSize: 11 }}>
-                        T{running.index} {localizeText(lang, "in progress", "进行中", "進行中")}
+                        T{running.index} {codingStepStatusLabel(lang, running.status)}
                     </div>
                 ) : pendingApproval ? (
                     <div style={{ color: chrome.accentStrong, fontSize: 11, fontWeight: 600 }}>
@@ -102,24 +106,36 @@ export function CodingAgentPlanChecklist({
             ) : null}
             <ol className="capc-steps">
                 {steps.map((st) => {
-                    const color = codingStepStatusColor(st.status, dark, chrome);
-                    const active = (st.status || "").toLowerCase() === "running" || (st.status || "").toLowerCase() === "in_progress";
+                    const color = codingStepStatusColor(st.status, chrome);
+                    const active = codingStepIsActive(st.status);
+                    const failed = codingStepIsFailed(st.status);
                     return (
                         <li
                             key={st.index}
                             data-testid={`coding-agent-plan-step-${st.index}`}
                             data-status={st.status}
+                            aria-current={active ? "step" : undefined}
                             style={{
                                 display: "flex",
                                 gap: 8,
                                 alignItems: "baseline",
                                 color,
-                                fontWeight: active ? 650 : 400,
+                                fontWeight: active || failed ? 650 : 400,
+                                // The current step gets a soft accent pill so the eye
+                                // lands on it without extra chrome.
+                                ...(active
+                                    ? { background: chrome.chipActiveBg, borderRadius: 4, padding: "2px 6px", margin: "0 -6px" }
+                                    : null),
                             }}
                         >
                             <span aria-hidden className="capc-glyph">{codingStepGlyph(st.status)}</span>
                             <span className="capc-step-idx">T{st.index}</span>
-                            <span className="capc-step-title">{st.title || st.status}</span>
+                            <span className="capc-step-title">{st.title || codingStepStatusLabel(lang, st.status)}</span>
+                            {/* The glyph is aria-hidden and the color carries no
+                                meaning for screen readers, so state the status. */}
+                            <span data-testid={`coding-agent-plan-step-${st.index}-sr-status`} style={srOnlyStyle}>
+                                {`${localizeText(lang, "Status", "状态", "狀態")}：${codingStepStatusLabel(lang, st.status)}`}
+                            </span>
                         </li>
                     );
                 })}
@@ -176,7 +192,9 @@ export function CodingAgentPlanChecklist({
                             borderRadius: 5,
                             border: `1px solid ${chrome.chipIdleBorder}`,
                             background: chrome.chipIdleBg,
-                            color: theme.errorText || "#dc2626",
+                            // --theme-danger (not theme.errorText): the latter is the
+                            // undecorated brand red and only reaches 3.9:1 on white.
+                            color: "var(--theme-danger, #dc2626)",
                             fontSize: 12,
                             cursor: ready ? "pointer" : "not-allowed",
                             opacity: ready ? 1 : 0.55,

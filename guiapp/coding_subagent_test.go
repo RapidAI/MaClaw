@@ -1424,11 +1424,11 @@ func TestRemoteCodingSubAgentDefaultWorkingDirFallsBackToWorkDir(t *testing.T) {
 
 func TestRemoteWriteFileResultRequiresExplicitOK(t *testing.T) {
 	success := remoteWriteFileResult("/repo/main.py", 12, "OK\n", false)
-	if !strings.Contains(success, "已写入 /repo/main.py") || !strings.Contains(success, "12 bytes") || !strings.Contains(success, "created=false") {
+	if !strings.Contains(success, "已写入 /repo/main.py") || !strings.Contains(success, "12 bytes") || !strings.Contains(success, "created=false") || !strings.Contains(success, "覆盖了已有文件") {
 		t.Fatalf("write result should report success when command prints OK, got %q", success)
 	}
 	created := remoteWriteFileResult("/repo/new.py", 8, "OK created=true\n", false)
-	if !strings.Contains(created, "created=true") {
+	if !strings.Contains(created, "created=true") || !strings.Contains(created, "新文件") {
 		t.Fatalf("write result should preserve created=true from explicit OK line, got %q", created)
 	}
 	chunked := remoteWriteFileResult("/repo/main.py", 40000, "OK\n", true)
@@ -1475,6 +1475,22 @@ func TestRemoteEditFileResultRequiresExplicitOK(t *testing.T) {
 		if !strings.HasPrefix(got, "编辑失败:") {
 			t.Fatalf("edit result for %q should fail closed, got %q", result, got)
 		}
+	}
+	notFound := remoteEditFileResult("/repo/main.py", "ERROR: old_str not found in file")
+	if !strings.Contains(notFound, "先 ssh_read_file") || !strings.Contains(notFound, "重试 ssh_edit_file") || strings.Contains(notFound, "覆盖已有文件") {
+		t.Fatalf("missing old_str should tell the model to re-read and retry edit, got %q", notFound)
+	}
+	ambiguous := remoteEditFileResult("/repo/main.py", "ERROR: old_str matches 2 locations (must be unique)")
+	if !strings.Contains(ambiguous, "唯一匹配") || !strings.Contains(ambiguous, "不要改用 ssh_write_file") {
+		t.Fatalf("ambiguous old_str should tell the model to narrow the match, got %q", ambiguous)
+	}
+	missing := remoteEditFileResult("/repo/main.py", "ERROR: file not found: /repo/main.py")
+	if !strings.Contains(missing, "新建用 ssh_write_file") {
+		t.Fatalf("missing file should point at ssh_write_file for creation, got %q", missing)
+	}
+	transport := remoteEditFileResult("/repo/main.py", "remote coding subagent: handler unavailable")
+	if strings.Contains(transport, "ssh_read_file") || strings.Contains(transport, "ssh_write_file") {
+		t.Fatalf("transport failure should not add an edit-recovery hint, got %q", transport)
 	}
 }
 
@@ -3581,10 +3597,17 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"new_string/new_content/replace/replacement -> new_str",
 		"cwd/work_dir -> working_dir",
 		"id/task -> task_id",
-		"再次 ssh_read_file",
+		"创建远程新文件",
+		"每个改过或新建的文件，都要在它最后一次修改或新建之后，再次 ssh_read_file",
+		"验证命令不要加管道、|| 或重定向",
+		"也不要和 git status/diff 写在同一条命令里",
+		"验证跟在最后一次非文档修改之后",
+		"其他步骤必须在本步骤验证",
+		"修改或新建后用 ssh_bash",
 		"运行匹配任务的验证命令",
-		"git diff --stat",
-		"git status --short",
+		"git status --short && git diff --stat",
+		"不要用分号、管道或 || 拆开",
+		"不要附带 git log",
 		"最终回复用工程师口吻",
 		"不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题",
 		"没有真实风险时不要写 remaining risk",
@@ -3604,6 +3627,9 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("remote prompt should expose alias hint %q, got %q", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "ssh_bash 只用于") {
+		t.Fatal("remote prompt must not say ssh_bash is only for inspection; explicit delete still has to be called")
 	}
 
 	defs := remoteCodingToolDefinitions()
@@ -3637,7 +3663,9 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 	expectDescriptionContains("ssh_read_file.path", "file/file_path/filename/target_path")
 	expectDescriptionContains("ssh_read_file.offset", "start/start_line/startLine")
 	expectDescriptionContains("ssh_read_file.limit", "默认 200", "lines/num_lines/line_count", "最大 2000")
-	expectDescriptionContains("ssh_edit_file", "old_string/old_content/find/search", "new_string/new_content/replace/replacement")
+	expectDescriptionContains("ssh_write_file", "创建远程新文件", "已有文件默认用 ssh_edit_file", "created=false")
+	expectDescriptionContains("ssh_write_file.content", "新文件的完整内容", "一次 ssh_edit_file 放不下")
+	expectDescriptionContains("ssh_edit_file", "修改已有文件的默认方式", "old_string/old_content/find/search", "new_string/new_content/replace/replacement")
 	expectDescriptionContains("ssh_edit_file.old_str", "old_string/old_content/find/search")
 	expectDescriptionContains("ssh_edit_file.new_str", "new_string/new_content/replace/replacement")
 	expectDescriptionContains("ssh_bash", "探索、诊断、格式化或验证", "拒绝 git 工作区改写", "递归删除")
@@ -3646,6 +3674,119 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 	expectDescriptionContains("ssh_list_dir.path", "dir/directory/root", "file/file_path/filename/target_path")
 	expectDescriptionContains("ssh_check_task.task_id", "id/task")
 	expectDescriptionContains("ssh_check_task.tail_lines", "默认 50", "tail/lines/limit", "1-1000")
+}
+
+func TestRemoteMutatingFileContractIsShared(t *testing.T) {
+	contract := remoteCodingMutatingFileContract()
+	root := buildRemoteFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt("/repo", "/repo", "")
+	procedure := buildRemoteCodingSystemPrompt("/repo", "/repo", "")
+	if strings.Count(root, contract) != 1 || strings.Contains(procedure, contract) {
+		t.Fatalf("root prompt should quote the shared contract only in the preamble, count=%d", strings.Count(root, contract))
+	}
+	if !strings.Contains(procedure, "ssh_edit_file 失败时先 ssh_read_file 确认当前内容，再重试") {
+		t.Fatal("step 3 should keep the edit-failure retry without the overwrite contract")
+	}
+	nested := buildRemoteNestedFullCodingEnvironmentPromptPreamble() + procedure
+	if strings.Count(nested, contract) != 1 {
+		t.Fatalf("nested worker prompt should quote the shared contract only in the nested preamble, count=%d", strings.Count(nested, contract))
+	}
+	workerHint := remoteCodingSpawnRolePromptHint(codingRoleWorker)
+	if strings.Contains(workerHint, contract) || !strings.Contains(workerHint, "ssh_edit_file") || !strings.Contains(workerHint, "ssh_write_file") {
+		t.Fatalf("worker role hint should name the edit/write tools without repeating the overwrite contract: %q", workerHint)
+	}
+	withTask := buildRemoteNestedFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt("/repo", "/repo", workerHint)
+	if strings.Count(withTask, contract) != 1 {
+		t.Fatalf("spawned worker prompt should keep the contract in the nested preamble only, count=%d", strings.Count(withTask, contract))
+	}
+	for _, role := range []codingSubAgentRole{codingRoleExplorer, codingRoleReviewer} {
+		text := remoteCodingSpawnRolePromptHint(role) + buildRemoteInspectionRoleSystemPrompt("/repo", "/repo", role, "")
+		if strings.Contains(text, contract) || strings.Contains(text, "覆盖已有文件") {
+			t.Fatalf("%s prompt must stay read-only", role)
+		}
+	}
+	var writeDesc, editDesc, contentDesc string
+	for _, def := range remoteCodingToolDefinitions() {
+		fn, _ := def["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		desc, _ := fn["description"].(string)
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		switch name {
+		case "ssh_write_file":
+			writeDesc = desc
+			content, _ := props["content"].(map[string]interface{})
+			contentDesc, _ = content["description"].(string)
+		case "ssh_edit_file":
+			editDesc = desc
+		}
+	}
+	for _, got := range []string{writeDesc, editDesc} {
+		if !strings.Contains(got, contract) {
+			t.Fatalf("tool text missing shared contract: %q", got)
+		}
+	}
+	if strings.Contains(contentDesc, contract) {
+		t.Fatalf("content parameter should keep the size exception without repeating the full contract: %q", contentDesc)
+	}
+	notFoundHint := remoteEditFileRecoveryHint("ERROR: old_str not found in file")
+	if strings.Contains(notFoundHint, contract) || !strings.Contains(notFoundHint, "重试 ssh_edit_file") {
+		t.Fatalf("missing old_str should retry edit without offering overwrite: %q", notFoundHint)
+	}
+	missingFile := remoteEditFileRecoveryHint("ERROR: file not found: /repo/main.py")
+	if !strings.Contains(missingFile, "新建用 ssh_write_file") || strings.Contains(missingFile, "覆盖已有文件") {
+		t.Fatalf("missing file should say create, not overwrite: %q", missingFile)
+	}
+	ambiguous := remoteEditFileRecoveryHint("ERROR: old_str matches 2 locations (must be unique)")
+	if !strings.Contains(ambiguous, "不要改用 ssh_write_file") || strings.Contains(ambiguous, "才覆盖已有文件") {
+		t.Fatalf("non-unique match must not offer overwrite: %q", ambiguous)
+	}
+	if remoteEditFileRecoveryHint("remote coding subagent: handler unavailable") != "" {
+		t.Fatal("transport failure must not get the edit/write contract")
+	}
+}
+
+func TestRemoteCorrelatedPromptUsesSSHTools(t *testing.T) {
+	on := true
+	root := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		projectDir:                "/repo",
+		workDir:                   "/repo",
+		correlatedRemoteExecution: true,
+	}, qualityGateEnabled: &on}
+	prompt := root.BuildSystemPrompt("fix parser", true)
+	if strings.Contains(prompt, "list_directory / read_file / glob") || strings.Contains(prompt, "list_directory/Glob/ripgrep") {
+		t.Fatalf("remote prompt still teaches local tool names: %.240q", prompt)
+	}
+	for _, want := range []string{"全功能远程编程环境", "ssh_read_file", "ssh_edit_file", "ssh_bash"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("remote prompt missing %q", want)
+		}
+	}
+
+	nested := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		projectDir:                "/repo",
+		workDir:                   "/repo",
+		nestDepth:                 1,
+		role:                      codingRoleWorker,
+		correlatedRemoteExecution: true,
+	}, qualityGateEnabled: &on}
+	nestedPrompt := nested.BuildSystemPrompt("fix parser", true)
+	if strings.Contains(nestedPrompt, "隔离 git worktree") || strings.Contains(nestedPrompt, "用 spawn_coding_agent 派生子代理") {
+		t.Fatalf("nested remote worker prompt should not use the local worktree/spawn pitch: %.240q", nestedPrompt)
+	}
+	reviewer := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		projectDir:                "/repo",
+		workDir:                   "/repo",
+		nestDepth:                 1,
+		role:                      codingRoleReviewer,
+		correlatedRemoteExecution: true,
+	}, qualityGateEnabled: &on}
+	reviewPrompt := reviewer.BuildSystemPrompt("review the diff", true)
+	if strings.Contains(reviewPrompt, "与 git_diff") || strings.Contains(reviewPrompt, "隔离 git worktree") {
+		t.Fatalf("remote reviewer prompt still uses local role guidance: %.240q", reviewPrompt)
+	}
+	if !strings.Contains(reviewPrompt, "ssh_bash") {
+		t.Fatal("remote reviewer prompt should name ssh_bash")
+	}
 }
 
 func TestRemoteCodingSubAgentRejectsHighRiskBashBeforeSSH(t *testing.T) {
@@ -4425,7 +4566,7 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 		"SSH 会话 ssh_x 连续 3 次执行无响应，shell 可能被挂起的进程锁住。",
 		"invalid localization evidence: missing required fields: causal_path, reproduction",
 		"bug-fix edit blocked: submit report_localization with root-cause evidence before modifying remote code: missing localization evidence",
-		"bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before rewriting existing code",
+		"bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before editing existing code",
 		"control_plane_stale: todo_write expected revision=9 version=7; current revision=10 version=10",
 	}
 	for _, result := range failures {
@@ -4437,7 +4578,7 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 	successes := []string{
 		"",
 		"OK: replaced 1 occurrence",
-		"已写入 /tmp/file.py (42 bytes, created=false)",
+		"已写入 /tmp/file.py (42 bytes, created=false，覆盖了已有文件)",
 		"0 errors and 0 warnings",
 		"[completed] task task-123\nstatus: completed\nexit_code: 0\n--- latest log ---\n1 passed",
 		"EXIT: 0\nall checks passed",

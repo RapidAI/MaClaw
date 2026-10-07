@@ -32,7 +32,13 @@ describe('aiAssistantProgressUtils', () => {
         expect(prepareChatBodyForDisplay('\u274C sugar')).toBe('\u274C sugar');
         // Fenced code keeps leading pictographs.
         expect(prepareChatBodyForDisplay('```\n\u{1F680} not stripped\n```')).toBe('```\n\u{1F680} not stripped\n```');
+        expect(prepareChatBodyForDisplay('Title\u{1F680}```\n\u{1F680} keep\n```\n\u{1F680} gone')).toBe('Title\u{1F680}```\n\u{1F680} keep\n```\ngone');
         expect(prepareChatBodyForDisplay('~~~~\n\u{1F680} not stripped\n~~~\n\u{1F4A1} still source\n~~~~')).toBe('~~~~\n\u{1F680} not stripped\n~~~\n\u{1F4A1} still source\n~~~~');
+        // Backticks inside a display formula must not open a fence, or the
+        // following prose keeps its pictograph and the real code body loses it.
+        expect(prepareChatBodyForDisplay('$$\nx + y```\n$$\n\u{1F680} gone\n```\n\u{1F680} keep\n```')).toBe('$$\nx + y```\n$$\ngone\n```\n\u{1F680} keep\n```');
+        expect(prepareChatBodyForDisplay('$$ x```\n\u{1F680} gone\n$$\n```\n\u{1F680} keep\n```')).toBe('$$ x```\ngone\n$$\n```\n\u{1F680} keep\n```');
+        expect(prepareChatBodyForDisplay('\\[\nx + y```\n\\]\n\u{1F680} gone\n```\n\u{1F680} keep\n```')).toBe('\\[\nx + y```\n\\]\ngone\n```\n\u{1F680} keep\n```');
         expect(prepareChatBodyForDisplay('')).toBe('');
         expect(stripLeadingEmojiCluster('\u{1F50D} **/btw**')).toBe('**/btw**');
         // Idempotent + line-array form matches string form.
@@ -46,6 +52,8 @@ describe('aiAssistantProgressUtils', () => {
         // Clean ASCII (no pictograph) returns same string reference when possible.
         const plain = 'plain ### heading\n- item';
         expect(prepareChatBodyForDisplay(plain)).toBe(plain);
+        const plainLines = plain.split('\n');
+        expect(prepareChatBodyLines(plainLines)).toBe(plainLines);
         // Status/star-only marks: content preserved, original string identity kept when nothing decorative removed.
         const midOnly = 'Score \u2B50 high';
         expect(prepareChatBodyForDisplay(midOnly)).toBe(midOnly);

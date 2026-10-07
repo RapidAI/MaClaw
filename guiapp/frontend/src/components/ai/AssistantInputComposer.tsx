@@ -20,7 +20,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         hardLockInput = false,
         inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, flushBottom = false, isBusy, isSelectionCollapsedAtBoundary,
         lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
-        pendingAttachmentsTestId, permissionMode, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
+        pendingAttachmentsTestId, permissionMode, taskCommandAllowed, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
         resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner,
         showMemoryUsage = true, showVoiceInput = true, submittedPrompts: submittedPromptsProp, textareaAriaLabel, textareaTestId = "ai-input",
         theme: t, themeMode, toolbarAddon, toolbarEndContent, toolbarTestId = "ai-input-toolbar", trailingToolbarContent, updateInputValue, voiceInput,
@@ -186,6 +186,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         themeMode={themeMode}
                         voiceInput={voiceInput}
                         permissionMode={permissionMode}
+                        taskCommandAllowed={taskCommandAllowed}
                         showPermissionMode={showPermissionMode}
                         showWorkspacePermissionOption={showWorkspacePermissionOption}
                         showVoiceInput={showVoiceInput}

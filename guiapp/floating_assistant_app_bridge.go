@@ -52,6 +52,40 @@ func (a *App) DisablePetFromMenu() {
 	}
 }
 
+func (a *App) syncPetVoiceCompanion() {
+	if a == nil {
+		return
+	}
+	go func() {
+		if fa := a.existingFloatingAssistant(); fa != nil {
+			fa.syncCompanion()
+		}
+	}()
+}
+
+func (a *App) showMainWindowFromPet() {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	a.emitEvent("switch-to-ai-panel", map[string]any{
+		"source": "pet-menu",
+		"voice":  false,
+	})
+}
+
+func (a *App) openPetConversationFromMenu() {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	a.emitEvent("open-pet-conversation", map[string]any{"source": "pet"})
+}
+
 // openPetSettingsFromMenu opens the pet settings from the native context menu.
 // Unexported for the same reason as onFloatingButtonClicked: the WebView
 // floating button that used the Wails binding no longer exists.

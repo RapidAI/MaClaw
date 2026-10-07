@@ -92,6 +92,12 @@ describe("splitMidLineOrderedListMarkers", () => {
         expect(splitMidLineOrderedListMarkers(input)).toBe(input);
     });
 
+    it("leaves a dotted number that has no list body", () => {
+        expect(splitMidLineOrderedListMarkers("node 18.")).toBe("node 18.");
+        expect(splitMidLineOrderedListMarkers("listen 8080.")).toBe("listen 8080.");
+        expect(splitMidLineOrderedListMarkers("1.\r2.")).toBe("1.\n2.");
+    });
+
     it("splits after CJK/punctuation glue (no space)", () => {
         expect(splitMidLineOrderedListMarkers("完成。1. 第一步")).toBe("完成。\n1. 第一步");
         expect(splitMidLineOrderedListMarkers("Note:1. first")).toBe("Note:\n1. first");

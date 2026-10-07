@@ -12,37 +12,58 @@ import (
 )
 
 var (
-	contentXMLToolCallBlockRe        = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>\s*(.*?)\s*</tool_call>`)
-	contentAngleToolCallOpenRe       = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>`)
-	contentXMLToolCallOpenToEndRe    = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
-	contentCodexToolCallBlockRe      = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>(.*?)</turn>`)
-	contentCodexToolCallMarkerRe     = regexp.MustCompile(`(?is)<turn:\s*tool_call\b`)
-	contentPlainToolCallMarkerRe     = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*`)
-	contentCodexToolInvokeRe         = regexp.MustCompile(`(?s)<invoke\b([^>]*)>(.*?)</invoke>`)
-	contentCodexToolParameterRe      = regexp.MustCompile(`(?s)<parameter\b([^>]*)>(.*?)</parameter>`)
-	contentCodexToolAttributeRe      = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_:-]*)\s*=\s*"([^"]*)"`)
-	contentFunctionEqBlockRe         = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>(.*?)</function>`)
-	contentFunctionEqOpenRe          = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
-	contentGLMArgPairRe              = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
-	contentQwenParamEqRe             = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
-	contentLeadingToolNameRe         = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
-	contentSpecialTokenRe            = regexp.MustCompile(`<\|[^|<>\n]+\|>`)
-	dsmlSpacedFenceRe                = regexp.MustCompile(`(?i)\|\s*DSML\s*\|`)
-	dsmlLooseOpenRe                  = regexp.MustCompile(`(?i)<\s*\|DSML\|`)
-	dsmlLooseCloseRe                 = regexp.MustCompile(`(?i)</\s*\|DSML\|`)
-	dsmlTagSpaceRe                   = regexp.MustCompile(`(?i)(</?)\|DSML\|\s+`)
-	dsmlAltCloseRe                   = regexp.MustCompile(`(?i)<\|DSML\|/([A-Za-z_]+)>`)
-	dsmlCollapsePipeSpaceRe          = regexp.MustCompile(`\s*\|\s*`)
-	dsmlCollapseOpenSpaceRe          = regexp.MustCompile(`<\s+`)
-	dsmlParameterOpenRe              = regexp.MustCompile(`(?i)<\|DSML\|parameter`)
-	dsmlParameterCloseRe             = regexp.MustCompile(`(?i)</\|DSML\|parameter>`)
-	contentDSMLBlockRe               = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\s*>(.*?)</\|DSML\|(?:tool_calls|function_calls)>`)
-	contentDSMLBlockOpenRe           = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\b`)
-	contentDSMLInvokeRe              = regexp.MustCompile(`(?is)<\|DSML\|invoke\b([^>]*)>(.*?)</\|DSML\|invoke>`)
-	contentDSMLInvokeOpenRe          = regexp.MustCompile(`(?is)<\|DSML\|invoke\b`)
-	contentDSMLMarkerRe              = regexp.MustCompile(`(?i)<\s*[|\x{FF5C}]\s*DSML\s*[|\x{FF5C}]\s*(?:tool_calls|function_calls|invoke|parameter)\b`)
-	MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。"
+	contentXMLToolCallBlockRe     = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>\s*(.*?)\s*</tool_call>`)
+	contentAngleToolCallOpenRe    = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>`)
+	contentXMLToolCallOpenToEndRe = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
+	contentCodexToolCallBlockRe   = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>(.*?)</turn>`)
+	contentCodexToolCallMarkerRe  = regexp.MustCompile(`(?is)<turn:\s*tool_call\b`)
+	contentPlainToolCallMarkerRe  = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*`)
+	contentCodexToolInvokeRe      = regexp.MustCompile(`(?s)<invoke\b([^>]*)>(.*?)</invoke>`)
+	contentCodexToolParameterRe   = regexp.MustCompile(`(?s)<parameter\b([^>]*)>(.*?)</parameter>`)
+	contentCodexToolAttributeRe   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_:-]*)\s*=\s*"([^"]*)"`)
+	contentFunctionEqBlockRe      = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>(.*?)</function>`)
+	contentFunctionEqOpenRe       = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
+	contentGLMArgPairRe           = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
+	contentQwenParamEqRe          = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
+	contentLeadingToolNameRe      = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
+	contentSpecialTokenRe         = regexp.MustCompile(`<\|[^|<>\n]+\|>`)
+	// The DSML token is ｜DSML｜. A decoder that also writes the bar literally
+	// produces ｜｜DSML｜｜. A fence is rewritten only when a real tag follows,
+	// so "< | DSML | note" stays prose. tool_calls is listed before calls so
+	// the short block name cannot steal the tail of tool_calls.
+	dsmlTagFenceRe          = regexp.MustCompile(`(?i)(</?)\s*(?:` + dsmlBar + `\s*)+DSML(?:\s*` + dsmlBar + `)+\s*(/)?\s*(` + dsmlTagTail + `)`)
+	dsmlFenceRe             = regexp.MustCompile(`(?i)(?:\|\s*)+DSML(?:\s*\|)+`)
+	dsmlCollapsePipeSpaceRe = regexp.MustCompile(`\s*\|\s*`)
+	dsmlCollapseOpenSpaceRe = regexp.MustCompile(`<\s+`)
+	dsmlCollapsedTagSpaceRe = regexp.MustCompile(`^<\|dsml\|\s+`)
+	dsmlParameterOpenRe     = regexp.MustCompile(`(?i)<\|DSML\|parameter`)
+	dsmlParameterCloseRe    = regexp.MustCompile(`(?i)</\|DSML\|parameter>`)
+	contentDSMLBlockRe      = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlBlockTags + `)\s*>(.*?)</\|DSML\|(?:` + dsmlBlockTags + `)>`)
+	contentDSMLBlockOpenRe  = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlTagTail + `)`)
+	contentDSMLInvokeRe     = regexp.MustCompile(`(?is)<\|DSML\|invoke\b([^>]*)>(.*?)</\|DSML\|invoke>`)
+	contentDSMLInvokeOpenRe = regexp.MustCompile(`(?is)<\|DSML\|invoke(?:\s+name\s*=|\s*>)`)
+	contentDSMLMarkerRe     = regexp.MustCompile(`(?i)<\s*(?:[|\x{FF5C}]\s*)+DSML(?:\s*[|\x{FF5C}])+\s*(?:` + dsmlTagTail + `)`)
 )
+
+const (
+	// dsmlBlockTags are the wrappers around invoke elements. calls is the
+	// block tag left when this decoder writes the fence and drops "tool_".
+	dsmlBlockTags = "tool_calls|function_calls|calls"
+	// invoke and parameter are tags only with an attribute or a close.
+	// "parameter is a field" is a sentence. Block tags close with '>'.
+	dsmlTagTail = `(?:(?:invoke|parameter)(?:\s+name\s*=|\s*>)|(?:` + dsmlBlockTags + `)\s*>)`
+	dsmlBar     = `[|\x{FF5C}]`
+)
+
+var dsmlCollapsedMarkers = []string{
+	"<|dsml|tool_calls",
+	"<|dsml|function_calls",
+	"<|dsml|invoke",
+	"<|dsml|parameter",
+	"<|dsml|calls",
+}
+
+const MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。"
 
 // ParseContentToolCallsDetailed extracts tool calls emitted in assistant
 // content by OpenAI-compatible providers that fail to populate tool_calls.
@@ -102,6 +123,16 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 		calls = append(calls, plainCalls...)
 	}
 	if plainMalformed {
+		malformed = true
+	}
+	// Some models emit the call as a markdown-wrapped function line
+	// (`*web_search(query="...")*`) instead of tool_calls. That line is the
+	// call, not an answer.
+	parenCalls, parenMalformed := parseParenthesizedContentToolCalls(content)
+	if len(parenCalls) > 0 {
+		calls = append(calls, parenCalls...)
+	}
+	if parenMalformed {
 		malformed = true
 	}
 	// Some providers emit a line-oriented call that the legacy plain parser
@@ -564,8 +595,26 @@ func HoldContentToolCallStream(s string, force bool) (visible, hold string, supp
 		}
 		return visible, "", true
 	}
+	// A narrated lookup line is held, not treated as the end of the message.
+	// Text that arrives after it must still reach the chat. Flush hides the
+	// line only when it parsed as a call; an unfinished line stays visible.
+	if idx := parenContentToolCallIndex(s); idx >= 0 {
+		if idx > 0 {
+			visible = s[:idx]
+		}
+		if !force {
+			return visible, s[idx:], false
+		}
+		if calls, _ := parseParenthesizedContentToolCalls(s); len(calls) > 0 {
+			return visible, "", false
+		}
+		return s, "", false
+	}
 	partial := contentToolCallMarkerSuffixLen(s)
 	if n := leakedLineOrientedIncompleteLineHoldLen(s); n > partial {
+		partial = n
+	}
+	if n := parenToolCallIncompleteLineHoldLen(s); n > partial {
 		partial = n
 	}
 	if partial <= 0 {
@@ -575,6 +624,10 @@ func HoldContentToolCallStream(s string, force bool) (visible, hold string, supp
 	suffix := s[len(s)-partial:]
 	if !force {
 		return visible, suffix, false
+	}
+	if parenToolCallSuffixIsUnconfirmed(suffix) {
+		// The trailing span never became a call. Show it.
+		return s, "", false
 	}
 	if dropPartialContentToolCallOnFlush(suffix) {
 		return visible, "", true
@@ -679,16 +732,59 @@ func contentToolCallMarkerSuffixLen(s string) int {
 }
 
 func looksLikeDSMLContent(s string) bool {
-	if contentDSMLMarkerRe.MatchString(s) {
-		return true
+	if !hasDSMLWord(s) {
+		return false
 	}
-	return strings.Contains(collapseDSMLFence(s), "<|dsml|")
+	// A fence with no real tag is prose. The marker is the same tag tail the
+	// rewriter accepts, so a second collapse of the whole message cannot
+	// discover a call the marker missed.
+	return contentDSMLMarkerRe.MatchString(s)
+}
+
+func hasDSMLWord(s string) bool {
+	for i := 0; i+4 <= len(s); i++ {
+		if (s[i] == 'd' || s[i] == 'D') &&
+			(s[i+1] == 's' || s[i+1] == 'S') &&
+			(s[i+2] == 'm' || s[i+2] == 'M') &&
+			(s[i+3] == 'l' || s[i+3] == 'L') {
+			return true
+		}
+	}
+	return false
 }
 
 func collapseDSMLFence(s string) string {
 	s = strings.ToLower(strings.ReplaceAll(s, "\uFF5C", "|"))
 	s = dsmlCollapseOpenSpaceRe.ReplaceAllString(s, "<")
-	return dsmlCollapsePipeSpaceRe.ReplaceAllString(s, "|")
+	s = dsmlCollapsePipeSpaceRe.ReplaceAllString(s, "|")
+	s = dsmlFenceRe.ReplaceAllString(s, "|dsml|")
+	return collapseOpenDSMLBars(s)
+}
+
+// collapseOpenDSMLBars folds a repeated bar run after '<' into one bar when
+// that run is the fence prefix. '<||ds' is '<|ds'. '<||b' is left alone.
+func collapseOpenDSMLBars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] != '<' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(s) && s[j] == '|' {
+			j++
+		}
+		if j >= i+3 && (j == len(s) || s[j] == 'd') {
+			b.WriteString("<|")
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 func dsmlOpenSuffixLen(s string) int {
@@ -697,26 +793,426 @@ func dsmlOpenSuffixLen(s string) int {
 		return 0
 	}
 	tail := s[idx:]
+	if !dsmlTailMightBeFence(tail) {
+		return 0
+	}
 	if contentDSMLMarkerRe.MatchString(tail) {
 		return 0
 	}
-	collapsed := collapseDSMLFence(tail)
-	for _, marker := range []string{"<|dsml|tool_calls", "<|dsml|function_calls", "<|dsml|invoke", "<|dsml|parameter"} {
-		if len(collapsed) < len(marker) && strings.HasPrefix(marker, collapsed) {
+	collapsed := dsmlCollapsedTagSpaceRe.ReplaceAllString(collapseDSMLFence(tail), "<|dsml|")
+	for _, marker := range dsmlCollapsedMarkers {
+		if strings.HasPrefix(marker, collapsed) {
 			return len(s) - idx
 		}
 	}
 	return 0
 }
 
+// dsmlTailMightBeFence reports whether a '<' tail can still grow into the
+// DSML token. A '<div' or '<html' tail is not collapsed on every streamed byte.
+func dsmlTailMightBeFence(tail string) bool {
+	if len(tail) == 0 || tail[0] != '<' {
+		return false
+	}
+	i := 1
+	for n := 0; i < len(tail) && n < 16; n++ {
+		switch tail[i] {
+		case ' ', '\t', '\n', '\r':
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(tail) {
+		return true
+	}
+	return tail[i] == '|' || strings.HasPrefix(tail[i:], "\uFF5C")
+}
+
 func normalizeDSMLMarkup(s string) string {
-	s = strings.ReplaceAll(s, "\uFF5C", "|")
-	s = dsmlSpacedFenceRe.ReplaceAllString(s, "|DSML|")
-	s = dsmlLooseOpenRe.ReplaceAllString(s, "<|DSML|")
-	s = dsmlLooseCloseRe.ReplaceAllString(s, "</|DSML|")
-	s = strings.ReplaceAll(s, "|DSML| /", "|DSML|/")
-	s = dsmlTagSpaceRe.ReplaceAllString(s, "${1}|DSML|")
-	return dsmlAltCloseRe.ReplaceAllString(s, "</|DSML|$1>")
+	if !hasDSMLWord(s) {
+		return s
+	}
+	locs := dsmlTagFenceRe.FindAllStringSubmatchIndex(s, -1)
+	if len(locs) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prev := 0
+	for _, loc := range locs {
+		if len(loc) < 8 || loc[6] < 0 {
+			continue
+		}
+		b.WriteString(s[prev:loc[0]])
+		open := s[loc[2]:loc[3]]
+		if loc[4] >= 0 && s[loc[4]:loc[5]] == "/" {
+			open = "</"
+		}
+		b.WriteString(open)
+		b.WriteString("|DSML|")
+		b.WriteString(canonicalizeDSMLTagTail(s[loc[6]:loc[7]]))
+		prev = loc[1]
+	}
+	b.WriteString(s[prev:])
+	return b.String()
+}
+
+// canonicalizeDSMLTagTail drops whitespace the detector allowed before '>'.
+// The close patterns match parameter> and invoke>, so "calls >" has to
+// become "calls>" or the block is reported malformed and dropped.
+func canonicalizeDSMLTagTail(tail string) string {
+	i := strings.LastIndexByte(tail, '>')
+	if i < 0 {
+		return tail
+	}
+	return strings.TrimRight(tail[:i], " \t\r\n") + tail[i:]
+}
+
+// parenContentToolNames is the lookup set models narrate as a markdown-wrapped
+// function line. File and shell names stay out: a code sample must not become
+// an execution.
+var parenContentToolNames = []string{"web_search", "web_fetch", "current_datetime"}
+
+func parseParenthesizedContentToolCalls(content string) ([]ToolCall, bool) {
+	// A wrapped lookup line is a call only when the rest of the message is a
+	// short lead-in. The same line inside a real answer stays text.
+	if !parenNarrationIsTheAnswer(content) {
+		return nil, false
+	}
+	var calls []ToolCall
+	for _, line := range strings.Split(content, "\n") {
+		name, argsBody, ok, partial := splitParenToolCallLine(line)
+		if !ok || partial {
+			continue
+		}
+		raw, parsed := parseParenToolArgs(argsBody)
+		if !parsed {
+			continue
+		}
+		call, ok := normalizePlainContentToolCall(name, raw)
+		if !ok {
+			continue
+		}
+		calls = append(calls, call)
+	}
+	// An unfinished line stays text. Marking it malformed would replace the
+	// reply with the tool-XML error.
+	return calls, false
+}
+
+func parenNarrationIsTheAnswer(content string) bool {
+	var other int
+	for _, line := range strings.Split(content, "\n") {
+		if _, _, ok, partial := splitParenToolCallLine(line); ok || partial {
+			continue
+		}
+		other += len([]rune(strings.TrimSpace(line)))
+	}
+	return other <= 80
+}
+
+func splitParenToolCallLine(line string) (name, args string, ok, incomplete bool) {
+	raw := strings.TrimSpace(line)
+	if !strings.HasPrefix(raw, "*") && !strings.HasPrefix(raw, "_") && !strings.HasPrefix(raw, "`") {
+		return "", "", false, false
+	}
+	trimmed := trimWrappingMarkdown(raw)
+	open := strings.IndexByte(trimmed, '(')
+	if open <= 0 {
+		return "", "", false, false
+	}
+	name, ok = canonicalParenContentToolName(trimmed[:open])
+	if !ok {
+		return "", "", false, false
+	}
+	close := parenCallClose(trimmed, open)
+	if close < 0 {
+		return "", "", false, true
+	}
+	if strings.TrimSpace(trimmed[close+1:]) != "" {
+		return "", "", false, false
+	}
+	return name, trimmed[open+1 : close], true, false
+}
+
+func trimWrappingMarkdown(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) >= 2 {
+		a, b := s[0], s[len(s)-1]
+		if (a == '*' || a == '_' || a == '`') && a == b {
+			s = strings.TrimSpace(s[1 : len(s)-1])
+			continue
+		}
+		break
+	}
+	return s
+}
+
+func canonicalParenContentToolName(name string) (string, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, known := range parenContentToolNames {
+		if name == known {
+			return known, true
+		}
+	}
+	return "", false
+}
+
+func parseParenToolArgs(body string) (json.RawMessage, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return json.RawMessage("{}"), true
+	}
+	args := map[string]interface{}{}
+	rest := body
+	for strings.TrimSpace(rest) != "" {
+		rest = strings.TrimSpace(rest)
+		eq := strings.IndexByte(rest, '=')
+		if eq <= 0 {
+			return nil, false
+		}
+		key := strings.TrimSpace(rest[:eq])
+		if contentLeadingToolNameRe.FindString(key) != key {
+			return nil, false
+		}
+		rest = strings.TrimSpace(rest[eq+1:])
+		if rest == "" {
+			return nil, false
+		}
+		var val string
+		if rest[0] == '"' || rest[0] == '\'' {
+			quote := rest[0]
+			var b strings.Builder
+			i := 1
+			closed := false
+			for i < len(rest) {
+				if rest[i] == '\\' && i+1 < len(rest) {
+					b.WriteByte(rest[i+1])
+					i += 2
+					continue
+				}
+				if rest[i] == quote {
+					closed = true
+					i++
+					break
+				}
+				b.WriteByte(rest[i])
+				i++
+			}
+			if !closed {
+				return nil, false
+			}
+			val = b.String()
+			rest = strings.TrimSpace(rest[i:])
+		} else {
+			end := strings.IndexByte(rest, ',')
+			if end < 0 {
+				val = strings.TrimSpace(rest)
+				rest = ""
+			} else {
+				val = strings.TrimSpace(rest[:end])
+				rest = rest[end:]
+			}
+			if val == "" {
+				return nil, false
+			}
+		}
+		if isNumericToolArgKey(key) {
+			if n, err := strconv.Atoi(val); err == nil {
+				args[key] = n
+			} else {
+				args[key] = val
+			}
+		} else {
+			args[key] = val
+		}
+		if strings.HasPrefix(rest, ",") {
+			rest = strings.TrimSpace(rest[1:])
+		}
+	}
+	if len(args) == 0 {
+		return nil, false
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+func parenCallClose(s string, open int) int {
+	inQuote := byte(0)
+	for i := open + 1; i < len(s); i++ {
+		c := s[i]
+		if inQuote != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			inQuote = c
+			continue
+		}
+		if c == ')' {
+			return i
+		}
+	}
+	return -1
+}
+
+func parenContentToolCallIndex(s string) int {
+	if !parenNarrationIsTheAnswer(s) {
+		return -1
+	}
+	best := -1
+	for _, name := range parenContentToolNames {
+		needle := name + "("
+		from := 0
+		for from < len(s) {
+			rel := indexASCIIFold(s[from:], needle)
+			if rel < 0 {
+				break
+			}
+			abs := from + rel
+			if parenCallWrappedAtLineStart(s, abs) && (best < 0 || abs < best) {
+				best = parenCallMarkdownStart(s, abs)
+			}
+			from = abs + len(needle)
+		}
+	}
+	return best
+}
+
+// indexASCIIFold finds needle in s without case-folding the whole string.
+// strings.ToLower can change byte length, which would slice the stream at the
+// wrong offset.
+func indexASCIIFold(s, needle string) int {
+	n := len(needle)
+	if n == 0 || len(s) < n {
+		return -1
+	}
+	for i := 0; i+n <= len(s); i++ {
+		if asciiFoldEqual(s[i:i+n], needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+func asciiFoldEqual(s, lowerNeedle string) bool {
+	for i := 0; i < len(lowerNeedle); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != lowerNeedle[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func parenCallWrappedAtLineStart(s string, abs int) bool {
+	i := abs
+	for i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
+		i--
+	}
+	if i == 0 {
+		return false
+	}
+	mark := s[i-1]
+	if mark != '*' && mark != '_' && mark != '`' {
+		return false
+	}
+	for i > 0 {
+		c := s[i-1]
+		if c == mark || c == ' ' || c == '\t' {
+			i--
+			continue
+		}
+		return c == '\n' || c == '\r'
+	}
+	return true
+}
+
+func parenCallMarkdownStart(s string, abs int) int {
+	for abs > 0 && (s[abs-1] == ' ' || s[abs-1] == '\t') {
+		abs--
+	}
+	for abs > 0 {
+		c := s[abs-1]
+		if c != '*' && c != '_' && c != '`' {
+			break
+		}
+		abs--
+	}
+	return abs
+}
+
+func parenToolCallIncompleteLineHoldLen(s string) int {
+	idx := strings.LastIndexByte(s, '\n')
+	last := s
+	if idx >= 0 {
+		last = s[idx+1:]
+	}
+	if last == "" || !couldBecomeParenToolCallLine(last) {
+		return 0
+	}
+	return len(last)
+}
+
+func couldBecomeParenToolCallLine(line string) bool {
+	raw := strings.TrimSpace(line)
+	if raw == "" || (!strings.HasPrefix(raw, "*") && !strings.HasPrefix(raw, "_") && !strings.HasPrefix(raw, "`")) {
+		return false
+	}
+	if _, _, ok, incomplete := splitParenToolCallLine(raw); ok || incomplete {
+		return !ok
+	}
+	// "*web_search*" is closed emphasis. Only an unclosed span can still grow
+	// into web_search(...).
+	if closedParenMarkdownSpan(raw) {
+		return false
+	}
+	inner := strings.TrimLeft(raw, "*_`")
+	inner = strings.TrimSpace(inner)
+	if inner == "" || strings.ContainsAny(inner, " \t()\"'") {
+		return false
+	}
+	lower := strings.ToLower(inner)
+	for _, known := range parenContentToolNames {
+		if strings.HasPrefix(known, lower) && len(lower) >= 4 {
+			return true
+		}
+	}
+	return false
+}
+
+func parenToolCallSuffixIsUnconfirmed(suffix string) bool {
+	idx := strings.LastIndexByte(suffix, '\n')
+	last := suffix
+	if idx >= 0 {
+		last = suffix[idx+1:]
+	}
+	return couldBecomeParenToolCallLine(last)
+}
+
+func closedParenMarkdownSpan(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return false
+	}
+	mark := s[0]
+	if (mark != '*' && mark != '_' && mark != '`') || s[len(s)-1] != mark {
+		return false
+	}
+	return trimWrappingMarkdown(s) != s
 }
 
 func parseLineOrientedContentToolCalls(content string) ([]ToolCall, bool) {

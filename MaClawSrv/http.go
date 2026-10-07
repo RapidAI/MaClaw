@@ -110,6 +110,8 @@ type HTTPServer struct {
 	// local Git prober below; it must never supply a mutating probe.
 	codingRuntimeRecoveryProber func(codingruntime.Task) codingruntime.WorkspaceProber
 	closeOnce                   sync.Once
+	// platformBindingCache avoids scanning every tenant on each chat turn.
+	platformBindingCache sync.Map
 }
 
 func newWeixinQRTokenStore() *weixinQRTokenStore {
@@ -259,7 +261,6 @@ func (s *HTTPServer) routes() {
 	s.registerPlatformRoutes()
 	s.registerUserAPIRoutes()
 }
-
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

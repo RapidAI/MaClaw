@@ -261,6 +261,9 @@ type BrowserAgentSession struct {
 	lastMissingKey  string
 	missingExpectN  int
 
+	// peekFlags overrides the CDP flag peek in tests.
+	peekFlags func() (BrowserPageFlags, error)
+
 	// fastBatch skips per-step settle and full observe for task_run.
 	fastBatch        bool
 	fastBatchURL     string

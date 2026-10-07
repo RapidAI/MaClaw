@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -49,9 +49,19 @@ describe("aiAssistantPanelSessionUtils", () => {
     it("does not block the ACP mirror tab when sidebar registration fails", () => {
         expect(ACP_ASSISTANT_TAB_IDENTITY).toBe("acp");
         expect(shouldBlockAssistantTabOpenOnTaskRegistration("acp")).toBe(false);
-        expect(shouldBlockAssistantTabOpenOnTaskRegistration("ve")).toBe(true);
+        expect(shouldBlockAssistantTabOpenOnTaskRegistration("ve")).toBe(false);
         expect(shouldBlockAssistantTabOpenOnTaskRegistration("discussion")).toBe(true);
         expect(shouldBlockAssistantTabOpenOnTaskRegistration("project")).toBe(true);
+    });
+
+    it("detects digital-employee chat rows that must stay off the task list", () => {
+        expect(isVEAssistantTabTaskItem({
+            tags: ["task_management", "source:assistant_tab:ve:abc123"],
+        })).toBe(true);
+        expect(isVEAssistantTabTaskItem({
+            tags: ["task_management", "source:assistant_tab:discussion:abc123"],
+        })).toBe(false);
+        expect(isVEAssistantTabTaskItem({ tags: ["task_management"] })).toBe(false);
     });
 
     it("detects VS Code / ACP sidebar snapshot rows", () => {

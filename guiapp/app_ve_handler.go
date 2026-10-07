@@ -32,6 +32,24 @@ type VEMessageHandler struct {
 	app            *App
 	mu             sync.Mutex
 	activeSessions map[string]*veSession // key: consultation/session ID
+
+	// Activity notices are forwarded to Hub in order. One worker avoids a
+	// goroutine per tool call, which could deliver tool_done before tool_start.
+	activityMu       sync.Mutex
+	activityPending  []veActivityNotice
+	activityDraining bool
+	localAgentID     string
+
+	// One reply at a time per session. The on-screen turn can finish before the
+	// Hub upload does; the next message must not start until that upload's
+	// stream_end has been sent.
+	turnMu sync.Mutex
+	turns  map[string]*sync.Mutex
+}
+
+type veActivityNotice struct {
+	sessionID string
+	body      string
 }
 
 // veSession tracks an active VE conversation session.
@@ -484,11 +502,37 @@ func (h *VEMessageHandler) shouldIgnoreIncomingVEMessage(msg a2a.GroupDiscussion
 	return localID != "" && veGroupParticipantIdentityMatches(fromID, localID)
 }
 
+// lockSessionTurn blocks until this session's previous reply has finished
+// sending, including the Hub stream_end. The mutex stays in the map so a
+// turn that is still waiting cannot miss a replacement lock.
+func (h *VEMessageHandler) lockSessionTurn(sessionID string) func() {
+	h.turnMu.Lock()
+	if h.turns == nil {
+		h.turns = make(map[string]*sync.Mutex)
+	}
+	mu := h.turns[sessionID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		h.turns[sessionID] = mu
+	}
+	h.turnMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
 // processAndRespond runs the AI agent on the incoming message and sends the final response back.
 func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, sessionID string, msg a2a.GroupDiscussionMessage) {
+	unlock := h.lockSessionTurn(sessionID)
+	defer unlock()
+
 	// Derive a per-message context from the session context so that
 	// CloseSession() cancellation propagates to in-flight processing.
-	ctx, cancel := context.WithTimeout(sessionCtx, 5*time.Minute)
+	// Use the same limit the chat UI waits for, so a long tool is not
+	// cancelled while the screen still says the reply is in progress.
+	// The timeout starts when this turn actually begins, not while it is
+	// waiting behind the previous reply.
+	responseTimeout := h.responseTimeout()
+	ctx, cancel := context.WithTimeout(sessionCtx, responseTimeout)
 	defer cancel()
 
 	userMessage := msg.Content
@@ -522,7 +566,7 @@ func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, session
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
 				Kind:    a2a.MessageStatement,
-				Content: "[timeout] Digital employee response timed out after 5 minutes. Please try again later",
+				Content: fmt.Sprintf("[timeout] Digital employee response timed out after %s. Please try again later", responseTimeout),
 			})
 		}
 	}
@@ -536,13 +580,16 @@ func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, session
 			handleResult(r, true)
 		case <-ctx.Done():
 			sendTimeout()
+			// The agent may still be flushing Hub. Hold this turn until that
+			// finishes so the next message cannot mix into the open stream.
+			<-resultCh
 		}
 	case r := <-resultCh:
 		// Agent finished (possibly with error) before timeout
 		handleResult(r, true)
 	case <-ctx.Done():
 		sendTimeout()
-		// Let the buffered result channel receive later; do not block after cancellation.
+		<-resultCh
 	}
 }
 
@@ -565,23 +612,27 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		}
 	}
 
+	h.emitConversationActivity(sessionID, "accepted", "")
+
 	// Stream LLM deltas to the frontend in real-time so the user sees progressive
 	// output instead of a static "思考中..." indicator. The agent loop calls
 	// OnToken for intermediate rounds (tool-planning text) and the final round's
 	// text is returned via LoopResult.Text (not via OnToken — see loop.go:302).
 	// Both paths emit ve:stream_chunk events, giving a seamless streaming experience.
 	//
-	// IMPORTANT: onToken emits LOCAL Wails events only (no Hub network calls).
-	// Hub sync uses batched chunks sent via a background goroutine with 80ms
-	// flush intervals, giving remote devices progressive streaming without
-	// per-token HTTP overhead.
+	// IMPORTANT: onToken does not call Hub per token. Local paints coalesce to
+	// about one frame, and Hub sync flushes every 80ms or 2KB.
 	var streamingStarted int32
 	senderID := h.getLocalAgentID() // cache once — avoid per-token config lock
 
-	// Batched Hub streaming: accumulate deltas and flush every 80ms or 2KB.
-	hubStreamCh := make(chan string, 256)
+	// Both paints copy the token and return. A slow Hub upload or a busy UI
+	// cannot stall the model, and neither side drops text.
+	hubPending := newPendingStreamText()
 	hubStreamDone := make(chan struct{})
-	go h.batchHubStreamChunks(sessionID, hubStreamCh, hubStreamDone)
+	go h.syncHubStream(sessionID, hubPending, hubStreamDone)
+	localPending := newPendingStreamText()
+	localStreamDone := make(chan struct{})
+	go h.syncLocalStream(sessionID, senderID, localPending, localStreamDone)
 
 	onToken := func(delta string) {
 		delta = visibleVEStreamDelta(delta)
@@ -595,61 +646,41 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 			default:
 			}
 		}
-		// Local frontend: immediate per-token display
-		h.emitStreamChunkLocalWithSender(sessionID, delta, senderID)
-		// Hub: queue for batched sending to remote devices
-		select {
-		case hubStreamCh <- delta:
-		default:
-			// Channel full — remote device will miss this delta but get the final
-			// aggregated response below.
-		}
+		hubPending.add(delta)
+		localPending.add(delta)
 	}
 
 	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, requestID, onToken)
-	// Close the Hub batch channel so the goroutine flushes remaining content and exits.
-	close(hubStreamCh)
-	<-hubStreamDone
+	// Finish the on-screen turn before waiting on Hub. Remote sync can take
+	// seconds; the local cursor should not keep blinking until that upload ends.
+	localPending.close()
+	<-localStreamDone
 
+	streamed := atomic.LoadInt32(&streamingStarted) != 0
+	ctxErr := ctx.Err()
+	// Assembled text must be tofu-sanitized, not treated as a single stream
+	// token — a leading U+0001 would otherwise drop the reply.
+	fullResponse = textutil.SanitizeVisibleChatText(fullResponse)
+	sendFallback := !streamed && err == nil && ctxErr == nil && strings.TrimSpace(fullResponse) != ""
+	if sendFallback {
+		h.emitStreamChunkLocal(sessionID, fullResponse)
+	}
+	if streamed || (err == nil && ctxErr == nil) {
+		h.emitStreamEndLocal(sessionID)
+	}
+
+	hubPending.close()
+	<-hubStreamDone
+	if sendFallback {
+		h.SendStreamChunk(sessionID, fullResponse)
+	}
+	if streamed || (err == nil && ctxErr == nil) {
+		h.SendStreamEnd(sessionID)
+	}
 	if err != nil {
-		// If streaming was already in progress, close it so the frontend doesn't
-		// hang in the streaming state with a blinking cursor forever.
-		if atomic.LoadInt32(&streamingStarted) != 0 {
-			h.emitStreamEndLocal(sessionID)
-		}
 		return err
 	}
-
-	if ctx.Err() != nil {
-		if atomic.LoadInt32(&streamingStarted) != 0 {
-			h.emitStreamEndLocal(sessionID)
-		}
-		return ctx.Err()
-	}
-
-	// The streaming LLM request already called onToken for each text delta during
-	// the final round (doLLMRequestWithToolsStream emits deltas in real-time).
-	// Only send fullResponse as a local chunk if no streaming occurred (e.g. the
-	// streaming path fell back to non-streaming, or the loop produced text without
-	// ever calling onToken). Assembled text must be tofu-sanitized, not treated
-	// as a single stream token — a leading U+0001 would otherwise drop the reply.
-	fullResponse = textutil.SanitizeVisibleChatText(fullResponse)
-	if strings.TrimSpace(fullResponse) != "" {
-		if atomic.LoadInt32(&streamingStarted) == 0 {
-			// No streaming occurred — send final text locally for immediate display
-			// and to Hub for remote devices.
-			h.emitStreamChunkLocal(sessionID, fullResponse)
-			h.SendStreamChunk(sessionID, fullResponse)
-		}
-		// When streaming occurred, batched Hub chunks already delivered the content
-		// progressively. No need to send fullResponse again (it would duplicate).
-	}
-
-	// Signal end of streaming locally (frontend transitions from streaming to final message).
-	h.emitStreamEndLocal(sessionID)
-	// Sync stream_end to Hub for remote devices.
-	h.SendStreamEnd(sessionID)
-	return nil
+	return ctxErr
 }
 
 // visibleVEStreamDelta removes internal stream markers before a digital-employee
@@ -694,6 +725,7 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 
 	callbacks := &veAgentCallbacks{
 		app:       h.app,
+		handler:   h,
 		ctx:       ctx,
 		sessionID: sessionID,
 		ownerID:   ownerID,
@@ -731,6 +763,7 @@ func veAgentOwnerID(sessionID string) string {
 // It provides a simplified agent loop with VE-specific system prompt and tools.
 type veAgentCallbacks struct {
 	app       *App
+	handler   *VEMessageHandler
 	ctx       context.Context
 	sessionID string
 	ownerID   string
@@ -842,8 +875,9 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	if len(allowedDirs) > 0 {
 		sb.WriteString("- You cannot modify files, execute commands, or operate a browser; you may send files from the configured allowed directories.\n")
 	} else {
-		sb.WriteString("- You cannot modify files, execute commands, access the network, operate a browser, or send files until the owner adds at least one allowed access directory in Settings > Digital Employee.\n")
+		sb.WriteString("- You cannot modify files, execute commands, operate a browser, or send files until the owner adds at least one allowed access directory in Settings > Digital Employee.\n")
 	}
+	c.appendVEHostClock(&sb)
 	sb.WriteString("- Sensitive files such as .env, private keys, and credentials are blocked and must not be read or sent.\n")
 	sb.WriteString("- If an operation is unsupported in digital employee mode, say so directly and do not invent reasons.\n")
 	sb.WriteString("- You may answer questions, provide advice, generate text, analyze problems, and read allowed file content.\n")
@@ -878,6 +912,21 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 
 	c.appendVEMemoryRecall(&sb, userText)
 	return sb.String()
+}
+
+// appendVEHostClock states the host clock and the live-lookup contract.
+// A narrated web_search(...) line is not a search, and a year taken from
+// model memory is not today's date.
+func (c *veAgentCallbacks) appendVEHostClock(b *strings.Builder) {
+	if b == nil {
+		return
+	}
+	now := time.Now()
+	b.WriteString("\n## Live information\n")
+	b.WriteString(fmt.Sprintf("- Host clock: %s (timezone: %s). This is the only current date and time. Do not invent a year, month, or day.\n",
+		now.Format("2006-01-02 Monday 15:04:05"), now.Location().String()))
+	b.WriteString("- Weather, news, prices, schedules, and any fact about today or now must be answered by calling web_search. Use web_fetch only after you have a specific page URL. Put the host date in the query.\n")
+	b.WriteString("- Writing web_search(...) or web_fetch(...) in the reply does not run the tool. Call it through the tool interface, then answer from the tool result.\n")
 }
 
 // appendVEMemoryRecall writes the owner identity catalog (user facts) only.
@@ -921,11 +970,13 @@ func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} 
 		if handler != nil && handler.registry != nil {
 			allTools := NewDynamicToolBuilder(handler.registry).BuildAll()
 			allowedDirs := c.getVEAllowedDirectories()
-			return filterToolsForVEWithConfig(allTools, allowedDirs)
+			return stampVELiveLookupTools(filterToolsForVEWithConfig(allTools, allowedDirs))
 		}
 	}
-	// Fallback: if registry is unavailable, return minimal safe tools
-	return veRemoteToolDefinitions(c.veKnowledgeAvailable())
+	// Fallback: if registry is unavailable, return minimal safe tools.
+	// Live lookup stays on this path too: the prompt tells the model these
+	// tools exist, so a missing registry must not drop them.
+	return stampVELiveLookupTools(veRemoteToolDefinitions(c.veKnowledgeAvailable()))
 }
 
 // getVEAllowedDirectories reads the VEAllowedDirectories list from AppConfig.
@@ -1119,9 +1170,17 @@ func (c *veAgentCallbacks) OnToken(delta string) {
 
 func (c *veAgentCallbacks) OnProgress(text string) {}
 
-func (c *veAgentCallbacks) OnToolCall(name string) {}
+func (c *veAgentCallbacks) OnToolCall(name string) {
+	if c != nil && c.handler != nil {
+		c.handler.emitConversationActivity(c.sessionID, "tool_start", name)
+	}
+}
 
-func (c *veAgentCallbacks) OnToolResult(name string) {}
+func (c *veAgentCallbacks) OnToolResult(name string) {
+	if c != nil && c.handler != nil {
+		c.handler.emitConversationActivity(c.sessionID, "tool_done", name)
+	}
+}
 
 func (c *veAgentCallbacks) ShouldStop() bool {
 	return c.ctx.Err() != nil
@@ -1307,6 +1366,20 @@ func (h *VEMessageHandler) sendMessage(sessionID string, msg a2a.GroupDiscussion
 		return
 	}
 
+	if msg.Kind == a2a.MessageStreamChunk || msg.Kind == a2a.MessageStreamEnd {
+		if strings.TrimSpace(msg.FromID) == "" {
+			msg.FromID = h.getLocalAgentID()
+		}
+		msg.SessionID = sessionID
+		if msg.CreatedAt.IsZero() {
+			msg.CreatedAt = time.Now()
+		}
+		if err := h.app.sendVEStreamPart(sessionID, msg); err != nil {
+			log.Printf("[ve-handler] stream part failed session=%s kind=%s: %v", sessionID, msg.Kind, err)
+		}
+		return
+	}
+
 	// Get the agent ID for this maclaw instance
 	cfg, _ := h.app.LoadConfig()
 	agentID := cfg.RemoteMachineID
@@ -1369,6 +1442,100 @@ func (h *VEMessageHandler) emitStreamChunkLocalWithSender(sessionID, chunk, send
 	})
 }
 
+// emitConversationActivity tells the open chat what the employee is doing, and
+// forwards the same status to other participants without waiting on Hub.
+func (h *VEMessageHandler) emitConversationActivity(sessionID, phase, name string) {
+	if h == nil {
+		return
+	}
+	phase = strings.TrimSpace(phase)
+	switch phase {
+	case "accepted", "tool_start", "tool_done":
+	default:
+		return
+	}
+	name = sanitizeVEActivityName(name)
+	if h.app != nil {
+		h.app.emitEvent("ve:activity", map[string]any{
+			"session_id": sessionID,
+			"from_id":    h.getLocalAgentID(),
+			"phase":      phase,
+			"name":       name,
+		})
+	}
+	body, err := json.Marshal(map[string]string{"phase": phase, "name": name})
+	if err != nil {
+		return
+	}
+	h.enqueueActivity(veActivityNotice{sessionID: sessionID, body: string(body)})
+}
+
+func (h *VEMessageHandler) enqueueActivity(notice veActivityNotice) {
+	if h == nil || notice.sessionID == "" || notice.body == "" {
+		return
+	}
+	h.activityMu.Lock()
+	h.activityPending = coalesceActivityNotice(h.activityPending, notice)
+	if h.activityDraining {
+		h.activityMu.Unlock()
+		return
+	}
+	h.activityDraining = true
+	h.activityMu.Unlock()
+	go h.drainActivity()
+}
+
+func (h *VEMessageHandler) drainActivity() {
+	for {
+		h.activityMu.Lock()
+		if len(h.activityPending) == 0 {
+			h.activityDraining = false
+			h.activityMu.Unlock()
+			return
+		}
+		notice := h.activityPending[0]
+		h.activityPending = h.activityPending[1:]
+		h.activityMu.Unlock()
+		if h.app == nil {
+			continue
+		}
+		if err := h.app.sendVEActivityNotice(notice.sessionID, notice.body); err != nil {
+			log.Printf("[ve-handler] activity notice failed session=%s: %v", notice.sessionID, err)
+		}
+	}
+}
+
+// coalesceActivityNotice keeps the newest unsent status for a session. A
+// status that is still queued has not been shown remotely, so sending the
+// superseded one only adds a Hub round trip.
+func coalesceActivityNotice(pending []veActivityNotice, notice veActivityNotice) []veActivityNotice {
+	for i := range pending {
+		if pending[i].sessionID == notice.sessionID {
+			pending[i] = notice
+			return pending
+		}
+	}
+	pending = append(pending, notice)
+	if extra := len(pending) - 32; extra > 0 {
+		pending = append([]veActivityNotice(nil), pending[extra:]...)
+	}
+	return pending
+}
+
+func sanitizeVEActivityName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 {
+		return ""
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-' || r == ':' {
+			continue
+		}
+		return ""
+	}
+	return name
+}
+
 // emitStreamEndLocal sends a ve:stream_end event directly to the local frontend.
 func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
 	if h.app == nil || h.app.ctx == nil {
@@ -1384,6 +1551,11 @@ func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
 	})
 }
 
+const (
+	localStreamFlushInterval = 16 * time.Millisecond
+	localStreamMaxBytes      = 512
+)
+
 // batchHubStreamChunks consumes token deltas from ch, batches them with a short
 // flush interval or size threshold, and sends each batch as a single
 // SendStreamChunk call to Hub. This gives remote devices progressive streaming
@@ -1392,11 +1564,151 @@ func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
 // First non-empty content is flushed immediately so remote UIs leave "thinking"
 // without waiting for the batch timer; subsequent deltas use the shared group
 // Hub sync cadence (80ms / 2KB).
-func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan string, done chan<- struct{}) {
+func (h *VEMessageHandler) syncHubStream(sessionID string, pending *pendingStreamText, done chan<- struct{}) {
 	defer close(done)
+	interval := groupHubSyncChunkFlushInterval
+	if interval <= 0 {
+		interval = 80 * time.Millisecond
+	}
+	maxBytes := groupHubSyncChunkMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 2048
+	}
+	drainPendingStream(pending, interval, maxBytes, func(chunk string) {
+		h.SendStreamChunk(sessionID, chunk)
+	})
+}
 
-	flushInterval := groupHubSyncChunkFlushInterval
-	maxBatchBytes := groupHubSyncChunkMaxBytes
+func (h *VEMessageHandler) syncLocalStream(sessionID, senderID string, pending *pendingStreamText, done chan<- struct{}) {
+	defer close(done)
+	drainPendingStream(pending, localStreamFlushInterval, localStreamMaxBytes, func(chunk string) {
+		h.emitStreamChunkLocalWithSender(sessionID, chunk, senderID)
+	})
+}
+
+func drainPendingStream(pending *pendingStreamText, interval time.Duration, maxBytes int, flush func(string)) {
+	if pending == nil || flush == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 80 * time.Millisecond
+	}
+	if maxBytes <= 0 {
+		maxBytes = 2048
+	}
+	timer := time.NewTimer(interval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	armed := false
+	sent := false
+	disarm := func() {
+		if !armed {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		armed = false
+	}
+	for {
+		select {
+		case <-pending.wake:
+		case <-timer.C:
+			armed = false
+		}
+		minBytes := maxBytes
+		if !sent || !armed {
+			minBytes = 1
+		}
+		chunk, closed := pending.take(minBytes)
+		if chunk != "" {
+			flush(chunk)
+			sent = true
+			disarm()
+		}
+		if closed {
+			tail, _ := pending.take(1)
+			if tail != "" {
+				flush(tail)
+			}
+			disarm()
+			return
+		}
+		if pending.len() > 0 && !armed {
+			timer.Reset(interval)
+			armed = true
+		}
+	}
+}
+
+// pendingStreamText collects tokens for a slow consumer. add returns without
+// waiting for the network, and close makes the remainder readable immediately.
+type pendingStreamText struct {
+	mu     sync.Mutex
+	buf    strings.Builder
+	closed bool
+	wake   chan struct{}
+}
+
+func newPendingStreamText() *pendingStreamText {
+	return &pendingStreamText{wake: make(chan struct{}, 1)}
+}
+
+func (p *pendingStreamText) add(s string) {
+	if p == nil || s == "" {
+		return
+	}
+	p.mu.Lock()
+	if !p.closed {
+		p.buf.WriteString(s)
+	}
+	p.mu.Unlock()
+	p.signal()
+}
+
+func (p *pendingStreamText) close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
+	p.signal()
+}
+
+func (p *pendingStreamText) signal() {
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *pendingStreamText) len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buf.Len()
+}
+
+// take returns buffered text once it reaches minBytes, or immediately when the
+// producer has closed. A short open buffer returns "" so the caller can wait.
+func (p *pendingStreamText) take(minBytes int) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.buf.Len() == 0 || (minBytes > 1 && p.buf.Len() < minBytes && !p.closed) {
+		return "", p.closed
+	}
+	chunk := p.buf.String()
+	p.buf.Reset()
+	return chunk, p.closed
+}
+
+// batchStreamDeltas flushes the first delta immediately and coalesces the rest
+// by time or size. Closing ch flushes whatever is still buffered.
+func batchStreamDeltas(ch <-chan string, flushInterval time.Duration, maxBatchBytes int, flushFn func(string)) {
 	if flushInterval <= 0 {
 		flushInterval = 80 * time.Millisecond
 	}
@@ -1416,22 +1728,25 @@ func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan stri
 		if buf.Len() == 0 {
 			return
 		}
-		h.SendStreamChunk(sessionID, buf.String())
+		flushFn(buf.String())
 		buf.Reset()
 		firstFlushed = true
+	}
+	stopTimer := func() {
+		if timerActive && !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timerActive = false
 	}
 
 	for {
 		select {
 		case delta, ok := <-ch:
 			if !ok {
-				// Channel closed — flush remaining buffer.
-				if timerActive && !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
+				stopTimer()
 				flush()
 				return
 			}
@@ -1439,28 +1754,12 @@ func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan stri
 				continue
 			}
 			buf.WriteString(delta)
-			// First paint ASAP for remote clients (TTFB for stream_chunk).
-			if !firstFlushed {
-				if timerActive && !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timerActive = false
+			if !firstFlushed || buf.Len() >= maxBatchBytes {
+				stopTimer()
 				flush()
 				continue
 			}
-			if buf.Len() >= maxBatchBytes {
-				if timerActive && !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timerActive = false
-				flush()
-			} else if !timerActive {
+			if !timerActive {
 				timer.Reset(flushInterval)
 				timerActive = true
 			}
@@ -1471,8 +1770,43 @@ func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan stri
 	}
 }
 
+func (h *VEMessageHandler) responseTimeout() time.Duration {
+	sec := corelib.DefaultAgentTimeoutSec
+	if h != nil && h.app != nil {
+		if cfg, err := h.app.LoadConfig(); err == nil {
+			sec = corelib.NormalizeAgentTimeoutSec(cfg.AgentResponseTimeoutSec)
+		}
+	}
+	return time.Duration(sec) * time.Second
+}
+
 // getLocalAgentID returns the local machine/client ID for sender identification.
+// The id is cached so tool progress does not reload the full config snapshot.
 func (h *VEMessageHandler) getLocalAgentID() string {
+	if h == nil {
+		return "local-maclaw"
+	}
+	h.mu.Lock()
+	cached := h.localAgentID
+	h.mu.Unlock()
+	if cached != "" {
+		return cached
+	}
+	id := h.resolveLocalAgentID()
+	if id == "" || id == "local-maclaw" {
+		return "local-maclaw"
+	}
+	h.mu.Lock()
+	if h.localAgentID == "" {
+		h.localAgentID = id
+	} else {
+		id = h.localAgentID
+	}
+	h.mu.Unlock()
+	return id
+}
+
+func (h *VEMessageHandler) resolveLocalAgentID() string {
 	if h.app == nil {
 		return "local-maclaw"
 	}

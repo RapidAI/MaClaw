@@ -150,3 +150,68 @@ func TokenBankWithdrawHandler(identity *auth.IdentityService, system store.Syste
 		})
 	}
 }
+
+type tokenBankAutoSettingsBody struct {
+	MaxPerWithdrawMicro *int64 `json:"max_per_withdraw_micro"`
+}
+
+func writeTokenBankAutoSettings(w http.ResponseWriter, cfg llmservice.TokenBankAutoSettings) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":                cfg.Enabled,
+		"max_per_withdraw_micro": cfg.MaxPerWithdrawMicro,
+		"service_group_id":       cfg.ServiceGroupID,
+	})
+}
+
+// TokenBankAutoSettingsHandler reads and stores this machine's ceiling for
+// one automatic Token Bank pull. Zero means no local ceiling. The 1/N share
+// on HubCenter still applies.
+func TokenBankAutoSettingsHandler(identity *auth.IdentityService, system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET or PUT is required")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil || principal == nil || strings.TrimSpace(principal.Email) == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		if system == nil {
+			writeError(w, http.StatusServiceUnavailable, "TOKEN_BANK_UNAVAILABLE", "Token Bank withdraw is not available on this hub")
+			return
+		}
+		if r.Method == http.MethodGet {
+			cfg, err := llmservice.LoadTokenBankAutoSettings(r.Context(), system)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "TOKEN_BANK_SETTINGS", err.Error())
+				return
+			}
+			writeTokenBankAutoSettings(w, cfg)
+			return
+		}
+		var req tokenBankAutoSettingsBody
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if req.MaxPerWithdrawMicro == nil {
+			writeError(w, http.StatusBadRequest, "MISSING_CAP", "max_per_withdraw_micro is required")
+			return
+		}
+		if *req.MaxPerWithdrawMicro < 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_AMOUNT", "automatic withdrawal cap must not be negative")
+			return
+		}
+		if err := llmservice.SaveTokenBankAutoMaxPerWithdraw(r.Context(), system, *req.MaxPerWithdrawMicro); err != nil {
+			writeError(w, http.StatusInternalServerError, "TOKEN_BANK_SETTINGS", err.Error())
+			return
+		}
+		cfg, err := llmservice.LoadTokenBankAutoSettings(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "TOKEN_BANK_SETTINGS", err.Error())
+			return
+		}
+		writeTokenBankAutoSettings(w, cfg)
+	}
+}

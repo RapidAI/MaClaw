@@ -11,13 +11,17 @@ import (
 func synthesizeSkillParams(steps []corelib.NLSkillStep, args []string) []corelib.NLSkillParam {
 	params := coreskill.SynthesizeParams(steps, args)
 	if len(params) == 0 && len(args) > 0 {
+		// Fallback for args that synthesis filtered out. These are inferred,
+		// not author-declared, so they must stay optional: forcing Required
+		// here is what once made a learned skill demand values for "0", "i"
+		// and "p_theta" (misread shell/format syntax), burning LLM retries.
 		params = make([]corelib.NLSkillParam, 0, len(args))
 		for _, arg := range args {
 			arg = strings.TrimSpace(arg)
 			if arg == "" {
 				continue
 			}
-			params = append(params, corelib.NLSkillParam{Name: arg, Required: true, Synthetic: true})
+			params = append(params, corelib.NLSkillParam{Name: arg, Required: false, Synthetic: true})
 		}
 	}
 	for i := range params {
@@ -75,6 +79,6 @@ func describeRequiredArg(arg string) string {
 	case "output", "output_path":
 		return "Output path or value for this learned workflow."
 	default:
-		return "Required value for this learned workflow."
+		return "Value for this learned workflow (inferred from recorded steps)."
 	}
 }

@@ -663,7 +663,7 @@ describe('AssistantPreviewPane', () => {
             />,
         );
 
-        expect(screen.getByTestId('preview-file-action-upload').getAttribute('aria-label')).toBe('上传到文稿库');
+        expect(screen.getByTestId('preview-file-action-upload').getAttribute('aria-label')).toBe('上传到云盘');
         expect(screen.getByTestId('preview-file-action-share').getAttribute('aria-label')).toBe('分享（复制文件路径）');
         expect(screen.getByTestId('preview-file-action-reveal').getAttribute('aria-label')).toBe('打开文件夹');
     });

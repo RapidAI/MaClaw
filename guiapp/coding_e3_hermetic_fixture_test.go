@@ -87,6 +87,12 @@ func codingE3MCPInputSchema() map[string]interface{} {
 
 func newCodingE3HermeticEnv(t *testing.T) *codingE3HermeticEnv {
 	t.Helper()
+	// applyDataDirFromConfigLocked mutates the process-global maclaw base dir
+	// for a testHomeDir app; restore it so later bare-App tests in the same
+	// binary do not resolve their data dir to this test's (deleted) TempDir
+	// and trip a data-dir-change reset over their own memory store.
+	previousBaseDir := corelib.MaclawBaseDir()
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(previousBaseDir) })
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(app.closeSemanticInvocationStore)
 	t.Cleanup(func() {

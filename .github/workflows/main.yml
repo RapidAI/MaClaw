@@ -62,8 +62,21 @@ jobs:
           -run 'Test(ModuleRegistry|RuntimeExecutor|RuntimeSurfaceDigest|DescribeRuntimeCapabilities|RuntimeCapabilitiesEndpoint|RuntimeCallbacks|CoreAgentCallbacks|RegisterBuiltinModules|ResolveRole|AdaptiveRetry|HeadlessScreenshot|GUIAndSrv|SQLiteRunEventStoreConcurrent|RunEventsStream|OpenAPIDocument)'
           -count=1 -race
 
+      # guiapp's linux pet/floating files are cgo with pkg-config gtk+-3.0, and
+      # the wails v2 runtime needs webkit2gtk: install them (4.0 on 22.04, or
+      # 4.1 + build tag on 24.04/26.04) or the compile step dies on pkg-config.
+      - name: Install GTK for GUI host compile
+        run: |
+          sudo apt-get update
+          if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
+            echo "GUIHOST_TAGS=" >> $GITHUB_ENV
+          else
+            sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+            echo "GUIHOST_TAGS=webkit2_41" >> $GITHUB_ENV
+          fi
+
       - name: Compile GUI host package
-        run: go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
 
   verify-noembedding:
     runs-on: ubuntu-latest
@@ -167,7 +180,10 @@ jobs:
             [ "$i" = 60 ] && { echo "sqlserver did not become ready"; exit 1; }
             sleep 2
           done
-          docker exec "$MS" bash -c 'if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -Q "IF DB_ID(''dbtest'') IS NULL CREATE DATABASE dbtest"; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -Q "IF DB_ID(''dbtest'') IS NULL CREATE DATABASE dbtest"; fi'
+          # DB_ID must receive SQL-quoted 'dbtest': inside the single-quoted bash -c
+          # string that is '\''dbtest'\'', NOT dbtest (a bare word parses as a column
+          # name and the CREATE DATABASE silently never runs).
+          docker exec "$MS" bash -c 'if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -Q "IF DB_ID('\''dbtest'\'') IS NULL CREATE DATABASE dbtest"; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -Q "IF DB_ID('\''dbtest'\'') IS NULL CREATE DATABASE dbtest"; fi'
 
       - name: Run database integration tests
         env:
@@ -1557,6 +1573,8 @@ jobs:
   # ============================================================
   build-linux:
     strategy:
+      # A single-brand smoke failure must not cancel the sibling builds.
+      fail-fast: false
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || inputs.BRAND == 'metastaff' && fromJSON('["metastaff"]') || fromJSON('["", "qianxin", "metastaff"]') }}
         os_version: [ubuntu-22.04, ubuntu-24.04]
@@ -1796,6 +1814,9 @@ jobs:
   # ============================================================
   build-linux-arm64:
     strategy:
+      # A single-brand smoke failure must not cancel the sibling builds:
+      # every arm64 job's log is needed to diagnose GUI startup on arm.
+      fail-fast: false
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || inputs.BRAND == 'metastaff' && fromJSON('["metastaff"]') || fromJSON('["", "qianxin", "metastaff"]') }}
         os_version: [ubuntu-22.04-arm, ubuntu-24.04-arm]
@@ -2450,9 +2471,9 @@ jobs:
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
-    # Every publication step below uses github.ref_name as its release tag and
-    # syncs that tag to Gitee. workflow_dispatch supplies a branch name, so it
-    # may validate builds but must never publish or enter the release boundary.
+    # Every publication step below uses github.ref_name as its release tag.
+    # workflow_dispatch supplies a branch name, so it may validate builds but
+    # must never publish or enter the release boundary.
     if: github.ref_type == 'tag'
     needs: [verify-agent-architecture, build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-clawmate-maker]
     runs-on: ubuntu-latest
@@ -2647,114 +2668,6 @@ jobs:
           echo "${MANIFEST_NAME} preview:"
           cat "release-assets/${MANIFEST_NAME}"
 
-      - name: Set up Node.js for Cloudflare R2
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Upload release assets to Cloudflare R2
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
-          RELEASE_ASSETS_DIR: release-assets
-          R2_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
-            echo "Cloudflare R2 credentials are required for an official firmware release." >&2
-            exit 1
-          fi
-          node --version
-          npm --version
-          npm install -g wrangler@latest
-          wrangler --version
-          echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
-          # Determine asset prefix based on release channel (stable 閳?latest/, beta 閳?beta/)
-          ASSET_PREFIX="latest"
-          if [ "${RELEASE_CHANNEL}" = "beta" ]; then
-            ASSET_PREFIX="beta"
-          fi
-          echo "Channel=${RELEASE_CHANNEL} prefix=${ASSET_PREFIX}/ manifest=${MANIFEST_NAME}"
-          printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
-            [ -n "$name" ] || continue
-            path="$RELEASE_ASSETS_DIR/$name"
-            if [ ! -f "$path" ]; then
-              echo "R2 release asset not found: $name" >&2
-              exit 1
-            fi
-            echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
-            wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
-            if [ "${RELEASE_CHANNEL}" = "stable" ]; then
-              # Object keys are raw; only the public history URL is escaped.
-              wrangler r2 object put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
-            fi
-          done
-          wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
-
-      - name: Upload release assets to Tencent COS
-        env:
-          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
-          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
-          COS_BUCKET: ${{ secrets.COS_BUCKET }}
-          COS_REGION: ${{ secrets.COS_REGION }}
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
-          COS_UPLOAD_PART_SIZE_MB: 8
-          COS_UPLOAD_THREADS: 8
-          COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-        run: |
-          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
-            echo "Tencent COS credentials and public URL are required for an official firmware release." >&2
-            exit 1
-          fi
-          python3 -m pip install -q cos-python-sdk-v5
-          python3 .github/scripts/sync_cos_release.py
-
-      - name: Publish stable rollback history to Cloudflare R2
-        if: env.RELEASE_CHANNEL == 'stable'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
-        run: |
-          for attempt in 1 2 3 4 5; do
-            if curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
-              break
-            fi
-            [ "$attempt" = "5" ] && exit 1
-            sleep 3
-          done
-          wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
-      - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
-        env:
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-        run: python3 .github/scripts/verify_update_mirror.py
-
-      - name: Verify firmware publication on Cloudflare R2 and Tencent COS
-        if: env.ESP32_FIRMWARE_ENABLED == 'true'
-        env:
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-        run: python3 .github/scripts/verify_firmware_mirrors.py
-
-      # Do not publish the GitHub Release until both public mirrors contain
-      # the same manifest and all four signed firmware archives. This keeps
-      # the desktop client's GitHub/R2/COS discovery contract truthful.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -2889,142 +2802,111 @@ jobs:
                       time.sleep(5)
           PY
 
-      - name: Verify Gitee token secret
+      - name: Set up Node.js for Cloudflare R2
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Upload release assets to Cloudflare R2
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+          RELEASE_ASSETS_DIR: release-assets
+          R2_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [ -z "$GITEE_TOKEN" ]; then
-            echo "GITEE_TOKEN secret is empty or missing" >&2
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
+            echo "Cloudflare R2 credentials are required for an official firmware release." >&2
             exit 1
           fi
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import urllib.error
-          import urllib.parse
-          import urllib.request
+          node --version
+          npm --version
+          npm install -g wrangler@latest
+          wrangler --version
+          echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
+          # Determine asset prefix based on release channel (stable 閳?latest/, beta 閳?beta/)
+          ASSET_PREFIX="latest"
+          if [ "${RELEASE_CHANNEL}" = "beta" ]; then
+            ASSET_PREFIX="beta"
+          fi
+          echo "Channel=${RELEASE_CHANNEL} prefix=${ASSET_PREFIX}/ manifest=${MANIFEST_NAME}"
+          printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            path="$RELEASE_ASSETS_DIR/$name"
+            if [ ! -f "$path" ]; then
+              echo "R2 release asset not found: $name" >&2
+              exit 1
+            fi
+            echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
+            wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            if [ "${RELEASE_CHANNEL}" = "stable" ]; then
+              # Object keys are raw; only the public history URL is escaped.
+              wrangler r2 object put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            fi
+          done
+          wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
 
-          token = os.environ["GITEE_TOKEN"]
-          print(f"GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
-          user_url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
-          try:
-              with urllib.request.urlopen(user_url, timeout=30) as resp:
-                  user = json.loads(resp.read().decode("utf-8"))
-          except urllib.error.HTTPError as exc:
-              payload = exc.read().decode("utf-8", errors="replace")
-              raise SystemExit(
-                  f"Gitee token validation failed at /user: HTTP {exc.code} {payload}\n"
-                  "The selected GitHub secret must be a Gitee API access token. "
-                  "Check that repository secret GITEE contains the token value itself, not a secret name, SSH key, password, or prefixed text."
-              )
-          print(f"Verified Gitee token login={user.get('login')} name={user.get('name')} id={user.get('id')}")
-          url = "https://gitee.com/api/v5/repos/znsoft/maclaw?" + urllib.parse.urlencode({"access_token": token})
-          try:
-              with urllib.request.urlopen(url, timeout=30) as resp:
-                  repo = json.loads(resp.read().decode("utf-8"))
-              print(f"Verified Gitee repo access: {repo.get('full_name') or repo.get('path_with_namespace') or 'znsoft/maclaw'}")
-          except urllib.error.HTTPError as exc:
-              payload = exc.read().decode("utf-8", errors="replace")
-              raise SystemExit(f"Gitee token cannot access znsoft/maclaw: HTTP {exc.code} {payload}")
-          PY
-
-      - name: Push source tags to Gitee
+      - name: Upload release assets to Tencent COS
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
+          COS_UPLOAD_PART_SIZE_MB: 8
+          COS_UPLOAD_THREADS: 8
+          COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
         run: |
-          if [ -z "$GITEE_TOKEN" ]; then
-            echo "GITEE_TOKEN secret is required for Gitee sync" >&2
+          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
+            echo "Tencent COS credentials and public URL are required for an official firmware release." >&2
             exit 1
           fi
-          python3 - <<'PY'
-          import hashlib
-          import os
+          python3 -m pip install -q cos-python-sdk-v5
+          python3 .github/scripts/sync_cos_release.py
 
-          token = os.environ["GITEE_TOKEN"]
-          print(f"Push step GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
-          PY
-          tag="${{ github.ref_name }}"
-          gitee_login="$(python3 - <<'PY'
-          import json
-          import os
-          import urllib.parse
-          import urllib.request
-
-          token = os.environ["GITEE_TOKEN"]
-          url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
-          with urllib.request.urlopen(url, timeout=30) as resp:
-              user = json.loads(resp.read().decode("utf-8"))
-          print(user.get("login") or "")
-          PY
-          )"
-          if [ -z "$gitee_login" ]; then
-            echo "Unable to resolve Gitee token username" >&2
-            exit 1
-          fi
-          export GITEE_LOGIN="$gitee_login"
-          gitee_login_encoded="$(python3 - <<'PY'
-          import os
-          import urllib.parse
-          print(urllib.parse.quote(os.environ["GITEE_LOGIN"], safe=""))
-          PY
-          )"
-          gitee_token_encoded="$(python3 - <<'PY'
-          import os
-          import urllib.parse
-          print(urllib.parse.quote(os.environ["GITEE_TOKEN"], safe=""))
-          PY
-          )"
-          git remote add gitee "https://${gitee_login_encoded}:${gitee_token_encoded}@gitee.com/znsoft/maclaw.git"
-          echo "GitHub ref: ${{ github.ref }}"
-          echo "GitHub ref_name: ${tag}"
-          echo "GitHub sha: ${{ github.sha }}"
-          echo "Local HEAD: $(git rev-parse HEAD)"
-          echo "Gitee token user: ${gitee_login}"
-          echo "Gitee push username: ${gitee_login}"
-          echo "Gitee push repository: znsoft/maclaw"
-          echo "Gitee remote: https://${gitee_login}:***@gitee.com/znsoft/maclaw.git"
-          git fetch origin main --tags --force
-          echo "Origin main: $(git rev-parse refs/remotes/origin/main)"
-          echo "Release tag object: $(git rev-parse refs/tags/${tag})"
-          echo "Release tag peeled commit: $(git rev-parse refs/tags/${tag}^{})"
-
-          if git ls-remote --exit-code gitee refs/heads/main >/tmp/gitee-main-ref 2>/tmp/gitee-main-err; then
-            echo "Gitee main before push: $(cat /tmp/gitee-main-ref)"
-          else
-            echo "Gitee main before push: not found or inaccessible"
-            cat /tmp/gitee-main-err >&2 || true
-          fi
-
-          if git ls-remote --exit-code gitee "refs/tags/${tag}" >/tmp/gitee-tag-ref 2>/tmp/gitee-tag-err; then
-            echo "Gitee tag ${tag} before push: $(cat /tmp/gitee-tag-ref)"
-          else
-            echo "Gitee tag ${tag} before push: not found"
-            cat /tmp/gitee-tag-err >&2 || true
-          fi
-
-          if ! GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main 2>/tmp/gitee-main-push-err; then
-            cat /tmp/gitee-main-push-err >&2 || true
-            if grep -qi "Access denied\|403" /tmp/gitee-main-push-err; then
-              echo "error: Gitee token user '${gitee_login}' can read znsoft/maclaw but cannot push to it." >&2
-              echo "error: Grant '${gitee_login}' write access on Gitee, enable the token's repository write scope, or replace GITEE_TOKEN with a writable account token." >&2
+      - name: Publish stable rollback history to Cloudflare R2
+        if: env.RELEASE_CHANNEL == 'stable'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
+              break
             fi
-            echo "warning: Gitee main branch push failed; continuing with current tag sync" >&2
-          fi
+            [ "$attempt" = "5" ] && exit 1
+            sleep 3
+          done
+          wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
+      - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
+        env:
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: python3 .github/scripts/verify_update_mirror.py
 
-          if git ls-remote --exit-code gitee "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "Gitee tag ${tag} already exists; skip pushing tag"
-          elif ! GIT_LFS_SKIP_PUSH=1 git push gitee "refs/tags/${tag}:refs/tags/${tag}" 2>/tmp/gitee-tag-push-err; then
-            cat /tmp/gitee-tag-push-err >&2 || true
-            if grep -qi "Access denied\|403" /tmp/gitee-tag-push-err; then
-              echo "error: Gitee token user '${gitee_login}' does not have permission to create tag ${tag} in znsoft/maclaw." >&2
-              echo "error: Gitee Release sync needs this tag to exist before assets can be uploaded." >&2
-            fi
-            echo "error: failed to push release tag ${tag} to Gitee" >&2
-            exit 1
-          fi
+      - name: Verify firmware publication on Cloudflare R2 and Tencent COS
+        if: env.ESP32_FIRMWARE_ENABLED == 'true'
+        env:
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: python3 .github/scripts/verify_firmware_mirrors.py
 
-          git ls-remote gitee refs/heads/main "refs/tags/${tag}"
-
-      - name: Skip Gitee release asset upload
-        run: echo "Release packages are uploaded to Tencent COS; skipping slow Gitee asset upload."
+      # Do not publish the GitHub Release until both public mirrors contain
+      # the same manifest and all four signed firmware archives. This keeps
+      # the desktop client's GitHub/R2/COS discovery contract truthful.

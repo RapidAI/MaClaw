@@ -59,14 +59,73 @@ func TestComputeTokenBankSettlementRoundsEachLegUp(t *testing.T) {
 	}
 }
 
-func TestComputeTokenBankSettlementCacheLegsAreSeparate(t *testing.T) {
-	// Cache legs are added, not folded into input: a route that charges a
-	// different cached-read price must not have that price applied to plain
-	// input tokens.
-	gross, _, _ := ComputeTokenBankSettlement(0, 0, 1_000_000, 1_000_000, 0, 0, 2.0, 4.0, 1, 0)
-	want := int64(200_000_000 + 400_000_000)
+func TestComputeTokenBankSettlementCacheLegsReplaceInputPrice(t *testing.T) {
+	// Measured input already includes cache read and cache write. Those tokens
+	// are priced at the cache rates, not again at the input rate. Charging both
+	// is what made list-price gross exceed the consumer charge.
+	//
+	//	input 1_000_000, cached 400_000, write 100_000
+	//	normal 500_000 @ 3.0 = 150 credits
+	//	cache  400_000 @ 0.3 = 12
+	//	write  100_000 @ 3.75 = 37.5
+	gross, _, _ := ComputeTokenBankSettlement(1_000_000, 0, 400_000, 100_000, 3, 0, 0.3, 3.75, 1, 0)
+	const want = int64(199_500_000)
 	if gross != want {
 		t.Fatalf("gross = %d, want %d", gross, want)
+	}
+	// The old additive formula billed the cached half again at the input rate.
+	if gross >= 300_000_000 {
+		t.Fatalf("gross = %d, cache was added on top of the full input", gross)
+	}
+}
+
+func TestComputeTokenBankSettlementCachePriceDoesNotApplyToPlainInput(t *testing.T) {
+	gross, _, _ := ComputeTokenBankSettlement(10_000, 0, 0, 0, 3, 6, 9, 9, 1, 0)
+	if gross != 3_000_000 {
+		t.Fatalf("gross = %d, want 3000000 (plain input stays on the input rate)", gross)
+	}
+}
+
+func TestComputeTokenBankSettlementUnsetCacheRateStaysOnInput(t *testing.T) {
+	// A resolved cache unit of 0 means the platform default for that direction
+	// is also 0. Those tokens stay on the input price. Peeling them off would
+	// drop them from the bill and underpay the sharer. A blank price-book
+	// field is resolved to the platform default before it reaches here.
+	gross, _, _ := ComputeTokenBankSettlement(10_000, 0, 8_000, 0, 3, 0, 0, 0, 1, 0)
+	if gross != 3_000_000 {
+		t.Fatalf("gross with unset cache rates = %d, want 3000000", gross)
+	}
+	negative, _, _ := ComputeTokenBankSettlement(10_000, 0, 8_000, 2_000, 3, 0, -1, -1, 1, 0)
+	if negative != 3_000_000 {
+		t.Fatalf("gross with negative cache rates = %d, want 3000000", negative)
+	}
+	// A positive read rate replaces the input price for that subset only.
+	// 2_000 normal @ 3 = 600_000; 8_000 cache @ 0.3 = 240_000.
+	priced, _, _ := ComputeTokenBankSettlement(10_000, 0, 8_000, 0, 3, 0, 0.3, 0, 1, 0)
+	if priced != 840_000 {
+		t.Fatalf("gross with a cache-read rate = %d, want 840000", priced)
+	}
+	// The two directions are independent. An unset read rate leaves those
+	// tokens on input, while a positive write rate still replaces its subset.
+	// The write is clamped to the input left after the measured read: 2_000.
+	// 8_000 @ 3 = 2_400_000; 2_000 @ 3.75 = 750_000.
+	mixed, _, _ := ComputeTokenBankSettlement(10_000, 0, 8_000, 2_000, 3, 0, 0, 3.75, 1, 0)
+	if mixed != 3_150_000 {
+		t.Fatalf("gross with only a write rate = %d, want 3150000", mixed)
+	}
+}
+
+func TestComputeTokenBankSettlementCacheAboveInputIsClamped(t *testing.T) {
+	// Cache that the input does not contain is not an extra leg. Consumer
+	// billing clamps the same way, so the two sides stay on one measurement.
+	gross, _, _ := ComputeTokenBankSettlement(0, 0, 1_000_000, 1_000_000, 0, 0, 2, 4, 1, 0)
+	if gross != 0 {
+		t.Fatalf("gross = %d, want 0 when input does not contain the cache tokens", gross)
+	}
+	// 10_000 input can hold 8_000 reads and only 2_000 of the reported writes.
+	capped, _, _ := ComputeTokenBankSettlement(10_000, 0, 8_000, 5_000, 1, 0, 2, 4, 1, 0)
+	if capped != 2_400_000 {
+		t.Fatalf("capped gross = %d, want 2400000", capped)
 	}
 }
 
@@ -81,6 +140,82 @@ func TestComputeTokenBankSettlementClampsFeeRate(t *testing.T) {
 	}
 	if net != 0 {
 		t.Fatalf("net = %d, want 0", net)
+	}
+}
+
+func TestSettleTokenBankUsageFormulaUsesThePricedSplit(t *testing.T) {
+	repo := newSettleTestRepo(t, "tbk-settle-cache-formula.db")
+	ctx := context.Background()
+
+	unset := settleInput("req-cache-unset")
+	unset.CachedInputTokens = 400_000
+	unset.CacheWriteTokens = 100_000
+	out, err := repo.SettleTokenBankUsage(ctx, unset)
+	if err != nil {
+		t.Fatalf("unset cache SettleTokenBankUsage() error = %v", err)
+	}
+	wantGross, _, _ := ComputeTokenBankSettlement(
+		unset.InputTokens, unset.OutputTokens, unset.CachedInputTokens, unset.CacheWriteTokens,
+		unset.UnitInputPer10K, unset.UnitOutputPer10K, unset.UnitCachedReadPer10K, unset.UnitCacheWritePer10K,
+		unset.TierMultiplier, unset.FeeRate)
+	if out.GrossMicro != wantGross || out.GrossMicro != 720_000_000 {
+		t.Fatalf("unset gross = %d, want %d and 720000000", out.GrossMicro, wantGross)
+	}
+	rows, err := repo.ListUsage(ctx, unset.OwnerID, 10, unset.ShareID)
+	if err != nil {
+		t.Fatalf("ListUsage() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("usage rows = %d, want 1", len(rows))
+	}
+	for _, piece := range []string{
+		`"billable_input_tokens":1000000`,
+		`"priced_cached_tokens":0`,
+		`"priced_cache_write_tokens":0`,
+		`"priced_output_tokens":500000`,
+	} {
+		if !strings.Contains(rows[0].FormulaJSON, piece) {
+			t.Fatalf("formula = %s, want %s", rows[0].FormulaJSON, piece)
+		}
+	}
+
+	priced := unset
+	priced.RequestID = "req-cache-priced"
+	priced.UnitCachedReadPer10K = 0.3
+	priced.UnitCacheWritePer10K = 3.75
+	pricedOut, err := repo.SettleTokenBankUsage(ctx, priced)
+	if err != nil {
+		t.Fatalf("priced cache SettleTokenBankUsage() error = %v", err)
+	}
+	wantPriced, _, _ := ComputeTokenBankSettlement(
+		priced.InputTokens, priced.OutputTokens, priced.CachedInputTokens, priced.CacheWriteTokens,
+		priced.UnitInputPer10K, priced.UnitOutputPer10K, priced.UnitCachedReadPer10K, priced.UnitCacheWritePer10K,
+		priced.TierMultiplier, priced.FeeRate)
+	if pricedOut.GrossMicro != wantPriced {
+		t.Fatalf("priced gross = %d, want %d", pricedOut.GrossMicro, wantPriced)
+	}
+	if pricedOut.GrossMicro >= out.GrossMicro {
+		t.Fatalf("priced gross = %d, cache replaced the input price and should be below %d", pricedOut.GrossMicro, out.GrossMicro)
+	}
+	rows, err = repo.ListUsage(ctx, priced.OwnerID, 10, priced.ShareID)
+	if err != nil {
+		t.Fatalf("ListUsage() error = %v", err)
+	}
+	var formula string
+	for _, row := range rows {
+		if row.RequestID == priced.RequestID {
+			formula = row.FormulaJSON
+		}
+	}
+	for _, piece := range []string{
+		`"billable_input_tokens":500000`,
+		`"priced_cached_tokens":400000`,
+		`"priced_cache_write_tokens":100000`,
+		`"priced_output_tokens":500000`,
+	} {
+		if !strings.Contains(formula, piece) {
+			t.Fatalf("formula = %s, want %s", formula, piece)
+		}
 	}
 }
 

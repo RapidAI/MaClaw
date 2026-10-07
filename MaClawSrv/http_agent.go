@@ -73,6 +73,7 @@ func (s *HTTPServer) handleDeleteInstance(w http.ResponseWriter, r *http.Request
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	releaseDesktopPerson(r.PathValue("instanceId"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -191,20 +192,34 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		})
 		return
 	}
+	instanceID := r.PathValue("instanceId")
+	var metadata map[string]string
+	if s.svc != nil {
+		if inst, instErr := s.svc.GetInstance(r.Context(), p, instanceID); instErr == nil && inst != nil {
+			metadata = inst.Metadata
+			if strings.TrimSpace(inst.ID) != "" {
+				instanceID = inst.ID
+			}
+		}
+	}
+	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	releaseDesktop := occupyUserDesktop(r.Context(), desktopTenantID, desktopUserID, r.PathValue("instanceId"))
+	defer releaseDesktop()
 	sess, run, msg, err := s.svc.SendMessage(r.Context(), p, r.PathValue("instanceId"), in)
+	handoff := takeDesktopHandoff(desktopTenantID, desktopUserID, r.PathValue("instanceId"))
 	if err != nil {
 		if run != nil {
 			status := http.StatusBadGateway
 			if run.Status == agentservice.RunStatusCancelled {
 				status = http.StatusConflict
 			}
-			writeJSON(w, status, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+			writeJSON(w, status, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "desktop_handoff": handoff})
 			return
 		}
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg})
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "desktop_handoff": handoff})
 }
 
 func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -364,16 +379,30 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 		})
 		return
 	}
+	instanceID := r.PathValue("instanceId")
+	var metadata map[string]string
+	if s.svc != nil {
+		if inst, instErr := s.svc.GetInstance(r.Context(), p, instanceID); instErr == nil && inst != nil {
+			metadata = inst.Metadata
+			if strings.TrimSpace(inst.ID) != "" {
+				instanceID = inst.ID
+			}
+		}
+	}
+	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	releaseDesktop := occupyUserDesktop(r.Context(), desktopTenantID, desktopUserID, r.PathValue("instanceId"))
+	defer releaseDesktop()
 	run, msg, err := s.svc.PostMessage(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
+	handoff := takeDesktopHandoff(desktopTenantID, desktopUserID, r.PathValue("instanceId"))
 	if err != nil {
 		if run != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+			writeJSON(w, http.StatusBadGateway, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "desktop_handoff": handoff})
 			return
 		}
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg})
+	writeJSON(w, http.StatusOK, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "desktop_handoff": handoff})
 }
 
 func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

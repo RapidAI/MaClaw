@@ -825,6 +825,9 @@ func TestRemoteSourcePreview_IsExplicitlyOptIn(t *testing.T) {
 
 func TestBuildRemoteCodingCodeFileEvent_ForceOpensRightHandPanel(t *testing.T) {
 	tabPath := `D:\workprj\aicoder\data\tasks\linux-sysinfo`
+	// Writes open the right-hand pane; a read only fills a background tab so
+	// exploration cannot pop the pane over the user's screen.
+	forceOpenByOp := map[string]bool{"read": false, "modify": true, "create": true}
 	for _, op := range []string{"read", "modify", "create"} {
 		evt := buildRemoteCodingCodeFileEvent(
 			"remote:ssh-1:1:1",
@@ -836,11 +839,11 @@ func TestBuildRemoteCodingCodeFileEvent_ForceOpensRightHandPanel(t *testing.T) {
 			false,
 			false,
 		)
-		if !evt.ForceOpen {
-			t.Fatalf("op %s: ForceOpen = false, want true so the right-hand code preview opens", op)
+		if evt.ForceOpen != forceOpenByOp[op] {
+			t.Fatalf("op %s: ForceOpen = %v, want %v", op, evt.ForceOpen, forceOpenByOp[op])
 		}
-		if !evt.AutoOpenPreview {
-			t.Fatalf("op %s: AutoOpenPreview = false, want true", op)
+		if evt.AutoOpenPreview != forceOpenByOp[op] {
+			t.Fatalf("op %s: AutoOpenPreview = %v, want %v", op, evt.AutoOpenPreview, forceOpenByOp[op])
 		}
 		if evt.OpType != op {
 			t.Fatalf("opType = %q, want %q", evt.OpType, op)

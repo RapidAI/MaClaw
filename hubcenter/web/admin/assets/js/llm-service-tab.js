@@ -98,6 +98,9 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldGroupModels: 'Models (JSON)', modelNamePlaceholder: 'e.g. gpt-4, claude-3.5',
       fieldGroupKind: 'Kind', sgKindDynamic: 'Dynamic', sgKindStatic: 'Static',
       sgRouteHint: 'Exposed model alias with provider failover',
+      sgArrayDragHint: 'Drag an array to change its place in this group',
+      sgArrayOrderHint: 'List order applies when capability, resolution tier, multiplier, and priority match.',
+      sgMoveEarlier: 'Move earlier', sgMoveLater: 'Move later',
       sgRemoveRoute: 'Remove', sgExposedModel: 'Exposed Model', sgNoProviders: 'No providers assigned. Add a provider above.',
       sgAccessPolicy: 'Access Policy', sgPolicyFreeHint: 'no grant needed', sgPolicyGrantHint: 'needs card/grant',
       sgRoutes: 'Provider Routes', sgAddRoute: '+ Add Route',
@@ -216,7 +219,14 @@ if (typeof I18N_ZH !== 'undefined') {
       billingEmpty: 'No windows. The base multiplier applies all day.',
       billingCurrent: 'Now', billingDroppedWindows: 'Fix windows with empty or identical start/end times before saving.',
       billingOvernight: 'If start is later than end, the window wraps past midnight. The first matching window wins.',
-      weekdaySun: 'Sun', weekdayMon: 'Mon', weekdayTue: 'Tue', weekdayWed: 'Wed', weekdayThu: 'Thu', weekdayFri: 'Fri', weekdaySat: 'Sat'
+      weekdaySun: 'Sun', weekdayMon: 'Mon', weekdayTue: 'Tue', weekdayWed: 'Wed', weekdayThu: 'Thu', weekdayFri: 'Fri', weekdaySat: 'Sat',
+      serveTitle: 'Serve window', serveHint: 'Restrict the weekdays and hours when this provider may answer (evaluated in Beijing time). Requests outside every window skip to other supply; useful for time-limited free tiers.',
+      serveAddWindow: 'Add window', serveRemoveWindow: 'Remove',
+      serveEveryday: 'Every day', serveWeekdays: 'Weekdays', serveAllDay: 'All day',
+      serveDroppedWindows: 'Fix windows with missing or identical start/end times, or invalid weekdays, before saving.',
+      serveEmpty: 'No windows. The provider answers around the clock.',
+      serveWindowBadge: 'Serve window', serveClosedNow: 'closed',
+      weekdayMonFull: 'Mon', weekdayTueFull: 'Tue', weekdayWedFull: 'Wed', weekdayThuFull: 'Thu', weekdayFriFull: 'Fri', weekdaySatFull: 'Sat', weekdaySunFull: 'Sun'
     },
     zh: {
       llmTabTitle: 'LLM \u670d\u52a1', llmTabDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
@@ -298,6 +308,9 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldGroupModels: '\u6a21\u578b\u914d\u7f6e (JSON)', modelNamePlaceholder: '\u5982 gpt-4, claude-3.5',
       fieldGroupKind: '\u7c7b\u578b', sgKindDynamic: '\u52a8\u6001', sgKindStatic: '\u9759\u6001',
       sgRouteHint: '\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',
+      sgArrayDragHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u5728\u672c\u7ec4\u5185\u7684\u4f4d\u7f6e',
+      sgArrayOrderHint: '\u80fd\u529b\u3001\u5206\u8fa8\u7387\u6863\u3001\u500d\u7387\u548c\u4f18\u5148\u7ea7\u76f8\u540c\u65f6\uff0c\u6309\u5217\u8868\u987a\u5e8f\u3002',
+      sgMoveEarlier: '\u5411\u524d\u79fb\u4e00\u4f4d', sgMoveLater: '\u5411\u540e\u79fb\u4e00\u4f4d',
       sgRemoveRoute: '\u5220\u9664', sgExposedModel: '\u66b4\u9732\u6a21\u578b\u540d', sgNoProviders: '\u672a\u5206\u914d\u670d\u52a1\u5546\u3002\u8bf7\u5728\u4e0a\u65b9\u6dfb\u52a0\u3002',
       sgAccessPolicy: '\u8bbf\u95ee\u7b56\u7565', sgPolicyFreeHint: '\u65e0\u9700\u6388\u6743', sgPolicyGrantHint: '\u9700\u8981\u5361/\u6388\u6743',
       sgRoutes: '\u670d\u52a1\u5546\u8def\u7531', sgAddRoute: '+ \u6dfb\u52a0\u8def\u7531',
@@ -416,7 +429,14 @@ if (typeof I18N_ZH !== 'undefined') {
       billingEmpty: '\u6682\u65e0\u5206\u65f6\u65f6\u6bb5\uff0c\u5168\u5929\u4f7f\u7528\u57fa\u7840\u500d\u7387\u3002',
       billingCurrent: '\u5f53\u524d', billingDroppedWindows: '\u5148\u4fee\u597d\u5f00\u59cb\u548c\u7ed3\u675f\u76f8\u540c\u6216\u4e3a\u7a7a\u7684\u65f6\u6bb5\uff0c\u518d\u4fdd\u5b58\u3002',
       billingOvernight: '\u5f00\u59cb\u665a\u4e8e\u7ed3\u675f\u65f6\uff0c\u65f6\u6bb5\u4f1a\u8de8\u8fc7\u5348\u591c\u3002\u5148\u5339\u914d\u5230\u7684\u65f6\u6bb5\u751f\u6548\u3002',
-      weekdaySun: '\u65e5', weekdayMon: '\u4e00', weekdayTue: '\u4e8c', weekdayWed: '\u4e09', weekdayThu: '\u56db', weekdayFri: '\u4e94', weekdaySat: '\u516d'
+      weekdaySun: '\u65e5', weekdayMon: '\u4e00', weekdayTue: '\u4e8c', weekdayWed: '\u4e09', weekdayThu: '\u56db', weekdayFri: '\u4e94', weekdaySat: '\u516d',
+      serveTitle: '\u670d\u52a1\u65f6\u6bb5', serveHint: '\u9650\u5236\u8be5\u670d\u52a1\u5546\u53ef\u4ee5\u63a5\u5355\u7684\u661f\u671f\u4e0e\u65f6\u6bb5\uff08\u6309\u5317\u4eac\u65f6\u95f4\u5224\u5b9a\uff09\u3002\u65f6\u6bb5\u5916\u7684\u8bf7\u6c42\u81ea\u52a8\u6539\u7528\u5176\u5b83\u4f9b\u7ed9\uff0c\u9002\u7528\u4e8e\u9650\u65f6\u514d\u8d39\u7b49\u573a\u666f\u3002',
+      serveAddWindow: '\u6dfb\u52a0\u65f6\u6bb5', serveRemoveWindow: '\u5220\u9664',
+      serveEveryday: '\u6bcf\u5929', serveWeekdays: '\u5de5\u4f5c\u65e5', serveAllDay: '\u5168\u5929',
+      serveDroppedWindows: '\u5148\u4fee\u597d\u5f00\u59cb\u7ed3\u675f\u4e3a\u7a7a\u3001\u76f8\u540c\u6216\u661f\u671f\u65e0\u6548\u7684\u65f6\u6bb5\uff0c\u518d\u4fdd\u5b58\u3002',
+      serveEmpty: '\u6682\u65e0\u9650\u5236\uff0c\u5168\u5929\u53ef\u63a5\u5355\u3002',
+      serveWindowBadge: '\u670d\u52a1\u65f6\u6bb5', serveClosedNow: '\u4e0d\u53ef\u63a5\u5355',
+      weekdayMonFull: '\u5468\u4e00', weekdayTueFull: '\u5468\u4e8c', weekdayWedFull: '\u5468\u4e09', weekdayThuFull: '\u5468\u56db', weekdayFriFull: '\u5468\u4e94', weekdaySatFull: '\u5468\u516d', weekdaySunFull: '\u5468\u65e5'
     }
   };
   function t(k) { var l = (window.currentLang || 'en').startsWith('zh') ? 'zh' : 'en'; return (I18N[l]||I18N.en)[k] || I18N.en[k] || k; }
@@ -458,6 +478,9 @@ if (typeof I18N_ZH !== 'undefined') {
   var providerAccessNodes = [];
   var providerBillingSchedule = [];
   var providerTokenPricingSchedule = [];
+  var providerServeWindowSchedule = [];
+  var providerServeWeekdayOrder = [1, 2, 3, 4, 5, 6, 0];
+  var providerServeWeekdayKeys = ['weekdayMonFull','weekdayTueFull','weekdayWedFull','weekdayThuFull','weekdayFriFull','weekdaySatFull','weekdaySunFull'];
   var providerBillingNowTimer = 0;
   var providerBillingTimezoneOptions = ['Asia/Shanghai','Asia/Hong_Kong','Asia/Tokyo','UTC','America/New_York','Europe/London'];
   var providerBillingWeekdayKeys = ['weekdaySun','weekdayMon','weekdayTue','weekdayWed','weekdayThu','weekdayFri','weekdaySat'];
@@ -486,6 +509,9 @@ if (typeof I18N_ZH !== 'undefined') {
   var llmEmbeddingRuntimePollTimer = 0;
   var sgDraft = null, sgMode = 'create', sgProviderDraft = null, sgOpenKind = '';
   var sgSaveBusy = false, sgTrainBusy = false, sgHeadBusy = false;
+  var sgGroupReturn = null;
+  var sgPendingGroupScroll = '';
+  var sgGroupScrollMemory = {};
   var sgCapabilityOptions = ['reasoning','tools','document','vision','audio','code','search'];
   var sgPriorityOptions = [0,10,20,30,40,50,60,70,80,90,100];
   var sgResolutionOptions = [0,1,2,3,4,5];
@@ -1471,6 +1497,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + providerBillingBadge(p)
       + providerWorkBuddyBadge(p)
       + providerAccessBadge(p)
+      + providerServeBadge(p)
       + '</div>'
       + '<span class="data-row-meta" title="' + dragHint + '">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
       + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
@@ -1525,6 +1552,7 @@ if (typeof I18N_ZH !== 'undefined') {
     bindProviderArrayDrag(el);
     patchProviderTraffic();
     scheduleProviderCanaryRefresh();
+    startProviderServeBadgeClock();
   }
   window.toggleProviderArray = function(id) {
     if (!id) return;
@@ -1633,6 +1661,7 @@ if (typeof I18N_ZH !== 'undefined') {
     }
     payload.token_pricing = pricing;
     if (provider.allowed_node_ids) payload.allowed_node_ids = provider.allowed_node_ids;
+    payload.serve_windows = Array.isArray(provider.serve_windows) ? provider.serve_windows : [];
     payload.array_id = arrayID;
     return payload;
   }
@@ -1827,13 +1856,21 @@ if (typeof I18N_ZH !== 'undefined') {
     if (minutes < end) return providerBillingWeekdayMatches(window.days, weekday) || providerBillingWeekdayMatches(window.days, (weekday + 6) % 7);
     return false;
   }
+  var providerClockFormatterCache = {};
   function providerBillingNowParts(timezone) {
     timezone = String(timezone || 'Asia/Shanghai').trim() || 'Asia/Shanghai';
     var now = new Date();
     function read(tz) {
-      var parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23'
-      }).formatToParts(now);
+      // Constructing Intl.DateTimeFormat dominates this helper; cache one
+      // formatter per timezone since it is stateless between formatToParts.
+      var formatter = providerClockFormatterCache[tz];
+      if (!formatter) {
+        formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23'
+        });
+        providerClockFormatterCache[tz] = formatter;
+      }
+      var parts = formatter.formatToParts(now);
       var map = {};
       parts.forEach(function(part) { map[part.type] = part.value; });
       var weekday = { Sun:0,Sunday:0,Mon:1,Monday:1,Tue:2,Tues:2,Tuesday:2,Wed:3,Wednesday:3,Thu:4,Thur:4,Thurs:4,Thursday:4,Fri:5,Friday:5,Sat:6,Saturday:6 }[String(map.weekday||'').replace(/\.$/, '')];
@@ -2322,6 +2359,203 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!ids.length) return '';
     return '<span class="badge">' + esc(t('accessScopeSelected') + ': ' + ids.join(', ')) + '</span>';
   }
+  function providerServeWindowAllDay(item) {
+    return (item && item.start) === '00:00' && (item && item.end) === '24:00';
+  }
+  function providerServeDaysInvalid(days) {
+    if (!Array.isArray(days)) return true;
+    var seen = {};
+    for (var i = 0; i < days.length; i++) {
+      var n = Number(days[i]);
+      if (!isFinite(n) || n < 0 || n > 6 || n !== Math.round(n) || seen[n]) return true;
+      seen[n] = true;
+    }
+    return false;
+  }
+  function normalizeProviderServeWindow(item) {
+    var days = normalizeProviderBillingDays(item && item.days);
+    if (days == null) return null;
+    return {
+      days: days,
+      start: normalizeProviderBillingClock(item && item.start) || '00:00',
+      end: normalizeProviderBillingClock(item && item.end) || '24:00'
+    };
+  }
+  function cloneProviderServeWindows(windows) {
+    // Broken rows stay visible and block the save: silently dropping them
+    // would widen availability beyond the hours that were stored.
+    return (windows || []).map(function(w) {
+      return {
+        days: (w && Array.isArray(w.days)) ? w.days.slice() : [],
+        start: normalizeProviderBillingClock(w && w.start),
+        end: normalizeProviderBillingClock(w && w.end)
+      };
+    }).filter(function(w) { return w.days.length || w.start || w.end; });
+  }
+  function providerServeWindowInvalid(item) {
+    var start = parseProviderBillingMinutes(item && item.start);
+    var end = parseProviderBillingMinutes(item && item.end);
+    if (start < 0 || end < 0 || start === end) return true;
+    return providerServeDaysInvalid(item && item.days);
+  }
+  function providerServeWindowsHTML() {
+    if (!(providerServeWindowSchedule || []).length) {
+      return '<div class="provider-billing-empty">' + esc(t('serveEmpty')) + '</div>';
+    }
+    return providerServeWindowSchedule.map(providerServeWindowHTML).join('');
+  }
+  function providerServeWindowHTML(item, index) {
+    var days = uniqueProviderBillingDays(item && item.days);
+    var everyday = !days.length;
+    var weekdays = providerBillingDaysAreWeekdays(days);
+    var allDay = providerServeWindowAllDay(item);
+    var chips = providerServeWeekdayOrder.map(function(day, position) {
+      var on = everyday || days.indexOf(day) >= 0;
+      return '<button type="button" id="llmPrvServeDay' + index + '_' + day + '" class="provider-day-chip' + (on ? ' is-active' : '') + '" aria-pressed="' + (on ? 'true' : 'false') + '" onclick="toggleProviderServeDay(' + index + ',' + day + ')">' + esc(t(providerServeWeekdayKeys[position])) + '</button>';
+    }).join('');
+    function timeField(key) {
+      var id = 'llmPrvServe' + (key === 'start' ? 'Start' : 'End') + index;
+      var isEnd24 = key === 'end' && item && item.end === '24:00';
+      // A native time input cannot hold 24:00, so the end of the day renders
+      // as an editable text field instead.
+      var input = isEnd24
+        ? '<input id="' + id + '" type="text" inputmode="numeric" value="24:00"' + (allDay ? ' disabled' : '')
+          + ' oninput="setProviderServeField(' + index + ',\'end\',this.value)" onchange="setProviderServeField(' + index + ',\'end\',this.value)">'
+        : '<input id="' + id + '" type="time" value="' + esc((item && item[key]) || (key === 'start' ? '00:00' : '23:59')) + '"' + (allDay ? ' disabled' : '')
+          + ' oninput="setProviderServeField(' + index + ',\'' + key + '\',this.value)" onchange="setProviderServeField(' + index + ',\'' + key + '\',this.value)">';
+      return '<div><label for="' + id + '">' + esc(t(key === 'start' ? 'billingStart' : 'billingEnd')) + '</label>' + input + '</div>';
+    }
+    return '<div class="provider-billing-window' + (providerServeWindowInvalid(item) ? ' is-invalid' : '') + '">'
+      + '<div class="provider-billing-presets">'
+      + '<button type="button" id="llmPrvServePreset' + index + '_everyday" class="provider-preset-chip' + (everyday ? ' is-active' : '') + '" aria-pressed="' + (everyday ? 'true' : 'false') + '" onclick="setProviderServePreset(' + index + ',\'everyday\')">' + esc(t('serveEveryday')) + '</button>'
+      + '<button type="button" id="llmPrvServePreset' + index + '_weekdays" class="provider-preset-chip' + (weekdays ? ' is-active' : '') + '" aria-pressed="' + (weekdays ? 'true' : 'false') + '" onclick="setProviderServePreset(' + index + ',\'weekdays\')">' + esc(t('serveWeekdays')) + '</button>'
+      + '</div>'
+      + '<div class="provider-billing-days">' + chips + '</div>'
+      + '<div class="provider-billing-times provider-serve-times">'
+      + '<div class="provider-serve-allday"><label for="llmPrvServeAllDay' + index + '">' + esc(t('serveAllDay')) + '</label>'
+      + '<input id="llmPrvServeAllDay' + index + '" type="checkbox"' + (allDay ? ' checked' : '') + ' onchange="setProviderServeAllDay(' + index + ',this.checked)"></div>'
+      + timeField('start') + timeField('end')
+      + '<button class="btn-ghost" type="button" id="llmPrvServeRemove' + index + '" onclick="removeProviderServeWindow(' + index + ')">' + esc(t('serveRemoveWindow')) + '</button>'
+      + '</div></div>';
+  }
+  function renderProviderServeWindows() {
+    var el = document.getElementById('llmPrvServeWindows');
+    if (!el) return;
+    el.innerHTML = providerServeWindowsHTML();
+  }
+  function providerServeSection() {
+    // Not provider-access-scope: the access handlers replace the first
+    // element with that class, so the serve box must not match it.
+    return '<div class="provider-serve-scope"><div class="provider-billing-title"><strong>' + esc(t('serveTitle')) + '</strong></div>'
+      + '<div class="provider-billing-hint">' + esc(t('serveHint')) + '</div>'
+      + '<div class="provider-billing-head"><span></span><button class="btn-ghost" type="button" onclick="addProviderServeWindow()">' + esc(t('serveAddWindow')) + '</button></div>'
+      + '<div id="llmPrvServeWindows">' + providerServeWindowsHTML() + '</div></div>';
+  }
+  window.addProviderServeWindow = function() {
+    providerServeWindowSchedule.push({ days: [1, 2, 3, 4, 5], start: '00:00', end: '24:00' });
+    renderProviderServeWindows();
+  };
+  window.removeProviderServeWindow = function(index) {
+    providerServeWindowSchedule.splice(index, 1);
+    renderProviderServeWindows();
+  };
+  window.setProviderServePreset = function(index, preset) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    item.days = preset === 'weekdays' ? [1, 2, 3, 4, 5] : [];
+    renderProviderServeWindows();
+    focusProviderBillingControl('llmPrvServePreset' + index + '_' + preset);
+  };
+  window.toggleProviderServeDay = function(index, day) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    var days = uniqueProviderBillingDays(item.days);
+    if (!days.length) days = [0, 1, 2, 3, 4, 5, 6];
+    var pos = days.indexOf(day);
+    if (pos >= 0) days.splice(pos, 1);
+    else days.push(day);
+    item.days = normalizeProviderBillingDays(days) || [];
+    renderProviderServeWindows();
+    focusProviderBillingControl('llmPrvServeDay' + index + '_' + day);
+  };
+  window.setProviderServeField = function(index, key, value) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    item[key] = normalizeProviderBillingClock(value);
+    var root = document.querySelectorAll('#llmPrvServeWindows .provider-billing-window')[index];
+    if (root) root.classList.toggle('is-invalid', providerServeWindowInvalid(item));
+  };
+  window.setProviderServeAllDay = function(index, on) {
+    var item = providerServeWindowSchedule[index];
+    if (!item) return;
+    if (on) {
+      item.start = '00:00';
+      item.end = '24:00';
+    } else if (providerServeWindowAllDay(item)) {
+      item.start = '09:00';
+      item.end = '18:00';
+    }
+    renderProviderServeWindows();
+  };
+  function readProviderServeWindows() {
+    return (providerServeWindowSchedule || []).map(normalizeProviderServeWindow).filter(Boolean).filter(function(w) {
+      return !providerServeWindowInvalid(w);
+    });
+  }
+  function providerServeWindowsDropped() {
+    return readProviderServeWindows().length !== (providerServeWindowSchedule || []).length;
+  }
+  function providerHasServeWindows(p) {
+    return !!(p && Array.isArray(p.serve_windows) && p.serve_windows.length);
+  }
+  function providerServeSummary(p) {
+    return (p && p.serve_windows || []).map(function(w) {
+      var days = uniqueProviderBillingDays(w.days);
+      var dayLabel = days.length ? days.map(function(d) { return t(providerBillingWeekdayKeys[d]); }).join('/') : t('billingEveryday');
+      return dayLabel + ' ' + (w.start || '00:00') + '\u2013' + (w.end || '24:00');
+    }).join('; ');
+  }
+  function providerServeBadge(p) {
+    if (!providerHasServeWindows(p)) return '';
+    // The dial gate always evaluates in Asia/Shanghai on the backend, so the
+    // badge must not follow the provider's billing timezone.
+    var parts = providerBillingNowParts('Asia/Shanghai');
+    var open = (p.serve_windows || []).some(function(w) { return providerBillingWindowMatches(w, parts.weekday, parts.minutes); });
+    var title = esc(t('serveWindowBadge') + ': ' + providerServeSummary(p));
+    var cls = 'badge provider-serve-badge' + (open ? ' info' : ' warn');
+    var text = open ? t('serveWindowBadge') : t('serveWindowBadge') + ' \u00b7 ' + t('serveClosedNow');
+    return '<span class="' + cls + '" data-provider-id="' + esc(p.id) + '" title="' + title + '">' + esc(text) + '</span>';
+  }
+  var providerServeBadgeTimer = 0;
+  function refreshProviderServeBadges() {
+    // The list rows re-render only on data loads; flip the badges in place so
+    // a tab left open does not advertise a window that closed an hour ago.
+    var root = document.getElementById('llmProvidersList');
+    if (!root) return;
+    var badges = root.querySelectorAll('.provider-serve-badge');
+    if (!badges.length) return;
+    var parts = providerBillingNowParts('Asia/Shanghai');
+    badges.forEach(function(el) {
+      var id = el.getAttribute('data-provider-id') || '';
+      var provider = null;
+      for (var i = 0; i < providers.length; i++) {
+        if (id && providers[i] && providers[i].id === id) { provider = providers[i]; break; }
+      }
+      if (!providerHasServeWindows(provider)) return;
+      var open = (provider.serve_windows || []).some(function(w) { return providerBillingWindowMatches(w, parts.weekday, parts.minutes); });
+      var title = esc(t('serveWindowBadge') + ': ' + providerServeSummary(provider));
+      el.className = 'badge provider-serve-badge' + (open ? ' info' : ' warn');
+      el.textContent = open ? t('serveWindowBadge') : t('serveWindowBadge') + ' \u00b7 ' + t('serveClosedNow');
+      el.setAttribute('title', title);
+    });
+  }
+  function startProviderServeBadgeClock() {
+    if (providerServeBadgeTimer) return;
+    providerServeBadgeTimer = setInterval(function() {
+      if (document.visibilityState === 'hidden') return;
+      refreshProviderServeBadges();
+    }, 60000);
+  }
   window.showProviderDialog = async function(mode, id, opts) {
     var seq = ++providerDialogSeq;
     var p = mode === 'edit' ? providers.find(function(x){return x.id===id;}) : null;
@@ -2333,6 +2567,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!(opts && opts.keepBilling)) {
       providerBillingSchedule = cloneProviderBillingSchedule(p && p.credit_multiplier_schedule);
       providerTokenPricingSchedule = cloneProviderTokenPricingSchedule(p && p.token_pricing && p.token_pricing.price_schedule);
+      providerServeWindowSchedule = cloneProviderServeWindows(p && p.serve_windows);
       var savedIDs = (p && p.allowed_node_ids) || [];
       providerAccessMode = savedIDs.length ? 'nodes' : 'all';
       providerAccessSelected = {};
@@ -2368,6 +2603,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + '</div><div class="hint">' + esc(t('sequenceHint')) + '</div>'
       + providerArraySection(p, selectedArrayID)
       + providerAccessScopeSection()
+      + providerServeSection()
       + '<div id="llmPrvBillingNote" class="hint">' + esc(t('providerArrayBillingOnEdit')) + '</div>',
       '<button class="btn-primary" onclick="saveProvider(' + jsArg(mode==='edit'?id:'') + ')">' + esc(t('save')) + '</button>'
       + '<button class="btn-ghost" onclick="sgCloseCurrentDialog()">' + esc(t('cancel')) + '</button>');
@@ -2637,6 +2873,14 @@ if (typeof I18N_ZH !== 'undefined') {
     payload.timezone = billing.timezone;
     payload.credit_multiplier = billing.credit_multiplier;
     payload.credit_multiplier_schedule = billing.credit_multiplier_schedule;
+    // The serve editor is authoritative for the dial windows. An empty or
+    // half-filled window would silently widen availability to "always on",
+    // so the save is refused rather than repaired.
+    if (providerServeWindowsDropped()) {
+      toast(t('serveDroppedWindows'), 'error');
+      return;
+    }
+    payload.serve_windows = readProviderServeWindows();
     if (providerAccessMode === 'nodes') {
       var nodeInput = document.getElementById('llmPrvNodes');
       if (nodeInput) {
@@ -3101,6 +3345,8 @@ if (typeof I18N_ZH !== 'undefined') {
       if (!serviceGroups.length) {
         defaultServiceGroupId = '';
         renderServiceGroups();
+      } else {
+        sgPendingGroupScroll = '';
       }
       return;
     }
@@ -3112,7 +3358,7 @@ if (typeof I18N_ZH !== 'undefined') {
     var el = document.getElementById('llmServiceGroupsList');
     if (!el) return;
     syncServiceGroupTrafficSwitch();
-    if (!serviceGroups.length) { el.innerHTML = '<div class="hint">' + esc(t('noGroups')) + '</div>'; return; }
+    if (!serviceGroups.length) { el.innerHTML = '<div class="hint">' + esc(t('noGroups')) + '</div>'; sgPendingGroupScroll = ''; return; }
     el.innerHTML = serviceGroups.map(function(g) {
       var modelNames = (g.models||[]).map(function(m){return m.name;}).join(', ');
       var policyBadge = g.access_policy === 'grant_required' ? '<span class="badge warn">'+esc(sgPolicyLabel('grant_required'))+'</span>' : '<span class="badge ok">'+esc(sgPolicyLabel('free'))+'</span>';
@@ -3125,7 +3371,7 @@ if (typeof I18N_ZH !== 'undefined') {
         + (isDefault ? '<span class="badge ok">' + esc(t('sgDefaultBadge')) + '</span>' : '')
         + (isDynamic ? '<span class="badge">' + esc(t('sgKindDynamic')) + '</span>' : '<span class="badge">' + esc(t('sgKindStatic')) + '</span>')
         + '</div>';
-      return '<div class="data-row llm-service-group-row"><div class="data-row-main"><strong>' + esc(g.name||g.id) + '</strong> ' + tags
+      return '<div class="data-row llm-service-group-row" tabindex="-1" data-sg-group-id="' + esc(g.id) + '"><div class="data-row-main"><strong>' + esc(g.name||g.id) + '</strong> ' + tags
         + '<span class="data-row-meta">' + esc(agentName) + ' \u00b7 ' + esc(g.description||'') + ' \u00b7 ' + esc(modelNames||'no models')
         + ' \u00b7 ' + (g.models||[]).length + ' route(s)</span></div>'
         + '<div class="data-row-actions">'
@@ -3138,6 +3384,55 @@ if (typeof I18N_ZH !== 'undefined') {
         + '<div class="service-group-traffic' + (serviceGroupTrafficReady ? '' : ' is-pending') + '" data-service-group-id="' + esc(g.id) + '"></div></div>';
     }).join('');
     patchServiceGroupTraffic();
+    if (sgPendingGroupScroll) {
+      var revealId = sgPendingGroupScroll;
+      sgPendingGroupScroll = '';
+      sgScrollServiceGroupRow(revealId);
+    }
+  }
+  function sgRememberSavedGroup(payload) {
+    if (!payload || !String(payload.id || '').trim()) return;
+    var saved = sgCloneGroup(payload);
+    var id = String(saved.id || '');
+    var i;
+    for (i = 0; i < serviceGroups.length; i++) {
+      if (String(serviceGroups[i] && serviceGroups[i].id || '') === id) {
+        serviceGroups[i] = saved;
+        return;
+      }
+    }
+    serviceGroups.push(saved);
+  }
+  function sgServiceGroupRow(id) {
+    var want = String(id || '');
+    if (!want) return null;
+    var rows = document.querySelectorAll('#llmServiceGroupsList .llm-service-group-row');
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-sg-group-id') === want) return rows[i];
+    }
+    return null;
+  }
+  function sgScrollServiceGroupRow(id) {
+    var want = String(id || '');
+    if (!want) return;
+    function go() {
+      var row = sgServiceGroupRow(want);
+      if (!row) return;
+      // content-visibility:auto can ignore scrollIntoView until the row is forced visible.
+      row.classList.add('sg-group-reveal');
+      var marked = document.querySelectorAll('#llmServiceGroupsList .sg-group-reveal');
+      var i;
+      for (i = 0; i < marked.length; i++) {
+        if (marked[i] !== row) marked[i].classList.remove('sg-group-reveal');
+      }
+      if (row.scrollIntoView) row.scrollIntoView({block:'nearest', inline:'nearest'});
+      var active = document.activeElement;
+      var list = document.getElementById('llmServiceGroupsList');
+      if (row.focus && (!active || active === document.body || active === document.documentElement || active === list)) row.focus({preventScroll:true});
+    }
+    go();
+    requestAnimationFrame(function(){ go(); requestAnimationFrame(go); });
   }
   window.setDefaultLLMServiceGroup = async function(id) {
     try {
@@ -3157,9 +3452,14 @@ if (typeof I18N_ZH !== 'undefined') {
   function agentNameByID(id){var a=agents.find(function(x){return x.id===id;});return a&&(a.name||a.id);}
   function sgPolicyLabel(policy){return policy==='grant_required'?(isZh()?'\u9700\u5151\u6362\u5361':'Card Required'):(isZh()?'\u514d\u8d39\u901a\u884c':'Free Access');}
   function sgProviderIDsFromModel(m) {
-    var ids = [];
-    (m && m.provider_ids || []).forEach(function(id){ if (id && ids.indexOf(id) < 0) ids.push(id); });
-    (m && m.provider_configs || []).forEach(function(c){ if (c && c.provider_id && ids.indexOf(c.provider_id) < 0) ids.push(c.provider_id); });
+    var ids=[], configs=m&&m.provider_configs||[], i, id;
+    for(i=0;i<configs.length;i++){
+      id=configs[i]&&String(configs[i].provider_id||'').trim();
+      if(id&&ids.indexOf(id)<0) ids.push(id);
+    }
+    if(ids.length) return ids;
+    var legacy=m&&m.provider_ids||[];
+    for(i=0;i<legacy.length;i++){ id=String(legacy[i]||'').trim(); if(id&&ids.indexOf(id)<0) ids.push(id); }
     return ids;
   }
   function sgProviderByID(id){return providers.find(function(x){return x.id===id;})||null;}
@@ -3396,6 +3696,139 @@ if (typeof I18N_ZH !== 'undefined') {
   function sgQualityLabel(q){ return q||''; }
   function sgSectionHead(title, hint){ return '<div class="sg-section-head"><div class="sg-section-copy"><div class="sg-section-title">'+esc(title)+'</div>'+(hint?'<div class="sg-section-hint">'+esc(hint)+'</div>':'')+'</div></div>'; }
 
+  var sgRouteDrag=null;
+  var sgRouteDropTo=null;
+  var sgRouteDragScrollAt=0;
+  function sgRouteInsertAt(list, clientY){
+    var cards=list?list.querySelectorAll('.sg-provider-card'):[];
+    for(var i=0;i<cards.length;i++){
+      var rect=cards[i].getBoundingClientRect();
+      if(clientY<rect.top+rect.height/2) return i;
+    }
+    return cards.length;
+  }
+  function sgRouteFinalIndex(from, insertAt, length){
+    if(insertAt>from) insertAt-=1;
+    if(insertAt<0) insertAt=0;
+    if(length<1) return 0;
+    if(insertAt>length-1) insertAt=length-1;
+    return insertAt;
+  }
+  function clearSgRouteDropMarks(root){
+    if(!root) return;
+    root.querySelectorAll('.sg-provider-card.is-drop-before, .sg-provider-card.is-drop-after').forEach(function(node){
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+    });
+  }
+  function clearSgRouteDragMarks(root){
+    if(!root) return;
+    root.querySelectorAll('.sg-provider-card.is-dragging').forEach(function(node){ node.classList.remove('is-dragging'); });
+    clearSgRouteDropMarks(root);
+  }
+  function sgRouteDragAutoScroll(event){
+    var now=Date.now();
+    if(now-sgRouteDragScrollAt<40) return;
+    var scroller=document.querySelector('#llmDialogContent .sg-dialog-body');
+    if(!scroller) return;
+    var rect=scroller.getBoundingClientRect();
+    var edge=18;
+    var dy=0;
+    if(event.clientY<rect.top+edge) dy=-Math.ceil((rect.top+edge-event.clientY)/2);
+    else if(event.clientY>rect.bottom-edge) dy=Math.ceil((event.clientY-(rect.bottom-edge))/2);
+    if(!dy) return;
+    if(dy>24) dy=24;
+    if(dy<-24) dy=-24;
+    sgRouteDragScrollAt=now;
+    scroller.scrollTop+=dy;
+  }
+  function sgRoutePressStartsDrag(node){
+    return !(node&&node.closest('button, a, input, select, textarea, label, .sg-provider-meta'));
+  }
+  function markSgRouteGap(list, insertAt){
+    if(!list) return;
+    list.querySelectorAll('.is-drop-before, .is-drop-after').forEach(function(node){
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+    });
+    var cards=list.querySelectorAll('.sg-provider-card');
+    if(!cards.length) return;
+    if(insertAt<=0) cards[0].classList.add('is-drop-before');
+    else if(insertAt>=cards.length) cards[cards.length-1].classList.add('is-drop-after');
+    else cards[insertAt].classList.add('is-drop-before');
+  }
+  function bindServiceGroupRouteDrag(){
+    var root=document.getElementById('llmDialogOverlay');
+    if(!root||root.getAttribute('data-sg-route-drag')==='1') return;
+    root.setAttribute('data-sg-route-drag','1');
+    var sgRouteIgnoreClickUntil=0;
+    document.addEventListener('pointerdown', function(){
+      sgRouteIgnoreClickUntil=0;
+    }, true);
+    document.addEventListener('click', function(event){
+      if(Date.now()>sgRouteIgnoreClickUntil) return;
+      sgRouteIgnoreClickUntil=0;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }, true);
+    root.addEventListener('pointerdown', function(event){
+      var node=dragEventNode(event);
+      var card=node&&node.closest('.sg-provider-card');
+      if(!card||!root.contains(card)||!card.classList.contains('is-draggable')) return;
+      card.setAttribute('draggable', sgRoutePressStartsDrag(node)?'true':'false');
+    }, true);
+    root.addEventListener('dragstart', function(event){
+      var node=dragEventNode(event);
+      var card=node&&node.closest('.sg-provider-card');
+      if(!card||!root.contains(card)) return;
+      if(!sgRoutePressStartsDrag(node)){ event.preventDefault(); return; }
+      if(card.getAttribute('draggable')!=='true'){ event.preventDefault(); return; }
+      var row=card.getAttribute('data-sg-row');
+      var index=Number(card.getAttribute('data-sg-index'));
+      if(row==null||!isFinite(index)){ event.preventDefault(); return; }
+      sgRouteDropTo=null;
+      sgRouteDragScrollAt=0;
+      sgRouteDrag={row:String(row), index:index};
+      card.classList.add('is-dragging');
+      if(!event.dataTransfer) return;
+      event.dataTransfer.effectAllowed='move';
+      try{ event.dataTransfer.setData('text/plain', row+':'+index); }catch(e){}
+    });
+    function allowSgRouteDrop(event){
+      if(!sgRouteDrag) return;
+      sgRouteDragAutoScroll(event);
+      var node=dragEventNode(event);
+      var list=node&&node.closest('.sg-provider-list');
+      if(!list||!root.contains(list)||list.getAttribute('data-sg-row')!==sgRouteDrag.row){
+        clearSgRouteDropMarks(root);
+        return;
+      }
+      event.preventDefault();
+      if(event.dataTransfer) event.dataTransfer.dropEffect='move';
+      markSgRouteGap(list, sgRouteInsertAt(list, event.clientY));
+    }
+    root.addEventListener('dragenter', allowSgRouteDrop);
+    root.addEventListener('dragover', allowSgRouteDrop);
+    root.addEventListener('drop', function(event){
+      if(!sgRouteDrag) return;
+      var node=dragEventNode(event);
+      var list=node&&node.closest('.sg-provider-list');
+      var same=!!(list&&root.contains(list)&&list.getAttribute('data-sg-row')===sgRouteDrag.row);
+      if(!same){ sgRouteDropTo=null; return; }
+      event.preventDefault();
+      sgRouteDropTo=sgRouteFinalIndex(sgRouteDrag.index, sgRouteInsertAt(list, event.clientY), list.querySelectorAll('.sg-provider-card').length);
+    });
+    root.addEventListener('dragend', function(){
+      var drag=sgRouteDrag;
+      var to=sgRouteDropTo;
+      sgRouteDrag=null;
+      sgRouteDropTo=null;
+      clearSgRouteDragMarks(root);
+      if(drag&&to!=null&&to!==drag.index) window.sgMoveProviderTo(Number(drag.row), drag.index, to);
+      if(drag) sgRouteIgnoreClickUntil=Date.now()+80;
+    });
+  }
   function sgRenderProviderCard(rowIndex,routeIndex,total){
     var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];
     var cfg=sgGetProviderConfig(model,routeIndex);
@@ -3406,17 +3839,21 @@ if (typeof I18N_ZH !== 'undefined') {
     var pricingMeta = pricingBrief ? ' \u00b7 '+esc(billingLabel)+' \u00b7 '+esc(pricingBrief) : ' \u00b7 '+esc(billingLabel);
     var array = providerArrayByID(cfg.provider_id);
     var memberMeta = array && array.members.length > 1 ? ' \u00b7 '+esc(array.members.map(function(member){ return member.name || member.id; }).join(', ')) : '';
-    return '<div class="sg-provider-card"><div class="sg-row-head"><strong>'+esc(sgProviderName(cfg.provider_id))+' #'+(routeIndex+1)+'</strong>'
+    var canDrag=total>1;
+    return '<div class="sg-provider-card'+(canDrag?' is-draggable':'')+'"'+(canDrag?' draggable="true"':'')+' data-sg-row="'+rowIndex+'" data-sg-index="'+routeIndex+'">'
+      +(canDrag?'<span class="sg-provider-grip" title="'+esc(t('sgArrayDragHint'))+'" aria-hidden="true"></span>':'')
+      +'<div class="sg-provider-body"><div class="sg-row-head"><strong>'+esc(sgProviderName(cfg.provider_id))+' #'+(routeIndex+1)+'</strong>'
       +'<div class="sg-actions"><button class="btn-ghost sg-tiny-btn" onclick="sgEditProviderConfig('+rowIndex+','+routeIndex+')">'+esc(t('editGroup'))+'</button>'
-      +(routeIndex>0?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)">\u2191</button>':'')
-      +(routeIndex<total-1?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)">\u2193</button>':'')
+      +(routeIndex>0?'<button type="button" class="btn-ghost sg-icon-btn" data-sg-move="-1" aria-label="'+esc(t('sgMoveEarlier'))+'" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)">\u2191</button>':'')
+      +(routeIndex<total-1?'<button type="button" class="btn-ghost sg-icon-btn" data-sg-move="1" aria-label="'+esc(t('sgMoveLater'))+'" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)">\u2193</button>':'')
       +'<button class="btn-danger-ghost sg-tiny-btn" onclick="sgRemoveProvider('+rowIndex+','+routeIndex+')">\u2715</button></div></div>'
-      +'<div class="sg-provider-meta">Upstream: '+esc((cfg&&cfg.model)||'-')+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+pricingMeta+memberMeta+'</div></div>';
+      +'<div class="sg-provider-meta">Upstream: '+esc((cfg&&cfg.model)||'-')+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+pricingMeta+memberMeta+'</div></div></div>';
   }
   function sgRenderRouteRow(model,rowIndex){
     model.provider_configs=sgProviderConfigsFromModel(model);
     var locked=sgDraft&&sgDraft.kind==='dynamic'&&sgIsLockedModelName(model.name);
-    var cards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,(model.provider_configs||[]).length);}).join('');
+    var total=(model.provider_configs||[]).length;
+    var cards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,total);}).join('');
     var routeArrays=providerArrayRecords().filter(function(array){ return array.members && array.members.length; });
     var providerOptions=!routeArrays.length?'<option value="">('+esc(t('noProviders'))+')</option>'
       :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+routeArrays.map(function(array){
@@ -3431,7 +3868,7 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<input class="sg-field-full" value="'+esc(model.name||'auto')+'"'+(locked?' disabled':'')+' oninput="sgSetRouteField('+rowIndex+',\'name\',this.value)"></div>'
       +'<div><label class="sg-label-sm">'+esc(t('sgFeeMultiplier'))+'</label><input class="sg-field-full" type="number" min="0.01" step="0.01" value="'+esc(String(fee))+'" oninput="sgSetRouteField('+rowIndex+',\'billing_multiplier\',this.value)"></div>'
       +'<div class="sg-provider-add"><select id="sgProviderAdd'+rowIndex+'">'+providerOptions+'</select><button class="btn-ghost" onclick="sgAddProviderToRoute('+rowIndex+')">+</button></div></div>'
-      +(cards||'<div class="sg-empty-provider">'+esc(t('sgNoProviders'))+'</div>')+'</div>';
+      +(cards?'<div class="sg-provider-list" data-sg-row="'+rowIndex+'">'+cards+'</div>':'<div class="sg-empty-provider">'+esc(t('sgNoProviders'))+'</div>')+'</div>';
   }
   function sgRenderWorkloadTable(d){
     var rows=(d.routes||sgDefaultDynamicRoutes()).map(function(r,i){
@@ -3451,12 +3888,17 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<option value="mid"'+(d.quality_floor==='mid'?' selected':'')+'>mid</option>'
       +'<option value="low"'+(d.quality_floor==='low'?' selected':'')+'>low</option></select></div></div></div>';
   }
-  function sgRenderGroupDialog(){
+  function sgRenderGroupDialog(opts){
     var d=sgDraft||sgEmptyGroup();
     if(d.kind==='dynamic') sgPrepareDynamicDraft(d);
     var title=sgMode==='edit'?t('groupDialogTitleEdit'):t('groupDialogTitleNew');
     var agentOptions = agents.map(function(a){return '<option value="'+esc(a.id)+'"'+(d.agent_id===a.id?' selected':'')+'>'+esc(a.name||a.id)+'</option>';}).join('');
-    var rows=(d.models||[]).map(function(m,i){return sgRenderRouteRow(m,i);}).join('');
+    var dragHint='';
+    var routeModels=d.models||[];
+    for(var ri=0;ri<routeModels.length;ri++){
+      if(sgProviderConfigsFromModel(routeModels[ri]).length>1){ dragHint=t('sgArrayOrderHint'); break; }
+    }
+    var rows=routeModels.map(function(m,i){return sgRenderRouteRow(m,i);}).join('');
     var body='<div class="sg-form-grid">'
       +'<div><label>'+esc(t('fieldGroupID'))+'</label><input id="sgFieldID" value="'+esc(d.id)+'"'+(sgMode==='edit'?' readonly class="sg-readonly"':'')+' oninput="sgSetField(\'id\',this.value)"></div>'
       +'<div><label>'+esc(t('fieldGroupName'))+'</label><input id="sgFieldName" value="'+esc(d.name)+'" oninput="sgSetField(\'name\',this.value)"></div></div>'
@@ -3465,16 +3907,71 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<div class="sg-block-xs"><label>'+esc(t('sgAccessPolicy'))+'</label><select id="sgFieldPolicy" onchange="sgSetField(\'access_policy\',this.value)"><option value="free"'+(d.access_policy!=='grant_required'?' selected':'')+'>'+esc(sgPolicyLabel('free'))+' ('+esc(t('sgPolicyFreeHint'))+')</option><option value="grant_required"'+(d.access_policy==='grant_required'?' selected':'')+'>'+esc(sgPolicyLabel('grant_required'))+' ('+esc(t('sgPolicyGrantHint'))+')</option></select></div>'
       +'<div class="sg-block-xs"><label>'+esc(t('fieldGroupKind'))+'</label><select id="sgFieldKind" onchange="sgSetKind(this.value)"><option value="dynamic"'+(d.kind==='dynamic'?' selected':'')+'>'+esc(t('sgKindDynamic'))+'</option><option value="static"'+(d.kind!=='dynamic'?' selected':'')+'>'+esc(t('sgKindStatic'))+'</option></select></div>'
       +(d.kind==='dynamic'?sgRenderWorkloadTable(d)+sgRenderCatalog(d):'')
-      +'<div class="sg-section">'+sgSectionHead(t('sgRoutes'), '')+'<div class="sg-flex-between"><span></span><button class="btn-ghost" onclick="sgAddRoute()">'+esc(t('sgAddRoute'))+'</button></div>'+rows+'</div>';
+      +'<div class="sg-section">'+sgSectionHead(t('sgRoutes'), dragHint)+'<div class="sg-flex-between"><span></span><button class="btn-ghost" onclick="sgAddRoute()">'+esc(t('sgAddRoute'))+'</button></div>'+rows+'</div>';
     sgOpenKind='group';
-    openDialog(sgDialogChrome(title, body, '<button class="btn-primary" onclick="sgSaveGroup()">'+esc(t('save'))+'</button><button class="btn-ghost" onclick="sgCloseCurrentDialog()">'+esc(t('cancel'))+'</button>'), 'sg-form-dialog');
+    var reveal=opts&&opts.revealRoute;
+    var keepScroll=!!(opts&&opts.keepScroll);
+    var scrollTop=0;
+    var prevBody=(keepScroll&&!reveal)?document.querySelector('#llmDialogContent .sg-dialog-body'):null;
+    if(prevBody) scrollTop=prevBody.scrollTop;
+    if(reveal&&isFinite(Number(reveal.top))) scrollTop=Number(reveal.top);
+    openDialog(sgDialogChrome(title, body, '<button class="btn-primary" onclick="sgSaveGroup()">'+esc(t('save'))+'</button><button class="btn-ghost" onclick="sgCloseCurrentDialog()">'+esc(t('cancel'))+'</button>'), 'sg-form-dialog', (keepScroll||reveal)?false:true);
+    bindServiceGroupRouteDrag();
+    if(!keepScroll&&!reveal) return;
+    var next=document.querySelector('#llmDialogContent .sg-dialog-body');
+    if(!next) return;
+    next.scrollTop=scrollTop;
+    var pinned=scrollTop;
+    var fm=opts&&opts.focusMove;
+    if(fm){
+      var moved=document.querySelector('#llmDialogContent .sg-provider-card[data-sg-row="'+Number(fm.row)+'"][data-sg-index="'+Number(fm.index)+'"]');
+      var again=moved&&moved.querySelector('[data-sg-move="'+(Number(fm.delta)<0?'-1':'1')+'"]');
+      if(again&&again.focus) again.focus({preventScroll:true});
+      else if(moved&&moved.focus){ moved.setAttribute('tabindex','-1'); moved.focus({preventScroll:true}); }
+    }
+    if(reveal&&isFinite(Number(reveal.row))&&isFinite(Number(reveal.index))){
+      var card=document.querySelector('#llmDialogContent .sg-provider-card[data-sg-row="'+Number(reveal.row)+'"][data-sg-index="'+Number(reveal.index)+'"]');
+      if(card){
+        var bodyRect=next.getBoundingClientRect();
+        var cardRect=card.getBoundingClientRect();
+        var pad=12;
+        var top=next.scrollTop;
+        if(cardRect.top<bodyRect.top+pad) top+=cardRect.top-bodyRect.top-pad;
+        else if(cardRect.bottom>bodyRect.bottom-pad) top+=cardRect.bottom-bodyRect.bottom+pad;
+        if(top<0) top=0;
+        next.scrollTop=top;
+        pinned=next.scrollTop;
+        if(!fm&&card.focus){ card.setAttribute('tabindex','-1'); card.focus({preventScroll:true}); }
+      }
+    }
+    if(reveal&&!fm){
+      var shell=document.getElementById('llmDialogContent');
+      var active=document.activeElement;
+      if(shell&&(!active||!shell.contains(active))&&shell.focus){
+        shell.setAttribute('tabindex','-1');
+        shell.focus({preventScroll:true});
+      }
+    }
+    requestAnimationFrame(function(){ if(next.isConnected) next.scrollTop=pinned; });
+  }
+  function sgCaptureEditingPlace(){
+    var body=document.querySelector('#llmDialogContent .sg-dialog-body');
+    return {top:body?body.scrollTop:0};
+  }
+  function sgReturnToGroupEditor(){
+    var back=sgGroupReturn;
+    sgGroupReturn=null;
+    sgProviderDraft=null;
+    sgOpenKind='group';
+    sgRenderGroupDialog(back?{revealRoute:back}:null);
   }
   window.showGroupDialog=function(mode,id){
     var g=mode==='edit'?serviceGroups.find(function(x){return x.id===id;}):null;
     sgMode=mode==='edit'?'edit':'create';
     sgDraft=g?sgCloneGroup(g):sgEmptyGroup();
     if(sgDraft.kind==='dynamic') sgPrepareDynamicDraft(sgDraft,{fillEmptyOfficial:true});
-    sgRenderGroupDialog();
+    var mem=sgMode==='edit'?sgGroupScrollMemory[String(sgDraft.id||'')]:null;
+    sgRenderGroupDialog(mem?{revealRoute:mem}:null);
   };
   window.editLLMServiceGroup=function(id){window.showGroupDialog('edit',id);};
   window.showLLMGroupEditor=function(){window.showGroupDialog('create');};
@@ -3496,7 +3993,24 @@ if (typeof I18N_ZH !== 'undefined') {
   window.sgAddRoute=function(){if(!sgDraft)sgDraft=sgEmptyGroup();sgDraft.models.push(sgEmptyModel('auto'));sgRenderGroupDialog();};
   window.sgRemoveRoute=function(i){var m=sgDraft&&sgDraft.models&&sgDraft.models[i]; if(m&&sgIsLockedModelName(m.name)){toast(t('sgProtectedModel'),'info');return;} if(sgDraft&&sgDraft.models){sgDraft.models.splice(i,1);sgRenderGroupDialog();}};
   window.sgAddProviderToRoute=function(i){var sel=document.getElementById('sgProviderAdd'+i);var id=sel&&sel.value;if(!id){toast(t('chooseProvider'),'info');return;}var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);if(sgRouteDuplicateIndex(m,{provider_id:id,model:''},-1)>=0){toast(sgDuplicateRouteMessage({provider_id:id,model:''}),'error');return;}m.provider_configs.push({provider_id:id,model:'',billing_mode:'',capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1,token_pricing:{}});m.provider_ids=sgProviderIDsFromModel(m);if(sgDraft.kind==='dynamic')sgFillEmptyOfficialBandsFromAuto(sgDraft);sgRenderGroupDialog();};
-  window.sgMoveProvider=function(i,routeIndex,delta){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);var to=routeIndex+delta;if(routeIndex<0||to<0||routeIndex>=m.provider_configs.length||to>=m.provider_configs.length)return;var item=m.provider_configs.splice(routeIndex,1)[0];m.provider_configs.splice(to,0,item);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
+  window.sgMoveProviderTo=function(rowIndex,fromIndex,toIndex,focusMove){
+    var m=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];
+    if(!m) return;
+    m.provider_configs=sgProviderConfigsFromModel(m);
+    var n=m.provider_configs.length;
+    fromIndex=Number(fromIndex);
+    toIndex=Number(toIndex);
+    if(!isFinite(fromIndex)||!isFinite(toIndex)) return;
+    if(fromIndex<0||toIndex<0||fromIndex>=n||toIndex>=n||fromIndex===toIndex) return;
+    var item=m.provider_configs.splice(fromIndex,1)[0];
+    m.provider_configs.splice(toIndex,0,item);
+    m.provider_ids=sgProviderIDsFromModel(m);
+    sgRenderGroupDialog({keepScroll:true, focusMove:focusMove||null});
+  };
+  window.sgMoveProvider=function(i,routeIndex,delta){
+    var to=Number(routeIndex)+Number(delta);
+    window.sgMoveProviderTo(i, routeIndex, to, {row:Number(i), index:to, delta:Number(delta)});
+  };
   window.sgRemoveProvider=function(i,routeIndex){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);m.provider_configs.splice(routeIndex,1);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
   function sgClonePricingForDraft(tp){
     var p=sgNormalizeTokenPricing(tp||{});
@@ -3504,7 +4018,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if(p.price_schedule) out.price_schedule=p.price_schedule;
     return out;
   }
-  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;sgOpenKind='provider-config';sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',billing_mode:String(cfg&&cfg.billing_mode||'').trim(),capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1,token_pricing_override:cfg&&cfg.token_pricing_override===true,token_pricing:sgClonePricingForDraft(cfg.token_pricing)}};sgRenderProviderDialog();};
+  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;var body=document.querySelector('#llmDialogContent .sg-dialog-body');sgGroupReturn={top:body?body.scrollTop:0,row:Number(rowIndex),index:Number(routeIndex)};sgOpenKind='provider-config';sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',billing_mode:String(cfg&&cfg.billing_mode||'').trim(),capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1,token_pricing_override:cfg&&cfg.token_pricing_override===true,token_pricing:sgClonePricingForDraft(cfg.token_pricing)}};sgRenderProviderDialog();};
   function sgRenderProviderDialog(){
     if(!sgProviderDraft)return;var d=sgProviderDraft.draft;
     var tp=d.token_pricing||{};
@@ -3570,8 +4084,8 @@ if (typeof I18N_ZH !== 'undefined') {
       // but preserve an explicit empty to avoid sending stray keys
     }
     cfg.token_pricing=cleaned;
-    sgProviderDraft=null;sgOpenKind='group';sgRenderGroupDialog();};
-  window.sgCancelProviderConfig=function(){sgProviderDraft=null;sgOpenKind='group';sgRenderGroupDialog();};
+    sgReturnToGroupEditor();};
+  window.sgCancelProviderConfig=function(){sgReturnToGroupEditor();};
   window.sgSaveGroup=async function(){
     if(sgSaveBusy||sgOpenKind!=='group')return;
     if(!sgDraft||!sgDraft.id||!sgDraft.name){toast(t('sgIDNameRequired'),'error');return;}
@@ -3598,7 +4112,15 @@ if (typeof I18N_ZH !== 'undefined') {
     try{
       if(sgMode==='edit'){await api('/api/admin/llm/service-groups/'+encodeURIComponent(payload.id),{method:'PUT',body:JSON.stringify(payload)});}
       else{await api('/api/admin/llm/service-groups',{method:'POST',body:JSON.stringify(payload)});}
-      sgCloseCurrentDialog();toast(t('saved'),'success');loadServiceGroups();
+      sgGroupScrollMemory[String(payload.id||'')]=sgCaptureEditingPlace();
+      sgRememberSavedGroup(payload);
+      sgCloseCurrentDialog();
+      sgPendingGroupScroll=String(payload.id||'');
+      renderServiceGroups();
+      sgPendingGroupScroll=String(payload.id||'');
+      sgScrollServiceGroupRow(payload.id);
+      toast(t('saved'),'success');
+      loadServiceGroups();
     }catch(e){toast(e.message,'error');}
     finally{sgSaveBusy=false;}
   };
@@ -4279,6 +4801,7 @@ if (typeof I18N_ZH !== 'undefined') {
       options: (document.getElementById('llmPrvModelOptions') || {}).innerHTML || '',
       accessMode: providerAccessMode,
       accessSelected: Object.assign({}, providerAccessSelected),
+      serveWindows: JSON.parse(JSON.stringify(providerServeWindowSchedule || [])),
       arrayID: val('llmPrvArray')
     };
     var opened = window.showProviderDialog(providerDialogID ? 'edit' : 'create', providerDialogID, {keepBilling:true, arrayID:snap.arrayID, timezone:snap.timezone, multiplier:snap.multiplier});
@@ -4296,6 +4819,8 @@ if (typeof I18N_ZH !== 'undefined') {
       providerAccessSelected = snap.accessSelected || {};
       var accessRoot = document.querySelector('.provider-access-scope');
       if (accessRoot) accessRoot.outerHTML = providerAccessScopeSection();
+      providerServeWindowSchedule = snap.serveWindows || [];
+      renderProviderServeWindows();
       var status = document.getElementById('llmPrvProbeStatus');
       var choices = document.getElementById('llmPrvModelChoices');
       var list = document.getElementById('llmPrvModelOptions');
@@ -4357,6 +4882,8 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!overlay || !overlay.classList.contains('show')) return;
     if (event.key === 'Escape') {
       if (sgSwallowEsc) { event.preventDefault(); sgSwallowEsc = false; return; }
+      // Escape cancels the in-progress drag. Leave the editor open.
+      if (sgRouteDrag) { sgRouteDropTo = null; return; }
       event.preventDefault();
       sgCloseCurrentDialog();
       return;
@@ -4368,7 +4895,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
-  function openDialog(html, extraClass) {
+  function openDialog(html, extraClass, focusFirst) {
     stopProviderBillingNowClock();
     var overlay = document.getElementById('llmDialogOverlay');
     if (!overlay) {
@@ -4390,16 +4917,40 @@ if (typeof I18N_ZH !== 'undefined') {
     content.innerHTML = html;
     overlay.classList.add('show');
     if (!extraClass || extraClass.indexOf('sg-form-dialog') < 0) sgOpenKind = '';
-    var focus = sgFocusable(content);
-    if (focus[0]) focus[0].focus();
+    if (focusFirst !== false) {
+      var focus = sgFocusable(content);
+      if (focus[0]) focus[0].focus();
+    }
   }
   function closeDialog() {
     stopProviderBillingNowClock();
     stopWorkBuddyLoginPoll();
+    sgRouteDrag = null;
+    sgRouteDropTo = null;
+    sgGroupReturn = null;
     var o = document.getElementById('llmDialogOverlay');
+    var active = document.activeElement;
+    var groupId = '';
+    if ((sgOpenKind === 'group' || sgOpenKind === 'provider-config') && sgDraft) groupId = String(sgDraft.id || '').trim();
+    var row = groupId ? sgServiceGroupRow(groupId) : null;
+    var parked = false;
+    if (row && row.focus) {
+      row.classList.add('sg-group-reveal');
+      row.focus({preventScroll:true});
+      parked = true;
+    } else if (groupId) {
+      var list = document.getElementById('llmServiceGroupsList');
+      if (list && list.focus) {
+        list.setAttribute('tabindex', '-1');
+        list.focus({preventScroll:true});
+        parked = true;
+      }
+    }
+    if (!parked && active && active.blur && o && o.contains(active)) active.blur();
     if (o) o.classList.remove('show');
     sgOpenKind = '';
     sgProviderDraft = null;
+    if (groupId) sgScrollServiceGroupRow(groupId);
   }
   function sgCloseCurrentDialog() { closeDialog(); }
   window.closeDialog = closeDialog;

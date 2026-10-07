@@ -75,8 +75,14 @@ type DeviceGateway struct {
 	// physical client ID. Re-pairing creates a new credential/client identity
 	// but must not make its standby weather wait for the next GUI refresh.
 	ambientByMachine map[string]map[string]any
-	media            map[string]*deviceMedia
-	hardware         map[string]deviceHardwareConfig
+	// eventsByMachine holds the newest persist=true event per machine so a
+	// device that was off while it was raised still learns about it on its next
+	// handshake. A cold boot discards the runtime queue (see
+	// resetDeviceRuntimeQueueForBootLocked), so this snapshot -- not the queue --
+	// is what makes "persist" mean anything.
+	eventsByMachine map[string]storedDeviceEvent
+	media           map[string]*deviceMedia
+	hardware        map[string]deviceHardwareConfig
 	// dispatchLocks serializes the short Hub-relay hand-off for one physical
 	// client with deletion of that same binding. It is deliberately per-device:
 	// an ESP32 hand-off must never make another bound ESP32 wait.
@@ -149,6 +155,11 @@ type persistedDeviceCredentials struct {
 	// weather snapshot during its first handshake, even if the GUI's normal
 	// 45-minute refresh has not run again yet.
 	AmbientByMachine map[string]map[string]any `json:"ambientByMachine,omitempty"`
+	// EventsByMachine stores the pending persist=true event for each machine
+	// together with the absolute instant its window closes. The expiry travels
+	// with the event because ttlSec is relative: replaying it verbatim after a
+	// restart would silently extend a decision prompt's deadline.
+	EventsByMachine map[string]storedDeviceEvent `json:"eventsByMachine,omitempty"`
 	// These are deliberately limited to the tenant/user/machine records that
 	// own an ESP credential. MachineTokenHash is retained so an already running
 	// GUI can prove its existing identity after Hub SQLite is recreated; raw GUI
@@ -407,7 +418,7 @@ const (
 )
 
 func NewDeviceGateway(plugin *RemoteGatewayPlugin) *DeviceGateway {
-	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), ambientByMachine: make(map[string]map[string]any), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), dispatchLocks: make(map[string]*sync.Mutex), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
+	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), ambientByMachine: make(map[string]map[string]any), eventsByMachine: make(map[string]storedDeviceEvent), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), dispatchLocks: make(map[string]*sync.Mutex), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
 }
 
 // SetMachineMessageSender lets the HTTP-side hardware ACK complete an
@@ -602,6 +613,31 @@ func (g *DeviceGateway) restorePersistedCredentials(ctx context.Context, raw str
 		}
 		ambientByMachine[machineID] = copy
 	}
+	eventsByMachine := make(map[string]storedDeviceEvent, len(saved.EventsByMachine))
+	for machineID, stored := range saved.EventsByMachine {
+		machineID = strings.TrimSpace(machineID)
+		if machineID == "" {
+			continue
+		}
+		copy, ok := cloneStoredDeviceEvent(stored)
+		if !ok {
+			// Unlike ambient, one unreadable event snapshot is dropped instead of
+			// failing the whole recovery. The asymmetry is deliberate: this is a
+			// best-effort replay cache for a display, while the rest of the
+			// snapshot is the pairing state. Rejecting everything over a corrupt
+			// cache would turn a trivial problem into "every device must be
+			// paired again", and the re-marshal below self-heals it.
+			log.Printf("device gateway: drop unreadable recovered machine event for %q", machineID)
+			continue
+		}
+		eventsByMachine[machineID] = copy
+	}
+	// The normalized event snapshot must be written back *before* the marshal
+	// below, unlike ambient. Normalization is what stamps the absolute expiry,
+	// so persisting the raw payload instead would drop it -- and the next
+	// restart would then replay a stale approval with a fresh window, which is
+	// exactly the failure the field exists to prevent.
+	saved.EventsByMachine = eventsByMachine
 	if err := validateCredentialIdentitySnapshot(saved); err != nil {
 		return false, err
 	}
@@ -642,6 +678,7 @@ func (g *DeviceGateway) restorePersistedCredentials(ctx context.Context, raw str
 	g.tokens = saved.Tokens
 	g.hardware = saved.MachineHardware
 	g.ambientByMachine = ambientByMachine
+	g.eventsByMachine = eventsByMachine
 	return true, nil
 }
 
@@ -862,6 +899,12 @@ func (g *DeviceGateway) marshalPersistedCredentialsLocked() (string, error) {
 			copyAmbient[machineID] = copy
 		}
 	}
+	copyEvents := make(map[string]storedDeviceEvent, len(g.eventsByMachine))
+	for machineID, stored := range g.eventsByMachine {
+		if copy, ok := cloneStoredDeviceEvent(stored); ok {
+			copyEvents[machineID] = copy
+		}
+	}
 	tenants, users, machines, err := g.snapshotCredentialIdentitiesLocked(context.Background(), copyTokens)
 	if err != nil {
 		return "", err
@@ -870,6 +913,7 @@ func (g *DeviceGateway) marshalPersistedCredentialsLocked() (string, error) {
 		Tokens:           copyTokens,
 		MachineHardware:  copyHardware,
 		AmbientByMachine: copyAmbient,
+		EventsByMachine:  copyEvents,
 		Tenants:          tenants,
 		Users:            users,
 		Machines:         machines,
@@ -1193,6 +1237,8 @@ func (g *DeviceGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.handleAck(w, r)
 	case "/api/im-gateway/v1/tool-result":
 		g.handleToolResult(w, r)
+	case "/api/im-gateway/v1/event-ack":
+		g.handleEventAck(w, r)
 	case "/api/im-gateway/v1/media/upload-url":
 		g.handleMediaUploadURL(w, r)
 	default:
@@ -1648,7 +1694,8 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 		// tool calls that were queued for the process which just disappeared are
 		// no longer actionable and must not repaint the new standby screen. Drop
 		// the old runtime queue first; durable control state is reconstructed below
-		// from hardware config, Welcome, pet profile and ambient snapshots.
+		// from hardware config, Welcome, pet profile, ambient and pending event
+		// snapshots.
 		g.resetDeviceRuntimeQueueForBootLocked(state)
 		state.bootSessionID = bootSessionID
 	}
@@ -1685,6 +1732,15 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 	response["capabilitiesAccepted"] = capabilities
 	if ambient, ok := g.latestAmbientForMachineLocked(p.MachineID); ok {
 		response["ambient"] = ambient
+	}
+	// A persist=true event raised while this device was off is replayed here
+	// rather than queued, because a cold boot has just discarded the queue. The
+	// gate is the capabilities *this* handshake declared: a device that cannot
+	// render a card must not be handed one it would have to drop silently.
+	if DeviceEventPushSupported(capabilities) {
+		if event, ok := g.latestDeviceEventForMachineLocked(p.MachineID, time.Now()); ok {
+			response["event"] = event
+		}
 	}
 	writeDeviceJSON(w, 200, response)
 }
@@ -1764,12 +1820,16 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g.plugin == nil {
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventRejected, "unavailable")
 		writeDeviceError(w, 503, "unavailable", "GUI relay is unavailable")
 		return
 	}
 	ownerID := g.plugin.GatewayOwnerForTenant(p.TenantID)
 	if ownerID == "" {
-		writeDeviceError(w, http.StatusServiceUnavailable, "gui_offline", "the paired MaClaw GUI is not connected to Hub")
+		// F3: no brain is reachable for this tenant. This is the signal the
+		// link-health panel exists to quantify.
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventRejected, deviceErrorCodeGuiOffline)
+		writeDeviceError(w, http.StatusServiceUnavailable, deviceErrorCodeGuiOffline, "the paired MaClaw GUI is not connected to Hub")
 		return
 	}
 	attachments, err := g.incomingAttachments(p.ClientID, req.Message.Attachments)
@@ -1790,6 +1850,7 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	// retaining the same eventId (as required for a retry) would receive a
 	// false duplicate success and the corrected message would never reach GUI.
 	if g.markDeviceEvent(p.ClientID, "incoming:"+strings.TrimSpace(req.EventID)) {
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventDuplicate, "")
 		writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": true})
 		return
 	}
@@ -1802,6 +1863,7 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	// race revokes the credential before the goroutine can reach the GUI.
 	dispatchMu := g.deviceDispatchMutex(p.ClientID)
 	go g.forwardIncomingDeviceMessage(dispatchMu, deviceBearerToken(r), p, ownerID, payload)
+	LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventAccepted, "")
 	writeDeviceJSON(w, 200, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": false})
 }
 
@@ -2167,6 +2229,7 @@ func (g *DeviceGateway) handleToolResult(w http.ResponseWriter, r *http.Request)
 	}
 	eventID := coreim.ThirdPartyToolResultEventID(req)
 	if g.markDeviceEvent(p.ClientID, eventID) {
+		LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventDuplicate, "")
 		writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "duplicate": true})
 		return
 	}
@@ -2185,6 +2248,7 @@ func (g *DeviceGateway) handleToolResult(w http.ResponseWriter, r *http.Request)
 		"client_tools": clientTools, "client_tool_context": agent.ClientToolContext{ClientID: p.ClientID, ConversationID: conversationID, ReplyToMessageID: eventID},
 	})
 	go g.plugin.HandleGatewayMessage(ownerID, payload)
+	LinkHealth().ObserveDeviceEvent(p.TenantID, DeviceEventAccepted, "")
 	writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "duplicate": false})
 }
 
@@ -3612,6 +3676,22 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 			}
 		}
 		return true
+	case "event":
+		// Structured event push (plan N1-1). Requires an explicit capability
+		// declaration: an event carries decision actions the user is meant to
+		// press, and downgrading it to plain text would silently drop them.
+		if !DeviceEventPushSupported(capabilities) {
+			return false
+		}
+		normalized, ok := normalizeDeviceEventPush(reply["event"])
+		if !ok {
+			return false
+		}
+		if capabilities.Output.Text != nil {
+			clampDeviceEventText(normalized, capabilities.Output.Text.MaxChars)
+		}
+		reply["event"] = normalized
+		return true
 	default:
 		if !capabilities.SupportsOutput("text") {
 			return false
@@ -3774,6 +3854,27 @@ func deviceReplyInt64(reply map[string]any, keys ...string) int64 {
 	return 0
 }
 
+// deviceReplyBool reads an optional boolean flag. JSON booleans and the string
+// forms "true"/"false" are accepted because hand-written and LLM-produced
+// payloads routinely quote them; anything else is treated as absent so a
+// malformed flag can never be read as an affirmative.
+func deviceReplyBool(reply map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		switch value := reply[key].(type) {
+		case bool:
+			return value
+		case string:
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "true":
+				return true
+			case "false":
+				return false
+			}
+		}
+	}
+	return false
+}
+
 // UpdateMachineAmbient accepts the GUI's compact weather result and publishes
 // it to every paired hardware surface. The Hub never queries a weather vendor;
 // it only relays GUI-owned context, preserving the existing trust boundary.
@@ -3818,6 +3919,77 @@ func (g *DeviceGateway) UpdateMachineAmbient(machineID string, ambient map[strin
 func (g *DeviceGateway) latestAmbientForMachineLocked(machineID string) (map[string]any, bool) {
 	ambient := g.ambientByMachine[machineID]
 	return ambient, ambient != nil
+}
+
+// UpdateMachineEvent accepts a structured event from the GUI and publishes it to
+// every paired hardware surface of the same machine (plan N1-3).
+//
+// It follows the ambient fan-out deliberately: the message is built here and
+// pushed onto each device queue, bypassing the per-reply adaptation path. That
+// bypass is why the capability check below is mandatory -- adaptDeviceGatewayReply
+// gates `event` replies, but nothing on this path would otherwise stop an event
+// from reaching a device that only draws text.
+//
+// A persist=true event is also recorded in the handshake snapshot, whether or
+// not a device is online right now, so a device that is off (or paired later)
+// still learns about it. Its absolute expiry is stamped at this moment, so the
+// replay cannot refresh the original window.
+func (g *DeviceGateway) UpdateMachineEvent(machineID string, event map[string]any) {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return
+	}
+	now := time.Now()
+	push, ok := prepareDeviceEventPush(event, now)
+	if !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if push.Persist {
+		if g.eventsByMachine == nil {
+			g.eventsByMachine = make(map[string]storedDeviceEvent)
+		}
+		g.eventsByMachine[machineID] = push.Stored
+		if err := g.persistTokensLocked(); err != nil {
+			// The event is still delivered live; a persistence failure only costs
+			// the reboot replay, but it must stay visible because a silent failure
+			// here would look exactly like "the user never answered".
+			log.Printf("device gateway: persist event for machine %q: %v", machineID, err)
+		}
+	}
+	for _, principal := range g.tokens {
+		if principal.MachineID != machineID {
+			continue
+		}
+		state := g.clientLocked(principal.ClientID)
+		if !DeviceEventPushSupported(state.capabilities) {
+			// Either the device never declared eventPush or it declared only a
+			// non-text output. Skipping is the fail-closed choice: a downgraded
+			// card would drop the decision buttons the user is meant to press.
+			continue
+		}
+		state.next++
+		g.queueDeviceMessageLocked(state, map[string]any{
+			"seq": state.next, "id": fmt.Sprintf("hub_event_%d_%d", now.UnixMilli(), state.next),
+			"type": "event", "conversationId": "system", "event": push.Event,
+		})
+		old := state.notify
+		state.notify = make(chan struct{})
+		close(old)
+	}
+}
+
+// latestDeviceEventForMachineLocked returns the pending persist=true event in
+// the form the device should receive it, i.e. with a ttlSec recomputed from the
+// recorded absolute expiry. A closed window yields false, so a stale approval is
+// never resurrected by a reboot.
+func (g *DeviceGateway) latestDeviceEventForMachineLocked(machineID string, now time.Time) (map[string]any, bool) {
+	stored, ok := g.eventsByMachine[machineID]
+	if !ok {
+		return nil, false
+	}
+	return replayDeviceEventPush(stored, now)
 }
 
 func normalizeDeviceAmbient(raw map[string]any) (map[string]any, bool) {
@@ -4677,6 +4849,21 @@ func (g *DeviceGateway) clientLocked(clientID string) *deviceClientState {
 		}
 	}
 	return state
+}
+
+// deviceEventHandled is the read-only half of markDeviceEvent. A caller that
+// must do irreversible work before the ack counts as handled (delivering a
+// decision to the GUI, for instance) peeks with this first, so a replay is
+// recognised without also recording an ack that then fails to be delivered.
+func (g *DeviceGateway) deviceEventHandled(clientID, eventID string) bool {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, exists := g.clientLocked(clientID).seenEvents[eventID]
+	return exists
 }
 
 // markDeviceEvent provides bounded, per-client replay suppression at the HTTP

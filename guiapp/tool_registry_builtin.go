@@ -719,7 +719,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	manageScheduleSchema, manageScheduleRequired := overlayCoreToolSchema("manage_schedule", map[string]interface{}{
 		"action": map[string]string{"type": "string", "description": "操作: create/list/run/pause/resume/delete/update/list_targets"},
 	})
-	reg("manage_schedule", "定时任务管理（所有本地 IM 通道可用）。action: create/list/run/pause/resume/delete/update/list_targets。run 会立即在后台执行指定任务；pause/resume 暂停或恢复任务。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self）。create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。即时发消息请用 im_message，不要用定时任务硬绕。",
+	reg("manage_schedule", "定时任务管理（所有本地 IM 通道可用）。action: create/list/run/pause/resume/delete/update/list_targets。run 会立即在后台执行指定任务；pause/resume 暂停或恢复任务。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self）、device（码卡龙设备，仅 self）。create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。即时发消息请用 im_message，不要用定时任务硬绕。",
 		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval", "create", "list", "run", "execute", "trigger", "pause", "resume", "delete", "update", "delivery", "im"},
 		manageScheduleSchema, manageScheduleRequired,
 		func(args map[string]interface{}) string { return h.toolManageSchedule(args) })
@@ -754,8 +754,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 
 	// --- Immediate IM message (proactive push, independent of schedule) ---
 	imMessageSchema, imMessageRequired := overlayCoreToolSchema("im_message", nil)
-	reg("im_message", "即时向 IM 通道发文本或文件（蓝信群/人、微信/Telegram/QQ 最近会话）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file，有 query/群名则 list）。用户说「给蓝信某群发…」「推送到微信」时用本工具，不要用 manage_schedule 绕路。send 需 text + group_name/group_id/user_id。send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
-		ToolCategoryBuiltin, []string{"im", "message", "lansenger", "weixin", "telegram", "qq", "push", "notify", "group"},
+	reg("im_message", "即时向 IM 通道发文本或文件（蓝信群/人、微信/Telegram/QQ 最近会话、码卡龙设备）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file，有 query/群名则 list）。用户说「给蓝信某群发…」「推送到微信」时用本工具，不要用 manage_schedule 绕路。send 需 text + group_name/group_id/user_id（device 通道仅支持 user_id=self）。send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
+		ToolCategoryBuiltin, []string{"im", "message", "lansenger", "weixin", "telegram", "qq", "device", "hardware", "码卡龙", "push", "notify", "group"},
 		imMessageSchema, imMessageRequired,
 		func(args map[string]interface{}) string { return h.toolIMMessage(args) })
 	// Catalog registration only: pushing a message/file to an IM channel is

@@ -162,7 +162,12 @@ func Main(v string) {
 		// (race between the async "drag" invoke and mouse release could wedge
 		// the window in the native move loop); dragging goes through the
 		// guarded BeginWindowDrag binding + data-window-drag regions instead.
-		CSSDragProperty:          cssDragPropertyOverride(),
+		CSSDragProperty: cssDragPropertyOverride(),
+		// Enable Wails' native file-drop channel: WebView2 external file
+		// drags from Explorer are unreliable at delivering usable
+		// dataTransfer.files to page drop handlers, so the frontend also
+		// listens on runtime.OnFileDrop and receives resolved absolute paths.
+		DragAndDrop:              &options.DragAndDrop{EnableFileDrop: true},
 		Width:                    envCheckWidth,
 		Height:                   envCheckHeight,
 		EnableDefaultContextMenu: true,
@@ -515,6 +520,7 @@ func closeLogSinks() {
 func closeLogSinksLocked() {
 	programLogger.Close()
 	closeSDKDiagLog()
+	closePetCompanionLog()
 	file, regFile := openLogSinkHandles.file, openLogSinkHandles.regFile
 	openLogSinkHandles.file, openLogSinkHandles.regFile = nil, nil
 	log.SetOutput(os.Stderr)
@@ -628,6 +634,7 @@ func openLogSinksLocked(dir string, announce bool) bool {
 
 	previousFile, previousReg := openLogSinkHandles.file, openLogSinkHandles.regFile
 	openLogSinkHandles.file, openLogSinkHandles.regFile = f, regF
+	openPetCompanionLog(dir)
 	if previousFile != nil {
 		_ = previousFile.Close()
 	}

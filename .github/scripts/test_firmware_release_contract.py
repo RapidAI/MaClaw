@@ -399,10 +399,12 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertIn("  verify-firmware-release-contract:", workflow)
         self.assertIn("needs: [verify-firmware-release-contract]", workflow)
         self.assertLess(workflow.index(command), workflow.index("- name: Generate release manifest"))
+        # The GitHub Release page is created before mirror uploads: mirror
+        # latency (COS from GHA) must not block the release page.
         self.assertIn("Verify firmware publication on Cloudflare R2 and Tencent COS", workflow)
-        self.assertLess(workflow.index("Verify firmware publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
+        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("Verify firmware publication on Cloudflare R2 and Tencent COS"))
         self.assertIn("Verify desktop update publication on Cloudflare R2 and Tencent COS", workflow)
-        self.assertLess(workflow.index("Verify desktop update publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
+        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("Verify desktop update publication on Cloudflare R2 and Tencent COS"))
         self.assertIn("- name: Verify GitHub update manifest is published", workflow)
         self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("- name: Verify GitHub update manifest is published"))
         self.assertIn("- name: Verify GitHub rollback installer attachments are published", workflow)

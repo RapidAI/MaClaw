@@ -44,6 +44,28 @@ func TestFilterTruncatedToolCallsTreatsEmptyRequiredFieldAsTruncated(t *testing.
 	}
 }
 
+func TestFilterTruncatedToolCallsKeepsFinishedWriteFileEdit(t *testing.T) {
+	passage := strings.Repeat("x", 5000)
+	msg := &llm.Message{
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call_edit",
+			Type: "function",
+			Function: llm.ToolCallFunction{
+				Name:      "write_file",
+				Arguments: `{"path":"references.bib","old_string":"` + passage + `","new_string":"@article{added}"}`,
+			},
+		}},
+	}
+
+	_, truncated, _ := filterTruncatedToolCalls(msg, "tool_calls")
+	if len(truncated) != 0 {
+		t.Fatalf("truncated = %#v, want the finished edit kept", truncated)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want the write_file call kept", msg.ToolCalls)
+	}
+}
+
 func TestFilterTruncatedToolCallsTrimsToolNameForRequiredFieldDetection(t *testing.T) {
 	msg := &llm.Message{
 		ToolCalls: []llm.ToolCall{{

@@ -47,14 +47,10 @@ var configAgentAllowedTools = map[string]struct{}{
 	"wecom.config.update":              {},
 	"dingtalk.config.get":              {},
 	"dingtalk.config.update":           {},
-	"openclaw_im.config.get":           {},
-	"openclaw_im.config.update":        {},
 	"content_audit.config.get":         {},
 	"content_audit.config.update":      {},
 	"qqbot.config.get":                 {},
 	"qqbot.config.update":              {},
-	"bridge.channels.list":             {},
-	"bridge.channels.save":             {},
 	"mail.sender_name.get":             {},
 	"mail.sender_name.update":          {},
 	"smart_route_all.get":              {},
@@ -135,14 +131,10 @@ func configAgentToolCatalogJSON(providerReg *im.LLMProviderRegistry) string {
 			{"name": "wecom.config.update", "mode": "write", "desc": "Update WeCom config", "args": []string{"enabled", "bot_id", "secret", "ws_url"}},
 			{"name": "dingtalk.config.get", "mode": "read", "desc": "Get DingTalk config (secret masked)"},
 			{"name": "dingtalk.config.update", "mode": "write", "desc": "Update DingTalk config", "args": []string{"enabled", "client_id", "client_secret"}},
-			{"name": "openclaw_im.config.get", "mode": "read", "desc": "Get OpenClaw IM bridge config"},
-			{"name": "openclaw_im.config.update", "mode": "write", "desc": "Update OpenClaw IM bridge config", "args": []string{"enabled", "webhook_url", "secret"}},
 			{"name": "content_audit.config.get", "mode": "read", "desc": "Get content audit config"},
 			{"name": "content_audit.config.update", "mode": "write", "desc": "Update content audit keywords/timeout", "args": []string{"enabled_via_keywords", "keywords", "timeout_seconds", "timeout_policy", "program_path"}},
 			{"name": "qqbot.config.get", "mode": "read", "desc": "Get QQ Bot config (secret masked)"},
 			{"name": "qqbot.config.update", "mode": "write", "desc": "Update QQ Bot config", "args": []string{"enabled", "app_id", "app_secret"}},
-			{"name": "bridge.channels.list", "mode": "read", "desc": "List OpenClaw bridge channels"},
-			{"name": "bridge.channels.save", "mode": "write", "desc": "Save one bridge channel config", "args": []string{"id", "enabled", "fields", "install_npm"}},
 			{"name": "mail.sender_name.get", "mode": "read", "desc": "Get tenant mail sender display name"},
 			{"name": "mail.sender_name.update", "mode": "write", "desc": "Update tenant mail sender display name", "args": []string{"from_name"}},
 			{"name": "smart_route_all.get", "mode": "read", "desc": "Get smart_route_all toggle"},
@@ -452,10 +444,6 @@ func defaultAPIPreviewForTool(tool string) map[string]any {
 		return map[string]any{"method": "GET", "path": "/api/admin/settings/dingtalk"}
 	case "dingtalk.config.update":
 		return map[string]any{"method": "POST", "path": "/api/admin/settings/dingtalk"}
-	case "openclaw_im.config.get":
-		return map[string]any{"method": "GET", "path": "/api/admin/settings/openclaw_im"}
-	case "openclaw_im.config.update":
-		return map[string]any{"method": "POST", "path": "/api/admin/settings/openclaw_im"}
 	case "content_audit.config.get":
 		return map[string]any{"method": "GET", "path": "/api/admin/content_audit/config"}
 	case "content_audit.config.update":
@@ -464,10 +452,6 @@ func defaultAPIPreviewForTool(tool string) map[string]any {
 		return map[string]any{"method": "GET", "path": "/api/admin/settings/qqbot"}
 	case "qqbot.config.update":
 		return map[string]any{"method": "POST", "path": "/api/admin/settings/qqbot"}
-	case "bridge.channels.list":
-		return map[string]any{"method": "GET", "path": "/api/admin/bridge/channels"}
-	case "bridge.channels.save":
-		return map[string]any{"method": "POST", "path": "/api/admin/bridge/channels", "note": "saves channel config; npm install when install_npm=true"}
 	case "mail.sender_name.get":
 		return map[string]any{"method": "GET", "path": "/api/admin/mail/sender-name"}
 	case "mail.sender_name.update":

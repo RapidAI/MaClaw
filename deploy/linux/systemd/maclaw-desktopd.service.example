@@ -1,0 +1,24 @@
+# /etc/systemd/system/maclaw-desktopd.service
+# desktopd/remote_deploy.sh writes exactly this unit (with DESKTOPD_DEPLOY_DIR
+# in place of /data/soft/maclaw_desktopd); this copy is for review and manual
+# installs. .env holds DESKTOPD_TOKEN and the other DESKTOPD_* keys and is
+# never committed. systemd < 240 (Ubuntu 18.04 ships 237) ignores "append:"
+# and sends output to the journal: journalctl -u maclaw-desktopd.
+[Unit]
+Description=MaClaw Docker desktop service
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/data/soft/maclaw_desktopd
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/data/soft/maclaw_desktopd/.env
+ExecStart=/data/soft/maclaw_desktopd/bin/desktopd
+Restart=always
+RestartSec=3
+StandardOutput=append:/data/soft/maclaw_desktopd/logs/desktopd.log
+StandardError=append:/data/soft/maclaw_desktopd/logs/desktopd.err.log
+
+[Install]
+WantedBy=multi-user.target

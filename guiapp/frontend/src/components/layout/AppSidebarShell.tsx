@@ -93,6 +93,9 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     busyTaskRuns?: { projectPaths: string[]; expertIds: string[] };
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
+    /** Performs the tenant daily check-in; resolved state arrives via sidebarHubCredits. */
+    onHubCheckin?: () => Promise<void> | void;
+    hubCheckinPending?: boolean;
     unlimitedHubCreditText: string;
     noHubAuthorizationText: string;
     showHubCreditAction: boolean;
@@ -260,10 +263,12 @@ export const AppSidebarShell = ({
     profileSummaries,
     activeProfile,
     codingInheritsAssistant,
+    onHubCheckin,
+    hubCheckinPending = false,
 }: AppSidebarShellProps) => (
 <>
             <div className="mc-sidebar-drag-strip" data-window-drag style={{
-                height: '30px',
+                height: 'var(--mc-sidebar-drag-strip, 10px)',
                 width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
                 position: 'absolute',
                 top: 0,
@@ -287,6 +292,9 @@ export const AppSidebarShell = ({
                     t={t}
                     gossipAllowed={gossipAllowed}
                     config={config}
+                    hubCheckin={sidebarHubCredits?.checkin}
+                    onHubCheckin={onHubCheckin}
+                    hubCheckinPending={hubCheckinPending}
                     favoriteEmployees={favoriteEmployees}
                     veAuthorized={veAuthorized}
                     onStartVEConversation={onStartVEConversation || (() => {})}

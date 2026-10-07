@@ -119,24 +119,25 @@ const (
 
 // TaskItem represents a single task extracted from the confirmed task list.
 type TaskItem struct {
-	Index              int
-	DisplayNumber      int // stable one-based T number shown to users/logs
-	Title              string
-	Description        string
-	Files              []string // expected files to create/modify
-	ActualFiles        []string // files actually modified during execution (populated by SubAgent)
-	ActualCreatedFiles []string // files newly created during execution (populated by SubAgent)
-	AcceptanceCriteria []string // TDD test criteria
-	DependsOn          []int    // indices of prerequisite tasks
-	Status             TaskExecStatus
-	RetryCount         int
-	SessionID          string // session used for this task
-	ErrorSummary       string
-	ResultSummary      string                      // user-visible short prose for downstream task context
-	QualityStatus      codingSubAgentQualityStatus // audit outcome; used only on failed retry
-	QualitySummary     string                      // audit reason; used only on failed retry
-	ExecMode           TaskExecMode                // resolved per-task at execution time
-	RequestKind        codingRequestKind           // set by the workbench intent classifier for direct coding turns
+	Index                 int
+	DisplayNumber         int // stable one-based T number shown to users/logs
+	Title                 string
+	Description           string
+	Files                 []string // expected files to create/modify
+	ActualFiles           []string // files actually modified during execution (populated by SubAgent)
+	ActualCreatedFiles    []string // files newly created during execution (populated by SubAgent)
+	AcceptanceCriteria    []string // TDD test criteria
+	DependsOn             []int    // indices of prerequisite tasks
+	Status                TaskExecStatus
+	RetryCount            int
+	SessionID             string // session used for this task
+	ErrorSummary          string
+	ResultSummary         string                      // user-visible short prose for downstream task context
+	QualityStatus         codingSubAgentQualityStatus // audit outcome; used only on failed retry
+	QualitySummary        string                      // audit reason; used only on failed retry
+	ExecMode              TaskExecMode                // resolved per-task at execution time
+	RequestKind           codingRequestKind           // set by the workbench intent classifier for direct coding turns
+	OperationalAcceptance codingOperationalAcceptance // operational evidence contract; empty means project launch
 }
 
 type TaskRunHandle struct {

@@ -51,7 +51,7 @@ func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResul
 		return codingToolExecutionResult{Text: fmt.Sprintf("read failed: %s", err.Error()), Outcome: codingToolOutcomeFailed}
 	}
 
-	lines := strings.SplitAfter(string(data), "\n")
+	lines := coretool.SplitTextLines(string(data))
 	totalLines := len(lines)
 	if offset, ok := codingSubAgentArgumentIntegerValue(args["offset"]); ok && offset > 0 {
 		tailN := int(offset)

@@ -7,9 +7,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+// newExperienceTestApp builds a hermetic App for experience-learning tests.
+// Every App-scoped ensure* side effect (skill scan, session store, config
+// overlays, remote infra) resolves under a temp home instead of the real
+// ~/.maclaw, and the process-global maclaw base dir these ensures mutate is
+// restored afterwards so later bare-App tests do not trip a data-dir-change
+// reset over their own stores.
+func newExperienceTestApp(t *testing.T, store *corememory.Store, tracker *coretool.UsageTracker) *App {
+	t.Helper()
+	previousBaseDir := corelib.MaclawBaseDir()
+	app := &App{testHomeDir: t.TempDir(), memoryStore: store, usageTracker: tracker}
+	t.Cleanup(func() {
+		// Stop any store the ensure chain opened for a nil injected store;
+		// Windows TempDir removal cannot unlink an open sqlite file.
+		if app.memoryStore != nil && app.memoryStore != store {
+			app.memoryStore.Stop()
+			app.memoryStore = nil
+		}
+		if app.sessionSearchStore != nil {
+			_ = app.sessionSearchStore.Close()
+			app.sessionSearchStore = nil
+		}
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+		if app.auditLog != nil {
+			_ = app.auditLog.Close()
+			app.auditLog = nil
+		}
+		corelib.SetMaclawBaseDir(previousBaseDir)
+	})
+	return app
+}
 
 func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *testing.T) {
 	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
@@ -25,7 +60,7 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 	}
 	retry.RecordFailure("browser_open", FailureNetwork, RetryDecision{Action: RetryActionRetry, Attempt: 0, ProviderName: "ChatFire", Model: "gpt-5.1-codex-mini", WireAPI: "responses"})
 
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	direct := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{ReviewOnly: true, Limit: 5})
 	if direct.Count != 1 || direct.ReviewRequiredCount != 1 || direct.Returned != 1 {
 		t.Fatalf("expected one review-required recovery summary: %#v", direct)
@@ -156,7 +191,7 @@ func TestExperienceToolRecoveryNormalizesLegacyBrowserMemory(t *testing.T) {
 		t.Fatalf("UpsertProjectKnowledge: %v", err)
 	}
 
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	result := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Tool: "browser_open", Limit: 5})
 	if result.Query.Tool != "browser" || result.Count != 1 || result.ToolCounts["browser"] != 1 {
 		t.Fatalf("legacy browser recovery query not normalized: %#v", result)
@@ -177,7 +212,7 @@ func TestExperienceGovernanceSummaryRecommendsToolRecoveryInspection(t *testing.
 	retry.SetMemoryStore(store)
 	retry.RecordFailure("browser_open", FailureNetwork, RetryDecision{Action: RetryActionRetry, Attempt: 0, ProviderName: "ChatFire", Model: "gpt-5.1-codex-mini", WireAPI: "responses"})
 
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	summary := app.GetExperienceGovernanceSummary(ExperienceRoutingSignalQuery{})
 	if summary["recommended_next_action"] != experienceGovernanceActionInspectToolRecoveryGovernance.String() {
 		t.Fatalf("expected tool recovery inspection recommendation: %#v", summary)
@@ -226,7 +261,7 @@ func TestExperienceLearningToolRoutingSignalsFiltersToolEvidence(t *testing.T) {
 			FinalOutcome: "recovered",
 		})
 	}
-	handler := &IMMessageHandler{app: &App{usageTracker: tracker}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, nil, tracker)}
 
 	payload := parseExperienceRoutingSignalsToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
 		"action":    "routing_signals",
@@ -301,7 +336,7 @@ func TestExperienceLearningToolBuildsRoutingAdjustmentDraft(t *testing.T) {
 			FinalOutcome: "recovered",
 		})
 	}
-	handler := &IMMessageHandler{app: &App{usageTracker: tracker}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, nil, tracker)}
 
 	payload := parseExperienceRoutingAdjustmentDraftToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
 		"action":    "build_routing_adjustment_draft",
@@ -359,7 +394,7 @@ func TestExperienceGovernanceSummaryUsesQueryScopedRoutingCandidates(t *testing.
 			FinalOutcome: "recovered",
 		})
 	}
-	app := &App{usageTracker: tracker}
+	app := newExperienceTestApp(t, nil, tracker)
 	directSignals := app.QueryExperienceRoutingSignals(ExperienceRoutingSignalQuery{TaskType: "research", Tool: "browser_open", Query: "browser", Limit: 2})
 	if !strings.Contains(directSignals.NonExecutingBoundary, "read-only routing") || !strings.Contains(directSignals.NonExecutingBoundary, "memory rewrite") {
 		t.Fatalf("direct routing signals should expose shared non-executing boundary: %#v", directSignals)

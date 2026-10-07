@@ -7,14 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-// veRemoteToolDefinitions returns the tool definitions available to VE sessions.
-// These are safe, read-only tools that don't modify the filesystem or execute commands.
-// Knowledge base tools (knowledge_search, knowledge_image_search, knowledge_context_pack) are included because
-// they only query the local SQLite FTS index — purely read-only, no LLM calls, no network.
+// veRemoteToolDefinitions returns the tool definitions available to VE sessions
+// when the shared registry is not wired. Live public lookup (web_search,
+// web_fetch, current_datetime) is part of this set: the system prompt tells
+// the model those tools exist. Knowledge tools only query the local index.
 func veRemoteToolDefinitions(hasKnowledge bool) []map[string]interface{} {
 	tools := []map[string]interface{}{
+		veWebSearchToolDefinition(),
+		veWebFetchToolDefinition(),
+		veCurrentDateTimeToolDefinition(),
 		{
 			"type": "function",
 			"function": map[string]interface{}{
@@ -175,15 +179,118 @@ func veRemoteToolDefinitions(hasKnowledge bool) []map[string]interface{} {
 	return tools
 }
 
+func veWebSearchToolDefinition() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "web_search",
+			"description": "Search the public web for live information such as weather, news, and prices. Pass only query. Use the host date from the system prompt when the user means today.",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "Search query. Include the host date when the user means today or now.",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+	}
+}
+
+func veWebFetchToolDefinition() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "web_fetch",
+			"description": "Fetch one public http(s) page after web_search has produced its URL.",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"url": map[string]interface{}{
+						"type":        "string",
+						"description": "Absolute http or https URL",
+					},
+				},
+				"required": []string{"url"},
+			},
+		},
+	}
+}
+
+func veCurrentDateTimeToolDefinition() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "current_datetime",
+			"description": "Read the host clock: date, weekday, time, and timezone. Use this instead of guessing today's date.",
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}
+}
+
+// stampVELiveLookupTools keeps web_search, web_fetch, and current_datetime on
+// every digital-employee tool surface and stamps the host date onto the
+// search tool the model actually sees.
+func stampVELiveLookupTools(tools []map[string]interface{}) []map[string]interface{} {
+	have := map[string]bool{}
+	for _, def := range tools {
+		if name := extractToolName(def); name != "" {
+			have[name] = true
+		}
+	}
+	for _, def := range []map[string]interface{}{veWebSearchToolDefinition(), veWebFetchToolDefinition(), veCurrentDateTimeToolDefinition()} {
+		name := extractToolName(def)
+		if name != "" && !have[name] {
+			tools = append(tools, def)
+			have[name] = true
+		}
+	}
+	clock := time.Now().Format("2006-01-02")
+	note := " Host date is " + clock + ". When the user means today or now, the query must use this date."
+	for _, def := range tools {
+		if extractToolName(def) != "web_search" {
+			continue
+		}
+		fn, _ := def["function"].(map[string]interface{})
+		if fn == nil {
+			continue
+		}
+		desc, _ := fn["description"].(string)
+		if strings.Contains(desc, "Host date is ") {
+			continue
+		}
+		copied := make(map[string]interface{}, len(fn))
+		for key, value := range fn {
+			copied[key] = value
+		}
+		copied["description"] = strings.TrimSpace(desc) + note
+		def["function"] = copied
+	}
+	return tools
+}
+
 // executeVERemoteTool executes a tool call in VE remote mode.
 // Only safe, read-only tools are supported.
 func executeVERemoteTool(app *App, name, argsJSON string) string {
-	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return fmt.Sprintf("[error] 参数解析失败: %v", err)
+	args := map[string]interface{}{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return fmt.Sprintf("[error] 参数解析失败: %v", err)
+		}
 	}
 
 	switch name {
+	case "web_search":
+		return (&IMMessageHandler{app: app}).toolWebSearch(args)
+	case "web_fetch":
+		return (&IMMessageHandler{app: app}).toolWebFetch(args)
+	case "current_datetime":
+		return formatBtwCurrentDateTime()
 	case "read_file":
 		return veToolReadFile(args)
 	case "list_directory":

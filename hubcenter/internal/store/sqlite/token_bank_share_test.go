@@ -516,6 +516,124 @@ func TestTokenBankSetSharePausedScopesToOwner(t *testing.T) {
 	}
 }
 
+func TestTokenBankUnpauseClearsCapLastError(t *testing.T) {
+	repo, _ := newTokenBankShareRepo(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, _, err := repo.CreateShare(ctx, shareFixture("share-1", "user-1", "fp-1"), nil, 0, now); err != nil {
+		t.Fatalf("CreateShare() error = %v", err)
+	}
+
+	pause := func(reason string) {
+		t.Helper()
+		if err := repo.SetSharePaused(ctx, "share-1", "user-1", reason, true, now); err != nil {
+			t.Fatalf("pause %q: %v", reason, err)
+		}
+	}
+	unpause := func() {
+		t.Helper()
+		if err := repo.SetSharePaused(ctx, "share-1", "user-1", "", false, now); err != nil {
+			t.Fatalf("unpause: %v", err)
+		}
+	}
+	load := func() *TokenBankShare {
+		t.Helper()
+		share, err := repo.LoadShare(ctx, "share-1", "")
+		if err != nil {
+			t.Fatalf("LoadShare() error = %v", err)
+		}
+		return share
+	}
+
+	// The settler stores the same sentence in paused_reason and last_error.
+	pause("token cap: anomaly")
+	if err := repo.NoteShareModelError(ctx, "share-1", "", "token cap: anomaly"); err != nil {
+		t.Fatalf("note cap: %v", err)
+	}
+	if err := repo.SetSharePaused(ctx, "share-1", "intruder", "", false, now); !errors.Is(err, ErrTokenBankShareNotFound) {
+		t.Fatalf("cross-owner unpause error = %v, want ErrTokenBankShareNotFound", err)
+	}
+	if share := load(); share.LastError != "token cap: anomaly" || share.Status != TokenBankShareStatusPaused {
+		t.Fatalf("intruder unpause changed share: status=%q last_error=%q", share.Status, share.LastError)
+	}
+	unpause()
+	if share := load(); share.Status != TokenBankShareStatusActive || share.PausedReason != "" || share.LastError != "" {
+		t.Fatalf("cap unpause = status %q reason %q last_error %q, want active and empty",
+			share.Status, share.PausedReason, share.LastError)
+	}
+
+	// A model-prefixed copy of the same note is the same pause.
+	pause("token cap: anomaly")
+	if err := repo.NoteShareModelError(ctx, "share-1", "glm-5", "token cap: anomaly"); err != nil {
+		t.Fatalf("note prefixed cap: %v", err)
+	}
+	if share := load(); share.LastError != "glm-5: token cap: anomaly" {
+		t.Fatalf("prefixed last_error = %q", share.LastError)
+	}
+	unpause()
+	if share := load(); share.LastError != "" || share.PausedReason != "" {
+		t.Fatalf("prefixed unpause left reason %q last_error %q", share.PausedReason, share.LastError)
+	}
+
+	// A cap note still clears when the stored pause reason is empty.
+	if err := repo.NoteShareModelError(ctx, "share-1", "", "token cap: monthly"); err != nil {
+		t.Fatalf("note monthly: %v", err)
+	}
+	pause("")
+	unpause()
+	if share := load(); share.LastError != "" {
+		t.Fatalf("empty-reason unpause left last_error %q", share.LastError)
+	}
+
+	// Pausing leaves an unrelated upstream error alone, and so does unpause.
+	if err := repo.NoteShareModelError(ctx, "share-1", "", "upstream timeout"); err != nil {
+		t.Fatalf("note upstream: %v", err)
+	}
+	pause("token cap: daily")
+	if share := load(); share.LastError != "upstream timeout" || share.PausedReason != "token cap: daily" {
+		t.Fatalf("pause changed upstream error: reason %q last_error %q", share.PausedReason, share.LastError)
+	}
+	unpause()
+	if share := load(); share.Status != TokenBankShareStatusActive || share.PausedReason != "" || share.LastError != "upstream timeout" {
+		t.Fatalf("unpause of unrelated error = status %q reason %q last_error %q",
+			share.Status, share.PausedReason, share.LastError)
+	}
+
+	// % and _ in a pause reason are literals. They must not wipe a different error.
+	if err := repo.NoteShareModelError(ctx, "share-1", "glm-5", "1000"); err != nil {
+		t.Fatalf("note 1000: %v", err)
+	}
+	pause("100%")
+	unpause()
+	if share := load(); share.LastError != "glm-5: 1000" {
+		t.Fatalf("percent reason cleared last_error %q", share.LastError)
+	}
+	if err := repo.NoteShareModelError(ctx, "share-1", "glm-5", "100%"); err != nil {
+		t.Fatalf("note 100%%: %v", err)
+	}
+	pause("100%")
+	unpause()
+	if share := load(); share.LastError != "" {
+		t.Fatalf("matching percent reason left last_error %q", share.LastError)
+	}
+	if err := repo.NoteShareModelError(ctx, "share-1", "glm-5", "axb"); err != nil {
+		t.Fatalf("note axb: %v", err)
+	}
+	pause("a_b")
+	unpause()
+	if share := load(); share.LastError != "glm-5: axb" {
+		t.Fatalf("underscore reason cleared last_error %q", share.LastError)
+	}
+	if err := repo.NoteShareModelError(ctx, "share-1", "glm-5", "a_b"); err != nil {
+		t.Fatalf("note a_b: %v", err)
+	}
+	pause("a_b")
+	unpause()
+	if share := load(); share.LastError != "" {
+		t.Fatalf("matching underscore reason left last_error %q", share.LastError)
+	}
+}
+
 func TestTokenBankSetSharePausedRejectsUnknownShare(t *testing.T) {
 	repo, _ := newTokenBankShareRepo(t)
 	if err := repo.SetSharePaused(context.Background(), "ghost", "", "x", true, time.Now().UTC()); !errors.Is(err, ErrTokenBankShareNotFound) {

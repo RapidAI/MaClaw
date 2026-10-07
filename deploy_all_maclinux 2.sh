@@ -422,7 +422,6 @@ stage_assets() {
   cp -f "$ROOT_DIR/go.mod" "$ROOT_DIR/go.sum" "$stage/"
   rsync -a --exclude bin --exclude package --exclude data --exclude .gocache --exclude .gomodcache --exclude cmd --exclude internal --exclude '*.exe' --exclude '*.exe~' "$ROOT_DIR/hubcenter/" "$stage/hubcenter/"
   rsync -a --exclude bin --exclude package --exclude data --exclude .gocache --exclude .gomodcache --exclude cmd --exclude internal --exclude '*.exe' --exclude '*.exe~' "$ROOT_DIR/hub/" "$stage/hub/"
-  rsync -a --exclude node_modules --exclude dist "$ROOT_DIR/openclaw-bridge/" "$stage/openclaw-bridge/" 2>/dev/null || true
 
   [[ -d "$stage/hubcenter/web/admin" ]] || die "Missing deploy directory: hubcenter admin web assets"
   [[ -f "$stage/hubcenter/web/admin/assets/js/admin-core.js" ]] || die "Missing deploy payload: hubcenter admin core script"

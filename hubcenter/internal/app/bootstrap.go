@@ -308,6 +308,18 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	if llmModule != nil && llmModule.TokenBank != nil {
 		bank := llmModule.TokenBank
 		svc := llmModule.Service
+		if haSvc != nil && svc != nil {
+			// A peer can still be writing the registry from a snapshot that
+			// has these members paused. Applying that snapshot pauses them
+			// again; the spike note left on the row is what this pass matches.
+			haSvc.SetLLMRegistryCacheInvalidator(func() {
+				svc.InvalidateCache()
+				scheduleUsageSpikeResume(app.ctx, bank, svc)
+			})
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resumeSharesPausedForUsageSpike(releaseCtx, bank, svc)
+		releaseCancel()
 		llmservice.ConfigureTokenBankAutoPause(func() int {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
