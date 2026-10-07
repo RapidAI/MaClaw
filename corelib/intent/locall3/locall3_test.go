@@ -189,3 +189,36 @@ func TestEmbedderFamily(t *testing.T) {
 		t.Fatal("noop")
 	}
 }
+
+// A head written by scripts/intent_shadow_recalibrate.py (set
+// MACLAW_TEST_RECAL_HEAD) loads, is preferred as an _xf head, and keeps its
+// human-calibrated tau_s.
+func TestRecalibratedHeadFile(t *testing.T) {
+	src := os.Getenv("MACLAW_TEST_RECAL_HEAD")
+	if src == "" {
+		t.Skip("MACLAW_TEST_RECAL_HEAD not set")
+	}
+	t.Setenv(intent.LocalHeadEnv, "")
+	t.Setenv(intent.LocalTauSEnv, "")
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Tau         float64 `json:"tau"`
+		TauSv       float64 `json:"tau_s"`
+		Calibration struct{ Source string }
+	}
+	json.Unmarshal(b, &f)
+	dir := t.TempDir()
+	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	os.WriteFile(filepath.Join(dir, "head_mlp_qwen3go_xf.json"), b, 0o644)
+	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(h.ID, "head_mlp_qwen3go_xf.json@") || h.CalibrationSource != "human_labels" || h.TauS != f.TauSv || h.Tau != f.Tau {
+		t.Fatalf("id=%s src=%q tau=%v tau_s=%v want %v/%v", h.ID, h.CalibrationSource, h.Tau, h.TauS, f.Tau, f.TauSv)
+	}
+	t.Logf("recalibrated head %s tau=%.3f tau_s=%.3f", h.ID, h.Tau, h.TauS)
+}
