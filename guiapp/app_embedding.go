@@ -49,6 +49,7 @@ func (a *App) initEarlyClassifier() {
 			Embedder:       embedding.NoopEmbedder{},
 			LLMFunc:        a.intentL3Func(),
 			LLMContextFunc: a.intentL3ContextFunc(),
+			LocalHeadProbe: a.localL3Runtime().ProbeFunc(),
 			LLMTimeout:     30 * time.Second,
 			// 宁慢勿乱 (2026-09-18): a 12s tree deadline turned every slow-hub
 			// turn into a degraded guess — missing tools, rescue chains, wrong
@@ -661,6 +662,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 	a.unifiedClassifier.SetLLMFunc(a.intentL3Func())
 	a.unifiedClassifier.SetLLMContextFunc(a.intentL3ContextFunc())
+	a.unifiedClassifier.SetLocalHeadProbe(a.localL3Runtime().ProbeFunc())
 	// Ensure toolRouter has the UIC reference. initEarlyClassifier may have
 	// skipped this wiring if toolRouter was nil at that time (e.g., startup
 	// without Hub credentials where ensureRemoteInfra runs later).

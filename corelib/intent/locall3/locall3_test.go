@@ -255,3 +255,16 @@ func TestHeadCalibratedForLiveComputeModePreferred(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeFuncOffNilAndUnattachedNotOK(t *testing.T) {
+	if NewWithMode(t.TempDir(), intent.LocalL3Off).ProbeFunc() != nil {
+		t.Fatal("mode off must not install a head probe")
+	}
+	p := NewWithMode(t.TempDir(), intent.LocalL3On).ProbeFunc()
+	if p == nil {
+		t.Fatal("mode on must install a probe")
+	}
+	if _, _, _, ok := p(context.Background(), "hello"); ok {
+		t.Fatal("unattached runtime must report ok=false")
+	}
+}

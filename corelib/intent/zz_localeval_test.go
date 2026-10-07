@@ -231,6 +231,9 @@ func TestZZLocalEval(t *testing.T) {
 			}
 		}
 		base := LocalTreeFunc(emb, h, nil)
+		// Head/L2 hint fix (head_hint_fix.go) needs the composite-override
+		// probe; the weak-hint veto rides on LocalTreeFunc's uncertain error.
+		cfg.LocalHeadProbe = LocalHeadProbe(emb, h)
 		cfg.LLMContextFunc = func(ctx, parent context.Context, sys, user string) (string, error) {
 			l3Calls++
 			out, err := base(ctx, parent, sys, user)
@@ -303,7 +306,7 @@ func TestZZLocalEval(t *testing.T) {
 			}
 			if l3 == "head" {
 				l3Errs++
-				return "", fmt.Errorf("local head uncertain: %s %.2f < %.2f", hd.Labels[idx[0]], probs[idx[0]], thrFor(hd.Labels[idx[0]]))
+				return "", NewLocalHeadUncertainError(hd.Labels[idx[0]], probs[idx[0]], thrFor(hd.Labels[idx[0]]))
 			}
 			// headllm: ask the small local LLM to choose among the head's top-5.
 			var opts []string

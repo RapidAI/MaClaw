@@ -115,6 +115,26 @@ func (r *Runtime) Active() (*intent.LocalHead, embedding.Embedder) {
 	return nil, nil
 }
 
+// ProbeFunc returns the head/L2 composite-override probe for
+// intent.Config.LocalHeadProbe / SetLocalHeadProbe. It reads the live
+// attachment on every call (ok=false while no head is attached); mode off
+// returns nil so the classifier never probes.
+func (r *Runtime) ProbeFunc() intent.LocalHeadProbeFunc {
+	if r == nil || r.mode == intent.LocalL3Off {
+		return nil
+	}
+	return func(ctx context.Context, text string) (string, float64, float64, bool) {
+		s := r.st.Load()
+		if s == nil || s.head == nil {
+			return "", 0, 0, false
+		}
+		if p := intent.LocalHeadProbe(s.emb, s.head); p != nil {
+			return p(ctx, text)
+		}
+		return "", 0, 0, false
+	}
+}
+
 // ErrNotReady is returned in strict mode before a head is attached. It is
 // not a DeadlineExceeded / 5xx so the tree-endpoint skip window stays closed.
 var ErrNotReady = errors.New("local L3 not ready (embedder or head not loaded)")

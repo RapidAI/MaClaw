@@ -53,6 +53,9 @@ type Config struct {
 	// Shadow enables intent shadow mode (shadow.go). nil → read the
 	// MACLAW_INTENT_SHADOW* environment once; disabled by default.
 	Shadow *ShadowConfig
+	// LocalHeadProbe exposes the local intent head's top-1 for the head/L2
+	// composite override (head_hint_fix.go). Optional.
+	LocalHeadProbe LocalHeadProbeFunc
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -74,6 +77,7 @@ type UnifiedIntentClassifier struct {
 	llmContextFunc     LLMClassifyContextFunc
 	llmTimeout         time.Duration
 	fusionTreeDeadline time.Duration
+	localHeadProbe     LocalHeadProbeFunc
 
 	// Intent Tree text for Layer 3 tree reasoning (pre-built from definitions).
 	treeText string
@@ -170,6 +174,7 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		anchors:            BuildAnchorsFromDefinitions(defs),
 		llmFunc:            cfg.LLMFunc,
 		llmContextFunc:     cfg.LLMContextFunc,
+		localHeadProbe:     cfg.LocalHeadProbe,
 		llmTimeout:         timeout,
 		fusionTreeDeadline: fusionTreeDeadline,
 		treeText:           treeText,
@@ -389,7 +394,13 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 	anchors := u.anchors
 	hasLLM := u.llmFunc != nil || u.llmContextFunc != nil
 	isReady := u.ready
+	headProbe := u.localHeadProbe
 	u.mu.RUnlock()
+	hintFix := headHintFixEnabled(emb)
+	// headTop* hold the local head's sub-threshold top-1 when Layer 3 was the
+	// local head and it abstained (head_hint_fix.go weak-hint veto).
+	var headTopLabel string
+	var headTopProb float64
 
 	// Determine which layers are available.
 	isNoop := embedding.IsNoop(emb)
@@ -431,6 +442,14 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 		}
 		if confident {
 			NormalizeDeclaredComposite(&l2Result)
+			if hintFix && headProbe != nil && isDeclaredCompositeResult(l2Result) {
+				if hl, hp, strong, ok := headProbe(treeCtx, msg.Text); ok {
+					if ov, changed := overrideCompositeByHead(l2Result, hl, hp, strong); changed {
+						log.Printf("[UnifiedIntentClassifier] %s", ov.Reason)
+						l2Result = ov
+					}
+				}
+			}
 			applyExecutionAffordances(msg.Text, &l2Result)
 			l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
 			u.cacheAndLog(cacheKey, msg.Text, &l2Result)
@@ -703,6 +722,9 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 				return bestResult
 			}
 			log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v; keeping L2 lookup as hint or collapsing non-lookup", err)
+			if hl, hp, ok := LocalHeadUncertainTop(err); ok {
+				headTopLabel, headTopProb = hl, hp
+			}
 			if err := ctx.Err(); err != nil {
 				return cancelledClassificationResult(err)
 			}
@@ -748,6 +770,12 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 	// to unknown. Do not keep generate/coding secondaries or resolve tools.
 	if l2Ran {
 		result := lookupHintOrUnknownFromL2(l2Result, skipTree)
+		if hintFix && headTopLabel != "" {
+			if vetoed, changed := vetoL2HintByHead(result, headTopLabel, headTopProb); changed {
+				log.Printf("[UnifiedIntentClassifier] L2 hint vetoed by local head: hint=%s head=%s(%.2f)", result.Primary, headTopLabel, headTopProb)
+				result = vetoed
+			}
+		}
 		if skipTree {
 			// Policy skip is stable for this text, unlike an L3 timeout.
 			// cacheAndLog refuses all Degraded results; store the hint here,
@@ -1109,6 +1137,16 @@ func (u *UnifiedIntentClassifier) SetFusionTreeDeadline(d time.Duration) {
 func (u *UnifiedIntentClassifier) SetLLMFunc(fn LLMClassifyFunc) {
 	u.mu.Lock()
 	u.llmFunc = fn
+	u.cacheEpoch.Add(1)
+	u.mu.Unlock()
+	u.InvalidateCache()
+}
+
+// SetLocalHeadProbe sets (or clears with nil) the local head probe used by
+// the head/L2 composite override (head_hint_fix.go).
+func (u *UnifiedIntentClassifier) SetLocalHeadProbe(fn LocalHeadProbeFunc) {
+	u.mu.Lock()
+	u.localHeadProbe = fn
 	u.cacheEpoch.Add(1)
 	u.mu.Unlock()
 	u.InvalidateCache()
