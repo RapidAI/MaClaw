@@ -1,8 +1,10 @@
 package progress
 
 import (
+	"bufio"
 	"encoding/json"
 	"math"
+	"os"
 	"testing"
 )
 
@@ -77,5 +79,52 @@ func TestParseRelevanceModelRejectsBadFiles(t *testing.T) {
 		if _, err := ParseRelevanceModel([]byte(doc)); err == nil {
 			t.Fatalf("%s: want error", name)
 		}
+	}
+}
+
+// TestRelevanceModelRealFileParity loads an exported model
+// (MACLAW_TEST_INTERRUPT_RELEVANCE) and, when MACLAW_TEST_INTERRUPT_PARITY
+// (jsonl {"u":[...],"v":[...],"raw":x}) is set, checks Go raw scores against
+// the Python trainer's.
+func TestRelevanceModelRealFileParity(t *testing.T) {
+	path := os.Getenv("MACLAW_TEST_INTERRUPT_RELEVANCE")
+	if path == "" {
+		t.Skip("MACLAW_TEST_INTERRUPT_RELEVANCE not set")
+	}
+	m, err := LoadRelevanceModel(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("kind=%s dims=%d high=%.4f low=%.4f task=%q msg=%q", m.Kind, m.Dims, m.High, m.Low, m.TaskInstruction, m.MessageInstruction)
+	pp := os.Getenv("MACLAW_TEST_INTERRUPT_PARITY")
+	if pp == "" {
+		return
+	}
+	f, err := os.Open(pp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
+	n, maxd := 0, 0.0
+	for sc.Scan() {
+		var r struct {
+			U, V []float32
+			Raw  float64
+		}
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		got, err := m.RawScore(r.U, r.V)
+		if err != nil {
+			t.Fatal(err)
+		}
+		maxd = math.Max(maxd, math.Abs(got-r.Raw))
+		n++
+	}
+	t.Logf("parity n=%d max|Δraw|=%.2e", n, maxd)
+	if n == 0 || maxd > 1e-4 {
+		t.Fatalf("parity failed: n=%d max|Δ|=%v", n, maxd)
 	}
 }

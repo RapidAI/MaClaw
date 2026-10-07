@@ -28,6 +28,9 @@ type imInterruptHandler struct {
 	// May be nil or NoopEmbedder — relevance degrades to -1 (unavailable).
 	embedderMu sync.RWMutex
 	embedder   embedding.Embedder
+
+	// taskVecs caches relevance-model-formatted task vectors (Qwen3).
+	taskVecs taskVecCache
 }
 
 func newIMInterruptHandler(h *IMMessageHandler) *imInterruptHandler {
@@ -61,6 +64,17 @@ func (ih *imInterruptHandler) EmbedText(text string) []float32 {
 	emb := ih.currentEmbedder()
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil
+	}
+	if m := interruptRelevanceModelFor(emb); m != nil {
+		// Qwen3: the task side is embedded in the relevance model's format;
+		// cache it so TryInterrupt reuses this vector.
+		tk := m.FormatTask(text)
+		vec, err := emb.Embed(tk)
+		if err != nil {
+			return nil
+		}
+		ih.taskVecs.put(tk, vec)
+		return vec
 	}
 	vec, err := emb.Embed(text)
 	if err != nil {
@@ -157,7 +171,11 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	if tracker != nil {
 		taskEmbed := tracker.Buffer().TaskEmbed()
 		emb := ih.currentEmbedder()
-		if emb != nil && !embedding.IsNoop(emb) {
+		if m := interruptRelevanceModelFor(emb); m != nil {
+			// Embedder-specific relevance (Qwen3): instruction-formatted
+			// vectors, model score calibrated onto the scheduler bands.
+			relevance = ih.modelRelevance(emb, m, tracker.Buffer().TaskDesc(), messageText)
+		} else if emb != nil && !embedding.IsNoop(emb) {
 			// A task can start during embedding startup, before runAgentLoop had an
 			// embedder available. Recover on the first interruption and cache the
 			// result, instead of permanently using the broad domain-only fallback.
