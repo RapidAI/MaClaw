@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,10 +31,16 @@ var defaultHubModelFiles = strings.Join([]string{
 	"kokoro-v1_0.koro",
 	"kokoro_82m_selected_voices_koro_v2.zip",
 	ocr.ModelsZipFilename,
+	// First-run local model + heads (GitHub release Model_Release; sha256
+	// pinned in corelib/embedding/release_assets.json and verified by the
+	// download script).
+	embedding.Qwen3ModelFilename,
+	"head_mlp_qwen3go_xf.json",
+	"tool_head_ovr_qwen3go.json",
 }, " ")
 
 const defaultHubModelLockTTL = 24 * time.Hour
-const modelDownloadScriptVersion = "maclaw-model-download-v3"
+const modelDownloadScriptVersion = "maclaw-model-download-v4"
 
 type hubModelFileView struct {
 	Name        string `json:"name"`
@@ -136,7 +143,25 @@ func resolveModelPublicPath(modelsDir string, legacyDataDir string, filename str
 }
 
 func isAllowedModelFilename(filename string) bool {
-	return filename != "" && !strings.Contains(filename, "/") && !strings.Contains(filename, "\\") && !strings.Contains(filename, "..") && isAllowedModelExtension(filename)
+	return filename != "" && !strings.Contains(filename, "/") && !strings.Contains(filename, "\\") && !strings.Contains(filename, "..") &&
+		(isAllowedModelExtension(filename) || embedding.IsReleaseAssetFilename(filename))
+}
+
+// modelDownloadArgs appends "#<sha256>" to every pinned release asset so the
+// download script verifies it (and re-fetches a corrupt cached copy).
+func modelDownloadArgs(files []string) []string {
+	pins := map[string]string{}
+	for _, a := range embedding.ReleaseAssets() {
+		pins[a.Filename] = a.SHA256
+	}
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if sha := pins[f]; sha != "" {
+			f += "#" + sha
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // isAllowedModelExtension checks if a filename has a permitted model file extension.
@@ -228,7 +253,7 @@ func TriggerAdminModelDownloadHandler(configPath string) http.HandlerFunc {
 
 		lockPath := filepath.Join(modelsDir, ".models-downloading")
 		sentinelPath := filepath.Join(modelsDir, ".models-initialized")
-		args := append([]string{strings.TrimSpace(os.Getenv("HUB_MODEL_BASE_URL")), modelsDir, resolveUserModelDir(), sentinelPath, lockPath}, expectedFiles...)
+		args := append([]string{strings.TrimSpace(os.Getenv("HUB_MODEL_BASE_URL")), modelsDir, resolveUserModelDir(), sentinelPath, lockPath}, modelDownloadArgs(expectedFiles)...)
 		if strings.TrimSpace(args[0]) == "" {
 			args[0] = defaultHubModelBaseURL
 		}
@@ -388,7 +413,7 @@ func ensureModelDownloadScript(scriptPath string) error {
 		return err
 	}
 	const script = `#!/bin/sh
-# maclaw-model-download-v3
+# maclaw-model-download-v4
 set -eu
 BASE_URL="$1"
 TARGET_DIR="$2"
@@ -403,18 +428,34 @@ trap cleanup EXIT INT TERM
 is_allowed_model_file() {
   case "$1" in
     ""|*/*|*\\*|*..*) return 1 ;;
-	    *.gguf|*.cmpg|*.yolow|*.koro|*.onnx|*.zip) return 0 ;;
+    *.gguf|*.cmpg|*.yolow|*.koro|*.onnx|*.zip|*.json) return 0 ;;
     *) return 1 ;;
   esac
 }
+sha_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else echo ""; fi
+}
+sha_ok() {
+  [ -z "$2" ] && return 0
+  got="$(sha_of "$1")"
+  [ -z "$got" ] && return 0
+  [ "$got" = "$2" ]
+}
 download_one() {
   name="$1"
+  want="$2"
   url="$BASE_URL/$name"
   target="$TARGET_DIR/$name"
   tmp="$target.part"
-	  if [ -s "$target" ]; then
-    cp -f "$target" "$HOME_DIR/$name"
-    return 0
+  if [ -s "$target" ]; then
+    if sha_ok "$target" "$want"; then
+      cp -f "$target" "$HOME_DIR/$name"
+      return 0
+    fi
+    echo "[WARN] cached $name sha256 mismatch; re-downloading" >&2
+    rm -f "$target"
   fi
   rm -f "$tmp"
   if command -v curl >/dev/null 2>&1; then
@@ -431,16 +472,28 @@ download_one() {
     echo "[ERROR] Neither curl nor wget is available" >&2
     exit 1
   fi
+  if ! sha_ok "$tmp" "$want"; then
+    echo "[ERROR] $name sha256 mismatch from $url (want $want)" >&2
+    rm -f "$tmp"
+    return 1
+  fi
   mv -f "$tmp" "$target"
   cp -f "$target" "$HOME_DIR/$name"
 }
-for file in "$@"; do
+rc=0
+for spec in "$@"; do
+  file="${spec%%#*}"
+  want=""
+  case "$spec" in *#*) want="${spec#*#}" ;; esac
   if ! is_allowed_model_file "$file"; then
     echo "[WARN] Skip unsafe model filename: $file" >&2
     continue
   fi
-  download_one "$file"
+  download_one "$file" "$want" || rc=1
 done
+if [ "$rc" -ne 0 ]; then
+  exit 1
+fi
 touch "$SENTINEL"
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
