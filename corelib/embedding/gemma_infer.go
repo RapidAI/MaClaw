@@ -3,6 +3,7 @@ package embedding
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -287,31 +288,34 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 			ropeCos, ropeSin = sc.ropeCosSwa, sc.ropeSinSwa
 		}
 		tensor.RMSNormRows(normed, x, layer.attnNormW, seq, dim, hp.RMSNormEps)
-		if fuse {
+		if fuse && !fuseOffQKV {
 			tensor.MatMulQ8PackedQKV(q, k, v, normed, &layer.attnQWeight, &layer.attnKWeight, &layer.attnVWeight, seq, maxWorkers)
-			tensor.RMSNormRoPESeq(q, layer.attnQNormW, ropeCos, ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
-			tensor.RMSNormRoPESeq(k, layer.attnKNormW, ropeCos, ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		} else {
 			tensor.MatMulQ8N(q, normed, &layer.attnQWeight, seq, dim, dim, maxWorkers)
 			tensor.MatMulQ8N(k, normed, &layer.attnKWeight, seq, kvDim, dim, maxWorkers)
 			tensor.MatMulQ8N(v, normed, &layer.attnVWeight, seq, kvDim, dim, maxWorkers)
-			tensor.RMSNormRoPESeq(q, layer.attnQNormW, ropeCos, ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
-			tensor.RMSNormRoPESeq(k, layer.attnKNormW, ropeCos, ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		}
+		tensor.RMSNormRoPESeq(q, layer.attnQNormW, ropeCos, ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
+		tensor.RMSNormRoPESeq(k, layer.attnKNormW, ropeCos, ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, halfW)
-		if fuse {
+		if fuse && !fuseOffAttRes {
 			tensor.MatMulQ8RMSResidual(x, attnOut, sc.yTile, &layer.attnOutWeight, layer.postAttnNormW, seq, dim, dim, 8, maxWorkers, hp.RMSNormEps)
-			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
-			tensor.MatMulQ8DualOut(ffGate, ffUp, normed, &layer.ffGateWeight, &layer.ffUpWeight, seq, maxWorkers)
-			tensor.MatMulQ8RMSResidual(x, ffGate, sc.yTile, &layer.ffDownWeight, layer.postFFNNormW, seq, dim, ffDim, 8, maxWorkers, hp.RMSNormEps)
 		} else {
 			tensor.MatMulQ8N(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim, maxWorkers)
 			tensor.RMSNormRows(projOut, projOut, layer.postAttnNormW, seq, dim, hp.RMSNormEps)
 			tensor.Add(x, x, projOut)
-			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
+		}
+		tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
+		if fuse && !fuseOffFFN {
+			tensor.MatMulQ8DualOut(ffGate, ffUp, normed, &layer.ffGateWeight, &layer.ffUpWeight, seq, maxWorkers)
+		} else {
 			tensor.MatMulQ8N(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim, maxWorkers)
 			tensor.MatMulQ8N(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim, maxWorkers)
 			tensor.GeluMul(ffGate, ffUp)
+		}
+		if fuse && !fuseOffFFNRes {
+			tensor.MatMulQ8RMSResidual(x, ffGate, sc.yTile, &layer.ffDownWeight, layer.postFFNNormW, seq, dim, ffDim, 8, maxWorkers, hp.RMSNormEps)
+		} else {
 			tensor.MatMulQ8N(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim, maxWorkers)
 			tensor.RMSNormRows(ffDown, ffDown, layer.postFFNNormW, seq, dim, hp.RMSNormEps)
 			tensor.Add(x, x, ffDown)
@@ -503,4 +507,31 @@ func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, sc
 		o := out[(sq+t)*qStride+hOff : (sq+t)*qStride+hOff+headDim]
 		tensor.SoftmaxWeightedSumStrided(o, row, vBase[rlo*kvStride:], rhi-rlo, kvStride, headDim)
 	}
+}
+
+// Per-op fused-path diagnostics.
+//
+// MACLAW_EMBED_FUSION=0 turns the whole fused branch off, but that only says
+// what fusion costs *in total*.  These four turn off one fused op each, which
+// is what makes the cost attributable: measured against llama.cpp on the
+// built-in corpus, the fused path is worth minCos 0.99891 and turning all four
+// off gives 0.99989, with no single op dominating (FFNRES 6.0e-4, QKV 3.4e-4,
+// FFN 2.6e-4, ATTRES -7.4e-5 -- i.e. one op *helps*).  See TestFusionOpCost.
+//
+// The non-fused equivalents are not a free replacement: measured interleaved,
+// turning fusion off costs 1.72x single-text latency and 1.63x batch throughput
+// (p50 9.79 -> 16.79 ms, 99.6 -> 61.1 t/s), so this is a real tradeoff and the
+// default stays fused.
+//
+// Read once at init, so a normal forward pays nothing for them.
+var (
+	fuseOffQKV    = envFlag("MACLAW_NO_FUSE_QKV")
+	fuseOffAttRes = envFlag("MACLAW_NO_FUSE_ATTRES")
+	fuseOffFFN    = envFlag("MACLAW_NO_FUSE_FFN")
+	fuseOffFFNRes = envFlag("MACLAW_NO_FUSE_FFNRES")
+)
+
+func envFlag(name string) bool {
+	v := os.Getenv(name)
+	return v != "" && v != "0"
 }

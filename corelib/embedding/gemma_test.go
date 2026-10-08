@@ -433,6 +433,140 @@ func cosine32(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
+// TestFusionOpCost attributes the reference's fused-path approximation to
+// individual fused ops, and pins the total.
+//
+// Measured against llama.cpp on the built-in corpus (tools/go_ref_vs_llamacpp.py
+// for the totals, the MACLAW_NO_FUSE_* switches for the per-op split), the fused
+// path is worth minCos 0.99891 and turning all four ops off gives 0.99989.  That
+// makes it the largest single residual in the reference -- 10x the port's total
+// error against llama.cpp (0.9999999) -- and it is not inherent to fusing: the
+// port uses an activation panel for the same "one quantization of A feeds both
+// weight streams" idea and still lands within 1.1e-7 of llama.cpp.
+//
+// The cost is spread over all four ops rather than concentrated in one, which is
+// why this test measures each separately.  On the built-in corpus, minCos against
+// llama.cpp: all fused 0.998912713, QKV off 0.999254070, ATTRES off 0.998838346,
+// FFN off 0.999171824, FFNRES off 0.999509473, all off 0.999892791.  Note ATTRES
+// off is *worse* than fused -- turning off a fusion cannot be assumed to help.
+//
+// It is a tradeoff, not a free win: measured interleaved, turning fusion off
+// costs 1.72x single-text latency and 1.63x batch throughput (p50 9.79 -> 16.79
+// ms, 99.6 -> 61.1 t/s), which is why the default stays fused.
+//
+// This test has no llama.cpp golden to compare against, so it pins the *shape*
+// instead: every switch must change the output -- a silently dead switch is the
+// failure mode this project has hit twice -- and the all-off configuration must
+// differ from the fused one by more than noise.  On this corpus (dim 256) that
+// difference is minCos 0.999493085, i.e. 5.07e-4; the gate below is 2.5x looser
+// than the measurement so it catches the fused path being disabled or drifting
+// without failing on a corpus change.
+func TestFusionOpCost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads the model seven times")
+	}
+	path := findModel(t)
+	raw, err := os.ReadFile(filepath.Join("testdata", "embed_gate_zh.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			texts = append(texts, line)
+		}
+	}
+	if len(texts) == 0 {
+		t.Fatal("empty gate corpus")
+	}
+
+	// Restore the switches afterwards: they are package-level because the env
+	// vars behind them are read once at init.
+	defer func(q, a, f, r bool) {
+		fuseOffQKV, fuseOffAttRes, fuseOffFFN, fuseOffFFNRes = q, a, f, r
+	}(fuseOffQKV, fuseOffAttRes, fuseOffFFN, fuseOffFFNRes)
+
+	embed := func() [][]float32 {
+		g, err := NewGemmaEmbedder(path, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer g.Close()
+		out := make([][]float32, len(texts))
+		for i, tx := range texts {
+			v, err := g.Embed(tx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[i] = v
+		}
+		return out
+	}
+
+	fuseOffQKV, fuseOffAttRes, fuseOffFFN, fuseOffFFNRes = false, false, false, false
+	base := embed()
+
+	configs := []struct {
+		name                string
+		qkv, attr, ffn, res bool
+	}{
+		{"all fused", false, false, false, false},
+		{"QKV off", true, false, false, false},
+		{"ATTRES off", false, true, false, false},
+		{"FFN off", false, false, true, false},
+		{"FFNRES off", false, false, false, true},
+		{"all off", true, true, true, true},
+	}
+	for _, c := range configs {
+		fuseOffQKV, fuseOffAttRes, fuseOffFFN, fuseOffFFNRes = c.qkv, c.attr, c.ffn, c.res
+		got := embed()
+		minCos, worst := 1.0, -1
+		// "Did this switch do anything" is a bitwise question, not a cosine
+		// one: a dead switch returns the identical vectors, and a cosine
+		// threshold would either pass a 1e-16 wobble or fail on rounding.
+		identical := true
+		for i := range base {
+			for j := range base[i] {
+				if base[i][j] != got[i][j] {
+					identical = false
+					break
+				}
+			}
+			if cos := cosine32(base[i], got[i]); cos < minCos {
+				minCos, worst = cos, i
+			}
+		}
+		t.Logf("%-12s minCos vs all-fused = %.9f (worst text %d)", c.name, minCos, worst)
+		if c.name == "all fused" {
+			// The baseline must reproduce itself, or the switches are not what
+			// is being measured.
+			if !identical {
+				t.Fatal("baseline is not deterministic")
+			}
+			continue
+		}
+		// A switch that changes nothing is either dead or the op is unused on
+		// this shape; either way it must not pass silently.
+		if identical {
+			t.Fatalf("%s changed nothing -- the switch is not live", c.name)
+		}
+	}
+	// The whole-path number, which is the one quoted against llama.cpp.
+	fuseOffQKV, fuseOffAttRes, fuseOffFFN, fuseOffFFNRes = true, true, true, true
+	off := embed()
+	minCos := 1.0
+	for i := range base {
+		if cos := cosine32(base[i], off[i]); cos < minCos {
+			minCos = cos
+		}
+	}
+	if minCos > 0.9998 {
+		t.Fatalf("fused vs non-fused minCos=%.9f; the fused path measured 0.999493085 "+
+			"here (5.07e-4), so a gap this small means it is no longer doing anything",
+			minCos)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Sliding-window attention.
 //
