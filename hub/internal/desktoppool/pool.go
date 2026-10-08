@@ -102,10 +102,21 @@ type Desktop struct {
 	Status     string `json:"status"`
 }
 
+// AuthorizedUser is one platform user a desktop assignment covers. The
+// check-desktop list shows only these users: anyone else would fail with
+// ErrNotAssigned because no assignment resolves for them.
+type AuthorizedUser struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 // View is the admin payload.
 type View struct {
 	Servers     []ServerView `json:"servers"`
 	Assignments []Assignment `json:"assignments"`
+	// Users lists the platform users covered by an assignment. The pool has
+	// no user list, so the admin handler fills it in via AuthorizedUsers.
+	Users []AuthorizedUser `json:"users,omitempty"`
 }
 
 type record struct {
@@ -133,6 +144,88 @@ func (p *Pool) View(ctx context.Context, tenantID string) (View, error) {
 		return View{}, err
 	}
 	return viewOf(rec), nil
+}
+
+// AuthorizedUsers filters candidates down to the users an assignment covers:
+// a user-scope assignment names them, a department-scope assignment covers
+// their department chain, and a global assignment covers everyone. It is
+// resolve()'s matching in reverse, so every listed user's desktop calls
+// succeed; unlisted users would fail with ErrNotAssigned.
+func (p *Pool) AuthorizedUsers(ctx context.Context, tenantID string, candidates []AuthorizedUser) []AuthorizedUser {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return nil
+	}
+	return p.filterAuthorizedUsers(ctx, candidates, rec.Assignments)
+}
+
+// ViewAuthorized is the admin view with Users filled in, from one settings
+// read: the panel needs both and two reads could disagree after a write.
+func (p *Pool) ViewAuthorized(ctx context.Context, tenantID string, candidates []AuthorizedUser) (View, error) {
+	if p == nil {
+		return View{}, ErrSettingsUnavailable
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return View{}, err
+	}
+	view := viewOf(rec)
+	view.Users = p.filterAuthorizedUsers(ctx, candidates, rec.Assignments)
+	return view, nil
+}
+
+// filterAuthorizedUsers applies resolve()'s matching in reverse. A global
+// assignment short-circuits everything: nobody needs a department chain, so
+// the directory is left alone for large tenants. With department assignments
+// and no global, each candidate's chain resolves at most to a first match.
+func (p *Pool) filterAuthorizedUsers(ctx context.Context, candidates []AuthorizedUser, assignments []Assignment) []AuthorizedUser {
+	var (
+		global bool
+		users  = map[string]bool{}
+		depts  = map[string]bool{}
+	)
+	for _, item := range assignments {
+		switch item.Scope {
+		case ScopeGlobal:
+			global = true
+		case ScopeUser:
+			users[item.TargetID] = true
+		case ScopeDepartment:
+			depts[item.TargetID] = true
+		}
+	}
+	if !global && len(users) == 0 && len(depts) == 0 {
+		return nil
+	}
+	out := []AuthorizedUser{}
+	add := func(id, label string) {
+		out = append(out, AuthorizedUser{ID: id, Label: label})
+	}
+	for _, candidate := range candidates {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		switch {
+		case global || users[id]:
+			add(id, candidate.Label)
+		case len(depts) > 0:
+			for _, groupID := range p.departmentChain(ctx, id) {
+				if depts[groupID] {
+					add(id, candidate.Label)
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (p *Pool) CreateServer(ctx context.Context, tenantID string, in Server) (ServerView, error) {

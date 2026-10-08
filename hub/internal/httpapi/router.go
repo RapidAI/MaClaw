@@ -404,7 +404,7 @@ func NewRouter(
 	}
 	desktopPool := desktoppool.New(system, desktopDirectory)
 	botSvc.Desktop = botDesktopControl{pool: desktopPool}
-	mux.HandleFunc("GET /api/admin/desktop-services", requireTenantAdmin(GetDesktopServicesAdminHandler(desktopPool)))
+	mux.HandleFunc("GET /api/admin/desktop-services", requireTenantAdmin(GetDesktopServicesAdminHandler(desktopPool, platformUsers)))
 	mux.HandleFunc("POST /api/admin/desktop-services", requireTenantAdmin(PostDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("PATCH /api/admin/desktop-services/{id}", requireTenantAdmin(PatchDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("DELETE /api/admin/desktop-services/{id}", requireTenantAdmin(DeleteDesktopServiceAdminHandler(desktopPool)))

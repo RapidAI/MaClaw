@@ -41,6 +41,7 @@
       target: '\u90e8\u95e8\u6216\u7528\u6237',
       targetPick: '\u8bf7\u9009\u62e9',
       targetEmpty: '\u7ec4\u7ec7\u673a\u6784\u52a0\u8f7d\u540e\u53ef\u9009',
+      userEmpty: '\u8fd8\u6ca1\u6709\u5df2\u6388\u6743\u7684\u7528\u6237\uff0c\u5148\u5728\u4e0a\u65b9\u6dfb\u52a0\u5206\u914d',
       server: 'Docker \u670d\u52a1',
       assign: '\u4fdd\u5b58\u5206\u914d',
       desktop: '\u68c0\u67e5\u684c\u9762',
@@ -100,6 +101,7 @@
       target: 'Department or user',
       targetPick: 'Choose',
       targetEmpty: 'Available after the organization loads',
+      userEmpty: 'No authorized users yet; assign a user or department to a Docker service first',
       server: 'Docker service',
       assign: 'Save assignment',
       desktop: 'Check a desktop',
@@ -261,7 +263,6 @@
     var target = byID('desktopTarget');
     var targetLabel = byID('desktopTargetLabel');
     if (!scope || !target) return;
-    fillUserSelect();
     var everyone = scope.value === 'global';
     target.disabled = everyone;
     if (targetLabel) targetLabel.hidden = everyone;
@@ -287,14 +288,19 @@
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
   }
 
+  // The check-desktop list carries the users the backend reports as covered
+  // by an assignment (directly, through their department chain, or globally),
+  // so it never offers a user whose desktop request would fail with
+  // "no docker service is assigned".
   function fillUserSelect() {
     var select = byID('desktopUser');
     if (!select) return;
     var previous = select.value;
-    var users = orgChoices().users;
-    var placeholder = users.length ? text().targetPick : text().targetEmpty;
+    var panel = host();
+    var users = (panel && panel._view && panel._view.users) || [];
+    var placeholder = users.length ? text().targetPick : text().userEmpty;
     select.innerHTML = '<option value="">' + escapeHtml(placeholder) + '</option>' + users.map(function (item) {
-      return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.label) + '</option>';
+      return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.label || item.id) + '</option>';
     }).join('');
     if (previous) select.value = previous;
   }
@@ -365,6 +371,7 @@
   function render(view) {
     var panel = host();
     if (panel) panel._view = view;
+    fillUserSelect();
     var servers = view.servers || [];
     var list = byID('desktopServerList');
     if (list) {

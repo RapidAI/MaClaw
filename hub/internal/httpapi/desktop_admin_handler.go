@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -99,19 +101,48 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 	}
 }
 
-func GetDesktopServicesAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
+func GetDesktopServicesAdminHandler(pool *desktoppool.Pool, users store.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pool == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
 			return
 		}
-		view, err := pool.View(r.Context(), desktopTenantID(r))
+		tenantID := desktopTenantID(r)
+		candidates := desktopUserCandidates(r.Context(), users, tenantID)
+		view, err := pool.ViewAuthorized(r.Context(), tenantID, candidates)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, view)
 	}
+}
+
+// desktopUserCandidates turns the tenant's users into filter candidates for
+// the pool: real users only, labeled by email when there is one. A repository
+// failure yields no candidates, so the panel lists nobody rather than users
+// whose desktop calls would fail.
+func desktopUserCandidates(ctx context.Context, repo store.UserRepository, tenantID string) []desktoppool.AuthorizedUser {
+	if repo == nil {
+		return nil
+	}
+	items, err := repo.ListByTenant(ctx, tenantID)
+	if err != nil {
+		log.Printf("[admin/desktop-services] list users failed: %v", err)
+		return nil
+	}
+	candidates := make([]desktoppool.AuthorizedUser, 0, len(items))
+	for _, user := range items {
+		if user == nil || strings.TrimSpace(user.ID) == "" || llmservice.IsSystemLLMUser(user.ID, user.Email) {
+			continue
+		}
+		label := strings.TrimSpace(user.Email)
+		if label == "" {
+			label = strings.TrimSpace(user.ID)
+		}
+		candidates = append(candidates, desktoppool.AuthorizedUser{ID: user.ID, Label: label})
+	}
+	return candidates
 }
 
 func PostDesktopServiceAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {

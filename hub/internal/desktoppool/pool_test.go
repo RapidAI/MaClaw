@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +126,111 @@ func TestUserDepartmentAndGlobalPickDifferentDockerHosts(t *testing.T) {
 func mustJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
+}
+
+func TestAuthorizedUsersListsOnlyAssignedUsers(t *testing.T) {
+	candidates := testPoolCandidates()
+	assignments := func(global bool) []Assignment {
+		if global {
+			return []Assignment{{Scope: ScopeGlobal}}
+		}
+		return []Assignment{
+			{Scope: ScopeDepartment, TargetID: "eng"},
+			{Scope: ScopeUser, TargetID: "alice"},
+		}
+	}
+	// Without a global assignment the list keeps to the named user and the
+	// users the department chain (child department included) reaches.
+	pool := newCandidatePool(t, assignments(false))
+	got := pool.AuthorizedUsers(context.Background(), "tenant-a", candidates)
+	want := []AuthorizedUser{
+		{ID: "alice", Label: "alice@example.com"},
+		{ID: "bob", Label: "bob@example.com"},
+		{ID: "carol", Label: "carol@example.com"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("department+user assignments authorized=%s want=%s", mustJSON(got), mustJSON(want))
+	}
+	// A global assignment covers everyone, whoever their department is.
+	pool = newCandidatePool(t, assignments(true))
+	got = pool.AuthorizedUsers(context.Background(), "tenant-a", candidates)
+	want = append([]AuthorizedUser{}, candidates...)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("global assignment authorized=%s want=%s", mustJSON(got), mustJSON(want))
+	}
+}
+
+// TestViewAuthorizedCarriesUsers checks the one-read path the GET handler
+// uses: servers and assignments ride along with the same user filter that
+// AuthorizedUsers reports for the same candidates.
+func TestViewAuthorizedCarriesUsers(t *testing.T) {
+	pool := newCandidatePool(t, []Assignment{
+		{Scope: ScopeDepartment, TargetID: "eng"},
+		{Scope: ScopeUser, TargetID: "alice"},
+	})
+	view, err := pool.ViewAuthorized(context.Background(), "tenant-a", testPoolCandidates())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Servers) != 1 || len(view.Assignments) != 2 {
+		t.Fatalf("view=%s missing servers or assignments", mustJSON(view))
+	}
+	users := pool.AuthorizedUsers(context.Background(), "tenant-a", testPoolCandidates())
+	if !reflect.DeepEqual(view.Users, users) {
+		t.Fatalf("view users=%s want=%s", mustJSON(view.Users), mustJSON(users))
+	}
+}
+
+// testPoolCandidates is one candidate per user the shared directory knows:
+// alice (user assignment), bob and carol (the eng department chain), dave
+// (no email, no department), eve (unrelated department).
+func testPoolCandidates() []AuthorizedUser {
+	return []AuthorizedUser{
+		{ID: "alice", Label: "alice@example.com"},
+		{ID: "bob", Label: "bob@example.com"},
+		{ID: "carol", Label: "carol@example.com"},
+		{ID: "dave", Label: "dave"},
+		{ID: "eve", Label: "eve@example.com"},
+	}
+}
+
+func newCandidatePool(t *testing.T, assignments []Assignment) *Pool {
+	t.Helper()
+	pool := New(&memSettings{}, memDir{
+		email: map[string]string{
+			"alice": "alice@example.com", "bob": "bob@example.com", "carol": "carol@example.com",
+			"dave": "", "eve": "eve@example.com",
+		},
+		group:   map[string]string{"alice@example.com": "eng", "bob@example.com": "eng", "carol@example.com": "eng-child", "eve@example.com": "sales"},
+		parents: map[string]string{"eng-child": "eng"},
+	})
+	ctx := context.Background()
+	view, err := pool.CreateServer(ctx, "tenant-a", Server{Name: "srv", BaseURL: "http://srv.example:18081", AccessToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range assignments {
+		item.ServerID = view.ID
+		if _, err := pool.CreateAssignment(ctx, "tenant-a", item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return pool
+}
+
+func TestAuthorizedUsersEmptyWithoutAssignments(t *testing.T) {
+	pool := New(&memSettings{}, memDir{
+		email: map[string]string{"alice": "alice@example.com"},
+		group: map[string]string{"alice@example.com": "eng"},
+	})
+	ctx := context.Background()
+	if _, err := pool.CreateServer(ctx, "tenant-a", Server{Name: "srv", BaseURL: "http://srv.example:18081", AccessToken: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	got := pool.AuthorizedUsers(ctx, "tenant-a", []AuthorizedUser{{ID: "alice", Label: "alice@example.com"}})
+	if len(got) != 0 {
+		t.Fatalf("no assignments must authorize nobody, got=%s", mustJSON(got))
+	}
 }
 
 func TestDeletingUserAssignmentStopsTheOldServerDesktop(t *testing.T) {

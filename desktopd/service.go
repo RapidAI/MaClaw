@@ -50,7 +50,15 @@ type Service struct {
 	// the effective value per creation (the panel's file-backed config).
 	DesktopProxyURL string
 	Egress          *EgressSource
-	userGates       sync.Map
+	// ImageSources maps a local image name to the registry ref it is pulled
+	// from when missing (image_source.go); ImagePullTimeout bounds that pull.
+	ImageSources     map[string]string
+	ImagePullTimeout time.Duration
+	// pulls tracks in-flight registry pulls by image: concurrent desktop
+	// requests join one pull and a failed registry is not re-hit on every
+	// request (imagePullRetryAfter backoff, see image_source.go).
+	pulls     imagePulls
+	userGates sync.Map
 }
 
 // desktopProxy resolves the proxy URL the NEXT created desktop receives: the
@@ -655,13 +663,8 @@ func (s *Service) keepUserLayer(ctx context.Context, name string, spec Spec, fro
 	return nil
 }
 
-func (s *Service) installImage(ctx context.Context, image string) error {
-	if _, err := s.docker(ctx, "image", "inspect", "--format", "{{.Id}}", image); err == nil {
-		return nil
-	}
-	_, err := s.docker(ctx, "pull", image)
-	return err
-}
+// installImage moved to image_source.go: it consults the per-image source map
+// (s.ImageSources) and bounds registry pulls with ImagePullTimeout.
 
 // runContainer starts a new desktop from image. spec.Image is the requested
 // image and is recorded in the maclaw.image label; image may be this user's

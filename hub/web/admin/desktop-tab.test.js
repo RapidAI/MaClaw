@@ -154,7 +154,10 @@ function createHarness(options) {
     if (url === '/api/admin/desktop-services') {
       return Promise.resolve({
         servers: [{ id: 's1', name: 'dockerd-a', base_url: 'http://docker-host:18081', token_set: true, image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm_size: '512m' }],
-        assignments: [{ id: 'a1', scope: 'global', target_id: '', server_id: 's1' }]
+        assignments: [{ id: 'a1', scope: 'global', target_id: '', server_id: 's1' }],
+        users: opts.viewUsers === undefined
+          ? [{ id: 'u_alice', label: 'alice@example.com' }, { id: 'u_bob', label: 'bob@example.com' }]
+          : opts.viewUsers
       });
     }
     if (url === '/api/admin/desktop-services/desktops/view') {
@@ -177,7 +180,11 @@ function createHarness(options) {
   context.api = api;
   context.showToast = function (msg, kind) { toasts.push({ msg: msg, kind: kind }); };
   context.botOrgChoices = function () {
-    return { ready: true, departments: [{ id: 'dept-finance', label: 'Finance' }], users: [{ id: 'u_alice', label: 'Alice' }] };
+    return {
+      ready: true,
+      departments: [{ id: 'dept-finance', label: 'Finance' }],
+      users: [{ id: 'u_alice', label: 'Alice' }, { id: 'u_stranger', label: 'Stranger' }]
+    };
   };
   context.AdminTabRegistry = { onLanguageChange: function () {} };
 
@@ -219,6 +226,27 @@ function createHarness(options) {
     pickUser: pickUser,
     releaseView: function (value) { releaseView(value); }
   };
+}
+
+async function testUserListCarriesOnlyAuthorizedUsers() {
+  console.log('  Test: the check-desktop dropdown lists only the users the backend authorized');
+  const harness = createHarness();
+  harness.mount();
+  await harness.load();
+  const html = harness.elements.desktopUser.innerHTML;
+  assertIncludes(html, 'u_alice', 'an assigned user is listed');
+  assertIncludes(html, 'u_bob', 'a department-covered user is listed');
+  assert(html.indexOf('u_stranger') === -1, 'an org user without an assignment is not listed');
+}
+
+async function testUserListEmptyShowsTheAssignmentHint() {
+  console.log('  Test: without authorized users the dropdown explains the assignment step');
+  const harness = createHarness({ viewUsers: [] });
+  harness.mount();
+  await harness.load();
+  const html = harness.elements.desktopUser.innerHTML;
+  assertIncludes(html, '\u8fd8\u6ca1\u6709\u5df2\u6388\u6743\u7684\u7528\u6237', 'the empty list tells the admin to add an assignment');
+  assert(html.indexOf('u_alice') === -1, 'no unauthorized user is listed');
 }
 
 async function testViewButtonFollowsStopButton() {
@@ -377,6 +405,8 @@ async function testSwitchingUserOpensThatDesktop() {
 }
 
 Promise.resolve()
+  .then(testUserListCarriesOnlyAuthorizedUsers)
+  .then(testUserListEmptyShowsTheAssignmentHint)
   .then(testViewButtonFollowsStopButton)
   .then(testViewOpensFramedDesktop)
   .then(testCloseButtonDropsTheFrame)

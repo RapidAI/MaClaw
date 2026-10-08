@@ -213,3 +213,109 @@ func TestDesktopAdminStopEndsTheHold(t *testing.T) {
 		t.Fatalf("docker stops=%d, want 1 after the admin stopped it", got)
 	}
 }
+
+// desktopTestUsers is an in-memory user repository for the view handler's
+// authorized-user list; the tenant filter mirrors ListByTenant semantics.
+type desktopTestUsers struct{ items []*store.User }
+
+func (u desktopTestUsers) Create(context.Context, *store.User) error               { return nil }
+func (u desktopTestUsers) GetByID(context.Context, string) (*store.User, error)    { return nil, nil }
+func (u desktopTestUsers) GetByEmail(context.Context, string) (*store.User, error) { return nil, nil }
+func (u desktopTestUsers) GetByTenantEmail(context.Context, string, string) (*store.User, error) {
+	return nil, nil
+}
+func (u desktopTestUsers) List(context.Context) ([]*store.User, error) { return u.items, nil }
+func (u desktopTestUsers) ListByTenant(_ context.Context, tenantID string) ([]*store.User, error) {
+	if tenantID == "tenant-a" {
+		return u.items, nil
+	}
+	return nil, nil
+}
+func (u desktopTestUsers) DeleteByEmail(context.Context, string) error               { return nil }
+func (u desktopTestUsers) DeleteByTenantEmail(context.Context, string, string) error { return nil }
+func (u desktopTestUsers) UpdateSmartRoute(context.Context, string, bool) error      { return nil }
+func (u desktopTestUsers) MarkEmailVerified(context.Context, string, string) error   { return nil }
+func (u desktopTestUsers) GetByTenantIdentity(context.Context, string, string, string) (*store.User, error) {
+	return nil, nil
+}
+func (u desktopTestUsers) ListIdentitiesByUser(context.Context, string, string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+func (u desktopTestUsers) UpsertIdentity(context.Context, *store.UserIdentity) error { return nil }
+
+// desktopUserPool builds a pool whose tenant-a assignments are exactly items.
+func desktopUserPool(t *testing.T, system *desktopSettingsMem, items []desktoppool.Assignment) *desktoppool.Pool {
+	t.Helper()
+	docker, _ := dockerDesktopFake(t, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+	pool := desktoppool.New(system, nil)
+	server, err := pool.CreateServer(context.Background(), "tenant-a", desktoppool.Server{Name: "srv", BaseURL: docker.URL, AccessToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		item.ServerID = server.ID
+		if _, err := pool.CreateAssignment(context.Background(), "tenant-a", item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return pool
+}
+
+func TestDesktopServicesViewListsOnlyAuthorizedUsers(t *testing.T) {
+	tenantUsers := []*store.User{
+		{ID: "alice", TenantID: "tenant-a", Email: "alice@example.com"},
+		{ID: "bob", TenantID: "tenant-a", Email: "bob@example.com"},
+		{ID: "llmsys", TenantID: "tenant-a", Email: "sys_user@example.com"},
+	}
+	system := newDesktopSettingsMem()
+	users := desktopTestUsers{items: tenantUsers}
+
+	// A user-scope assignment for alice: the view lists alice only, never the
+	// user the panel could not open a desktop for.
+	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeUser, TargetID: "alice"}})
+	rec := httptest.NewRecorder()
+	GetDesktopServicesAdminHandler(pool, users).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Users []desktoppool.AuthorizedUser `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Users) != 1 || out.Users[0].ID != "alice" || out.Users[0].Label != "alice@example.com" {
+		t.Fatalf("users=%s want alice only", mustJSONOrNil(out.Users))
+	}
+}
+
+func TestDesktopServicesViewGlobalAssignmentCoversEveryone(t *testing.T) {
+	tenantUsers := []*store.User{
+		{ID: "alice", TenantID: "tenant-a", Email: "alice@example.com"},
+		{ID: "bob", TenantID: "tenant-a", Email: "bob@example.com"},
+	}
+	system := newDesktopSettingsMem()
+	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeGlobal}})
+	rec := httptest.NewRecorder()
+	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Users []desktoppool.AuthorizedUser `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Users) != 2 {
+		t.Fatalf("users=%s, want every tenant user", mustJSONOrNil(out.Users))
+	}
+}
+
+func mustJSONOrNil(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "<unserializable>"
+	}
+	return string(raw)
+}
