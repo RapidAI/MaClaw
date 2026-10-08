@@ -38,7 +38,28 @@ func main() {
 	dim := flag.Int("dim", 768, "output embedding dim (MRL truncation)")
 	bench := flag.Int("bench", 0, "benchmark iterations (0 = off)")
 	out := flag.String("out", "", "write golden embeddings to this binary file")
+	in := flag.String("in", "", "embed each \\n-separated line of this file instead of the built-in corpus")
 	flag.Parse()
+
+	// -in exists so the reference can be diffed against the C++ port end to end
+	// on *adversarial* text, not just on the 10 built-in strings.  Those 10 are
+	// all ordinary prose, so they cannot see a tokenizer fix that only fires on
+	// double spaces, tabs, newlines or markup -- the special-token
+	// pre-partition changes none of their embeddings at all.  The C++ port's
+	// -embed-file uses this exact splitting rule (start to next '\n', or EOF),
+	// and so does cmd/tokcheck, so all three agree on what the corpus is.
+	if *in != "" {
+		raw, err := os.ReadFile(*in)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read", *in, ":", err)
+			os.Exit(1)
+		}
+		corpus = splitLines(raw)
+		if len(corpus) == 0 {
+			fmt.Fprintln(os.Stderr, *in, "contains no texts")
+			os.Exit(1)
+		}
+	}
 
 	if *model == "" {
 		home, _ := os.UserHomeDir()
@@ -131,7 +152,14 @@ func main() {
 	}
 
 	// ---- benchmark: single-text latency -----------------------------------
-	text := corpus[3]
+	// The benchmark reuses one corpus entry.  corpus[3] was assumed to exist,
+	// which holds for the built-in corpus but not for a short -in file; an
+	// index out of range here would abort after the goldens had already been
+	// written, which reads as a golden-write failure.
+	text := corpus[0]
+	if len(corpus) > 3 {
+		text = corpus[3]
+	}
 	for i := 0; i < 3; i++ {
 		emb.Embed(text)
 	}
@@ -167,6 +195,32 @@ func main() {
 	bt := time.Since(start)
 	fmt.Printf("--- batch throughput (64 texts, EmbedBatch concurrent) ---\n")
 	fmt.Printf("total=%.1fms  throughput=%.1f texts/s\n", bt.Seconds()*1000, 64/bt.Seconds())
+}
+
+// splitLines splits on '\n' with the same rule as the C++ port's -embed-file
+// and cmd/tokcheck: iterate "from start to the next '\n' or EOF", so a trailing
+// '\n' yields a final empty text on every side and the corpora stay aligned.
+// A '\r' is *not* stripped -- the port does not strip it either, and the
+// adversarial tokenizer differential has a case that depends on that.
+func splitLines(raw []byte) []string {
+	var out []string
+	start := 0
+	for {
+		nl := -1
+		for i := start; i < len(raw); i++ {
+			if raw[i] == '\n' {
+				nl = i
+				break
+			}
+		}
+		if nl < 0 {
+			out = append(out, string(raw[start:]))
+			break
+		}
+		out = append(out, string(raw[start:nl]))
+		start = nl + 1
+	}
+	return out
 }
 
 func trunc(s string, n int) string {

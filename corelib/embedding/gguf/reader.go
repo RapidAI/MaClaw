@@ -180,11 +180,12 @@ func readMetaValue(r io.Reader) (MetaValue, error) {
 		}
 		mv.Str = s
 	case 9: // ARRAY
-		arr, err := readArray(r)
+		arr, i32s, err := readArray(r)
 		if err != nil {
 			return mv, err
 		}
 		mv.Arr = arr
+		mv.I32s = i32s
 	case 10: // UINT64
 		binary.Read(r, binary.LittleEndian, &mv.U64)
 	case 11: // INT64
@@ -201,33 +202,37 @@ func readMetaValue(r io.Reader) (MetaValue, error) {
 	return mv, nil
 }
 
-func readArray(r io.Reader) ([]string, error) {
+// readArray reads one metadata array.  It returns the string form when the
+// element type is STRING and the int32 form when it is INT32; a float32 array
+// still goes to the package-global side channel (see lastF32Array), and every
+// other element type is skipped.
+func readArray(r io.Reader) ([]string, []int32, error) {
 	var elemType uint32
 	var count uint64
 	binary.Read(r, binary.LittleEndian, &elemType)
 	binary.Read(r, binary.LittleEndian, &count)
 	if elemType == 8 { // string array
 		if count > maxMetaStringArrayCount {
-			return nil, fmt.Errorf("gguf: meta string array count %d too large (corrupt header?)", count)
+			return nil, nil, fmt.Errorf("gguf: meta string array count %d too large (corrupt header?)", count)
 		}
 		out := make([]string, count)
 		for i := uint64(0); i < count; i++ {
 			s, err := readString(r)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			out[i] = s
 		}
-		return out, nil
+		return out, nil, nil
 	}
 	// Float32 arrays — store for later retrieval
 	if elemType == 6 {
 		if count > maxF32ArrayCount {
-			return nil, fmt.Errorf("gguf: float32 array count %d too large (corrupt header?)", count)
+			return nil, nil, fmt.Errorf("gguf: float32 array count %d too large (corrupt header?)", count)
 		}
 		buf := make([]byte, count*4)
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Parse into a local slice and publish once: writing the package-global
 		// element-by-element let a concurrent LastF32Array (or a second parser
@@ -239,20 +244,36 @@ func readArray(r io.Reader) ([]string, error) {
 		lastF32Mu.Lock()
 		lastF32Array = arr
 		lastF32Mu.Unlock()
-		return nil, nil
+		return nil, nil, nil
 	}
-	// Skip non-string arrays
-	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+	// Int32 arrays — materialised, because token_type is the one array the
+	// tokenizer has to consult per token rather than read once.
+	if elemType == 5 {
+		if count > maxI32ArrayCount {
+			return nil, nil, fmt.Errorf("gguf: int32 array count %d too large (corrupt header?)", count)
+		}
+		buf := make([]byte, count*4)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, nil, err
+		}
+		out := make([]int32, count)
+		for i := uint64(0); i < count; i++ {
+			out[i] = int32(binary.LittleEndian.Uint32(buf[i*4:]))
+		}
+		return nil, out, nil
+	}
+	// Skip any other array
+	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 	sz, ok := elemSizes[elemType]
 	if !ok {
-		return nil, fmt.Errorf("unsupported array elem type %d", elemType)
+		return nil, nil, fmt.Errorf("unsupported array elem type %d", elemType)
 	}
 	if count > maxSkipArrayCount {
-		return nil, fmt.Errorf("gguf: array count %d too large (corrupt header?)", count)
+		return nil, nil, fmt.Errorf("gguf: array count %d too large (corrupt header?)", count)
 	}
 	skip := make([]byte, int(count)*sz)
 	io.ReadFull(r, skip)
-	return nil, nil
+	return nil, nil, nil
 }
 
 // Sanity caps for metadata array counts: real GGUF files stay well below
@@ -261,6 +282,7 @@ func readArray(r io.Reader) ([]string, error) {
 const (
 	maxMetaStringArrayCount = 1 << 20
 	maxF32ArrayCount        = 1 << 22
+	maxI32ArrayCount        = 1 << 22
 	maxSkipArrayCount       = 1 << 24
 )
 

@@ -31,7 +31,9 @@ func main() {
 	}
 	// Synthetic vocab whose tokens are deliberately "▁"-prefixed, so this test
 	// wants the legacy dummy prefix; the framing is explicit rather than implied.
-	tk := embedding.NewTokenizer(vocab, scores, embedding.NewTokenizerOptions())
+	// No token_type array: the synthetic vocab has no special tokens, so the
+	// pre-partition is off and every input is one fragment.
+	tk := embedding.NewTokenizer(vocab, scores, nil, embedding.NewTokenizerOptions())
 
 	texts := []string{
 		"abc", "abab", "abcabc", "cab", "aabbcc", "bcabca",
@@ -67,7 +69,7 @@ func byteVocab() *embedding.Tokenizer {
 	for i := range s {
 		s[i] = -float32(i)
 	}
-	return embedding.NewTokenizer(v, s, embedding.NewTokenizerOptions())
+	return embedding.NewTokenizer(v, s, nil, embedding.NewTokenizerOptions())
 }
 
 func dumpDecode() {
