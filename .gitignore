@@ -361,3 +361,5 @@ build/desktopd_deploy/
 # --- Local tool state files (2026-10-07 cleanup) ---
 /jobs_tmp.json
 /guiapp/todo-debounce/
+
+.build_win_lock/
