@@ -37,6 +37,63 @@ type GemmaHParams struct {
 	MaxSeqLen  int     // context_length (2048)
 	RMSNormEps float32 // attention.layer_norm_rms_epsilon
 	RopeTheta  float32 // rope.freq_base
+
+	// Sliding-window attention, and the per-layer RoPE base that comes with it.
+	//
+	// llama.cpp's gemma-embedding loader (src/models/gemma-embedding.cpp:4-10):
+	//     hparams.swa_type = LLAMA_SWA_TYPE_SYMMETRIC;
+	//     load_swa_pattern(ml, 6);
+	//     ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA, hparams.rope_freq_base_train_swa, false);
+	//     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa);
+	// and llama-model.cpp:2358 then resolves the RoPE base per layer as
+	//     is_swa(il) ? hparams.rope_freq_base_train_swa : cparams.rope_freq_base
+	//
+	// So the window and the RoPE base are both layer-dependent and both have to
+	// be right together; getting either one wrong is silent. For this model the
+	// window is 512 (a +-256 band, see HalfWindowFor) and 20 of the 24 layers
+	// rotate at 1e4 while 5/11/17/23 rotate at 1e6.
+	NSwa         int     // attention.sliding_window; 0 = none declared
+	SwaPattern   int     // attention.sliding_window_pattern (scalar form); 0 = every layer
+	RopeThetaSwa float32 // rope.freq_base_swa; absent from this GGUF -> 10000
+	// Explicit per-layer flags, used verbatim when the GGUF carries
+	// attention.sliding_window_pattern as an *array* (llama.cpp reads the array
+	// first and only falls back to the scalar). Empty for this model.
+	SwaLayers []uint8
+}
+
+// IsSwaLayer is llama.cpp's set_swa_pattern(n_pattern, dense_first=false):
+//
+//	is_swa_impl[il] = n_pattern == 0 || il % n_pattern < n_pattern - 1
+//
+// so with the default 6 the *global* layers are 5, 11, 17 and 23 of 24. Pure
+// pattern query: the window width does not enter here, exactly as in llama.cpp,
+// where is_swa() keys the RoPE-base choice off the pattern alone.
+func (hp *GemmaHParams) IsSwaLayer(il int) bool {
+	if len(hp.SwaLayers) > 0 {
+		return il >= 0 && il < len(hp.SwaLayers) && hp.SwaLayers[il] != 0
+	}
+	if hp.SwaPattern <= 0 {
+		return true
+	}
+	return (il % hp.SwaPattern) < (hp.SwaPattern - 1)
+}
+
+// HalfWindowFor returns the symmetric half-width of the attention band for layer
+// il, or -1 for full attention.
+//
+// llama.cpp's is_masked_swa for LLAMA_SWA_TYPE_SYMMETRIC is
+//
+//	const int32_t half_n_swa = (int32_t) n_swa / 2;
+//	masked iff |p1 - p0| > half_n_swa
+//
+// NOTE the halving: the declared 512 is a +-256 band, i.e. a 513-wide window,
+// not +-512. Confirmed against llama.cpp's own mask dump at n_swa = 8, where
+// row 0 is open for columns 0..4 and masked from 5.
+func (hp *GemmaHParams) HalfWindowFor(il int) int {
+	if hp.NSwa <= 0 || !hp.IsSwaLayer(il) {
+		return -1
+	}
+	return hp.NSwa / 2
 }
 
 // gemmaLayer holds weights for one transformer block.
@@ -147,8 +204,14 @@ type gemmaScratch struct {
 	poolOut []float32
 	ropeCos []float32
 	ropeSin []float32
-	seqCap  int
-	ropeSeq int
+	// Second RoPE table pair, for the SWA layers' different base.  Left nil when
+	// the two bases are equal (then ropeCos/ropeSin serve every layer), so a nil
+	// pair must never be selected -- see the len()>0 guard at the call sites,
+	// which mirrors the port's !ropeCosSwa.empty().
+	ropeCosSwa []float32
+	ropeSinSwa []float32
+	seqCap     int
+	ropeSeq    int
 }
 
 // NewGemmaEmbedder loads a Gemma2 embedding model from a GGUF file.
@@ -194,6 +257,32 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	nKVHeads := gguf.GetMetaI32(mf.Meta, prefix+"attention.head_count_kv", 1)
 	headDim := embDim / nHeads
 
+	// Sliding-window attention, and the per-layer RoPE base that comes with it.
+	//
+	// This GGUF carries the window but neither the pattern nor freq_base_swa, so
+	// both take llama.cpp's defaults (load_swa_pattern(ml, 6) and the 1e4 that
+	// get_key falls back to).  Both are read anyway: the whole point of reading
+	// them rather than hardcoding is that a file which *does* declare them must
+	// not be silently misread.
+	nSwa := gguf.GetMetaI32(mf.Meta, prefix+"attention.sliding_window", 0)
+	ropeThetaSwa := gguf.GetMetaF32(mf.Meta, prefix+"rope.freq_base_swa", 1e4)
+	swaPattern := 6
+	// llama.cpp's get_arr reads the per-layer array first and only falls back to
+	// the scalar.  Element type matters: a BOOL array lands in I32s only because
+	// readArray was taught to materialise it (it used to be skipped, which would
+	// have made this a silent fallback to pattern 6).
+	var swaLayers []uint8
+	if arr := gguf.GetMetaI32Arr(mf.Meta, prefix+"attention.sliding_window_pattern"); len(arr) > 0 {
+		swaLayers = make([]uint8, len(arr))
+		for i, v := range arr {
+			if v != 0 {
+				swaLayers[i] = 1
+			}
+		}
+	} else if p := gguf.GetMetaI32(mf.Meta, prefix+"attention.sliding_window_pattern", 0); p > 0 {
+		swaPattern = p
+	}
+
 	hp := GemmaHParams{
 		Dim:        embDim,
 		NLayers:    gguf.GetMetaI32(mf.Meta, prefix+"block_count", 24),
@@ -205,6 +294,11 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 		MaxSeqLen:  gguf.GetMetaI32(mf.Meta, prefix+"context_length", 2048),
 		RMSNormEps: gguf.GetMetaF32(mf.Meta, prefix+"attention.layer_norm_rms_epsilon", 1e-6),
 		RopeTheta:  gguf.GetMetaF32(mf.Meta, prefix+"rope.freq_base", 1e6),
+
+		NSwa:         nSwa,
+		SwaPattern:   swaPattern,
+		RopeThetaSwa: ropeThetaSwa,
+		SwaLayers:    swaLayers,
 	}
 
 	w, err := loadWeightsMmap(mf, hp)

@@ -203,9 +203,9 @@ func readMetaValue(r io.Reader) (MetaValue, error) {
 }
 
 // readArray reads one metadata array.  It returns the string form when the
-// element type is STRING and the int32 form when it is INT32; a float32 array
-// still goes to the package-global side channel (see lastF32Array), and every
-// other element type is skipped.
+// element type is STRING and the int32 form when it is INT32 or BOOL; a float32
+// array still goes to the package-global side channel (see lastF32Array), and
+// every other element type is skipped.
 func readArray(r io.Reader) ([]string, []int32, error) {
 	var elemType uint32
 	var count uint64
@@ -262,8 +262,31 @@ func readArray(r io.Reader) ([]string, []int32, error) {
 		}
 		return nil, out, nil
 	}
+	// Bool arrays — llama.cpp's get_arr reads attention.sliding_window_pattern as
+	// a std::vector<bool>, and that key is the one thing that decides which
+	// layers rotate at the SWA RoPE base and which get a window.  Skipping it
+	// (it used to fall through to the generic skip below) is not a missing
+	// answer but a wrong one: the caller silently keeps the scalar default, so
+	// every layer's RoPE base and mask width would be wrong together.  Same
+	// materialised int32 form as token_type.
+	if elemType == 7 {
+		if count > maxI32ArrayCount {
+			return nil, nil, fmt.Errorf("gguf: bool array count %d too large (corrupt header?)", count)
+		}
+		buf := make([]byte, count)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, nil, err
+		}
+		out := make([]int32, count)
+		for i := uint64(0); i < count; i++ {
+			if buf[i] != 0 {
+				out[i] = 1
+			}
+		}
+		return nil, out, nil
+	}
 	// Skip any other array
-	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 10: 8, 11: 8, 12: 8}
 	sz, ok := elemSizes[elemType]
 	if !ok {
 		return nil, nil, fmt.Errorf("unsupported array elem type %d", elemType)

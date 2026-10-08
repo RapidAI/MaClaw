@@ -110,6 +110,15 @@ func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
 		layer := &g.weights.layers[l]
 		p := "l" + itoa(l) + "."
 
+		// Same per-layer config as layerLoop: the window width and the RoPE base
+		// both vary by layer, so the trace has to apply the same ones or the
+		// dumps stop being comparable with a real forward pass.
+		halfW := hp.HalfWindowFor(l)
+		ropeCos, ropeSin := sc.ropeCos, sc.ropeSin
+		if len(sc.ropeCosSwa) > 0 && hp.IsSwaLayer(l) {
+			ropeCos, ropeSin = sc.ropeCosSwa, sc.ropeSinSwa
+		}
+
 		for s := 0; s < seq; s++ {
 			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.attnNormW, hp.RMSNormEps)
 		}
@@ -131,15 +140,15 @@ func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
 				off := s*kvDim + h*headDim
 				tensor.RMSNorm(k[off:off+headDim], k[off:off+headDim], layer.attnKNormW, hp.RMSNormEps)
 			}
-			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
-			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
+			cosTab := ropeCos[s*halfDim : (s+1)*halfDim]
+			sinTab := ropeSin[s*halfDim : (s+1)*halfDim]
 			tensor.RoPEPrecomputed(q[s*dim:(s+1)*dim], nHeads, headDim, cosTab, sinTab)
 			tensor.RoPEPrecomputed(k[s*kvDim:(s+1)*kvDim], nKVHeads, headDim, cosTab, sinTab)
 		}
 		tw.put(p+"qrope", q)
 		tw.put(p+"krope", k)
 
-		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim)
+		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, halfW)
 		tw.put(p+"attnOut", attnOut)
 
 		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
