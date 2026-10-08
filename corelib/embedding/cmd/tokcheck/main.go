@@ -36,7 +36,7 @@ func main() {
 	defer mf.CloseMmap()
 	tokens := gguf.GetMetaStrArr(mf.Meta, "tokenizer.ggml.tokens")
 	scores := gguf.LastF32Array()
-	tk := embedding.LoadTokenizerFromGGUF(tokens, scores)
+	tk := embedding.LoadTokenizerFromGGUF(tokens, scores, embedding.TokenizerOptionsFromGGUF(mf.Meta))
 
 	raw, err := os.ReadFile(*in)
 	if err != nil {

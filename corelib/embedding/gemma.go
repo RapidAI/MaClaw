@@ -224,7 +224,7 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	if _, ok := mf.Meta["tokenizer.ggml.scores"]; ok {
 		scores = gguf.LastF32Array()
 	}
-	tok := LoadTokenizerFromGGUF(tokens, scores)
+	tok := LoadTokenizerFromGGUF(tokens, scores, TokenizerOptionsFromGGUF(mf.Meta))
 
 	g := &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf,
 		modelName:  modelName,

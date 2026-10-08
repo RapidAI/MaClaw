@@ -4,25 +4,68 @@ import (
 	"container/heap"
 	"sort"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
 )
+
+// TokenizerOptions holds the token-stream framing the GGUF declares.
+//
+// These used to be hardcoded -- "▁" was always prepended, BOS was always added,
+// EOS never was -- and both GGUFs this project runs declare the opposite on
+// every count (`add_space_prefix = false`, `add_bos_token = true`,
+// `add_eos_token = true`).  Hardcoding it changed the first token of every text
+// and dropped the trailing EOS, which is the dominant part of this reference's
+// disagreement with llama.cpp.
+type TokenizerOptions struct {
+	AddSpacePrefix bool // tokenizer.ggml.add_space_prefix
+	AddBOS         bool // tokenizer.ggml.add_bos_token
+	AddEOS         bool // tokenizer.ggml.add_eos_token
+	BOSID          int  // tokenizer.ggml.bos_token_id
+	EOSID          int  // tokenizer.ggml.eos_token_id
+}
+
+// NewTokenizerOptions returns the framing the reference used to hardcode.  It is
+// what a caller with no GGUF metadata gets, so nothing that cannot read the file
+// changes behaviour underneath it.
+func NewTokenizerOptions() TokenizerOptions {
+	return TokenizerOptions{AddSpacePrefix: true, AddBOS: true, AddEOS: false, BOSID: 2, EOSID: 1}
+}
+
+// TokenizerOptionsFromGGUF reads the framing keys, falling back per key to
+// NewTokenizerOptions() so a file that declares none behaves as before.  BOOL
+// metadata is stored in U32 by the reader, so GetMetaI32 reads it directly.
+func TokenizerOptionsFromGGUF(meta map[string]gguf.MetaValue) TokenizerOptions {
+	o := NewTokenizerOptions()
+	b := func(key string, def bool) bool {
+		d := 0
+		if def {
+			d = 1
+		}
+		return gguf.GetMetaI32(meta, key, d) != 0
+	}
+	o.AddSpacePrefix = b("tokenizer.ggml.add_space_prefix", o.AddSpacePrefix)
+	o.AddBOS = b("tokenizer.ggml.add_bos_token", o.AddBOS)
+	o.AddEOS = b("tokenizer.ggml.add_eos_token", o.AddEOS)
+	o.BOSID = gguf.GetMetaI32(meta, "tokenizer.ggml.bos_token_id", o.BOSID)
+	o.EOSID = gguf.GetMetaI32(meta, "tokenizer.ggml.eos_token_id", o.EOSID)
+	return o
+}
 
 // Tokenizer implements a minimal SentencePiece BPE tokenizer loaded from GGUF vocab.
 type Tokenizer struct {
 	vocab    []string       // id -> token string
 	tokenMap map[string]int // token string -> id
 	scores   []float32      // token scores (for BPE merge priority)
-	bosID    int
-	eosID    int
+	opt      TokenizerOptions
 }
 
 // NewTokenizer creates a tokenizer from GGUF vocab data.
-func NewTokenizer(tokens []string, scores []float32) *Tokenizer {
+func NewTokenizer(tokens []string, scores []float32, opt TokenizerOptions) *Tokenizer {
 	t := &Tokenizer{
 		vocab:    tokens,
 		tokenMap: make(map[string]int, len(tokens)),
 		scores:   scores,
-		bosID:    2, // Gemma default
-		eosID:    1,
+		opt:      opt,
 	}
 	for i, tok := range tokens {
 		t.tokenMap[tok] = i
@@ -73,17 +116,46 @@ func (h *mergeHeap) Pop() interface{} {
 	return m
 }
 
-// Encode tokenizes text into token IDs using BPE with a heap-based merge.
-// Prepends BOS token. Gemma uses "▁" (U+2581) as the space marker.
+// Encode tokenizes text and applies the framing in the tokenizer's options.
+// Gemma uses "▁" (U+2581) as the space marker.
 func (t *Tokenizer) Encode(text string) []int {
-	// Gemma SentencePiece: prepend space, replace spaces with ▁
-	text = " " + text
-	text = strings.ReplaceAll(text, " ", "▁")
+	ids := make([]int, 0, 16)
+	if t.opt.AddBOS {
+		ids = append(ids, t.opt.BOSID)
+	}
+	ids = append(ids, t.encodeFragment(text, true)...)
+	if t.opt.AddEOS {
+		ids = append(ids, t.opt.EOSID)
+	}
+	return ids
+}
+
+// encodeFragment escapes one raw span, applies the conditional dummy prefix and
+// BPEs it.
+//
+// isPrevSpecial mirrors llama.cpp's is_prev_special: true for the first fragment
+// and again right after a special token, and it is what gates the dummy prefix.
+// Nothing produces a second fragment yet -- the special-token pre-partition is
+// the next fix -- but the gate is where llama.cpp puts it, so that fix drops in
+// without having to move it.
+func (t *Tokenizer) encodeFragment(text string, isPrevSpecial bool) []int {
+	// Gemma SentencePiece: prepend a space, then map *all* spaces (including the
+	// prepended one) to the ▁ marker, so the leading marker is not a literal
+	// 0x20 byte.  The prefix is conditional: tokenizer.ggml.add_space_prefix is
+	// false in both GGUFs this project runs, and prepending ▁ anyway changes the
+	// first token of every text.
+	s := text
+	if t.opt.AddSpacePrefix && isPrevSpecial {
+		s = " " + text
+	}
+	if strings.IndexByte(s, ' ') >= 0 {
+		s = strings.ReplaceAll(s, " ", "▁")
+	}
 
 	// Build doubly-linked list of single-character symbols
 	var head *bpeNode
 	var prev *bpeNode
-	for _, r := range text {
+	for _, r := range s {
 		n := &bpeNode{text: string(r)}
 		if prev != nil {
 			prev.next = n
@@ -159,15 +231,16 @@ func (t *Tokenizer) tryMerge(n *bpeNode) *bpeMerge {
 	return nil
 }
 
-// symbolsToIDs converts the linked list of symbols to token IDs.
+// symbolsToIDs converts the linked list of symbols to token IDs.  The framing
+// tokens are *not* added here: Encode owns them, so that a future pre-partition
+// can call this once per fragment without duplicating BOS/EOS.
 func (t *Tokenizer) symbolsToIDs(head *bpeNode) []int {
 	// Count nodes for capacity hint
 	count := 0
 	for n := head; n != nil; n = n.next {
 		count++
 	}
-	ids := make([]int, 0, count+1)
-	ids = append(ids, t.bosID)
+	ids := make([]int, 0, count)
 	for n := head; n != nil; n = n.next {
 		if id, ok := t.tokenMap[n.text]; ok {
 			ids = append(ids, id)
@@ -191,8 +264,10 @@ func byteTokenStr(b byte) string {
 	return "<0x" + string(hex[b>>4]) + string(hex[b&0xf]) + ">"
 }
 
-// LoadTokenizerFromGGUF extracts tokenizer data from GGUF metadata.
-func LoadTokenizerFromGGUF(tokens []string, scoresRaw []float32) *Tokenizer {
+// LoadTokenizerFromGGUF extracts tokenizer data from GGUF metadata.  The framing
+// must be passed in (see TokenizerOptionsFromGGUF); it is not hardcoded here any
+// more, because hardcoding it was the defect.
+func LoadTokenizerFromGGUF(tokens []string, scoresRaw []float32, opt TokenizerOptions) *Tokenizer {
 	scores := scoresRaw
 	if len(scores) == 0 {
 		// If no scores, assign descending scores (earlier tokens = higher priority)
@@ -201,7 +276,7 @@ func LoadTokenizerFromGGUF(tokens []string, scoresRaw []float32) *Tokenizer {
 			scores[i] = -float32(i)
 		}
 	}
-	return NewTokenizer(tokens, scores)
+	return NewTokenizer(tokens, scores, opt)
 }
 
 // SortedVocab returns vocab entries sorted by score (descending).

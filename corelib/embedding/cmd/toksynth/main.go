@@ -29,7 +29,9 @@ func main() {
 		x = x*1664525 + 1013904223
 		scores[i] = float32((x >> 16) % 3)
 	}
-	tk := embedding.NewTokenizer(vocab, scores)
+	// Synthetic vocab whose tokens are deliberately "▁"-prefixed, so this test
+	// wants the legacy dummy prefix; the framing is explicit rather than implied.
+	tk := embedding.NewTokenizer(vocab, scores, embedding.NewTokenizerOptions())
 
 	texts := []string{
 		"abc", "abab", "abcabc", "cab", "aabbcc", "bcabca",
@@ -65,7 +67,7 @@ func byteVocab() *embedding.Tokenizer {
 	for i := range s {
 		s[i] = -float32(i)
 	}
-	return embedding.NewTokenizer(v, s)
+	return embedding.NewTokenizer(v, s, embedding.NewTokenizerOptions())
 }
 
 func dumpDecode() {
