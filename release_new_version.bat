@@ -97,7 +97,6 @@ echo.
 echo Release started successfully.
 echo GitHub Actions: https://github.com/RapidAI/MaClaw/actions/workflows/main.yml
 echo GitHub Release will be created for: %TAG%
-echo Gitee Release will be synced automatically after GitHub Release succeeds.
 echo.
 pause
 exit /b 0
