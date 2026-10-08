@@ -7,9 +7,11 @@ ensure for the same key reuses that desktop. Other keys cannot see it.
 import base64
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -22,6 +24,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 ROOT = Path("/desktops")
+PROC = Path("/proc")
 MAX_RUNNING = 3
 DISPLAY_MIN = 20
 DISPLAY_MAX = 50
@@ -60,7 +63,442 @@ def session_argv():
     return ["fluxbox"]
 
 
+def clear_stale_display(display):
+    """Remove the X lock and socket a killed Xvfb left behind.
+
+    docker stop ends the container with SIGKILL for everything but pid 1, so
+    Xvfb never removes /tmp/.X<n>-lock. The container keeps its /tmp, and on
+    the next start Xvfb refuses the display ("Server is already active") while
+    the stale socket makes the display look ready. Only a lock whose pid is
+    not a running Xvfb is removed.
+    """
+    lock = Path("/tmp/.X%d-lock" % display)
+    try:
+        pid = int(lock.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0:
+        try:
+            comm = (PROC / str(pid) / "comm").read_text(encoding="utf-8").strip()
+        except OSError:
+            comm = ""
+        if comm == "Xvfb":
+            return
+    for path in (lock, Path("/tmp/.X11-unix/X%d" % display)):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def start_session_bus(env, log, display):
+    """Start a D-Bus session bus for one desktop.
+
+    Returns (address, pid), or ("", 0) when no bus could be started; the
+    caller then falls back to dbus-launch, which gives XFCE a bus of its own.
+    The bus listens on a fixed socket per display, so its address is known
+    without reading it back from the daemon.
+    """
+    if not shutil.which("dbus-daemon"):
+        return "", 0
+    socket_path = Path("/tmp/.maclaw-dbus-%d" % display)
+    try:
+        socket_path.unlink()
+    except OSError:
+        pass
+    address = "unix:path=%s" % socket_path
+    try:
+        bus = spawn(["dbus-daemon", "--session", "--nofork", "--nopidfile", "--address=" + address], env, log)
+    except OSError:
+        return "", 0
+    for _ in range(40):
+        if socket_path.exists():
+            return address, bus.pid
+        if bus.poll() is not None:
+            return "", 0
+        time.sleep(0.25)
+    try:
+        bus.kill()
+    except OSError:
+        pass
+    return "", 0
+
+
+# apt inside the desktop. Images built on a Tencent Cloud host carried that
+# cloud's intranet mirror (mirrors.tencentyun.com) in debian.sources, and
+# desktopd's egress proxy (HTTP(S)_PROXY) sends root's apt abroad, where that
+# mirror does not exist: "502 Bad Gateway [IP: 172.17.0.1 18083]". The
+# supervisor picks a public mirror and the route to it (direct or through the
+# proxy) by measuring both, writes debian.sources and an apt proxy file, and
+# keeps the proxy variables across sudo. MACLAW_APT_MIRROR overrides it:
+#   unset/"auto"  measure deb.debian.org and mirrors.tencent.com, use the faster
+#   "off"         leave the apt sources alone (the proxy file is still written)
+#   a mirror      "mirrors.ustc.edu.cn", "https://mirror.example/" (one is
+#                 used as is; several, comma separated, are measured)
+APT_SOURCES = "etc/apt/sources.list.d/debian.sources"
+APT_PROXY_CONF = "etc/apt/apt.conf.d/90maclaw-proxy"
+APT_STATE = "var/lib/maclaw/apt-mirror.json"
+APT_SUDOERS = "etc/sudoers.d/maclaw-proxy-env"
+APT_MARKER = "# maclaw-apt-mirror:"
+APT_DEFAULT_MIRROR = "http://deb.debian.org"
+APT_AUTO_MIRRORS = (APT_DEFAULT_MIRROR, "https://mirrors.tencent.com")
+# debian.sources pointing only at these hosts is a stock file the supervisor
+# may rewrite; any other mirror in it was chosen by a person and stays.
+APT_STOCK_HOSTS = frozenset((
+    "deb.debian.org", "security.debian.org", "mirrors.tencentyun.com",
+    "mirrors.tencent.com", "mirrors.cloud.tencent.com",
+))
+APT_RECHECK_SECONDS = 24 * 3600
+APT_PROBE_TIMEOUT = 6.0
+APT_CONFIG_VERSION = 1
+PROXY_ENV_NAMES = ("http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+SUDOERS_PROXY_ENV = (
+    "# Written by /desktop_supervisor.py: sudo keeps the desktop's egress proxy.\n"
+    'Defaults env_keep += "%s"\n' % " ".join(PROXY_ENV_NAMES)
+)
+
+
+def apt_write_file(path, text, mode):
+    """Atomically write text unless the file already holds it."""
+    path = Path(path)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            if (path.stat().st_mode & 0o777) != mode:
+                os.chmod(str(path), mode)
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name("." + path.name + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        os.chmod(str(temporary), mode)
+        os.replace(str(temporary), str(path))
+        return True
+    except OSError:
+        return False
+
+
+def container_proxy(env=None):
+    """The proxy URL apt should use, from the container environment, or ""."""
+    env = os.environ if env is None else env
+    for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+        value = (env.get(name) or "").strip()
+        if not value:
+            continue
+        parsed = urlsplit(value)
+        if parsed.scheme in ("http", "https") and parsed.hostname and not re.search(r'[\s";\\]', value):
+            return value
+        return ""
+    return ""
+
+
+def normalize_apt_mirror(raw):
+    """"mirrors.ustc.edu.cn" / "https://x/debian/" -> "scheme://host[/path]", or ""."""
+    value = raw.strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "http://" + value
+    parsed = urlsplit(value)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/debian"):
+        path = path[: -len("/debian")]
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.query or parsed.fragment:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9.-]+(:[0-9]{1,5})?", parsed.netloc) or not re.fullmatch(r"[A-Za-z0-9._~/-]*", path):
+        return ""
+    return "%s://%s%s" % (parsed.scheme, parsed.netloc.lower(), path)
+
+
+def apt_mirror_setting(env=None):
+    """("off", []), ("auto", candidates) or ("fixed", [mirror]) from MACLAW_APT_MIRROR."""
+    env = os.environ if env is None else env
+    raw = (env.get("MACLAW_APT_MIRROR") or "").strip()
+    if raw.lower() in ("off", "keep", "none", "no", "false", "0"):
+        return "off", []
+    if raw.lower() in ("", "auto"):
+        return "auto", list(APT_AUTO_MIRRORS)
+    mirrors = []
+    for item in re.split(r"[\s,]+", raw):
+        mirror = normalize_apt_mirror(item)
+        if mirror and mirror not in mirrors:
+            mirrors.append(mirror)
+    if not mirrors:
+        return "auto", list(APT_AUTO_MIRRORS)
+    return ("fixed" if len(mirrors) == 1 else "auto"), mirrors
+
+
+def debian_codename(root=Path("/")):
+    try:
+        for line in (Path(root) / "etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VERSION_CODENAME="):
+                name = line.split("=", 1)[1].strip().strip('"')
+                if re.fullmatch(r"[a-z]+", name):
+                    return name
+    except OSError:
+        pass
+    return "bookworm"
+
+
+def apt_sources_text(mirror, codename):
+    return (
+        "%s %s\n"
+        "# Written by /desktop_supervisor.py. Set MACLAW_APT_MIRROR=off on the\n"
+        "# container to keep your own sources; edits to this file are replaced.\n"
+        "Types: deb\n"
+        "URIs: %s/debian\n"
+        "Suites: %s %s-updates\n"
+        "Components: main\n"
+        "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
+        "\n"
+        "Types: deb\n"
+        "URIs: %s/debian-security\n"
+        "Suites: %s-security\n"
+        "Components: main\n"
+        "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
+    ) % (APT_MARKER, mirror, mirror, codename, codename, mirror, codename)
+
+
+def apt_sources_replaceable(text):
+    """True for our own file or Debian's/Tencent's stock one, False for a person's."""
+    if text is None or APT_MARKER in text:
+        return True
+    hosts = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#") or not line:
+            continue
+        if line.lower().startswith("uris:"):
+            urls = line.split(":", 1)[1].split()
+        elif line.startswith(("deb ", "deb-src ")):
+            urls = [word for word in line.split()[1:] if "://" in word][:1]
+        else:
+            continue
+        for url in urls:
+            hosts.add((urlsplit(url).hostname or "").lower())
+    return bool(hosts) and hosts <= APT_STOCK_HOSTS
+
+
+def apt_proxy_text(proxy, direct_mirror=""):
+    """apt.conf: every repository through the proxy, the chosen mirror maybe direct.
+
+    Root's apt reads HTTP(S)_PROXY from the environment, but sudo drops it and
+    so do services. The file gives apt one route however it is started.
+    """
+    lines = [
+        "// Written by /desktop_supervisor.py from the container's proxy environment.",
+        'Acquire::http::Proxy "%s";' % proxy,
+        'Acquire::https::Proxy "%s";' % proxy,
+    ]
+    host = (urlsplit(direct_mirror).hostname or "") if direct_mirror else ""
+    if host:
+        lines.append('Acquire::http::Proxy::%s "DIRECT";' % host)
+        lines.append('Acquire::https::Proxy::%s "DIRECT";' % host)
+    return "\n".join(lines) + "\n"
+
+
+def probe_apt_mirror(mirror, codename, proxy, timeout=APT_PROBE_TIMEOUT):
+    """Seconds to fetch the mirror's InRelease (direct, or through proxy), or None."""
+    import urllib.request
+
+    handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
+    opener = urllib.request.build_opener(handler)
+    url = "%s/debian/dists/%s/InRelease" % (mirror, codename)
+    started = time.monotonic()
+    try:
+        with opener.open(urllib.request.Request(url, headers={"User-Agent": "maclaw-apt-probe"}), timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            body = response.read(4 << 20)
+    except Exception:
+        return None
+    if b"Origin: Debian" not in body:
+        return None
+    return round(time.monotonic() - started, 3)
+
+
+def choose_apt_route(mirrors, codename, proxy, probe=None):
+    """(mirror, through_proxy, results): the fastest working mirror and route."""
+    probe = probe or probe_apt_mirror
+    routes = [(mirror, False) for mirror in mirrors]
+    if proxy:
+        routes += [(mirror, True) for mirror in mirrors]
+    results = {}
+
+    def run(route):
+        results[route] = probe(route[0], codename, proxy if route[1] else "")
+
+    threads = [threading.Thread(target=run, args=(route,), daemon=True) for route in routes]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(APT_PROBE_TIMEOUT + 2)
+    working = [(results[route], index, route) for index, route in enumerate(routes) if results.get(route) is not None]
+    report = {"%s %s" % (mirror, "proxy" if via else "direct"): results.get((mirror, via)) for mirror, via in routes}
+    if not working:
+        return mirrors[0], bool(proxy), report
+    _, _, (mirror, via) = min(working)
+    return mirror, via, report
+
+
+def apt_fingerprint(env, root=Path("/")):
+    setting = apt_mirror_setting(env)
+    raw = json.dumps([APT_CONFIG_VERSION, setting, container_proxy(env), debian_codename(root)])
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def read_apt_state(root=Path("/")):
+    try:
+        state = json.loads((Path(root) / APT_STATE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def apt_config_current(root=Path("/"), env=None, now=None):
+    env = os.environ if env is None else env
+    now = time.time() if now is None else now
+    state = read_apt_state(root)
+    if state.get("fingerprint") != apt_fingerprint(env, root):
+        return False
+    if now - float(state.get("checked_at") or 0) > APT_RECHECK_SECONDS:
+        return False
+    if state.get("mirror"):
+        try:
+            text = (Path(root) / APT_SOURCES).read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return text == apt_sources_text(state["mirror"], debian_codename(root))
+    return True
+
+
+def write_sudoers_proxy_env(root=Path("/")):
+    """sudo keeps HTTP(S)_PROXY (sudo's env_reset drops them otherwise)."""
+    root = Path(root)
+    target = root / APT_SUDOERS
+    if not target.parent.is_dir():
+        return False
+    try:
+        if target.exists() and target.read_text(encoding="utf-8") == SUDOERS_PROXY_ENV:
+            return False
+    except OSError:
+        return False
+    temporary = target.with_name(".maclaw-proxy-env.tmp")
+    try:
+        temporary.write_text(SUDOERS_PROXY_ENV, encoding="utf-8")
+        os.chmod(str(temporary), 0o440)
+        visudo = shutil.which("visudo")
+        if visudo and str(root) == "/":
+            # A broken sudoers.d file breaks every sudo; never install one.
+            checked = subprocess.run([visudo, "-cqf", str(temporary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            if checked.returncode != 0:
+                temporary.unlink()
+                return False
+        os.replace(str(temporary), str(target))
+        return True
+    except (OSError, subprocess.SubprocessError):
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def configure_apt(root=Path("/"), env=None, probe=None, now=None, default_only=False):
+    """Point apt at a reachable public mirror and give it the container's proxy.
+
+    Idempotent. default_only (image build) writes deb.debian.org without
+    measuring anything and records no decision, so the first desktop start
+    measures from wherever the container runs.
+    """
+    root = Path(root)
+    env = os.environ if env is None else env
+    now = time.time() if now is None else now
+    codename = debian_codename(root)
+    proxy = container_proxy(env)
+    mode, mirrors = apt_mirror_setting(env)
+    sources = root / APT_SOURCES
+    try:
+        current = sources.read_text(encoding="utf-8") if sources.exists() else None
+    except OSError:
+        current = ""
+    result = {"mode": mode, "proxy": bool(proxy), "mirror": "", "via_proxy": bool(proxy)}
+    write_sudoers_proxy_env(root)
+    if default_only:
+        if mode != "off" and apt_sources_replaceable(current):
+            apt_write_file(sources, apt_sources_text(mirrors[0] if mode == "fixed" else APT_DEFAULT_MIRROR, codename), 0o644)
+        return result
+    replace = mode == "fixed" or (mode == "auto" and apt_sources_replaceable(current))
+    if replace:
+        if len(mirrors) == 1 and not proxy:
+            mirror, via, report = mirrors[0], False, {}
+        else:
+            mirror, via, report = choose_apt_route(mirrors, codename, proxy, probe)
+        apt_write_file(sources, apt_sources_text(mirror, codename), 0o644)
+        result.update(mirror=mirror, via_proxy=bool(proxy) and via, probes=report)
+    proxy_conf = root / APT_PROXY_CONF
+    if proxy:
+        direct = result["mirror"] if result["mirror"] and not result["via_proxy"] else ""
+        apt_write_file(proxy_conf, apt_proxy_text(proxy, direct), 0o600 if urlsplit(proxy).username else 0o644)
+    else:
+        try:
+            proxy_conf.unlink()
+        except OSError:
+            pass
+    state = dict(result, fingerprint=apt_fingerprint(env, root), checked_at=int(now))
+    apt_write_file(root / APT_STATE, json.dumps(state, sort_keys=True) + "\n", 0o644)
+    return result
+
+
+def configure_apt_locked():
+    """configure_apt() for the CLI; a second run while one measures does nothing."""
+    lock_path = Path("/run/maclaw-apt-mirror.lock")
+    try:
+        lock_file = open(lock_path, "a", encoding="utf-8")
+    except OSError:
+        lock_file = None
+    try:
+        if lock_file is not None:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return {"skipped": "another apt-mirror run is measuring"}
+        return configure_apt()
+    finally:
+        if lock_file is not None:
+            lock_file.close()
+
+
+def ensure_apt_config():
+    """Called by ensure(): measure in the background when the decision is stale.
+
+    Measuring takes a few seconds; the desktop does not wait for it.
+    """
+    try:
+        if apt_config_current():
+            return
+        log = open("/var/log/maclaw-apt-mirror.log", "ab")
+        try:
+            spawn([sys.executable, os.path.abspath(__file__), "apt-mirror"], os.environ.copy(), log)
+        finally:
+            log.close()
+    except OSError as exc:
+        print("apt mirror check skipped: %s" % exc, file=sys.stderr)
+
+
 def main(argv):
+    if len(argv) in (2, 3) and argv[1] == "apt-mirror":
+        if len(argv) == 3 and argv[2] != "--default":
+            print("usage: desktop_supervisor.py apt-mirror [--default]", file=sys.stderr)
+            return 2
+        if len(argv) == 3:
+            print(json.dumps(configure_apt(default_only=True), sort_keys=True))
+        else:
+            print(json.dumps(configure_apt_locked(), sort_keys=True))
+        return 0
+    if len(argv) >= 2 and argv[1] == "browser":
+        return open_shared_browser(argv[2:])
+    if len(argv) == 2 and argv[1] == "install-browser":
+        install_browser_integration()
+        return 0
     if len(argv) == 5 and argv[1] == "gate":
         return serve_gate(int(argv[2]), int(argv[3]), argv[4])
     if len(argv) == 4 and argv[1] == "watch":
@@ -132,6 +570,12 @@ def valid_key(key):
 
 
 def ensure(key):
+    ensure_apt_config()
+    try:
+        install_browser_integration()
+    except OSError as exc:
+        # A read-only image keeps its old browser entries; the desktop still opens.
+        print("browser integration skipped: %s" % exc, file=sys.stderr)
     registry = load_registry()
     users = registry.setdefault("users", {})
     entry = users.get(key)
@@ -182,7 +626,7 @@ def browser_pid(profile):
     Treating that as stopped would start a second browser and a new profile.
     """
     needle = b"--user-data-dir=" + str(profile).encode()
-    proc = Path("/proc")
+    proc = PROC
     if not proc.is_dir():
         return 0
     for entry in proc.iterdir():
@@ -214,24 +658,15 @@ def desktop_running(key):
     if not pid_alive(pid):
         return False
     try:
-        cmd = (Path("/proc") / str(int(pid)) / "cmdline").read_bytes()
+        cmd = (PROC / str(int(pid)) / "cmdline").read_bytes()
     except (OSError, TypeError, ValueError):
         return True
     needle = b"--user-data-dir=" + str(profile).encode()
     return needle in cmd and b"--type=" not in cmd
 
 
-def start_desktop(key, display):
-    home = ROOT / key
-    home.mkdir(mode=0o700, exist_ok=True)
-    profile = home / "profile"
-    profile.mkdir(mode=0o700, exist_ok=True)
-    # The previous browser is already gone. A leftover lock would make this
-    # start open a new empty profile and drop the website login. A leftover
-    # flush flag would make the next stop skip writing this new login.
-    clear_flush_flag(key)
-    release_profile_lock(profile)
-    keep_website_login(profile)
+def desktop_env(display):
+    """The environment every program of this desktop runs with."""
     user_home = Path("/home/desktop")
     user_home.mkdir(mode=0o700, exist_ok=True)
     for path in (
@@ -241,8 +676,6 @@ def start_desktop(key, display):
         user_home / ".cache",
     ):
         path.mkdir(parents=True, mode=0o700, exist_ok=True)
-    log_path = home / "desktop.log"
-    log = open(log_path, "ab")
     env = os.environ.copy()
     env["HOME"] = str(user_home)
     env["XDG_CONFIG_HOME"] = str(user_home / ".config")
@@ -250,21 +683,19 @@ def start_desktop(key, display):
     env["XDG_CACHE_HOME"] = str(user_home / ".cache")
     env["PATH"] = str(user_home / ".local" / "bin") + os.pathsep + env.get("PATH", "")
     env["DISPLAY"] = ":%d" % display
-    xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
-    wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
-    token = desktop_token_for(key)
-    vnc = start_vnc(env, log, display, token) if token else None
-    session = session_argv()
-    if session[0] == "dbus-launch":
-        env.setdefault("XDG_SESSION_TYPE", "x11")
-        env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
-    # The pid key stays "fluxbox" so stop_desktop and pids.json written by
-    # older supervisors keep the same meaning: the window session.
-    flux = spawn(session, env, log)
-    chrome_port = 18000 + display
+    return env
+
+
+def browser_argv(profile, chrome_port):
+    """The one browser of this desktop: the agent's CDP and the person's window.
+
+    Every other way to open a browser here (panel launcher, menu, xdg-open,
+    x-www-browser) goes through open_shared_browser, which joins this
+    process with the same --user-data-dir instead of starting a second one.
+    """
     # No start URL. A blank page would cover the restored tabs, and the
     # website login lives in this profile.
-    spawn([
+    return [
         browser_bin(),
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -281,10 +712,130 @@ def start_desktop(key, display):
         "--remote-debugging-port=%d" % chrome_port,
         "--remote-allow-origins=*",
         "--start-maximized",
-    ] + browser_proxy_flags(), env, log)
+    ] + browser_proxy_flags()
+
+
+def browser_proxy_flags():
+    """Chromium proxy flags derived from the container's proxy environment.
+
+    desktopd can inject HTTP(S)_PROXY into the container when the desktops
+    egress through a proxy. Chromium does not read those variables, and it
+    never takes credentials from --proxy-server, so userinfo is dropped here;
+    the proxy desktopd points the container at must not need them.
+    Without a proxy in the environment there are no extra flags.
+    """
+    proxy = ""
+    for name in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            proxy = value
+            break
+    if not proxy:
+        return []
+    parsed = urlsplit(proxy)
+    if parsed.scheme != "http" or not parsed.hostname:
+        return []
+    try:
+        port = parsed.port
+    except ValueError:
+        return []
+    host = parsed.hostname
+    if port:
+        host += ":%d" % port
+    bypass = os.environ.get("no_proxy") or os.environ.get("NO_PROXY") or ""
+    rules = [rule.strip() for rule in bypass.replace(";", ",").split(",") if rule.strip()]
+    rules.append("<local>")
+    return ["--proxy-server=http://%s" % host, "--proxy-bypass-list=%s" % ";".join(rules)]
+
+
+def start_browser(profile, env, log, chrome_port):
+    env = dict(env)
+    # /etc/chromium.d/zz-maclaw-shared-browser sends every other chromium
+    # start to open_shared_browser. This is the start it must let through.
+    env[SUPERVISED_BROWSER_ENV] = "1"
+    log_signin(Path(profile).parent.name, "start: before browser", browser=False)
+    spawn(browser_argv(profile, chrome_port), env, log)
     # The launcher pid can exit. Only the process that still has this profile
     # open is the browser with the website login.
     wait_for(lambda: browser_pid(profile) and port_open(chrome_port), "chromium profile %s" % profile)
+
+
+def session_alive(pids, display):
+    """True while this desktop's X server and window session still run.
+
+    A person can close the browser window, which ends Chromium but not the
+    desktop. Starting the whole desktop again then would put a second XFCE
+    session (panels, window manager) on the same display.
+    """
+    return (
+        pid_alive(pids.get("xvfb"))
+        and pid_alive(pids.get("fluxbox"))
+        and Path("/tmp/.X11-unix/X%d" % display).exists()
+    )
+
+
+def start_desktop(key, display):
+    home = ROOT / key
+    home.mkdir(mode=0o700, exist_ok=True)
+    profile = home / "profile"
+    profile.mkdir(mode=0o700, exist_ok=True)
+    # The previous browser is already gone. A leftover lock would make this
+    # start open a new empty profile and drop the website login. A leftover
+    # flush flag would make the next stop skip writing this new login.
+    clear_flush_flag(key)
+    release_profile_lock(profile)
+    keep_website_login(profile)
+    log_path = home / "desktop.log"
+    log = open(log_path, "ab")
+    env = desktop_env(display)
+    chrome_port = 18000 + display
+    # What actually runs in this container, not only what pids.json says. An
+    # earlier start that was cut off (desktopd restarted, the request was
+    # dropped, Chromium was slow) leaves its X server, session and VNC running
+    # without a record. Starting a second set beside them puts two sessions on
+    # one display, and the new VNC cannot bind its ports, so the watcher kept
+    # restarting the screen and noVNC reconnected every few seconds.
+    pids = current_pids(key, display)
+    if session_alive(pids, display):
+        restart_browser(key, display, profile, env, log, chrome_port, pids)
+        return
+    # No usable session: whatever is left of the old one belongs to a display
+    # that is about to be replaced, and it would hold the VNC ports.
+    for name in ("proxy", "vgate", "vnc", "x11vnc", "fluxbox", "dbus", "xvfb"):
+        kill_pid(pids.pop(name, None))
+    clear_stale_display(display)
+    xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
+    pids["xvfb"] = xvfb.pid
+    write_pids(key, pids)
+    wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
+    token = desktop_token_for(key)
+    vnc = start_vnc(env, log, display, token) if token else None
+    if vnc is not None:
+        record_vnc(pids, vnc)
+        write_pids(key, pids)
+    session = session_argv()
+    bus_pid = 0
+    if session[0] == "dbus-launch":
+        env.setdefault("XDG_SESSION_TYPE", "x11")
+        env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
+        # Chromium is started here, not by XFCE. It has to be on the same
+        # session bus as XFCE and fcitx5: its GTK input-method module talks to
+        # fcitx5 over D-Bus, so a browser outside the session bus cannot type
+        # Chinese. Start the bus first and hand it to both.
+        address, bus_pid = start_session_bus(env, log, display)
+        if address:
+            env["DBUS_SESSION_BUS_ADDRESS"] = address
+            session = session[2:]
+    # The pid key stays "fluxbox" so stop_desktop and pids.json written by
+    # older supervisors keep the same meaning: the window session.
+    flux = spawn(session, env, log)
+    pids["fluxbox"] = flux.pid
+    if bus_pid:
+        pids["dbus"] = bus_pid
+    # Recorded before the browser starts: a start that stops at the browser
+    # still leaves a session the next ensure reuses instead of duplicating.
+    write_pids(key, pids)
+    start_browser(profile, env, log, chrome_port)
     try:
         restore_page_login(key)
     except (OSError, ValueError, TypeError):
@@ -292,22 +843,29 @@ def start_desktop(key, display):
     proxy = None
     if token:
         proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], env, log)
-    pids = {
-        "xvfb": xvfb.pid,
-        "fluxbox": flux.pid,
-        "chromium": browser_pid(profile),
-    }
+    pids["chromium"] = browser_pid(profile)
     if proxy is not None:
         pids["proxy"] = proxy.pid
-    if vnc is not None:
-        x11, web, gate = vnc
-        if x11 is not None:
-            pids["x11vnc"] = x11.pid
-        if web is not None:
-            pids["vnc"] = web.pid
-        if gate is not None:
-            pids["vgate"] = gate.pid
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    write_pids(key, pids)
+
+
+def restart_browser(key, display, profile, env, log, chrome_port, pids):
+    """Start only the browser on a desktop whose session is still running."""
+    bus = Path("/tmp/.maclaw-dbus-%d" % display)
+    if pid_alive(pids.get("dbus")) and bus.exists():
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
+    if shutil.which("startxfce4"):
+        env.setdefault("XDG_SESSION_TYPE", "x11")
+        env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
+    start_browser(profile, env, log, chrome_port)
+    try:
+        restore_page_login(key)
+    except (OSError, ValueError, TypeError):
+        pass
+    pids["chromium"] = browser_pid(profile)
+    write_pids(key, pids)
+    ensure_vnc(key, display)
+    ensure_proxy(key, display)
 
 
 def release_profile_lock(profile):
@@ -360,6 +918,15 @@ def keep_website_login(profile):
     defaults["cookies"] = 1
     profile_prefs["default_content_setting_values"] = defaults
     data["profile"] = profile_prefs
+    # "Allow Chromium sign-in" off (the policy written by install-browser does
+    # the same where /etc is writable): with it on, each start signed the
+    # person out of Google websites.
+    signin = data.get("signin")
+    if not isinstance(signin, dict):
+        signin = {}
+    signin["allowed"] = False
+    signin["allowed_on_next_startup"] = False
+    data["signin"] = signin
     tmp = pref.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -411,6 +978,67 @@ def flush_claim(key):
             except ValueError:
                 pid = 0
     return pid, signaled
+
+
+# Google keeps a sign-in in these cookies. Only how many are present is
+# logged, never a value or a host, so a stop/start can be checked for whether
+# the sign-in reached the disk and came back.
+GOOGLE_SIGNIN_COOKIES = ("SID", "__Secure-1PSID", "__Secure-3PSID", "SAPISID", "__Secure-1PSIDTS", "__Secure-3PSIDTS")
+
+
+def google_signin_on_disk(key):
+    """How many Google sign-in cookies the profile's cookie file holds, or -1."""
+    try:
+        import sqlite3
+        db = ROOT / key / "profile" / "Default" / "Cookies"
+        if not db.exists():
+            return 0
+        # The running browser holds the file locked; immutable reads it anyway.
+        conn = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(str(db)), uri=True, timeout=2)
+        try:
+            marks = ",".join("?" * len(GOOGLE_SIGNIN_COOKIES))
+            row = conn.execute(
+                "select count(*) from cookies where host_key in ('.google.com', 'google.com') and name in (%s)" % marks,
+                GOOGLE_SIGNIN_COOKIES,
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row[0])
+    except Exception:
+        return -1
+
+
+def google_signin_in_browser(key):
+    """How many Google sign-in cookies the running browser has, or -1."""
+    try:
+        version = http_json("127.0.0.1", chrome_debug_port(key), "/json/version")
+        with cdp_connection(version.get("webSocketDebuggerUrl") or "") as conn:
+            result = conn.call("Storage.getCookies", {})
+        cookies = result.get("cookies") if isinstance(result, dict) else None
+        if not isinstance(cookies, list):
+            return -1
+        return sum(
+            1 for c in cookies
+            if isinstance(c, dict) and c.get("name") in GOOGLE_SIGNIN_COOKIES
+            and str(c.get("domain") or "").lstrip(".") == "google.com"
+        )
+    except Exception:
+        return -1
+
+
+def log_signin(key, stage, browser=True):
+    """One desktop.log line with sign-in cookie counts (no values, no hosts)."""
+    line = "%s [maclaw] %s: google sign-in cookies browser=%s disk=%s\n" % (
+        time.strftime("%Y-%m-%d %H:%M:%S"),
+        stage,
+        google_signin_in_browser(key) if browser else "-",
+        google_signin_on_disk(key),
+    )
+    try:
+        with open(ROOT / key / "desktop.log", "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 def mark_flush_signaled(key):
@@ -747,7 +1375,11 @@ def http_json_any(host, port, path):
     sock = socket.create_connection((host, port), 2)
     try:
         sock.settimeout(2)
-        sock.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (path, host)).encode("ascii"))
+        # Chromium builds the webSocketDebuggerUrl it returns from this Host
+        # header. Without the port it answered ws://127.0.0.1/devtools/...,
+        # every CDP connection went to port 80 and was refused, and the
+        # cookie and page saves before a stop silently did nothing.
+        sock.sendall(("GET %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n\r\n" % (path, host, port)).encode("ascii"))
         buf = bytearray()
         while True:
             try:
@@ -1333,15 +1965,16 @@ def flush_browser_locked(key):
         # Write them into this profile first, then let the browser exit.
         persist_website_login(key)
         capture_page_login(key)
-        try:
-            os.kill(int(pid), 15)
-        except (OSError, TypeError, ValueError):
+        log_signin(key, "stop: before quit")
+        mark_flush_signaled(key)
+        if not quit_browser(key, pid, profile):
             clear_flush_flag(key)
             return 0
-        mark_flush_signaled(key)
     for _ in range(150):
         if not browser_pid(profile) and not pid_alive(pid):
             clear_flush_flag(key)
+            if owned:
+                log_signin(key, "stop: browser exited", browser=False)
             return 0
         # The first flush died before it could signal. This stop still has
         # to write the website login into the same profile.
@@ -1351,13 +1984,274 @@ def flush_browser_locked(key):
                 owned = True
                 persist_website_login(key)
                 capture_page_login(key)
-                try:
-                    os.kill(int(pid), 15)
-                except (OSError, TypeError, ValueError):
+                mark_flush_signaled(key)
+                if not quit_browser(key, pid, profile):
                     clear_flush_flag(key)
                     return 0
-                mark_flush_signaled(key)
         time.sleep(0.1)
+    return 0
+
+
+def quit_browser(key, pid, profile):
+    """Quit Chromium the way a person quits it, so the cookie store is written.
+
+    On SIGTERM Chromium ends as at a system logout (exit_type "SessionEnded"):
+    preferences and tabs are saved, but the cookie database, which Chromium
+    commits only every 30 seconds, is not. Cookies set or renewed shortly
+    before the stop were lost, including the session cookies made persistent
+    just above and sign-in cookies that sites such as Google keep rotating,
+    and the next start came up signed out. Browser.close over CDP is a normal
+    quit that writes them. SIGTERM stays the fallback.
+    Returns False only when the browser could not be signaled at all.
+    """
+    asked = False
+    try:
+        version = http_json("127.0.0.1", chrome_debug_port(key), "/json/version")
+        ws = version.get("webSocketDebuggerUrl") or ""
+        if isinstance(ws, str) and ws.startswith("ws://"):
+            with cdp_connection(ws) as conn:
+                payload = json.dumps({"id": 1, "method": "Browser.close", "params": {}}).encode("utf-8")
+                conn.sock.sendall(ws_client_frame(payload))
+                asked = True
+                try:
+                    # The reply, or the socket closing as the browser exits.
+                    ws_read(conn.sock, conn.pending)
+                except (OSError, ValueError):
+                    pass
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    if asked:
+        for _ in range(100):
+            if not browser_pid(profile) and not pid_alive(pid):
+                return True
+            time.sleep(0.1)
+    try:
+        os.kill(int(pid), 15)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+SUPERVISED_BROWSER_ENV = "MACLAW_SUPERVISED_BROWSER"
+
+# /usr/bin/chromium (Debian's launcher script) sources /etc/chromium.d/* before
+# it starts the browser. Run as root without --no-sandbox Chromium exits at
+# once, and with its default profile it would not be the agent's browser
+# anyway. This hook sends every chromium start that is not the supervisor's
+# own (panel launcher, application menu, xdg-open, x-www-browser,
+# sensible-browser) to maclaw-browser, which joins the supervised browser.
+CHROMIUM_HOOK = """# MaClaw desktop: written by /desktop_supervisor.py (install-browser).
+# Every chromium start in this desktop joins the supervised browser that the
+# agent drives over CDP: same profile, same login, one window list.
+# The supervisor's own start sets MACLAW_SUPERVISED_BROWSER=1; an explicit
+# --user-data-dir keeps a deliberate separate profile.
+case " $* " in
+  *" --user-data-dir"*) ;;
+  *)
+    if [ -z "${MACLAW_SUPERVISED_BROWSER:-}" ] && [ -n "${DISPLAY:-}" ] && [ -x /usr/bin/maclaw-browser ]; then
+      exec /usr/bin/maclaw-browser "$@"
+    fi
+    ;;
+esac
+"""
+
+SHARED_BROWSER_WRAPPER = """#!/bin/sh
+# MaClaw desktop: open the desktop's one browser (the supervised Chromium the
+# agent uses), focusing its window or opening the given URLs in it.
+# Written by /desktop_supervisor.py (install-browser).
+if [ -f /desktop_supervisor.py ]; then
+  exec python3 /desktop_supervisor.py browser "$@"
+fi
+MACLAW_SUPERVISED_BROWSER=1 exec /usr/bin/chromium --no-sandbox "$@"
+"""
+
+BROWSER_SIGNIN_POLICY = '{"BrowserSignin": 0}\n'
+
+BROWSER_MIME_TYPES = (
+    "text/html",
+    "application/xhtml+xml",
+    "x-scheme-handler/http",
+    "x-scheme-handler/https",
+    "x-scheme-handler/about",
+    "x-scheme-handler/unknown",
+)
+
+
+def write_if_changed(path, text, mode):
+    path = Path(path)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            if (path.stat().st_mode & 0o777) != mode:
+                os.chmod(str(path), mode)
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name("." + path.name + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        os.chmod(str(temporary), mode)
+        os.replace(str(temporary), str(path))
+        return True
+    except OSError:
+        return False
+
+
+def set_ini_value(path, section, key, value):
+    """Set key=value in an ini-style file, keeping every other line."""
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    except OSError:
+        return False
+    out, current, done, seen_section = [], None, False, section is None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if current == section and not done:
+                out.append("%s=%s" % (key, value))
+                done = True
+            current = stripped[1:-1]
+            seen_section = seen_section or current == section
+        elif current == section and stripped.split("=", 1)[0].strip() == key:
+            if not done:
+                out.append("%s=%s" % (key, value))
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        if not seen_section and section is not None:
+            out.append("[%s]" % section)
+        out.append("%s=%s" % (key, value))
+    return write_if_changed(path, "\n".join(out) + "\n", 0o644)
+
+
+def install_browser_integration(root=Path("/")):
+    """Make the desktop's browser entries open the supervised browser.
+
+    Idempotent and best effort: the image build runs it, and ensure() runs it
+    again so containers created from an older image pick it up with the next
+    supervisor copy. maclaw-gui:1 has no XFCE; the XFCE parts are skipped.
+    """
+    root = Path(root)
+    write_if_changed(root / "usr/bin/maclaw-browser", SHARED_BROWSER_WRAPPER, 0o755)
+    if (root / "etc/chromium.d").is_dir() or (root / "usr/bin/chromium").exists():
+        write_if_changed(root / "etc/chromium.d/zz-maclaw-shared-browser", CHROMIUM_HOOK, 0o644)
+        # Chromium without Google's API keys still offers "Allow Chromium
+        # sign-in". With it on, every browser start signs the person out of
+        # Google websites (Gmail, YouTube, accounts.google.com show "Signed
+        # out") although the cookies were kept; other sites are not affected.
+        # Turning browser sign-in off keeps the website login. Logging in to
+        # Google websites still works.
+        write_if_changed(root / "etc/chromium/policies/managed/maclaw-browser-signin.json", BROWSER_SIGNIN_POLICY, 0o644)
+    # XFCE "Preferred Applications": the panel's Web Browser launcher and
+    # exo-open/xdg-open use this helper. chromium.desktop runs /usr/bin/chromium,
+    # which the hook above routes to the shared browser.
+    helpers = root / "etc/xdg/xfce4/helpers.rc"
+    if helpers.exists():
+        set_ini_value(helpers, None, "WebBrowser", "chromium")
+    # xdg-mime / xdg-settings and GLib apps.
+    for mimeapps in (root / "etc/xdg/mimeapps.list", root / "usr/share/applications/mimeapps.list"):
+        if not (root / "usr/share/applications/chromium.desktop").exists():
+            break
+        for mime in BROWSER_MIME_TYPES:
+            set_ini_value(mimeapps, "Default Applications", mime, "chromium.desktop")
+
+
+def shared_browser_key(env=None):
+    """The user key whose desktop this process runs on, or ""."""
+    env = os.environ if env is None else env
+    raw = env.get("DISPLAY", "")
+    try:
+        display = int(raw.split(":", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        display = 0
+    users = load_registry().get("users", {})
+    owner = env.get("MACLAW_DESKTOP_KEY", "").strip()
+    if valid_key(owner) and owner in users:
+        return owner
+    for key, entry in users.items():
+        try:
+            if valid_key(key) and display and int(entry.get("display") or 0) == display:
+                return key
+        except (TypeError, ValueError):
+            continue
+    return ""
+
+
+def browser_windows(env):
+    """The shared browser's top-level windows, topmost first.
+
+    Minimized windows count: they are not "visible" to xdotool, yet they are
+    what the person expects the panel launcher to bring back. The window
+    manager's client list tells real windows from Chromium's hidden helpers.
+    """
+    def run(args):
+        return subprocess.run(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=5).stdout.decode("ascii", "ignore")
+
+    chromium = [int(w) for w in run(["xdotool", "search", "--class", "chromium"]).split() if w.isdigit()]
+    try:
+        stacking = [int(w, 16) for w in re.findall(r"0x[0-9a-fA-F]+", run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"]))]
+    except (OSError, subprocess.SubprocessError):
+        stacking = []
+    if stacking:
+        return [w for w in reversed(stacking) if w in chromium]
+    return [int(w) for w in run(["xdotool", "search", "--onlyvisible", "--class", "chromium"]).split() if w.isdigit()]
+
+
+def activate_browser_window(display, wait_seconds=3.0):
+    """Raise the shared browser's window. False when there is none to raise."""
+    if not shutil.which("xdotool"):
+        return False
+    env = os.environ.copy()
+    env["DISPLAY"] = ":%d" % display
+    deadline = time.time() + wait_seconds
+    while True:
+        try:
+            windows = browser_windows(env)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        for window in windows:
+            try:
+                done = subprocess.run(["xdotool", "windowactivate", str(window)], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if done.returncode == 0:
+                return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.3)
+
+
+def open_shared_browser(args):
+    """Panel launcher, menu, xdg-open: use the desktop's one browser.
+
+    The supervised Chromium has the agent's CDP port and the website login.
+    When it runs, a start with the same --user-data-dir only hands the URLs
+    to it (Chromium's process singleton) and exits; with no URL its window is
+    raised. When the person closed it, it is started again with the
+    supervisor's flags, so CDP comes back too.
+    """
+    key = shared_browser_key()
+    if not key:
+        print("maclaw-browser: this display has no MaClaw desktop", file=sys.stderr)
+        return 1
+    entry = load_registry().get("users", {}).get(key) or {}
+    display = int(entry.get("display") or DISPLAY_MIN)
+    profile = ROOT / key / "profile"
+    started = False
+    if not browser_pid(profile):
+        with desktop_lock():
+            ensure(key)
+        started = True
+    urls = [arg for arg in args if arg and not arg.startswith("-")]
+    if not urls and activate_browser_window(display, 5.0 if started else 1.0):
+        return 0
+    if started and not urls:
+        return 0
+    env = os.environ.copy()
+    env[SUPERVISED_BROWSER_ENV] = "1"
+    argv = [browser_bin(), "--no-sandbox", "--user-data-dir=%s" % profile, "--profile-directory=Default"] + list(args)
+    os.execvpe(argv[0], argv, env)
     return 0
 
 
@@ -1369,41 +2263,6 @@ def browser_bin():
     return "chromium"
 
 
-def browser_proxy_flags():
-    """Chromium proxy flags derived from the container's proxy environment.
-
-    desktopd injects HTTP(S)_PROXY into the container when an egress proxy is
-    configured (DESKTOPD_DESKTOP_PROXY_URL). Chromium never reads credentials
-    from --proxy-server, so userinfo is dropped here; the desktopd bridge
-    listener is unauthenticated and chained to the upstream proxy itself.
-    apt/curl inside the container keep using the raw env vars directly.
-    Chromium bypasses loopback targets on its own.
-    """
-    proxy = ""
-    for name in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
-        value = os.environ.get(name, "").strip()
-        if value:
-            proxy = value
-            break
-    if not proxy:
-        return []
-    parsed = urlsplit(proxy)
-    if parsed.scheme != "http" or not parsed.hostname:
-        return []
-    try:
-        port = parsed.port
-    except ValueError:
-        # A malformed port would otherwise raise while the flags are built.
-        return []
-    host = parsed.hostname
-    if port:
-        host += ":%d" % port
-    bypass = os.environ.get("no_proxy") or os.environ.get("NO_PROXY") or ""
-    rules = [rule.strip() for rule in bypass.replace(";", ",").split(",") if rule.strip()]
-    rules.append("<local>")
-    return ["--proxy-server=http://%s" % host, "--proxy-bypass-list=%s" % ";".join(rules)]
-
-
 def pid_alive(pid):
     try:
         pid = int(pid or 0)
@@ -1412,7 +2271,7 @@ def pid_alive(pid):
     if pid <= 0:
         return False
     try:
-        text = Path("/proc/%d/stat" % pid).read_text(encoding="utf-8")
+        text = (PROC / str(pid) / "stat").read_text(encoding="utf-8")
     except OSError:
         return False
     # "pid (comm) state". A zombie still has a /proc entry and the old
@@ -1425,12 +2284,191 @@ def pid_alive(pid):
 
 
 def read_pids(key):
+    """The pids recorded for this desktop since the container last started.
+
+    pids.json lives on the desktop volume and outlasts docker stop. After the
+    next docker start its numbers belong to other processes, so a file written
+    before the restart (its "boot" differs) records nothing. Files from older
+    supervisors have no "boot" and are still read.
+    """
     pid_file = ROOT / key / "pids.json"
     try:
         data = json.loads(pid_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    boot = data.pop("boot", None)
+    if boot is not None and boot != container_boot():
+        return {}
+    return data
+
+
+def write_pids(key, pids):
+    home = ROOT / key
+    home.mkdir(mode=0o700, exist_ok=True)
+    data = {name: pid for name, pid in pids.items() if name != "boot" and pid}
+    boot = container_boot()
+    if boot:
+        data["boot"] = boot
+    tmp = home / "pids.json.tmp"
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(str(tmp), str(home / "pids.json"))
+
+
+def proc_stat_fields(pid):
+    """Fields of /proc/<pid>/stat after "(comm)": state, ppid, ..."""
+    try:
+        text = (PROC / str(int(pid)) / "stat").read_text(encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return []
+    end = text.rfind(")")
+    return text[end + 2:].split() if end >= 0 else []
+
+
+def container_boot():
+    """When this container started: the start time of its pid 1.
+
+    It changes with every docker start, so it tells pids recorded in this run
+    of the container from numbers left over from an earlier one.
+    """
+    fields = proc_stat_fields(1)
+    # starttime is field 22 of stat, the 20th after "(comm)".
+    return "b" + fields[19] if len(fields) > 19 else ""
+
+
+def proc_argv(pid):
+    try:
+        raw = (PROC / str(int(pid)) / "cmdline").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def proc_on_display(pid, display):
+    try:
+        raw = (PROC / str(int(pid)) / "environ").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return False
+    return ("DISPLAY=:%d" % display).encode() in raw.split(b"\0")
+
+
+# Desktop parts found by command line. Chromium is found by its profile.
+DESKTOP_PARTS = ("xvfb", "fluxbox", "dbus", "x11vnc", "vnc", "vgate", "proxy", "watch")
+
+
+def desktop_part(pid, key, display):
+    """Which part of this desktop the process is, or ""."""
+    argv = proc_argv(pid)
+    if not argv:
+        return ""
+    names = [os.path.basename(arg) for arg in argv[:2]]
+    screen = ":%d" % display
+    if names[0] == "Xvfb":
+        return "xvfb" if len(argv) > 1 and argv[1] == screen else ""
+    if names[0] == "x11vnc":
+        return "x11vnc" if screen in argv else ""
+    if names[0] == "dbus-daemon":
+        return "dbus" if "--address=unix:path=/tmp/.maclaw-dbus-%d" % display in argv else ""
+    if names[0] in ("xfce4-session", "fluxbox") or "startxfce4" in names:
+        return "fluxbox" if proc_on_display(pid, display) else ""
+    if "websockify" in names:
+        return "vnc" if "127.0.0.1:%d" % VNC_WEBSOCKIFY_PORT in argv else ""
+    if len(argv) >= 4 and names[1] == "desktop_supervisor.py":
+        if argv[2] == "gate" and argv[3] == str(VNC_GATE_PORT):
+            return "vgate"
+        if argv[2] == "gate" and argv[3] == str(proxy_port(display)):
+            return "proxy"
+        if argv[2] == "watch" and argv[3] == key:
+            return "watch"
+    return ""
+
+
+def find_desktop_parts(key, display):
+    """The running process of each desktop part, found by command line.
+
+    A part can have several processes (websockify forks one per connection,
+    startxfce4 runs xfce4-session); the outermost, oldest one is the part.
+    """
+    found = {}
+    if not PROC.is_dir():
+        return {}
+    me = os.getpid()
+    for entry in PROC.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in (1, me) or not pid_alive(pid):
+            continue
+        part = desktop_part(pid, key, display)
+        if part:
+            found.setdefault(part, []).append(pid)
+    parts = {}
+    for part, pids in found.items():
+        outer = [pid for pid in pids if proc_ppid(pid) not in pids] or pids
+        outer.sort(key=proc_start_time)
+        parts[part] = outer[0]
+    return parts
+
+
+def proc_ppid(pid):
+    fields = proc_stat_fields(pid)
+    try:
+        return int(fields[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def proc_start_time(pid):
+    fields = proc_stat_fields(pid)
+    try:
+        return int(fields[19])
+    except (IndexError, ValueError):
+        return 0
+
+
+def current_pids(key, display):
+    """pids.json brought in line with the processes that really run.
+
+    A recorded pid that is gone or is now another process is replaced by the
+    running part, and a running part nobody recorded is adopted. The file is
+    rewritten when anything changed.
+    """
+    pids = read_pids(key)
+    found = None
+    changed = False
+    for part in DESKTOP_PARTS:
+        pid = pids.get(part)
+        if pid and pid_alive(pid) and desktop_part(pid, key, display) == part:
+            continue
+        if found is None:
+            found = find_desktop_parts(key, display)
+        if part in found:
+            pids[part] = found[part]
+            changed = True
+        elif part in pids:
+            del pids[part]
+            changed = True
+    browser = browser_pid(ROOT / key / "profile")
+    if browser and pids.get("chromium") != browser:
+        pids["chromium"] = browser
+        changed = True
+    if changed:
+        write_pids(key, pids)
+    return pids
+
+
+def reap_children():
+    """Collect exited children so they do not stay behind as zombies."""
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        except OSError:
+            return
+        if pid == 0:
+            return
 
 
 def desktop_token_for(key):
@@ -1449,7 +2487,7 @@ def ensure_proxy(key, display):
     The website login lives in the running Chromium. A dead gate only
     hides that browser from the agent.
     """
-    pids = read_pids(key)
+    pids = current_pids(key, display)
     if pid_alive(pids.get("proxy")):
         return
     token = desktop_token_for(key)
@@ -1462,7 +2500,7 @@ def ensure_proxy(key, display):
     chrome_port = 18000 + display
     proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], os.environ.copy(), log)
     pids["proxy"] = proxy.pid
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    write_pids(key, pids)
 
 
 def ensure_vnc(key, display):
@@ -1473,7 +2511,10 @@ def ensure_vnc(key, display):
     """
     if shutil.which("x11vnc") is None or shutil.which("websockify") is None:
         return
-    pids = read_pids(key)
+    # Found by command line, so VNC processes nobody recorded are seen too.
+    # Restarting beside them failed to bind the ports and dropped the view
+    # every few seconds.
+    pids = current_pids(key, display)
     if vnc_pair_alive(pids):
         return
     token = desktop_token_for(key)
@@ -1490,20 +2531,16 @@ def ensure_vnc(key, display):
     pair = start_vnc(env, log, display, token)
     if pair is None:
         return
-    x11, web, gate = pair
-    if x11 is not None:
-        pids["x11vnc"] = x11.pid
-    else:
-        pids.pop("x11vnc", None)
-    if web is not None:
-        pids["vnc"] = web.pid
-    else:
-        pids.pop("vnc", None)
-    if gate is not None:
-        pids["vgate"] = gate.pid
-    else:
-        pids.pop("vgate", None)
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    record_vnc(pids, pair)
+    write_pids(key, pids)
+
+
+def record_vnc(pids, pair):
+    for name, proc in zip(("x11vnc", "vnc", "vgate"), pair):
+        if proc is not None:
+            pids[name] = proc.pid
+        else:
+            pids.pop(name, None)
 
 
 def vnc_pair_alive(pids):
@@ -1517,14 +2554,14 @@ def kill_pid(pid):
         pid = int(pid or 0)
     except (TypeError, ValueError):
         return
-    if pid <= 0 or not Path("/proc/%d" % pid).exists():
+    if pid <= 0 or not (PROC / str(pid)).exists():
         return
     try:
         os.kill(pid, 15)
     except OSError:
         return
     for _ in range(20):
-        if not Path("/proc/%d" % pid).exists():
+        if not (PROC / str(pid)).exists():
             return
         time.sleep(0.05)
     try:
@@ -1534,22 +2571,45 @@ def kill_pid(pid):
 
 
 def ensure_watch(key, display):
-    """Keep the login view up while the browser is still running."""
-    pids = read_pids(key)
-    if pid_alive(pids.get("watch")):
+    """Keep the login view up while the browser is still running.
+
+    A watcher keeps running the supervisor it was started with. After a
+    deploy copied in a new desktop_supervisor.py, the old watcher would go on
+    restarting VNC by its old rules, so it is replaced once by one that runs
+    the current file.
+    """
+    pids = current_pids(key, display)
+    code = supervisor_code()
+    if pid_alive(pids.get("watch")) and pids.get("watch_code") == code:
         return
+    kill_pid(pids.get("watch"))
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
     log = open(home / "desktop.log", "ab")
     proc = spawn([sys.executable, __file__, "watch", key, str(display)], os.environ.copy(), log)
     pids["watch"] = proc.pid
-    (home / "pids.json").write_text(json.dumps(pids), encoding="utf-8")
+    pids["watch_code"] = code
+    write_pids(key, pids)
+
+
+def supervisor_code():
+    """Short hash of this supervisor file, to tell old watchers from new."""
+    try:
+        return "c" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
 
 
 def watch_vnc(key, display):
     if not valid_key(key):
         return 2
+    started = time.time()
+    checks = [20, 90]
     while desktop_running(key):
+        # Whether a Google sign-in that came back from disk is still there
+        # once the restored pages have talked to Google.
+        if checks and time.time() - started >= checks[0]:
+            log_signin(key, "running %ds" % checks.pop(0))
         lock_file = open(ROOT / "lock", "a", encoding="utf-8")
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
@@ -1559,6 +2619,8 @@ def watch_vnc(key, display):
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             lock_file.close()
+        # VNC parts this watcher restarted are its children.
+        reap_children()
         time.sleep(2)
     return 0
 
@@ -1632,16 +2694,17 @@ def stop_desktop(key):
     profile = ROOT / key / "profile"
     browser_gone = not browser_pid(profile)
     pid_file = ROOT / key / "pids.json"
-    try:
-        pids = json.loads(pid_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    if not pid_file.exists():
         return
-    if not isinstance(pids, dict):
-        return
+    # Only pids from this run of the container: older numbers are now other
+    # processes.
+    pids = read_pids(key)
     for name, pid in pids.items():
+        if not isinstance(pid, int):
+            continue
         # The browser was already asked to exit. Signaling it again, or
         # closing its display first, aborts the cookie write.
-        if name in ("chromium", "xvfb", "fluxbox") and not browser_gone:
+        if name in ("chromium", "xvfb", "fluxbox", "dbus") and not browser_gone:
             continue
         if name == "chromium":
             continue

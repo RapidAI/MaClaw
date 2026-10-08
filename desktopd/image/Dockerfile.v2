@@ -13,7 +13,15 @@
 #     --build-arg BASE_IMAGE=mirror.ccs.tencentyun.com/library/debian:bookworm \
 #     --build-arg APT_MIRROR=mirrors.tencentyun.com \
 #     -t maclaw-gui:2 desktopd/image
-# APT_MIRROR replaces deb.debian.org in the apt sources; empty keeps Debian's.
+# APT_MIRROR replaces deb.debian.org in the apt sources for the build only;
+# empty keeps Debian's. The finished image always ships deb.debian.org: an
+# intranet mirror such as mirrors.tencentyun.com is unreachable from other
+# hosts and through desktopd's egress proxy (apt then fails with "502 Bad
+# Gateway"). At desktop start the supervisor measures deb.debian.org and
+# mirrors.tencent.com (direct and through HTTP(S)_PROXY), writes the faster to
+# debian.sources plus /etc/apt/apt.conf.d/90maclaw-proxy, and makes sudo keep
+# the proxy variables. MACLAW_APT_MIRROR on the container overrides it
+# (a mirror host/URL, or "off"); see apt-mirror in desktop_supervisor.py.
 # No "# syntax=" line on purpose: Docker 20.10's legacy builder works and the
 # frontend image would need Docker Hub.
 ARG BASE_IMAGE=debian:bookworm
@@ -69,6 +77,9 @@ RUN set -eux; \
       '<channel name="xfwm4" version="1.0"><property name="general" type="empty">' \
       '<property name="use_compositing" type="bool" value="false"/></property></channel>' \
       > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml; \
+    if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|${APT_MIRROR}|deb.debian.org|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=shim /src/libclose_range_shim.so /usr/lib/x86_64-linux-gnu/libclose_range_shim.so
@@ -80,6 +91,11 @@ RUN printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Fcitx 5' 'Exec=fcit
       'X-GNOME-Autostart-Phase=Applications' > /etc/xdg/autostart/org.fcitx.Fcitx5.desktop \
  && rm -f /etc/xdg/autostart/xscreensaver.desktop
 COPY desktop_supervisor.py /desktop_supervisor.py
+# Public apt sources (never the build mirror) and sudo keeping the proxy env.
+RUN python3 /desktop_supervisor.py apt-mirror --default \
+ && grep -q '^URIs: http://deb.debian.org/debian$' /etc/apt/sources.list.d/debian.sources \
+ && ! grep -rq tencentyun /etc/apt/ \
+ && test -f /etc/sudoers.d/maclaw-proxy-env && visudo -c >/dev/null
 # One browser per desktop: the panel's Web Browser launcher, the menu entry,
 # xdg-open and x-www-browser all join the supervised Chromium the agent uses
 # (same profile and login) instead of starting a root Chromium that exits.
