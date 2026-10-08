@@ -366,3 +366,6 @@ build/desktopd_deploy/
 
 # r17: CI 构建流水日志存档
 r17/
+
+# Ins-maclaw 本地构建产物
+/Ins-maclaw/Ins-maclaw.exe
