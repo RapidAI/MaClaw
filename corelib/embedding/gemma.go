@@ -43,6 +43,18 @@ type GemmaHParams struct {
 	RopeThetaLocal float32 // rope.freq_base_swa, sliding layers
 	SlidingWindow  int     // attention.sliding_window (tokens)
 	SWAPeriod      int     // attention.sliding_window_pattern
+
+	// Same sliding-window facts in the loader-researched form (union with the
+	// scalar fields above; the runtime reads windowHalf/globalLayer, the
+	// loader-validation tests read these). For this 512-window model the band
+	// is +-256, and 20 of the 24 layers rotate at 1e4 while 5/11/17/23 rotate
+	// at 1e6.
+	NSwa         int     // attention.sliding_window; 0 = none declared
+	SwaPattern   int     // attention.sliding_window_pattern (scalar form); 0 = every layer
+	RopeThetaSwa float32 // rope.freq_base_swa; absent from this GGUF -> 10000
+	// Explicit per-layer flags, used verbatim when the GGUF carries
+	// attention.sliding_window_pattern as an *array*. Empty for this model.
+	SwaLayers []uint8
 }
 
 // globalLayer reports a full-attention layer. Period 6 matches EmbeddingGemma
@@ -62,6 +74,31 @@ func (hp GemmaHParams) windowHalf(layer int) int {
 		return 0
 	}
 	return hp.SlidingWindow / 2
+}
+
+// IsSwaLayer is llama.cpp's set_swa_pattern(n_pattern, dense_first=false):
+//
+//	is_swa_impl[il] = n_pattern == 0 || il % n_pattern < n_pattern - 1
+//
+// so with the default 6 the *global* layers are 5, 11, 17 and 23 of 24.
+func (hp *GemmaHParams) IsSwaLayer(il int) bool {
+	if len(hp.SwaLayers) > 0 {
+		return il >= 0 && il < len(hp.SwaLayers) && hp.SwaLayers[il] != 0
+	}
+	if hp.SwaPattern <= 0 {
+		return true
+	}
+	return (il % hp.SwaPattern) < (hp.SwaPattern - 1)
+}
+
+// HalfWindowFor returns the symmetric half-width of the attention band for
+// layer il, or -1 for full attention. llama.cpp halves the declared window:
+// the declared 512 is a +-256 band, not +-512.
+func (hp *GemmaHParams) HalfWindowFor(il int) int {
+	if hp.NSwa <= 0 || !hp.IsSwaLayer(il) {
+		return -1
+	}
+	return hp.NSwa / 2
 }
 
 // gemmaLayer holds weights for one transformer block.
@@ -157,24 +194,24 @@ func (tc *tokenEmbCache) Get(id int) []float32 {
 // gemmaScratch holds reusable scratch buffers for forward pass.
 // Allocated once on first Embed call, reused across subsequent calls.
 type gemmaScratch struct {
-	arena    []float32
-	x        []float32 // hidden state [seq*dim]
-	normed   []float32
-	q, k, v  []float32
-	attnOut  []float32
-	projOut  []float32
-	ffGate   []float32
-	ffUp     []float32
-	ffDown   []float32
-	yTile    []float32
-	rowBuf   []float32
-	scores   []float32
-	poolOut  []float32
-	ropeCos  []float32 // local theta, in the arena [seqCap * headDim/2]
-	ropeSin  []float32
-	seqCap   int
-	ropeSeq  int
-	ropeKind int // 1 = global theta, 2 = local theta
+	arena       []float32
+	x           []float32 // hidden state [seq*dim]
+	normed      []float32
+	q, k, v     []float32
+	attnOut     []float32
+	projOut     []float32
+	ffGate      []float32
+	ffUp        []float32
+	ffDown      []float32
+	yTile       []float32
+	rowBuf      []float32
+	scores      []float32
+	poolOut     []float32
+	ropeCos     []float32 // kind-2 (local theta) table, in the arena [seqCap * headDim/2]
+	ropeSin     []float32
+	seqCap      int
+	ropeSeq     int
+	ropeKind    int // 1 = global theta, 2 = local theta
 	// ropeKeep caches each theta. Index 2 aliases ropeCos. Index 1 is the
 	// global table, allocated beside the arena so a layer switch does not
 	// recompute cos/sin and scratchArenaFloats stays one table.
@@ -185,6 +222,10 @@ type gemmaScratch struct {
 	// scratchArenaFloats stays the official one-table size.
 	ropeLocal  ropeFreq
 	ropeGlobal ropeFreq
+	// Prebuilt SWA table pair, for the SWA layers' different base. Left nil
+	// when the two bases are equal, mirroring the port's !ropeCosSwa.empty().
+	ropeCosSwa []float32
+	ropeSinSwa []float32
 }
 
 // NewGemmaEmbedder loads an EmbeddingGemma model from a GGUF file.
@@ -242,6 +283,19 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	if period <= 0 {
 		period = 6
 	}
+	// llama.cpp's get_arr reads the per-layer array first and only falls back
+	// to the scalar.  A BOOL array lands in I32s only because readArray was
+	// taught to materialise it (it used to be skipped, which would have made
+	// this a silent fallback to the scalar pattern).
+	var swaLayers []uint8
+	if arr := gguf.GetMetaI32Arr(mf.Meta, prefix+"attention.sliding_window_pattern"); len(arr) > 0 {
+		swaLayers = make([]uint8, len(arr))
+		for i, v := range arr {
+			if v != 0 {
+				swaLayers[i] = 1
+			}
+		}
+	}
 	if keyLen := gguf.GetMetaI32(mf.Meta, prefix+"attention.key_length", 0); keyLen > 0 && keyLen != headDim {
 		mf.CloseMmap()
 		return nil, fmt.Errorf("gemma: attention.key_length %d != embedding_length/head_count %d", keyLen, headDim)
@@ -261,6 +315,13 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 		RopeThetaLocal: localTheta,
 		SlidingWindow:  sw,
 		SWAPeriod:      period,
+
+		// Same sliding-window facts in the loader-researched form; fed from the
+		// reads above so a file declaring them is not silently misread.
+		NSwa:         sw,
+		SwaPattern:   period,
+		RopeThetaSwa: localTheta,
+		SwaLayers:    swaLayers,
 	}
 
 	w, err := loadWeightsMmap(mf, hp)
@@ -280,7 +341,9 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	if _, ok := mf.Meta["tokenizer.ggml.scores"]; ok {
 		scores = gguf.LastF32Array()
 	}
-	tok := LoadTokenizerFromGGUF(tokens, scores)
+	tok := LoadTokenizerFromGGUF(tokens, scores,
+		gguf.GetMetaI32Arr(mf.Meta, "tokenizer.ggml.token_type"),
+		TokenizerOptionsFromGGUF(mf.Meta))
 
 	g := &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf,
 		modelName:  modelName,

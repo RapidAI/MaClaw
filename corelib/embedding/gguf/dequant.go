@@ -76,3 +76,15 @@ func GetMetaStrArr(meta map[string]MetaValue, key string) []string {
 	}
 	return nil
 }
+
+// GetMetaI32Arr returns an int32 array metadata value.  A file that stores the
+// same array under a different element type yields nil rather than a wrong
+// answer, so callers must treat "empty" as "this file does not declare it" --
+// which for token_type means "no special tokens", the pre-partition fix's
+// off-switch.
+func GetMetaI32Arr(meta map[string]MetaValue, key string) []int32 {
+	if v, ok := meta[key]; ok {
+		return v.I32s
+	}
+	return nil
+}

@@ -337,6 +337,28 @@ func TestEmbedTokenStates_WidthIsModelDim(t *testing.T) {
 	}
 }
 
+// TestFusionOffVsOnCosine pins the fused FFN/attention path against the plain
+// one.  The fused paths are a deliberate approximation (per-row activation
+// quantization at 2-3 tokens; see the comment in packedDualOutGemmaShort), so
+// this is a "the approximation stays small" gate, not an equality gate.
+//
+// The gate was 0.999 and is now 0.998, on measurement rather than convenience.
+// The FFN activation was SiLU and is now GELU (tensor.GeluMul), which took this
+// corpus from 0.976 to 0.9995 against llama.cpp -- but a *shared* error of that
+// size was also what held the two paths together here.  With it removed the
+// remaining difference between them is the fused path's own approximation, which
+// was there all along and is now visible:
+//
+//	"你好" (seq=3, the worst case)   fused-vs-non-fused   fused-vs-llama.cpp
+//	  before (SiLU, shared error)        0.999559            0.975968727
+//	  after  (GELU, error removed)       0.998957            0.999505482
+//	  non-fused, after                    --                0.999910649
+//
+// So the fused path costs ~4.9e-4 in cosine against llama.cpp on the shortest
+// input, against 8.9e-5 for the plain path.  Tightening this back up means
+// making the fused path accurate, not tightening the gate -- the per-row VNNI
+// path for seq==3 measures 0.999755 with packedDualOutGemmaShort disabled, so
+// roughly half of the residual is that kernel's quantization.
 func TestFusionOffVsOnCosine(t *testing.T) {
 	path := findModel(t)
 	on, err := NewGemmaEmbedder(path, 256)
@@ -443,3 +465,364 @@ func cosine32(a, b []float32) float64 {
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
+
+// ---------------------------------------------------------------------------
+// Sliding-window attention.
+//
+// The window is one of the two remaining deviations from the C++ port, and both
+// ways of getting it wrong -- n_swa instead of n_swa/2, and an exclusive far
+// edge -- shift the band by a constant.  A shifted band still produces a
+// plausible cosine, so neither shows up as a failure; they have to be pinned by
+// construction.  TestSwaRange pins the range helper against the mask predicate
+// itself, and TestGqaAttentionMatchesMaskedReference pins the whole attention
+// path against a -inf-masked float64 reference, which is the definition the
+// slice-based implementation is claiming to be equivalent to.
+// ---------------------------------------------------------------------------
+
+func TestSwaRange(t *testing.T) {
+	// The masked condition in llama.cpp is |p1 - p0| > n_swa/2, so the visible
+	// set is exactly {q : |q-p| <= halfW}, clipped to [0,seq).  Check the helper
+	// against that predicate for every (p, seq, halfW) rather than against a few
+	// hand-written expectations -- the off-by-one lives in the clipping.
+	for _, seq := range []int{1, 2, 3, 8, 9, 16, 17, 40} {
+		for _, halfW := range []int{0, 1, 2, 3, 7, 8, 255, 256, 512, 1000} {
+			for p := 0; p < seq; p++ {
+				lo, hi := swaRange(p, seq, halfW)
+				for q := 0; q < seq; q++ {
+					d := q - p
+					if d < 0 {
+						d = -d
+					}
+					want := d <= halfW
+					got := q >= lo && q < hi
+					if want != got {
+						t.Fatalf("seq=%d halfW=%d p=%d q=%d: visible=%v want %v (lo=%d hi=%d)",
+							seq, halfW, p, q, got, want, lo, hi)
+					}
+				}
+				if lo < 0 || hi > seq || lo > hi {
+					t.Fatalf("seq=%d halfW=%d p=%d: bad range [%d,%d)", seq, halfW, p, lo, hi)
+				}
+				if !(p >= lo && p < hi) {
+					t.Fatalf("seq=%d halfW=%d p=%d: query excluded from its own band", seq, halfW, p)
+				}
+			}
+		}
+	}
+	// Full attention is the halfW < 0 sentinel, and must span the sequence.
+	for _, seq := range []int{0, 1, 40, 794} {
+		for p := 0; p < seq; p++ {
+			if lo, hi := swaRange(p, seq, -1); lo != 0 || hi != seq {
+				t.Fatalf("full attention seq=%d p=%d: got [%d,%d) want [0,%d)", seq, p, lo, hi, seq)
+			}
+		}
+	}
+}
+
+func TestSwaLayerPattern(t *testing.T) {
+	// llama.cpp's gemma-embedding loader calls load_swa_pattern(ml, 6), whose
+	// set_swa_pattern(n, dense_first=false) gives il%n < n-1.  For 24 layers the
+	// global ones are 5, 11, 17 and 23 -- llama.cpp's own dump prints
+	// `is_swa = 1` five times then `is_swa = 0`, repeating.
+	hp := GemmaHParams{NSwa: 512, SwaPattern: 6, RopeTheta: 1e6, RopeThetaSwa: 1e4}
+	const want = "111110111110111110111110"
+	var got strings.Builder
+	for il := 0; il < 24; il++ {
+		if hp.IsSwaLayer(il) {
+			got.WriteByte('1')
+		} else {
+			got.WriteByte('0')
+		}
+	}
+	if got.String() != want {
+		t.Fatalf("pattern-6 layer map = %s want %s", got.String(), want)
+	}
+	// HalfWindowFor halves: the declared 512 is a +-256 band, not +-512.
+	for il := 0; il < 24; il++ {
+		want := 256
+		if il == 5 || il == 11 || il == 17 || il == 23 {
+			want = -1
+		}
+		if got := hp.HalfWindowFor(il); got != want {
+			t.Fatalf("layer %d: HalfWindowFor=%d want %d", il, got, want)
+		}
+	}
+	// An explicit per-layer array wins over the scalar pattern, and a file that
+	// declares no window at all gets full attention everywhere.
+	hp.SwaLayers = []uint8{0, 1, 1, 0}
+	for il, want := range []int{-1, 256, 256, -1} {
+		if got := hp.HalfWindowFor(il); got != want {
+			t.Fatalf("explicit array layer %d: HalfWindowFor=%d want %d", il, got, want)
+		}
+	}
+	hp2 := GemmaHParams{NSwa: 0, SwaPattern: 6, RopeTheta: 1e6, RopeThetaSwa: 1e4}
+	for il := 0; il < 24; il++ {
+		if got := hp2.HalfWindowFor(il); got != -1 {
+			t.Fatalf("n_swa=0 layer %d: HalfWindowFor=%d want -1", il, got)
+		}
+	}
+}
+
+func TestScratchSwaRopeTables(t *testing.T) {
+	base := GemmaHParams{Dim: 8, NLayers: 2, NHeads: 2, NKVHeads: 1, HeadDim: 4, KVDim: 4,
+		FFDim: 16, RopeTheta: 1e6, RopeThetaSwa: 1e6, NSwa: 512, SwaPattern: 6}
+	same := newGemmaScratch(base, 16)
+	if same.ropeCosSwa != nil || same.ropeSinSwa != nil {
+		t.Fatalf("equal bases must leave the second pair nil, got %d/%d",
+			len(same.ropeCosSwa), len(same.ropeSinSwa))
+	}
+	// With a second base the arena grows by exactly 2*S*halfDim and both pairs
+	// are filled for the whole bucket.
+	diff := base
+	diff.RopeThetaSwa = 1e4
+	s := newGemmaScratch(diff, 16)
+	S := scratchBucket(16)
+	if len(s.ropeCosSwa) != S*2 || len(s.ropeSinSwa) != S*2 {
+		t.Fatalf("swa pair len %d/%d want %d", len(s.ropeCosSwa), len(s.ropeSinSwa), S*2)
+	}
+	if got, want := scratchArenaFloats(diff, S)-scratchArenaFloats(base, S), 2*S*2; got != want {
+		t.Fatalf("arena grew by %d floats want %d", got, want)
+	}
+	// Position 0 is angle 0 for every base; the tables must differ at a position
+	// and lane where the base actually enters.  At lane i=0 the frequency is
+	// theta^0 = 1 for every base, so cos(pos) is base-independent there and
+	// comparing it proves nothing -- the first lane where the base matters is
+	// (pos=1, i=1), at index halfDim+1.
+	if s.ropeCosSwa[0] != 1.0 || s.ropeSinSwa[0] != 0.0 {
+		t.Fatalf("swa pair position 0 = (%g,%g) want (1,0)", s.ropeCosSwa[0], s.ropeSinSwa[0])
+	}
+	const probe = 1*2 + 1 // pos=1, i=1 for halfDim=2
+	// The merged runtime fills ropeCosSwa eagerly and keeps the kind-2 arena
+	// table lazy, so compare the SWA pair against the *global* table layer 5
+	// would rotate at (pattern period 6): those two must disagree.
+	cos5, _ := ropeForLayer(s, diff, 5)
+	if cos5[probe] == s.ropeCosSwa[probe] {
+		t.Fatalf("1e6 and 1e4 tables agree at (pos=1,i=1) = %g; the second base is not taking effect",
+			cos5[probe])
+	}
+}
+
+// swaRange is the visible key range [lo, hi) for query position p: llama.cpp's
+// LLAMA_SWA_TYPE_SYMMETRIC mask, where `|p1 - p0| > n_swa/2` is the *masked*
+// condition.  So the band is inclusive at both ends and 2*halfW+1 wide, and
+// halfW < 0 means full attention.
+//
+// Kept as a test-only helper next to refSlicedAttention so TestSwaRange can
+// pin the band against the mask predicate itself.
+func swaRange(p, seq, halfW int) (int, int) {
+	if halfW < 0 {
+		return 0, seq
+	}
+	lo := p - halfW
+	if lo < 0 {
+		lo = 0
+	}
+	hi := p + halfW + 1
+	if hi > seq {
+		hi = seq
+	}
+	return lo, hi
+}
+
+// refSlicedAttention is the same *kernel* as gqaAttention but with the visible
+// range found by scanning the mask predicate itself, never through swaRange.
+// It shares tensor.SoftmaxWeightedSumStrided, so the Schraudolph exp cancels
+// and any difference left is the range and tile arithmetic -- which is exactly
+// what this port adds.  Deriving the range independently is the point: a
+// reference that called swaRange too would agree with a broken swaRange.
+func refSlicedAttention(out, q, k, v []float32, seq, nHeads, nKVHeads, headDim, halfW int) {
+	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
+	headsPerGroup := nHeads / nKVHeads
+	qStride := nHeads * headDim
+	kvStride := nKVHeads * headDim
+	scores := make([]float32, seq)
+	for h := 0; h < nHeads; h++ {
+		kvH := h / headsPerGroup
+		vBase := v[kvH*headDim:]
+		hOff := h * headDim
+		for p := 0; p < seq; p++ {
+			lo, hi := seq, 0
+			for sk := 0; sk < seq; sk++ {
+				d := sk - p
+				if d < 0 {
+					d = -d
+				}
+				if halfW < 0 || d <= halfW {
+					if sk < lo {
+						lo = sk
+					}
+					if sk+1 > hi {
+						hi = sk + 1
+					}
+				}
+			}
+			qVec := q[p*qStride+hOff : p*qStride+hOff+headDim]
+			for sk := lo; sk < hi; sk++ {
+				scores[sk-lo] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:sk*kvStride+kvH*headDim+headDim]) * scale
+			}
+			tensor.SoftmaxWeightedSumStrided(out[p*qStride+hOff:p*qStride+hOff+headDim],
+				scores[:hi-lo], vBase[lo*kvStride:], hi-lo, kvStride, headDim)
+		}
+	}
+}
+
+// refExactMaskedAttention is the *definition* the slice trick claims to equal:
+// softmax over exp(score - max) with -inf written into the masked lanes, in
+// float64 and with no tiling.  It shares no code with the implementation, so it
+// is a real independent check -- but it uses exact exp while the kernel uses
+// Schraudolph, so it can only be compared loosely.
+func refExactMaskedAttention(out, q, k, v []float32, seq, nHeads, nKVHeads, headDim, halfW int) {
+	scale := 1.0 / math.Sqrt(float64(headDim))
+	headsPerGroup := nHeads / nKVHeads
+	qStride := nHeads * headDim
+	kvStride := nKVHeads * headDim
+	for h := 0; h < nHeads; h++ {
+		kvH := h / headsPerGroup
+		for p := 0; p < seq; p++ {
+			scores := make([]float64, seq)
+			max := math.Inf(-1)
+			for sk := 0; sk < seq; sk++ {
+				if halfW >= 0 {
+					d := sk - p
+					if d < 0 {
+						d = -d
+					}
+					if d > halfW {
+						scores[sk] = math.Inf(-1)
+						continue
+					}
+				}
+				var acc float64
+				for i := 0; i < headDim; i++ {
+					acc += float64(q[p*qStride+h*headDim+i]) * float64(k[sk*kvStride+kvH*headDim+i])
+				}
+				acc *= scale
+				scores[sk] = acc
+				if acc > max {
+					max = acc
+				}
+			}
+			var sum float64
+			for sk := range scores {
+				if math.IsInf(scores[sk], -1) {
+					scores[sk] = 0
+					continue
+				}
+				scores[sk] = math.Exp(scores[sk] - max)
+				sum += scores[sk]
+			}
+			for i := 0; i < headDim; i++ {
+				var acc float64
+				for sk := 0; sk < seq; sk++ {
+					acc += scores[sk] * float64(v[sk*kvStride+kvH*headDim+i])
+				}
+				out[p*qStride+h*headDim+i] = float32(acc / sum)
+			}
+		}
+	}
+}
+
+// maxAbsDiff is the largest elementwise |a-b|.
+func maxAbsDiff(a, b []float32) float64 {
+	var m float64
+	for i := range a {
+		if d := math.Abs(float64(a[i]) - float64(b[i])); d > m {
+			m = d
+		}
+	}
+	return m
+}
+
+func TestGqaAttentionMatchesMaskedReference(t *testing.T) {
+	// seq values are chosen to cross every internal boundary: 21 exercises the
+	// nQ=8 tile, the nQ=4 leftover tile and the single-query tail; 70 crosses
+	// the seq>=64 parallel branch; 3 and 8 are the short-Embed shapes.
+	for _, tc := range []struct {
+		seq, nHeads, nKVHeads, headDim, halfW int
+	}{
+		{3, 3, 1, 16, 256},
+		{8, 3, 1, 16, 2},
+		{21, 3, 1, 16, 1},
+		{21, 3, 1, 16, 2},
+		{21, 3, 1, 16, 4},
+		{21, 3, 1, 16, 256},
+		{21, 3, 1, 16, -1},
+		{40, 2, 2, 8, 3},
+		{70, 3, 1, 16, 5},
+		{70, 3, 1, 16, -1},
+	} {
+		seq, nHeads, nKVHeads, headDim, halfW := tc.seq, tc.nHeads, tc.nKVHeads, tc.headDim, tc.halfW
+		qStride := nHeads * headDim
+		kvStride := nKVHeads * headDim
+		q := make([]float32, seq*qStride)
+		k := make([]float32, seq*kvStride)
+		v := make([]float32, seq*kvStride)
+		// Deterministic fill; a fixed LCG keeps this reproducible without
+		// pulling in math/rand's global state.
+		seed := uint32(12345)
+		next := func() float32 {
+			seed = seed*1664525 + 1013904223
+			return float32(int32(seed>>8)%2000-1000) / 1000.0
+		}
+		for i := range q {
+			q[i] = next()
+		}
+		for i := range k {
+			k[i] = next()
+		}
+		for i := range v {
+			v[i] = next()
+		}
+		run := func(hw int) []float32 {
+			out := make([]float32, seq*qStride)
+			(&GemmaEmbedder{}).gqaAttention(out, q, k, v, seq, nHeads, nKVHeads, headDim, qStride, kvStride, hw)
+			return out
+		}
+
+		got := run(halfW)
+
+		// (1) The window and tile arithmetic, against an independently derived
+		// range and the same kernel.  A range off by one changes which keys are
+		// in the softmax, so this catches it; only the dot kernel's accumulation
+		// order (MultiDot8 tiles vs scalar Dot) is left, hence the tolerance.
+		sliced := make([]float32, seq*qStride)
+		refSlicedAttention(sliced, q, k, v, seq, nHeads, nKVHeads, headDim, halfW)
+		if d := maxAbsDiff(got, sliced); d > 1e-5 {
+			t.Fatalf("seq=%d heads=%d/%d headDim=%d halfW=%d: differs from the predicate-derived "+
+				"slice reference by %g", seq, nHeads, nKVHeads, headDim, halfW, d)
+		}
+
+		// (2) That it is really attention, against exact float64 arithmetic.
+		// Loose on purpose: the kernel's exp is Schraudolph, and the error grows
+		// as the window narrows (fewer terms to average over), so this is a
+		// sanity bound, not a precision claim.
+		exact := make([]float32, seq*qStride)
+		refExactMaskedAttention(exact, q, k, v, seq, nHeads, nKVHeads, headDim, halfW)
+		dExact := maxAbsDiff(got, exact)
+		if dExact > 0.05 {
+			t.Fatalf("seq=%d halfW=%d: differs from exact float64 attention by %g",
+				seq, halfW, dExact)
+		}
+
+		// (3) The window has to be a no-op when it is at least as wide as the
+		// sequence, and to actually clip when it is not -- otherwise every
+		// assertion above would pass with the window silently ignored.
+		full := run(-1)
+		dFull := maxAbsDiff(got, full)
+		switch {
+		case halfW >= seq-1:
+			if dFull != 0 {
+				t.Fatalf("seq=%d halfW=%d: wide window differs from full attention by %g",
+					seq, halfW, dFull)
+			}
+		case halfW > 0:
+			if dFull < 0.02 {
+				t.Fatalf("seq=%d halfW=%d: window changed the output by only %g; not clipping",
+					seq, halfW, dFull)
+			}
+		}
+		t.Logf("seq=%d heads=%d/%d headDim=%d halfW=%d: vs_slice=%g vs_exact=%g vs_full=%g",
+			seq, nHeads, nKVHeads, headDim, halfW, maxAbsDiff(got, sliced), dExact, dFull)
+	}
+}
+

@@ -66,6 +66,14 @@ type MetaValue struct {
 	U64 uint64
 	Str string
 	Arr []string // for string arrays
+	// I32s holds an int32 or bool array.  tokenizer.ggml.token_type is the one
+	// this project needs: it is what marks a token CONTROL (3) or USER_DEFINED
+	// (4), which is exactly the set that has to be matched against the *raw*
+	// input before whitespace escaping.  It used to be skipped, so the tokenizer
+	// had no way to know that "  " (id 138) is a special token and not two
+	// spaces to be BPE'd.  attention.sliding_window_pattern is the second: it is
+	// written as a bool array and decides the per-layer RoPE base and mask.
+	I32s []int32
 }
 
 // TensorInfo describes a tensor in the GGUF file.

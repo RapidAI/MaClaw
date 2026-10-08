@@ -605,6 +605,45 @@ func siluMulScalar(gate, up []float32) {
 	}
 }
 
+// GeluMul computes gelu(gate) * up in-place into gate, fusing two operations.
+//
+// This is the EmbeddingGemma FFN epilogue, and it is GELU, not SiLU. The formula
+// is ggml's ggml_gelu_f32 (ggml/src/ggml-cpu/vec.h), the tanh-approximation GELU
+// that every Gemma generation declares as `hidden_activation:
+// "gelu_pytorch_tanh"` in its HF config:
+//
+//	0.5 * x * (1 + tanh(sqrt(2/pi) * x * (1 + 0.044715 * x^2)))
+//
+// llama.cpp builds this model's FFN with LLM_FFN_GELU
+// (src/models/gemma-embedding.cpp:150), so this is what the reference
+// implementation computes. The embedding path used SiLU here, which was the
+// single largest remaining deviation: reproducing it is worth cos 0.93 -> 0.9998
+// against the port on a 794-token text (tools/go_vs_port.py --sweep).
+//
+// SiLUMul is deliberately left alone. The ASR decoder uses it
+// (corelib/asr/decoder.go:319) and those weights were trained for SwiGLU, so the
+// two activations now have to be kept apart rather than shared.
+//
+// Scalar, and float32 throughout, to match the port's scalar tail
+// (src/tensor.cpp geluMul) which keeps the exact tanhf expression. The fused
+// call sites apply this per N-range and GELU is elementwise, so a vectorised
+// version can drop in without touching them; the port has one to copy.
+func GeluMul(gate, up []float32) {
+	const (
+		sqrt2OverPi = 0.79788456080286535588
+		geluCoefA   = 0.044715
+	)
+	n := len(gate)
+	if len(up) < n {
+		n = len(up)
+	}
+	for i := 0; i < n; i++ {
+		x := gate[i]
+		t := float32(math.Tanh(float64(sqrt2OverPi * x * (1.0 + geluCoefA*x*x))))
+		gate[i] = 0.5 * x * (1.0 + t) * up[i]
+	}
+}
+
 // ElemMul computes element-wise multiplication: out[i] = a[i] * b[i].
 // out may alias a or b when they share the same starting address.
 func ElemMul(out, a, b []float32) {
