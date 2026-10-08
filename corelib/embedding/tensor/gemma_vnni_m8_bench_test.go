@@ -49,7 +49,7 @@ func BenchmarkGemmaM8Kernels(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			for m := 0; m+7 < 48; m += 8 {
 				gemmaVNNIRowM8N24PackedAVX512(&out[m*N], &panel.q[m*K], &panel.s[m],
-					&bt.Packed[0], &bt.Scales[0], N, 0, N)
+					&bt.Packed[0], &bt.Scales[0], N, 0, N, &bt.ColBias[0])
 			}
 		}
 	})

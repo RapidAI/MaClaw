@@ -333,7 +333,6 @@ func TestRollbackReleasesFromManifestUsesOnlyStableMirrorURLs(t *testing.T) {
 		{Build: "11970", PublishedAt: "2026-08-28T10:00:00Z", Assets: map[string]updateManifestAsset{
 			"MaClaw-Setup.exe": {URLs: []string{
 				"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/11970/MaClaw-Setup.exe",
-				"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/releases/11970/MaClaw-Setup.exe",
 			}, SHA256: strings.Repeat("a", 64)},
 		}},
 		{Build: "11969", PublishedAt: "2026-08-27T10:00:00Z", Assets: map[string]updateManifestAsset{
@@ -349,8 +348,8 @@ func TestRollbackReleasesFromManifestUsesOnlyStableMirrorURLs(t *testing.T) {
 		t.Fatalf("unexpected rollback release: %+v", releases[0])
 	}
 	urls := splitDownloadURLs(releases[0].DownloadUrl)
-	if len(urls) != 3 || urls[0] != "https://github.com/RapidAI/MaClaw/releases/download/11970/MaClaw-Setup.exe" || !strings.Contains(urls[1], "/releases/11970/MaClaw-Setup.exe") {
-		t.Fatalf("rollback URLs = %#v, want GitHub then immutable R2/COS paths", urls)
+	if len(urls) != 2 || urls[0] != "https://github.com/RapidAI/MaClaw/releases/download/11970/MaClaw-Setup.exe" || !strings.Contains(urls[1], "/releases/11970/MaClaw-Setup.exe") {
+		t.Fatalf("rollback URLs = %#v, want GitHub then immutable R2 path", urls)
 	}
 }
 
@@ -489,14 +488,13 @@ func TestManifestAssetDownloadURLsPreservesPublishedMirrors(t *testing.T) {
 			"MaClaw-Setup.exe": {
 				URLs: []string{
 					"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe",
-					"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/MaClaw-Setup.exe",
 				},
 			},
 		},
 	}
 	urls := manifestAssetDownloadURLs(manifest, "MaClaw-Setup.exe", "V7.1.0.11864", false)
-	if len(urls) != 2 || urls[0] != "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe" || !strings.Contains(urls[1], "myqcloud.com") {
-		t.Fatalf("manifestAssetDownloadURLs() = %#v, want the published R2 and COS URLs", urls)
+	if len(urls) != 1 || urls[0] != "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe" {
+		t.Fatalf("manifestAssetDownloadURLs() = %#v, want the published R2 URL", urls)
 	}
 }
 
@@ -535,14 +533,13 @@ func TestValidGitHubReleaseAssetURL(t *testing.T) {
 	}
 }
 
-func TestManifestDownloadOrderUsesR2ThenGitHubThenCOS(t *testing.T) {
+func TestManifestDownloadOrderUsesR2ThenGitHub(t *testing.T) {
 	manifest := updateManifest{
 		Tag: "V7.1.0.11864",
 		Assets: map[string]updateManifestAsset{
 			"MaClaw-Setup.exe": {
 				URLs: []string{
 					"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe",
-					"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/MaClaw-Setup.exe",
 				},
 			},
 		},
@@ -550,8 +547,8 @@ func TestManifestDownloadOrderUsesR2ThenGitHubThenCOS(t *testing.T) {
 	urls := manifestAssetDownloadURLs(manifest, "MaClaw-Setup.exe", manifest.Tag, false)
 	downloads := combineDownloadURLList(append([]string{r2ReleaseAssetURL("MaClaw-Setup.exe", false), "https://github.com/RapidAI/MaClaw/releases/download/V7.1.0.11864/MaClaw-Setup.exe"}, urls...)...)
 	got := splitDownloadURLs(downloads)
-	if len(got) != 3 || got[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(got[1], "github.com/") || !strings.Contains(got[2], "myqcloud.com") {
-		t.Fatalf("download candidate order = %#v, want R2, GitHub, COS", got)
+	if len(got) != 2 || got[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(got[1], "github.com/") {
+		t.Fatalf("download candidate order = %#v, want R2, GitHub", got)
 	}
 }
 
@@ -562,8 +559,8 @@ func TestBuildUpdateResultUsesR2AndGitHubWhenNoManifestURLsExist(t *testing.T) {
 		t.Fatalf("buildUpdateResult() error = %v", err)
 	}
 	urls := splitDownloadURLs(result.DownloadUrl)
-	if len(urls) != 3 || urls[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(urls[1], "github.com/") || !strings.Contains(urls[2], "myqcloud.com") {
-		t.Fatalf("fallback download candidate order = %#v, want R2, GitHub, COS", urls)
+	if len(urls) != 2 || urls[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(urls[1], "github.com/") {
+		t.Fatalf("fallback download candidate order = %#v, want R2, GitHub", urls)
 	}
 }
 

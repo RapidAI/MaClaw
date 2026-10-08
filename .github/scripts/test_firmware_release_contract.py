@@ -28,9 +28,9 @@ def load_module(name):
 
 contract = load_module("firmware_manifest_contract")
 sys.modules["firmware_manifest_contract"] = contract
-os.environ.setdefault("COS_PUBLIC_BASE_URL", "https://cos.example")
+os.environ.setdefault("R2_PUBLIC_BASE_URL", "https://r2.example")
 os.environ.setdefault("RELEASE_TAG", "v-test")
-sync = load_module("sync_cos_release")
+sync = load_module("sync_release")
 verify = load_module("verify_firmware_mirrors")
 update_verify = load_module("verify_update_mirror")
 
@@ -104,10 +104,9 @@ class FirmwareReleaseContractTest(unittest.TestCase):
                 "name": name,
                 "size": path.stat().st_size,
                 "sha256": contract.sha256_file(path),
-                "url": "https://cos.example/latest/" + name,
+                "url": "https://r2.example/latest/" + name,
                 "urls": [
                     "https://r2.example/latest/" + name,
-                    "https://cos.example/latest/" + name,
                 ],
             }
         result = {"tag": "v1.2.3", "version": "v1.2.3", "assets": entries}
@@ -161,14 +160,12 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             "tag": sync.tag,
             "asset_dir": sync.asset_dir,
             "r2_public_base_url": sync.r2_public_base_url,
-            "public_base_url": sync.public_base_url,
         }
         try:
             with mock.patch.dict(os.environ, {"REQUIRE_FIRMWARE_MANIFEST": "true"}):
                 sync.tag = "v1.2.3"
                 sync.asset_dir = self.assets
                 sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
-                sync.public_base_url = contract.COS_PUBLIC_BASE_URL
                 result = sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS])
                 manifest = json.loads(result.read_text(encoding="utf-8"))
                 _, found = contract.required_firmware(manifest, self.assets, "v1.2.3")
@@ -186,112 +183,16 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             "tag": sync.tag,
             "asset_dir": sync.asset_dir,
             "r2_public_base_url": sync.r2_public_base_url,
-            "public_base_url": sync.public_base_url,
         }
         try:
             with mock.patch.dict(os.environ, {"REQUIRE_FIRMWARE_MANIFEST": "false"}):
                 sync.tag = "V7.0.0.11852"
                 sync.asset_dir = self.assets
                 sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
-                sync.public_base_url = contract.COS_PUBLIC_BASE_URL
                 result = sync.write_latest_manifest([desktop_asset])
                 manifest = json.loads(result.read_text(encoding="utf-8"))
             self.assertEqual("V7.0.0.11852", manifest["tag"])
             self.assertIn("MaClaw-Setup.exe", manifest["assets"])
-        finally:
-            for key, value in previous.items():
-                setattr(sync, key, value)
-
-    def test_stable_history_preserves_existing_entries_and_only_initializes_on_404(self):
-        class Response:
-            def __init__(self, status_code):
-                self.status_code = status_code
-
-        class MissingHistory(Exception):
-            def get_response(self):
-                return Response("404")
-
-        class UnavailableHistory(Exception):
-            def get_response(self):
-                return Response(503)
-
-        class Body:
-            def __init__(self, raw):
-                self.raw = raw
-
-            def get_raw_stream(self):
-                return self
-
-            def read(self):
-                return self.raw
-
-        class Client:
-            def __init__(self, raw=None, error=None):
-                self.raw = raw
-                self.error = error
-                self.uploaded = []
-
-            def get_object(self, **_kwargs):
-                if self.error:
-                    raise self.error
-                return {"Body": Body(self.raw)}
-
-        installer = self.assets / "MaClaw-Setup.exe"
-        installer.write_bytes(b"desktop installer")
-        previous = {
-            "tag": sync.tag,
-            "asset_dir": sync.asset_dir,
-            "bucket": sync.bucket,
-            "public_base_url": sync.public_base_url,
-            "r2_public_base_url": sync.r2_public_base_url,
-            "upload_file": sync.upload_file,
-        }
-        try:
-            sync.tag = "V7.0.0.11970"
-            sync.asset_dir = self.assets
-            sync.bucket = "test-bucket"
-            sync.public_base_url = contract.COS_PUBLIC_BASE_URL
-            sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
-            sync.upload_file = lambda client, path, key, _cache: client.uploaded.append((key, json.loads(path.read_text(encoding="utf-8"))))
-
-            missing = Client(error=MissingHistory())
-            sync.update_stable_history(missing, [installer])
-            self.assertEqual(["V7.0.0.11970"], [item["build"] for item in missing.uploaded[0][1]["releases"]])
-
-            existing = {
-                "releases": [
-                    {"build": "V7.0.0.11968", "published_at": "2026-08-26T00:00:00Z", "assets": {}},
-                    {"build": "V7.0.0.11969", "published_at": "2026-08-27T00:00:00Z", "assets": {}},
-                    {"build": " V7.0.0.11970 ", "published_at": "2026-08-28T00:00:00Z", "assets": {}},
-                    {"build": "invalid-date", "published_at": "yesterday", "assets": {}},
-                    {"build": "missing-assets", "published_at": "2026-08-29T00:00:00Z"},
-                ]
-            }
-            retained = Client(raw=json.dumps(existing).encode("utf-8"))
-            sync.update_stable_history(retained, [installer])
-            self.assertEqual(
-                ["V7.0.0.11970", "V7.0.0.11969", "V7.0.0.11968"],
-                [item["build"].strip() for item in retained.uploaded[0][1]["releases"]],
-            )
-
-            with self.assertRaisesRegex(RuntimeError, "failed to load stable-history.json"):
-                sync.update_stable_history(Client(error=UnavailableHistory()), [installer])
-        finally:
-            for key, value in previous.items():
-                setattr(sync, key, value)
-
-    def test_stable_history_urls_follow_the_desktop_path_escape_contract(self):
-        installer = self.assets / "MaClaw+Setup:beta@1.exe"
-        installer.write_bytes(b"desktop installer")
-        previous = {"tag": sync.tag, "public_base_url": sync.public_base_url, "r2_public_base_url": sync.r2_public_base_url}
-        try:
-            sync.tag = "V7+candidate:1@host"
-            sync.public_base_url = contract.COS_PUBLIC_BASE_URL
-            sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
-            asset = sync.stable_history_asset(installer)
-            expected = "/releases/V7+candidate:1@host/MaClaw+Setup:beta@1.exe"
-            self.assertEqual(contract.R2_PUBLIC_BASE_URL + expected, asset["urls"][0])
-            self.assertEqual(contract.COS_PUBLIC_BASE_URL + expected, asset["urls"][1])
         finally:
             for key, value in previous.items():
                 setattr(sync, key, value)
@@ -318,16 +219,15 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             "sha256": digest,
             "urls": [
                 f"{contract.R2_PUBLIC_BASE_URL}/{prefix}/{name}",
-                f"{contract.COS_PUBLIC_BASE_URL}/{prefix}/{name}",
             ],
-            "url": f"{contract.COS_PUBLIC_BASE_URL}/{prefix}/{name}",
+            "url": f"{contract.R2_PUBLIC_BASE_URL}/{prefix}/{name}",
         }
         manifest = {"tag": "v1.2.3", "version": "v1.2.3", "assets": {name: entry}}
         with mock.patch.object(update_verify, "read_json", return_value=manifest), mock.patch.object(
             update_verify, "public_content_length", return_value=path.stat().st_size
         ):
             update_verify.verify_mirror("R2", contract.R2_PUBLIC_BASE_URL, "latest.json", "v1.2.3", prefix, self.assets, [name])
-            entry["urls"] = [entry["urls"][0]]
+            entry["urls"] = []
             with self.assertRaisesRegex(RuntimeError, "mirror URLs differ"):
                 update_verify.verify_mirror("R2", contract.R2_PUBLIC_BASE_URL, "latest.json", "v1.2.3", prefix, self.assets, [name])
 
@@ -340,18 +240,9 @@ class FirmwareReleaseContractTest(unittest.TestCase):
                 contract.R2_PUBLIC_BASE_URL,
             ),
         )
-        self.assertEqual(
-            "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com",
-            contract.validate_public_mirror_base(
-                "COS_PUBLIC_BASE_URL",
-                "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com",
-                contract.COS_PUBLIC_BASE_URL,
-            ),
-        )
         for label, value, expected in (
             ("R2_PUBLIC_BASE_URL", "http://pub-c837069cbe31469590a5fea6235b436b.r2.dev", contract.R2_PUBLIC_BASE_URL),
             ("R2_PUBLIC_BASE_URL", "https://other.example", contract.R2_PUBLIC_BASE_URL),
-            ("COS_PUBLIC_BASE_URL", "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/proxy", contract.COS_PUBLIC_BASE_URL),
         ):
             with self.assertRaisesRegex(RuntimeError, "desktop-approved"):
                 contract.validate_public_mirror_base(label, value, expected)
@@ -363,13 +254,11 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         remote["generatedAt"] = "2026-08-07T00:00:00Z"
         remote["assets"][contract.FIRMWARE_ASSETS[0]]["urls"] = [
             f"{contract.R2_PUBLIC_BASE_URL}/latest/{contract.FIRMWARE_ASSETS[0]}",
-            f"{contract.COS_PUBLIC_BASE_URL}/latest/{contract.FIRMWARE_ASSETS[0]}",
         ]
         remote["assets"][contract.FIRMWARE_ASSETS[0]]["url"] = remote["assets"][contract.FIRMWARE_ASSETS[0]]["urls"][-1]
         for name in contract.FIRMWARE_ASSETS[1:]:
             remote["assets"][name]["urls"] = [
                 f"{contract.R2_PUBLIC_BASE_URL}/latest/{name}",
-                f"{contract.COS_PUBLIC_BASE_URL}/latest/{name}",
             ]
             remote["assets"][name]["url"] = remote["assets"][name]["urls"][-1]
         verify.validate_remote_manifest(remote, local, expected, "R2")
@@ -377,17 +266,16 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "metadata differs"):
             verify.validate_remote_manifest(remote, local, expected, "R2")
 
-    def test_manifest_rejects_wrong_mirror_path_or_missing_independent_source(self):
+    def test_manifest_rejects_wrong_mirror_path(self):
         manifest = self.manifest()
         for name, entry in manifest["assets"].items():
             entry["urls"] = [
                 f"{contract.R2_PUBLIC_BASE_URL}/latest/{name}",
-                f"{contract.COS_PUBLIC_BASE_URL}/latest/{name}",
             ]
             entry["url"] = entry["urls"][-1]
         contract.validate_manifest_asset_urls(manifest)
         manifest["assets"][contract.FIRMWARE_ASSETS[0]]["urls"] = [
-            f"{contract.R2_PUBLIC_BASE_URL}/latest/{contract.FIRMWARE_ASSETS[0]}"
+            f"{contract.R2_PUBLIC_BASE_URL}/other/{contract.FIRMWARE_ASSETS[0]}",
         ]
         with self.assertRaisesRegex(RuntimeError, "approved latest topology"):
             contract.validate_manifest_asset_urls(manifest)
@@ -400,11 +288,11 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertIn("needs: [verify-firmware-release-contract]", workflow)
         self.assertLess(workflow.index(command), workflow.index("- name: Generate release manifest"))
         # The GitHub Release page is created before mirror uploads: mirror
-        # latency (COS from GHA) must not block the release page.
-        self.assertIn("Verify firmware publication on Cloudflare R2 and Tencent COS", workflow)
-        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("Verify firmware publication on Cloudflare R2 and Tencent COS"))
-        self.assertIn("Verify desktop update publication on Cloudflare R2 and Tencent COS", workflow)
-        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("Verify desktop update publication on Cloudflare R2 and Tencent COS"))
+        # latency must not block the release page.
+        self.assertIn("Verify firmware publication on Cloudflare R2", workflow)
+        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("Verify firmware publication on Cloudflare R2"))
+        self.assertIn("Verify desktop update publication on Cloudflare R2", workflow)
+        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("Verify desktop update publication on Cloudflare R2"))
         self.assertIn("- name: Verify GitHub update manifest is published", workflow)
         self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("- name: Verify GitHub update manifest is published"))
         self.assertIn("- name: Verify GitHub rollback installer attachments are published", workflow)
@@ -415,8 +303,9 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertNotIn('installers = [name for name in names if name.endswith(("-Setup.exe", "-Universal.pkg"))]', workflow)
         self.assertIn("releases/latest/download/{manifest_name}", workflow)
         self.assertIn('required = {"MaClaw-Setup.exe", "MaClaw-Universal.pkg"}', workflow)
-        self.assertNotIn("COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}", workflow)
-        self.assertIn("COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com", workflow)
+        self.assertNotIn("COS_PUBLIC_BASE_URL", workflow)
+        self.assertNotIn("sync_cos_release", workflow)
+        self.assertIn("sync_release.py --manifest-name", workflow)
 
     def test_firmware_build_and_mirror_publication_use_protected_release_environment(self):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
@@ -441,11 +330,9 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertNotIn("build-esp32-firmware", release_job.split("runs-on:", 1)[0])
         self.assertIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", release_job)
         self.assertIn("- name: Generate release manifest", release_job)
-        r2_step = release_job[release_job.index("- name: Upload release assets to Cloudflare R2") : release_job.index("- name: Upload release assets to Tencent COS")]
+        r2_step = release_job[release_job.index("- name: Upload release assets to Cloudflare R2") : release_job.index("- name: Publish stable rollback history to Cloudflare R2")]
         self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", r2_step)
-        cos_step = release_job[release_job.index("- name: Upload release assets to Tencent COS") : release_job.index("- name: Verify firmware publication on Cloudflare R2 and Tencent COS")]
-        self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", cos_step)
-        self.assertIn("- name: Verify desktop update publication on Cloudflare R2 and Tencent COS", cos_step)
+        self.assertIn("- name: Verify desktop update publication on Cloudflare R2", release_job)
         manifest_step = release_job[release_job.index("- name: Generate release manifest") : release_job.index("- name: Set up Node.js for Cloudflare R2")]
         self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", manifest_step)
 

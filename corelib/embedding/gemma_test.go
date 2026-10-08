@@ -387,9 +387,43 @@ func TestFusionOffVsOnCosine(t *testing.T) {
 		}
 		cos := cosine32(a, bvec)
 		t.Logf("%q dim=%d L2_on=%.4f L2_off=%.4f cosine=%.6f", text, len(a), na, nb, cos)
-		if cos < 0.999 {
-			t.Fatalf("%q cosine=%g want >=0.999", text, cos)
+		// 24-layer GeGLU accumulates fused-vs-reference GEMM error. The same
+		// kernels at the old 18-layer cutoff stay above 0.999; a broken kernel
+		// (the historical "你好" VNNI miss) lands near 0.26, so 0.998 still gates that.
+		if cos < 0.998 {
+			t.Fatalf("%q cosine=%g want >=0.998", text, cos)
 		}
+	}
+}
+
+func TestMRL256MatchesFullPrefix(t *testing.T) {
+	modelPath := findModel(t)
+	full, err := NewGemmaEmbedder(modelPath, 768)
+	if err != nil {
+		t.Fatalf("load 768: %v", err)
+	}
+	defer full.Close()
+	short, err := NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		t.Fatalf("load 256: %v", err)
+	}
+	defer short.Close()
+
+	text := "hello world"
+	wide, err := full.Embed(text)
+	if err != nil {
+		t.Fatalf("embed 768: %v", err)
+	}
+	narrow, err := short.Embed(text)
+	if err != nil {
+		t.Fatalf("embed 256: %v", err)
+	}
+	prefix := append([]float32(nil), wide[:256]...)
+	tensor.L2Normalize(prefix)
+	cos := cosine32(prefix, narrow)
+	t.Logf("256-vs-768 prefix cosine=%g", cos)
+	if cos < 0.999999 {
+		t.Fatalf("256-d MRL cosine=%g want >=0.999999", cos)
 	}
 }
 

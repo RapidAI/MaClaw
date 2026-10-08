@@ -523,6 +523,12 @@ func formatObserveDisplay(snapshot BrowserSnapshot) string {
 	if snapshot.PageFlags.Canvas {
 		flags = append(flags, "canvas")
 	}
+	if snapshot.PageFlags.PaymentConfirm {
+		flags = append(flags, "payment_confirm")
+	}
+	if snapshot.PageFlags.ConsentDialog {
+		flags = append(flags, "consent_dialog")
+	}
 	if snapshot.PageFlags.CaptchaWidget {
 		display += "; page flags: " + strings.Join(flags, ",") + " — solve the captcha in the browser, then probe before clicking"
 	} else if len(flags) > 0 {

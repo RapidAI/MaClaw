@@ -305,6 +305,13 @@ type PlannedSelection struct {
 	// from selections, and an archetype companion has no id prefix of its own.
 	// Dropping the evidence made that download or search the task.
 	EvidenceIDs []string
+	// Continuation is set only on the one sibling opened after a budgeted
+	// family's published wave was spent. That node is the host's single
+	// promise of another call. It is not a new budget: its result must not
+	// promise a further call, and another ask must not append a second
+	// continuation. Iterative local file writes leave this false; the next
+	// edit is a new obligation, not a promise minted by the spent-budget note.
+	Continuation bool `json:",omitempty"`
 }
 
 // IsLightPromptSafeSelection reports whether an already-planned selection may

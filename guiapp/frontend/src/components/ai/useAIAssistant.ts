@@ -2319,6 +2319,9 @@ function canonicalResponseSource(source: unknown): string {
         case 'canceled':
             return 'cancel';
         case 'agentloop':
+        case 'sharedagentloop':
+            // Desktop chat reports shared_agent_loop. Same fragment guard as
+            // agent_loop, so a short later receipt cannot hide the streamed answer.
             return 'agent_loop';
         case 'agentviewsubmit':
             return 'agent_view_submit';
@@ -2478,6 +2481,23 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     return preserveEmbeddedToolCalls(selectFinalRoundContent(message, response), message.content || "");
 }
 
+// A restored deliverable is a prefix of the bubble. The next round appends
+// the lookup acknowledgement after it. That tail must not become the answer,
+// including when it is long enough to trip the 2× fragment guard.
+function storedFactReceiptTail(stream: string, finalText: string): boolean {
+    const final = finalText.trim();
+    if (!final || stream.length <= final.length) return false;
+    const trimmed = stream.trimStart();
+    if (!trimmed.startsWith(final)) return false;
+    const tail = trimmed.slice(final.length).trim();
+    if (!tail) return false;
+    // Only the opening of the appended round is the acknowledgement. A later
+    // mention inside a real continuation stays with that continuation.
+    const head = Array.from(tail).slice(0, 80).join('');
+    if (head.includes('查询优先级')) return true;
+    return head.includes('先查记忆') && head.includes('knowledge_search');
+}
+
 /** The model's final message. Independent of the live tool transcript in content. */
 export function terminalAssistantResult(message: ChatMessage, response: any): string | undefined {
     if (!message.toolCalls?.length) return undefined;
@@ -2545,10 +2565,13 @@ function selectFinalRoundContent(message: ChatMessage, response: any): string {
     // Host status bullets are not a model reasoning trail. Counting them as
     // one skipped Layer 3 and dropped accumulated streamed prose.
     const hasReasoningTrail = Boolean(reasoningText);
+    const agentLoopSource = !responseSource || responseSource === 'agent_loop';
     let chosen = '';
-    if (streamedContent && finalText && finalTextLen > 0
+    if (agentLoopSource && storedFactReceiptTail(streamedContent, finalText)) {
+        chosen = finalText;
+    } else if (streamedContent && finalText && finalTextLen > 0
         && streamedContent.length >= finalTextLen * 2
-        && (!responseSource || responseSource === 'agent_loop')) {
+        && agentLoopSource) {
         // Apply role prefix stripping - streamedContent bypasses backend
         // post-processing (stripRolePrefixHallucination) because it comes
         // from the streaming token path, not from resp.Text.

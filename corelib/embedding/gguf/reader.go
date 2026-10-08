@@ -1,6 +1,7 @@
 package gguf
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -68,8 +69,27 @@ func (gf *File) ReadTensorF32(name string) ([]float32, error) {
 	return out, nil
 }
 
+// countReader counts bytes pulled from the underlying reader.
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
 func (gf *File) parseHeader() error {
-	r := io.NewSectionReader(gf.f, 0, 1<<62)
+	// Tokenizer vocab is a few hundred thousand short strings. A SectionReader
+	// turns each binary.Read into its own ReadAt, which dominated model load.
+	// Buffer the header and recover the logical offset from bytes still sitting
+	// unread in the buffer, so the tensor data alignment does not move.
+	sr := io.NewSectionReader(gf.f, 0, 1<<62)
+	cr := &countReader{r: sr}
+	br := bufio.NewReaderSize(cr, 1<<20)
+	r := io.Reader(br)
 	var magic, version uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
 		return fmt.Errorf("gguf: read magic: %w", err)
@@ -113,11 +133,10 @@ func (gf *File) parseHeader() error {
 		gf.Tensors[ti.Name] = ti
 	}
 
-	// Data section starts at next 32-byte aligned offset
-	pos, _ := gf.f.Seek(0, io.SeekCurrent)
-	_ = pos // we used SectionReader, get position from r
-	curOff2, _ := r.Seek(0, io.SeekCurrent)
-	gf.dataOffset = align32(curOff2)
+	// Data section starts at the next 32-byte aligned offset. br has read
+	// ahead, so the file position is cr.n and the parser position is that
+	// minus the unread buffer.
+	gf.dataOffset = align32(cr.n - int64(br.Buffered()))
 	return nil
 }
 

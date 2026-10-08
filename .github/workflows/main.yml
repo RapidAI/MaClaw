@@ -2490,7 +2490,7 @@ jobs:
     if: github.ref_type == 'tag'
     needs: [verify-agent-architecture, build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-clawmate-maker]
     runs-on: ubuntu-latest
-    # The R2/COS credentials and firmware release keys may be environment
+    # The R2 credentials and firmware release keys may be environment
     # secrets. Keep asset generation, mirror upload and public read-back under
     # the same protected release boundary as the desktop flasher build.
     environment: firmware-release
@@ -2668,16 +2668,15 @@ jobs:
 
       - name: Generate release manifest
         env:
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
           R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
           MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
-          COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
           REQUIRE_FIRMWARE_MANIFEST: ${{ env.ESP32_FIRMWARE_ENABLED }}
         run: |
-          python3 .github/scripts/sync_cos_release.py --manifest-only --manifest-name "${MANIFEST_NAME}"
+          python3 .github/scripts/sync_release.py --manifest-name "${MANIFEST_NAME}"
           echo "${MANIFEST_NAME} preview:"
           cat "release-assets/${MANIFEST_NAME}"
 
@@ -2691,7 +2690,7 @@ jobs:
 
       - name: Verify GitHub update manifest is published
         # MaClaw GUI reads this exact stable endpoint before falling back to
-        # R2/COS. Validate the published Release asset, rather than merely the
+        # R2. Validate the published Release asset, rather than merely the
         # workspace file passed to the upload action.
         if: env.RELEASE_CHANNEL == 'stable'
         env:
@@ -2738,7 +2737,7 @@ jobs:
 
       - name: Verify GitHub rollback installer attachments are published
         # Rollback downloads prefer the deterministic per-tag GitHub attachment
-        # before falling back to R2/COS. Confirm the attachment exists and has
+        # before falling back to R2. Confirm the attachment exists and has
         # the exact local size after GitHub finishes publishing the release.
         if: env.RELEASE_CHANNEL == 'stable'
         env:
@@ -2860,33 +2859,10 @@ jobs:
           done
           wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
 
-      # Tencent COS mirror upload PAUSED (2026-10-08): the GHA -> COS egress
-      # link stalls for hours and repeatedly fails the whole release job while
-      # the GitHub Release page is already published. Re-enable by restoring
-      # this step and the COS halves of the two mirror verification steps.
-      - name: Upload release assets to Tencent COS (paused)
-        if: false
-        env:
-          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
-          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
-          COS_BUCKET: ${{ secrets.COS_BUCKET }}
-          COS_REGION: ${{ secrets.COS_REGION }}
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
-          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ASSETS_DIR: release-assets
-          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
-          COS_UPLOAD_PART_SIZE_MB: 8
-          COS_UPLOAD_THREADS: 8
-          COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
-        run: |
-          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
-            echo "Tencent COS credentials and public URL are required for an official firmware release." >&2
-            exit 1
-          fi
-          python3 -m pip install -q cos-python-sdk-v5
-          python3 .github/scripts/sync_cos_release.py
+      # Tencent COS mirror upload RETIRED (2026-10-08): the GHA -> COS egress
+      # link stalled for hours and repeatedly failed the whole release job, and
+      # the bucket no longer serves anonymous reads. All clients now discover
+      # downloads via GitHub Releases and the Cloudflare R2 mirror only.
 
       - name: Publish stable rollback history to Cloudflare R2
         if: env.RELEASE_CHANNEL == 'stable'
@@ -2898,38 +2874,33 @@ jobs:
           RELEASE_ASSETS_DIR: release-assets
           RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
         run: |
-          # Seed the rollback catalogue from the COS mirror when reachable;
-          # with COS paused (upload step off) a missing remote history is not
-          # fatal - fall back to this release as the single stable entry.
-          if ! curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
-            echo "COS stable-history.json unavailable (mirror upload paused); seeding from current release"
+          # Rollback history is seeded from the current release when no remote
+          # catalogue exists yet (first stable release or prior job failure).
+          if ! curl --fail --silent --show-error --retry 2 --output stable-history.json "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/stable-history.json"; then
+            echo "R2 stable-history.json unavailable; seeding from current release"
             python3 .github/scripts/seed_stable_history.py
           fi
           wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
-      - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
+      - name: Verify desktop update publication on Cloudflare R2
         env:
           R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
           MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
           RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
-          # COS mirror upload is paused; gate the R2 half only.
-          VERIFY_COS_MIRROR: '0'
         run: python3 .github/scripts/verify_update_mirror.py
 
-      - name: Verify firmware publication on Cloudflare R2 and Tencent COS
+      - name: Verify firmware publication on Cloudflare R2
         if: env.ESP32_FIRMWARE_ENABLED == 'true'
         env:
           R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
-          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
           RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
         run: python3 .github/scripts/verify_firmware_mirrors.py
 
-      # Do not publish the GitHub Release until both public mirrors contain
+      # Do not publish the GitHub Release until the public mirror contains
       # the same manifest and all four signed firmware archives. This keeps
-      # the desktop client's GitHub/R2/COS discovery contract truthful.
+      # the desktop client's GitHub/R2 discovery contract truthful.

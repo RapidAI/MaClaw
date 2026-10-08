@@ -70,6 +70,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	} else {
 		systemPrompt = h.buildSystemPromptBaseWithExperienceContext(false, lifecycle.EventContext{}, loopCtx, promptMessage)
 	}
+	if loopContextTurnAnswerOnly(loopCtx) {
+		systemPrompt += "\n\n" + sessionTurnAnswerOnlyMessage()
+	}
 	basePromptElapsed := time.Since(promptBuildStart)
 
 	resumeStart := time.Now()

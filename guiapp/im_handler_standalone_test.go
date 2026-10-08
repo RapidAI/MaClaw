@@ -1183,6 +1183,35 @@ func TestClassifyPendingUserReplyAnswerTimeoutDoesNotBlockEntryPath(t *testing.T
 	}
 }
 
+func TestClassifyPendingUserReplyAnswerSkipsHubRoundTrip(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"new"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai", HubManaged: true}
+		},
+	})
+	defer h.memory.Stop()
+
+	startedAt := time.Now()
+	answer, classified := h.classifyPendingUserReplyAnswer("desktop-user", "Which model should I deploy?", "use your recommendation")
+	if answer || classified {
+		t.Fatalf("hub pending-reply answer = (%v, %v), want unclassified", answer, classified)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 200*time.Millisecond {
+		t.Fatalf("hub pending-reply classify blocked entry for %s", elapsed)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("hub pending-reply classify made %d LLM calls, want 0", got)
+	}
+}
+
 func TestClassifyPendingUserReplyPromptUsesFastLLMWithBoundedDeadline(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

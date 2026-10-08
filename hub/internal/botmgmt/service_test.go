@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
@@ -186,6 +187,220 @@ func (d *scriptedDesktop) Stop(context.Context, string, string) error {
 		return nil
 	}
 	return d.stop()
+}
+
+func TestFilterGrantedIDsFollowsBotScope(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	ids := []string{"alice", " bob ", "carol", "sam", " ", "alice"}
+	if got := svc.FilterGrantedIDs(ctx, "tenant-a", ids); len(got) != 0 {
+		t.Fatalf("off by default: %#v", got)
+	}
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "bob"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.FilterGrantedIDs(ctx, "tenant-a", ids); len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("user grant: %#v", got)
+	}
+	svc.Directory = chainDir{
+		email:   map[string]string{"alice": "alice@example.com", "carol": "carol@example.com", "sam": "sam@example.com"},
+		group:   map[string]string{"alice@example.com": "eng", "carol@example.com": "eng-child", "sam@example.com": "sales"},
+		parents: map[string]string{"eng-child": "eng"},
+	}
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeDepartment, TargetID: "eng"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(svc.FilterGrantedIDs(ctx, "tenant-a", ids), ","); got != "alice,bob,carol" {
+		t.Fatalf("department chain: %s", got)
+	}
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeGlobal}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(svc.FilterGrantedIDs(ctx, "tenant-a", []string{"zoe", "alice"}), ","); got != "zoe,alice" {
+		t.Fatalf("global: %s", got)
+	}
+	if got := (*Service)(nil).FilterGrantedIDs(ctx, "tenant-a", ids); got != nil {
+		t.Fatalf("nil service: %#v", got)
+	}
+}
+
+func TestFilterGrantedAgreesWithEnabled(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	svc.Directory = chainDir{
+		email:   map[string]string{"alice": "alice@example.com", "carol": "carol@example.com", "sam": "sam@example.com"},
+		group:   map[string]string{"alice@example.com": "eng", "carol@example.com": "eng-child", "sam@example.com": "sales"},
+		parents: map[string]string{"eng-child": "eng"},
+	}
+	for _, grant := range []Grant{
+		{Scope: ScopeUser, TargetID: "bob"},
+		{Scope: ScopeDepartment, TargetID: "eng"},
+	} {
+		if _, err := svc.CreateGrant(ctx, "tenant-a", grant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := []string{"alice", "bob", "carol", "sam"}
+	listed := map[string]bool{}
+	for _, id := range svc.FilterGrantedIDs(ctx, "tenant-a", ids) {
+		listed[id] = true
+	}
+	for _, id := range ids {
+		on, err := svc.Enabled(ctx, "tenant-a", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if on != listed[id] {
+			t.Fatalf("%s enabled=%v listed=%v", id, on, listed[id])
+		}
+	}
+}
+
+func TestFilterGrantedDepartmentCycleStillCoversBothSides(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	svc.Directory = chainDir{
+		email:   map[string]string{"ann": "ann@example.com", "ben": "ben@example.com"},
+		group:   map[string]string{"ann@example.com": "alpha", "ben@example.com": "beta"},
+		parents: map[string]string{"alpha": "beta", "beta": "alpha"},
+	}
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeDepartment, TargetID: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	// ann is visited first. Her walk stops when beta points back at alpha.
+	// ben still has to see alpha, or the grant would depend on list order.
+	got := svc.FilterGranted(ctx, "tenant-a", []GrantSubject{
+		{ID: "ann", Email: "ann@example.com"},
+		{ID: "ben", Email: "ben@example.com"},
+	})
+	if strings.Join(got, ",") != "ann,ben" {
+		t.Fatalf("cycle grant=%v", got)
+	}
+}
+
+func TestFilterGrantedReusesDepartmentChain(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	dir := &countingDir{chainDir: chainDir{
+		email:   map[string]string{"carol": "carol@example.com", "dave": "dave@example.com"},
+		group:   map[string]string{"carol@example.com": "eng-child", "dave@example.com": "eng-child"},
+		parents: map[string]string{"eng-child": "eng"},
+	}}
+	svc.Directory = dir
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeDepartment, TargetID: "eng"}); err != nil {
+		t.Fatal(err)
+	}
+	got := svc.FilterGranted(ctx, "tenant-a", []GrantSubject{
+		{ID: "carol", Email: "carol@example.com"},
+		{ID: "dave", Email: "dave@example.com"},
+	})
+	if strings.Join(got, ",") != "carol,dave" {
+		t.Fatalf("granted=%v", got)
+	}
+	if dir.emailCalls != 0 {
+		t.Fatalf("email lookups=%d, known addresses should skip them", dir.emailCalls)
+	}
+	if dir.groupCalls != 2 {
+		t.Fatalf("group lookups=%d, want one per user", dir.groupCalls)
+	}
+	if dir.parentCalls != 2 {
+		t.Fatalf("parent lookups=%d, want the shared chain once", dir.parentCalls)
+	}
+}
+
+type countingDir struct {
+	chainDir
+	emailCalls  int
+	groupCalls  int
+	parentCalls int
+}
+
+func (d *countingDir) Email(ctx context.Context, userID string) (string, error) {
+	d.emailCalls++
+	return d.chainDir.Email(ctx, userID)
+}
+
+func (d *countingDir) GroupID(ctx context.Context, email string) (string, error) {
+	d.groupCalls++
+	return d.chainDir.GroupID(ctx, email)
+}
+
+func (d *countingDir) ParentID(ctx context.Context, groupID string) (string, error) {
+	d.parentCalls++
+	return d.chainDir.ParentID(ctx, groupID)
+}
+
+// TestDepartmentGrantUsesSettingsTenant checks that a department grant is
+// resolved in the tenant that owns the grant. The directory answers only
+// for that tenant, the same way the security store filters group rows.
+func TestDepartmentGrantUsesSettingsTenant(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	dir := &tenantDir{
+		want:   "tenant-a",
+		groups: map[string]string{"carol@example.com": "eng", "sam@example.com": "sales"},
+	}
+	svc.Directory = dir
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "bob"}); err != nil {
+		t.Fatal(err)
+	}
+	on, err := svc.Enabled(ctx, "tenant-a", "bob")
+	if err != nil || !on {
+		t.Fatalf("user grant enabled=%v err=%v", on, err)
+	}
+	if dir.calls != 0 {
+		t.Fatalf("user grant directory calls=%d, want none", dir.calls)
+	}
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeDepartment, TargetID: "eng"}); err != nil {
+		t.Fatal(err)
+	}
+	got := svc.FilterGranted(ctx, "tenant-a", []GrantSubject{
+		{ID: "carol", Email: "carol@example.com"},
+		{ID: "sam", Email: "sam@example.com"},
+	})
+	if strings.Join(got, ",") != "carol" {
+		t.Fatalf("granted=%v, want carol", got)
+	}
+	on, err = svc.Enabled(ctx, "tenant-a", "carol")
+	if err != nil || !on {
+		t.Fatalf("carol enabled=%v err=%v", on, err)
+	}
+	on, err = svc.Enabled(ctx, "tenant-a", "sam")
+	if err != nil || on {
+		t.Fatalf("sam enabled=%v err=%v", on, err)
+	}
+}
+
+// tenantDir answers with a department only when the context carries want.
+// Any other tenant, including the unset default, looks like a user with no group.
+type tenantDir struct {
+	want   string
+	groups map[string]string
+	calls  int
+}
+
+func (d *tenantDir) Email(ctx context.Context, userID string) (string, error) {
+	d.calls++
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return userID + "@example.com", nil
+}
+
+func (d *tenantDir) GroupID(ctx context.Context, email string) (string, error) {
+	d.calls++
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return d.groups[email], nil
+}
+
+func (d *tenantDir) ParentID(ctx context.Context, groupID string) (string, error) {
+	d.calls++
+	if security.TenantIDFromContext(ctx) != d.want || groupID == "" {
+		return "", nil
+	}
+	return "", nil
 }
 
 func TestBotFeatureIsOffUntilGranted(t *testing.T) {

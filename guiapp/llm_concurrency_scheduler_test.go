@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ func TestLLMConcurrencySchedulerClassifiesBackgroundCallers(t *testing.T) {
 		{Caller: "gossip-auto"},
 		{Caller: "vision-probe"},
 		{Caller: "provider-test"},
+		{Caller: "unified-intent-classifier-late"},
 	} {
 		if got := classifyLLMRequestPriority(trace); got != llmPriorityBackground {
 			t.Fatalf("classifyLLMRequestPriority(%+v) = %s, want background", trace, got)
@@ -36,6 +38,230 @@ func TestLLMConcurrencySchedulerClassifiesBackgroundCallers(t *testing.T) {
 	}
 	if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: "confirmation-intent-fast", OwnerID: "desktop-user"}); got != llmPriorityForeground {
 		t.Fatalf("fast confirmation intent priority = %s, want foreground", got)
+	}
+	if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: "unified-intent-classifier"}); got != llmPriorityForeground {
+		t.Fatalf("synchronous intent tree priority = %s, want foreground", got)
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleWaitsOutTurn(t *testing.T) {
+	var busy atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		waitLateTreeForForegroundIdle(busy.Load, nil, 300*time.Millisecond, time.Second, 5*time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	busy.Store(true)
+	select {
+	case <-done:
+		t.Fatal("late tree started while the foreground turn was active")
+	case <-time.After(40 * time.Millisecond):
+	}
+	busy.Store(false)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("late tree did not start after the foreground turn ended")
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleStartsWhenNoTurnAppears(t *testing.T) {
+	start := time.Now()
+	waitLateTreeForForegroundIdle(func() bool { return false }, nil, 40*time.Millisecond, time.Second, 5*time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed < 20*time.Millisecond || elapsed > 250*time.Millisecond {
+		t.Fatalf("no-turn wait took %s", elapsed)
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleHoldsPastAppearDeadline(t *testing.T) {
+	var busy atomic.Bool
+	busy.Store(true)
+	done := make(chan struct{})
+	go func() {
+		waitLateTreeForForegroundIdle(busy.Load, nil, 30*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(80 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("released at the appear deadline while the turn was still active")
+	default:
+	}
+	busy.Store(false)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("did not release after the turn ended")
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleSurvivesGapAfterOtherTurn(t *testing.T) {
+	// 0: some other turn is already on the lane. 1: quiet gap. 2: this turn.
+	var phase atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		waitLateTreeForForegroundIdle(func() bool {
+			switch phase.Load() {
+			case 0, 2:
+				return true
+			default:
+				return false
+			}
+		}, nil, 300*time.Millisecond, 2*time.Second, 5*time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	phase.Store(1)
+	time.Sleep(40 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("late tree started in the gap before this turn claimed the lane")
+	default:
+	}
+	phase.Store(2)
+	time.Sleep(40 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("late tree started while this turn still held the lane")
+	default:
+	}
+	phase.Store(3)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("late tree did not start after this turn released the lane")
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleCapsWhileTurnStaysBusy(t *testing.T) {
+	start := time.Now()
+	waitLateTreeForForegroundIdle(func() bool { return true }, nil, time.Second, 50*time.Millisecond, 5*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Fatalf("capped wait took %s", elapsed)
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleIgnoresClassifierHTTP(t *testing.T) {
+	// Production order: the late tree is scheduled inside the first
+	// ClassifyContext, the lane is idle, then a task-context ClassifyContext
+	// holds a foreground slot longer than the appear window, and only after
+	// that HTTP ends does the agent loop claim foreground work.
+	var loop atomic.Bool
+	var http atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		waitLateTreeForForegroundIdle(loop.Load, http.Load, 80*time.Millisecond, 2*time.Second, 5*time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(25 * time.Millisecond)
+	http.Store(true)
+	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("appear window expired during classifier HTTP")
+	default:
+	}
+	http.Store(false)
+	time.Sleep(25 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("late tree started in the gap after classifier HTTP and before the agent loop")
+	default:
+	}
+	loop.Store(true)
+	time.Sleep(40 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("late tree started while the agent loop held the lane")
+	default:
+	}
+	// Raise HTTP before dropping the loop so one poll cannot see both idle.
+	http.Store(true)
+	loop.Store(false)
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("late tree started while a foreground HTTP was still in flight")
+	default:
+	}
+	http.Store(false)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("late tree did not start after the loop and classifier HTTP were both idle")
+	}
+}
+
+func TestWaitLateTreeForForegroundIdleAppearSlidesPastClassifierHTTP(t *testing.T) {
+	var http atomic.Bool
+	http.Store(true)
+	done := make(chan struct{})
+	go func() {
+		waitLateTreeForForegroundIdle(func() bool { return false }, http.Load, 50*time.Millisecond, time.Second, 5*time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("appear window expired during classifier HTTP")
+	default:
+	}
+	cleared := time.Now()
+	http.Store(false)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("did not start after classifier HTTP with no agent loop")
+	}
+	if waited := time.Since(cleared); waited < 30*time.Millisecond {
+		t.Fatalf("started %s after classifier HTTP; want a fresh appear window", waited)
+	}
+}
+
+func TestForegroundLaneBusyCoversLoopGapAndQueuedForeground(t *testing.T) {
+	s := newLLMConcurrencyScheduler()
+	var work atomic.Int64
+	s.foregroundWork = func() int64 { return work.Load() }
+	if s.foregroundLaneBusy() {
+		t.Fatal("idle lane reported busy")
+	}
+	work.Store(1)
+	if !s.foregroundLaneBusy() || !s.foregroundLoopBusy() || s.foregroundHTTPBusy() {
+		t.Fatal("agent loop between model rounds must keep the lane busy without an HTTP lease")
+	}
+	work.Store(0)
+	if s.foregroundLaneBusy() || s.foregroundLoopBusy() || s.foregroundHTTPBusy() {
+		t.Fatal("lane stayed busy after the agent loop finished")
+	}
+
+	lease, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"})
+	if err != nil {
+		t.Fatalf("acquire foreground: %v", err)
+	}
+	if !s.foregroundLaneBusy() || s.foregroundLoopBusy() || !s.foregroundHTTPBusy() {
+		t.Fatal("in-flight foreground request must keep the lane busy without an agent loop")
+	}
+	lease.Release()
+	if s.foregroundLaneBusy() || s.foregroundLoopBusy() || s.foregroundHTTPBusy() {
+		t.Fatal("lane stayed busy after the foreground lease was released")
+	}
+
+	// A foreground waiter can be visible before dispatch grants it. The late
+	// tree must treat that waiter as the user turn, or it acquires a slot and
+	// the grant cancels it.
+	s.mu.Lock()
+	s.queue = append(s.queue, &llmSchedulerWaiter{priority: llmPriorityForeground})
+	s.mu.Unlock()
+	if !s.foregroundLaneBusy() || s.foregroundLoopBusy() || !s.foregroundHTTPBusy() {
+		t.Fatal("queued foreground request must keep the lane busy without an agent loop")
+	}
+	s.mu.Lock()
+	s.queue = nil
+	s.mu.Unlock()
+	if s.foregroundLaneBusy() || s.foregroundLoopBusy() || s.foregroundHTTPBusy() {
+		t.Fatal("lane stayed busy after the queued foreground request was dropped")
 	}
 }
 

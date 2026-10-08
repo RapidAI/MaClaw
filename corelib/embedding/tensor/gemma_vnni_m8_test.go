@@ -61,10 +61,11 @@ func testGemmaVNNIRowM8(t *testing.T, K, N, nBlocks int, ns, ne int, seed int64)
 	gemmaQuantizeQ8URowScalar(q, s, a, 8, K)
 
 	got := make([]float32, 8*N)
+	b.ensureColBias()
 	if K == 768 {
-		gemmaVNNIRowM8N24PackedAVX512(&got[0], &q[0], &s[0], &b.Packed[0], &b.Scales[0], N, ns, ne)
+		gemmaVNNIRowM8N24PackedAVX512(&got[0], &q[0], &s[0], &b.Packed[0], &b.Scales[0], N, ns, ne, &b.ColBias[0])
 	} else {
-		gemmaVNNIRowM8N36PackedAVX512(&got[0], &q[0], &s[0], &b.Packed[0], &b.Scales[0], N, ns, ne)
+		gemmaVNNIRowM8N36PackedAVX512(&got[0], &q[0], &s[0], &b.Packed[0], &b.Scales[0], N, ns, ne, &b.ColBias[0])
 	}
 
 	want := gemmaVNNIRowM8ScalarRef(q, s, b, 8, N, nBlocks)

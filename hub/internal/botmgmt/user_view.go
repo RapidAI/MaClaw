@@ -105,3 +105,48 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	novnc := s.desktopViewURL(tenantID, userID)
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 }
+
+// ReleaseUserDesktopView drops the Bot page's watch hold. The desktop stops
+// only when nothing is opening it, no login pin is held, no other instance
+// is using it, and no admin hold is active.
+func (s *Service) ReleaseUserDesktopView(ctx context.Context, tenantID, userID, botID string) error {
+	if s == nil {
+		return nil
+	}
+	enabled, err := s.Enabled(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != userID {
+		return ErrNotFound
+	}
+	instanceID := rec.Bots[index].InstanceID
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	_, hadView := s.desktopUserView[key]
+	if hadView {
+		delete(s.desktopUserView, key)
+		s.persistDesktopState(tenantID)
+	}
+	opening := 0
+	if s.desktopOpening != nil {
+		opening = s.desktopOpening[key]
+	}
+	awaiting := s.desktopAwaiting[key]
+	_, held := s.desktopHeld[key]
+	admin := s.adminDesktopViewActiveLocked(key)
+	s.mu.Unlock()
+	if opening != 0 || awaiting || held || admin || s.otherInstanceHasDesktop(tenantID, userID, instanceID) {
+		return nil
+	}
+	return s.stopDesktop(ctx, tenantID, userID)
+}

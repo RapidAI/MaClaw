@@ -327,6 +327,10 @@ func pageFlagSet(flags BrowserPageFlags, name string) (set bool, known bool) {
 		return flags.MFA, true
 	case "canvas":
 		return flags.Canvas, true
+	case "payment_confirm":
+		return flags.PaymentConfirm, true
+	case "consent_dialog":
+		return flags.ConsentDialog, true
 	default:
 		return false, false
 	}

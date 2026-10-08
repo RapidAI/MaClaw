@@ -41,11 +41,11 @@
       target: '\u90e8\u95e8\u6216\u7528\u6237',
       targetPick: '\u8bf7\u9009\u62e9',
       targetEmpty: '\u7ec4\u7ec7\u673a\u6784\u52a0\u8f7d\u540e\u53ef\u9009',
-      userEmpty: '\u8fd8\u6ca1\u6709\u5df2\u6388\u6743\u7684\u7528\u6237\uff0c\u5148\u5728\u4e0a\u65b9\u6dfb\u52a0\u5206\u914d',
+      userEmpty: '\u8fd8\u6ca1\u6709\u53ef\u68c0\u67e5\u7684\u7528\u6237\u3002\u5148\u5728\u5f00\u901a\u8303\u56f4\u91cc\u6388\u6743\uff0c\u5e76\u5728\u4e0a\u65b9\u5206\u914d Docker \u670d\u52a1',
       server: 'Docker \u670d\u52a1',
       assign: '\u4fdd\u5b58\u5206\u914d',
       desktop: '\u68c0\u67e5\u684c\u9762',
-      desktopHint: '\u6309\u8fd9\u4e2a\u7528\u6237\u7684\u5206\u914d\u62c9\u8d77\u6216\u505c\u6b62\u684c\u9762\u3002',
+      desktopHint: '\u6309\u8fd9\u4e2a\u7528\u6237\u7684\u5206\u914d\u62c9\u8d77\u6216\u505c\u6b62\u684c\u9762\u3002\u53ea\u5217\u51fa\u5f00\u901a\u8303\u56f4\u91cc\u5df2\u6388\u6743\u3001\u4e14\u5df2\u5206\u914d Docker \u670d\u52a1\u7684\u7528\u6237\u3002',
       userId: '\u7528\u6237',
       start: '\u521b\u5efa\u684c\u9762',
       stop: '\u505c\u6b62\u684c\u9762',
@@ -101,11 +101,11 @@
       target: 'Department or user',
       targetPick: 'Choose',
       targetEmpty: 'Available after the organization loads',
-      userEmpty: 'No authorized users yet; assign a user or department to a Docker service first',
+      userEmpty: 'No one to check yet. Enable a user or department under Who can use bots, and assign a Docker service above',
       server: 'Docker service',
       assign: 'Save assignment',
       desktop: 'Check a desktop',
-      desktopHint: 'Starts or stops a desktop using the service assigned to this user.',
+      desktopHint: 'Starts or stops a desktop using the service assigned to this user. Only users enabled under Who can use bots who also have a Docker service are listed.',
       userId: 'User',
       start: 'Create desktop',
       stop: 'Stop desktop',
@@ -288,10 +288,9 @@
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
   }
 
-  // The check-desktop list carries the users the backend reports as covered
-  // by an assignment (directly, through their department chain, or globally),
-  // so it never offers a user whose desktop request would fail with
-  // "no docker service is assigned".
+  // The check-desktop list is the intersection the backend already computed:
+  // a user 开通范围 covers, and a Docker assignment (user, department chain,
+  // or everyone) that a desktop call can resolve. Anyone else is omitted.
   function fillUserSelect() {
     var select = byID('desktopUser');
     if (!select) return;

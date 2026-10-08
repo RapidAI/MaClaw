@@ -62,7 +62,7 @@ func TestRemoteDesktopDoesNotUseLocalDocker(t *testing.T) {
 	if !strings.Contains(gotUser, `"user_id":"alice"`) || !strings.Contains(gotMemory, "docker.example") {
 		t.Fatalf("user=%s memory=%s", gotUser, gotMemory)
 	}
-	out, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_list", nil)
+	out, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_list", nil, nil)
 	if err != nil || !strings.Contains(out, "ok") {
 		t.Fatalf("app out=%q err=%v", out, err)
 	}

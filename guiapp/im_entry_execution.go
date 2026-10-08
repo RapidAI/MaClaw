@@ -335,8 +335,14 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				}
 			}
 		}
+		if rewritten := semanticExplicitKnowledgeWrite(semanticIntent, msg.Text); rewritten != nil {
+			semanticIntent = rewritten
+			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
+		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
+		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
 		loopCtx.Runtime.ClassificationMessage = classifyMsg
 		bindLoopSemanticIntent(loopCtx, semanticIntent)
 	}

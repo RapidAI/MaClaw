@@ -28,10 +28,14 @@ const repeatSiblingSeparator = "#"
 // record built from it.
 const RepeatSiblingBudgetLimit = 32
 
-// MaxRepeatFamilyInvocations is how many times one repeatable tool may still
-// run in the same turn after the published wave is spent. Extra siblings are
-// added one at a time, only when a call arrives, so a catalog larger than
-// the published wave finishes without another user message.
+// MaxRepeatFamilyInvocations is the absolute ceiling on nodes one family may
+// hold. For a budgeted family the published wave is the budget. After it is
+// spent the host may open one continuation sibling, and that sibling does not
+// raise the budget again. A note that says "call this tool again" must not
+// mint the next node forever (production 2026-10-08: bash #02 through #23,
+// each success echoing a petition for knowledge_save_text). An iterative
+// local file write is not that promise: the next edit is listed because the
+// write succeeded, and it may continue until this ceiling.
 const MaxRepeatFamilyInvocations = 256
 
 // RepeatSiblingNeedID names the index-th invocation of a repeatable need.
@@ -115,13 +119,26 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 	// after one append and the model was told write_file had reached this
 	// turn's usage limit). That node is still the iterative capability, so
 	// the next call appends a sibling instead of ending the edit.
-	if count < 1 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 || (count < 2 && !IterativeLocalFileWrite(prototype)) {
+	// A continuation already in a budgeted family is that one extra call.
+	// Opening another would make the spent-budget note and this append feed
+	// each other: the note says call again, the append raises the budget,
+	// the new result says call again. A file write does not take that flag.
+	// Each successful edit lists the next write, up to the turn ceiling.
+	fileWrite := IterativeLocalFileWrite(prototype)
+	// A companion family is the workspace floor, not the task. Its published
+	// nodes are the whole allowance. Promising another call and then appending
+	// it is how a knowledge-save turn keeps executing bash after the save tool
+	// is already listed.
+	if count < 1 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 || (count < 2 && !fileWrite) || repeatFamilyIsCompanionOnly(plan, family) || (!fileWrite && repeatFamilyHasContinuation(plan, family)) {
 		return plan, "", false
 	}
 	needID := RepeatSiblingNeedID(family, nextIndex)
 	sibling := prototype
 	sibling.ID = "selection:" + needID
 	sibling.NeedID = needID
+	if !fileWrite {
+		sibling.Continuation = true
+	}
 	// The extra invocation is ready on its own. Keeping the prototype's
 	// producer edges while clearing Requires makes the published plan fail
 	// validation, so the 33rd download would never be stored.
@@ -516,19 +533,33 @@ const RepeatWaveListedMarker = "another call will be listed"
 // just-spent grant so a still-live sibling suppresses the notice.
 func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized map[string]bool, liveSelectionIDs []string) string {
 	family := RepeatFamilyID(selectionID)
+	// The published wave may promise one more call. Once that continuation
+	// exists, the promise is the node itself. Another note would instruct the
+	// model to call the same tool again, and the host would treat the obedient
+	// call as a reason to raise the budget.
+	if repeatFamilyHasContinuation(plan, family) || repeatFamilyIsCompanionOnly(plan, family) {
+		return ""
+	}
 	budget := 0
 	capability := CapabilityID("")
+	fileWrite := false
 	for _, selection := range plan.Selections {
 		if RepeatFamilyID(selection.ID) != family {
 			continue
 		}
 		budget++
 		capability = selection.FitProof.MatchedCapability
+		if IterativeLocalFileWrite(selection) {
+			fileWrite = true
+		}
 		if !materialized[selection.ID] {
 			return ""
 		}
 	}
-	if budget < 2 {
+	// A file edit lists its next write from the successful call. The budget
+	// note would tell the model to call write_file again, and the obedient
+	// call would be stored as another node, up to the ceiling.
+	if budget < 2 || fileWrite {
 		return ""
 	}
 	for _, liveID := range liveSelectionIDs {
@@ -537,4 +568,68 @@ func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized
 		}
 	}
 	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. If this task is unfinished, call this tool again on the next request in this same turn; %s. Do not ask the user to send another message. Do not narrate tool limits.", capability, budget, RepeatWaveListedMarker)
+}
+
+// repeatFamilyHasContinuation reports that this family already holds the one
+// sibling opened after its published wave. family is whichever identity the
+// caller grouped by: a need id or a selection id.
+func repeatFamilyHasContinuation(plan ToolPlan, family string) bool {
+	family = strings.TrimSpace(family)
+	if family == "" {
+		return false
+	}
+	for _, selection := range plan.Selections {
+		if !selection.Continuation {
+			continue
+		}
+		if selectionInRepeatFamily(selection, family) {
+			return true
+		}
+	}
+	return false
+}
+
+// RepeatSelectionIsCompanion reports a selection the planner added as a
+// workspace floor or an archetype companion. The task's own need does not
+// carry these marks, so a raised family that still contains that need stays
+// repeatable.
+func RepeatSelectionIsCompanion(selection PlannedSelection) bool {
+	if strings.Contains(selection.NeedID, "zz-baseline:") || strings.Contains(selection.ID, "zz-baseline:") {
+		return true
+	}
+	for _, evidence := range selection.EvidenceIDs {
+		switch evidence {
+		case "intent:baseline_workspace", "intent:archetype_bundle":
+			return true
+		}
+	}
+	return false
+}
+
+// repeatFamilyIsCompanionOnly reports that every node in the family is a
+// companion. One task-owned node keeps the family's own repeat rule.
+func repeatFamilyIsCompanionOnly(plan ToolPlan, family string) bool {
+	seen := false
+	for _, selection := range plan.Selections {
+		if !selectionInRepeatFamily(selection, family) {
+			continue
+		}
+		seen = true
+		if !RepeatSelectionIsCompanion(selection) {
+			return false
+		}
+	}
+	return seen
+}
+
+func selectionInRepeatFamily(selection PlannedSelection, family string) bool {
+	for _, candidate := range []string{RepeatFamilyID(selection.NeedID), RepeatFamilyID(selection.ID)} {
+		if candidate == "" {
+			continue
+		}
+		if candidate == family || "selection:"+candidate == family || strings.TrimPrefix(candidate, "selection:") == family {
+			return true
+		}
+	}
+	return false
 }

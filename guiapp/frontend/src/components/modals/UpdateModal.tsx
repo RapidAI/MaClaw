@@ -42,7 +42,6 @@ export function downloadSourceName(value: unknown): string {
     }
     const normalizedHost = host.toLowerCase();
     if (normalizedHost === 'github.com' || normalizedHost.endsWith('.github.com')) return 'GitHub Releases';
-    if (normalizedHost.includes('myqcloud.com') || normalizedHost.includes('cos.')) return 'Tencent Cloud COS';
     if (normalizedHost.includes('cloudflare') || normalizedHost.includes('r2.')) return 'Cloudflare R2';
     return host;
 }

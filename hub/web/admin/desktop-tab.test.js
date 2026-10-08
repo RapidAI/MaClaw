@@ -245,7 +245,7 @@ async function testUserListEmptyShowsTheAssignmentHint() {
   harness.mount();
   await harness.load();
   const html = harness.elements.desktopUser.innerHTML;
-  assertIncludes(html, '\u8fd8\u6ca1\u6709\u5df2\u6388\u6743\u7684\u7528\u6237', 'the empty list tells the admin to add an assignment');
+  assertIncludes(html, '\u5148\u5728\u5f00\u901a\u8303\u56f4\u91cc\u6388\u6743', 'the empty list tells the admin to enable someone and assign a service');
   assert(html.indexOf('u_alice') === -1, 'no unauthorized user is listed');
 }
 

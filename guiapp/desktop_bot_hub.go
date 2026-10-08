@@ -15,8 +15,30 @@ import (
 
 const desktopBotDisabledMessage = "服务器没有开通bot功能"
 
+// desktopBotRelayResult is one Hub reply for a bot message.
+// A desktop address is not a handoff unless the person has the keyboard
+// or Hub named an attention reason.
+type desktopBotRelayResult struct {
+	Text               string
+	NovncURL           string
+	UserControl        bool
+	AttentionReason    string
+	AskUserInputType   string
+	AskUserSecretName  string
+	AskUserQuestion    string
+	AskUserOptionsJSON string
+}
+
 // desktopBotRelayOverride is set by tests. Production posts to Hub.
-var desktopBotRelayOverride func(ctx context.Context, botID, text string) (reply, novncURL string, userControl bool, err error)
+var desktopBotRelayOverride func(ctx context.Context, botID, text, phase string) (desktopBotRelayResult, error)
+
+// desktopBotWatchOverride is set by tests that drive a timeout without Hub.
+var desktopBotWatchOverride func(ctx context.Context, botID string) (novncURL string, userControl bool, attentionReason string, err error)
+
+// desktopBotViewSink and desktopBotResultSink record what the relay would
+// show. Production leaves them nil; emitEvent still runs.
+var desktopBotViewSink func(payload string)
+var desktopBotResultSink func(*IMAgentResponse)
 
 // DesktopBotAccess is the gate for the left-hand bot entry.
 type DesktopBotAccess struct {
@@ -35,8 +57,9 @@ type DesktopBotInfo struct {
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
 // user's desktop and whether a bot handed that keyboard to the person.
 type DesktopBotWatch struct {
-	NovncURL    string `json:"novnc_url"`
-	UserControl bool   `json:"user_control"`
+	NovncURL        string `json:"novnc_url"`
+	UserControl     bool   `json:"user_control"`
+	AttentionReason string `json:"attention_reason,omitempty"`
 }
 
 // WatchDesktopBot polls the live desktop for the Bot page. The GUI calls it
@@ -49,17 +72,30 @@ func (a *App) WatchDesktopBot(botID string) (*DesktopBotWatch, error) {
 		return nil, fmt.Errorf("bot id is required")
 	}
 	var out struct {
-		NovncURL    string `json:"novnc_url"`
-		UserControl bool   `json:"user_control"`
+		NovncURL        string `json:"novnc_url"`
+		UserControl     bool   `json:"user_control"`
+		AttentionReason string `json:"attention_reason"`
 	}
 	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", nil, &out, 15*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	return &DesktopBotWatch{
-		NovncURL:    a.absoluteHubPath(out.NovncURL),
-		UserControl: out.UserControl,
+		NovncURL:        a.absoluteHubPath(out.NovncURL),
+		UserControl:     out.UserControl,
+		AttentionReason: strings.TrimSpace(out.AttentionReason),
 	}, nil
+}
+
+// ReleaseDesktopBotWatch drops the watch hold for the Bot page that just hid.
+func (a *App) ReleaseDesktopBotWatch(botID string) error {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return fmt.Errorf("bot id is required")
+	}
+	return a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", map[string]bool{
+		"release": true,
+	}, nil, 15*time.Second)
 }
 
 type hubBot struct {
@@ -122,54 +158,80 @@ func (a *App) DeleteDesktopBot(botID string) error {
 	return a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), nil, nil, 30*time.Second)
 }
 
-func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text string) {
+func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if desktopBotRelayOverride == nil {
 		go a.publishDesktopBotView(ctx, requestID, sessionKey, botID)
 	}
-	reply, novnc, userControl, err := a.relayDesktopBot(ctx, botID, text)
+	result, err := a.relayDesktopBot(ctx, botID, text, phase)
 	resp := &IMAgentResponse{RequestID: requestID, SessionKey: sessionKey, EventScopeID: sessionKey}
 	if err != nil {
 		resp.Error = err.Error()
-		if novnc, userControl, ok := a.desktopAfterTimeout(botID, err); ok {
+		if novnc, ok := a.desktopTimeoutHandoff(botID, err); ok {
 			resp.DesktopHandoffURL = novnc
-			resp.DesktopUserControl = userControl
-			if userControl {
-				resp.Text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
-				resp.Error = ""
-			}
+			resp.DesktopUserControl = true
+			resp.Text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
+			resp.Error = ""
 		} else if novnc, ok := a.desktopFailureKeepsLogin(botID, err); ok {
 			resp.DesktopHandoffURL = novnc
 			resp.DesktopUserControl = true
+		} else {
+			a.emitDesktopBotCleared(requestID, sessionKey)
 		}
 	} else {
-		resp.Text = reply
-		resp.DesktopHandoffURL = novnc
-		resp.DesktopUserControl = userControl
+		resp.Text = result.Text
+		resp.DesktopUserControl = result.UserControl
+		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
+		resp.AskUserInputType = strings.TrimSpace(result.AskUserInputType)
+		resp.AskUserSecretName = strings.TrimSpace(result.AskUserSecretName)
+		resp.AskUserQuestion = strings.TrimSpace(result.AskUserQuestion)
+		resp.AskUserOptionsJSON = strings.TrimSpace(result.AskUserOptionsJSON)
+		if result.UserControl || resp.DesktopAttentionReason != "" {
+			resp.DesktopHandoffURL = result.NovncURL
+		}
+	}
+	if desktopBotResultSink != nil {
+		desktopBotResultSink(resp)
 	}
 	a.emitAIAssistantResponse(requestID, resp)
 }
 
-func (a *App) relayDesktopBot(ctx context.Context, botID, text string) (string, string, bool, error) {
+func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase string) (desktopBotRelayResult, error) {
 	if desktopBotRelayOverride != nil {
-		return desktopBotRelayOverride(ctx, botID, text)
+		return desktopBotRelayOverride(ctx, botID, text, phase)
 	}
 	var out struct {
-		Text     string `json:"text"`
-		NovncURL string `json:"novnc_url"`
-		Handoff  bool   `json:"handoff"`
+		Text               string `json:"text"`
+		NovncURL           string `json:"novnc_url"`
+		Handoff            bool   `json:"handoff"`
+		AttentionReason    string `json:"attention_reason"`
+		AskUserInputType   string `json:"ask_user_input_type"`
+		AskUserSecretName  string `json:"ask_user_secret_name"`
+		AskUserQuestion    string `json:"ask_user_question"`
+		AskUserOptionsJSON string `json:"ask_user_options_json"`
 	}
-	err := a.desktopBotCall(ctx, http.MethodPost, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID))+"/messages", map[string]string{
-		"content": text,
-	}, &out, 8*time.Minute)
+	body := map[string]string{"content": text}
+	if phase = strings.TrimSpace(phase); phase != "" {
+		body["phase"] = phase
+	}
+	err := a.desktopBotCall(ctx, http.MethodPost, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID))+"/messages", body, &out, 8*time.Minute)
 	if err != nil {
-		return "", "", false, err
+		return desktopBotRelayResult{}, err
 	}
 	if strings.TrimSpace(out.Text) == "" {
-		return "", "", false, fmt.Errorf("MaClawSrv 没有返回结果")
+		return desktopBotRelayResult{}, fmt.Errorf("MaClawSrv 没有返回结果")
 	}
-	return out.Text, a.absoluteHubPath(out.NovncURL), out.Handoff, nil
+	return desktopBotRelayResult{
+		Text:               out.Text,
+		NovncURL:           a.absoluteHubPath(out.NovncURL),
+		UserControl:        out.Handoff,
+		AttentionReason:    strings.TrimSpace(out.AttentionReason),
+		AskUserInputType:   strings.TrimSpace(out.AskUserInputType),
+		AskUserSecretName:  strings.TrimSpace(out.AskUserSecretName),
+		AskUserQuestion:    strings.TrimSpace(out.AskUserQuestion),
+		AskUserOptionsJSON: strings.TrimSpace(out.AskUserOptionsJSON),
+	}, nil
 }
 
 func (a *App) absoluteHubPath(raw string) string {
@@ -182,41 +244,52 @@ func (a *App) absoluteHubPath(raw string) string {
 	return raw
 }
 
-// publishDesktopBotView polls Hub until this user's desktop is up and tells
-// the chat to show it while the instance is still working.
+// desktopViewSnap is one poll of the live desktop.
+type desktopViewSnap struct {
+	url     string
+	control bool
+	reason  string
+}
+
+func normalizeDesktopView(snap desktopViewSnap) desktopViewSnap {
+	snap.url = strings.TrimSpace(snap.url)
+	snap.reason = strings.TrimSpace(snap.reason)
+	return snap
+}
+
+func desktopViewHasAttention(snap desktopViewSnap) bool {
+	return snap.control || snap.reason != ""
+}
+
+// desktopViewShouldEmit reports whether this poll is a screen announcement.
+// A desktop address by itself is not. A rising handoff is. A falling
+// keyboard handoff on a URL we already announced is, so the viewer can close.
+func desktopViewShouldEmit(prev, next desktopViewSnap) bool {
+	prev = normalizeDesktopView(prev)
+	next = normalizeDesktopView(next)
+	if prev == next {
+		return false
+	}
+	return desktopViewHasAttention(prev) || desktopViewHasAttention(next)
+}
+
+// publishDesktopBotView polls Hub while a bot message is in flight.
+// It announces the desktop only when the poll is a real handoff.
 func (a *App) publishDesktopBotView(ctx context.Context, requestID, sessionKey, botID string) {
-	var lastURL string
-	var lastControl bool
+	var last desktopViewSnap
 	poll := func() {
 		if ctx.Err() != nil {
 			return
 		}
-		var out struct {
-			NovncURL    string `json:"novnc_url"`
-			UserControl bool   `json:"user_control"`
-		}
 		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := a.desktopBotCall(callCtx, http.MethodGet, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID))+"/desktop", nil, &out, 5*time.Second)
+		novnc, control, reason, err := a.watchDesktopBot(callCtx, botID)
 		cancel()
 		if err != nil || ctx.Err() != nil {
 			return
 		}
-		novnc := a.absoluteHubPath(out.NovncURL)
-		if novnc == "" || (novnc == lastURL && out.UserControl == lastControl) {
-			return
-		}
-		lastURL = novnc
-		lastControl = out.UserControl
-		raw, err := json.Marshal(map[string]any{
-			"request_id":   requestID,
-			"session_key":  sessionKey,
-			"novnc_url":    novnc,
-			"user_control": out.UserControl,
+		last = a.announceDesktopView(requestID, sessionKey, last, desktopViewSnap{
+			url: novnc, control: control, reason: reason,
 		})
-		if err != nil {
-			return
-		}
-		a.emitEvent("desktop-bot-view", string(raw))
 	}
 	poll()
 	ticker := time.NewTicker(400 * time.Millisecond)
@@ -231,6 +304,45 @@ func (a *App) publishDesktopBotView(ctx context.Context, requestID, sessionKey, 
 	}
 }
 
+// announceDesktopView stores the latest poll even when it stays quiet.
+func (a *App) announceDesktopView(requestID, sessionKey string, prev, next desktopViewSnap) desktopViewSnap {
+	next = normalizeDesktopView(next)
+	if !desktopViewShouldEmit(prev, next) {
+		return next
+	}
+	raw, err := json.Marshal(map[string]any{
+		"request_id":       requestID,
+		"session_key":      sessionKey,
+		"novnc_url":        next.url,
+		"user_control":     next.control,
+		"attention_reason": next.reason,
+	})
+	if err != nil {
+		return next
+	}
+	a.emitDesktopBotView(string(raw))
+	return next
+}
+
+func (a *App) emitDesktopBotView(payload string) {
+	if desktopBotViewSink != nil {
+		desktopBotViewSink(payload)
+	}
+	a.emitEvent("desktop-bot-view", payload)
+}
+
+func (a *App) emitDesktopBotCleared(requestID, sessionKey string) {
+	raw, err := json.Marshal(map[string]any{
+		"request_id":  requestID,
+		"session_key": sessionKey,
+		"cleared":     true,
+	})
+	if err != nil {
+		return
+	}
+	a.emitDesktopBotView(string(raw))
+}
+
 func (a *App) desktopTimeoutHandoff(botID string, err error) (string, bool) {
 	novnc, userControl, ok := a.desktopAfterTimeout(botID, err)
 	if !ok || !desktopTimeoutHandsOff(err, novnc, userControl) {
@@ -243,10 +355,14 @@ func (a *App) desktopTimeoutHandoff(botID string, err error) (string, bool) {
 // arrives. The keyboard stays with the person only if this bot already handed
 // the desktop over for login.
 func (a *App) desktopAfterTimeout(botID string, err error) (string, bool, bool) {
-	if desktopBotRelayOverride != nil || !desktopCommandTimedOut(err) {
+	if !desktopCommandTimedOut(err) {
 		return "", false, false
 	}
-	novnc, userControl, watchErr := a.watchDesktopBot(context.Background(), botID)
+	// A test that replaced the relay and did not stub the watch must not dial Hub.
+	if desktopBotWatchOverride == nil && desktopBotRelayOverride != nil {
+		return "", false, false
+	}
+	novnc, userControl, _, watchErr := a.watchDesktopBot(context.Background(), botID)
 	if watchErr != nil || strings.TrimSpace(novnc) == "" {
 		return "", false, false
 	}
@@ -254,10 +370,13 @@ func (a *App) desktopAfterTimeout(botID string, err error) (string, bool, bool) 
 }
 
 func (a *App) desktopFailureKeepsLogin(botID string, err error) (string, bool) {
-	if desktopBotRelayOverride != nil || !keepLoginDesktopAfterFailure(err, "pending", true) {
+	if !keepLoginDesktopAfterFailure(err, "pending", true) {
 		return "", false
 	}
-	novnc, userControl, watchErr := a.watchDesktopBot(context.Background(), botID)
+	if desktopBotWatchOverride == nil && desktopBotRelayOverride != nil {
+		return "", false
+	}
+	novnc, userControl, _, watchErr := a.watchDesktopBot(context.Background(), botID)
 	if watchErr != nil || !keepLoginDesktopAfterFailure(err, novnc, userControl) {
 		return "", false
 	}
@@ -284,16 +403,20 @@ func desktopCommandTimedOut(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "没有在时限内")
 }
 
-func (a *App) watchDesktopBot(ctx context.Context, botID string) (string, bool, error) {
+func (a *App) watchDesktopBot(ctx context.Context, botID string) (string, bool, string, error) {
+	if desktopBotWatchOverride != nil {
+		return desktopBotWatchOverride(ctx, botID)
+	}
 	var out struct {
-		NovncURL    string `json:"novnc_url"`
-		UserControl bool   `json:"user_control"`
+		NovncURL        string `json:"novnc_url"`
+		UserControl     bool   `json:"user_control"`
+		AttentionReason string `json:"attention_reason"`
 	}
 	err := a.desktopBotCall(ctx, http.MethodGet, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID))+"/desktop", nil, &out, 5*time.Second)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
-	return a.absoluteHubPath(out.NovncURL), out.UserControl, nil
+	return a.absoluteHubPath(out.NovncURL), out.UserControl, strings.TrimSpace(out.AttentionReason), nil
 }
 
 func (a *App) desktopBotCall(ctx context.Context, method, path string, body any, dest any, timeout time.Duration) error {

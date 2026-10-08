@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -580,6 +581,13 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(userID, question, answ
 		}
 		log.Printf("[PendingUserReply] answer test classifier failed: %v", err)
 	}
+	// Official hub time-to-first-token is longer than this 1.5s budget, so the
+	// call always expires and the caller binds the fresh pending question.
+	// Skip that wait. A local or auxiliary model still classifies in the budget.
+	if pendingReplyAnswerClassifyHitsHub(h) {
+		log.Printf("[PendingUserReply] skip blocking answer classify on hub-managed model user=%s", userID)
+		return false, false
+	}
 	// This runs synchronously at the beginning of a turn, so use the dedicated
 	// fast model route and a small deadline. We want semantic interpretation of
 	// an answer, not a brittle keyword list, but an unavailable/slow auxiliary
@@ -610,6 +618,21 @@ Reply with exactly one word: answer or new. If uncertain, reply new.`,
 	// Fail open to the new-task path: retaining old task context is more
 	// surprising than asking the main Agent to interpret an ambiguous reply.
 	return false, false
+}
+
+// pendingReplyAnswerClassifyHitsHub reports that the lightweight answer
+// classifier would call a hub-managed model. That round trip cannot finish
+// inside the entry budget, and the caller already binds on an unclassified
+// fresh question.
+func pendingReplyAnswerClassifyHitsHub(h *IMMessageHandler) bool {
+	if h == nil {
+		return false
+	}
+	cfg := h.getMaclawLLMConfig()
+	if light := h.getLightweightLLMConfig(); strings.TrimSpace(light.URL) != "" && strings.TrimSpace(light.Model) != "" {
+		cfg = light
+	}
+	return cfg.HubManaged || corelib.IsHubManagedLLMEndpoint(cfg.URL, cfg.Model)
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a

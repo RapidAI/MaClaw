@@ -441,7 +441,7 @@ func TestAppRunUsesOneXdotoolCall(t *testing.T) {
 			map[string]any{"action": "type", "text": "hi"},
 			map[string]any{"action": "key", "key": "Return"},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,6 +451,35 @@ func TestAppRunUsesOneXdotoolCall(t *testing.T) {
 	joined := strings.Join(argv, " ")
 	if !strings.Contains(joined, "windowactivate") || !strings.Contains(joined, "type") || !strings.Contains(joined, "key") {
 		t.Fatalf("argv=%v", argv)
+	}
+	// A focus read has to see the window switch before the type is sent.
+	var guarded [][]string
+	reads := 0
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		guarded = append(guarded, append([]string(nil), args...))
+		return "ok", nil
+	}
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "focus", "name": "Notes"},
+			map[string]any{"action": "type", "text": "hi"},
+			map[string]any{"action": "key", "key": "Return"},
+		},
+	}, func() error {
+		reads++
+		return nil
+	})
+	if err != nil || text != "ok" || reads != 1 || len(guarded) != 3 {
+		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, guarded)
+	}
+	if !strings.Contains(strings.Join(guarded[0], " "), "windowactivate") || strings.Contains(strings.Join(guarded[0], " "), "type") {
+		t.Fatalf("focus was not delivered alone: %v", guarded[0])
+	}
+	if strings.Join(guarded[1], " ") != "type --delay 20 hi" {
+		t.Fatalf("type call=%v", guarded[1])
+	}
+	if strings.Join(guarded[2], " ") != "key Return" {
+		t.Fatalf("return call=%v", guarded[2])
 	}
 }
 

@@ -102,6 +102,12 @@ type simpleLLMRequestOptions struct {
 	// and abort the read that was supposed to continue. Detach-and-return is
 	// for callers that will retry and adopt the same read.
 	AwaitResponse bool
+	// AdoptInFlightPastCancel keeps waiting for an already-detached body after
+	// this caller's context ends. The late tree sets it: that goroutine is off
+	// the user-visible path, and returning at its own deadline drops a response
+	// the sync call already paid for. A synchronous caller must leave it false.
+	// Blocking that caller past its budget delays the turn.
+	AdoptInFlightPastCancel bool
 }
 
 const (
@@ -114,14 +120,18 @@ const (
 	detachedReadKeepaliveCap = 90 * time.Second
 )
 
-// detachedReadCompletedRetention keeps a FINISHED detached-read entry in the
-// registry briefly after its result published. A late duplicate (e.g. the
-// late-verdict goroutine delayed by scheduler load until after the response
-// arrived) must still adopt the completed result instead of paying a second
-// upstream request — without retention the entry is gone the moment the
-// response lands, and the adoption window closes exactly when loaded
-// machines are most likely to miss it.
-var detachedReadCompletedRetention = 5 * time.Second
+// detachedReadCompletedRetention keeps a FINISHED successful detached read
+// until the late-tree retry can adopt it. That retry waits until the
+// user-visible agent loop releases the foreground lane, which is capped at
+// lateTreeForegroundWaitCap. A few seconds of retention expired while the
+// loop was still running, and the retry then sent a second tree request for
+// a body that had already arrived.
+var detachedReadCompletedRetention = lateTreeForegroundWaitCap + time.Minute
+
+// detachedReadErrorRetention keeps a failed detached read only briefly. A
+// long-lived error entry makes a later fresh send fall through and chain
+// another request for the same payload.
+const detachedReadErrorRetention = 5 * time.Second
 
 func detachedReadGrace(budget time.Duration) time.Duration {
 	grace := 2 * budget
@@ -312,24 +322,62 @@ func doSimpleLLMRequestDetachable(ctx context.Context, cfg corelib.MaclawLLMConf
 	if existing, ok := detachedSimpleLLMReads.Load(key); ok {
 		entry := existing.(*detachedSimpleLLMRead)
 		log.Printf("[LLM] detached read adoption wait key=%s", key)
-		select {
-		case <-entry.done:
-			if entry.err == nil && entry.resp != nil {
-				log.Printf("[LLM] detached read adopted key=%s", key)
-				// Adoption is a success observe of the same endpoint and
-				// payload: deliver the positive health signal for this
-				// category too, not just the detacher's own resolution.
-				if opts.OnDetachedComplete != nil {
-					opts.OnDetachedComplete(nil)
-				}
-				return entry.resp, nil
-			}
-			log.Printf("[LLM] detached read resolved with error; falling through to a fresh request key=%s err=%v", key, entry.err)
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		if resp, err, proceed := takeDetachedSimpleLLMRead(ctx, entry, opts, key); !proceed {
+			return resp, err
 		}
 	}
 	return doSimpleLLMRequestForeground(ctx, cfg, messages, client, timeout, opts, key)
+}
+
+// takeDetachedSimpleLLMRead waits for a detached entry. proceed is false when
+// this caller must return resp/err as-is: the body was adopted, the caller
+// context ended, or the context is already dead so a fresh send cannot start.
+// proceed is true only when the entry failed and ctx is still live, which is
+// the fresh-request rescue.
+func takeDetachedSimpleLLMRead(ctx context.Context, entry *detachedSimpleLLMRead, opts simpleLLMRequestOptions, key string) (resp *llmSimpleResponse, err error, proceed bool) {
+	resp, err, ready := waitDetachedSimpleLLMRead(ctx, entry, opts.AdoptInFlightPastCancel)
+	if !ready {
+		return nil, err, false
+	}
+	if err == nil && resp != nil {
+		log.Printf("[LLM] detached read adopted key=%s", key)
+		// Adoption is a success observe of the same endpoint and payload:
+		// deliver the positive health signal for this category too, not just
+		// the detacher's own resolution.
+		if opts.OnDetachedComplete != nil {
+			opts.OnDetachedComplete(nil)
+		}
+		return resp, nil, false
+	}
+	if ctx.Err() != nil {
+		// The caller budget already ended while this entry was in flight.
+		// Falling through would run doSimpleLLMRequestForeground on a dead
+		// context: acquire fails, or a race detaches a second unread body.
+		log.Printf("[LLM] detached read resolved with error after caller budget; not re-sending key=%s err=%v", key, err)
+		if err != nil {
+			return nil, err, false
+		}
+		return nil, ctx.Err(), false
+	}
+	log.Printf("[LLM] detached read resolved with error; falling through to a fresh request key=%s err=%v", key, err)
+	return nil, nil, true
+}
+
+// waitDetachedSimpleLLMRead blocks until entry resolves. ready is false when
+// ctx ended first and this caller must not outlive it. A late-tree adopter
+// passes pastCancel so the wait continues until the detached grace window
+// closes entry.done. That wait does not hold a scheduler lease.
+func waitDetachedSimpleLLMRead(ctx context.Context, entry *detachedSimpleLLMRead, pastCancel bool) (resp *llmSimpleResponse, err error, ready bool) {
+	select {
+	case <-entry.done:
+		return entry.resp, entry.err, true
+	case <-ctx.Done():
+		if !pastCancel {
+			return nil, ctx.Err(), false
+		}
+		<-entry.done
+		return entry.resp, entry.err, true
+	}
 }
 
 // doSimpleLLMRequestForeground is the shared send tail: acquire the scheduler
@@ -448,29 +496,14 @@ func beginDetachedSimpleLLMRead(ctx context.Context, cfg corelib.MaclawLLMConfig
 		// existing promise with OUR OWN ctx as the bound — its grace window
 		// started at the other request's detach time and may far outlive our
 		// budget, so a synchronous caller must never block past its own
-		// cancellation.
+		// cancellation. AdoptInFlightPastCancel is the late-tree exception.
 		existing := actual.(*detachedSimpleLLMRead)
 		scheduledCancel()
 		detachCancel()
 		lease.Release()
 		log.Printf("[LLM] detached read: concurrent duplicate detached first; waiting on existing entry key=%s", key)
-		select {
-		case <-existing.done:
-			if existing.err == nil && existing.resp != nil {
-				// Adopted: deliver the same positive health signal as the
-				// top-level adoption path.
-				if opts.OnDetachedComplete != nil {
-					opts.OnDetachedComplete(nil)
-				}
-				return existing.resp, nil
-			}
-			// The existing read failed (e.g. its grace expired). Fall through
-			// to a fresh request — the same rescue semantics as the top-level
-			// adoption path — instead of propagating the failure, which would
-			// let the late-verdict goroutine exit without re-sending.
-			log.Printf("[LLM] existing detached read failed; falling through to a fresh request key=%s err=%v", key, existing.err)
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		if resp, err, proceed := takeDetachedSimpleLLMRead(ctx, existing, opts, key); !proceed {
+			return resp, err
 		}
 		return doSimpleLLMRequestForeground(ctx, cfg, messages, client, budget, opts, key)
 	}
@@ -498,13 +531,16 @@ func beginDetachedSimpleLLMRead(ctx context.Context, cfg corelib.MaclawLLMConfig
 		// Publish the result before removing the registry entry so a lookup
 		// that raced the removal still adopts instead of double-sending.
 		// CompareAndDelete guards against deleting a NEWER live entry that a
-		// concurrent same-key request registered after us. The deletion is
-		// delayed by detachedReadCompletedRetention so a late duplicate that
-		// missed the in-flight window still adopts the finished result.
+		// concurrent same-key request registered after us. A success stays
+		// for the late-tree gate. A failure is dropped on the short timer.
 		close(entry.done)
 		scheduledCancel()
 		detachCancel()
-		time.AfterFunc(detachedReadCompletedRetention, func() {
+		retain := detachedReadCompletedRetention
+		if r.err != nil || r.resp == nil {
+			retain = detachedReadErrorRetention
+		}
+		time.AfterFunc(retain, func() {
 			detachedSimpleLLMReads.CompareAndDelete(key, entry)
 		})
 	}()

@@ -70,3 +70,99 @@ func TestLateTreeVerdictSingleFlightIgnoresEpoch(t *testing.T) {
 		t.Fatal("stale epoch verdict must not satisfy the bumped-epoch scope")
 	}
 }
+
+// TestLateTreeForegroundGateRunsBeforeHTTP verifies the desktop gate delays
+// the background HTTP until it returns, so the 30s tree budget is not spent
+// waiting for the user-visible turn.
+func TestLateTreeForegroundGateRunsBeforeHTTP(t *testing.T) {
+	releaseGate := make(chan struct{})
+	entered := make(chan struct{})
+	SetLateTreeForegroundGate(func() {
+		close(entered)
+		<-releaseGate
+	})
+	t.Cleanup(func() {
+		select {
+		case <-releaseGate:
+		default:
+			close(releaseGate)
+		}
+		SetLateTreeForegroundGate(nil)
+	})
+
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
+			calls.Add(1)
+			return `{"top":[{"skill":"knowledge_write","score":0.95}]}`, nil
+		},
+		LLMTimeout: time.Second,
+	})
+	msg := MessageContext{UserID: "u-gate", Text: "保存到知识库：门闩"}
+	key := classificationCacheKey(uic.cacheEpoch.Load(), msg)
+	uic.scheduleLateTreeVerdict(key, msg.Text)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("late tree did not enter the foreground gate")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("tree calls before gate release = %d, want 0", got)
+	}
+	close(releaseGate)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("tree calls after gate release = %d, want 1", got)
+	}
+}
+
+// TestLateTreeAdoptsVerdictAfterOwnDeadline: the background retry must cache a
+// verdict that lands after its HTTP deadline. The sync call's detached read
+// can still be in flight then. A synchronous tree must keep returning at the
+// deadline so the user turn is not held open.
+func TestLateTreeAdoptsVerdictAfterOwnDeadline(t *testing.T) {
+	const treeJSON = `{"top":[{"skill":"knowledge_write","score":0.95}]}`
+	uic := New(Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
+			time.Sleep(160 * time.Millisecond)
+			return treeJSON, nil
+		},
+		LLMTimeout: 40 * time.Millisecond,
+	})
+	msg := MessageContext{UserID: "u-late-body", Text: "保存到知识库：迟到的结论"}
+	key := classificationCacheKey(uic.cacheEpoch.Load(), msg)
+	uic.scheduleLateTreeVerdict(key, msg.Text)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := uic.cache.Load(key); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := uic.cache.Load(key); !ok {
+		t.Fatal("late verdict that landed after the tree deadline was dropped")
+	}
+}
+
+func TestSyncTreeTimeoutDoesNotWaitForLateBody(t *testing.T) {
+	started := time.Now()
+	_, err := classifyByTreeWithTimeout(context.Background(), func(context.Context, context.Context, string, string) (string, error) {
+		time.Sleep(300 * time.Millisecond)
+		return `{"top":[{"skill":"knowledge_write","score":0.95}]}`, nil
+	}, nil, "", "hi", 40*time.Millisecond)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("synchronous tree returned a verdict past its deadline")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("synchronous tree blocked for %s; the deadline must return", elapsed)
+	}
+}

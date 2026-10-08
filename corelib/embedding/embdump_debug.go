@@ -122,6 +122,7 @@ func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
 		tw.put(p+"k", k)
 		tw.put(p+"v", v)
 
+		ropeCos, ropeSin := ropeForLayer(sc, hp, l)
 		for s := 0; s < seq; s++ {
 			for h := 0; h < nHeads; h++ {
 				off := s*dim + h*headDim
@@ -131,15 +132,15 @@ func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
 				off := s*kvDim + h*headDim
 				tensor.RMSNorm(k[off:off+headDim], k[off:off+headDim], layer.attnKNormW, hp.RMSNormEps)
 			}
-			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
-			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
+			cosTab := ropeCos[s*halfDim : (s+1)*halfDim]
+			sinTab := ropeSin[s*halfDim : (s+1)*halfDim]
 			tensor.RoPEPrecomputed(q[s*dim:(s+1)*dim], nHeads, headDim, cosTab, sinTab)
 			tensor.RoPEPrecomputed(k[s*kvDim:(s+1)*kvDim], nKVHeads, headDim, cosTab, sinTab)
 		}
 		tw.put(p+"qrope", q)
 		tw.put(p+"krope", k)
 
-		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim)
+		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, hp.windowHalf(l))
 		tw.put(p+"attnOut", attnOut)
 
 		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
@@ -161,8 +162,8 @@ func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
 		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim)
 		tw.put(p+"ffGate", ffGate)
 		tw.put(p+"ffUp", ffUp)
-		tensor.SiLUMul(ffGate, ffUp)
-		tw.put(p+"ffSilu", ffGate)
+		tensor.GELUMul(ffGate, ffUp)
+		tw.put(p+"ffGelu", ffGate)
 
 		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim)
 		tw.put(p+"ffDown", ffDown)

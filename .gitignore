@@ -363,3 +363,6 @@ build/desktopd_deploy/
 /guiapp/todo-debounce/
 
 .build_win_lock/
+
+# r17: CI 构建流水日志存档
+r17/

@@ -2025,13 +2025,26 @@ func (s *Session) evalString(js, field string) (string, error) {
 }
 
 func evalStringOn(client *CDPClient, js, field string) (string, error) {
+	return evalStringOnSession(client, "", js, field)
+}
+
+func evalStringOnSession(client *CDPClient, sessionID, js, field string) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("browser session not connected")
 	}
-	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
+	params := map[string]interface{}{
 		"expression":    js,
 		"returnByValue": true,
-	}, DefaultCmdTimeout)
+	}
+	var (
+		result json.RawMessage
+		err    error
+	)
+	if sessionID == "" {
+		result, err = client.Send("Runtime.evaluate", params, DefaultCmdTimeout)
+	} else {
+		result, err = client.SendOn(sessionID, "Runtime.evaluate", params, DefaultCmdTimeout)
+	}
 	if err != nil {
 		return "", err
 	}

@@ -186,13 +186,13 @@ func TestSafeFieldsAllowsPerImageEvidenceButNotHostPath(t *testing.T) {
 
 func TestSafeFieldsAllowsMirrorFallbackEvidenceButNotFullURL(t *testing.T) {
 	fields := SafeFields(map[string]any{
-		"source":         "cos",
-		"endpoint":       "maclaw-1252723594.cos.ap-beijing.myqcloud.com",
-		"failedSource":   "r2",
-		"failedEndpoint": "pub-c837069cbe31469590a5fea6235b436b.r2.dev",
+		"source":         "r2",
+		"endpoint":       "pub-c837069cbe31469590a5fea6235b436b.r2.dev",
+		"failedSource":   "github",
+		"failedEndpoint": "github.com",
 		"url":            "https://example.invalid/private?token=secret",
 	})
-	if len(fields) != 4 || fields["failedSource"] != "r2" || fields["failedEndpoint"] == nil || fields["url"] != nil {
+	if len(fields) != 4 || fields["failedSource"] != "github" || fields["failedEndpoint"] == nil || fields["url"] != nil {
 		t.Fatalf("fields=%#v", fields)
 	}
 }

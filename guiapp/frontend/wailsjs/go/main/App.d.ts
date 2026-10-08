@@ -2211,7 +2211,7 @@ export function SendAIAssistantMessage(arg1:main.AIAssistantSendRequest):Promise
 
 export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentResponse>;
 
-export function SendDesktopBotTask(arg1:string,arg2:string):Promise<main.IMAgentResponse>;
+export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
@@ -2673,4 +2673,12 @@ export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function WatchDesktopBot(arg1:string):Promise<{novnc_url:string,user_control:boolean}>;
+export function WatchDesktopBot(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string}>;
+
+export function ReleaseDesktopBotWatch(arg1:string):Promise<void>;
+
+export function SaveBotSecret(arg1:string,arg2:string):Promise<void>;
+
+export function RecallBotSecret(arg1:string):Promise<boolean>;
+
+export function FillBotSecret(arg1:string,arg2:string):Promise<void>;

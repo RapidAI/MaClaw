@@ -157,6 +157,21 @@ func TestAddBiasGELU_MatchesAddBiasThenGELU(t *testing.T) {
 	}
 }
 
+func TestGELUMulMatchesGELUThenMul(t *testing.T) {
+	gate := []float32{-2, -0.5, 0, 0.3, 1.5}
+	up := []float32{0.2, -1, 3, 0.5, -0.25}
+	got := append([]float32(nil), gate...)
+	GELUMul(got, up)
+	want := append([]float32(nil), gate...)
+	GELU(want)
+	for i := range want {
+		want[i] *= up[i]
+		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-6 {
+			t.Fatalf("got[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestWeightedSumStrided(t *testing.T) {
 	weights := []float32{0.25, 0.5, -0.75}
 	values := []float32{

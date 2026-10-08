@@ -346,12 +346,157 @@ func (s *llmConcurrencyScheduler) nextDispatchIndexLocked() int {
 	return -1
 }
 
+// foregroundLoopBusy reports an agent loop that has started and not yet
+// finished. Between model rounds activeFG is 0 while that loop is still the
+// user-visible turn. Dispatch ignores this counter so memory work can run in
+// the gap; a late intent tree cannot, because the next chat POST cancels
+// every active background lease.
+func (s *llmConcurrencyScheduler) foregroundLoopBusy() bool {
+	if s == nil {
+		return false
+	}
+	return s.foregroundWorkLocked() > 0
+}
+
+// foregroundHTTPBusy reports an in-flight or queued foreground LLM request.
+// Classifier retries hold this bit and do not increment foreground work.
+// The late-tree gate must not treat them as the user turn.
+func (s *llmConcurrencyScheduler) foregroundHTTPBusy() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeFG > 0 || s.hasQueuedForegroundLocked()
+}
+
+// foregroundLaneBusy is the union of the agent loop and foreground HTTP.
+// The late-tree gate does not use it: a task-context ClassifyContext is
+// foreground HTTP that starts and ends before the loop claims the lane.
+func (s *llmConcurrencyScheduler) foregroundLaneBusy() bool {
+	if s.foregroundHTTPBusy() {
+		return true
+	}
+	return s.foregroundLoopBusy()
+}
+
+const (
+	// lateTreeForegroundAppearTimeout is how long a late tree waits for the
+	// user turn to claim the foreground lane. The goroutine starts during
+	// classification, before the loop increments foreground work.
+	lateTreeForegroundAppearTimeout = 4 * time.Second
+	// lateTreeForegroundWaitCap bounds the single-flight claim so a long
+	// coding turn cannot pin one classification scope forever.
+	lateTreeForegroundWaitCap = 3 * time.Minute
+	lateTreeForegroundPoll    = 50 * time.Millisecond
+)
+
+// waitLateTreeForForegroundIdle blocks until the agent loop that follows
+// this verdict has claimed and released the foreground lane, or until
+// appearTimeout passes with no such loop. loopBusy is that loop
+// (foreground work). httpBusy is an in-flight or queued foreground LLM
+// request, including a later task-context ClassifyContext. That retry is
+// scheduled before the loop increments foreground work and can outlast the
+// appear window. Treating its release as the end of the turn starts this
+// HTTP in the gap, and the chat POST cancels it.
+//
+// An agent loop already running when the verdict is scheduled belongs to
+// other work. Its release is not this turn. Classifier HTTP does not drain
+// and does not open the hold; while it is in flight the appear window
+// slides so the deadline cannot expire underneath it. The hold ends only
+// when the loop and foreground HTTP are both idle. The total wait never
+// exceeds waitCap. Nil httpBusy means no classifier HTTP. A nil loopBusy
+// starts immediately. Both funcs are polled and must be safe to call
+// repeatedly.
+func waitLateTreeForForegroundIdle(loopBusy, httpBusy func() bool, appearTimeout, waitCap, poll time.Duration) {
+	if loopBusy == nil {
+		return
+	}
+	if httpBusy == nil {
+		httpBusy = func() bool { return false }
+	}
+	if appearTimeout <= 0 {
+		appearTimeout = lateTreeForegroundAppearTimeout
+	}
+	if waitCap <= 0 {
+		waitCap = lateTreeForegroundWaitCap
+	}
+	if poll <= 0 {
+		poll = lateTreeForegroundPoll
+	}
+	start := time.Now()
+	deadline := start.Add(waitCap)
+	// drain: some other agent loop was already in progress.
+	// appear: waiting for this turn's agent loop to claim the lane.
+	// hold: this turn's loop has the lane; wait until it and any
+	// foreground HTTP have both released it.
+	const (
+		lateTreeWaitDrain = iota
+		lateTreeWaitAppear
+		lateTreeWaitHold
+	)
+	state := lateTreeWaitAppear
+	if loopBusy() {
+		state = lateTreeWaitDrain
+	}
+	var appearBy time.Time
+	for {
+		now := time.Now()
+		if !now.Before(deadline) {
+			log.Printf("[llm-scheduler] late tree foreground wait capped after %s", now.Sub(start).Round(time.Millisecond))
+			return
+		}
+		loop := loopBusy()
+		http := httpBusy()
+		switch state {
+		case lateTreeWaitDrain:
+			if !loop {
+				state = lateTreeWaitAppear
+				appearBy = now.Add(appearTimeout)
+			}
+		case lateTreeWaitAppear:
+			if appearBy.IsZero() || http {
+				// Slide across a classifier retry. The window is measured
+				// from the last poll that still saw foreground HTTP, so a
+				// 30s task-context tree cannot look like "no turn".
+				appearBy = now.Add(appearTimeout)
+			}
+			if appearBy.After(deadline) {
+				appearBy = deadline
+			}
+			if loop {
+				state = lateTreeWaitHold
+			} else if !http && !now.Before(appearBy) {
+				log.Printf("[llm-scheduler] late tree saw no foreground turn within %s", appearTimeout)
+				return
+			}
+		case lateTreeWaitHold:
+			if !loop && !http {
+				log.Printf("[llm-scheduler] late tree foreground turn finished after %s", now.Sub(start).Round(time.Millisecond))
+				return
+			}
+		}
+		sleep := poll
+		if state == lateTreeWaitAppear && !appearBy.IsZero() {
+			if remain := appearBy.Sub(now); remain < sleep {
+				sleep = remain
+			}
+		}
+		if remain := deadline.Sub(now); remain < sleep {
+			sleep = remain
+		}
+		if sleep > 0 {
+			time.Sleep(sleep)
+		}
+	}
+}
+
 func (s *llmConcurrencyScheduler) foregroundWorkLocked() int64 {
 	if s == nil || s.foregroundWork == nil {
 		return 0
 	}
-	// Used only for diagnostic logging (logWaitStill). Not part of dispatch
-	// decisions — see nextDispatchIndexLocked for the rationale.
+	// Not part of dispatch — see nextDispatchIndexLocked. The late-tree gate
+	// reads it so a background verdict does not start between model rounds.
 	return s.foregroundWork()
 }
 
@@ -441,6 +586,11 @@ func classifyLLMRequestPriority(trace llm.RequestTrace) llmRequestPriority {
 	// other pending-reply work remains asynchronous background work.
 	if caller == "pending-reply-answer-fast" || caller == "confirmation-intent-fast" {
 		return llmPriorityForeground
+	}
+	// A late intent tree is durable cache for a resend. It must not share
+	// the foreground lane with the user-visible chat request.
+	if caller == "unified-intent-classifier-late" {
+		return llmPriorityBackground
 	}
 	if strings.Contains(caller, "background") || strings.Contains(caller, "memory") || strings.Contains(caller, "session-start") || strings.Contains(caller, "post-conversation") || strings.Contains(caller, "pending-reply") || strings.Contains(caller, "experience") || strings.Contains(caller, "probe") || strings.Contains(caller, "provider-test") || caller == "knowledge-card" || caller == "gossip-auto" {
 		return llmPriorityBackground

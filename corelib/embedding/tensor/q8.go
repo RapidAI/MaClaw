@@ -18,8 +18,13 @@ type Q8Tensor struct {
 	Data   []byte    // raw Q8_0 blocks
 	Packed []byte    // optional packed int8 qs, 32 bytes/block, row-major (no f16 hole)
 	Scales []float32 // optional preconverted f32 scales, row-major by block
-	Rows   int       // number of rows (outer dimension)
-	Cols   int       // number of columns (inner dimension, must be multiple of 32)
+	// ColBias holds 16 f32 lanes per row for the K=768/1152 row-scale VNNI M8
+	// kernels. Lane g is the float32 sum of scale·128·(b0+b1+b2+b3) over the
+	// 4-byte groups that VPDPBUSD accumulates into that lane. The kernel
+	// subtracts the lanes before the horizontal sum. Nil until ensureColBias.
+	ColBias []float32
+	Rows    int // number of rows (outer dimension)
+	Cols    int // number of columns (inner dimension, must be multiple of 32)
 }
 
 // PrepareScales extracts all f16 block scales into f32. Safe to call multiple times.
@@ -101,7 +106,40 @@ func (t *Q8Tensor) PackQSFrom(dst []byte) []byte {
 		}
 	}
 	t.Packed = dst[:need]
+	t.ensureColBias()
 	return dst[need:]
+}
+
+// ensureColBias fills the 16 VPDPBUSD lanes per row used by the K=768 and
+// K=1152 M8 kernels. Other widths are left unset. Safe to call more than once.
+func (t *Q8Tensor) ensureColBias() {
+	if t == nil || t.ColBias != nil || (t.Cols != 768 && t.Cols != 1152) || t.Rows <= 0 {
+		return
+	}
+	nBlocks := t.Cols / q8BlockSize
+	if nBlocks&1 != 0 || len(t.Packed) < t.Rows*t.Cols || len(t.Scales) < t.Rows*nBlocks {
+		return
+	}
+	bias := make([]float32, t.Rows*16)
+	for n := 0; n < t.Rows; n++ {
+		packed := t.Packed[n*t.Cols : (n+1)*t.Cols]
+		scales := t.Scales[n*nBlocks : (n+1)*nBlocks]
+		lanes := bias[n*16 : (n+1)*16]
+		for blk := 0; blk < nBlocks; blk += 2 {
+			s0 := scales[blk]
+			s1 := scales[blk+1]
+			base := blk * q8BlockSize
+			for g := 0; g < 8; g++ {
+				off := base + g*4
+				sum := int32(int8(packed[off])) + int32(int8(packed[off+1])) + int32(int8(packed[off+2])) + int32(int8(packed[off+3]))
+				lanes[g] += s0 * float32(sum<<7)
+				off += 32
+				sum = int32(int8(packed[off])) + int32(int8(packed[off+1])) + int32(int8(packed[off+2])) + int32(int8(packed[off+3]))
+				lanes[8+g] += s1 * float32(sum<<7)
+			}
+		}
+	}
+	t.ColBias = bias
 }
 
 // FaultInPacked touches packed qs pages (separate from mmap Data).
@@ -1363,7 +1401,6 @@ func matMulQ8RangeFusedAccumScaledPre(out, a []float32, b *Q8Tensor, bias []floa
 
 // enableQ8ZK2048VNNI gates the ZMM per-block K=2048 FFN-down path.
 var enableQ8ZK2048VNNI = false // precision: 3e-5/layer rounding vs YMM flips the snapshot comma
-
 
 func matMulQ8RangeFusedAccumScaledBias(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int) {
 	matMulQ8RangeFusedAccumScaledBiasPre(out, a, b, bias, M, N, K, ns, ne, nBlocks, nil)

@@ -9471,17 +9471,13 @@ const (
 	githubLatestManifestURL   = "https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json"
 	r2LatestManifestURL       = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json"
 	r2PublicBaseURL           = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
-	cosLatestManifestURL      = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
-	cosPublicBaseURL          = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
 
-	// Beta channel manifest URLs
-	r2BetaManifestURL  = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta.json"
-	cosBetaManifestURL = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/beta.json"
+	// Beta channel manifest URL
+	r2BetaManifestURL = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta.json"
 
 	// Published only by stable release jobs. The contents are the server-side
 	// authority for rollbackable formal builds, not a locally inferred history.
-	r2StableHistoryURL  = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/stable-history.json"
-	cosStableHistoryURL = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"
+	r2StableHistoryURL = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/stable-history.json"
 )
 
 type updateManifest struct {
@@ -9521,7 +9517,7 @@ func isReleaseMirrorURL(rawURL string, targetFileName string, isBeta bool) bool 
 	if parsed.EscapedPath() != expectedPath {
 		return false
 	}
-	return parsed.Host == mirrorHost(r2PublicBaseURL) || parsed.Host == mirrorHost(cosPublicBaseURL)
+	return parsed.Host == mirrorHost(r2PublicBaseURL)
 }
 
 func mirrorHost(baseURL string) string {
@@ -9576,17 +9572,9 @@ func immutableReleaseAssetURL(baseURL, build, fileName string) string {
 
 // githubReleaseAssetURL is deterministic from the server-published build and
 // platform installer name. Rollback history never supplies an arbitrary GitHub
-// URL; it only authorizes the immutable R2/COS archive metadata and checksum.
+// URL; it only authorizes the immutable R2 archive metadata and checksum.
 func githubReleaseAssetURL(build, fileName string) string {
 	return fmt.Sprintf("%s/%s/%s", githubReleaseDownloadBase, url.PathEscape(build), url.PathEscape(fileName))
-}
-
-func cosReleaseAssetURL(fileName string, isBeta bool) string {
-	prefix := "latest"
-	if isBeta {
-		prefix = "beta"
-	}
-	return fmt.Sprintf("%s/%s/%s", cosPublicBaseURL, prefix, fileName)
 }
 
 func combineDownloadURLList(urls ...string) string {
@@ -9614,7 +9602,6 @@ func manifestAssetDownloadURLs(manifest updateManifest, targetFileName, tagName 
 	}
 	if tagName != "" {
 		urls = append(urls, r2ReleaseAssetURL(targetFileName, isBeta))
-		urls = append(urls, cosReleaseAssetURL(targetFileName, isBeta))
 	}
 	combined := combineDownloadURLList(urls...)
 	if combined == "" {
@@ -9647,20 +9634,14 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 	}
 
 	githubDownloadUrl := strings.TrimSpace(release.GitHubDownloadURL)
-	cosDownloadUrl := strings.TrimSpace(release.COSDownloadURL)
 	if githubDownloadUrl == "" {
 		githubDownloadUrl = githubReleaseAssetURL(tagName, targetFileName)
-	}
-	if cosDownloadUrl == "" {
-		betaTag := isBeta || strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc")
-		cosDownloadUrl = cosReleaseAssetURL(targetFileName, betaTag)
 	}
 	downloadUrl := strings.TrimSpace(release.DownloadURL)
 	if downloadUrl == "" {
 		downloadUrl = combineDownloadURLList(
 			r2ReleaseAssetURL(targetFileName, isBeta),
 			githubDownloadUrl,
-			cosDownloadUrl,
 		)
 	}
 
@@ -9770,18 +9751,10 @@ func pickPreferredUpdateResult(beta UpdateResult, betaErr error, stable UpdateRe
 }
 
 func (a *App) fetchBetaReleaseFast() (latestReleaseInfo, string, error) {
-	var errors []string
 	if release, err := a.fetchManifestLatestRelease("r2-beta", r2BetaManifestURL, 5*time.Second); err == nil {
 		return release, "r2-beta", nil
 	} else {
-		errors = append(errors, fmt.Sprintf("r2-beta: %v", err))
-		a.log(a.tr("CheckUpdateBeta: R2 beta check failed, trying COS: %v", err))
-	}
-	if release, err := a.fetchManifestLatestRelease("cos-beta", cosBetaManifestURL, 5*time.Second); err == nil {
-		return release, "cos-beta", nil
-	} else {
-		errors = append(errors, fmt.Sprintf("cos-beta: %v", err))
-		return latestReleaseInfo{}, "", fmt.Errorf("all beta manifest checks failed: %s", strings.Join(errors, "; "))
+		return latestReleaseInfo{}, "", fmt.Errorf("beta manifest check failed: %v", err)
 	}
 }
 
@@ -9791,7 +9764,6 @@ type latestReleaseInfo struct {
 	ReleaseURL        string
 	DownloadURL       string
 	GitHubDownloadURL string
-	COSDownloadURL    string
 	SHA256            string
 }
 
@@ -9807,12 +9779,6 @@ func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
 		return release, "r2", nil
 	} else {
 		errors = append(errors, fmt.Sprintf("r2: %v", err))
-		a.log(a.tr("CheckUpdate: R2 latest check failed quickly, trying COS: %v", err))
-	}
-	if release, err := a.fetchCOSLatestRelease(5 * time.Second); err == nil {
-		return release, "cos", nil
-	} else {
-		errors = append(errors, fmt.Sprintf("cos: %v", err))
 		return latestReleaseInfo{}, "", fmt.Errorf("all latest manifest checks failed: %s", strings.Join(errors, "; "))
 	}
 }
@@ -9858,21 +9824,15 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 	if asset, ok := manifest.Assets[targetFileName]; ok {
 		sha256 = strings.TrimSpace(asset.SHA256)
 	}
-	// The client only accepts the two compiled-in public mirrors from the
+	// The client only accepts the compiled-in public mirror from the
 	// manifest; never let remote metadata introduce an arbitrary download host.
-	downloadURLs := append([]string{r2ReleaseAssetURL(targetFileName, isBeta), githubURL, cosReleaseAssetURL(targetFileName, isBeta)}, mirrorURLs...)
-	cosURL := cosReleaseAssetURL(targetFileName, isBeta)
-	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(downloadURLs...), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL, SHA256: sha256}, nil
+	downloadURLs := append([]string{r2ReleaseAssetURL(targetFileName, isBeta), githubURL}, mirrorURLs...)
+	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(downloadURLs...), GitHubDownloadURL: githubURL, SHA256: sha256}, nil
 }
 
 func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
 	a.log(a.tr("CheckUpdate: Starting R2 check against %s", r2LatestManifestURL))
 	return a.fetchManifestLatestRelease("r2", r2LatestManifestURL, timeout)
-}
-
-func (a *App) fetchCOSLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
-	a.log(a.tr("CheckUpdate: Starting COS check against %s", cosLatestManifestURL))
-	return a.fetchManifestLatestRelease("cos", cosLatestManifestURL, timeout)
 }
 
 // ListRollbackReleases returns at most five formal builds from the server-
@@ -9897,7 +9857,6 @@ func (a *App) ListRollbackReleases() ([]RollbackRelease, error) {
 		url  string
 	}{
 		{name: "r2", url: r2StableHistoryURL},
-		{name: "cos", url: cosStableHistoryURL},
 	} {
 		releases, err := fetchStableHistory(source.name, source.url, 6*time.Second)
 		if err == nil {
@@ -10001,7 +9960,7 @@ func fetchGitHubStableHistory(timeout time.Duration) ([]RollbackRelease, error) 
 		if err != nil || !validSHA256Digest(sha) {
 			continue
 		}
-		result = append(result, RollbackRelease{Build: build, PublishedAt: publishedAt, DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, target), immutableReleaseAssetURL(r2PublicBaseURL, build, target), immutableReleaseAssetURL(cosPublicBaseURL, build, target)), SHA256: sha})
+		result = append(result, RollbackRelease{Build: build, PublishedAt: publishedAt, DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, target), immutableReleaseAssetURL(r2PublicBaseURL, build, target)), SHA256: sha})
 		seen[build] = true
 	}
 	// GitHub normally returns newest-first, but the API does not promise that
@@ -10097,14 +10056,13 @@ func rollbackReleasesFromManifest(manifest stableHistoryManifest, targetFileName
 		// mirror location. History payloads provide the build/date/hash only;
 		// they cannot redirect the installer to an arbitrary host.
 		r2URL := immutableReleaseAssetURL(r2PublicBaseURL, build, targetFileName)
-		cosURL := immutableReleaseAssetURL(cosPublicBaseURL, build, targetFileName)
-		if !rollbackAssetURLsMatch(asset, r2URL, cosURL) {
+		if !rollbackAssetURLsMatch(asset, r2URL) {
 			continue
 		}
 		// Prefer GitHub's release attachment for rollback downloads so the
-		// project mirrors carry less egress, then retain R2 and COS as verified
-		// fallbacks when GitHub is unavailable.
-		downloadURL := combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), r2URL, cosURL)
+		// project mirrors carry less egress, then retain R2 as a verified
+		// fallback when GitHub is unavailable.
+		downloadURL := combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), r2URL)
 		releases = append(releases, RollbackRelease{
 			Build:       build,
 			PublishedAt: publishedAt,
@@ -10138,8 +10096,11 @@ func validSHA256Digest(value string) bool {
 	return true
 }
 
-func rollbackAssetURLsMatch(asset updateManifestAsset, r2URL, cosURL string) bool {
-	allowed := map[string]bool{r2URL: true, cosURL: true}
+func rollbackAssetURLsMatch(asset updateManifestAsset, allowedURLs ...string) bool {
+	allowed := map[string]bool{}
+	for _, allowedURL := range allowedURLs {
+		allowed[allowedURL] = true
+	}
 	for _, candidate := range append(asset.URLs, asset.URL) {
 		if allowed[strings.TrimSpace(candidate)] {
 			return true

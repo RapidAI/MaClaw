@@ -101,14 +101,16 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 	}
 }
 
-func GetDesktopServicesAdminHandler(pool *desktoppool.Pool, users store.UserRepository) http.HandlerFunc {
+func GetDesktopServicesAdminHandler(pool *desktoppool.Pool, users store.UserRepository, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pool == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
 			return
 		}
 		tenantID := desktopTenantID(r)
-		candidates := desktopUserCandidates(r.Context(), users, tenantID)
+		// 开通范围 first, then the Docker assignment. A user the Bot entry
+		// hides never reaches the department walk the assignment filter does.
+		candidates := desktopCandidatesInBotScope(r.Context(), bots, tenantID, desktopUserCandidates(r.Context(), users, tenantID))
 		view, err := pool.ViewAuthorized(r.Context(), tenantID, candidates)
 		if err != nil {
 			writeDesktopError(w, err)
@@ -116,6 +118,44 @@ func GetDesktopServicesAdminHandler(pool *desktoppool.Pool, users store.UserRepo
 		}
 		writeJSON(w, http.StatusOK, view)
 	}
+}
+
+// desktopCandidatesInBotScope keeps users 开通范围 covers. The Docker
+// assignment filter still runs afterwards, so the check-desktop list is the
+// intersection: enabled in 开通范围, and a desktop call would resolve.
+// No grants means the feature is off, so a global Docker assignment does
+// not put the whole tenant in the dropdown.
+func desktopCandidatesInBotScope(ctx context.Context, bots *botmgmt.Service, tenantID string, candidates []desktoppool.AuthorizedUser) []desktoppool.AuthorizedUser {
+	if len(candidates) == 0 {
+		return nil
+	}
+	subjects := make([]botmgmt.GrantSubject, 0, len(candidates))
+	byID := make(map[string]desktoppool.AuthorizedUser, len(candidates))
+	for _, user := range candidates {
+		id := strings.TrimSpace(user.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := byID[id]; ok {
+			continue
+		}
+		user.ID = id
+		byID[id] = user
+		subjects = append(subjects, botmgmt.GrantSubject{ID: id, Email: strings.TrimSpace(user.Email)})
+	}
+	granted := bots.FilterGranted(ctx, tenantID, subjects)
+	if len(granted) == 0 {
+		return nil
+	}
+	out := make([]desktoppool.AuthorizedUser, 0, len(granted))
+	for _, id := range granted {
+		user, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, user)
+	}
+	return out
 }
 
 // desktopUserCandidates turns the tenant's users into filter candidates for
@@ -133,14 +173,19 @@ func desktopUserCandidates(ctx context.Context, repo store.UserRepository, tenan
 	}
 	candidates := make([]desktoppool.AuthorizedUser, 0, len(items))
 	for _, user := range items {
-		if user == nil || strings.TrimSpace(user.ID) == "" || llmservice.IsSystemLLMUser(user.ID, user.Email) {
+		if user == nil {
 			continue
 		}
-		label := strings.TrimSpace(user.Email)
-		if label == "" {
-			label = strings.TrimSpace(user.ID)
+		id := strings.TrimSpace(user.ID)
+		email := strings.TrimSpace(user.Email)
+		if id == "" || llmservice.IsSystemLLMUser(id, email) {
+			continue
 		}
-		candidates = append(candidates, desktoppool.AuthorizedUser{ID: user.ID, Label: label})
+		label := email
+		if label == "" {
+			label = id
+		}
+		candidates = append(candidates, desktoppool.AuthorizedUser{ID: id, Label: label, Email: email})
 	}
 	return candidates
 }

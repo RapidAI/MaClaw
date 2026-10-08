@@ -89,6 +89,13 @@ type IMAgentResponse struct {
 	DesktopHandoffURL string `json:"desktop_handoff_url,omitempty"`
 	// DesktopUserControl is true when the bot paused and the person operates the desktop.
 	DesktopUserControl bool `json:"desktop_user_control,omitempty"`
+	// DesktopAttentionReason is why the desktop is being handed to a person.
+	// A desktop address with an empty reason is not a handoff.
+	DesktopAttentionReason string `json:"attention_reason,omitempty"`
+	AskUserInputType       string `json:"ask_user_input_type,omitempty"`
+	AskUserSecretName      string `json:"ask_user_secret_name,omitempty"`
+	AskUserQuestion        string `json:"ask_user_question,omitempty"`
+	AskUserOptionsJSON     string `json:"ask_user_options_json,omitempty"`
 	// CodingRuntimeTaskID / CodingRuntimeAttemptID are opaque ledger references
 	// for hosts such as ACP. They are projection metadata only: clients cannot
 	// use them to replay a prior model or tool invocation.

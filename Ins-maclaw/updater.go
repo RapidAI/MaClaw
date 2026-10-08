@@ -20,8 +20,6 @@ const (
 	githubLatestManifestURL = "https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json"
 	r2LatestManifestURL     = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json"
 	r2PublicBaseURL         = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
-	cosLatestManifestURL    = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
-	cosPublicBaseURL        = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
 	minInstallerBytes       = 5 * 1024 * 1024
 )
 
@@ -74,7 +72,6 @@ func fetchLatestReleaseFast(ctx context.Context, productName, targetFileName str
 	}{
 		{source: "github", url: githubLatestManifestURL, timeout: 4 * time.Second},
 		{source: "r2", url: r2LatestManifestURL, timeout: 5 * time.Second},
-		{source: "cos", url: cosLatestManifestURL, timeout: 5 * time.Second},
 	}
 	for _, check := range checks {
 		release, err := fetchManifestLatestRelease(ctx, productName, targetFileName, check.source, check.url, check.timeout)
@@ -139,7 +136,7 @@ func manifestAssetDownloadURLs(manifest updateManifest, fileName, tagName string
 		urls = append(urls, asset.URL)
 	}
 	if tagName != "" {
-		urls = append(urls, r2ReleaseAssetURL(fileName), cosReleaseAssetURL(fileName))
+		urls = append(urls, r2ReleaseAssetURL(fileName))
 	}
 	combined := combineDownloadURLList(urls...)
 	if combined == "" {
@@ -150,10 +147,6 @@ func manifestAssetDownloadURLs(manifest updateManifest, fileName, tagName string
 
 func r2ReleaseAssetURL(fileName string) string {
 	return fmt.Sprintf("%s/latest/%s", r2PublicBaseURL, fileName)
-}
-
-func cosReleaseAssetURL(fileName string) string {
-	return fmt.Sprintf("%s/latest/%s", cosPublicBaseURL, fileName)
 }
 
 func combineDownloadURLList(urls ...string) string {

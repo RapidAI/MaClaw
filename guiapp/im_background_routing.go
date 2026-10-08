@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -78,8 +79,14 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}, true
 	}
 	cancelClassification()
+	if rewritten := semanticExplicitKnowledgeWrite(semanticIntent, msg.Text); rewritten != nil {
+		semanticIntent = rewritten
+		executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+		log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
+	}
 	semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 	loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
+	markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
 	loopCtx.Runtime.ClassificationMessage = classificationMessage(msg.UserID, msg.Text, history)
 	bindLoopSemanticIntent(loopCtx, semanticIntent)
 	applyStagedImageUnderstandRuntime(loopCtx, msg.Text, msg.Attachments)

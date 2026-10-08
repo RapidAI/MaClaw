@@ -293,13 +293,13 @@ profile ID 本身不作为物理身份；它是客户端选择探测/校验策�
 
 ### 6.4 Release 镜像发现、测速与回退
 
-正式 Release workflow 会将同一份精确命名的 `.clawfw` 资产、长度、SHA-256 和 `latest.json` 同步到 GitHub Release、Cloudflare R2 与腾讯云 COS。正式公共 origin 固定为桌面端内置 allow-list 中的 R2 与 COS 域名；CI 不允许用 Secret 把它替换为另一个 CDN、代理或 bucket，以免生成桌面端无法安全发现的 release index。每个固件 entry 的 `urls` 必须按固定顺序包含 `R2/{latest|beta}/<exact asset>` 和 `COS/{latest|beta}/<exact asset>`，`url` 必须是后者。每个 `.clawfw` 的 Ed25519 签名 manifest 还必须声明精确 `channel: stable|beta`；打包器、发布 workflow 和桌面端都比较所选 channel、对象路径与已签名 channel，任一不一致即拒绝，避免把 beta 对象误标为 stable 或反向降级。桌面端以 GitHub Release API 的精确 asset 名、tag、大小和 GitHub digest 为发布权威；R2/COS 的 manifest 仅用于发现镜像和选择下载节点，绝不替代包内 Ed25519 签名、catalog binding、分区与芯片兼容性校验。
+正式 Release workflow 会将同一份精确命名的 `.clawfw` 资产、长度、SHA-256 和 `latest.json` 同步到 GitHub Release 与 Cloudflare R2。正式公共 origin 固定为桌面端内置 allow-list 中的 R2 域名；CI 不允许用 Secret 把它替换为另一个 CDN、代理或 bucket，以免生成桌面端无法安全发现的 release index。每个固件 entry 的 `urls` 必须精确为 `R2/{latest|beta}/<exact asset>`，`url` 必须与之一致。每个 `.clawfw` 的 Ed25519 签名 manifest 还必须声明精确 `channel: stable|beta`；打包器、发布 workflow 和桌面端都比较所选 channel、对象路径与已签名 channel，任一不一致即拒绝，避免把 beta 对象误标为 stable 或反向降级。桌面端以 GitHub Release API 的精确 asset 名、tag、大小和 GitHub digest 为发布权威；R2 的 manifest 仅用于发现镜像和选择下载节点，绝不替代包内 Ed25519 签名、catalog binding、分区与芯片兼容性校验。
 
-发布门禁先生成 `latest.json`/`beta.json`，上传 R2 和 COS 后重新下载两份公开 manifest，并逐个下载 EchoEar 2ST、Bread Compact、Fangtang 4G 三个 `.clawfw` 校验长度与 SHA-256。任一凭据、上传、公开读取或校验失败都会使 workflow 失败，且 GitHub Release 在镜像门禁通过后才创建；镜像同步不能使用 `continue-on-error` 或“缺少密钥则跳过”。
+发布门禁先生成 `latest.json`/`beta.json`，上传 R2 后重新下载公开 manifest，并逐个下载 EchoEar 2ST、Bread Compact、Fangtang 4G 三个 `.clawfw` 校验长度与 SHA-256。任一凭据、上传、公开读取或校验失败都会使 workflow 失败，且 GitHub Release 在镜像门禁通过后才创建；镜像同步不能使用 `continue-on-error` 或“缺少密钥则跳过”。
 
-- 对每个板卡只接受与 catalog 完全相等的资产名；镜像 URL 必须为 HTTPS、无 userinfo、无显式端口，且 host 严格属于 GitHub Release、指定 R2 或指定 COS 白名单。下载重定向必须逐跳重验这一 allow-list，最多 5 跳。客户端和发布门禁都会校验镜像 URL 的 channel path 和双镜像拓扑：stable 为 `R2/latest/<asset>`、`COS/latest/<asset>`，beta 为 `R2/beta/<asset>`、`COS/beta/<asset>`；`urls` 必须按该顺序精确出现，`url` 必须为后者。不允许只上传一个 mirror 或把 entry 指向其他 allow-listed 路径。客户端默认只使用 stable；用户在界面主动选择 beta 后，才会读取 `beta.json` 并使用 beta 路径，且仍执行相同的镜像元数据、包签名和兼容性校验。日志只记录 host，不记录可能含签名或凭据的 query。
-- 并行读取 R2/COS manifest；若 tag、size、SHA-256 与 GitHub Release 不一致，或两个镜像彼此冲突，镜像元数据整体 fail-closed，回退为 GitHub，不得静默挑选其中一个。
-- 若 GitHub Release API 在本次请求中不可达或未返回精确 asset，客户端可仅在 R2 与 COS 两份独立 workflow manifest 都可达、且对 exact asset 的 tag、size、SHA-256 完全一致时，以该一致元数据继续发现和下载；任一镜像缺失或不一致即拒绝。该高可用回退不放宽最终 GitHub digest（若可得）、`.clawfw` Ed25519 签名和 catalog binding 校验。
+- 对每个板卡只接受与 catalog 完全相等的资产名；镜像 URL 必须为 HTTPS、无 userinfo、无显式端口，且 host 严格属于 GitHub Release 或指定 R2 白名单。下载重定向必须逐跳重验这一 allow-list，最多 5 跳。客户端和发布门禁都会校验镜像 URL 的 channel path 和双镜像拓扑：stable 为 `R2/latest/<asset>`，beta 为 `R2/beta/<asset>`；`urls` 必须与该路径精确一致，`url` 必须与之相同。不允许把 entry 指向其他 allow-listed 路径。客户端默认只使用 stable；用户在界面主动选择 beta 后，才会读取 `beta.json` 并使用 beta 路径，且仍执行相同的镜像元数据、包签名和兼容性校验。日志只记录 host，不记录可能含签名或凭据的 query。
+- 读取 R2 manifest；若 tag、size、SHA-256 与 GitHub Release 不一致，镜像元数据整体 fail-closed，回退为 GitHub，不得静默采用。
+- 若 GitHub Release API 在本次请求中不可达或未返回精确 asset，客户端可仅在 R2 workflow manifest 可达、且对 exact asset 的 tag、size、SHA-256 完全一致时，以该一致元数据继续发现和下载；manifest 缺失或不一致即拒绝。该高可用回退不放宽最终 GitHub digest（若可得）、`.clawfw` Ed25519 签名和 catalog binding 校验。
 - 对通过元数据校验的 URL 与 GitHub URL 并行执行无副作用的 `HEAD`；服务器拒绝 HEAD 时才使用 `GET Range: bytes=0-0`。测速有严格超时，只校验响应首部/一个字节，不预取固件主体；按可用性和响应时间排序，选择最快节点。
 - 实际下载仍按原有大小、断点续传、SHA-256、GitHub digest 和 `.clawfw` 签名/兼容性规则验证。最快节点发生网络、长度或 digest 错误时，删除该临时片段后按已测速候选顺序回退；任何一个镜像都不能因“测速成功”而被视为可信固件。
 - 日志必须覆盖 `MIRROR_DISCOVERY_*`、`MIRROR_MANIFEST_*`、`MIRROR_METADATA_CONFLICT`、`MIRROR_PROBE_*`、`MIRROR_SELECTED` 与 `MIRROR_FALLBACK`，从而可以判断是 metadata、测速、传输还是最终包校验失败。

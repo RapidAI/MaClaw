@@ -217,6 +217,83 @@ func TestDetachedReadBeyondGraceFallsBackToFreshRequest(t *testing.T) {
 	}
 }
 
+// TestDetachedReadLateTreeWaitsPastCallerBudget: the late-tree retry's own
+// deadline used to return ctx.Err() while the sync call's detached read was
+// still in flight, so the body was retained and then never adopted. The retry
+// is off the user-visible path and must keep waiting for that body.
+func TestDetachedReadLateTreeWaitsPastCallerBudget(t *testing.T) {
+	resetDetachedSimpleLLMReadsForTest(t)
+	var hits atomic.Int32
+	// Budget 200ms → grace 400ms, so the grace window closes at ~600ms.
+	// The body lands at 550ms, after the retry's 70ms context has already ended.
+	srv := slowSimpleLLMServer(550*time.Millisecond, &hits, detachedTestPayload)
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	msgs := []interface{}{map[string]string{"role": "user", "content": "classify this"}}
+	if _, err := doSimpleLLMRequest(context.Background(), cfg, msgs, srv.Client(), 200*time.Millisecond); !isLLMBudgetFiredError(err) {
+		t.Fatalf("first call err = %v, want llmBudgetFiredError", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	resp, err := doSimpleLLMRequestWithOptions(ctx, cfg, msgs, srv.Client(), 70*time.Millisecond, simpleLLMRequestOptions{AdoptInFlightPastCancel: true})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("late retry should adopt the in-flight body after its own deadline: %v", err)
+	}
+	if resp == nil || resp.Content != "adopted-content" {
+		t.Fatalf("content = %+v, want adopted-content", resp)
+	}
+	if elapsed < 70*time.Millisecond {
+		t.Fatalf("adopted in %s, before the caller deadline; the past-cancel wait was not exercised", elapsed)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (no second send while the detached read is live)", got)
+	}
+}
+
+// TestDetachedReadCallerBudgetDoesNotWaitForInFlightBody: a synchronous caller
+// must still return when its own context ends. Waiting out the detached grace
+// window would delay the user-visible turn.
+func TestDetachedReadCallerBudgetDoesNotWaitForInFlightBody(t *testing.T) {
+	resetDetachedSimpleLLMReadsForTest(t)
+	var hits atomic.Int32
+	srv := slowSimpleLLMServer(550*time.Millisecond, &hits, detachedTestPayload)
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	msgs := []interface{}{map[string]string{"role": "user", "content": "classify this"}}
+	if _, err := doSimpleLLMRequest(context.Background(), cfg, msgs, srv.Client(), 200*time.Millisecond); !isLLMBudgetFiredError(err) {
+		t.Fatalf("first call err = %v, want llmBudgetFiredError", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := doSimpleLLMRequestWithOptions(ctx, cfg, msgs, srv.Client(), 70*time.Millisecond, simpleLLMRequestOptions{})
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("synchronous caller blocked for %s after its deadline", elapsed)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (deadline must not start a second send)", got)
+	}
+}
+
+func TestDetachedReadRetentionCoversLateTreeGate(t *testing.T) {
+	if detachedReadCompletedRetention < lateTreeForegroundWaitCap {
+		t.Fatalf("successful detached retention %s is shorter than the late-tree gate cap %s", detachedReadCompletedRetention, lateTreeForegroundWaitCap)
+	}
+	if detachedReadErrorRetention >= detachedReadCompletedRetention {
+		t.Fatalf("error retention %s should stay shorter than success retention %s", detachedReadErrorRetention, detachedReadCompletedRetention)
+	}
+}
+
 // TestDetachedReadCompletedEntryRetainedForLateAdoption: a duplicate that
 // arrives AFTER the detached read finished (response already landed, entry
 // still within its completed-retention window) must adopt the completed

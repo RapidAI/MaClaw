@@ -4418,8 +4418,8 @@ export function SendBtwQuery(arg1, arg2) {
   return window['go']['main']['App']['SendBtwQuery'](arg1, arg2);
 }
 
-export function SendDesktopBotTask(arg1, arg2) {
-  return window['go']['main']['App']['SendDesktopBotTask'](arg1, arg2);
+export function SendDesktopBotTask(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendDesktopBotTask'](arg1, arg2, arg3);
 }
 
 export function DesktopBotAccess() {
@@ -5408,4 +5408,20 @@ export function TokenBankWithdrawGift(arg1, arg2, arg3) {
 
 export function WatchDesktopBot(arg1) {
   return window['go']['main']['App']['WatchDesktopBot'](arg1);
+}
+
+export function ReleaseDesktopBotWatch(arg1) {
+  return window['go']['main']['App']['ReleaseDesktopBotWatch'](arg1);
+}
+
+export function SaveBotSecret(arg1, arg2) {
+  return window['go']['main']['App']['SaveBotSecret'](arg1, arg2);
+}
+
+export function RecallBotSecret(arg1) {
+  return window['go']['main']['App']['RecallBotSecret'](arg1);
+}
+
+export function FillBotSecret(arg1, arg2) {
+  return window['go']['main']['App']['FillBotSecret'](arg1, arg2);
 }

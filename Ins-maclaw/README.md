@@ -6,9 +6,8 @@ It uses the same release discovery chain as the MaClaw online updater:
 
 1. GitHub latest `latest.json`
 2. Cloudflare R2 `latest.json`
-3. Tencent COS `latest.json`
-4. GitHub release asset URL plus R2/COS asset fallbacks
-5. SHA-256 verification when the release manifest provides a digest
+3. GitHub release asset URL plus R2 asset fallbacks
+4. SHA-256 verification when the release manifest provides a digest
 
 Supported targets:
 

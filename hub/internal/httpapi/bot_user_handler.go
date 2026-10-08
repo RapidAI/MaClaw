@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -146,12 +148,13 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity veMachineAuthenticator
 		}
 		var in struct {
 			Content string `json:"content"`
+			Phase   string `json:"phase"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
 			return
 		}
-		reply, err := svc.PostMessage(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content)
+		reply, err := svc.PostMessagePhase(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase)
 		if err != nil {
 			writeBotUserError(w, r, principal, err)
 			return
@@ -171,12 +174,17 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity veMachineAuthenticator)
 			}
 			return
 		}
-		novnc, userControl, err := svc.DesktopWatch(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		botID := r.PathValue("id")
+		novnc, userControl, err := svc.DesktopWatch(r.Context(), principal.TenantID, principal.UserID, botID)
 		if err != nil {
 			writeBotUserError(w, r, principal, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"novnc_url": novnc, "user_control": userControl})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"novnc_url":        novnc,
+			"user_control":     userControl,
+			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
+		})
 	}
 }
 
@@ -193,13 +201,54 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity veMachineAuthenti
 			}
 			return
 		}
-		novnc, userControl, err := svc.HoldDesktopView(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		botID := r.PathValue("id")
+		release, ok := botWatchRelease(w, r)
+		if !ok {
+			return
+		}
+		if release {
+			if err := svc.ReleaseUserDesktopView(r.Context(), principal.TenantID, principal.UserID, botID); err != nil {
+				writeBotUserError(w, r, principal, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"released": true})
+			return
+		}
+		novnc, userControl, err := svc.HoldDesktopView(r.Context(), principal.TenantID, principal.UserID, botID)
 		if err != nil {
 			writeBotUserError(w, r, principal, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"novnc_url": novnc, "user_control": userControl})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"novnc_url":        novnc,
+			"user_control":     userControl,
+			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
+		})
 	}
+}
+
+// botWatchRelease reads an optional {"release":true}. An empty body is a hold.
+// EOF is not a bad request: the viewer poll posts no body.
+func botWatchRelease(w http.ResponseWriter, r *http.Request) (bool, bool) {
+	if r.Body == nil {
+		return false, true
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+		return false, false
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return false, true
+	}
+	var in struct {
+		Release bool `json:"release"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+		return false, false
+	}
+	return in.Release, true
 }
 
 // GetDesktopHandoffHandler proxies noVNC through Hub. The token in the path

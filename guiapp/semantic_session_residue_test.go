@@ -1230,8 +1230,8 @@ func TestSpentWaveVideoRequestPlansShellNotCoding(t *testing.T) {
 		t.Fatal("a knowledge label kept a video request that needs a remote call")
 	}
 	save := "把agnes视频生成模型信息保存到知识库"
-	if !semanticReleasedRequestPlansShell(knowledge, save, history) {
-		t.Fatal("wording kept a knowledge label off shell when history already has an endpoint")
+	if semanticReleasedRequestPlansShell(knowledge, save, history) {
+		t.Fatal("an explicit knowledge save was planned as shell because an earlier message named an endpoint")
 	}
 	if semanticReleasedRequestPlansShell(knowledge, save, nil) {
 		t.Fatal("a knowledge label with no endpoint was planned as shell")
@@ -1243,6 +1243,48 @@ func TestSpentWaveVideoRequestPlansShellNotCoding(t *testing.T) {
 	withURL := "用 https://api.example.com/v1 生成一段视频"
 	if !semanticReleasedRequestPlansShell(coding, withURL, nil) {
 		t.Fatal("a video request that already names the endpoint stayed on coding")
+	}
+}
+
+func TestExplicitKnowledgeSaveReplacesShell(t *testing.T) {
+	shell := intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.91, Reason: "tree"}
+	save := "将以下信息保存到知识库：file-cn 服务器：file-cn.maclaw.top , root secret"
+	if semanticReleasedRequestPlansShell(intent.ClassificationResult{Primary: intent.LabelKnowledgeWrite, Confidence: 0.8}, save, []agent.ConversationEntry{{
+		Role: "assistant", Content: "下次可以用 bash/curl 调 https://api.example.com/v1。",
+	}}) {
+		t.Fatal("history endpoint rewrote an explicit knowledge save into shell")
+	}
+	got := semanticExplicitKnowledgeWrite(&shell, save)
+	if got == nil || got.Primary != intent.LabelKnowledgeWrite || got.Degraded || len(got.Secondary) != 0 {
+		t.Fatalf("explicit save = %#v", got)
+	}
+	if semanticExplicitKnowledgeWrite(&intent.ClassificationResult{Primary: intent.LabelKnowledgeWrite, Confidence: 0.9}, save) != nil {
+		t.Fatal("an already-clean knowledge write was replaced")
+	}
+	linked := "将以下信息保存到知识库：说明见 https://example.com/notes"
+	if semanticReleasedRequestPlansShell(intent.ClassificationResult{Primary: intent.LabelKnowledgeWrite, Confidence: 0.8}, linked, []agent.ConversationEntry{{
+		Role: "assistant", Content: "下次可以用 bash/curl 调 https://api.example.com/v1。",
+	}}) {
+		t.Fatal("saving a note that contains a link was planned as shell")
+	}
+	linkedWrite := semanticExplicitKnowledgeWrite(&shell, linked)
+	if linkedWrite == nil || linkedWrite.Primary != intent.LabelKnowledgeWrite {
+		t.Fatalf("save of a link = %#v", linkedWrite)
+	}
+	escalated := shell
+	escalated.Secondary = []intent.IntentLabel{intent.LabelSSH}
+	escalated.RunnerUp = intent.LabelSSH
+	escalated.RunnerUpScore = 0.9
+	escalated.ControlPlaneFailure = true
+	escalated.ToolNames = []string{"bash"}
+	escalated.WorkflowType = "coding"
+	cleared := semanticExplicitKnowledgeWrite(&escalated, save)
+	if cleared == nil || cleared.Primary != intent.LabelKnowledgeWrite || cleared.ControlPlaneFailure || cleared.RunnerUp != "" || cleared.WorkflowType != "" || len(cleared.Secondary) != 0 || len(cleared.ToolNames) != 0 {
+		t.Fatalf("explicit save kept shell escalation = %#v", cleared)
+	}
+	endpoint := semanticExplicitKnowledgeWrite(&shell, "用 https://api.example.com/v1 把结果保存到知识库")
+	if endpoint == nil || endpoint.Primary != intent.LabelKnowledgeWrite || len(endpoint.Secondary) != 0 {
+		t.Fatalf("endpoint save = %#v", endpoint)
 	}
 }
 

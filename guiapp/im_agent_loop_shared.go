@@ -4503,15 +4503,7 @@ func obligationLocalFileWrite(plan tool.ToolPlan, selection tool.PlannedSelectio
 }
 
 func companionPlannedSelection(selection tool.PlannedSelection) bool {
-	if strings.Contains(selection.NeedID, "zz-baseline:") || strings.Contains(selection.ID, "zz-baseline:") {
-		return true
-	}
-	for _, evidence := range selection.EvidenceIDs {
-		if evidence == "intent:baseline_workspace" || evidence == "intent:archetype_bundle" {
-			return true
-		}
-	}
-	return false
+	return tool.RepeatSelectionIsCompanion(selection)
 }
 
 func familyHasUnissuedSibling(surface *semanticCallSurface, prototype tool.PlannedSelection, exceptID string) bool {

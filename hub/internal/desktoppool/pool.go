@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -105,9 +106,13 @@ type Desktop struct {
 // AuthorizedUser is one platform user a desktop assignment covers. The
 // check-desktop list shows only these users: anyone else would fail with
 // ErrNotAssigned because no assignment resolves for them.
+// Email is the address already loaded with the user. It is not part of the
+// admin payload; the bot-scope filter uses it so a department grant does not
+// read that user a second time.
 type AuthorizedUser struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
+	Email string `json:"-"`
 }
 
 // View is the admin payload.
@@ -161,7 +166,7 @@ func (p *Pool) AuthorizedUsers(ctx context.Context, tenantID string, candidates 
 	if err != nil {
 		return nil
 	}
-	return p.filterAuthorizedUsers(ctx, candidates, rec.Assignments)
+	return p.filterAuthorizedUsers(directoryContext(ctx, tenantID), candidates, rec.Assignments)
 }
 
 // ViewAuthorized is the admin view with Users filled in, from one settings
@@ -177,7 +182,7 @@ func (p *Pool) ViewAuthorized(ctx context.Context, tenantID string, candidates [
 		return View{}, err
 	}
 	view := viewOf(rec)
-	view.Users = p.filterAuthorizedUsers(ctx, candidates, rec.Assignments)
+	view.Users = p.filterAuthorizedUsers(directoryContext(ctx, tenantID), candidates, rec.Assignments)
 	return view, nil
 }
 
@@ -543,6 +548,7 @@ func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display string)
 }
 
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
+	ctx = directoryContext(ctx, tenantID)
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return Server{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
@@ -565,6 +571,13 @@ func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, er
 		return serverByID(rec.Servers, serverID)
 	}
 	return Server{}, ErrNotAssigned
+}
+
+// directoryContext carries the assignment's tenant into department lookups.
+// Membership is stored per tenant. Without this value the lookup reads the
+// default tenant, and a department assignment for any other tenant misses.
+func directoryContext(ctx context.Context, tenantID string) context.Context {
+	return security.WithTenant(ctx, tenantID)
 }
 
 func (p *Pool) departmentChain(ctx context.Context, userID string) []string {

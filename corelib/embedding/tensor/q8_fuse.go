@@ -38,7 +38,7 @@ func MatMulQ8PackedQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorke
 	}
 }
 
-// MatMulQ8DualOut computes two N=1152 projections from the same A, then SiLUMul.
+// MatMulQ8DualOut computes two N=1152 projections from the same A, then GELUMul.
 // Fuses gate/up at the N-loop so each A panel stays in L1 across both weights.
 func MatMulQ8DualOut(gate, up, a []float32, wGate, wUp *Q8Tensor, seq, maxWorkers int) {
 	const K, N, mt = gemmaDim, gemmaFFDim, gemmaMTile
@@ -59,7 +59,7 @@ func MatMulQ8DualOut(gate, up, a []float32, wGate, wUp *Q8Tensor, seq, maxWorker
 			MatMulQ8N(gate[m0*N:], aPanel, wGate, rows, N, K, maxWorkers)
 			MatMulQ8N(up[m0*N:], aPanel, wUp, rows, N, K, maxWorkers)
 		}
-		SiLUMul(gate[:seq*N], up[:seq*N])
+		GELUMul(gate[:seq*N], up[:seq*N])
 		return
 	}
 	if packedDualOutGemmaShort(gate, up, a, wGate, wUp, seq, maxWorkers) {
@@ -86,7 +86,7 @@ func MatMulQ8DualOut(gate, up, a []float32, wGate, wUp *Q8Tensor, seq, maxWorker
 	} else {
 		parallelRanges(N, run)
 	}
-	SiLUMul(gate[:seq*N], up[:seq*N])
+	GELUMul(gate[:seq*N], up[:seq*N])
 }
 
 func matMulQ8DualOutRange(gate, up, a []float32, wGate, wUp *Q8Tensor, M, N, K, ns, ne, nBlocks int) {
@@ -288,7 +288,7 @@ func MatMulQ8NKRange(out, a []float32, b *Q8Tensor, M, N, k0, kLen, maxWorkers i
 	parallelRanges(N, run)
 }
 
-// MatMulQ8SwiGLUDown tiles gate/up N and down K at 384, then RMSNorm+residual on acc.
+// MatMulQ8SwiGLUDown tiles gate/up N and down K at 384, applies GeGLU, then RMSNorm+residual on acc.
 // a is [seq,768]; gTile/uTile are [seq,384]; acc/x are [seq,768].
 func MatMulQ8SwiGLUDown(x, a, gTile, uTile, acc []float32, wGate, wUp, wDown *Q8Tensor, wRMS []float32, seq, maxWorkers int, eps float32) {
 	if seq <= 0 {
@@ -299,7 +299,7 @@ func MatMulQ8SwiGLUDown(x, a, gTile, uTile, acc []float32, wGate, wUp, wDown *Q8
 		n0 := t * gemmaFFTile
 		MatMulQ8RowRange(gTile, a, wGate, seq, gemmaDim, n0, n0+gemmaFFTile, maxWorkers)
 		MatMulQ8RowRange(uTile, a, wUp, seq, gemmaDim, n0, n0+gemmaFFTile, maxWorkers)
-		SiLUMul(gTile[:seq*gemmaFFTile], uTile[:seq*gemmaFFTile])
+		GELUMul(gTile[:seq*gemmaFFTile], uTile[:seq*gemmaFFTile])
 		MatMulQ8NKRange(acc, gTile, wDown, seq, gemmaDim, n0, gemmaFFTile, maxWorkers, true)
 	}
 	for s := 0; s < seq; s++ {

@@ -876,14 +876,20 @@ func personPauseLine(session *BrowserAgentSession) (string, bool) {
 		return "", false
 	}
 	var names []string
-	if flags.LoginWall {
-		names = append(names, "login_wall")
+	if flags.CaptchaWidget {
+		names = append(names, "captcha_widget")
 	}
 	if flags.MFA {
 		names = append(names, "mfa")
 	}
-	if flags.CaptchaWidget {
-		names = append(names, "captcha_widget")
+	if flags.PaymentConfirm {
+		names = append(names, "payment_confirm")
+	}
+	if flags.ConsentDialog {
+		names = append(names, "consent_dialog")
+	}
+	if flags.LoginWall {
+		names = append(names, "login_wall")
 	}
 	if len(names) == 0 {
 		return "", false

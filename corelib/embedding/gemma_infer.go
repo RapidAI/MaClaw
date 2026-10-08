@@ -170,7 +170,7 @@ func (g *GemmaEmbedder) ensureScratch(seq int) *gemmaScratch {
 	return g.scratch
 }
 
-// forward runs the Gemma2 transformer using the shared scratch (mutex-protected path).
+// forward runs the EmbeddingGemma transformer using the shared scratch (mutex-protected path).
 func (g *GemmaEmbedder) forward(tokenIDs []int) ([]float32, error) {
 	sc := g.ensureScratch(len(tokenIDs))
 	return g.forwardWithScratch(tokenIDs, sc, gemmaMatMulWorkers(len(tokenIDs)))
@@ -184,7 +184,7 @@ func gemmaMatMulWorkers(seq int) int {
 	return 0
 }
 
-// forwardWithScratch runs the Gemma2 transformer with an externally provided
+// forwardWithScratch runs the EmbeddingGemma transformer with an externally provided
 // scratch buffer. This is the core inference function, safe to call from
 // multiple goroutines as long as each has its own scratch and weights are
 // read-only (mmap-backed Q8 tensors).
@@ -275,19 +275,20 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 
 	for l := 0; l < nLayers; l++ {
 		layer := &g.weights.layers[l]
+		ropeCos, ropeSin := ropeForLayer(sc, hp, l)
 		tensor.RMSNormRows(normed, x, layer.attnNormW, seq, dim, hp.RMSNormEps)
 		if fuse {
 			tensor.MatMulQ8PackedQKV(q, k, v, normed, &layer.attnQWeight, &layer.attnKWeight, &layer.attnVWeight, seq, maxWorkers)
-			tensor.RMSNormRoPESeq(q, layer.attnQNormW, sc.ropeCos, sc.ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
-			tensor.RMSNormRoPESeq(k, layer.attnKNormW, sc.ropeCos, sc.ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
+			tensor.RMSNormRoPESeq(q, layer.attnQNormW, ropeCos, ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
+			tensor.RMSNormRoPESeq(k, layer.attnKNormW, ropeCos, ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		} else {
 			tensor.MatMulQ8N(q, normed, &layer.attnQWeight, seq, dim, dim, maxWorkers)
 			tensor.MatMulQ8N(k, normed, &layer.attnKWeight, seq, kvDim, dim, maxWorkers)
 			tensor.MatMulQ8N(v, normed, &layer.attnVWeight, seq, kvDim, dim, maxWorkers)
-			tensor.RMSNormRoPESeq(q, layer.attnQNormW, sc.ropeCos, sc.ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
-			tensor.RMSNormRoPESeq(k, layer.attnKNormW, sc.ropeCos, sc.ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
+			tensor.RMSNormRoPESeq(q, layer.attnQNormW, ropeCos, ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
+			tensor.RMSNormRoPESeq(k, layer.attnKNormW, ropeCos, ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		}
-		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim)
+		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, hp.windowHalf(l))
 		if fuse {
 			tensor.MatMulQ8RMSResidual(x, attnOut, sc.yTile, &layer.attnOutWeight, layer.postAttnNormW, seq, dim, dim, 8, maxWorkers, hp.RMSNormEps)
 			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
@@ -300,7 +301,7 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
 			tensor.MatMulQ8N(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim, maxWorkers)
 			tensor.MatMulQ8N(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim, maxWorkers)
-			tensor.SiLUMul(ffGate, ffUp)
+			tensor.GELUMul(ffGate, ffUp)
 			tensor.MatMulQ8N(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim, maxWorkers)
 			tensor.RMSNormRows(ffDown, ffDown, layer.postFFNNormW, seq, dim, hp.RMSNormEps)
 			tensor.Add(x, x, ffDown)
@@ -309,7 +310,28 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 	tensor.RMSNormRows(x, x, g.weights.outputNorm, seq, dim, hp.RMSNormEps)
 }
 
+// gemmaKeySpan is the half-open key range [lo, hi) a query attends.
+// windowHalf <= 0, or a sequence that fits inside the window, attends every key.
+// Otherwise the range is [q-windowHalf, q+windowHalf], clamped to the sequence.
+// For EmbeddingGemma's window of 512 that is |q-k| <= 256.
+func gemmaKeySpan(q, seq, windowHalf int) (lo, hi int) {
+	if windowHalf <= 0 || seq <= windowHalf+1 {
+		return 0, seq
+	}
+	lo = q - windowHalf
+	if lo < 0 {
+		lo = 0
+	}
+	hi = q + windowHalf + 1
+	if hi > seq {
+		hi = seq
+	}
+	return lo, hi
+}
+
 // gqaAttention computes grouped-query attention using SIMD-accelerated dot products.
+// windowHalf 0 attends every key. A positive half keeps |q-k| <= windowHalf on
+// local layers. Sequences that fit in the window take the full-attention path.
 //
 // For seq>=64 the per-head loops run in parallel goroutines (heads write
 // disjoint out column ranges, each goroutine owns its score tile). For any
@@ -318,7 +340,7 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 // path, which is ~two orders of magnitude slower per token (measured: ~29%
 // of a ~900-token Embed in weightedSumContigN alone).
 func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
-	seq, nHeads, nKVHeads, headDim, qStride, kvStride int) {
+	seq, nHeads, nKVHeads, headDim, qStride, kvStride, windowHalf int) {
 
 	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
 	headsPerGroup := nHeads / nKVHeads
@@ -341,7 +363,7 @@ func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 					tile = tile[:8*seq]
 				}
 				defer gqaTilePool.Put(tilep)
-				g.gqaHead(tile, out, q, k, v, h, headsPerGroup, seq, nQ, scale, headDim, qStride, kvStride)
+				g.gqaHead(tile, out, q, k, v, h, headsPerGroup, seq, nQ, scale, headDim, qStride, kvStride, windowHalf)
 			}(h)
 		}
 		wg.Wait()
@@ -357,7 +379,7 @@ func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 	}
 	defer gqaTilePool.Put(tilep)
 	for h := 0; h < nHeads; h++ {
-		g.gqaHead(tile, out, q, k, v, h, headsPerGroup, seq, nQ, scale, headDim, qStride, kvStride)
+		g.gqaHead(tile, out, q, k, v, h, headsPerGroup, seq, nQ, scale, headDim, qStride, kvStride, windowHalf)
 	}
 }
 
@@ -368,32 +390,42 @@ var gqaTilePool = sync.Pool{New: func() any { p := make([]float32, 8*512); retur
 // path reuses tile[:seq]. Bulk tiles run at nQ=8 (K/V loaded once per 8
 // queries); a leftover 4..7 queries run as one nQ=4 tile before falling back
 // to the single-query strided path.
-func (g *GemmaEmbedder) gqaHead(tile, out, q, k, v []float32, h, headsPerGroup, seq, nQ int, scale float32, headDim, qStride, kvStride int) {
+func (g *GemmaEmbedder) gqaHead(tile, out, q, k, v []float32, h, headsPerGroup, seq, nQ int, scale float32, headDim, qStride, kvStride, windowHalf int) {
 	kvH := h / headsPerGroup
 	vBase := v[kvH*headDim:]
 	hOff := h * headDim
 
 	sq := 0
 	for ; sq+nQ <= seq; sq += nQ {
-		g.gqaTile(tile, out, q, k, vBase, sq, nQ, scale, headDim, hOff, seq, qStride, kvStride, kvH*headDim)
+		g.gqaTile(tile, out, q, k, vBase, sq, nQ, scale, headDim, hOff, seq, qStride, kvStride, kvH*headDim, windowHalf)
 	}
 	if rem := seq - sq; rem >= 4 {
-		g.gqaTile(tile, out, q, k, vBase, sq, 4, scale, headDim, hOff, seq, qStride, kvStride, kvH*headDim)
+		g.gqaTile(tile, out, q, k, vBase, sq, 4, scale, headDim, hOff, seq, qStride, kvStride, kvH*headDim, windowHalf)
 		sq += 4
 	}
+	kOff := kvH * headDim
 	for ; sq < seq; sq++ {
 		qVec := q[sq*qStride+hOff : sq*qStride+hOff+headDim]
-		for sk := 0; sk < seq; sk++ {
-			tile[sk] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:(sk*kvStride+kvH*headDim)+headDim]) * scale
+		lo, hi := gemmaKeySpan(sq, seq, windowHalf)
+		scores := tile[:hi-lo]
+		for i := range scores {
+			sk := lo + i
+			scores[i] = tensor.Dot(qVec, k[sk*kvStride+kOff:sk*kvStride+kOff+headDim]) * scale
 		}
-		tensor.SoftmaxWeightedSumStrided(out[sq*qStride+hOff:sq*qStride+hOff+headDim], tile[:seq], vBase, seq, kvStride, headDim)
+		tensor.SoftmaxWeightedSumStrided(out[sq*qStride+hOff:sq*qStride+hOff+headDim], scores, vBase[lo*kvStride:], hi-lo, kvStride, headDim)
 	}
 }
 
 // gqaTile computes Q·K scores and the softmax-weighted V sum for one tile of
 // nQ queries (nQ∈{4,8}) starting at query row sq. kOff is the head's column
 // offset within each K/V row (kvH*headDim).
-func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, scale float32, headDim, hOff, seq, qStride, kvStride, kOff int) {
+func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, scale float32, headDim, hOff, seq, qStride, kvStride, kOff, windowHalf int) {
+	ulo, _ := gemmaKeySpan(sq, seq, windowHalf)
+	_, uhi := gemmaKeySpan(sq+nQ-1, seq, windowHalf)
+	// A tile's key union can cover the whole sequence while an edge query
+	// still has to drop a key. Full attention is a property of the sequence,
+	// not of that union.
+	full := windowHalf <= 0 || seq <= windowHalf+1
 	if (nQ == 8 || nQ == 4) && headDim <= 256 {
 		// Q·K with K rows loaded once per nQ-query tile: q rows are strided
 		// in q, so stage them contiguously, then multiDot4/8 streams each
@@ -406,7 +438,7 @@ func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, sc
 		rows := tile[:nQ*seq]
 		if nQ == 8 {
 			var d8 [8]float32
-			for sk := 0; sk < seq; sk++ {
+			for sk := ulo; sk < uhi; sk++ {
 				kRow := k[sk*kvStride+kOff : sk*kvStride+kOff+headDim]
 				tensor.MultiDot8(&d8, aPanel, kRow, headDim)
 				for t := 0; t < 8; t++ {
@@ -415,7 +447,7 @@ func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, sc
 			}
 		} else {
 			var d4 [4]float32
-			for sk := 0; sk < seq; sk++ {
+			for sk := ulo; sk < uhi; sk++ {
 				kRow := k[sk*kvStride+kOff : sk*kvStride+kOff+headDim]
 				tensor.MultiDot4(&d4, aPanel, kRow, headDim)
 				rows[sk], rows[seq+sk], rows[2*seq+sk], rows[3*seq+sk] =
@@ -426,10 +458,31 @@ func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, sc
 		for t := 0; t < nQ; t++ {
 			qVec := q[(sq+t)*qStride+hOff : (sq+t)*qStride+hOff+headDim]
 			row := tile[t*seq : (t+1)*seq]
-			for sk := 0; sk < seq; sk++ {
+			for sk := ulo; sk < uhi; sk++ {
 				row[sk] = tensor.Dot(qVec, k[sk*kvStride+kOff:sk*kvStride+kOff+headDim]) * scale
 			}
 		}
 	}
-	tensor.SoftmaxWeightedSumBatched(out, tile[:nQ*seq], vBase, nQ, seq, kvStride, headDim, qStride, hOff, sq)
+	if full {
+		tensor.SoftmaxWeightedSumBatched(out, tile[:nQ*seq], vBase, nQ, seq, kvStride, headDim, qStride, hOff, sq)
+		return
+	}
+	rows := tile[:nQ*seq]
+	// Contiguous V (EmbeddingGemma has one KV head): softmax each query on its
+	// own span, then reuse the batched kernel. A zero outside the span is a
+	// weight, not a logit, so the far key stays out of the softmax.
+	if headDim == 256 && kvStride == 256 && (nQ == 8 || nQ == 4) {
+		var lo, hi [8]int
+		for t := 0; t < nQ; t++ {
+			lo[t], hi[t] = gemmaKeySpan(sq+t, seq, windowHalf)
+		}
+		if tensor.SoftmaxWeightedSumWindow256(out, rows, vBase, nQ, seq, qStride, hOff, sq, lo[:nQ], hi[:nQ]) {
+			return
+		}
+	}
+	for t := 0; t < nQ; t++ {
+		lo, hi := gemmaKeySpan(sq+t, seq, windowHalf)
+		oOff := (sq+t)*qStride + hOff
+		tensor.SoftmaxWeightedSumStrided(out[oOff:oOff+headDim], rows[t*seq+lo:t*seq+hi], vBase[lo*kvStride:], hi-lo, kvStride, headDim)
+	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -270,11 +271,16 @@ func TestDesktopServicesViewListsOnlyAuthorizedUsers(t *testing.T) {
 	system := newDesktopSettingsMem()
 	users := desktopTestUsers{items: tenantUsers}
 
-	// A user-scope assignment for alice: the view lists alice only, never the
-	// user the panel could not open a desktop for.
+	// Both people are in 开通范围, but only alice has a Docker assignment.
+	// The dropdown lists alice: bob's desktop call would fail, and the system
+	// user is never a candidate.
 	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeUser, TargetID: "alice"}})
+	bots := grantBotScope(t, system, nil,
+		botmgmt.Grant{Scope: botmgmt.ScopeUser, TargetID: "alice"},
+		botmgmt.Grant{Scope: botmgmt.ScopeUser, TargetID: "bob"},
+	)
 	rec := httptest.NewRecorder()
-	GetDesktopServicesAdminHandler(pool, users).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	GetDesktopServicesAdminHandler(pool, users, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -296,8 +302,9 @@ func TestDesktopServicesViewGlobalAssignmentCoversEveryone(t *testing.T) {
 	}
 	system := newDesktopSettingsMem()
 	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeGlobal}})
+	bots := grantBotScope(t, system, nil, botmgmt.Grant{Scope: botmgmt.ScopeGlobal})
 	rec := httptest.NewRecorder()
-	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -310,6 +317,198 @@ func TestDesktopServicesViewGlobalAssignmentCoversEveryone(t *testing.T) {
 	if len(out.Users) != 2 {
 		t.Fatalf("users=%s, want every tenant user", mustJSONOrNil(out.Users))
 	}
+}
+
+func TestDesktopServicesViewListsOnlyBotScope(t *testing.T) {
+	tenantUsers := []*store.User{
+		{ID: "alice", TenantID: "tenant-a", Email: "alice@example.com"},
+		{ID: "bob", TenantID: "tenant-a", Email: "bob@example.com"},
+		{ID: "carol", TenantID: "tenant-a", Email: "carol@example.com"},
+		{ID: "sam", TenantID: "tenant-a", Email: "sam@example.com"},
+	}
+	system := newDesktopSettingsMem()
+	// A global Docker assignment would otherwise list the whole tenant.
+	// 开通范围 keeps alice, and carol through her parent department.
+	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeGlobal}})
+	dir := desktopGrantDir{
+		email:   map[string]string{"alice": "alice@example.com", "carol": "carol@example.com", "sam": "sam@example.com"},
+		group:   map[string]string{"alice@example.com": "eng", "carol@example.com": "eng-child", "sam@example.com": "sales"},
+		parents: map[string]string{"eng-child": "eng"},
+	}
+	bots := grantBotScope(t, system, dir,
+		botmgmt.Grant{Scope: botmgmt.ScopeUser, TargetID: "alice"},
+		botmgmt.Grant{Scope: botmgmt.ScopeDepartment, TargetID: "eng"},
+	)
+	rec := httptest.NewRecorder()
+	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Users []desktoppool.AuthorizedUser `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Users) != 2 || out.Users[0].ID != "alice" || out.Users[0].Label != "alice@example.com" || out.Users[1].ID != "carol" || out.Users[1].Label != "carol@example.com" {
+		t.Fatalf("users=%s, want alice and carol", mustJSONOrNil(out.Users))
+	}
+}
+
+func TestDesktopServicesViewTrimsUserIDBeforeScopeMatch(t *testing.T) {
+	tenantUsers := []*store.User{
+		{ID: " alice ", TenantID: "tenant-a", Email: " alice@example.com "},
+	}
+	system := newDesktopSettingsMem()
+	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeUser, TargetID: "alice"}})
+	bots := grantBotScope(t, system, nil, botmgmt.Grant{Scope: botmgmt.ScopeUser, TargetID: "alice"})
+	rec := httptest.NewRecorder()
+	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Users []desktoppool.AuthorizedUser `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Users) != 1 || out.Users[0].ID != "alice" || out.Users[0].Label != "alice@example.com" {
+		t.Fatalf("users=%s, want the trimmed user", mustJSONOrNil(out.Users))
+	}
+	if strings.Contains(rec.Body.String(), `"email"`) {
+		t.Fatalf("body leaked the directory email: %s", rec.Body.String())
+	}
+}
+
+func TestDesktopServicesViewDepartmentGrantUsesAdminTenant(t *testing.T) {
+	tenantUsers := []*store.User{
+		{ID: "carol", TenantID: "tenant-a", Email: "carol@example.com"},
+		{ID: "sam", TenantID: "tenant-a", Email: "sam@example.com"},
+	}
+	system := newDesktopSettingsMem()
+	// The directory answers only when the security context carries tenant-a,
+	// which is the admin's tenant. A raw request context would miss both.
+	dir := tenantScopedDir{
+		want:  "tenant-a",
+		email: map[string]string{"carol": "carol@example.com", "sam": "sam@example.com"},
+		group: map[string]string{"carol@example.com": "eng", "sam@example.com": "sales"},
+	}
+	docker, _ := dockerDesktopFake(t, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+	pool := desktoppool.New(system, dir)
+	server, err := pool.CreateServer(context.Background(), "tenant-a", desktoppool.Server{Name: "srv", BaseURL: docker.URL, AccessToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(context.Background(), "tenant-a", desktoppool.Assignment{
+		Scope: desktoppool.ScopeDepartment, TargetID: "eng", ServerID: server.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bots := grantBotScope(t, system, dir, botmgmt.Grant{Scope: botmgmt.ScopeDepartment, TargetID: "eng"})
+	rec := httptest.NewRecorder()
+	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Users []desktoppool.AuthorizedUser `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Users) != 1 || out.Users[0].ID != "carol" || out.Users[0].Label != "carol@example.com" {
+		t.Fatalf("users=%s, want carol", mustJSONOrNil(out.Users))
+	}
+}
+
+func TestDesktopServicesViewEmptyWhenBotScopeIsOff(t *testing.T) {
+	tenantUsers := []*store.User{
+		{ID: "alice", TenantID: "tenant-a", Email: "alice@example.com"},
+		{ID: "bob", TenantID: "tenant-a", Email: "bob@example.com"},
+	}
+	system := newDesktopSettingsMem()
+	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeGlobal}})
+	bots := botmgmt.NewService(system)
+	rec := httptest.NewRecorder()
+	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("view status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Users   []desktoppool.AuthorizedUser `json:"users"`
+		Servers []struct {
+			Name string `json:"name"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Users) != 0 {
+		t.Fatalf("users=%s, 开通范围 off lists nobody", mustJSONOrNil(out.Users))
+	}
+	if len(out.Servers) != 1 {
+		t.Fatalf("servers=%s, the Docker service list stays", mustJSONOrNil(out.Servers))
+	}
+}
+
+// grantBotScope records 开通范围 grants on the same settings store the pool uses.
+func grantBotScope(t *testing.T, system *desktopSettingsMem, dir botmgmt.Directory, grants ...botmgmt.Grant) *botmgmt.Service {
+	t.Helper()
+	bots := botmgmt.NewService(system)
+	bots.Directory = dir
+	for _, item := range grants {
+		if _, err := bots.CreateGrant(context.Background(), "tenant-a", item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return bots
+}
+
+// desktopGrantDir resolves the department chain the 开通范围 filter walks.
+type desktopGrantDir struct {
+	email   map[string]string
+	group   map[string]string
+	parents map[string]string
+}
+
+func (d desktopGrantDir) Email(_ context.Context, userID string) (string, error) {
+	return d.email[userID], nil
+}
+func (d desktopGrantDir) GroupID(_ context.Context, email string) (string, error) {
+	return d.group[email], nil
+}
+func (d desktopGrantDir) ParentID(_ context.Context, groupID string) (string, error) {
+	return d.parents[groupID], nil
+}
+
+// tenantScopedDir is a department directory that answers only for want.
+// Group rows in the security store are selected the same way.
+type tenantScopedDir struct {
+	want  string
+	email map[string]string
+	group map[string]string
+}
+
+func (d tenantScopedDir) Email(ctx context.Context, userID string) (string, error) {
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return d.email[userID], nil
+}
+
+func (d tenantScopedDir) GroupID(ctx context.Context, email string) (string, error) {
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return d.group[email], nil
+}
+
+func (d tenantScopedDir) ParentID(ctx context.Context, groupID string) (string, error) {
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return "", nil
 }
 
 func mustJSONOrNil(v any) string {

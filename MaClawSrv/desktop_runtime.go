@@ -17,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
@@ -41,13 +42,31 @@ func (desktopRuntimeModule) Descriptor() agentruntime.ModuleDescriptor {
 	}
 }
 
-func (desktopRuntimeModule) Tools(context.Context, agentruntime.TurnRequest) ([]agentruntime.ToolDefinition, error) {
+func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRequest) ([]agentruntime.ToolDefinition, error) {
 	if !desktopAvailable() {
 		return nil, nil
 	}
+	if botPhaseFromTurn(request) == "plan" {
+		return []agentruntime.ToolDefinition{{
+			Name: desktopToolName,
+			Description: "Inspect this user's cloud desktop and propose an arrangement. " +
+				"Use only probe, screenshot, or app_list. " +
+				"A login wall, captcha, card field, or consent dialog is reported in the arrangement; it does not hand over the desktop. " +
+				"Bots of this user are different instances of the same MaClawSrv user and share this desktop. Other users cannot see it.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action": map[string]any{"type": "string", "description": "probe, screenshot, or app_list"},
+					"query":  map[string]any{"type": "string", "description": "Optional probe filter"},
+				},
+				"required": []string{"action"},
+			},
+		}}, nil
+	}
+	description := "Operate this user's cloud desktop. "
 	return []agentruntime.ToolDefinition{{
 		Name: desktopToolName,
-		Description: "Operate this user's cloud desktop. " +
+		Description: description +
 			"Bots of this user are different instances of the same MaClawSrv user and share this desktop. Other users cannot see it. " +
 			"For web pages use the browser inside that desktop: action=probe once, then action=task_run with steps " +
 			"(navigate, click, type, press, scroll, select, wait) in one call. Do not click the browser window with pixels. " +
@@ -75,14 +94,28 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if strings.TrimSpace(name) != desktopToolName {
 		return "", fmt.Errorf("unknown desktop tool %s", name)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A missing phase is not execution. Direct operateDesktop calls omit this
+	// key and keep today's behavior; a bot turn always sets it.
+	ctx = context.WithValue(ctx, desktopPhaseKey{}, botPhaseFromTurn(request))
 	return operateDesktop(ctx, request.Scope, args)
 }
 
-func (desktopRuntimeModule) ContributePrompt(context.Context, agentruntime.TurnRequest) (string, error) {
+func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentruntime.TurnRequest) (string, error) {
 	if !desktopAvailable() {
 		return "", nil
 	}
-	return "The current user has one cloud desktop through the desktop tool. " +
+	if botPhaseFromTurn(request) == "plan" {
+		return "The current user has one cloud desktop through the desktop tool. " +
+			"This turn only inspects it and proposes an arrangement. " +
+			"Use only probe, screenshot, or app_list. " +
+			"If the page is a login wall, captcha, card form, or consent dialog, describe that in the arrangement and wait for the user to confirm. " +
+			"This user's bots share this desktop. Other users have separate desktops.", nil
+	}
+	prompt := "The current user has one cloud desktop through the desktop tool. "
+	return prompt +
 		"The person and this agent share that desktop's browser window, so a login or verification finished by the person stays in this browser. " +
 		"After they hand it back, continue the original task in this browser. Other pages of this site keep the website login. If this site opens a window, continue there. Do not open another site, profile, or private session. " +
 		"Do not use web_fetch, web_search, or the host open tool for a site this user may have signed into; those tools cannot see this browser. " +
@@ -159,6 +192,18 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	if action == "press" && desktopArg(args, "key") == "" {
 		return "", fmt.Errorf("desktop press requires key")
 	}
+	if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
+		switch action {
+		case "navigate", "click", "type", "press", "task_run", "app_run":
+			return "", fmt.Errorf("plan phase blocks %s until the user confirms", action)
+		}
+	}
+	// Refuse before a session exists when this command would type into the
+	// control that is already focused. A ref, or a click before the text,
+	// is checked again at that target. The error is only the code.
+	if desktopInsertsIntoFocusedControl(action, args) && desktopPasswordFocused(scope, nil) {
+		return "", fmt.Errorf("not_password_field")
+	}
 	userKey, err := desktopUserKey(scope)
 	if err != nil {
 		return "", err
@@ -179,7 +224,24 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", err
 	}
 	if action == "app_list" || action == "app_run" {
-		return operateDesktopApp(ctx, scope, endpoint.Display, action, args)
+		// Clicks and window switches are delivered before the next type or
+		// character key. The focused control is read after those steps return,
+		// so a click into a password field is not in the same xdotool command
+		// as the text. The typed text is not part of the error.
+		var beforeInsert func() error
+		if action == "app_run" && appStepsIncludeType(args["steps"]) {
+			beforeInsert = func() error {
+				session, serr := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
+				if serr != nil {
+					return serr
+				}
+				if desktopPasswordFocused(scope, session) {
+					return fmt.Errorf("not_password_field")
+				}
+				return nil
+			}
+		}
+		return operateDesktopApp(ctx, scope, endpoint.Display, action, args, beforeInsert)
 	}
 	if action == "screenshot" {
 		return desktopScreenshot(ctx, scope, endpoint.Display)
@@ -188,6 +250,11 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	session, err := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
 	if err != nil {
 		return "", err
+	}
+	// Same rule after attach. A type that names a ref is decided by that
+	// ref, not by whichever control happens to be focused.
+	if desktopInsertsIntoFocusedControl(action, args) && desktopPasswordFocused(scope, session) {
+		return "", fmt.Errorf("not_password_field")
 	}
 	var text string
 	switch action {
@@ -222,42 +289,240 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	default:
 		return "", fmt.Errorf("desktop action must be navigate, probe, click, type, or press")
 	}
-	return finishDesktopAction(scope, text, err)
+	phase := "execute"
+	if value, keyed := desktopPhase(ctx); keyed {
+		phase = value
+	}
+	return finishDesktopActionPhase(scope, text, err, phase)
 }
 
 // finishDesktopAction stops the turn when the desktop is waiting for a person.
 // The agent loop treats the ask-user marker as a pause, so it does not keep
 // clicking. The same instance continues when the user sends the next command.
+const desktopLoginQuestion = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
+
 func finishDesktopAction(scope agentruntime.Scope, text string, err error) (string, error) {
-	if desktopNeedsPerson(text) {
-		if desktopUnattended(scope.InstanceID) {
-			return strings.TrimSpace(text + "\n这次是自动任务，没有人在桌面旁完成登录或验证。"), fmt.Errorf("desktop needs a person")
-		}
-		noteDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID)
-		noteDesktopResume(scope)
-		return agent.AskUserResultMarker(&agent.AskUserRequest{
-			Question:  "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。",
-			InputType: "text",
-		}), nil
+	return finishDesktopActionPhase(scope, text, err, "execute")
+}
+
+// finishDesktopActionPhase hands the desktop to a person only during execution.
+// A plan probe that sees a login wall returns the observation and does not
+// record a handoff or the login question.
+func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, phase string) (string, error) {
+	reason := desktopAttentionReason(text)
+	if reason == "" {
+		return text, err
 	}
-	return text, err
+	if phase != "execute" {
+		return text, err
+	}
+	if desktopUnattended(scope.InstanceID) {
+		return strings.TrimSpace(text + "\n这次是自动任务，没有人在桌面旁完成登录或验证。"), fmt.Errorf("desktop needs a person")
+	}
+	noteDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID)
+	noteDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID, reason)
+	noteDesktopResume(scope)
+	question := desktopLoginQuestion
+	switch reason {
+	case "payment_confirm":
+		question = "这一步需要你在当前桌面的浏览器里完成支付。完成后这个 bot 会接着操作。"
+	case "consent_dialog":
+		question = "这一步需要你在当前桌面的浏览器里确认这项同意。完成后这个 bot 会接着操作。"
+	}
+	return agent.AskUserResultMarker(&agent.AskUserRequest{
+		Question:  question,
+		InputType: "text",
+	}), nil
 }
 
 func desktopNeedsPerson(text string) bool {
+	return desktopAttentionReason(text) != ""
+}
+
+func desktopAttentionReason(text string) string {
 	if strings.Contains(text, "handoff=captcha") || strings.Contains(text, "captcha challenge") {
-		return true
+		return "captcha_widget"
 	}
 	flags := text
 	if index := strings.Index(text, "page flags:"); index >= 0 {
 		flags = text[index:]
 	} else {
+		return ""
+	}
+	for _, name := range []string{"captcha_widget", "mfa", "payment_confirm", "consent_dialog", "login_wall"} {
+		if strings.Contains(flags, name) {
+			return name
+		}
+	}
+	return ""
+}
+
+type desktopPhaseKey struct{}
+
+func desktopPhase(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	value, ok := ctx.Value(desktopPhaseKey{}).(string)
+	return value, ok
+}
+
+func botPhaseFromTurn(request agentruntime.TurnRequest) string {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		if input.Message.Metadata == nil {
+			return ""
+		}
+		return strings.TrimSpace(input.Message.Metadata["bot_phase"])
+	case *agentservice.ExecuteRequest:
+		if input == nil || input.Message.Metadata == nil {
+			return ""
+		}
+		return strings.TrimSpace(input.Message.Metadata["bot_phase"])
+	default:
+		return ""
+	}
+}
+
+// desktopFocusedInputType reports the focused control type. Tests replace it.
+// Production uses the same frame walk as secret fill.
+var desktopFocusedInputType = desktopLiveFocusedInputType
+
+func desktopLiveFocusedInputType(scope agentruntime.Scope) string {
+	session := desktopLiveSession(scope)
+	if session == nil {
+		return ""
+	}
+	_, kind := session.FocusedInputKind()
+	return kind
+}
+
+// desktopPasswordFocused is true when a model type would land in a password
+// field. A session already in hand is read directly so the binding lock is
+// not taken twice. With no session, the reader is the production frame walk
+// unless a test replaced it. The typed text is not part of this.
+func desktopPasswordFocused(scope agentruntime.Scope, session *browser.BrowserAgentSession) bool {
+	if session != nil {
+		_, kind := session.FocusedInputKind()
+		return browser.FocusBlocksModelType(kind)
+	}
+	if desktopFocusedInputType == nil {
 		return false
 	}
-	return strings.Contains(flags, "login_wall") || strings.Contains(flags, "mfa") || strings.Contains(flags, "captcha_widget")
+	return browser.FocusBlocksModelType(desktopFocusedInputType(scope))
+}
+
+// desktopInsertsIntoFocusedControl reports whether the command would type
+// into the control that is focused before any of its steps run. A later
+// click or a named ref can land somewhere else, so those stay out of this
+// check and are read at the insert.
+func desktopInsertsIntoFocusedControl(action string, args map[string]any) bool {
+	switch action {
+	case "type":
+		return desktopArg(args, "ref") == "" && desktopArg(args, "selector") == ""
+	case "press":
+		return browser.KeyInsertsText(desktopArg(args, "key"))
+	case "task_run":
+		return browserStepsInsertIntoFocus(args["steps"])
+	case "app_run":
+		return appStepsInsertIntoFocus(args["steps"])
+	default:
+		return false
+	}
+}
+
+func browserStepsInsertIntoFocus(raw any) bool {
+	steps, err := desktopBrowserSteps(raw)
+	if err != nil {
+		return false
+	}
+	moved := false
+	for _, step := range steps {
+		switch step.Action {
+		case "click", "navigate":
+			moved = true
+		case "press":
+			key := step.Params["key"]
+			if strings.TrimSpace(key) == "" {
+				key = step.Params["text"]
+			}
+			if browser.KeyInsertsText(key) {
+				if !moved {
+					return true
+				}
+			} else if strings.TrimSpace(key) != "" {
+				moved = true
+			}
+		case "type":
+			if strings.TrimSpace(step.Params["ref"]) == "" && strings.TrimSpace(step.Params["selector"]) == "" && !moved {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appStepsInsertIntoFocus(raw any) bool {
+	steps, err := desktopAppSteps(raw)
+	if err != nil {
+		return false
+	}
+	moved := false
+	for _, step := range steps {
+		if len(step) == 0 {
+			continue
+		}
+		switch step[0] {
+		case "search", "mousemove":
+			moved = true
+		case "key":
+			if len(step) >= 2 && browser.KeyInsertsText(step[1]) {
+				if !moved {
+					return true
+				}
+			} else {
+				moved = true
+			}
+		case "type":
+			if !moved {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appStepsIncludeType(raw any) bool {
+	if raw == nil {
+		return false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var loose []struct {
+		Action string `json:"action"`
+		Key    string `json:"key"`
+	}
+	if err := json.Unmarshal(encoded, &loose); err != nil {
+		return false
+	}
+	for _, step := range loose {
+		switch strings.ToLower(strings.TrimSpace(step.Action)) {
+		case "type":
+			return true
+		case "key":
+			if browser.KeyInsertsText(step.Key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func desktopBrowserSession(binding *desktopBinding, scope agentruntime.Scope, userKey, addr string) (*browser.BrowserAgentSession, error) {
 	if binding.session != nil && binding.addr == addr && binding.session.DesktopConnected() {
+		binding.session.BlockModelPasswordTyping()
 		followDesktopAfterPerson(scope, binding.session)
 		return binding.session, nil
 	}
@@ -273,6 +538,7 @@ func desktopBrowserSession(binding *desktopBinding, scope agentruntime.Scope, us
 	}
 	binding.session = session
 	binding.addr = addr
+	session.BlockModelPasswordTyping()
 	followDesktopAfterPerson(scope, session)
 	return session, nil
 }
@@ -507,7 +773,7 @@ func desktopSession(ctx context.Context, scope agentruntime.Scope, userKey strin
 	return desktopEnsureFn(userKey)
 }
 
-func operateDesktopApp(ctx context.Context, scope agentruntime.Scope, display, action string, args map[string]any) (string, error) {
+func operateDesktopApp(ctx context.Context, scope agentruntime.Scope, display, action string, args map[string]any, beforeInsert func() error) (string, error) {
 	run := func(argv ...string) (string, error) {
 		if desktopRemoteApp != nil {
 			return desktopRemoteApp(ctx, scope.TenantID, scope.UserID, display, argv)
@@ -525,17 +791,79 @@ func operateDesktopApp(ctx context.Context, scope agentruntime.Scope, display, a
 		if err != nil {
 			return "", err
 		}
-		out, err := run(desktopAppArgv(steps)...)
-		if err != nil {
-			text := strings.TrimSpace(out)
-			if text == "" {
-				text = err.Error()
-			}
-			return trimDesktopText(text), err
+		if beforeInsert == nil {
+			return desktopAppResult(run(desktopAppArgv(steps)...))
 		}
-		return trimDesktopText(strings.TrimSpace(out)), nil
+		return runGuardedDesktopAppSteps(steps, beforeInsert, run)
 	default:
 		return "", fmt.Errorf("unknown desktop app action %s", action)
+	}
+}
+
+func desktopAppResult(out string, err error) (string, error) {
+	if err != nil {
+		text := strings.TrimSpace(out)
+		if text == "" {
+			text = err.Error()
+		}
+		return trimDesktopText(text), err
+	}
+	return trimDesktopText(strings.TrimSpace(out)), nil
+}
+
+// runGuardedDesktopAppSteps delivers pointer and window steps, then reads the
+// focused control, then sends one type or character key. A later insert is
+// read again. Steps that do not insert stay in one xdotool command.
+func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, run func(...string) (string, error)) (string, error) {
+	var pending []string
+	var last string
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		out, err := run(pending...)
+		pending = nil
+		if strings.TrimSpace(out) != "" {
+			last = out
+		}
+		return err
+	}
+	for _, step := range steps {
+		if desktopArgvInsertsText(step) {
+			if err := flush(); err != nil {
+				return desktopAppResult(last, err)
+			}
+			if err := beforeInsert(); err != nil {
+				return "", err
+			}
+			out, err := run(step...)
+			if err != nil {
+				return desktopAppResult(out, err)
+			}
+			if strings.TrimSpace(out) != "" {
+				last = out
+			}
+			continue
+		}
+		pending = append(pending, step...)
+	}
+	if err := flush(); err != nil {
+		return desktopAppResult(last, err)
+	}
+	return trimDesktopText(strings.TrimSpace(last)), nil
+}
+
+func desktopArgvInsertsText(step []string) bool {
+	if len(step) == 0 {
+		return false
+	}
+	switch step[0] {
+	case "type":
+		return true
+	case "key":
+		return len(step) >= 2 && browser.KeyInsertsText(step[1])
+	default:
+		return false
 	}
 }
 

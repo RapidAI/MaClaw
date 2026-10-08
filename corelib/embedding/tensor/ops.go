@@ -785,24 +785,115 @@ func Tanh(x []float32) {
 	}
 }
 
-// GELU applies GELU activation in-place (approximate).
+// geluPyTorchC is √(2/π), the constant in gelu_pytorch_tanh.
+const geluPyTorchC = 0.7978845608
+
+func geluPyTorchTanh(v float64) float32 {
+	return float32(0.5 * v * (1.0 + math.Tanh(geluPyTorchC*(v+0.044715*v*v*v))))
+}
+
+// expF32 is the Cephes / sse_mathfun float32 exp. Relative error stays near 1 ulp
+// on the range GELU feeds it, which is enough for gelu_pytorch_tanh.
+func expF32(x float32) float32 {
+	const (
+		maxX  float32 = 88.37626
+		minX  float32 = -88.37626
+		log2e float32 = 1.442695
+		c1    float32 = 0.693359375
+		c2    float32 = -2.1219444e-4
+		p0    float32 = 1.98756915e-4
+		p1    float32 = 1.39819995e-3
+		p2    float32 = 8.3334519e-3
+		p3    float32 = 4.1665796e-2
+		p4    float32 = 1.6666665e-1
+		p5    float32 = 5.0000001e-1
+	)
+	if x > maxX {
+		x = maxX
+	} else if x < minX {
+		x = minX
+	}
+	fx := x*log2e + 0.5
+	n := float32(int32(fx))
+	if n > fx {
+		n--
+	}
+	g := x - n*c1 - n*c2
+	z := g * g
+	y := (((((p0*g+p1)*g+p2)*g+p3)*g+p4)*g+p5)*z + g + 1
+	bits := uint32(int32(n)+127) << 23
+	return y * math.Float32frombits(bits)
+}
+
+// tanhF32 matches math.Tanh narrowed to float32. The |z| < 0.625 arm is the
+// Cody-Waite rational used by math.Tanh. The other arm is 1 - 2/(exp(2z)+1).
+func tanhF32(x float32) float32 {
+	z := x
+	if z < 0 {
+		z = -z
+	}
+	if z >= 9 {
+		if x < 0 {
+			return -1
+		}
+		return 1
+	}
+	if z >= 0.625 {
+		e := expF32(2 * z)
+		y := float32(1 - 2/(float64(e)+1))
+		if x < 0 {
+			return -y
+		}
+		return y
+	}
+	if x == 0 {
+		return x
+	}
+	xd := float64(x)
+	s := xd * xd
+	y := xd + xd*s*((tanhP0*s+tanhP1)*s+tanhP2)/(((s+tanhQ0)*s+tanhQ1)*s+tanhQ2)
+	return float32(y)
+}
+
+const (
+	tanhP0 = -9.64399179425052238628e-1
+	tanhP1 = -9.92877231001918586564e1
+	tanhP2 = -1.61468768441708447952e3
+	tanhQ0 = 1.12811678491632931402e2
+	tanhQ1 = 2.23548839060100448583e3
+	tanhQ2 = 4.84406305325125486048e3
+)
+
+func geluPyTorchTanhFast(v float32) float32 {
+	inner := float32(geluPyTorchC) * (v + 0.044715*v*v*v)
+	return 0.5 * v * (1 + tanhF32(inner))
+}
+
+// GELU applies GELU activation in-place (gelu_pytorch_tanh).
 func GELU(x []float32) {
-	const c = 0.7978845608 // sqrt(2/pi)
 	for i := range x {
-		v := float64(x[i])
-		x[i] = float32(0.5 * v * (1.0 + math.Tanh(c*(v+0.044715*v*v*v))))
+		x[i] = geluPyTorchTanhFast(x[i])
+	}
+}
+
+// GELUMul computes GELU(gate) * up in-place into gate.
+// EmbeddingGemma's FFN is GeGLU with gelu_pytorch_tanh, not SiLU.
+// The AVX2 body uses 1-2/(exp(2|z|)+1) and saturates at |z|>=9. The tail
+// stays on geluPyTorchTanhFast, which keeps the small-argument rational.
+func GELUMul(gate, up []float32) {
+	n := geluMulBody(gate, up)
+	for i := n; i < len(gate); i++ {
+		gate[i] = geluPyTorchTanhFast(gate[i]) * up[i]
 	}
 }
 
 // AddBiasGELU fuses row-wise bias addition with GELU activation.
 func AddBiasGELU(data []float32, rows, dim int, bias []float32) {
-	const c = 0.7978845608 // sqrt(2/pi)
 	for r := 0; r < rows; r++ {
 		off := r * dim
 		row := data[off : off+dim]
 		for i := 0; i < dim; i++ {
-			v := float64(row[i] + bias[i])
-			row[i] = float32(0.5 * v * (1.0 + math.Tanh(c*(v+0.044715*v*v*v))))
+			row[i] = geluPyTorchTanhFast(row[i] + bias[i])
 		}
 	}
 }
@@ -934,6 +1025,50 @@ func softmaxInplaceInvScalar(scores []float32) float32 {
 		return 0
 	}
 	return 1.0 / sum
+}
+
+// weightedSumBatched256 accumulates exponentiated scores against contiguous
+// V rows of length 256. scores is [nQ][rows]. nQ is 4 or 8. invs[t] is 1/sum
+// for query t, so a zero score stays a zero weight.
+func weightedSumBatched256(out, scores, values []float32, nQ, rows, outStride, hOff, qf int, invs [8]float32) {
+	switch nQ {
+	case 8:
+		weightedSumBatchedContig256n8(out, scores, values, rows, outStride, hOff, qf, invs)
+	case 4, 3:
+		weightedSumBatchedContig256n4(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
+	}
+}
+
+// SoftmaxWeightedSumWindow256 softmaxes each query over its own key span and
+// accumulates the union with one batched V load. scores is [nQ][seq] with a
+// logit at [t*seq+k]. lo and hi are half-open spans, one per query, and lo is
+// non-decreasing. V rows are contiguous [seq][256]. Keys outside a query's
+// span get weight 0 after that query's softmax, so they do not enter it.
+// Returns false without writing when the union does not fit the scratch band.
+func SoftmaxWeightedSumWindow256(out, scores, values []float32, nQ, seq, outStride, hOff, qf int, lo, hi []int) bool {
+	if nQ <= 0 || seq <= 0 || len(lo) < nQ || len(hi) < nQ {
+		return false
+	}
+	ulo, uhi := lo[0], hi[nQ-1]
+	if ulo < 0 || uhi > seq || uhi <= ulo {
+		return false
+	}
+	uLen := uhi - ulo
+	// Official EmbeddingGemma window: 8 queries span at most 2*256+8 keys.
+	var band [8 * (2*256 + 8)]float32
+	if nQ > 8 || nQ*uLen > len(band) {
+		return false
+	}
+	var invs [8]float32
+	for t := 0; t < nQ; t++ {
+		span := scores[t*seq+lo[t] : t*seq+hi[t]]
+		invs[t] = softmaxInplaceInv(span)
+		dst := band[t*uLen : (t+1)*uLen]
+		clear(dst)
+		copy(dst[lo[t]-ulo:hi[t]-ulo], span)
+	}
+	weightedSumBatched256(out, band[:nQ*uLen], values[ulo*256:(ulo+uLen)*256], nQ, uLen, outStride, hOff, qf, invs)
+	return true
 }
 
 // SoftmaxWeightedSumBatched writes nQ attention outputs sharing one V stream.

@@ -128,6 +128,13 @@ func semanticShellClassification(reason string) *intent.ClassificationResult {
 func semanticReleasedRequestPlansShell(current intent.ClassificationResult, userText string, history []agent.ConversationEntry) bool {
 	switch current.Primary {
 	case intent.LabelKnowledgeWrite:
+		// The sentence itself is the knowledge save. A URL in the note, or in
+		// an earlier turn, is that text's evidence. Rewriting the save into
+		// shell lists bash, and the spent-wave note then tells the model to
+		// call bash again.
+		if intent.ExplicitCapabilityRequestTrigger(userText) {
+			return false
+		}
 	case intent.LabelCoding, intent.LabelBugFix, intent.LabelMaintenance:
 		if current.Confidence >= 0.85 {
 			return false
@@ -136,6 +143,65 @@ func semanticReleasedRequestPlansShell(current intent.ClassificationResult, user
 		return false
 	}
 	return semanticTextHasCallTarget(userText) || semanticHistoryHasCallTarget(history)
+}
+
+// semanticExplicitKnowledgeWrite is the sentence's own capability when it
+// asks to persist text into the knowledge base. The tree, a spent shell wave,
+// or task-context merge may have labeled it shell because the previous turn
+// was a server session. That label publishes bash as the required need, so
+// the model can only narrate knowledge_save_text inside a shell command.
+// A link inside the note is content being saved. The workspace shell floor
+// remains available for a sentence that also names an endpoint.
+// The trigger does not execute the tool; it selects the knowledge-ingest
+// plan, which is the normal grant path. Runner-up SSH and a protocol-failure
+// flag are cleared: the planner would otherwise promote the server session
+// back into a required shell, or reject the turn before that plan runs.
+func semanticExplicitKnowledgeWrite(current *intent.ClassificationResult, userText string) *intent.ClassificationResult {
+	if !intent.ExplicitCapabilityRequestTrigger(userText) {
+		return nil
+	}
+	base := intent.ClassificationResult{}
+	if current != nil {
+		base = *current
+	}
+	if semanticKnowledgeWriteAlreadySelected(base) {
+		return nil
+	}
+	base.Primary = intent.LabelKnowledgeWrite
+	base.Secondary = nil
+	base.ToolNames = nil
+	base.WorkflowType = ""
+	base.Degraded = false
+	base.ControlPlaneFailure = false
+	base.CreationOriented = false
+	base.RunnerUp = ""
+	base.RunnerUpScore = 0
+	base.Confidence = 0.95
+	if base.Layer < 3 {
+		base.Layer = 3
+	}
+	const note = "explicit knowledge-write request"
+	if base.Reason == "" {
+		base.Reason = note
+	} else if !strings.Contains(base.Reason, note) {
+		base.Reason = strings.TrimSpace(base.Reason + "; " + note)
+	}
+	return &base
+}
+
+// semanticKnowledgeWriteAlreadySelected reports a classification that already
+// publishes only the knowledge-write plan. Escalation evidence left on an
+// otherwise clean label is not selected: the planner promotes runner-up SSH
+// into a required remote shell.
+func semanticKnowledgeWriteAlreadySelected(result intent.ClassificationResult) bool {
+	return result.Primary == intent.LabelKnowledgeWrite &&
+		len(result.Secondary) == 0 &&
+		len(result.ToolNames) == 0 &&
+		result.WorkflowType == "" &&
+		result.RunnerUp == "" &&
+		!result.Degraded &&
+		!result.ControlPlaneFailure &&
+		!result.CreationOriented
 }
 
 func semanticTextHasCallTarget(text string) bool {

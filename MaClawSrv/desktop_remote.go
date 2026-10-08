@@ -175,7 +175,8 @@ var (
 	desktopRunsMu  sync.Mutex
 	desktopRuns    = map[string]int{}
 	desktopHolds   = map[string]int{}
-	desktopHandoff sync.Map
+	desktopHandoff    sync.Map
+	desktopAttention sync.Map
 	// desktopUserGates keep one user's stop and the next start apart.
 	// Stopping writes the website login. Starting during that write would
 	// open another browser and leave the login behind.
@@ -264,6 +265,27 @@ func desktopHandoffKey(tenantID, userID, instanceID string) string {
 // desktopRemoteHold is set by tests. Production tells Hub immediately, before
 // the message reply returns, so another bot cannot stop the login browser.
 var desktopRemoteHold func(ctx context.Context, tenantID, userID, instanceID string) error
+
+func noteDesktopAttention(tenantID, userID, instanceID, reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	desktopAttention.Store(desktopHandoffKey(tenantID, userID, instanceID), reason)
+}
+
+func takeDesktopTurn(tenantID, userID, instanceID string) (bool, string) {
+	return takeDesktopHandoff(tenantID, userID, instanceID), takeDesktopAttention(tenantID, userID, instanceID)
+}
+
+func takeDesktopAttention(tenantID, userID, instanceID string) string {
+	value, ok := desktopAttention.LoadAndDelete(desktopHandoffKey(tenantID, userID, instanceID))
+	reason, _ := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(reason)
+}
 
 func noteDesktopHandoff(tenantID, userID, instanceID string) {
 	desktopHandoff.Store(desktopHandoffKey(tenantID, userID, instanceID), true)

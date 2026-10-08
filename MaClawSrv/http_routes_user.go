@@ -102,6 +102,7 @@ func (s *HTTPServer) registerUserAPIRoutes() {
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/summary", s.withPrincipal(s.handleGetInstanceSummary))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/bootstrap", s.withPrincipal(s.handleGetInstanceBootstrap))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/messages", s.withPrincipal(s.handleSendMessage))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/secret-fill", s.withPrincipal(s.handleDesktopSecretFill))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions", s.withPrincipal(s.handleListSessions))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions", s.withPrincipal(s.handleCreateSession))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleGetSession))

@@ -6,15 +6,15 @@
 // Contract (per-row A scales; the per-block weight scale vector is shared by
 // all 8 rows so scale bookkeeping is hoisted out of the row loop):
 //   out[r][n] = aS[r] · Σ_blk bS[n][blk]·Σ_i (aQ[r][i]−128)·int8(packed[n][i])
-// The (aQ−128) offset compensation is accumulated per column in f32
-// (compF += bS·VPDPBUSD(0x80,B)) and subtracted once per row at the end.
+// The (aQ-128) offset is 16 precomputed f32 lanes per column (ColBias).
+// The epilogue loads them into Z27/Z31 and subtracts before the horizontal sum.
 // aQ: 8 rows × K bytes u8(+128), stride K. aS: 8 f32, stride 4.
 // packed: B payload rows of K bytes; bS: nBlocks f32 per B row.
 // ns must be even; loop covers col pairs [ns, ne) stepping 2.
 
-// func gemmaVNNIRowM8N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+// func gemmaVNNIRowM8N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int, bias *float32)
 // K=768 (24 blocks, 12 ticks of 64B per column pair).
-TEXT ·gemmaVNNIRowM8N24PackedAVX512(SB), NOSPLIT, $80-64
+TEXT ·gemmaVNNIRowM8N24PackedAVX512(SB), NOSPLIT, $80-72
 	MOVQ out+0(FP), AX
 	MOVQ AX, 0(SP)
 	MOVQ aQ+8(FP), AX
@@ -31,10 +31,8 @@ TEXT ·gemmaVNNIRowM8N24PackedAVX512(SB), NOSPLIT, $80-64
 	MOVQ AX, 48(SP)
 	MOVQ ns+48(FP), AX
 	MOVQ AX, 56(SP)
-
-	MOVL $0x80808080, CX
-	MOVL CX, 64(SP)
-	VPBROADCASTD 64(SP), Z21
+	MOVQ bias+64(FP), CX
+	MOVQ CX, 64(SP)
 
 	MOVQ 24(SP), DI
 	MOVQ AX, R12
@@ -87,20 +85,12 @@ r8v24k:
 	VMOVSS 4(R13), X28
 	VBROADCASTSS X28, Y25
 	VINSERTF32X8 $1, Y25, Z24, Z24
-	VPXORD Z26, Z26, Z26
-	VPDPBUSD Z16, Z21, Z26
-	VCVTDQ2PS Z26, Z26
-	VFMADD231PS Z24, Z26, Z27
 	// Z23 = [bS[n+1][b]×8 | bS[n+1][b+1]×8]; compF_{n+1} into Z31
 	VMOVSS (R14), X28
 	VBROADCASTSS X28, Y23
 	VMOVSS 4(R14), X28
 	VBROADCASTSS X28, Y25
 	VINSERTF32X8 $1, Y25, Z23, Z23
-	VPXORD Z26, Z26, Z26
-	VPDPBUSD Z17, Z21, Z26
-	VCVTDQ2PS Z26, Z26
-	VFMADD231PS Z23, Z26, Z31
 
 	// row 0
 	VMOVDQU64 (SI), Z18
@@ -191,10 +181,16 @@ r8v24k:
 	DECQ CX
 	JNZ  r8v24k
 
-	// finish 8 rows × 2 cols: (acc − compF) → hsum → ×aS[r] → store
+	// finish 8 rows x 2 cols: subtract lane bias, hsum, scale by aS[r], store
 	MOVQ 0(SP), BX
 	MOVQ 56(SP), AX
 	MOVQ 40(SP), DX
+	MOVQ 64(SP), CX
+	MOVQ AX, R12
+	SHLQ $6, R12
+	ADDQ R12, CX
+	VMOVDQU64 (CX), Z27
+	VMOVDQU64 64(CX), Z31
 	MOVQ AX, R12
 	SHLQ $2, R12
 	ADDQ BX, R12
@@ -401,9 +397,9 @@ r8v24k:
 r8v24done:
 	RET
 
-// func gemmaVNNIRowM8N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+// func gemmaVNNIRowM8N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int, bias *float32)
 // K=1152 (36 blocks, 18 ticks of 64B per column pair).
-TEXT ·gemmaVNNIRowM8N36PackedAVX512(SB), NOSPLIT, $80-64
+TEXT ·gemmaVNNIRowM8N36PackedAVX512(SB), NOSPLIT, $80-72
 	MOVQ out+0(FP), AX
 	MOVQ AX, 0(SP)
 	MOVQ aQ+8(FP), AX
@@ -420,10 +416,8 @@ TEXT ·gemmaVNNIRowM8N36PackedAVX512(SB), NOSPLIT, $80-64
 	MOVQ AX, 48(SP)
 	MOVQ ns+48(FP), AX
 	MOVQ AX, 56(SP)
-
-	MOVL $0x80808080, CX
-	MOVL CX, 64(SP)
-	VPBROADCASTD 64(SP), Z21
+	MOVQ bias+64(FP), CX
+	MOVQ CX, 64(SP)
 
 	MOVQ 24(SP), DI
 	MOVQ AX, R12
@@ -475,19 +469,11 @@ r8v36k:
 	VMOVSS 4(R13), X28
 	VBROADCASTSS X28, Y25
 	VINSERTF32X8 $1, Y25, Z24, Z24
-	VPXORD Z26, Z26, Z26
-	VPDPBUSD Z16, Z21, Z26
-	VCVTDQ2PS Z26, Z26
-	VFMADD231PS Z24, Z26, Z27
 	VMOVSS (R14), X28
 	VBROADCASTSS X28, Y23
 	VMOVSS 4(R14), X28
 	VBROADCASTSS X28, Y25
 	VINSERTF32X8 $1, Y25, Z23, Z23
-	VPXORD Z26, Z26, Z26
-	VPDPBUSD Z17, Z21, Z26
-	VCVTDQ2PS Z26, Z26
-	VFMADD231PS Z23, Z26, Z31
 
 	// row 0
 	VMOVDQU64 (SI), Z18
@@ -581,6 +567,12 @@ r8v36k:
 	MOVQ 0(SP), BX
 	MOVQ 56(SP), AX
 	MOVQ 40(SP), DX
+	MOVQ 64(SP), CX
+	MOVQ AX, R12
+	SHLQ $6, R12
+	ADDQ R12, CX
+	VMOVDQU64 (CX), Z27
+	VMOVDQU64 64(CX), Z31
 	MOVQ AX, R12
 	SHLQ $2, R12
 	ADDQ BX, R12

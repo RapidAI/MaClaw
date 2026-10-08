@@ -25,7 +25,9 @@ const browserPageFlagsCollectJS = `
     captcha: /captcha|verify you are human|unusual traffic|安全验证|人机验证/.test(lower) || genericCaptchaIframe || classCaptcha,
     login_wall: anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower),
     mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(lower),
-    canvas: anySelector('canvas')
+    canvas: anySelector('canvas'),
+    payment_confirm: anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout') || anyIframeSrc('js.stripe.com') || anyIframeSrc('paypal.com'),
+    consent_dialog: anySelector('[role="dialog"], [aria-modal="true"]') && /consent|隐私政策|privacy policy|同意并继续/.test(fullText) && !(anySelector('[class*="cookie"], [id*="cookie"]') && /accept cookies|接受.*cookie|同意.*cookie/.test(lower))
   };
 `
 
@@ -152,6 +154,21 @@ func captchaWidgetFromSignals(iframeSrcs []string, pageText string, classOrIDCap
 		return true
 	}
 	return classOrIDCaptcha && genericCaptchaIframe
+}
+
+// paymentConfirmFromSignals is true only for a card field or an external
+// checkout frame. A pay button, a price, or the word 支付 is not enough.
+func paymentConfirmFromSignals(hasCard, checkoutIframe bool) bool {
+	return hasCard || checkoutIframe
+}
+
+// consentDialogFromSignals ignores a cookie accept. A separate consent
+// dialog still counts.
+func consentDialogFromSignals(cookieAccept, consentDialog bool) bool {
+	if cookieAccept {
+		return false
+	}
+	return consentDialog
 }
 
 func (s *BrowserAgentSession) lastSnapshotFlags() (BrowserPageFlags, bool) {

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Seed stable-history.json from the current release when COS is unreachable.
+"""Seed stable-history.json from the current release when no catalogue exists.
 
-The rollback catalogue normally lives on the COS mirror and is updated by
-sync_cos_release.py during upload. While the COS upload step is paused the
-catalogue cannot be refreshed there; the R2 rollback publisher then falls back
-to this script, which builds a single-entry catalogue from the local release
-assets using the same schema as sync_cos_release.stable_history_entry.
+The rollback catalogue lives on the Cloudflare R2 mirror. The R2 publisher
+falls back to this script when no remote history is reachable yet (first
+stable release or a prior job failure), building a single-entry catalogue
+from the local release assets.
 """
 
 import hashlib

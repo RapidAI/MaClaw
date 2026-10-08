@@ -581,6 +581,188 @@ func testMatMulQ8PackedQKVSeq(t *testing.T, seq, maxWorkers int) {
 	}
 }
 
+// TestGemmaVNNISeq5to7PadMatchesF32 pins the padded M8 VNNI tile (seq 5-7,
+// K=768), exact groups (seq 8 and 16), and the seq>=8 tail against the f32
+// GEMM. Worker count 7 starts an odd column so the float tail reads only
+// the live rows. K=1152 seq 6 stays on MADDWD. A K=1152 tail of any length
+// stays on the f32 kernels; the last seq%8 rows must match within 1e-4.
+func TestGemmaVNNISeq5to7PadMatchesF32(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("needs AVX512-VNNI")
+	}
+	defer SetMatMulMaxParallel(0)
+	// seq 8 and 16 are exact M8 groups. seq 9 and 12 keep a 1- and 4-row
+	// f32 tail. seq 13, 14, and 15 are the 5-7 row K=768 tails on one
+	// padded M8 tile.
+	for _, seq := range []int{5, 6, 7, 8, 9, 12, 13, 14, 15, 16} {
+		for _, nw := range []int{1, 7} {
+			SetMatMulMaxParallel(nw)
+			testGemmaVNNIPadQKV(t, seq, nw)
+			testGemmaVNNIPadDual(t, seq, nw)
+			testGemmaVNNIPadRMS(t, seq, 768, nw, false)
+		}
+	}
+	SetMatMulMaxParallel(1)
+	testGemmaVNNIPadRMS(t, 6, 1152, 1, true)
+	for _, seq := range []int{13, 14, 15} {
+		for _, nw := range []int{1, 7} {
+			SetMatMulMaxParallel(nw)
+			testGemmaVNNIPadRMS(t, seq, 1152, nw, false)
+		}
+	}
+}
+
+func testGemmaVNNIPadQKV(t *testing.T, seq, maxWorkers int) {
+	t.Helper()
+	const K, Nq, Nkv = 768, 768, 256
+	a := make([]float32, seq*K)
+	qData := make([]float32, Nq*K)
+	kData := make([]float32, Nkv*K)
+	vData := make([]float32, Nkv*K)
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.01
+	}
+	for i := range qData {
+		qData[i] = float32((i%13)-6) * 0.02
+	}
+	for i := range kData {
+		kData[i] = float32((i%11)-5) * 0.015
+		vData[i] = float32((i%7)-3) * 0.018
+	}
+	wq := QuantizeToQ8(qData, Nq, K)
+	wk := QuantizeToQ8(kData, Nkv, K)
+	wv := QuantizeToQ8(vData, Nkv, K)
+	wq.PackQS()
+	wk.PackQS()
+	wv.PackQS()
+	wantQ := make([]float32, seq*Nq)
+	wantK := make([]float32, seq*Nkv)
+	wantV := make([]float32, seq*Nkv)
+	MatMulQ8N(wantQ, a, wq, seq, Nq, K, 1)
+	MatMulQ8N(wantK, a, wk, seq, Nkv, K, 1)
+	MatMulQ8N(wantV, a, wv, seq, Nkv, K, 1)
+	gotQ := make([]float32, seq*Nq)
+	gotK := make([]float32, seq*Nkv)
+	gotV := make([]float32, seq*Nkv)
+	// Twice: the second call reuses a dirty quantized-panel pool.
+	for range 2 {
+		MatMulQ8PackedQKV(gotQ, gotK, gotV, a, wq, wk, wv, seq, 0)
+	}
+	cos := gemmCosine32(gotQ, wantQ)
+	if c := gemmCosine32(gotK, wantK); c < cos {
+		cos = c
+	}
+	if c := gemmCosine32(gotV, wantV); c < cos {
+		cos = c
+	}
+	if cos < 0.999 {
+		t.Fatalf("seq=%d workers=%d packed QKV cosine=%g want >=0.999", seq, maxWorkers, cos)
+	}
+}
+
+func testGemmaVNNIPadDual(t *testing.T, seq, maxWorkers int) {
+	t.Helper()
+	const K, N = 768, 1152
+	a := make([]float32, seq*K)
+	gData := make([]float32, N*K)
+	uData := make([]float32, N*K)
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.01
+	}
+	for i := range gData {
+		gData[i] = float32((i%13)-6) * 0.02
+		uData[i] = float32((i%11)-5) * 0.015
+	}
+	wGate := QuantizeToQ8(gData, N, K)
+	wUp := QuantizeToQ8(uData, N, K)
+	wGate.PackQS()
+	wUp.PackQS()
+	wantG := make([]float32, seq*N)
+	wantU := make([]float32, seq*N)
+	MatMulQ8N(wantG, a, wGate, seq, N, K, 1)
+	MatMulQ8N(wantU, a, wUp, seq, N, K, 1)
+	GELUMul(wantG, wantU)
+	gotG := make([]float32, seq*N)
+	gotU := make([]float32, seq*N)
+	for range 2 {
+		MatMulQ8DualOut(gotG, gotU, a, wGate, wUp, seq, 0)
+	}
+	cos := gemmCosine32(gotG, wantG)
+	if c := gemmCosine32(gotU, wantU); c < cos {
+		cos = c
+	}
+	if cos < 0.999 {
+		t.Fatalf("seq=%d workers=%d packed DualOut cosine=%g want >=0.999", seq, maxWorkers, cos)
+	}
+}
+
+func testGemmaVNNIPadRMS(t *testing.T, seq, K, maxWorkers int, strictAbs bool) {
+	t.Helper()
+	const N, mt = 768, 8
+	x0 := make([]float32, seq*N)
+	a := make([]float32, seq*K)
+	bData := make([]float32, N*K)
+	wRMS := make([]float32, N)
+	for i := range x0 {
+		x0[i] = float32((i%9)-4) * 0.02
+	}
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.01
+	}
+	for i := range bData {
+		bData[i] = float32((i%11)-5) * 0.03
+	}
+	for i := range wRMS {
+		wRMS[i] = 1 + float32(i%5)*0.01
+	}
+	b := QuantizeToQ8(bData, N, K)
+	b.PackQS()
+	want := append([]float32(nil), x0...)
+	y := make([]float32, seq*N)
+	MatMulQ8N(y, a, b, seq, N, K, 1)
+	for s := 0; s < seq; s++ {
+		row := y[s*N : (s+1)*N]
+		RMSNorm(row, row, wRMS, 1e-6)
+		Add(want[s*N:(s+1)*N], want[s*N:(s+1)*N], row)
+	}
+	got := append([]float32(nil), x0...)
+	yTile := make([]float32, mt*N)
+	for range 2 {
+		copy(got, x0)
+		MatMulQ8RMSResidual(got, a, yTile, b, wRMS, seq, N, K, mt, 0, 1e-6)
+	}
+	cos := gemmCosine32(got, want)
+	var maxd float32
+	for i := range got {
+		d := float32(math.Abs(float64(got[i] - want[i])))
+		if d > maxd {
+			maxd = d
+		}
+	}
+	if cos < 0.999 {
+		t.Fatalf("seq=%d K=%d workers=%d RMS cosine=%g max|Δ|=%g", seq, K, maxWorkers, cos, maxd)
+	}
+	if strictAbs && maxd > 1e-4 {
+		t.Fatalf("seq=%d K=%d RMS max|Δ|=%g want <=1e-4 (K=1152 seq<8 stays on MADDWD)", seq, K, maxd)
+	}
+	// A K=1152 tail stays on the f32 GEMM, including remainders 5-7.
+	// RMSNorm is per row, so those rows do not mix with the VNNI body.
+	if K != 768 && seq >= 8 && seq%8 != 0 {
+		rem := seq % 8
+		var tailMax float32
+		start := (seq - rem) * N
+		for i := start; i < len(got); i++ {
+			d := float32(math.Abs(float64(got[i] - want[i])))
+			if d > tailMax {
+				tailMax = d
+			}
+		}
+		if tailMax > 1e-4 {
+			t.Fatalf("seq=%d K=%d workers=%d f32 tail max|Δ|=%g want <=1e-4", seq, K, maxWorkers, tailMax)
+		}
+	}
+}
+
 func TestMatMulQ8RMSResidual_MatchesSeparate(t *testing.T) {
 	const seq, N, K, mt = 6, 768, 1152, 8
 	x0 := make([]float32, seq*N)
@@ -706,7 +888,7 @@ func testMatMulQ8DualOutSeq(t *testing.T, seq, maxWorkers int) {
 	wantU := make([]float32, seq*N)
 	MatMulQ8N(wantG, a, wGate, seq, N, K, 1)
 	MatMulQ8N(wantU, a, wUp, seq, N, K, 1)
-	SiLUMul(wantG, wantU)
+	GELUMul(wantG, wantU)
 	MatMulQ8DualOut(gotG, gotU, a, wGate, wUp, seq, maxWorkers)
 	var maxd float32
 	for i := range gotG {
@@ -720,7 +902,7 @@ func testMatMulQ8DualOutSeq(t *testing.T, seq, maxWorkers int) {
 		}
 	}
 	if maxd > 2e-3 {
-		t.Fatalf("seq=%d workers=%d DualOut vs two GEMMs+SiLUMul max|Δ|=%g", seq, maxWorkers, maxd)
+		t.Fatalf("seq=%d workers=%d DualOut vs two GEMMs+GELUMul max|Δ|=%g", seq, maxWorkers, maxd)
 	}
 }
 
@@ -745,7 +927,7 @@ func TestMatMulQ8DualOut_PackedM3MatchesTwoGEMMs(t *testing.T) {
 	wantU := make([]float32, seq*N)
 	MatMulQ8N(wantG, a, wGate, seq, N, K, 1)
 	MatMulQ8N(wantU, a, wUp, seq, N, K, 1)
-	SiLUMul(wantG, wantU)
+	GELUMul(wantG, wantU)
 	for _, nw := range []int{0, 5, 7} {
 		SetMatMulMaxParallel(nw)
 		gotG := make([]float32, seq*N)

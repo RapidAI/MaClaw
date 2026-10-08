@@ -28,7 +28,7 @@ UIC、工具路由、Hub / HubCenter class head、知识库向量化、TTS `Embe
 
 包头注释（`corelib/embedding/gemma.go`）写明架构：
 
-- Gemma2-style transformer：GQA（3 heads / 1 KV head）、QK-norm、post-attn RMSNorm、post-FFN RMSNorm、SiLU-gated FFN、RoPE
+- Gemma 3 embedding：双向 GQA（3 heads / 1 KV head）、QK-norm、post-attn RMSNorm、post-FFN RMSNorm、GeGLU（gelu_pytorch_tanh）、对称滑窗（周期 6，半窗 256）与双 RoPE（局部 10000 / 全局 1e6）。下文融合图里的 SiLUMul 在数值上已是 GELUMul，融合边界不变。
 - 输出：mean-pool → L2 normalize；MRL 截断 768 → 512 / 256 / 128
 - 权重量化：大矩阵保持 Q8_0 mmap，按 block 在 MatMul 内反量化；norm 向量解到 float32
 
@@ -46,6 +46,9 @@ UIC、工具路由、Hub / HubCenter class head、知识库向量化、TTS `Embe
 | `MaxSeqLen` | `*.context_length` | 2048 |
 | `RMSNormEps` | `*.attention.layer_norm_rms_epsilon` | 1e-6 |
 | `RopeTheta` | `*.rope.freq_base` | 1e6 |
+| `RopeThetaLocal` | `*.rope.freq_base_swa`，缺省 10000 | 10000 |
+| `SlidingWindow` | `*.attention.sliding_window`，缺省 512 | 512 |
+| `SWAPeriod` | `*.attention.sliding_window_pattern`，缺省 6 | 6 |
 | 输出维 | `NewGemmaEmbedder(path, dim)` | UIC 默认 256；TTS 传 768 |
 
 Early-exit（`gemma.go` `NewGemmaEmbedder`）：`dim<=128` → `NLayers*2/3`（24→16）；`dim<=256` → `NLayers*3/4`（24→18）；`dim>256`（TTS 768）关闭。
@@ -1069,7 +1072,7 @@ PR5（8745HS，无后端）：开关灰掉，无徽章。PR6 在有 NPU 的机�
 
 ```text
 corelib/embedding/
-  gemma.go                 加载、PrepareScales、静态 cache 预乘 sqrt(dim)、early exit
+  gemma.go                 加载、PrepareScales、静态 cache 预乘 sqrt(dim)、可选 SetEarlyExit
   gemma_infer.go           layerLoop；fusion 开关；maxWorkers 下传
   gemma_scratch.go         新建（2a 分桶；2b arena）
   testdata/embed_gate_zh.txt

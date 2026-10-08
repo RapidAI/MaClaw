@@ -5,6 +5,17 @@ export interface DesktopBot {
     createdAt: number;
 }
 
+export type BotPhase = 'plan' | 'execute';
+
+// Ask details copied from the turn. secretName is a placeholder such as
+// SITE_PASSWORD. The secret value is never stored on the message.
+export interface DesktopBotAsk {
+    inputType?: string;
+    secretName?: string;
+    question?: string;
+    options?: string[];
+}
+
 export interface DesktopBotMessage {
     id: string;
     role: 'user' | 'assistant';
@@ -13,6 +24,10 @@ export interface DesktopBotMessage {
     failed?: boolean;
     handoffUrl?: string;
     userControl?: boolean;
+    attentionReason?: string;
+    phase?: BotPhase;
+    askUser?: DesktopBotAsk;
+    askResolved?: boolean;
     requestId?: string;
     // Instant "colleague accepted the task" reply. It never carries a handoff
     // or a result, so result lookups skip it.
@@ -152,35 +167,44 @@ function pendingBotIndex(current: DesktopBotMessage[], requestId: string): numbe
     return -1;
 }
 
-export function notePendingBotDesktop(userId: string, botId: string, patch: { handoffUrl: string; userControl?: boolean; reported: boolean; requestId?: string }) {
+export function notePendingBotDesktop(userId: string, botId: string, patch: { handoffUrl: string; userControl?: boolean; attentionReason?: string; reported: boolean; requestId?: string }) {
     const handoffUrl = patch.handoffUrl.trim();
-    if (!handoffUrl) return;
+    const reason = (patch.attentionReason || '').trim();
+    const control = patch.userControl === true;
+    // A desktop address on its own is not a screen handoff. Leave the pending
+    // reply alone so a later visit does not treat the URL as someone waiting.
+    if (!control && reason === '') return;
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return;
     const next = current.slice();
     next[index] = {
         ...next[index],
-        handoffUrl,
-        userControl: patch.reported ? patch.userControl === true : next[index].userControl,
+        handoffUrl: handoffUrl || next[index].handoffUrl,
+        userControl: patch.reported ? control : (control || next[index].userControl),
+        attentionReason: reason || next[index].attentionReason,
     };
     saveBotMessages(userId, botId, next);
 }
 
 // settlePendingBotReply records the instance result on the pending reply.
 // The bots page may already be closed when MaClawSrv finishes.
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; requestId?: string }) {
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string }) {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return;
     const next = current.slice();
+    const previous = next[index];
+    const reason = (patch.attentionReason || '').trim();
     next[index] = {
-        ...next[index],
+        ...previous,
         content: patch.content,
         pending: false,
         failed: patch.failed,
         handoffUrl: patch.handoffUrl || '',
         userControl: patch.userControl === true,
+        attentionReason: reason,
+        askUser: patch.askUser || previous.askUser,
     };
     saveBotMessages(userId, botId, next);
 }

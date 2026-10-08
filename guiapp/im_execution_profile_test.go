@@ -1576,6 +1576,18 @@ func TestShortContinuationKeepsParentExecutionTools(t *testing.T) {
 	if got := h.continuationKeepsParentExecution(light, userID, "用这个", live); !got.IsLight() {
 		t.Fatalf("a confident live-data turn must start clean, got %+v", got)
 	}
+	weather := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.73}
+	if got := h.continuationKeepsParentExecution(light, userID, "北京天气", weather); !got.IsLight() {
+		t.Fatalf("live data at the embedding lookup floor must start clean, got %+v", got)
+	}
+	clock := &intent.ClassificationResult{Primary: intent.LabelCurrentTime, Confidence: 0.73}
+	if got := h.continuationKeepsParentExecution(light, userID, "几点了", clock); !got.IsLight() {
+		t.Fatalf("a clock lookup at the embedding lookup floor must start clean, got %+v", got)
+	}
+	weakSearch := &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.73}
+	if got := h.continuationKeepsParentExecution(light, userID, "搜一下", weakSearch); got.Reason != shortContinuationReason {
+		t.Fatalf("a search below 0.85 must keep the parent surface, got %+v", got)
+	}
 	unsure := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.4}
 	if got := h.continuationKeepsParentExecution(light, userID, "用这个", unsure); got.Reason != shortContinuationReason {
 		t.Fatalf("a low-confidence label must keep the parent surface, got %+v", got)
@@ -1605,6 +1617,54 @@ func TestShortContinuationKeepsParentExecutionTools(t *testing.T) {
 	}
 	if got := h.continuationKeepsParentExecution(light, userID, "用这个", nil); !got.IsLight() {
 		t.Fatalf("after a light turn the next short reply starts clean, got %+v", got)
+	}
+}
+
+func TestSocialGreetingAndParentContinuationSkipIntentTree(t *testing.T) {
+	continuation := intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.73}
+	if !deferIntentTreeForParentContinuation(continuation) {
+		t.Fatal("a generic continuation reading must not wait on the tree when the parent surface is already full")
+	}
+	live := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.73}
+	if deferIntentTreeForParentContinuation(live) {
+		t.Fatal("a live-data reading must still classify so the lookup can start clean")
+	}
+	ssh := intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: 0.90}
+	if deferIntentTreeForParentContinuation(ssh) {
+		t.Fatal("a capability reading must still take the intent tree")
+	}
+
+	h := &IMMessageHandler{}
+	const userID = "desktop-user"
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	greeting := socialGreetingExecutionProfile()
+	kept := h.continuationKeepsParentExecution(greeting, userID, "你好呀", nil)
+	if !kept.IsLight() || kept.Reason != "social greeting" {
+		t.Fatalf("a greeting must stay on the light prompt, got %+v", kept)
+	}
+	ctx := NewLoopContext("chat", 1, nil)
+	ctx.Runtime.Execution = kept
+	markAnswerOnlySocialTurn(ctx, kept, "你好呀")
+	if !ctx.semanticTurnAnswerOnly {
+		t.Fatal("a greeting must answer without tools")
+	}
+	set := h.prepareAgentLoopTools(userID, "你好呀", ctx, agentLoopPhase{})
+	if len(set.Tools) != 0 || len(set.BaseTools) != 0 {
+		t.Fatalf("greeting published tools: %d base %d", len(set.Tools), len(set.BaseTools))
+	}
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("a greeting must leave the open task's tools, got %v", got)
+	}
+	ack := h.continuationKeepsParentExecution(greeting, userID, "好的", nil)
+	if ack.IsLight() || ack.Reason != shortContinuationReason {
+		t.Fatalf("an acknowledgement keeps the parent surface, got %+v", ack)
+	}
+	ackCtx := NewLoopContext("chat", 1, nil)
+	markAnswerOnlySocialTurn(ackCtx, ack, "好的")
+	if ackCtx.semanticTurnAnswerOnly {
+		t.Fatal("an acknowledgement must still be able to use the open task")
 	}
 }
 

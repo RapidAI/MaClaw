@@ -165,6 +165,9 @@ func TestGemmaModelIDTracksPromptRegime(t *testing.T) {
 	if !strings.Contains(rawID, ":768:") {
 		t.Errorf("ModelID %q should carry the output dimension", rawID)
 	}
+	if !strings.Contains(rawID, ":"+gemmaGraphVersion+":") {
+		t.Errorf("ModelID %q should carry the graph version", rawID)
+	}
 }
 
 // TestGemmaModelIDCarriesGGUFIdentity pins the reason ModelID reads the model

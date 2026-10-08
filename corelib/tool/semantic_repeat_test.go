@@ -247,6 +247,19 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	if len(updated.Selections) != RepeatSiblingBudgetLimit+1 {
 		t.Fatalf("selections=%d", len(updated.Selections))
 	}
+	if !updated.Selections[len(updated.Selections)-1].Continuation {
+		t.Fatal("the sibling past the published wave was not marked as the one continuation")
+	}
+	if _, _, again := AppendRepeatSibling(updated, updated.Selections[0].ID); again {
+		t.Fatal("a continuation renewed the budget")
+	}
+	materialized := map[string]bool{}
+	for _, selection := range updated.Selections {
+		materialized[selection.ID] = true
+	}
+	if note := RepeatFamilySpentBudgetNote(updated, updated.Selections[len(updated.Selections)-1].ID, materialized, nil); note != "" {
+		t.Fatalf("continuation result promised another call: %q", note)
+	}
 	gapped := ToolPlan{Selections: []PlannedSelection{
 		{ID: "selection:" + base, NeedID: base, AdapterName: "download_file"},
 		{ID: "selection:" + RepeatSiblingNeedID(base, 5), NeedID: RepeatSiblingNeedID(base, 5), AdapterName: "download_file"},
@@ -278,6 +291,43 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	}
 	if len(extendedWrite.Selections) != 2 || !strings.Contains(writeID, "#02") {
 		t.Fatalf("extended write id=%q selections=%d", writeID, len(extendedWrite.Selections))
+	}
+	if extendedWrite.Selections[len(extendedWrite.Selections)-1].Continuation {
+		t.Fatal("the next file write was marked as a budget continuation")
+	}
+	extendedAgain, _, openedAgain := AppendRepeatSibling(extendedWrite, extendedWrite.Selections[0].ID)
+	if !openedAgain || len(extendedAgain.Selections) != 3 {
+		t.Fatal("a local file write stopped after one extra sibling")
+	}
+	writeMaterialized := map[string]bool{}
+	for _, selection := range extendedAgain.Selections {
+		writeMaterialized[selection.ID] = true
+	}
+	if note := RepeatFamilySpentBudgetNote(extendedAgain, extendedAgain.Selections[len(extendedAgain.Selections)-1].ID, writeMaterialized, nil); note != "" {
+		t.Fatalf("file write note promised another call: %q", note)
+	}
+	baseline := "need:zz-baseline:shell.execute.local:abc123def456"
+	baselinePlan := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + baseline, NeedID: baseline, EvidenceIDs: []string{"intent:baseline_workspace"}, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal}},
+		{ID: "selection:" + RepeatSiblingNeedID(baseline, 1), NeedID: RepeatSiblingNeedID(baseline, 1), EvidenceIDs: []string{"intent:baseline_workspace"}, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal}},
+	}}
+	if _, _, openedBaseline := AppendRepeatSibling(baselinePlan, baselinePlan.Selections[0].ID); openedBaseline {
+		t.Fatal("a baseline shell floor opened another call")
+	}
+	baselineMaterialized := map[string]bool{}
+	for _, selection := range baselinePlan.Selections {
+		baselineMaterialized[selection.ID] = true
+	}
+	if note := RepeatFamilySpentBudgetNote(baselinePlan, baselinePlan.Selections[1].ID, baselineMaterialized, nil); note != "" {
+		t.Fatalf("baseline shell note promised another call: %q", note)
+	}
+	owned := "need:shell.execute.local:abc123def456"
+	mixed := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + owned, NeedID: owned, EvidenceIDs: []string{"intent:shell_command"}, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal}},
+		{ID: "selection:" + RepeatSiblingNeedID(owned, 1), NeedID: RepeatSiblingNeedID(owned, 1), EvidenceIDs: []string{"intent:baseline_workspace"}, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal}},
+	}}
+	if _, _, openedMixed := AppendRepeatSibling(mixed, mixed.Selections[0].ID); !openedMixed {
+		t.Fatal("a task-owned shell was treated as a companion floor")
 	}
 	capped := ToolPlan{}
 	for index := 0; index < MaxRepeatFamilyInvocations; index++ {

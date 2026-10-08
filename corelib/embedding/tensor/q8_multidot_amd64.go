@@ -455,8 +455,8 @@ func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWor
 	return true
 }
 
-// packedDualOutGemmaShort: Dual3 packed n-loop N-split + per-range SiLU
-// (no extra full-array SiLUMul join after the GEMM wait).
+// packedDualOutGemmaShort: Dual3 packed n-loop N-split + per-range GELU
+// (no extra full-array GELUMul join after the GEMM wait).
 func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, N, K int, eps float32, maxWorkers int) bool {
 	if seq != 3 || !hasAVX512 || b == nil || N != gemmaDim {
 		return false
@@ -469,7 +469,7 @@ func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, 
 	}
 	var aq *gemmaM3AQ
 	// Row-scale VNNI covers the K=768 projections; the K=1152 FFN-down keeps the
-	// f32 packed M3 kernel — per-row quantization of the SiLU-gated FFN row is
+	// f32 packed M3 kernel — per-row quantization of the GeGLU FFN row is
 	// too coarse for 2-3 token embeddings (gate: "你好" cosine 0.998 < 0.999).
 	if enableGemmaM3VNNI && hasAVX512VNNI && K == 768 && len(b.Packed) >= N*K {
 		aq = gemmaM3AQPool.Get().(*gemmaM3AQ)
@@ -536,7 +536,7 @@ func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWo
 		}
 		for r := 0; r < 3; r++ {
 			off := r*N + ns
-			SiLUMul(gate[off:r*N+ne], up[off:r*N+ne])
+			GELUMul(gate[off:r*N+ne], up[off:r*N+ne])
 		}
 	}
 	if maxWorkers == 1 || !shouldParallel(seq, N, K) {
@@ -598,10 +598,10 @@ func gemmaPackedM3N24(out, a []float32, b *Q8Tensor, N, ns, ne int) {
 func gemmaVNNIM3N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
 
 //go:noescape
-func gemmaVNNIRowM3N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+func gemmaVNNIRowM3N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int, bias *float32)
 
 //go:noescape
-func gemmaVNNIRowM3N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+func gemmaVNNIRowM3N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int, bias *float32)
 
 // gemmaVNNIRowM3N24/N36 run the row-scale M3 VNNI kernel over [ns,ne) with
 // odd column edges on the f32 tail path (same pattern as gemmaVNNIPackedM3N24).
@@ -612,7 +612,8 @@ func gemmaVNNIRowM3N24(out []float32, aQ []byte, aS []float32, a []float32, b *Q
 		n++
 	}
 	if n+1 < ne {
-		gemmaVNNIRowM3N24PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne)
+		b.ensureColBias()
+		gemmaVNNIRowM3N24PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne, &b.ColBias[0])
 	}
 	if (ne-n)&1 != 0 {
 		gemmaStoreTailCol(out, a, b, 3, N, 768, ne-1)
@@ -626,7 +627,8 @@ func gemmaVNNIRowM3N36(out []float32, aQ []byte, aS []float32, a []float32, b *Q
 		n++
 	}
 	if n+1 < ne {
-		gemmaVNNIRowM3N36PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne)
+		b.ensureColBias()
+		gemmaVNNIRowM3N36PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne, &b.ColBias[0])
 	}
 	if (ne-n)&1 != 0 {
 		gemmaStoreTailCol(out, a, b, 3, N, 1152, ne-1)
@@ -1312,4 +1314,3 @@ func dotQ8RowScaledScalar(a []float32, data []byte, scales []float32, rowOff, nB
 	}
 	return sum
 }
-

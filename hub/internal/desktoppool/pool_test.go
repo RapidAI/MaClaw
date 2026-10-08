@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
 type memSettings struct {
@@ -216,6 +218,79 @@ func newCandidatePool(t *testing.T, assignments []Assignment) *Pool {
 		}
 	}
 	return pool
+}
+
+// TestDepartmentAssignmentResolvesInSettingsTenant starts a desktop from a
+// department assignment when the caller did not already set a security tenant.
+// The directory answers only for the assignment's tenant.
+func TestDepartmentAssignmentResolvesInSettingsTenant(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/desktops" {
+			http.NotFound(w, r)
+			return
+		}
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"container":"desk","status":"running","image":"img","memory":"2g","cpus":"1","shm_size":"1g"}`))
+	}))
+	defer srv.Close()
+
+	pool := New(&memSettings{}, tenantPoolDir{
+		want:  "tenant-a",
+		email: map[string]string{"carol": "carol@example.com", "sam": "sam@example.com"},
+		group: map[string]string{"carol@example.com": "eng", "sam@example.com": "sales"},
+	})
+	ctx := context.Background()
+	view, err := pool.CreateServer(ctx, "tenant-a", Server{Name: "srv", BaseURL: srv.URL, AccessToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeDepartment, TargetID: "eng", ServerID: view.ID}); err != nil {
+		t.Fatal(err)
+	}
+	got := pool.AuthorizedUsers(ctx, "tenant-a", []AuthorizedUser{
+		{ID: "carol", Label: "carol@example.com"},
+		{ID: "sam", Label: "sam@example.com"},
+	})
+	if len(got) != 1 || got[0].ID != "carol" {
+		t.Fatalf("authorized=%s, want carol", mustJSON(got))
+	}
+	desktop, err := pool.CreateDesktop(ctx, "tenant-a", "carol")
+	if err != nil || desktop.ServerID != view.ID || hits != 1 {
+		t.Fatalf("desktop=%s hits=%d err=%v", mustJSON(desktop), hits, err)
+	}
+	if _, err := pool.CreateDesktop(ctx, "tenant-a", "sam"); err != ErrNotAssigned || hits != 1 {
+		t.Fatalf("sam err=%v hits=%d, want no assignment and no extra start", err, hits)
+	}
+}
+
+// tenantPoolDir answers with a department only when the context carries want.
+type tenantPoolDir struct {
+	want  string
+	email map[string]string
+	group map[string]string
+}
+
+func (d tenantPoolDir) Email(ctx context.Context, userID string) (string, error) {
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return d.email[userID], nil
+}
+
+func (d tenantPoolDir) GroupID(ctx context.Context, email string) (string, error) {
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return d.group[email], nil
+}
+
+func (d tenantPoolDir) ParentID(ctx context.Context, groupID string) (string, error) {
+	if security.TenantIDFromContext(ctx) != d.want {
+		return "", nil
+	}
+	return "", nil
 }
 
 func TestAuthorizedUsersEmptyWithoutAssignments(t *testing.T) {

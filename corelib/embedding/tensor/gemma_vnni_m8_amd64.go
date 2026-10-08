@@ -16,10 +16,10 @@ import (
 var enableGemmaM8VNNI = os.Getenv("MACLAW_EMBED_NO_VNNI") != "1"
 
 //go:noescape
-func gemmaVNNIRowM8N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+func gemmaVNNIRowM8N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int, bias *float32)
 
 //go:noescape
-func gemmaVNNIRowM8N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+func gemmaVNNIRowM8N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int, bias *float32)
 
 //go:noescape
 func gemmaQuantizeQ8UAVX512(q *byte, s *float32, a *float32, rows, nBlocks int)
@@ -103,10 +103,12 @@ func gemmaVNNIM8Cols(out []float32, aQ []byte, aS []float32, a []float32, b *Q8T
 		n++
 	}
 	if n+1 < ne {
+		b.ensureColBias()
+		bias := &b.ColBias[0]
 		if K == gemmaDim {
-			gemmaVNNIRowM8N24PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne)
+			gemmaVNNIRowM8N24PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne, bias)
 		} else {
-			gemmaVNNIRowM8N36PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne)
+			gemmaVNNIRowM8N36PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne, bias)
 		}
 	}
 	if (ne-n)&1 != 0 {
@@ -114,14 +116,24 @@ func gemmaVNNIM8Cols(out []float32, aQ []byte, aS []float32, a []float32, b *Q8T
 	}
 }
 
-// gemmaVNNIM8Range covers M rows on [ns,ne): VNNI M8 tiles plus existing f32
-// kernels for the M tail (<8 rows). aS holds one scale per row.
+// gemmaVNNIM8Range covers M rows on [ns,ne). Full groups of 8 use the VNNI
+// tile. A K=768 tail of 5, 6, or 7 rows is one zero-padded M8 tile: that
+// remainder was two f32 calls. Remainder 1, 2, and 4 stay on M4 (the tile
+// saves only a few microseconds, and switching them moved the analysis
+// sentence). Remainder 3 stays on packed M3, which is faster than the 8-row
+// tile. Every K=1152 tail stays on the f32 kernels. aQ/aS for the padded
+// tail are a multiple of 8 rows.
 func gemmaVNNIM8Range(out []float32, aQ []byte, aS []float32, a []float32, b *Q8Tensor, M, N, K, ns, ne int) {
 	m := 0
 	for ; m+7 < M; m += 8 {
 		gemmaVNNIM8Cols(out[m*N:], aQ[m*K:], aS[m:], a[m*K:], b, N, K, ns, ne)
 	}
 	if m >= M {
+		return
+	}
+	rows := M - m
+	if K == gemmaDim && rows >= 5 {
+		gemmaVNNIM8PadRange(out[m*N:], aQ[m*K:], aS[m:], a[m*K:], b, rows, N, K, ns, ne)
 		return
 	}
 	if K == gemmaDim {
@@ -145,23 +157,80 @@ func gemmaVNNIM8Range(out []float32, aQ []byte, aS []float32, a []float32, b *Q8
 	}
 }
 
-// gemmaVNNIQKV replaces MatMulQ8PackedQKV for seq>=8: quantize A once, then
+// gemmaVNNIQuantPanel quantizes seq rows of a and zero-pads to a multiple of
+// 8 so an M8 tile can read the tail. The pool buffer is dirty; the pad is
+// cleared after quantize.
+func gemmaVNNIQuantPanel(a []float32, seq, K int) *gemmaAQ8 {
+	rows := (seq + 7) &^ 7
+	panel := getGemmaAQ8(rows, K)
+	gemmaQuantizeQ8URow(panel.q, panel.s, a, seq, K)
+	if rows > seq {
+		clear(panel.q[seq*K : rows*K])
+		clear(panel.s[seq:rows])
+	}
+	return panel
+}
+
+// gemmaVNNIPadPool is an 8-row output scratch for the seq 5-7 tile.
+// 8*gemmaFFDim covers DualOut (N=1152); QKV and the K=768 residual are smaller.
+var gemmaVNNIPadPool = sync.Pool{New: func() any { p := make([]float32, 8*gemmaFFDim); return &p }}
+
+// gemmaVNNIM8PadRange runs one K=768 M8 VNNI tile for a live row count in
+// [1,8). Callers are seq 5-7 and a seq>=8 tail of 5-7 rows. The kernel
+// always stores 8 rows at stride N, so those stores land in a per-call
+// scratch and only the live rows of [ns, ne) are copied out. aQ/aS are 8
+// rows; pad rows are zeros. Odd columns dot the live float rows only.
+// Each N-split worker takes its own scratch. K must be 768.
+func gemmaVNNIM8PadRange(out []float32, aQ []byte, aS []float32, a []float32, b *Q8Tensor, seq, N, K, ns, ne int) {
+	tp := gemmaVNNIPadPool.Get().(*[]float32)
+	scratch := *tp
+	need := 8 * N
+	if cap(scratch) < need {
+		scratch = make([]float32, need)
+		*tp = scratch
+	} else {
+		scratch = scratch[:need]
+	}
+	defer gemmaVNNIPadPool.Put(tp)
+	n := ns
+	if n&1 != 0 {
+		gemmaStoreTailCol(scratch, a, b, seq, N, K, n)
+		n++
+	}
+	if n+1 < ne {
+		b.ensureColBias()
+		gemmaVNNIRowM8N24PackedAVX512(&scratch[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne, &b.ColBias[0])
+	}
+	if (ne-n)&1 != 0 {
+		gemmaStoreTailCol(scratch, a, b, seq, N, K, ne-1)
+	}
+	for r := 0; r < seq; r++ {
+		copy(out[r*N+ns:r*N+ne], scratch[r*N+ns:r*N+ne])
+	}
+}
+
+// gemmaVNNIQKV replaces MatMulQ8PackedQKV for seq>=5: quantize A once, then
 // split the virtual column space [0, Nq+Nkv+Nkv) so workers stay balanced
-// (Q [0,768), K [768,1024), V [1024,1280)).
+// (Q [0,768), K [768,1024), V [1024,1280)). seq 5-7 runs one zero-padded M8
+// tile. seq 4 stays on the M4 MADDWD path; an 8-row tile would do twice the
+// int8 work of that M4 tile.
 func gemmaVNNIQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers int) bool {
 	const K, Nq, Nkv = gemmaDim, gemmaDim, gemmaKVDim
-	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 8 {
+	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 5 {
 		return false
 	}
 	if !gemmaVNNIWeightOK(wq, K) || !gemmaVNNIWeightOK(wk, K) || !gemmaVNNIWeightOK(wv, K) {
 		return false
 	}
+	wq.ensureColBias()
+	wk.ensureColBias()
+	wv.ensureColBias()
 	if len(a) < seq*K || len(q) < seq*Nq || len(k) < seq*Nkv || len(v) < seq*Nkv {
 		return false
 	}
-	panel := getGemmaAQ8(seq, K)
+	panel := gemmaVNNIQuantPanel(a, seq, K)
 	defer putGemmaAQ8(panel)
-	gemmaQuantizeQ8URow(panel.q, panel.s, a, seq, K)
+	pad := seq < 8
 	total := Nq + 2*Nkv
 	run := func(cs, ce int) {
 		if cs < Nq {
@@ -169,7 +238,11 @@ func gemmaVNNIQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers in
 			if ne > Nq {
 				ne = Nq
 			}
-			gemmaVNNIM8Range(q, panel.q, panel.s, a, wq, seq, Nq, K, cs, ne)
+			if pad {
+				gemmaVNNIM8PadRange(q, panel.q, panel.s, a, wq, seq, Nq, K, cs, ne)
+			} else {
+				gemmaVNNIM8Range(q, panel.q, panel.s, a, wq, seq, Nq, K, cs, ne)
+			}
 		}
 		if ce > Nq && cs < Nq+Nkv {
 			s := cs - Nq
@@ -181,7 +254,11 @@ func gemmaVNNIQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers in
 				e = Nkv
 			}
 			if s < e {
-				gemmaVNNIM8Range(k, panel.q, panel.s, a, wk, seq, Nkv, K, s, e)
+				if pad {
+					gemmaVNNIM8PadRange(k, panel.q, panel.s, a, wk, seq, Nkv, K, s, e)
+				} else {
+					gemmaVNNIM8Range(k, panel.q, panel.s, a, wk, seq, Nkv, K, s, e)
+				}
 			}
 		}
 		if ce > Nq+Nkv {
@@ -194,7 +271,11 @@ func gemmaVNNIQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers in
 				e = Nkv
 			}
 			if s < e {
-				gemmaVNNIM8Range(v, panel.q, panel.s, a, wv, seq, Nkv, K, s, e)
+				if pad {
+					gemmaVNNIM8PadRange(v, panel.q, panel.s, a, wv, seq, Nkv, K, s, e)
+				} else {
+					gemmaVNNIM8Range(v, panel.q, panel.s, a, wv, seq, Nkv, K, s, e)
+				}
 			}
 		}
 	}
@@ -206,28 +287,36 @@ func gemmaVNNIQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers in
 	return true
 }
 
-// gemmaVNNIDualOut replaces MatMulQ8DualOut for seq>=8: one quantization of A
-// feeds both FFN weight streams; SiLU is applied per range (disjoint columns).
+// gemmaVNNIDualOut replaces MatMulQ8DualOut for seq>=5: one quantization of A
+// feeds both FFN weight streams; GELU is applied per range (disjoint columns).
+// seq 5-7 uses the same padded M8 tile as QKV. Both projections are K=768.
 func gemmaVNNIDualOut(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers int) bool {
 	const K, N = gemmaDim, gemmaFFDim
-	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 8 {
+	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 5 {
 		return false
 	}
 	if !gemmaVNNIWeightOK(wG, K) || !gemmaVNNIWeightOK(wU, K) {
 		return false
 	}
+	wG.ensureColBias()
+	wU.ensureColBias()
 	if len(a) < seq*K || len(gate) < seq*N || len(up) < seq*N {
 		return false
 	}
-	panel := getGemmaAQ8(seq, K)
+	panel := gemmaVNNIQuantPanel(a, seq, K)
 	defer putGemmaAQ8(panel)
-	gemmaQuantizeQ8URow(panel.q, panel.s, a, seq, K)
+	pad := seq < 8
 	run := func(ns, ne int) {
-		gemmaVNNIM8Range(gate, panel.q, panel.s, a, wG, seq, N, K, ns, ne)
-		gemmaVNNIM8Range(up, panel.q, panel.s, a, wU, seq, N, K, ns, ne)
+		if pad {
+			gemmaVNNIM8PadRange(gate, panel.q, panel.s, a, wG, seq, N, K, ns, ne)
+			gemmaVNNIM8PadRange(up, panel.q, panel.s, a, wU, seq, N, K, ns, ne)
+		} else {
+			gemmaVNNIM8Range(gate, panel.q, panel.s, a, wG, seq, N, K, ns, ne)
+			gemmaVNNIM8Range(up, panel.q, panel.s, a, wU, seq, N, K, ns, ne)
+		}
 		for r := 0; r < seq; r++ {
 			off := r * N
-			SiLUMul(gate[off+ns:off+ne], up[off+ns:off+ne])
+			GELUMul(gate[off+ns:off+ne], up[off+ns:off+ne])
 		}
 	}
 	if maxWorkers == 1 || !shouldParallel(seq, N, K) {
@@ -240,21 +329,27 @@ func gemmaVNNIDualOut(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers i
 
 var gemmaVNNIYPool = sync.Pool{New: func() any { return new([]float32) }}
 
-// gemmaVNNIRMSResidual replaces MatMulQ8RMSResidual for seq>=8: y = A@B^T into
+// gemmaVNNIRMSResidual replaces MatMulQ8RMSResidual for seq>=5: y = A@B^T into
 // a pooled full-size buffer under one N-split join, then RMSNorm+residual.
+// seq 5-7 is padded only for K=768. The K=1152 FFN-down stays on MADDWD:
+// row-scale VNNI of that GeGLU row was too coarse on short sequences.
 func gemmaVNNIRMSResidual(x, a []float32, b *Q8Tensor, wRMS []float32, seq, N, K, maxWorkers int, eps float32) bool {
-	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 8 {
+	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 5 {
+		return false
+	}
+	if seq < 8 && K != gemmaDim {
 		return false
 	}
 	if !gemmaVNNIWeightOK(b, K) {
 		return false
 	}
+	b.ensureColBias()
 	if len(a) < seq*K || len(x) < seq*N || len(wRMS) < N {
 		return false
 	}
-	panel := getGemmaAQ8(seq, K)
+	panel := gemmaVNNIQuantPanel(a, seq, K)
 	defer putGemmaAQ8(panel)
-	gemmaQuantizeQ8URow(panel.q, panel.s, a, seq, K)
+	pad := seq < 8
 	yp := gemmaVNNIYPool.Get().(*[]float32)
 	y := *yp
 	if cap(y) < seq*N {
@@ -265,6 +360,10 @@ func gemmaVNNIRMSResidual(x, a []float32, b *Q8Tensor, wRMS []float32, seq, N, K
 	}
 	defer gemmaVNNIYPool.Put(yp)
 	run := func(ns, ne int) {
+		if pad {
+			gemmaVNNIM8PadRange(y, panel.q, panel.s, a, b, seq, N, K, ns, ne)
+			return
+		}
 		gemmaVNNIM8Range(y, panel.q, panel.s, a, b, seq, N, K, ns, ne)
 	}
 	if maxWorkers == 1 || !shouldParallel(seq, N, K) {

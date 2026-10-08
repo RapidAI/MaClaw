@@ -33,12 +33,19 @@ func (g *GemmaEmbedder) EmbedBatchWithRole(texts []string, role Role) ([][]float
 	return g.EmbedBatch(prompted)
 }
 
+// gemmaGraphVersion is the numeric forward baked into ModelID.
+// gemma3-graph3: same graph as graph2, plus a seq>=8 K=768 tail of 5, 6, or
+// 7 rows on the row-scale VNNI tile. Remainder 1-4 and every K=1152 tail
+// stay on the f32 kernels. graph2 moved seq 5-7 K=768 onto that tile;
+// graph1 used int16 MADDWD there. Bump it when the forward changes again.
+const gemmaGraphVersion = "gemma3-graph3"
+
 // ModelID reports the identity of the vector space this embedder produces.
 //
-// It has three parts: the model identity declared in the GGUF header, the
-// output dimension, and the prompt recipe. Any of the three changing means
-// stored vectors are no longer comparable, so the knowledge store re-embeds
-// them instead of silently mixing two spaces.
+// It has four parts: the model identity declared in the GGUF header, the
+// output dimension, the graph version, and the prompt recipe. Any of them
+// changing means stored vectors are no longer comparable, so the knowledge
+// store re-embeds them instead of silently mixing two spaces.
 //
 // The model name is what the generic "%T:%d" fallback cannot express: two
 // different checkpoints that happen to share a dimension would otherwise be
@@ -49,5 +56,5 @@ func (g *GemmaEmbedder) ModelID() string {
 	if name == "" {
 		name = "gemma-embedding"
 	}
-	return fmt.Sprintf("%s:%d:%s", name, g.dim, SpaceRecipe())
+	return fmt.Sprintf("%s:%d:%s:%s", name, g.dim, gemmaGraphVersion, SpaceRecipe())
 }

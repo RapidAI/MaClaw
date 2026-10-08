@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
 const (
@@ -46,9 +47,14 @@ type DesktopControl interface {
 // Reply is the text from one MaClawSrv instance, plus a desktop handoff URL
 // when that instance paused for a login or captcha.
 type Reply struct {
-	Text     string `json:"text"`
-	NovncURL string `json:"novnc_url,omitempty"`
-	Handoff  bool   `json:"handoff,omitempty"`
+	Text               string `json:"text"`
+	NovncURL           string `json:"novnc_url,omitempty"`
+	Handoff            bool   `json:"handoff,omitempty"`
+	AttentionReason    string `json:"attention_reason,omitempty"`
+	AskUserInputType   string `json:"ask_user_input_type,omitempty"`
+	AskUserSecretName  string `json:"ask_user_secret_name,omitempty"`
+	AskUserQuestion    string `json:"ask_user_question,omitempty"`
+	AskUserOptionsJSON string `json:"ask_user_options_json,omitempty"`
 }
 
 func (s *Service) Enabled(ctx context.Context, tenantID, userID string) (bool, error) {
@@ -74,7 +80,12 @@ func (s *Service) loadForUser(ctx context.Context, tenantID, userID string) (rec
 	if err != nil {
 		return record{}, err
 	}
-	if !grantMatches(rec.Grants, userID, s.departmentChain(ctx, userID)) {
+	// A user or global grant does not need the department walk. That walk is
+	// a directory round trip on every bot message.
+	if grantMatches(rec.Grants, userID, nil) {
+		return rec, nil
+	}
+	if !grantMatches(rec.Grants, userID, s.departmentChain(directoryContext(ctx, tenantID), userID)) {
 		return record{}, ErrDisabled
 	}
 	return rec, nil
@@ -176,6 +187,13 @@ func (s *Service) DeleteBotForUser(ctx context.Context, tenantID, userID, botID 
 // this user has no run left. A transport failure here also stops it, because
 // MaClawSrv never saw the command.
 func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, content string) (Reply, error) {
+	return s.PostMessagePhase(ctx, tenantID, userID, botID, content, "")
+}
+
+// PostMessagePhase is PostMessage with the bot turn phase. An empty phase
+// leaves the body as content plus the session key, so an older client keeps
+// working. plan and execute travel as message metadata bot_phase.
+func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID, content, phase string) (Reply, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return Reply{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
@@ -204,10 +222,12 @@ func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, cont
 	}
 	var payload struct {
 		Message struct {
-			Content string `json:"content"`
+			Content  string            `json:"content"`
+			Metadata map[string]string `json:"metadata"`
 		} `json:"message"`
-		DesktopHandoff bool   `json:"desktop_handoff"`
-		Error          string `json:"error"`
+		DesktopHandoff  bool   `json:"desktop_handoff"`
+		AttentionReason string `json:"attention_reason"`
+		Error           string `json:"error"`
 	}
 	// The token exchange is a remote call: keep it off s.mu, so one slow
 	// MaClawSrv cannot stall every other user's command.
@@ -237,10 +257,15 @@ func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, cont
 		return Reply{}, err
 	}
 	path := instancePath + "/messages"
-	callErr := s.doAuth(ctx, fresh, token, http.MethodPost, path, map[string]any{
+	messageBody := map[string]any{
 		"content":            content,
 		"client_session_key": rec.Bots[index].ID,
-	}, &payload)
+	}
+	switch strings.TrimSpace(phase) {
+	case "plan", "execute":
+		messageBody["metadata"] = map[string]string{"bot_phase": strings.TrimSpace(phase)}
+	}
+	callErr := s.doAuth(ctx, fresh, token, http.MethodPost, path, messageBody, &payload)
 	if callErr != nil {
 		// The instance may already be waiting for a login. Stopping here
 		// would close that browser before the person can use it. A failed
@@ -277,19 +302,34 @@ func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, cont
 		return Reply{}, fmt.Errorf("%w: instance returned no result", ErrSrv)
 	}
 	reply := Reply{Text: text}
+	if meta := payload.Message.Metadata; meta != nil {
+		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
+		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
+		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
+		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+	}
+	reason := strings.TrimSpace(payload.AttentionReason)
 	if payload.DesktopHandoff {
 		// The login is already decided. This open may not have returned a
 		// picture yet; a later session can still publish one. Clearing the
 		// hold here would let the next failure close the browser before the
 		// person can sign in, and the website login would be gone.
 		s.noteDesktopHeld(tenantID, userID, botID)
+		if reason != "" {
+			s.noteDesktopAttention(tenantID, userID, botID, reason)
+		}
 		reply.Handoff = true
+		reply.AttentionReason = reason
 		reply.NovncURL = s.desktopViewURL(tenantID, userID)
 		if reply.NovncURL == "" && novnc != "" {
 			reply.NovncURL = s.gateDesktopHandoff(novnc)
 		}
 	} else {
 		s.clearDesktopHeld(tenantID, userID, botID)
+		if reason != "" {
+			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			reply.AttentionReason = reason
+		}
 	}
 	s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 	return reply, nil
@@ -735,6 +775,7 @@ func (s *Service) clearDesktopHeld(tenantID, userID, botID string) {
 			s.persistDesktopState(tenantID)
 		}
 	}
+	s.forgetDesktopAttentionLocked(tenantID, userID, botID)
 	s.mu.Unlock()
 }
 
@@ -947,40 +988,189 @@ func (s *Service) desktopViewURL(tenantID, userID string) string {
 }
 
 func (s *Service) departmentChain(ctx context.Context, userID string) []string {
+	return s.departmentChainCached(ctx, userID, "", nil)
+}
+
+// directoryContext carries the settings tenant into department lookups.
+// Group and parent rows are filtered by the security tenant on the context.
+// A request that never set one would read the default tenant and miss every
+// department grant stored for the real tenant.
+func directoryContext(ctx context.Context, tenantID string) context.Context {
+	return security.WithTenant(ctx, tenantID)
+}
+
+// parentMemo caches one request's parent lookups. The chain itself is not
+// cached: a walk that stops on a cycle or the depth cap is not some other
+// group's ancestor list. A failed lookup is not stored, so the next user
+// retries it. A nil memo keeps the single-user path allocation-free.
+type parentMemo struct {
+	parent map[string]string
+}
+
+func (s *Service) departmentChainCached(ctx context.Context, userID, knownEmail string, memo *parentMemo) []string {
 	if s == nil || s.Directory == nil {
 		return nil
 	}
-	email, err := s.Directory.Email(ctx, userID)
-	if err != nil || strings.TrimSpace(email) == "" {
-		return nil
+	email := strings.TrimSpace(knownEmail)
+	if email == "" {
+		resolved, err := s.Directory.Email(ctx, userID)
+		if err != nil || strings.TrimSpace(resolved) == "" {
+			return nil
+		}
+		email = strings.TrimSpace(resolved)
 	}
 	groupID, err := s.Directory.GroupID(ctx, email)
 	if err != nil {
 		return nil
 	}
+	groupID = strings.TrimSpace(groupID)
 	var chain []string
 	seen := map[string]bool{}
 	for groupID != "" && len(chain) < 32 && !seen[groupID] {
 		seen[groupID] = true
 		chain = append(chain, groupID)
-		parent, err := s.Directory.ParentID(ctx, groupID)
+		parent, err := memoParent(ctx, s, groupID, memo)
 		if err != nil {
 			break
 		}
-		groupID = strings.TrimSpace(parent)
+		groupID = parent
 	}
 	return chain
 }
 
-func grantMatches(grants []Grant, userID string, departments []string) bool {
+func memoParent(ctx context.Context, s *Service, groupID string, memo *parentMemo) (string, error) {
+	if memo != nil {
+		if parent, ok := memo.parent[groupID]; ok {
+			return parent, nil
+		}
+	}
+	parent, err := s.Directory.ParentID(ctx, groupID)
+	if err != nil {
+		return "", err
+	}
+	parent = strings.TrimSpace(parent)
+	if memo != nil {
+		if memo.parent == nil {
+			memo.parent = map[string]string{}
+		}
+		memo.parent[groupID] = parent
+	}
+	return parent, nil
+}
+
+// GrantSubject is one user tested against 开通范围. Email, when already
+// known, skips the directory read that would load it again.
+type GrantSubject struct {
+	ID    string
+	Email string
+}
+
+// FilterGranted keeps the subjects 开通范围 covers, in the same order.
+// A global grant keeps every id. With no grants the feature is off, so the
+// result is empty. A nil service or a failed settings read also returns nil:
+// the check-desktop list must not offer a user the Bot entry would hide.
+// Blank ids are dropped, and a repeated id is kept once.
+func (s *Service) FilterGranted(ctx context.Context, tenantID string, subjects []GrantSubject) []string {
+	if s == nil || len(subjects) == 0 {
+		return nil
+	}
+	ctx = directoryContext(ctx, tenantID)
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return nil
+	}
+	global, users, depts := indexGrants(rec.Grants)
+	if !global && len(users) == 0 && len(depts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(subjects))
+	seen := map[string]bool{}
+	var memo *parentMemo
+	if !global && len(depts) > 0 {
+		memo = &parentMemo{}
+	}
+	for _, subject := range subjects {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		id := strings.TrimSpace(subject.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if global || users[id] {
+			out = append(out, id)
+			continue
+		}
+		if len(depts) == 0 {
+			continue
+		}
+		for _, groupID := range s.departmentChainCached(ctx, id, subject.Email, memo) {
+			if depts[groupID] {
+				out = append(out, id)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// FilterGrantedIDs is FilterGranted for callers that only have user ids.
+func (s *Service) FilterGrantedIDs(ctx context.Context, tenantID string, userIDs []string) []string {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	subjects := make([]GrantSubject, len(userIDs))
+	for i, id := range userIDs {
+		subjects[i] = GrantSubject{ID: id}
+	}
+	return s.FilterGranted(ctx, tenantID, subjects)
+}
+
+// indexGrants is grantMatches keyed for a whole user list. Targets are
+// trimmed so a stored id matches the trimmed id the list compares with.
+func indexGrants(grants []Grant) (global bool, users, depts map[string]bool) {
 	for _, item := range grants {
-		if item.Scope == ScopeUser && item.TargetID == userID {
-			return true
+		switch item.Scope {
+		case ScopeGlobal:
+			global = true
+		case ScopeUser:
+			if id := strings.TrimSpace(item.TargetID); id != "" {
+				if users == nil {
+					users = map[string]bool{}
+				}
+				users[id] = true
+			}
+		case ScopeDepartment:
+			if id := strings.TrimSpace(item.TargetID); id != "" {
+				if depts == nil {
+					depts = map[string]bool{}
+				}
+				depts[id] = true
+			}
+		}
+	}
+	return global, users, depts
+}
+
+// grantMatches is the single-user form of indexGrants. It does not build
+// maps: bot access checks run on every message, and a tenant has few grants.
+func grantMatches(grants []Grant, userID string, departments []string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID != "" {
+		for _, item := range grants {
+			if item.Scope == ScopeUser && strings.TrimSpace(item.TargetID) == userID {
+				return true
+			}
 		}
 	}
 	for _, groupID := range departments {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
+			continue
+		}
 		for _, item := range grants {
-			if item.Scope == ScopeDepartment && item.TargetID == groupID {
+			if item.Scope == ScopeDepartment && strings.TrimSpace(item.TargetID) == groupID {
 				return true
 			}
 		}

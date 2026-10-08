@@ -266,6 +266,20 @@ describe('resolveFinalRoundContent — Bug Condition Exploration', () => {
         expect(result).not.toContain('Browser:');
     });
 
+    it('Case 10e.1: shared_agent_loop with a file uses the delivery text', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened with extra streamed residue.';
+        const finalText = 'Deck generated and saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            response_source: 'shared_agent_loop',
+            local_file_paths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
     it('Case 10f: Go-style screenshot artifact overrides explicit agent_loop source', () => {
         const streamedContent = 'Browser: screenshot captured with stale stream residue.';
         const finalText = 'Screenshot saved.';

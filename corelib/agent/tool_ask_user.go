@@ -3,15 +3,27 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// secretNamePattern is the only form a site secret may take in model context.
+// The value never travels with this name.
+var secretNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 
 // AskUserRequest represents a structured question from the agent to the user.
 type AskUserRequest struct {
 	Question  string   `json:"question"`
 	Options   []string `json:"options,omitempty"`
 	Context   string   `json:"context,omitempty"`
-	InputType string   `json:"input_type,omitempty"` // "choice", "text", "confirm"
+	InputType  string `json:"input_type,omitempty"` // "choice", "text", "confirm", "secret", "secret_fill"
+	SecretName string `json:"secret_name,omitempty"`
+}
+
+// ValidSecretName reports whether name may be shown to a model.
+// A secret value must never be passed here.
+func ValidSecretName(name string) bool {
+	return secretNamePattern.MatchString(strings.TrimSpace(name))
 }
 
 // ToolAskUser handles the ask_user tool call. It formats the question as a
@@ -51,6 +63,18 @@ func ToolAskUser(args map[string]interface{}) string {
 	}
 
 	ctx, _ := args["context"].(string)
+	secretName := strings.TrimSpace(fmt.Sprint(args["secret_name"]))
+	if secretName == "<nil>" {
+		secretName = ""
+	}
+	if inputType == "secret" || inputType == "secret_fill" {
+		if !ValidSecretName(secretName) {
+			return "错误: secret_name 无效"
+		}
+		if strings.TrimSpace(question) == "" {
+			question = secretName
+		}
+	}
 
 	// For confirm type, ensure we have yes/no options
 	if inputType == "confirm" && len(options) == 0 {
@@ -60,10 +84,11 @@ func ToolAskUser(args map[string]interface{}) string {
 	// Build the structured response that the agent loop will detect
 	// and render as an interactive UI element.
 	req := AskUserRequest{
-		Question:  question,
-		Options:   options,
-		Context:   ctx,
-		InputType: inputType,
+		Question:   question,
+		Options:    options,
+		Context:    ctx,
+		InputType:  inputType,
+		SecretName: secretName,
 	}
 
 	return AskUserResultMarker(&req)

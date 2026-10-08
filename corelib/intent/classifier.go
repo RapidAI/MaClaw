@@ -841,13 +841,28 @@ func classifyByTreeWithTimeout(parent context.Context, llmContextFn LLMClassifyC
 		// If a non-cooperative callback completes at the same instant as the
 		// inbound turn is cancelled, cancellation still wins. Otherwise an old
 		// turn can cache a successful verdict after its host has already replaced
-		// or abandoned that turn.
-		if err := ctx.Err(); err != nil {
+		// or abandoned that turn. A late tree has no user turn to protect: the
+		// result may be the detached body its own deadline would otherwise drop.
+		if err := ctx.Err(); err != nil && !LateTree(parent) {
 			return nil, fmt.Errorf("tree reasoning cancelled: %w", err)
 		}
 		return r.candidates, r.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("tree reasoning LLM call timed out after %s: %w", timeout, ctx.Err())
+		if !LateTree(parent) {
+			return nil, fmt.Errorf("tree reasoning LLM call timed out after %s: %w", timeout, ctx.Err())
+		}
+		// The desktop helper may still be waiting on the sync call's detached
+		// read. Returning here deletes the single-flight claim, so that body
+		// is never cached. The extra wait is the detached grace ceiling; a
+		// stuck callback cannot hold the scope longer than that.
+		timer := time.NewTimer(lateTreeInFlightAdoptWait)
+		defer timer.Stop()
+		select {
+		case r := <-ch:
+			return r.candidates, r.err
+		case <-timer.C:
+			return nil, fmt.Errorf("tree reasoning LLM call timed out after %s: %w", timeout, ctx.Err())
+		}
 	}
 }
 
@@ -1356,7 +1371,13 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 	}
 	go func() {
 		defer u.lateTree.Delete(scope)
-		candidates, err := classifyByTreeWithTimeout(context.Background(), llmContextFn, llmFn, treeText, text, timeout)
+		// Desktop installs a gate that waits until the user-visible turn has
+		// taken and then released the foreground lane. The wait is outside
+		// the HTTP budget. A late tree that acquires a slot before the chat
+		// POST is cancelled by foreground preemption and never caches a
+		// verdict. A nil gate (tests, non-desktop) starts immediately.
+		waitLateTreeForeground()
+		candidates, err := classifyByTreeWithTimeout(WithLateTree(context.Background()), llmContextFn, llmFn, treeText, text, timeout)
 		if err != nil || len(candidates) == 0 {
 			return
 		}
@@ -1425,6 +1446,56 @@ func (u *UnifiedIntentClassifier) verdictContradictedByLocal(text string, verdic
 		return true, leader, leaderScore, verdictScore
 	}
 	return false, leader, leaderScore, verdictScore
+}
+
+// lateTreeInFlightAdoptWait is how long a background tree keeps waiting after
+// its own deadline when the desktop helper is blocked on a detached read of
+// the same payload. That read's grace ceiling is 60s (guiapp detachedReadMaxGrace).
+// The deadline can fire while most of that grace remains. A stuck callback
+// cannot hold the single-flight claim longer than this.
+const lateTreeInFlightAdoptWait = 60 * time.Second
+
+// lateTreeForegroundGate, when set, blocks a background late-tree goroutine
+// until the desktop user turn has released the foreground LLM lane. The HTTP
+// budget starts only after it returns. atomic.Value stores a func(); the
+// zero value and an empty func both mean "start immediately".
+var lateTreeForegroundGate atomic.Value
+
+// SetLateTreeForegroundGate installs the desktop wait described above.
+// A nil fn clears the gate. Corelib tests leave it unset so they stay fast.
+func SetLateTreeForegroundGate(fn func()) {
+	if fn == nil {
+		lateTreeForegroundGate.Store(func() {})
+		return
+	}
+	lateTreeForegroundGate.Store(fn)
+}
+
+func waitLateTreeForeground() {
+	fn, _ := lateTreeForegroundGate.Load().(func())
+	if fn != nil {
+		fn()
+	}
+}
+
+type lateTreeContextKey struct{}
+
+// WithLateTree marks a tree call that is not on the user-visible path.
+// The desktop LLM callback uses it to schedule the request as background work.
+func WithLateTree(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, lateTreeContextKey{}, true)
+}
+
+// LateTree reports whether ctx was marked by WithLateTree.
+func LateTree(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	late, _ := ctx.Value(lateTreeContextKey{}).(bool)
+	return late
 }
 
 // verdictLocalLeaderFloor is the local confidence required before the

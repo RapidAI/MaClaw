@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -96,6 +97,14 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx cont
 	// shapes used to leave a governed request without SemanticIntent and let it
 	// re-enter the legacy router.
 	var semantic *intent.ClassificationResult
+	// Nil semantic is required. Returning the embedding result would enter
+	// classifyWithTaskContextMerge, which calls ClassifyContext again for a
+	// generic continuation and waits out a second tree. Parent tools are
+	// restored by continuationKeepsParentExecution, which still runs when
+	// semantic is nil.
+	if profile, ok := h.fastPathBeforeIntentTree(msg, structurallyForced, recentHistory); ok {
+		return profile, nil
+	}
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		result := uic.ClassifyContext(ctx, classificationMessageFromHistory(msg.UserID, msg.Text, recentHistory))
 		semantic = &result
@@ -242,6 +251,12 @@ func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionPro
 	if h == nil {
 		return profile
 	}
+	// 你好 answers in place. Taking the parent full surface here rebuilds the
+	// coding prompt and the tool list. 好的 is an acknowledgement and still
+	// continues the open task.
+	if strings.TrimSpace(profile.Reason) == "social greeting" && agent.IsAnswerOnlySocialTurn(text) {
+		return profile
+	}
 	// A page fetch is a managed full profile, not the light search profile.
 	// Narrow it so the prompt stays short and the loop is not auto-extended.
 	lightish := profile.IsLight() || isLightPromptProfile(profile.PromptProfile)
@@ -276,6 +291,18 @@ func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionPro
 		return kept
 	}
 	return fullExecutionProfile(shortContinuationReason)
+}
+
+// markAnswerOnlySocialTurn lists no tools for a pure greeting and leaves the
+// open task's carry alone. The flag is read by prepareAgentLoopStartState.
+func markAnswerOnlySocialTurn(ctx *LoopContext, profile ExecutionProfile, text string) {
+	if ctx == nil || strings.TrimSpace(profile.Reason) != "social greeting" {
+		return
+	}
+	if !agent.IsAnswerOnlySocialTurn(text) {
+		return
+	}
+	ctx.semanticTurnAnswerOnly = true
 }
 
 // lookupContinuationReason is a project-task search or page fetch that keeps
@@ -314,18 +341,95 @@ func shortContinuationText(text string) bool {
 }
 
 func confidentNewReadOnlyTask(semantic *intent.ClassificationResult) bool {
-	if semantic == nil || semantic.Degraded || semantic.Confidence < 0.85 || !imSemanticIntentIsManaged(*semantic) {
+	if semantic == nil || semantic.Degraded || !imSemanticIntentIsManaged(*semantic) {
 		return false
 	}
 	if semanticClassificationHasMutatingFamily(*semantic) {
 		return false
 	}
 	switch semantic.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime:
-		return true
+	case intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelCurrentTime:
+		// Weather and clock lookups are new tasks once they clear the embedding
+		// lookup floor. The old 0.85 bar kept a 0.73 「北京天气」 on the previous
+		// full surface (production 2026-10-08). Search and page fetch stay at
+		// 0.85 so a weak project-task lookup still keeps the parent tools.
+		return semantic.Confidence >= intent.EmbeddingLookupMinScore
+	case intent.LabelSearch, intent.LabelWebFetch:
+		return semantic.Confidence >= 0.85
 	default:
 		return false
 	}
+}
+
+// fastPathBeforeIntentTree skips the synchronous intent tree for two turns
+// whose tree result does not change the tool surface:
+// a pure social utterance, and a short generic continuation of a full parent.
+// Capability-shaped text still falls through to ClassifyContext.
+func (h *IMMessageHandler) fastPathBeforeIntentTree(msg IMUserMessage, structurallyForced bool, recentHistory []string) (ExecutionProfile, bool) {
+	if h == nil || structurallyForced {
+		return ExecutionProfile{}, false
+	}
+	text := strings.TrimSpace(msg.Text)
+	// The phrase is the whole utterance, so a history neighbor such as ssh
+	// or office is not a command. Waiting on the tree only delays 你好.
+	// Greetings answer in place. Acknowledgements keep the parent tools.
+	if agent.IsPureSocialGreeting(text) {
+		log.Printf("[exec-router] social greeting skips intent tree text_len=%d", utf8.RuneCountInString(text))
+		return socialGreetingExecutionProfile(), true
+	}
+	if !shortContinuationText(text) || !h.parentExecutionIsFull(msg.UserID) {
+		return ExecutionProfile{}, false
+	}
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return ExecutionProfile{}, false
+	}
+	emb := uic.ClassifyEmbeddingOnly(classificationMessageFromHistory(msg.UserID, text, recentHistory))
+	if !deferIntentTreeForParentContinuation(emb) {
+		return ExecutionProfile{}, false
+	}
+	log.Printf("[exec-router] short parent continuation skips intent tree text_len=%d l2=%s conf=%.2f", utf8.RuneCountInString(text), emb.Primary, emb.Confidence)
+	return deferredParentContinuationProfile(emb.Confidence), true
+}
+
+func socialGreetingExecutionProfile() ExecutionProfile {
+	return ExecutionProfile{
+		Layer:                string(executionLayerLight),
+		TaskType:             "general",
+		PromptProfile:        "light",
+		Confidence:           1,
+		Reason:               "social greeting",
+		RequiredCapabilities: []string{"current_data", "time", "web", "fetch", "status"},
+		ToolBudget:           8,
+		IterationBudget:      3,
+	}
+}
+
+func deferredParentContinuationProfile(conf float64) ExecutionProfile {
+	if conf <= 0 {
+		conf = 1
+	}
+	return ExecutionProfile{
+		Layer:           string(executionLayerLight),
+		TaskType:        "general",
+		PromptProfile:   "light",
+		Confidence:      conf,
+		Reason:          "short continuation defers intent tree",
+		ToolBudget:      8,
+		IterationBudget: 3,
+	}
+}
+
+// deferIntentTreeForParentContinuation is a short follow-up whose local
+// reading is continuation, unknown, or ambiguous. The parent full surface
+// already has the tools; waiting out the tree does not narrow that surface
+// unless the tree later returns a confident new lookup, which a generic
+// local reading is not.
+func deferIntentTreeForParentContinuation(emb intent.ClassificationResult) bool {
+	if emb.Degraded || !emb.IsGenericContinuationPrimary() {
+		return false
+	}
+	return true
 }
 
 func operationalExecutionProfile(profile ExecutionProfile) bool {

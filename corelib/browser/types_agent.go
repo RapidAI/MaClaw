@@ -115,8 +115,10 @@ type BrowserPageFlags struct {
 	Captcha       bool `json:"captcha,omitempty"`
 	LoginWall     bool `json:"login_wall,omitempty"`
 	MFA           bool `json:"mfa,omitempty"`
-	Canvas        bool `json:"canvas,omitempty"`
-	VisionUsed    bool `json:"vision_used,omitempty"`
+	Canvas          bool `json:"canvas,omitempty"`
+	PaymentConfirm  bool `json:"payment_confirm,omitempty"`
+	ConsentDialog   bool `json:"consent_dialog,omitempty"`
+	VisionUsed      bool `json:"vision_used,omitempty"`
 }
 
 // ExpectSpec is an optional post-condition for navigate/click/type/select.
@@ -253,6 +255,10 @@ type BrowserAgentSession struct {
 	recentNetworkEntries []BrowserNetworkEvent
 	activityLog          []string
 	recentSubmitClicks   map[string]time.Time
+
+	// blockModelPasswordTyping refuses a model Type into a focused password
+	// field. Desktop sessions set it. Secret fill uses InsertPasswordText.
+	blockModelPasswordTyping bool
 
 	snapshots       map[string]*BrowserSnapshot
 	lastSnapshotID  string

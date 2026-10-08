@@ -6,10 +6,11 @@ import "strings"
 // reads as an explicit knowledge-base write request (e.g. 「保存到知识库」「记入
 // 备忘录」「记住…」).
 //
-// trigger only, not authority: this predicate decides whether a degraded
-// turn is worth re-trying automatically (P0-1 recovery recall). It must never
-// grant tools, bypass fail-closed routing, or activate knowledge_save_* by
-// itself. Biased toward precision — a miss only costs one manual resend.
+// The predicate does not execute a tool, sign a grant, or bypass fail-closed
+// routing. A caller may use a true result to select the knowledge-write
+// label, so the planner publishes knowledge.ingest.local through the normal
+// grant path. It must not call knowledge_save_* itself. Biased toward
+// precision — a miss only costs one manual resend.
 func ExplicitCapabilityRequestTrigger(text string) bool {
 	t := strings.TrimSpace(text)
 	if t == "" {

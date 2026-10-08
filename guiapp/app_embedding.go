@@ -66,8 +66,23 @@ func (a *App) initEarlyClassifier() {
 			a.capabilityGapDetector.SetUnifiedClassifier(uic)
 		}
 		setUnifiedClassifierForIM(uic)
+		// Installed only with the desktop classifier. A package init would
+		// make TestDetachedUICFusionAdoptsSingleUpstreamRequest wait out the
+		// appear timeout inside its 3s adoption deadline.
+		installLateTreeForegroundGate()
 
 		log.Println("[classifier] early init complete: UIC L3 wired, L2 pending async embedding")
+	})
+}
+
+// installLateTreeForegroundGate holds the background tree retry until the
+// user-visible agent loop has claimed and released the foreground lane.
+// Classifier HTTP is not that loop: task-context ClassifyContext runs after
+// the verdict is scheduled and before the loop starts. The retry's HTTP
+// budget starts after the wait, so the chat POST does not cancel it.
+func installLateTreeForegroundGate() {
+	intent.SetLateTreeForegroundGate(func() {
+		waitLateTreeForForegroundIdle(globalLLMScheduler.foregroundLoopBusy, globalLLMScheduler.foregroundHTTPBusy, lateTreeForegroundAppearTimeout, lateTreeForegroundWaitCap, lateTreeForegroundPoll)
 	})
 }
 
@@ -992,11 +1007,17 @@ func (a *App) buildUICLLMContextFunc() intent.LLMClassifyContextFunc {
 			map[string]string{"role": "system", "content": systemPrompt},
 			map[string]string{"role": "user", "content": userText},
 		}
-		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "unified-intent-classifier"})
+		caller := "unified-intent-classifier"
+		if intent.LateTree(ctx) {
+			caller = "unified-intent-classifier-late"
+		}
+		lateTree := intent.LateTree(ctx)
+		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: caller})
 		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, nil, 30*time.Second, simpleLLMRequestOptions{
-			ResponseFormat:         intentTreeResponseFormat(),
-			PreserveResponseFormat: true,
-			DetachParentCtx:        parentCtx,
+			ResponseFormat:          intentTreeResponseFormat(),
+			PreserveResponseFormat:  true,
+			DetachParentCtx:         parentCtx,
+			AdoptInFlightPastCancel: lateTree,
 			OnDetachedComplete: func(detachErr error) {
 				if detachErr == nil {
 					a.observeLLMEndpointLightweightSuccess(cfg, llmEndpointCategoryUICTree)

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Release gate for the public desktop-update mirrors.
 
-GitHub publishes the release only after this script confirms that R2 and COS
-advertise the exact local release artifacts and every object is publicly
+GitHub publishes the release only after this script confirms that R2
+advertises the exact local release artifacts and every object is publicly
 readable at the expected size. This prevents a new manifest from sending
-desktop clients to a stale or private mirror.
+desktop clients to a stale or private mirror. The Tencent COS mirror was
+retired (2026-10-08); R2 is the only object-storage mirror.
 """
 
 import hashlib
@@ -17,7 +18,6 @@ import urllib.parse
 import urllib.request
 
 from firmware_manifest_contract import (
-    COS_PUBLIC_BASE_URL,
     R2_PUBLIC_BASE_URL,
     validate_public_mirror_base,
 )
@@ -27,7 +27,6 @@ MANIFEST_LIMIT = 2 * 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 45
 MIRROR_BASES = {
     "R2": R2_PUBLIC_BASE_URL,
-    "COS": COS_PUBLIC_BASE_URL,
 }
 # Matches Go's net/url.PathEscape for a single path segment. The history
 # publisher uses the same set so validation remains correct for opaque build
@@ -199,18 +198,9 @@ def main():
     asset_dir = pathlib.Path(required_env("RELEASE_ASSETS_DIR"))
     names = release_asset_names()
     r2_base = required_env("R2_PUBLIC_BASE_URL")
-    cos_base = required_env("COS_PUBLIC_BASE_URL")
-    # VERIFY_COS_MIRROR=0 pauses the COS half while the mirror upload is
-    # disabled in the workflow (GHA -> COS egress stalls); default keeps the
-    # original two-mirror contract.
-    verify_cos = os.environ.get("VERIFY_COS_MIRROR", "1").strip() not in ("0", "false", "no")
     verify_mirror("R2", r2_base, manifest_name, tag, prefix, asset_dir, names)
-    if verify_cos:
-        verify_mirror("COS", cos_base, manifest_name, tag, prefix, asset_dir, names)
     if prefix == "latest":
         verify_stable_history(r2_base, tag, asset_dir, names)
-        if verify_cos:
-            verify_stable_history(cos_base, tag, asset_dir, names)
 
 
 if __name__ == "__main__":

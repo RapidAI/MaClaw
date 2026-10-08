@@ -1034,6 +1034,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	freeReplans := 0
 	malformedReprompts := 0
 	storedFactNudges := 0
+	// preNudgeAnswer is the user-facing reply written before the one-shot
+	// stored-fact nudge. A follow-up that only acknowledges that instruction
+	// must not replace it.
+	var preNudgeAnswer string
 	// repeatWaveName is set when a spent repeat family was given another
 	// invocation. A following answer that stops without calling it is not
 	// the end of the user task; the loop continues once the tool is listed.
@@ -2445,9 +2449,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 			// A full turn that stops before any tool call still has memory or
 			// knowledge_search unused. One nudge, then the model's next
-			// answer stands. Light lookups are not forced to search storage.
-			if iteration+1 < maxIter && shouldNudgeStoredRetrieval(loopPromptProfile(cb).IsLight(), tools, historyDelta, storedFactNudges) {
+			// answer stands, unless that next answer only acknowledges the
+			// nudge. Light lookups and finished self-contained replies are
+			// not forced to search storage.
+			if iteration+1 < maxIter && shouldNudgeStoredRetrieval(loopPromptProfile(cb).IsLight(), tools, historyDelta, storedFactNudges, userText, content) {
 				storedFactNudges++
+				preNudgeAnswer = content
 				disposeSurface(ToolSurfaceResponseSettled)
 				nudge := StoredOperationalFactNudge()
 				conversation = append(conversation, map[string]interface{}{
@@ -2468,7 +2475,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
 				continue
 			}
+			preNudgeText := StripThinkingTags(preNudgeAnswer)
 			finalText := StripThinkingTags(content)
+			// A lookup that actually called memory or knowledge_search keeps
+			// that follow-up and its tool results. Only a tool-free receipt
+			// is folded back to the earlier deliverable.
+			if strings.TrimSpace(preNudgeText) != "" && !historyHasToolAfterStoredFactNudge(historyDelta) {
+				finalText = preferPreNudgeAnswer(preNudgeText, finalText)
+				if strings.TrimSpace(finalText) == strings.TrimSpace(preNudgeText) {
+					historyDelta = dropStoredFactNudgeSuffix(historyDelta)
+				}
+			}
 			// Note: we do NOT call cb.OnToken here. The final text is returned
 			// via LoopResult.Text, and the caller (handleChatSend) sends it as
 			// ChatResponseMsg. Calling OnToken would cause duplicate display.

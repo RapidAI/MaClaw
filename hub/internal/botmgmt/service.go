@@ -102,6 +102,9 @@ type Service struct {
 	// desktopHeld maps a user to the bot that handed the desktop over.
 	// A later failed message, or another bot finishing, must not stop it.
 	desktopHeld map[string]string
+	// desktopAttention is why that bot handed the screen over. It is not
+	// persisted. Polls keep reporting it until that handoff is cleared.
+	desktopAttention map[string]string
 	// desktopAwaiting is true only while that person still has the keyboard.
 	// The continuation takes the keyboard back as soon as it starts, but the
 	// desktop stays up until that bot finishes.

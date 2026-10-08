@@ -102,6 +102,40 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         expect(result).not.toContain('missing scratch-prompt baseline');
     });
 
+    it('keeps a long streamed deliverable when shared_agent_loop final text is a short later fragment', () => {
+        const finalText = '已收到该查询优先级指令。';
+        const streamed = '## 译文\n' + '检索增强生成通过引入外部知识来提升模型。'.repeat(20) + '\n\n' + finalText;
+        expect(streamed.length).toBeGreaterThanOrEqual(finalText.length * 2);
+        const result = resolveFinalRoundContent(
+            makeMessage(streamed, 'The user wants an English abstract translated into Chinese.'),
+            { text: finalText, response_source: 'shared_agent_loop' },
+        );
+        expect(result).toBe(streamed);
+        expect(result).toContain('## 译文');
+    });
+
+    it('keeps a restored deliverable when the next round appended a lookup receipt', () => {
+        const finalText = '## 译文\n检索增强生成。';
+        const streamed = `${finalText}\n\n${'已收到该查询优先级指令。'.repeat(8)}`;
+        expect(streamed.length).toBeGreaterThanOrEqual(finalText.length * 2);
+        const result = resolveFinalRoundContent(
+            makeMessage(streamed, 'The user wants an English abstract translated into Chinese.'),
+            { text: finalText, response_source: 'shared_agent_loop' },
+        );
+        expect(result).toBe(finalText);
+    });
+
+    it('keeps a longer continuation that does not acknowledge the lookup nudge', () => {
+        const finalText = '## 译文\n检索增强生成。';
+        const streamed = `${finalText}\n\n${'补充了一段不涉及检索指令的说明。'.repeat(8)}`;
+        expect(streamed.length).toBeGreaterThanOrEqual(finalText.length * 2);
+        const result = resolveFinalRoundContent(
+            makeMessage(streamed, 'The user wants an English abstract translated into Chinese.'),
+            { text: finalText, response_source: 'shared_agent_loop' },
+        );
+        expect(result).toBe(streamed);
+    });
+
     it('keeps the Layer 2 fragment guard ahead of the reasoning collapse', () => {
         // streamed >= 2x final → final text is a tail fragment, keep the
         // accumulated body even when a reasoning trail exists.
@@ -109,6 +143,19 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         const streamed = '很长的中间过程内容'.repeat(10) + finalText;
         const message = makeMessage(streamed, '思考过程');
         const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'agent_loop' });
+        expect(result).toBe(streamed);
+    });
+
+    it('keeps a continuation that mentions the lookup phrase after its opening', () => {
+        const finalText = '## 译文\n检索增强生成。';
+        const opening = '这里补上实验设置和指标的中文说明。'.repeat(5);
+        const streamed = `${finalText}\n\n${opening}查询优先级按原文保留。`;
+        expect(opening.length).toBeGreaterThanOrEqual(80);
+        expect(streamed.length).toBeGreaterThanOrEqual(finalText.length * 2);
+        const result = resolveFinalRoundContent(
+            makeMessage(streamed, 'The user wants an English abstract translated into Chinese.'),
+            { text: finalText, response_source: 'shared_agent_loop' },
+        );
         expect(result).toBe(streamed);
     });
 

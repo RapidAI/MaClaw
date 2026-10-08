@@ -576,6 +576,20 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 	ref = strings.TrimSpace(ref)
 	selector = strings.TrimSpace(selector)
 	contentFormat = normalizeBrowserContentFormat(contentFormat)
+	// Typing into the focused control must read that control first. A ref to
+	// a text field, email field, or textarea is a different control, so a
+	// password that happens to be focused does not block it. The error is
+	// only the code, never the text that was offered.
+	if s.modelPasswordTypingBlocked() && ref == "" && selector == "" {
+		if _, kind := s.FocusedInputKind(); FocusBlocksModelType(kind) {
+			return nil, fmt.Errorf("not_password_field")
+		}
+		// A focused container is not a password, but prepare descends into
+		// its first input and would clear that field.
+		if kind, err := s.receiveTargetKind(""); err != nil || receiveKindBlocks(kind) {
+			return nil, fmt.Errorf("not_password_field")
+		}
+	}
 	if ref == "" && selector == "" {
 		if err := s.session.TypeActiveContent(text, contentFormat); err != nil {
 			return nil, err
@@ -600,7 +614,29 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 	if err := rejectDisabledRef(resolvedRef); err != nil {
 		return nil, err
 	}
-	resolvedSelector, attempts, err := s.typeWithCandidates(candidates, text, contentFormat, appendText, resolvedRef)
+	// prepareEditable clears the element each selector candidate matches,
+	// including the first input inside a wrapper. Classify those candidates
+	// in the ref's frame before that clear. A known text ref still types
+	// while a password is focused, as long as its own selector does not
+	// receive into one.
+	frameID := ""
+	if resolvedRef != nil {
+		frameID = resolvedRef.FrameID
+	}
+	if s.modelPasswordTypingBlocked() {
+		if err := modelTypeCandidateBlocked(resolvedRef, candidates, func() string {
+			_, kind := s.FocusedInputKind()
+			return kind
+		}, func(selector string) (string, error) {
+			return s.receiveTargetKindInFrame(frameID, selector)
+		}); err != nil {
+			return nil, err
+		}
+	}
+	// An accessibility textbox can point at a password node and has no selector.
+	// Typing that node would set its value. A recorded text or email input
+	// keeps its node so a stale selector can still reach that field.
+	resolvedSelector, attempts, err := s.typeWithCandidates(candidates, text, contentFormat, appendText, modelTypeRefForInsert(s.modelPasswordTypingBlocked(), resolvedRef))
 	if err != nil {
 		if ref != "" {
 			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
@@ -1052,6 +1088,13 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 	}
 	if err := s.requireLiveSession(); err != nil {
 		return nil, err
+	}
+	// A character or paste lands in the focused control. Read it before the
+	// key is sent. Navigation keys still go through. The error is only the code.
+	if s.modelPasswordTypingBlocked() && KeyInsertsText(key) {
+		if _, kind := s.FocusedInputKind(); FocusBlocksModelType(kind) {
+			return nil, fmt.Errorf("not_password_field")
+		}
 	}
 	if err := s.session.Press(key); err != nil {
 		return nil, err

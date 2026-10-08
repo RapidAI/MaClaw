@@ -43,6 +43,7 @@ const (
 	metaAskUserQuestion    = "ask_user_question"
 	metaAskUserInputType   = "ask_user_input_type"
 	metaAskUserOptionsJSON = "ask_user_options_json"
+	metaAskUserSecretName  = "ask_user_secret_name"
 )
 
 type CoreAgentExecutor struct {
@@ -758,6 +759,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 			if data, err := json.Marshal(result.AskUser.Options); err == nil {
 				metadata[metaAskUserOptionsJSON] = string(data)
 			}
+		}
+		if name := strings.TrimSpace(result.AskUser.SecretName); name != "" {
+			metadata[metaAskUserSecretName] = name
 		}
 	}
 	if handle, err := cb.issueTaskContinuationHandle(); err == nil && handle != "" {
