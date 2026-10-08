@@ -706,7 +706,7 @@ func testMatMulQ8DualOutSeq(t *testing.T, seq, maxWorkers int) {
 	wantU := make([]float32, seq*N)
 	MatMulQ8N(wantG, a, wGate, seq, N, K, 1)
 	MatMulQ8N(wantU, a, wUp, seq, N, K, 1)
-	SiLUMul(wantG, wantU)
+	GeluMul(wantG, wantU)
 	MatMulQ8DualOut(gotG, gotU, a, wGate, wUp, seq, maxWorkers)
 	var maxd float32
 	for i := range gotG {
@@ -720,7 +720,7 @@ func testMatMulQ8DualOutSeq(t *testing.T, seq, maxWorkers int) {
 		}
 	}
 	if maxd > 2e-3 {
-		t.Fatalf("seq=%d workers=%d DualOut vs two GEMMs+SiLUMul max|Δ|=%g", seq, maxWorkers, maxd)
+		t.Fatalf("seq=%d workers=%d DualOut vs two GEMMs+GeluMul max|Δ|=%g", seq, maxWorkers, maxd)
 	}
 }
 
@@ -745,7 +745,7 @@ func TestMatMulQ8DualOut_PackedM3MatchesTwoGEMMs(t *testing.T) {
 	wantU := make([]float32, seq*N)
 	MatMulQ8N(wantG, a, wGate, seq, N, K, 1)
 	MatMulQ8N(wantU, a, wUp, seq, N, K, 1)
-	SiLUMul(wantG, wantU)
+	GeluMul(wantG, wantU)
 	for _, nw := range []int{0, 5, 7} {
 		SetMatMulMaxParallel(nw)
 		gotG := make([]float32, seq*N)

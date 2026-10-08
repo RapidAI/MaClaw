@@ -161,7 +161,7 @@ func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
 		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim)
 		tw.put(p+"ffGate", ffGate)
 		tw.put(p+"ffUp", ffUp)
-		tensor.SiLUMul(ffGate, ffUp)
+		tensor.GeluMul(ffGate, ffUp)
 		tw.put(p+"ffSilu", ffGate)
 
 		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim)

@@ -536,7 +536,7 @@ func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWo
 		}
 		for r := 0; r < 3; r++ {
 			off := r*N + ns
-			SiLUMul(gate[off:r*N+ne], up[off:r*N+ne])
+			GeluMul(gate[off:r*N+ne], up[off:r*N+ne])
 		}
 	}
 	if maxWorkers == 1 || !shouldParallel(seq, N, K) {

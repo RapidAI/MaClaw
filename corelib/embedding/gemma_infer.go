@@ -300,7 +300,7 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
 			tensor.MatMulQ8N(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim, maxWorkers)
 			tensor.MatMulQ8N(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim, maxWorkers)
-			tensor.SiLUMul(ffGate, ffUp)
+			tensor.GeluMul(ffGate, ffUp)
 			tensor.MatMulQ8N(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim, maxWorkers)
 			tensor.RMSNormRows(ffDown, ffDown, layer.postFFNNormW, seq, dim, hp.RMSNormEps)
 			tensor.Add(x, x, ffDown)

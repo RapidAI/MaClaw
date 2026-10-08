@@ -1,7 +1,7 @@
 // corelib/embedding/gemma.go — Pure Go Gemma2 embedding model (GGUF).
 //
 // Architecture: Gemma2-style transformer with GQA, QK-norm, post-attn norm,
-// post-FFN norm, SiLU-gated FFN, RoPE.
+// post-FFN norm, GELU-gated FFN, RoPE.
 // Output: mean-pooled hidden states → L2 normalized embedding.
 // Supports MRL truncation (768 → 512/256/128).
 //

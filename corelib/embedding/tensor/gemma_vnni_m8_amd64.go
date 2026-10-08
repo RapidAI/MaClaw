@@ -207,7 +207,7 @@ func gemmaVNNIQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers in
 }
 
 // gemmaVNNIDualOut replaces MatMulQ8DualOut for seq>=8: one quantization of A
-// feeds both FFN weight streams; SiLU is applied per range (disjoint columns).
+// feeds both FFN weight streams; GELU is applied per range (disjoint columns).
 func gemmaVNNIDualOut(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers int) bool {
 	const K, N = gemmaDim, gemmaFFDim
 	if !enableGemmaM8VNNI || !hasAVX512VNNI || seq < 8 {
@@ -227,7 +227,7 @@ func gemmaVNNIDualOut(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers i
 		gemmaVNNIM8Range(up, panel.q, panel.s, a, wU, seq, N, K, ns, ne)
 		for r := 0; r < seq; r++ {
 			off := r * N
-			SiLUMul(gate[off+ns:off+ne], up[off+ns:off+ne])
+			GeluMul(gate[off+ns:off+ne], up[off+ns:off+ne])
 		}
 	}
 	if maxWorkers == 1 || !shouldParallel(seq, N, K) {

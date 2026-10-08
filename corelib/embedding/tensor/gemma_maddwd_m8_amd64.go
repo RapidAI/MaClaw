@@ -305,7 +305,7 @@ func gemmaMaddwdQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers 
 }
 
 // gemmaMaddwdDualOut replaces MatMulQ8DualOut for seq>=3: one quantization
-// of A feeds both FFN weight streams; SiLU is applied per range. seq 3-4 run
+// of A feeds both FFN weight streams; GELU is applied per range. seq 3-4 run
 // as a single M4 tile.
 func gemmaMaddwdDualOut(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers int) bool {
 	const K, N = gemmaDim, gemmaFFDim
@@ -329,7 +329,7 @@ func gemmaMaddwdDualOut(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers
 		rangeFn(up, panel.q, panel.s, a, wU, seq, N, K, ns, ne)
 		for r := 0; r < seq; r++ {
 			off := r * N
-			SiLUMul(gate[off+ns:off+ne], up[off+ns:off+ne])
+			GeluMul(gate[off+ns:off+ne], up[off+ns:off+ne])
 		}
 	}
 	if maxWorkers == 1 || !shouldParallel(seq, N, K) {
