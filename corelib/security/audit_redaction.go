@@ -84,7 +84,7 @@ func RedactMetadataMap(in map[string]string) map[string]string {
 		if key == "" {
 			continue
 		}
-		if isSensitiveAuditKey(key) {
+		if isSensitiveAuditKey(key) && !IsBooleanAuditValue(v) {
 			out[key] = auditRedactedValue
 			continue
 		}
@@ -100,6 +100,15 @@ func RedactMetadataMap(in map[string]string) map[string]string {
 	return out
 }
 
+// IsBooleanAuditValue reports whether a metadata value is a plain boolean
+// token. Values under secret-named keys are redacted wholesale, but a bare
+// "true"/"false" cannot carry secret material — it is a diagnostic flag
+// (include_secrets, token_set, admin_secret_set) that admins need intact.
+// Only the exact JSON boolean spelling counts; anything else stays redacted.
+func IsBooleanAuditValue(value string) bool {
+	return value == "true" || value == "false"
+}
+
 func sanitizeAuditMap(in map[string]interface{}) map[string]interface{} {
 	if in == nil {
 		return nil
@@ -113,6 +122,12 @@ func sanitizeAuditMap(in map[string]interface{}) map[string]interface{} {
 
 func sanitizeAuditValue(key string, value interface{}) interface{} {
 	if isSensitiveAuditKey(key) {
+		if s, ok := value.(string); ok && IsBooleanAuditValue(s) {
+			return s
+		}
+		if _, ok := value.(bool); ok {
+			return value
+		}
 		return auditRedactedValue
 	}
 	switch v := value.(type) {
@@ -149,6 +164,12 @@ func sanitizeAuditValue(key string, value interface{}) interface{} {
 
 func auditValueWouldRedactAtKey(key string, value interface{}) bool {
 	if isSensitiveAuditKey(key) {
+		if s, ok := value.(string); ok && IsBooleanAuditValue(s) {
+			return false
+		}
+		if _, ok := value.(bool); ok {
+			return false
+		}
 		return true
 	}
 	switch v := value.(type) {
@@ -175,6 +196,9 @@ func isSensitiveAuditKey(key string) bool {
 	if normalized == "" {
 		return false
 	}
+	if maskedDiagnosticAuditKey(normalized) {
+		return false
+	}
 	fragments := []string{
 		"password", "passwd", "pwd", "secret", "token", "api_key", "apikey", "jwt",
 		"authorization", "cookie", "private_key", "access_key", "refresh_key", "encryption_key",
@@ -185,6 +209,18 @@ func isSensitiveAuditKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// maskedDiagnosticAuditKey marks keys whose producers shorten the value below
+// any secret threshold before the event is written. Wholesale redaction here
+// would only destroy the diagnostic the key exists for.
+func maskedDiagnosticAuditKey(normalized string) bool {
+	switch normalized {
+	case "api_key_prefix": // the first six characters derivable from any stored api_key mask
+		return true
+	default:
+		return false
+	}
 }
 
 func redactAuditString(value string) string {

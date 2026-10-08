@@ -79,7 +79,11 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
             aria-label={ariaLabel}
             aria-orientation="horizontal"
             style={{
-                position: 'absolute',
+                // Fixed, not absolute: the menus must escape the nav rail's
+                // scroll container. The rail's overflow-x hidden would clip an
+                // absolutely positioned menu that starts at the rail's right
+                // edge, and a scrolled rail would drag the menu with it.
+                position: 'fixed',
                 left: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
                 ...(anchorTop != null ? { top: `${anchorTop}px`, transform: 'translateY(-50%)' } : { bottom: '8px' }),
                 display: 'flex',

@@ -155,9 +155,9 @@ describe("renderContentWithCodeBlocks", () => {
 
         const well = container.querySelector("[data-assistant-code]") as HTMLElement;
         const pre = well.querySelector("pre") as HTMLElement;
-        expect(well.style.color).toBe("rgb(227, 233, 241)");
+        expect(well.style.color).toBe("rgb(201, 201, 201)");
         expect(well.style.background).toMatch(/color-mix/i);
-        expect(well.style.background).toMatch(/#e3e9f1|rgb\(227,\s*233,\s*241\)/i);
+        expect(well.style.background).toMatch(/#c9c9c9|rgb\(201,\s*201,\s*201\)/i);
         expect(pre.style.background).toBe("transparent");
     });
 

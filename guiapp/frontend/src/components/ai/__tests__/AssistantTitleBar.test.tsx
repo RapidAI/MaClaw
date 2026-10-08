@@ -75,7 +75,7 @@ describe('AssistantTitleBar', () => {
     it('exposes mobile documents as a title-bar icon near tools', () => {
         renderTitleBar();
         const btn = screen.getByTestId('mobile-docs-titlebar-btn');
-        expect(btn.getAttribute('aria-label')).toContain('Mobile');
+        expect(btn.getAttribute('aria-label')).toContain('云盘');
     });
 
     it('no longer hosts global settings controls (moved to the quick settings bar)', () => {

@@ -418,8 +418,9 @@ func (s *Service) finishDesktopOpen(tenantID, userID, instanceID string, opened,
 	left := s.dropDesktopUseLocked(key, instanceID)
 	_, held := s.desktopHeld[key]
 	adminView := s.adminDesktopViewActiveLocked(key)
+	userView := s.userDesktopViewActiveLocked(key)
 	s.mu.Unlock()
-	if !stop || left > 0 || held || adminView {
+	if !stop || left > 0 || held || adminView || userView {
 		return
 	}
 	if s.beforeDesktopStop != nil {
@@ -438,8 +439,9 @@ func (s *Service) finishDesktopOpen(tenantID, userID, instanceID string, opened,
 	}
 	_, held = s.desktopHeld[key]
 	adminView = s.adminDesktopViewActiveLocked(key)
+	userView = s.userDesktopViewActiveLocked(key)
 	s.mu.Unlock()
-	if left == 0 && !held && !adminView {
+	if left == 0 && !held && !adminView && !userView {
 		_ = s.stopDesktop(context.Background(), tenantID, userID)
 	}
 	gate.Unlock()
@@ -572,9 +574,10 @@ func (s *Service) adminDesktopViewActiveLocked(key string) bool {
 
 // ReleaseDesktopIfIdle drops a timeout pin so the desktop can stop.
 // It returns false while the person still has the keyboard, while another
-// command of this user already has the desktop open, or while an admin check
-// of that desktop is still inside its hold. The caller must leave that
-// browser up so the website login stays there.
+// command of this user already has the desktop open, while an admin check
+// of that desktop is still inside its hold, or while this user's own Bot
+// view is still inside its hold. The caller must leave that browser up so
+// the website login stays there.
 func (s *Service) ReleaseDesktopIfIdle(tenantID, userID string) bool {
 	if s == nil {
 		return true
@@ -587,6 +590,9 @@ func (s *Service) ReleaseDesktopIfIdle(tenantID, userID string) bool {
 		return false
 	}
 	if s.adminDesktopViewActiveLocked(key) {
+		return false
+	}
+	if s.userDesktopViewActiveLocked(key) {
 		return false
 	}
 	// The command that is stopping still counts as one open. A second open
@@ -841,7 +847,8 @@ func (s *Service) NoteDesktopView(tenantID, userID, raw string) {
 // ForgetDesktopView drops the chat picture after MaClawSrv stops the desktop.
 // The stop call does not go through the bot message path, so the picture has
 // to be cleared here or the next task shows a desktop that is already gone.
-// An admin check hold ends with the desktop it was watching.
+// An admin check hold ends with the desktop it was watching; a user view
+// hold ends too, so the next view opens a fresh desktop.
 func (s *Service) ForgetDesktopView(tenantID, userID string) {
 	if s == nil {
 		return
@@ -851,13 +858,17 @@ func (s *Service) ForgetDesktopView(tenantID, userID string) {
 	key := desktopViewKey(tenantID, userID)
 	_, hadView := s.desktopView[key]
 	_, hadAdminView := s.desktopAdminView[key]
+	_, hadUserView := s.desktopUserView[key]
 	if hadView {
 		delete(s.desktopView, key)
 	}
 	if hadAdminView {
 		delete(s.desktopAdminView, key)
 	}
-	if hadView || hadAdminView {
+	if hadUserView {
+		delete(s.desktopUserView, key)
+	}
+	if hadView || hadAdminView || hadUserView {
 		s.persistDesktopState(tenantID)
 	}
 	s.mu.Unlock()

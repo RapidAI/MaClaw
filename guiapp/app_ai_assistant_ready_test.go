@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -115,7 +116,28 @@ func TestAIAssistantControlBindingsSelfHealMissingHubClient(t *testing.T) {
 }
 
 func TestPrepareHubClientSyncIsIdempotent(t *testing.T) {
-	app := &App{testHomeDir: t.TempDir(), disableBackgroundEmbeddingForTest: true}
+	// Hub client background loops keep syncing config into the test home dir
+	// after the test returns; on Windows that races t.TempDir's RemoveAll
+	// ("directory is not empty") and fails the run. Use a manual dir whose
+	// cleanup retries briefly instead.
+	dir, err := os.MkdirTemp("", "TestPrepareHubClientSyncIsIdempotent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			rmErr := os.RemoveAll(dir)
+			if rmErr == nil || time.Now().After(deadline) {
+				if rmErr != nil {
+					t.Logf("cleanup: residual test dir %s: %v", dir, rmErr)
+				}
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	app := &App{testHomeDir: dir, disableBackgroundEmbeddingForTest: true}
 	defer func() {
 		if app.memoryStore != nil {
 			app.memoryStore.Stop()

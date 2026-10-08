@@ -42,11 +42,10 @@ var codingSurfaceTrustedAdapters = map[tool.CapabilityID]string{
 // managed coding plan can discover and grep the workspace without these two
 // legacy entries ever being registered.
 //
-// Glob is registered on the host with fs.read.local provisions and a trusted
-// adapter, so it no longer belongs here; ripgrep remains subagent-only.
-var codingSurfaceToolsOutsideHostRegistry = map[string]string{
-	"ripgrep": "subagent-only fallback definition; outcome served by fs.read.local query",
-}
+// Glob and ripgrep are now both registered on the host with fs.read.local
+// provisions and trusted adapters, so the list is empty; new subagent-only
+// fallbacks must be added back here when they appear.
+var codingSurfaceToolsOutsideHostRegistry = map[string]string{}
 
 // TestCodingSurfaceCapabilityCoverageProbe is the read-only probe for the
 // agentic half of the migration. It changes no routing, and it still describes

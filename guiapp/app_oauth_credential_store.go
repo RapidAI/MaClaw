@@ -9,8 +9,10 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -42,6 +44,12 @@ func credentialStoreProviderID(provider corelib.MaclawLLMProvider) string {
 		return qoder.StoreCN
 	case provider.Name == qoder.NameGlobal && kind.IsOAuth():
 		return qoder.StoreGlobal
+	case provider.Name == trae.NameCN && kind.IsOAuth():
+		return trae.StoreCN
+	case provider.Name == trae.NameGlobal && kind.IsOAuth():
+		return trae.StoreGlobal
+	case lobsterai.IsProviderName(provider.Name) && kind.IsOAuth():
+		return lobsterai.StoreID
 	case provider.Name == codegenProviderName && provider.AuthType == "sso":
 		return "codegen"
 	default:
@@ -174,13 +182,12 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provid
 				Type:           old.Type,
 				AccessToken:    refreshed.AccessToken,
 				RawAccessToken: refreshed.AccessToken,
-				RefreshToken:   refreshed.RefreshToken,
-				ExpiresAt:      refreshed.ExpiresAt,
-				UserID:         old.UserID,
-				Email:          old.Email,
-			}
-			if refreshed.RefreshToken == "" {
-				updated.RefreshToken = old.RefreshToken
+				// qoder.Refresh never returns an empty refresh token; it falls
+				// back to the caller-provided one when the server reuses it.
+				RefreshToken: refreshed.RefreshToken,
+				ExpiresAt:    refreshed.ExpiresAt,
+				UserID:       old.UserID,
+				Email:        old.Email,
 			}
 			syncCred = updated
 			log.Printf("[credential-store] refreshed %s token", storeID)
@@ -227,6 +234,52 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provid
 			syncCred = updated
 			log.Printf("[credential-store] refreshed %s token", storeID)
 			return updated, nil
+		case trae.StoreCN, trae.StoreGlobal:
+			edition, found := trae.ProfileByStoreID(storeID)
+			if !found {
+				return old, fmt.Errorf("unknown Trae provider %s", storeID)
+			}
+			refreshed, refreshErr := trae.Refresh(ctx, edition, old.RefreshToken, old.MachineID, old.DeviceID)
+			if refreshErr != nil {
+				return old, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			updated := &oauth.StoredCredential{
+				Type:           old.Type,
+				AccessToken:    refreshed.AccessToken,
+				RawAccessToken: refreshed.AccessToken,
+				// trae.Refresh keeps the caller-provided refresh token when the
+				// server reuses it; persist both new values otherwise.
+				RefreshToken: refreshed.RefreshToken,
+				ExpiresAt:    refreshed.ExpiresAt,
+				UserID:       oauthStoreFirstNonEmpty(refreshed.UserID, old.UserID),
+				Email:        oauthStoreFirstNonEmpty(refreshed.DisplayName, old.Email),
+				EnterpriseID: oauthStoreFirstNonEmpty(refreshed.EnterpriseID, old.EnterpriseID),
+				// The device pair never rotates: it anchors the token family.
+				MachineID: oauthStoreFirstNonEmpty(refreshed.MachineID, old.MachineID),
+				DeviceID:  oauthStoreFirstNonEmpty(refreshed.DeviceID, old.DeviceID),
+			}
+			syncCred = updated
+			log.Printf("[credential-store] refreshed %s token", storeID)
+			return updated, nil
+		case lobsterai.StoreID:
+			refreshed, refreshErr := lobsterai.Refresh(ctx, old.RefreshToken, old.UUID, old.FirstKeyfrom, old.UserID)
+			if refreshErr != nil {
+				return old, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			updated := &oauth.StoredCredential{
+				Type:           old.Type,
+				AccessToken:    refreshed.AccessToken,
+				RawAccessToken: refreshed.AccessToken,
+				RefreshToken:   refreshed.RefreshToken,
+				ExpiresAt:      refreshed.ExpiresAt,
+				UserID:         oauthStoreFirstNonEmpty(refreshed.UserID, old.UserID),
+				Email:          oauthStoreFirstNonEmpty(refreshed.Nickname, old.Email),
+				UUID:           oauthStoreFirstNonEmpty(refreshed.UUID, old.UUID),
+				FirstKeyfrom:   oauthStoreFirstNonEmpty(refreshed.FirstKeyfrom, old.FirstKeyfrom),
+			}
+			syncCred = updated
+			log.Printf("[credential-store] refreshed %s token", storeID)
+			return updated, nil
 		default:
 			return old, fmt.Errorf("unknown OAuth provider for refresh: %s", storeID)
 		}
@@ -258,6 +311,16 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provid
 		a.syncCredentialToConfig(provider.Name, syncCred, providerIdx)
 	}
 	return err
+}
+
+// oauthStoreFirstNonEmpty returns the first trimmed-non-empty value.
+func oauthStoreFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // completeStoredOAuthCredential fills blank store fields from the provider

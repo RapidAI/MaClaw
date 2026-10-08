@@ -120,7 +120,9 @@ type RemoteCodingSubAgent struct {
 	// never releases or mutates the parent LoopContext.
 	nestedLoopRelease func()
 	// dynamicLifecycleOwner is populated only by a qualified D1 composition;
-	// until then it is inert and remote Coding remains on S0.5.
+	// until then it is inert and remote Coding remains on S0.5. Its state is
+	// an atomic relay snapshot (no embedded lock), so struct copies of the
+	// agent never copy a mutex value.
 	dynamicLifecycleOwner codingDynamicLifecycleOwner
 
 	// See CodingSubAgent.dynamicInvocationIdentity. SSH sessionID identifies a
@@ -159,8 +161,9 @@ func (r *RemoteCodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskCancelled, Summary: "remote read-only child policy or context is unavailable"}
 	}
 	child := *r
-	// A child owns an independent lifecycle boundary; copying the parent's
-	// mutex/relay owner can let a child close a sibling reservation.
+	// A child owns an independent lifecycle boundary; it starts inert (fresh
+	// owner) so it can never close a sibling's reservation or install into
+	// the parent's lifecycle bridge.
 	child.dynamicLifecycleOwner = codingDynamicLifecycleOwner{}
 	defer child.releaseNestedLoopContext()
 	// RunReadOnlyChild owns this fresh Attempt. Retain the bounded runtime

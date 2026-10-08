@@ -358,6 +358,12 @@ func newQualifiedCodingBoundDynamicRequestLifecycleRelay(handler *IMMessageHandl
 // reserveCodingBoundDynamicRequestAdapterFromComposition, which consumes the
 // single immutable composition input instead of deriving anything locally.
 func reserveCodingBoundDynamicRequestAdapter(ctx context.Context, handler *IMMessageHandler, identity *trustedCodingInvocationIdentity, cfg corelib.MaclawLLMConfig) (*codingBoundDynamicRequestAdapter, error) {
+	// Same production deny boundary as assembleCodingBoundDynamicRequestAdapter:
+	// without the package-internal qualification override nothing is derived or
+	// reserved, so an unqualified caller must not touch the catalog at all.
+	if codingDynamicProductionAdapterQualificationOverride == nil {
+		return nil, nil
+	}
 	dynamic, err := handler.codingDynamicCatalogForIdentity(ctx, identity)
 	if err != nil {
 		return nil, err

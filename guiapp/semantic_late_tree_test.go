@@ -338,9 +338,13 @@ func TestPrepareAgentLoopToolsClassifierTimeoutKeepsWebSearch(t *testing.T) {
 		t.Fatalf("classifier-timeout leftover must expose web lookup, got %#v", names)
 	}
 
-	denied := *ctx
-	denied.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{AllowWebSearch: false}
-	blocked := h.prepareAgentLoopTools("u1", "长江学者申请后，一般研究项目执行几年？", &denied, agentLoopPhase{})
+	// A fresh LoopContext carrying the same runtime snapshot avoids copying
+	// the context's RWMutex while exercising the deny policy.
+	denied := &LoopContext{
+		Runtime: ctx.Runtime,
+		LansengerGroupPermissions: &lansengerGroupPermissionPolicy{AllowWebSearch: false},
+	}
+	blocked := h.prepareAgentLoopTools("u1", "长江学者申请后，一般研究项目执行几年？", denied, agentLoopPhase{})
 	blockedNames := toolNameSetForWorkflowFilterTest(blocked.Tools)
 	if blockedNames["web_search"] || blockedNames["web_fetch"] || blockedNames["bash"] || blockedNames["read_file"] {
 		t.Fatalf("group policy must still deny leftover web lookup and the execution floor, got %#v", blockedNames)

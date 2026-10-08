@@ -4,7 +4,7 @@ import { GetMaclawLLMProviders } from '../../wailsjs/go/main/App';
 import { localizeText } from '../i18n/langSelect';
 import { tokenBankDisplayURL } from '../utils/hubcenterTokenBank';
 import { TokenBankShareChipButton, useTokenBankDepositBusy } from './remote/TokenBankShareChipButton';
-import { PROVIDER_LOGOS } from './remote/providerLogos';
+import { PROVIDER_LOGOS, isLobsterAIProvider, isQoderProvider, isTraeProvider } from './remote/providerLogos';
 import {
     HUB_SERVICE_PROVIDER_NAME,
     listProviderModelsForShare,
@@ -49,9 +49,16 @@ export function isTokenBankShareableProvider(provider: LLMProvider): boolean {
  * GitHub token, not the Copilot API token, so it is not a share secret.
  */
 export function tokenBankShareCredential(provider: LLMProvider): string {
+    const name = String(provider.name || '').trim();
+    // Qoder device tokens are machine-bound (the refresh grants live on the
+    // depositor's machine), so a deposited copy cannot stay usable. Trae's
+    // device fingerprint and LobsterAI's install uuid ride the account
+    // session the same way. The badge gate reads the same rule via
+    // isProviderShareExcluded.
+    if (isQoderProvider(name) || isTraeProvider(name) || isLobsterAIProvider(name)) return '';
     const key = String(provider.key || '').trim();
     if (key) return key;
-    if (String(provider.name || '').trim() === COPILOT_PROVIDER_NAME) return '';
+    if (name === COPILOT_PROVIDER_NAME) return '';
     return String(provider.oauth_access_token || '').trim();
 }
 

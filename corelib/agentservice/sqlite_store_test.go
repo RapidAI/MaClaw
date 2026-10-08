@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -203,6 +204,82 @@ func TestSQLiteStoreSeparateHandlesKeepLifecycleWritesAndIdempotencyAtomic(t *te
 	runs, err := first.ListRuns("tenant", "user", "instance")
 	if err != nil || len(runs) != writers {
 		t.Fatalf("runs=%d err=%v; want %d", len(runs), err, writers)
+	}
+}
+
+// A credential digest must survive the SQLite snapshot round trip: the read
+// path rehydrates the state before every lookup, so a digest dropped from the
+// snapshot turns every /api/v1/auth/token exchange into a 401. See IssueToken.
+func TestSQLiteStoreCredentialSecretDigestSurvivesSnapshotReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	apiKey := "mck_digest-persist"
+	apiSecret := "mcs_digest-persist"
+	digest := HashSecretWithPepper(apiSecret, "")
+	if digest == "" {
+		t.Fatal("empty digest")
+	}
+	if err := store.SaveCredential(Credential{ID: "cred-digest", TenantID: "tenant", UserID: "user", Name: "persist", APIKeyHash: hashAPIKey(apiKey), APIKeyPrefix: deriveAPIKeyPrefix(apiKey), Status: CredentialStatusActive, TokenVersion: 1, SecretDigest: digest, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// A read rehydrates from the persisted snapshot; the digest must be there.
+	cred, err := store.GetCredentialByAPIKey(apiKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.SecretDigest == "" {
+		t.Fatal("secret digest was dropped by the snapshot round trip")
+	}
+	if !VerifySecretWithPepper(apiSecret, cred.SecretDigest, "") {
+		t.Fatal("persisted digest does not verify the api secret")
+	}
+}
+
+// IssueToken must keep working across a service restart on the SQLite
+// backend: the second process rehydrates the state from the persisted
+// snapshot, so the API secret digest has to be part of it.
+func TestSQLiteBackendIssueTokenSurvivesServiceRestart(t *testing.T) {
+	root := t.TempDir()
+	newSvc := func() *Service {
+		svc, err := NewService(Config{DataRoot: root, StoreBackend: "sqlite", TokenSecret: "test-token-secret-0123456789"}, nil, EchoExecutor{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+	svc := newSvc()
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "hub-connection"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: cred.APIKey, APISecret: cred.APISecret})
+	if err != nil {
+		t.Fatalf("issue token in the creating process: %v", err)
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Restart: a fresh service over the same state file.
+	reopened := newSvc()
+	defer reopened.Close()
+	second, err := reopened.IssueToken(context.Background(), IssueTokenInput{APIKey: cred.APIKey, APISecret: cred.APISecret})
+	if err != nil {
+		t.Fatalf("issue token after restart: %v", err)
+	}
+	if second.AccessToken == "" || first.AccessToken == "" {
+		t.Fatal("empty access token")
 	}
 }
 

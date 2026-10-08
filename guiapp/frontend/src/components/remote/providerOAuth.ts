@@ -1,31 +1,58 @@
 import {
     CancelGitHubCopilotOAuth,
     CancelKimiCodeOAuth,
+    CancelLobsterAIOAuth,
     CancelOpenAIOAuth,
     CancelQoderOAuth,
+    CancelTraeOAuth,
     CancelWorkBuddyOAuth,
     CancelXAIOAuth,
+    CancelZhipuCodingOAuth,
     CompleteAnthropicOAuth,
     StartAnthropicOAuth,
     StartGitHubCopilotOAuth,
     StartKimiCodeOAuth,
+    StartLobsterAIOAuth,
     StartOpenAIOAuth,
     StartQoderOAuth,
+    StartTraeOAuth,
     StartWorkBuddyOAuth,
     StartXAIOAuth,
+    StartZhipuCodingOAuth,
     WaitGitHubCopilotOAuth,
     WaitKimiCodeOAuth,
+    WaitLobsterAIOAuth,
     WaitQoderOAuth,
+    WaitTraeOAuth,
+    WaitZhipuCodingOAuth,
 } from "../../../wailsjs/go/main/App";
 import { copyKimiCodeUserCode } from "./LLMConfigOAuthFields";
-import { isKimiCodeProvider, isQoderProvider, isWorkBuddyProvider } from "./providerLogos";
+import {
+    isKimiCodeProvider,
+    isLobsterAIProvider,
+    isQoderProvider,
+    isTraeProvider,
+    isWorkBuddyProvider,
+    isZhipuCodingProvider,
+    LOBSTERAI_PROVIDER,
+    QODER_CN_PROVIDER,
+    QODER_GLOBAL_PROVIDER,
+    TRAE_CN_PROVIDER,
+    TRAE_GLOBAL_PROVIDER,
+} from "./providerLogos";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
 /** Edition sent to StartQoderOAuth for the 国内/国际 pair. */
 export function qoderEdition(providerName?: string): string | null {
     if (!isQoderProvider(providerName)) return null;
-    return providerName === "Qoder 国际版" ? "global" : "cn";
+    return providerName === QODER_GLOBAL_PROVIDER ? "global" : "cn";
+}
+
+/** Edition sent to StartTraeOAuth for the 国内/国际 pair. */
+export function traeEdition(providerName?: string): string | null {
+    if (!isTraeProvider(providerName)) return null;
+    return providerName === TRAE_GLOBAL_PROVIDER ? "global" : "cn";
 }
 
 export function cancelNamedProviderOAuth(providerName?: string) {
@@ -49,6 +76,18 @@ export function cancelNamedProviderOAuth(providerName?: string) {
         void CancelQoderOAuth();
         return;
     }
+    if (isTraeProvider(providerName)) {
+        void CancelTraeOAuth();
+        return;
+    }
+    if (isLobsterAIProvider(providerName)) {
+        void CancelLobsterAIOAuth();
+        return;
+    }
+    if (isZhipuCodingProvider(providerName)) {
+        void CancelZhipuCodingOAuth();
+        return;
+    }
     CancelOpenAIOAuth();
 }
 
@@ -58,6 +97,9 @@ export function cancelAllNativeOAuth() {
     void CancelWorkBuddyOAuth();
     void CancelKimiCodeOAuth();
     void CancelQoderOAuth();
+    void CancelTraeOAuth();
+    void CancelLobsterAIOAuth();
+    void CancelZhipuCodingOAuth();
 }
 
 export function oauthBrowserHelp(name: string, t: Translate): string {
@@ -73,6 +115,12 @@ export function oauthBrowserHelp(name: string, t: Translate): string {
     if (isQoderProvider(name)) {
         return t("Click below to authorize with your Qoder account in the browser. After you approve, MaClaw finishes automatically.", "点击下方按钮，将在浏览器中打开 Qoder 授权页。登录并允许后这里会自动完成，无需复制验证码。");
     }
+    if (isTraeProvider(name)) {
+        return t("Click below to authorize with your Trae account in the browser. After the redirect back, MaClaw finishes automatically.", "点击下方按钮，将在浏览器中打开 Trae 授权页。登录授权后页面会自动回跳，这里会完成登录，无需复制验证码。");
+    }
+    if (isLobsterAIProvider(name)) {
+        return t("Click below to sign in to LobsterAI in the browser. After the redirect back, MaClaw finishes automatically.", "点击下方按钮，将在浏览器中打开 LobsterAI 登录页。登录后页面会自动回跳，这里会完成登录，无需复制验证码。");
+    }
     return t("Click below to authorize with your OpenAI account in the browser.", "点击下方按钮，将在浏览器中完成 OpenAI 账号授权。");
 }
 
@@ -81,6 +129,8 @@ export function oauthSignInLabel(name: string, t: Translate): string {
     if (isWorkBuddyProvider(name)) return t("Sign in with WorkBuddy", "使用 WorkBuddy 账号登录");
     if (isKimiCodeProvider(name)) return t("Sign in with Kimi Code", "使用 Kimi Code 账号登录");
     if (isQoderProvider(name)) return t("Sign in with Qoder", "使用 Qoder 账号登录");
+    if (isTraeProvider(name)) return t("Sign in with Trae", "使用 Trae 账号登录");
+    if (isLobsterAIProvider(name)) return t("Sign in with LobsterAI", "使用 LobsterAI 账号登录");
     return t("Sign in with OpenAI", "使用 OpenAI 账号登录");
 }
 
@@ -119,6 +169,58 @@ export async function promptQoderBrowserLogin(providerName: string, t: Translate
         : t("The browser did not open. Open this page:", "浏览器未能自动打开，请打开此页面：");
     onHint(`${opened}\n${manualURL}`);
     return WaitQoderOAuth();
+}
+
+/**
+ * Runs the Trae browser redirect login (国内/国际 realms). The authorization
+ * page opens on its own and redirects back to MaClaw's local listener; the
+ * hint carries the URL for when the browser could not be opened.
+ */
+export async function promptTraeBrowserLogin(providerName: string, t: Translate, onHint: (hint: string) => void): Promise<string> {
+    const edition = traeEdition(providerName);
+    if (!edition) throw new Error(t("Unknown Trae edition", "未知的 Trae 版本"));
+    const info = await StartTraeOAuth(edition);
+    const manualURL = info.auth_url || "";
+    const opened = info.browser_opened
+        ? t("The browser is open. Confirm the Trae login.", "已打开浏览器，请登录并授权 Trae。")
+        : t("The browser did not open. Open this page:", "浏览器未能自动打开，请打开此页面：");
+    onHint(`${opened}\n${manualURL}`);
+    return WaitTraeOAuth();
+}
+
+/**
+ * Runs the LobsterAI browser login. The portal page opens on its own and the
+ * desktop redirect comes back to MaClaw's local listener.
+ */
+export async function promptLobsterAIBrowserLogin(t: Translate, onHint: (hint: string) => void): Promise<string> {
+    const info = await StartLobsterAIOAuth();
+    const manualURL = info.auth_url || "";
+    const opened = info.browser_opened
+        ? t("The browser is open. Sign in to LobsterAI.", "已打开浏览器，请登录 LobsterAI。")
+        : t("The browser did not open. Open this page:", "浏览器未能自动打开，请打开此页面：");
+    onHint(`${opened}\n${manualURL}`);
+    return WaitLobsterAIOAuth();
+}
+
+/**
+ * Runs the Zhipu (智谱) online login — the same browser flow as the ZCode
+ * CLI's "zcode login bigmodel". The approval page opens on its own. The hint
+ * is also pushed through setTestResult because the zhipu provider renders the
+ * API-key fields (no OAuth hint area), so a browser that failed to open would
+ * otherwise leave the user waiting with nothing on screen. Resolves with the
+ * login message once WaitZhipuCodingOAuth completes (the backend has already
+ * saved the resolved coding-plan API key by then).
+ */
+export async function promptZhipuBrowserLogin(t: Translate, onHint: (hint: string) => void, setTestResult?: (result: { ok: boolean; msg: string }) => void): Promise<string> {
+    const info = await StartZhipuCodingOAuth();
+    const manualURL = info.auth_url || "";
+    const opened = info.browser_opened
+        ? t("The browser is open. Confirm the Zhipu login.", "已打开浏览器，请完成智谱登录授权。")
+        : t("The browser did not open. Open this page:", "浏览器未能自动打开，请打开此页面：");
+    const hint = `${opened}\n${manualURL}`;
+    onHint(hint);
+    if (!info.browser_opened) setTestResult?.({ ok: true, msg: hint });
+    return WaitZhipuCodingOAuth();
 }
 
 type OAuthTestResult = { ok: boolean; msg: string; retryable?: boolean };
@@ -188,6 +290,15 @@ export async function runProviderOAuthLogin(options: {
     }
     if (isQoderProvider(providerName)) {
         return promptQoderBrowserLogin(providerName, t, onDeviceHint);
+    }
+    if (isTraeProvider(providerName)) {
+        return promptTraeBrowserLogin(providerName, t, onDeviceHint);
+    }
+    if (isLobsterAIProvider(providerName)) {
+        return promptLobsterAIBrowserLogin(t, onDeviceHint);
+    }
+    if (isZhipuCodingProvider(providerName)) {
+        return promptZhipuBrowserLogin(t, onDeviceHint, setTestResult);
     }
     return StartOpenAIOAuth();
 }

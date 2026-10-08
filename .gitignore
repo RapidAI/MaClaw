@@ -357,3 +357,7 @@ build/desktopd_deploy/stage/
 
 # desktopd 部署工作目录（打包产物与宿主配置）
 build/desktopd_deploy/
+
+# --- Local tool state files (2026-10-07 cleanup) ---
+/jobs_tmp.json
+/guiapp/todo-debounce/

@@ -45,17 +45,27 @@ func TestRepeatFamilyCollapsesSiblingsAndLeavesOthersAlone(t *testing.T) {
 	}
 	// A qualifier, capability, or adapter is free to contain the separator.
 	// Splitting on it blindly would merge two unrelated selections into one
-	// family and silently hide the second from the model.
+	// family and silently hide the second from the model. Only suffixes the
+	// sibling minter can produce collapse: three-digit ids are mintable now
+	// that a family can run past 99 invocations, but anything outside the
+	// mintable range (tag text, value below 2, beyond the family ceiling 256)
+	// stays its own identity.
 	for _, id := range []string{
 		"need:information.lookup:c0ffee#tag",
 		"need:shell.execute.local:abc#1",
-		"need:fs.read.local:abc#123",
+		"need:fs.read.local:abc#999",
+		"need:fs.read.local:abc#1234",
 		"#02",
 		"need:fs.read.local:abc#00",
 	} {
 		if got := RepeatFamilyID(id); got != id {
 			t.Fatalf("non-sibling id %q collapsed to %q", id, got)
 		}
+	}
+	// A three-digit suffix inside the mintable range is a real sibling under
+	// the extended family ceiling and must collapse.
+	if got := RepeatFamilyID("need:fs.read.local:abc#123"); got != "need:fs.read.local:abc" {
+		t.Fatalf("three-digit minted suffix %q did not collapse: %q", "need:fs.read.local:abc#123", got)
 	}
 }
 

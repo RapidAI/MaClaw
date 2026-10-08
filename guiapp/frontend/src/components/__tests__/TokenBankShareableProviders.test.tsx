@@ -96,6 +96,21 @@ describe('TokenBankShareableProviders', () => {
         expect(picker.getAttribute('title')).toBe('https://api.kimi.com/coding/v1');
     });
 
+    it('never offers a tested Qoder provider for deposit (machine-bound device token)', async () => {
+        listProvidersMock.mockResolvedValue({
+            providers: [
+                kimi,
+                { ...kimi, id: 'qoder-cn', name: 'Qoder 国内版', url: 'https://api2-v2.qoder.sh/model/v1' },
+                { ...kimi, id: 'qoder-global', name: 'Qoder 国际版', url: 'https://api2-v2.qoder.sh/model/v1' },
+            ],
+        });
+        render(<TokenBankShareableProviders lang="zh-Hans" reloadToken={1} />);
+        const picker = await openProviderMenu();
+        expect(screen.getAllByRole('option').map((option) => option.querySelector('.tbk-provider-pick__option-label')?.textContent)).toEqual(['Kimi Code']);
+        expect(screen.queryByRole('option', { name: 'Qoder 国内版' })).toBeNull();
+        expect(screen.queryByRole('option', { name: 'Qoder 国际版' })).toBeNull();
+    });
+
     it('labels providers that share a name with their endpoint', async () => {
         listProvidersMock.mockResolvedValue({
             providers: [

@@ -630,6 +630,12 @@ func TestOpenComputerUseLogArtifactAllowsUnderLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Remove(p) })
+	// This test verifies path validation, not OS integration: launching the
+	// real default handler for .json can block for minutes on a machine
+	// whose handler answers DDE slowly, stalling the entire test binary.
+	orig := startSystemOpenForTest
+	startSystemOpenForTest = func(string) error { return nil }
+	defer func() { startSystemOpenForTest = orig }()
 	a := &App{}
 	out := a.OpenComputerUseLogArtifact(p)
 	// Opening may fail without desktop shell; path validation should pass.

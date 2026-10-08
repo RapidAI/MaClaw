@@ -295,6 +295,12 @@ type App struct {
 	kimiOwnedGen             uint64                      // oauth generation owned by the Kimi login above
 	qoderLogin               *qoderLoginFlow             // in-progress Qoder device login
 	qoderOwnedGen            uint64                      // oauth generation owned by the Qoder login above
+	traeLogin                *traeLoginFlow              // in-progress Trae device login
+	traeOwnedGen             uint64                      // oauth generation owned by the Trae login above
+	lobsterLogin             *lobsterLoginFlow           // in-progress LobsterAI browser login
+	lobsterOwnedGen          uint64                      // oauth generation owned by the LobsterAI login above
+	zhipuLogin               *zhipuLoginFlow             // in-progress Zhipu (智谱) online login
+	zhipuOwnedGen            uint64                      // oauth generation owned by the Zhipu login above
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex
@@ -1103,6 +1109,14 @@ func (a *App) ensureMemoryStore() {
 			// the model finishes loading in the background. Tool embedding
 			// cache is also pre-warmed so the first routeTools() call is fast.
 			go func() {
+				defer func() {
+					// Embedder load runs native-heavy GGUF parsing in the
+					// background; degrade to no-embedder instead of crashing
+					// the whole process.
+					if r := recover(); r != nil {
+						log.Printf("[ensureMemoryStore] embedding load panic suppressed: %v", r)
+					}
+				}()
 				cfg, err := a.LoadConfig()
 				if err != nil {
 					return
@@ -2553,7 +2567,6 @@ func (a *App) isToolLocked(toolName string) bool {
 // IsToolBeingInstalled checks if a tool is currently being installed (exported for frontend)
 func (a *App) IsToolBeingInstalled(toolName string) bool {
 	return false
-	return a.isToolLocked(toolName)
 }
 
 func (a *App) syncIMGatewaysFromConfig() {
@@ -3876,7 +3889,7 @@ func (a *App) GetWorkflowWorkingDir() string {
 // preview panel shows the correct workflow state even if events were missed while the tab
 // was inactive (background agent loops emit events that are rejected by the inactive tab's
 // event filter — this refresh bridges that gap).
-func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabID ...string) {
+func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabIDs []string) {
 	if a.workflowV2 == nil {
 		return
 	}
@@ -3890,8 +3903,8 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabID ...string) 
 	}
 	// Seed the event_scope_id if provided, ensuring refreshed events carry the tab scope
 	// even when no user message has been sent yet (e.g., after app restart).
-	if len(tabID) > 0 && strings.TrimSpace(tabID[0]) != "" {
-		a.sessionEventScopeIDs.Store(userID, strings.TrimSpace(tabID[0]))
+	if len(tabIDs) > 0 && strings.TrimSpace(tabIDs[0]) != "" {
+		a.sessionEventScopeIDs.Store(userID, strings.TrimSpace(tabIDs[0]))
 	}
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {
@@ -11938,8 +11951,16 @@ func (a *App) normalizeOpenPathForApp(path string) (string, error) {
 	return normalizeOpenPathHome(path, home)
 }
 
+// startSystemOpenForTest replaces the real OS default-handler launch in tests.
+// ShellExecuteW can block for minutes when the registered handler for a file
+// type answers DDE slowly or not at all, which stalls the whole test binary.
+var startSystemOpenForTest func(path string) error
+
 // startSystemOpen opens path with the OS default handler (non-blocking).
 func startSystemOpen(path string) error {
+	if startSystemOpenForTest != nil {
+		return startSystemOpenForTest(path)
+	}
 	if goruntime.GOOS == "windows" {
 		winPath := filepath.FromSlash(path)
 		if err := startSystemOpenWindows(winPath); err == nil {

@@ -96,6 +96,48 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
       <p class="err" id="tokenErr"></p>
     </div>
 
+    <div class="card" id="proxyKeyCard">
+      <h2>出网代理 key（代理凭据）</h2>
+      <p class="muted" style="font-size:13px">本机开启出站代理（DESKTOPD_PROXY）后供其它机器消费的 key，在「出网代理 key」卡片管理；消费端机器在各自的「出网代理（上游与桌面容器）」里填主机和 key。</p>
+      <table>
+        <thead><tr><th>Token</th><th>来源</th><th></th></tr></thead>
+        <tbody id="proxyTokenRows"></tbody>
+      </table>
+      <form id="proxyTokenForm" style="margin-top:14px">
+        <div class="row">
+          <div><label for="ptToken">自定义 token（留空自动生成）</label><input type="text" id="ptToken" class="mono" placeholder="可选"></div>
+          <div style="flex:0"><button type="submit">设置</button></div>
+          <div style="flex:0"><button type="button" class="ghost" id="ptResetEnv">恢复环境变量值</button></div>
+        </div>
+      </form>
+      <p class="err" id="proxyTokenErr"></p>
+    </div>
+
+    <div class="card">
+      <h2>出网代理（上游与桌面容器）</h2>
+      <p class="muted" style="font-size:13px">本机作为消费端时使用。上游是境外机的代理（默认 https，端口 18082，可写 host:port 覆盖）；api key 来自境外机面板的「出网代理 key」。「测试」验证的是当前填写的值（不需先保存）。保存后级联与桌面容器即时生效（改桌面 URL 后，桌面在下一次打开时重建）；勾选同步 dockerd 会重写 drop-in 并重启 docker，打开中的桌面会话会断。</p>
+      <table>
+        <thead><tr><th>上游代理</th><th>桌面容器代理 URL</th><th>来源</th></tr></thead>
+        <tbody id="egressRows"></tbody>
+      </table>
+      <form id="egressForm" style="margin-top:14px">
+        <div class="row">
+          <div><label for="egHost">上游主机</label><input type="text" id="egHost" class="mono" style="max-width:360px" placeholder="dockerd.maclaw.top"></div>
+          <div><label for="egKey">API key</label><input type="text" id="egKey" class="mono" style="max-width:360px" placeholder="境外机面板「出网代理 key」"></div>
+          <div style="flex:0"><button type="button" class="ghost" id="egTestBtn" style="margin-bottom:0">测试</button></div>
+        </div>
+        <label for="egDesktop">桌面容器代理 URL（留空 = 容器直连）</label>
+        <input type="text" id="egDesktop" class="mono" style="max-width:420px" placeholder="http://172.17.0.1:18083">
+        <p class="muted" id="egressTestOut" style="font-size:13px;min-height:16px"></p>
+        <div class="row">
+          <label style="margin:8px 0 0"><input type="checkbox" id="egSyncDocker" style="width:auto"> 同步 dockerd（重启 docker，桌面会话会断）</label>
+          <div style="flex:0"><button type="submit">保存</button></div>
+          <div style="flex:0"><button type="button" class="ghost" id="egResetEnv">恢复环境变量值</button></div>
+        </div>
+      </form>
+      <p class="err" id="egressErr"></p>
+    </div>
+
     <div class="card">
       <h2>桌面容器</h2>
       <table>
@@ -147,15 +189,18 @@ async function loadDash() {
   const docker = o.docker_ok
     ? '<span class="badge ok">Docker ' + esc(o.docker_version || 'ok') + '</span>'
     : '<span class="badge bad">Docker 不可用</span>';
+  const proxyParts = o.proxy
+    ? ['出站代理 <span class="mono">' + esc(o.proxy_addr) + '</span>（key 见下方）']
+    : ['<span class="muted">未开启（DESKTOPD_PROXY）</span>'];
+  proxyParts.push(o.desktop_proxy
+    ? '桌面容器 <span class="mono">' + esc(o.desktop_proxy) + '</span>'
+    : '<span class="muted">桌面容器直连（DESKTOPD_DESKTOP_PROXY_URL）</span>');
   $('serviceInfo').innerHTML =
     '<dt>对外主机</dt><dd class="mono">' + (esc(o.advertise_host) || '<span class="muted">未设置 DESKTOPD_ADVERTISE_HOST</span>') + '</dd>' +
     '<dt>Docker</dt><dd>' + docker + '</dd>' +
     '<dt>默认镜像</dt><dd class="mono">' + esc(o.image) + '</dd>' +
-    '<dt>镜像来源</dt><dd class="mono">' + ((o.image_sources || []).map(function (x) {
-      const state = {idle: '本地已有或未触发', pulling: '拉取中', pulled: '已拉取', failed: '拉取失败'}[x.state] || x.state;
-      return esc(x.image) + ' ← ' + esc(x.source) + ' (' + esc(state) + (x.message ? ': ' + esc(x.message) : '') + ')';
-    }).join('<br>') || '<span class="muted">未配置(DESKTOPD_IMAGE_SOURCE=off),镜像需在主机上构建</span>') + '</dd>' +
-    '<dt>默认资源</dt><dd class="mono">' + esc(o.memory) + ' / ' + esc(o.cpus) + ' CPU / shm ' + esc(o.shm_size) + '</dd>';
+    '<dt>默认资源</dt><dd class="mono">' + esc(o.memory) + ' / ' + esc(o.cpus) + ' CPU / shm ' + esc(o.shm_size) + '</dd>' +
+    '<dt>出网代理</dt><dd>' + proxyParts.join('<br>') + '</dd>';
 
   const rows = [];
   rows.push('<tr><td>主 key（DESKTOPD_TOKEN）</td><td class="mono">' + esc(o.primary_token || '(未设置)') + '</td><td class="muted">环境变量</td><td></td></tr>');
@@ -167,6 +212,28 @@ async function loadDash() {
       '<td><button type="button" class="danger" data-del="' + esc(t.id) + '">删除</button></td></tr>');
   }
   $('tokenRows').innerHTML = rows.join('');
+
+  const ptSource = o.proxy_token_source === 'panel' ? '面板设置' : '环境变量';
+  $('proxyTokenRows').innerHTML =
+    '<tr><td class="mono">' + (esc(o.proxy_token) || '<span class="muted">(不可读)</span>') + '</td>' +
+    '<td class="muted">' + ptSource + '</td><td></td></tr>';
+  $('ptResetEnv').style.display = o.proxy_token_source === 'panel' ? '' : 'none';
+  $('proxyTokenErr').textContent = o.proxy_token ? '' : '代理 key 不可读：检查 ' + 'proxy_token.json 或环境变量。';
+
+  const egSource = o.egress_source === 'panel' ? '面板设置' : '环境变量';
+  // The provider-side key card only makes sense when this desktopd SERVES
+  // the proxy; consumer hosts get the (上游与桌面容器) card instead.
+  $('proxyKeyCard').style.display = o.proxy ? '' : 'none';
+  $('egressRows').innerHTML =
+    '<tr><td class="mono">' + (esc(o.egress_upstream) || '<span class="muted">未配置</span>') + '</td>' +
+    '<td class="mono">' + (esc(o.egress_desktop_url) || '<span class="muted">未配置</span>') + '</td>' +
+    '<td class="muted">' + egSource + '</td></tr>';
+  $('egHost').value = o.egress_upstream_host || '';
+  $('egKey').value = o.egress_upstream_key || '';
+  $('egDesktop').value = o.egress_desktop_url || '';
+  $('egressTestOut').textContent = '';
+  $('egResetEnv').style.display = o.egress_source === 'panel' ? '' : 'none';
+  $('egressErr').textContent = '';
   document.querySelectorAll('[data-del]').forEach((btn) => {
     btn.onclick = async () => {
       if (!confirm('确定删除该 API key？使用它的 Hub 将立即无法访问。')) return;
@@ -217,6 +284,90 @@ $('tokenForm').onsubmit = async (e) => {
     toast('API key 已添加');
     loadDash();
   } catch (err) { $('tokenErr').textContent = err.message; }
+};
+
+$('proxyTokenForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('proxyTokenErr').textContent = '';
+  try {
+    await api('proxy-token', { method: 'POST', body: { token: $('ptToken').value.trim() } });
+    $('ptToken').value = '';
+    toast('出网代理 key 已更新');
+    loadDash();
+  } catch (err) { $('proxyTokenErr').textContent = err.message; }
+};
+
+$('ptResetEnv').onclick = async () => {
+  if (!confirm('恢复为环境变量中的 key？面板设置的 key 将作废。')) return;
+  $('proxyTokenErr').textContent = '';
+  try {
+    await api('proxy-token', { method: 'DELETE' });
+    toast('已恢复环境变量值');
+    loadDash();
+  } catch (err) { $('proxyTokenErr').textContent = err.message; }
+};
+
+async function runEgressTest() {
+  $('egressTestOut').textContent = '';
+  $('egressErr').textContent = '';
+  $('egTestBtn').disabled = true;
+  try {
+    const started = Date.now();
+    $('egressTestOut').textContent = '测试中…';
+    const r = await api('egress-proxy/test', { method: 'POST', body: {
+      upstream_host: $('egHost').value.trim(),
+      upstream_key: $('egKey').value.trim(),
+    } });
+    if (r.ok) {
+      let msg = '通 ' + r.latency_ms + 'ms';
+      if (r.egress_ip) msg += '，出口 IP ' + r.egress_ip;
+      $('egressTestOut').textContent = msg;
+      toast('代理连通');
+    } else {
+      $('egressTestOut').textContent = '';
+      $('egressErr').textContent = '测试失败: ' + r.message;
+    }
+  } catch (err) {
+    $('egressTestOut').textContent = '';
+    $('egressErr').textContent = err.message;
+  } finally {
+    $('egTestBtn').disabled = false;
+  }
+}
+
+$('egTestBtn').onclick = runEgressTest;
+
+$('egressForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('egressErr').textContent = '';
+  $('egressTestOut').textContent = '';
+  const sync = $('egSyncDocker').checked;
+  if (sync && !confirm('同步 dockerd 会重启 docker，打开中的桌面会话会断。继续？')) return;
+  try {
+    const r = await api('egress-proxy', { method: 'POST', body: {
+      upstream_host: $('egHost').value.trim(),
+      upstream_key: $('egKey').value.trim(),
+      desktop_proxy_url: $('egDesktop').value.trim(),
+      sync_dockerd: sync,
+    } });
+    await loadDash();
+    // Set after loadDash: success refetches the dashboard and would wipe
+    // this message otherwise.
+    if (r.docker_error) $('egressErr').textContent = 'dockerd 同步失败（级联与桌面已生效）: ' + r.docker_error;
+    else if (r.docker_restarted) toast('已保存并同步 dockerd（docker 已重启）');
+    else toast('已保存');
+  } catch (err) { $('egressErr').textContent = err.message; }
+};
+
+$('egResetEnv').onclick = async () => {
+  if (!confirm('恢复为环境变量中的 egress 配置？（docker 拉镜像的 drop-in 会一并恢复）')) return;
+  $('egressErr').textContent = '';
+  try {
+    const r = await api('egress-proxy', { method: 'DELETE' });
+    if (r.docker_restarted) toast('已恢复环境变量值（docker 已重启）');
+    else toast('已恢复环境变量值');
+    loadDash();
+  } catch (err) { $('egressErr').textContent = err.message; }
 };
 
 (async function init() {

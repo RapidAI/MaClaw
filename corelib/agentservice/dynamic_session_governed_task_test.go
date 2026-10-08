@@ -1019,8 +1019,11 @@ func TestCoreDynamicSemanticOfficeWriteUsesHostWriterAndDoesNotReplayAfterSucces
 		t.Fatal("office_write must not persist as fs.write.local")
 	}
 	name := defs[0]["function"].(map[string]interface{})["name"].(string)
-	if name == "office" || name == "write_excel" {
-		t.Fatalf("leaked soup name %q", name)
+	// Host adapters and their GUI counterparts share one prompt name per turn
+	// (semantic_model_name.go): the office write the model calls on this
+	// surface is the same "office" it already knows from the GUI catalog.
+	if name != "office" {
+		t.Fatalf("dynamic office write must render under the shared prompt name, got %q", name)
 	}
 	result := first.ExecuteToolCall(name, `{"path":"sheet.xlsx","sheets":[{"name":"S1","rows":[["hello"]]}]}`, "call-office")
 	if result.Outcome != "ok" || !strings.Contains(result.Result, "sheet.xlsx") || strings.Contains(result.Result, dir) {
@@ -1081,8 +1084,11 @@ func TestCoreDynamicSemanticShellUsesHostExecutorAndDoesNotReplayAfterSuccess(t 
 		t.Fatalf("shell must persist as pending mutation, task=%#v ok=%v", task, ok)
 	}
 	name := defs[0]["function"].(map[string]interface{})["name"].(string)
-	if name == "bash" {
-		t.Fatalf("leaked soup name %q", name)
+	// The reviewed host shell shares the prompt name "bash" with its GUI
+	// counterpart (semantic_model_name.go), so conversation history reads the
+	// same tool on both surfaces.
+	if name != "bash" {
+		t.Fatalf("dynamic shell must render under the shared prompt name, got %q", name)
 	}
 	result := first.ExecuteToolCall(name, `{"command":"echo hi"}`, "call-shell")
 	if result.Outcome != "ok" || !strings.Contains(strings.ToLower(result.Result), "hi") {
@@ -1142,8 +1148,10 @@ func TestCoreDynamicSemanticDelegateUsesHostRunnerAndDoesNotReplayAfterUnknown(t
 		t.Fatalf("delegate must persist as pending mutation, task=%#v ok=%v", task, ok)
 	}
 	name := defs[0]["function"].(map[string]interface{})["name"].(string)
-	if name == "delegate_task" {
-		t.Fatalf("leaked soup name %q", name)
+	// The delegate subtask keeps the prompt name the model already calls:
+	// "delegate_task" (semantic_model_name.go shared prompt names).
+	if name != "delegate_task" {
+		t.Fatalf("dynamic delegate must render under the shared prompt name, got %q", name)
 	}
 	result := first.ExecuteToolCall(name, `{"task":"summarize"}`, "call-del")
 	if result.Outcome != "ok" || !strings.Contains(result.Result, "child completed") {
@@ -1224,8 +1232,10 @@ func TestCoreDynamicSemanticSSHUsesHostRunnerAndDoesNotReplayAfterUnknown(t *tes
 		t.Fatalf("ssh must persist as pending mutation, task=%#v ok=%v", task, ok)
 	}
 	name := defs[0]["function"].(map[string]interface{})["name"].(string)
-	if name == "ssh" {
-		t.Fatalf("leaked soup name %q", name)
+	// The reviewed host ssh shares the prompt name "ssh" with its remote
+	// counterpart (semantic_model_name.go shared prompt names).
+	if name != "ssh" {
+		t.Fatalf("dynamic ssh must render under the shared prompt name, got %q", name)
 	}
 	result := first.ExecuteToolCall(name, `{"command":"uname"}`, "call-ssh")
 	if result.Outcome != "ok" || !strings.Contains(result.Result, "remote:uname") {

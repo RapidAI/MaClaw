@@ -11,6 +11,21 @@ import {
     sameTokenBankAPI,
 } from '../../utils/hubcenterTokenBank';
 import { HUB_SERVICE_PROVIDER_NAME, type LLMProvider } from './LLMConfigPanelShared';
+import { isLobsterAIProvider, isQoderProvider, isTraeProvider } from './providerLogos';
+
+/**
+ * Names whose credential must not be deposited even when a connection test
+ * passed. Qoder device tokens are bound to the login machine_id: the refresh
+ * rounds live on the depositor's machine, and the copy inside a deposit can
+ * silently expire with no server-side re-exchange to save it. Trae (device
+ * fingerprint) and LobsterAI (install uuid keyfrom pair) ride the same
+ * account-session binding. Both share surfaces (the deposit list and the
+ * config-card badge) read this predicate so they can never disagree.
+ */
+export function isProviderShareExcluded(provider: { name?: unknown }): boolean {
+    const name = String(provider.name || '').trim();
+    return isQoderProvider(name) || isTraeProvider(name) || isLobsterAIProvider(name);
+}
 
 // One confirm and one share dialog at a time. A second row used to replace the
 // open confirm, which resolved the first row as cancelled.
@@ -316,7 +331,8 @@ export function LLMConfigProviderShareHeading({
             : `${provider.name} ${t('Configuration', '配置')}`;
     const shareable = provider.connection_test_passed === true
         && provider.is_hub_service !== true
-        && provider.name !== HUB_SERVICE_PROVIDER_NAME;
+        && provider.name !== HUB_SERVICE_PROVIDER_NAME
+        && !isProviderShareExcluded(provider);
 
     return (
         <div className="llm-config-form-card__heading">

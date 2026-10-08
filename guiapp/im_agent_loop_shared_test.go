@@ -1333,8 +1333,13 @@ func TestSemanticStaleGrantNameCannotAliasTheCurrentLookup(t *testing.T) {
 	if allowed, _ := full.IsToolCallAllowed("web_search", `{"query":"杭州天气"}`); !allowed {
 		t.Fatal("full turns must admit the stable web_search name")
 	}
-	child := *surface
-	child.replan = &semanticReplanInput{Attempts: 1}
+	// A fresh surface (fresh epoch mutex) carrying the same grants: the child
+	// revision only diverges in replan and must not alias the parent spelling.
+	child := &semanticCallSurface{
+		grants:        surface.grants,
+		retiredGrants: surface.retiredGrants,
+		replan:        &semanticReplanInput{Attempts: 1},
+	}
 	if child.resolveFunctionName(stale) != stale {
 		t.Fatalf("child revision aliased parent spelling to %q", child.resolveFunctionName(stale))
 	}

@@ -287,6 +287,17 @@ export function CancelQoderOAuth() {
   return window['go']['main']['App']['CancelQoderOAuth']();
 }
 
+export function CancelTraeOAuth() {
+  return window['go']['main']['App']['CancelTraeOAuth']();
+}
+
+export function CancelLobsterAIOAuth() {
+  return window['go']['main']['App']['CancelLobsterAIOAuth']();
+}
+export function CancelZhipuCodingOAuth() {
+  return window['go']['main']['App']['CancelZhipuCodingOAuth']();
+}
+
 export function CancelNLSkillRun(arg1) {
   return window['go']['main']['App']['CancelNLSkillRun'](arg1);
 }
@@ -4631,6 +4642,10 @@ export function SetNLSkillStatus(arg1, arg2) {
   return window['go']['main']['App']['SetNLSkillStatus'](arg1, arg2);
 }
 
+export function SetTaskbarBadgeCount(arg1) {
+  return window['go']['main']['App']['SetTaskbarBadgeCount'](arg1);
+}
+
 export function VerifyAndActivateNLSkill(arg1) {
   return window['go']['main']['App']['VerifyAndActivateNLSkill'](arg1);
 }
@@ -4794,6 +4809,17 @@ export function StartKimiCodeOAuth() {
 
 export function StartQoderOAuth(arg1) {
   return window['go']['main']['App']['StartQoderOAuth'](arg1);
+}
+
+export function StartTraeOAuth(arg1) {
+  return window['go']['main']['App']['StartTraeOAuth'](arg1);
+}
+
+export function StartLobsterAIOAuth() {
+  return window['go']['main']['App']['StartLobsterAIOAuth']();
+}
+export function StartZhipuCodingOAuth() {
+  return window['go']['main']['App']['StartZhipuCodingOAuth']();
 }
 
 export function StartGitHubCopilotOAuth() {
@@ -5208,6 +5234,17 @@ export function WaitQoderOAuth() {
   return window['go']['main']['App']['WaitQoderOAuth']();
 }
 
+export function WaitTraeOAuth() {
+  return window['go']['main']['App']['WaitTraeOAuth']();
+}
+
+export function WaitLobsterAIOAuth() {
+  return window['go']['main']['App']['WaitLobsterAIOAuth']();
+}
+export function WaitZhipuCodingOAuth() {
+  return window['go']['main']['App']['WaitZhipuCodingOAuth']();
+}
+
 export function WaitGitHubCopilotOAuth() {
   return window['go']['main']['App']['WaitGitHubCopilotOAuth']();
 }
@@ -5367,4 +5404,8 @@ export function TokenBankClaimGiftLink(arg1) {
 
 export function TokenBankWithdrawGift(arg1, arg2, arg3) {
   return window['go']['main']['App']['TokenBankWithdrawGift'](arg1, arg2, arg3);
+}
+
+export function WatchDesktopBot(arg1) {
+  return window['go']['main']['App']['WatchDesktopBot'](arg1);
 }

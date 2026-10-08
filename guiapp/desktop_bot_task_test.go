@@ -84,3 +84,9 @@ func TestSendDesktopBotTaskReachesTheInstance(t *testing.T) {
 		t.Fatal("message was not sent to the instance")
 	}
 }
+
+func TestWatchDesktopBotRequiresABotID(t *testing.T) {
+	if _, err := (&App{}).WatchDesktopBot(" "); err == nil {
+		t.Fatal("empty bot id should be rejected")
+	}
+}

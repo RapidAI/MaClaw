@@ -10,7 +10,6 @@ func TestNormalizeWorkflowReviewIntentExactEnums(t *testing.T) {
 	tests := map[string]workflow.ReviewIntent{
 		"confirm":     workflow.ReviewIntentConfirm,
 		"supplement":  workflow.ReviewIntentSupplement,
-		"modify":      workflow.ReviewIntentSupplement,
 		"skip":        workflow.ReviewIntentSkip,
 		"cancel":      workflow.ReviewIntentCancel,
 		"switch_task": workflow.ReviewIntentSwitchTask,

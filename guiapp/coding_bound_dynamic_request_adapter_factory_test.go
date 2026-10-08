@@ -713,11 +713,9 @@ func TestCodingDynamicLifecycleOwnerDoesNotCloseReplacementRelay(t *testing.T) {
 	// clear is exact: an old callback return must not tear down a successor
 	// relay installed for a later verified execution.
 	owner.clear(first, codingBoundDynamicRequestNestedExit)
-	owner.mu.Lock()
-	got := owner.relay
-	owner.mu.Unlock()
-	if got != second {
-		t.Fatalf("old callback closed replacement relay: got=%p want=%p", got, second)
+	state := owner.loadState()
+	if state == nil || state.relay != second {
+		t.Fatalf("old callback closed replacement relay: got=%#v want=%#v", state, second)
 	}
 	owner.clear(second, codingBoundDynamicRequestRuntimeClosed)
 }

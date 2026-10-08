@@ -26,8 +26,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -249,6 +251,12 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 		}
 		if profile, ok := qoder.ProfileByName(provider.Name); ok {
 			provider = normalizeQoderProvider(provider, qoderProvider(profile))
+		}
+		if profile, ok := trae.ProfileByName(provider.Name); ok {
+			provider = normalizeTraeProvider(provider, traeProvider(profile))
+		}
+		if lobsterai.IsProviderName(provider.Name) {
+			provider = normalizeLobsterAIProvider(provider, lobsterAIProvider())
 		}
 		if kimicode.IsProviderName(provider.Name) {
 			provider = normalizeKimiCodeProvider(provider, kimiCodeProvider())
@@ -765,18 +773,83 @@ func qoderProvider(profile qoder.Profile) corelib.MaclawLLMProvider {
 		Model:         qoder.DefaultModel,
 		Protocol:      "openai",
 		AuthType:      "oauth",
-		ContextLength: qoder.DefaultContextWindows,
+		ContextLength: qoder.DefaultContextLength,
 		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
 	}
 }
 
 // normalizeQoderProvider keeps both editions on the OAuth chat path. An
-// explicit model and context window are preserved.
+// explicit model and context window are preserved; the client identity is
+// Qoder's own chat API, so a stale agent override is always dropped.
 func normalizeQoderProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	provider.URL = defaults.URL
 	provider.AuthType = defaults.AuthType
 	provider.Protocol = defaults.Protocol
 	provider.WireAPI = ""
+	provider.AgentType = ""
+	if strings.TrimSpace(provider.Model) == "" {
+		provider.Model = defaults.Model
+	}
+	if provider.ContextLength <= 0 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	return provider
+}
+
+// traeProvider is the built-in chat config for each Trae realm. The chat API
+// carries the account JWT, so it is OAuth-only.
+func traeProvider(profile trae.Profile) corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          profile.Name,
+		URL:           profile.ChatHost,
+		Model:         profile.DefaultModel,
+		Protocol:      "openai",
+		AuthType:      "oauth",
+		ContextLength: trae.DefaultContextLength,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
+// lobsterAIProvider is the built-in LobsterAI chat config. The chat API talks
+// the account Bearer token, so it is OAuth-only.
+func lobsterAIProvider() corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          lobsterai.Name,
+		URL:           lobsterai.APIBase,
+		Model:         lobsterai.DefaultModel,
+		Protocol:      "openai",
+		AuthType:      "oauth",
+		ContextLength: lobsterai.DefaultContextLength,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
+// normalizeTraeProvider keeps both realms on the OAuth SOLO chat path. An
+// explicit model and context window are preserved; the client identity is
+// Trae's own agent API, so a stale agent override or wire variant is dropped.
+func normalizeTraeProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.URL = defaults.URL
+	provider.Protocol = defaults.Protocol
+	provider.AuthType = defaults.AuthType
+	provider.WireAPI = ""
+	provider.AgentType = ""
+	if strings.TrimSpace(provider.Model) == "" {
+		provider.Model = defaults.Model
+	}
+	if provider.ContextLength <= 0 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	return provider
+}
+
+// normalizeLobsterAIProvider keeps the LobsterAI provider on its OAuth chat
+// path and drops any wire/agent override picked up from another preset.
+func normalizeLobsterAIProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.URL = defaults.URL
+	provider.Protocol = defaults.Protocol
+	provider.AuthType = defaults.AuthType
+	provider.WireAPI = ""
+	provider.AgentType = ""
 	if strings.TrimSpace(provider.Model) == "" {
 		provider.Model = defaults.Model
 	}
@@ -809,6 +882,9 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		workbuddyProvider(workbuddy.GlobalProfile()),
 		qoderProvider(qoder.CNProfile()),
 		qoderProvider(qoder.GlobalProfile()),
+		traeProvider(trae.CNProfile()),
+		traeProvider(trae.GlobalProfile()),
+		lobsterAIProvider(),
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 	}
@@ -1393,7 +1469,36 @@ func (a *App) materializeMaclawLLMProvider(p corelib.MaclawLLMProvider) corelib.
 		ProviderID:      maclawLLMProviderIDForRead(p),
 		AuthType:        p.AuthType,
 	})
-	return a.attachWorkBuddyAccount(cfg, p)
+	return a.attachTraeAccount(a.attachWorkBuddyAccount(cfg, p), p)
+}
+
+// attachTraeAccount copies the stored login-device pair into the runtime
+// config so the chat headers reuse the pair the refresh token was minted
+// against. The upstream binds the token family to that pair.
+func (a *App) attachTraeAccount(cfg corelib.MaclawLLMConfig, p corelib.MaclawLLMProvider) corelib.MaclawLLMConfig {
+	if _, ok := trae.ProfileByName(p.Name); !ok {
+		if _, ok := trae.ProfileByChatHost(p.URL); !ok {
+			return cfg
+		}
+	}
+	if a == nil || a.credentialStore == nil || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+		return cfg
+	}
+	profile, ok := trae.ProfileByName(p.Name)
+	if !ok {
+		profile, _ = trae.ProfileByChatHost(p.URL)
+	}
+	stored, err := a.credentialStore.Read(profile.StoreID)
+	if err != nil || stored == nil {
+		return cfg
+	}
+	if strings.TrimSpace(stored.MachineID) != "" {
+		cfg.TraeMachineID = strings.TrimSpace(stored.MachineID)
+	}
+	if strings.TrimSpace(stored.DeviceID) != "" {
+		cfg.TraeDeviceID = strings.TrimSpace(stored.DeviceID)
+	}
+	return cfg
 }
 
 func (a *App) attachWorkBuddyAccount(cfg corelib.MaclawLLMConfig, p corelib.MaclawLLMProvider) corelib.MaclawLLMConfig {
@@ -3302,7 +3407,11 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	llm.Protocol = protocol
 	var textResult string
 	var err error
-	if llm.IsResponsesAPI() {
+	if qoder.IsChatBaseURL(url) {
+		// Qoder speaks the /algo signed wire (wasm COSY envelope), not the
+		// OpenAI front — the generic OpenAI probe 401s for every edition.
+		textResult, err = a.testQoderLLM(llm)
+	} else if llm.IsResponsesAPI() {
 		textResult, err = a.testResponsesAPILLM(llm)
 	} else if protocol == "anthropic" {
 		textResult, err = a.testAnthropicLLM(llm)
@@ -4005,6 +4114,16 @@ func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLM
 		return pingWorkBuddy(llmCfg, authenticationFailuresAreOffline)
 	}
 
+	if profile, ok := trae.ProfileByName(llmCfg.ProviderName); ok {
+		return pingTrae(profile, llmCfg, authenticationFailuresAreOffline)
+	}
+	if profile, ok := trae.ProfileByChatHost(llmCfg.URL); ok {
+		return pingTrae(profile, llmCfg, authenticationFailuresAreOffline)
+	}
+	if lobsterai.IsProviderName(llmCfg.ProviderName) || lobsterai.IsAPIBase(llmCfg.URL) {
+		return pingLobsterAI(llmCfg, authenticationFailuresAreOffline)
+	}
+
 	probeBaseURL := normalizeOpenAIProbeBaseURL(baseURL, ua)
 	probeCfg := llmCfg
 	probeCfg.URL = probeBaseURL
@@ -4032,6 +4151,61 @@ func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLM
 	}
 
 	return MaclawLLMStatus{Online: false, Configured: true, Error: err2.Error()}
+}
+
+// pingTrae probes the realm catalog endpoint: the chat host has no OpenAI
+// /models route, so the SOLO catalog answers "online" the way pingWorkBuddy
+// reads the WorkBuddy /v3/config.
+func pingTrae(profile trae.Profile, cfg corelib.MaclawLLMConfig, authenticationFailuresAreOffline bool) MaclawLLMStatus {
+	if strings.TrimSpace(cfg.Key) == "" {
+		if authenticationFailuresAreOffline {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
+		return MaclawLLMStatus{Online: false, Configured: true, Error: "missing access token"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	models, _, err := trae.ListModels(ctx, profile, cfg.Key, cfg.TraeMachineID, cfg.TraeDeviceID)
+	if err == nil && len(models) > 0 {
+		return MaclawLLMStatus{Online: true, Configured: true}
+	}
+	if err == nil {
+		err = fmt.Errorf("%s 模型目录为空", profile.Name)
+	}
+	if isMaclawLLMAuthenticationError(err) {
+		if authenticationFailuresAreOffline {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
+		return MaclawLLMStatus{Online: true, Configured: true}
+	}
+	return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
+}
+
+// pingLobsterAI probes the remote model catalog; auth failures stay "online"
+// under the same convention pingWorkBuddy uses.
+func pingLobsterAI(cfg corelib.MaclawLLMConfig, authenticationFailuresAreOffline bool) MaclawLLMStatus {
+	if strings.TrimSpace(cfg.Key) == "" {
+		if authenticationFailuresAreOffline {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
+		return MaclawLLMStatus{Online: false, Configured: true, Error: "missing access token"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	models, err := lobsterai.ListModels(ctx, cfg.Key)
+	if err == nil && len(models) > 0 {
+		return MaclawLLMStatus{Online: true, Configured: true}
+	}
+	if err == nil {
+		err = fmt.Errorf("%s 模型目录为空", lobsterai.Name)
+	}
+	if isMaclawLLMAuthenticationError(err) {
+		if authenticationFailuresAreOffline {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
+		return MaclawLLMStatus{Online: true, Configured: true}
+	}
+	return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 }
 
 func pingWorkBuddy(cfg corelib.MaclawLLMConfig, authenticationFailuresAreOffline bool) MaclawLLMStatus {
@@ -6279,6 +6453,26 @@ func (a *App) resolveAPIKeyForModelFetch(baseURL string) string {
 	return ""
 }
 
+// traeStoredDevicePair reads the stored login machine/device pair for one
+// Trae realm from the credential store. Empty strings when nothing is saved.
+func (a *App) traeStoredDevicePair(profile trae.Profile) (string, string) {
+	if a == nil || a.credentialStore == nil {
+		return "", ""
+	}
+	data := a.GetMaclawLLMProviders()
+	for _, provider := range data.Providers {
+		if !corelib.MaclawLLMProviderNameEqual(provider.Name, profile.Name) || !normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth() {
+			continue
+		}
+		stored, err := a.credentialStore.Read(profile.StoreID)
+		if err != nil || stored == nil {
+			return "", ""
+		}
+		return strings.TrimSpace(stored.MachineID), strings.TrimSpace(stored.DeviceID)
+	}
+	return "", ""
+}
+
 func isOpenCodeZenProvider(provider corelib.MaclawLLMProvider) bool {
 	if strings.EqualFold(strings.TrimSpace(provider.ImportSource), configfile.ExternalAgentSourceOpenCode) {
 		return true
@@ -6413,6 +6607,67 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 			items = append(items, ProviderModelItem{ID: spec.ID, Name: name})
 		}
 		return items, nil
+	}
+
+	// Qoder serves its catalog on the site inference host only; there is no
+	// OpenAI-style /models endpoint to probe. Both editions share the chat
+	// URL, so fetchQoderCatalogModels resolves the edition from credentials.
+	if qoder.IsChatBaseURL(baseURL) {
+		return a.fetchQoderCatalogModels()
+	}
+
+	// Trae serves its catalog on the realm chat host only; there is no
+	// OpenAI-style /models endpoint to probe.
+	if profile, ok := trae.ProfileByChatHost(baseURL); ok {
+		if apiKey == "" {
+			// Best-effort refresh via the shared resolver so listing works
+			// after token expiry, exactly like the WorkBuddy catalog read.
+			apiKey = a.resolveAPIKeyForModelFetch(baseURL)
+		}
+		machineID, deviceID := a.traeStoredDevicePair(profile)
+		models, _, err := trae.ListModels(context.Background(), profile, apiKey, machineID, deviceID)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]ProviderModelItem, 0, len(models))
+		for _, model := range models {
+			name := model.DisplayName
+			if name == "" {
+				name = model.ID
+			}
+			items = append(items, ProviderModelItem{ID: model.ID, Name: name})
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+		return nil, fmt.Errorf("%s 模型列表为空", profile.Name)
+	}
+
+	// LobsterAI lists models on the account host, not a /models path.
+	if lobsterai.IsAPIBase(baseURL) {
+		if apiKey == "" {
+			apiKey = a.resolveAPIKeyForModelFetch(baseURL)
+		}
+		models, err := lobsterai.ListModels(context.Background(), apiKey)
+		if err != nil {
+			// The remote catalog wins; the built-in list only backs failures.
+			items := make([]ProviderModelItem, 0, len(lobsterai.ModelList()))
+			for _, model := range lobsterai.ModelList() {
+				items = append(items, ProviderModelItem{ID: model.ID, Name: model.Name})
+			}
+			return items, nil
+		}
+		items := make([]ProviderModelItem, 0, len(models))
+		for _, model := range models {
+			name := model.Name
+			if name == "" {
+				name = model.ID
+			}
+			items = append(items, ProviderModelItem{ID: model.ID, Name: name})
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
 	}
 
 	// ChatGPT / Codex subscription (chatgpt.com/backend-api) does not expose a

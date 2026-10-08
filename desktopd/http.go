@@ -10,10 +10,12 @@ import (
 
 // Handler is the Docker service API Hub calls, plus the /admin operator
 // panel when a state directory is configured. stateDir may be empty to keep
-// the API-only behaviour of older deployments.
-func Handler(svc *Service, token, stateDir string) http.Handler {
+// the API-only behaviour of older deployments. proxyKeys and egress may be
+// nil; when set, the panel's proxy-token and egress-proxy APIs resolve from
+// the same file-backed sources the forward proxy and the desktop service use.
+func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, egress *EgressSource) http.Handler {
 	token = strings.TrimSpace(token)
-	admin := newAdminServer(svc, token, stateDir, adminPage)
+	admin := newAdminServer(svc, token, stateDir, adminPage, proxyKeys, egress)
 	// /v1/* accepts the primary DESKTOPD_TOKEN and every key issued through
 	// the admin panel.
 	authOK := func(r *http.Request) bool {

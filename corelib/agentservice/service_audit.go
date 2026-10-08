@@ -87,7 +87,7 @@ func redactAuditEventsForExport(dataRoot string, events []AuditEvent) []AuditEve
 func redactAuditExportMetadata(dataRoot string, metadata map[string]string) map[string]string {
 	out := make(map[string]string, len(metadata))
 	for key, value := range metadata {
-		if auditExportSensitiveKey(key) {
+		if auditExportSensitiveKey(key) && !security.IsBooleanAuditValue(value) {
 			out[key] = "[redacted]"
 			continue
 		}
@@ -98,6 +98,10 @@ func redactAuditExportMetadata(dataRoot string, metadata map[string]string) map[
 
 func auditExportSensitiveKey(key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "api_key_prefix" {
+		// The six-character masked prefix is a diagnostic, not a secret.
+		return false
+	}
 	for _, marker := range auditExportSecretKeyMarkers() {
 		if strings.Contains(key, marker) {
 			return true

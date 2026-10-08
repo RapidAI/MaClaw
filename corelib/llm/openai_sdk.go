@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -24,6 +27,15 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	client = HTTPClientForRequestContext(ctx, client)
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
+	}
+	if qoder.Matches(cfg) {
+		client = qoder.WrapClientForConfig(client, cfg)
 	}
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
@@ -81,6 +93,15 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	client = HTTPClientForRequestContext(ctx, client)
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
+	}
+	if qoder.Matches(cfg) {
+		client = qoder.WrapClientForConfig(client, cfg)
 	}
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
@@ -455,6 +476,11 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 				opts = append(opts, option.WithHeader(key, value))
 			}
 		}
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) && (cfg.TraeMachineID != "" || cfg.TraeDeviceID != "") {
+		opts = append(opts,
+			option.WithHeader("X-Machine-Id", cfg.TraeMachineID),
+			option.WithHeader("X-Device-Id", cfg.TraeDeviceID))
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))

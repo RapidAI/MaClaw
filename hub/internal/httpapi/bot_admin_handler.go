@@ -3,11 +3,27 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
+
+func principalTenant(p *auth.MachinePrincipal) string {
+	if p == nil {
+		return ""
+	}
+	return p.TenantID
+}
+
+func principalUser(p *auth.MachinePrincipal) string {
+	if p == nil {
+		return ""
+	}
+	return p.UserID
+}
 
 func botTenantID(r *http.Request) string {
 	if t := AdminTenantID(r.Context()); t != "" {
@@ -40,7 +56,11 @@ func writeBotError(w http.ResponseWriter, err error) {
 // writeBotUserError reports a bot failure to an end user. MaClawSrv status
 // codes and response bodies are admin diagnostics only, and a user cannot act
 // on "save the admin secret", so those collapse into one unavailable message.
-func writeBotUserError(w http.ResponseWriter, err error) {
+// The real cause goes to the hub log instead: without it a 502 here is
+// undiagnosable because nothing else records the underlying error.
+func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.MachinePrincipal, err error) {
+	log.Printf("[hub-bot] user bot request failed method=%s path=%s tenant=%q user=%q err=%v",
+		r.Method, r.URL.Path, principalTenant(principal), principalUser(principal), err)
 	switch {
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable),
 		errors.Is(err, botmgmt.ErrNotConfigured),

@@ -3,7 +3,8 @@ package guiapp
 import (
 	"context"
 	"fmt"
-	"sync"
+	"sync/atomic"
+	"unsafe"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -178,30 +179,57 @@ func requireCodingDynamicCallbackComposition(candidate any) error {
 // callback has a relay to install. Keeping the lifecycle bridge here makes the
 // future D2 wiring atomic with D1 rather than scattering close calls across
 // tool dispatchers and return branches.
+//
+// The state snapshot pointer is written only through sync/atomic helpers. A
+// raw unsafe.Pointer (rather than an atomic.Pointer wrapper or a mutex) keeps
+// whole-struct copies of CodingSubAgent / RemoteCodingSubAgent free of lock
+// values while preserving the field-copy semantics a copied owner shares the
+// current snapshot and still closes the shared relay without touching the
+// original.
 type codingDynamicLifecycleOwner struct {
-	mu    sync.Mutex
+	state unsafe.Pointer // *codingDynamicLifecycleOwnerState
+}
+
+type codingDynamicLifecycleOwnerState struct {
 	relay *codingBoundDynamicRequestLifecycleRelay
 	stop  context.CancelFunc
+}
+
+func (o *codingDynamicLifecycleOwner) loadState() *codingDynamicLifecycleOwnerState {
+	if o == nil {
+		return nil
+	}
+	return (*codingDynamicLifecycleOwnerState)(atomic.LoadPointer(&o.state))
 }
 
 func (o *codingDynamicLifecycleOwner) install(relay *codingBoundDynamicRequestLifecycleRelay, executionCtx context.Context, loopCtx *LoopContext) {
 	if o == nil || relay == nil {
 		return
 	}
-	o.mu.Lock()
-	if o.relay == relay {
-		o.mu.Unlock()
-		return
-	}
-	previous, stopPrevious := o.relay, o.stop
-	watchCtx, stop := context.WithCancel(context.Background())
-	o.relay, o.stop = relay, stop
-	o.mu.Unlock()
-	if stopPrevious != nil {
-		stopPrevious()
+	var previous *codingDynamicLifecycleOwnerState
+	var watchCtx context.Context
+	var stop context.CancelFunc
+	for {
+		previous = o.loadState()
+		if previous != nil && previous.relay == relay {
+			return
+		}
+		watchCtx, stop = context.WithCancel(context.Background())
+		// Lost the race: drop our watcher and retry so a concurrent install of
+		// a newer relay is never clobbered.
+		if !o.compareAndSwapState(previous, &codingDynamicLifecycleOwnerState{relay: relay, stop: stop}) {
+			stop()
+			continue
+		}
+		break
 	}
 	if previous != nil {
-		previous.CloseForLifecycle(codingBoundDynamicRequestRuntimeClosed)
+		if previous.stop != nil {
+			previous.stop()
+		}
+		if previous.relay != nil {
+			previous.relay.CloseForLifecycle(codingBoundDynamicRequestRuntimeClosed)
+		}
 	}
 
 	// Both sources are host-owned terminal facts. A detached child is stopped
@@ -230,15 +258,15 @@ func (o *codingDynamicLifecycleOwner) close(reason codingBoundDynamicRequestTerm
 	if o == nil {
 		return
 	}
-	o.mu.Lock()
-	relay, stop := o.relay, o.stop
-	o.relay, o.stop = nil, nil
-	o.mu.Unlock()
-	if stop != nil {
-		stop()
+	state := (*codingDynamicLifecycleOwnerState)(atomic.SwapPointer(&o.state, nil))
+	if state == nil {
+		return
 	}
-	if relay != nil {
-		relay.CloseForLifecycle(reason)
+	if state.stop != nil {
+		state.stop()
+	}
+	if state.relay != nil {
+		state.relay.CloseForLifecycle(reason)
 	}
 }
 
@@ -246,18 +274,24 @@ func (o *codingDynamicLifecycleOwner) clear(relay *codingBoundDynamicRequestLife
 	if o == nil || relay == nil {
 		return
 	}
-	o.mu.Lock()
-	if o.relay != relay {
-		o.mu.Unlock()
+	for {
+		state := o.loadState()
+		if state == nil || state.relay != relay {
+			return
+		}
+		if !o.compareAndSwapState(state, nil) {
+			continue
+		}
+		if state.stop != nil {
+			state.stop()
+		}
+		relay.CloseForLifecycle(reason)
 		return
 	}
-	stop := o.stop
-	o.relay, o.stop = nil, nil
-	o.mu.Unlock()
-	if stop != nil {
-		stop()
-	}
-	relay.CloseForLifecycle(reason)
+}
+
+func (o *codingDynamicLifecycleOwner) compareAndSwapState(old, new *codingDynamicLifecycleOwnerState) bool {
+	return atomic.CompareAndSwapPointer(&o.state, unsafe.Pointer(old), unsafe.Pointer(new))
 }
 
 func (c *codingSubAgentCallbacks) registerDynamicLifecycleOwner() {

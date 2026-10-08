@@ -106,9 +106,16 @@ type Credential struct {
 	Status       CredentialStatus `json:"status"`
 	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
 	TokenVersion int              `json:"token_version,omitempty"`
-	SecretDigest string           `json:"-"`
-	CreatedAt    time.Time        `json:"created_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	// SecretDigest is the scrypt digest of the API secret. The durable
+	// backends rehydrate the state from the persisted snapshot before every
+	// read, so the digest has to be part of that snapshot: dropping it turns
+	// every /api/v1/auth/token exchange into a 401 once the state has been
+	// reloaded. It is a salted scrypt hash, safe to store; sanitizeCredential
+	// clears it on regular API responses and snapshot exports expose it only
+	// with include_secrets.
+	SecretDigest string    `json:"secret_digest,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type ParameterDefinition struct {

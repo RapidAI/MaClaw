@@ -32,6 +32,36 @@ type DesktopBotInfo struct {
 	InstanceID  string `json:"instance_id"`
 }
 
+// DesktopBotWatch is one watch poll result: the live noVNC page for this
+// user's desktop and whether a bot handed that keyboard to the person.
+type DesktopBotWatch struct {
+	NovncURL    string `json:"novnc_url"`
+	UserControl bool   `json:"user_control"`
+}
+
+// WatchDesktopBot polls the live desktop for the Bot page. The GUI calls it
+// every few seconds while a desktop panel is open; each call refreshes the
+// Hub-side view hold, so the desktop stays up while a human is watching or
+// taking over instead of going black the moment the last command finishes.
+func (a *App) WatchDesktopBot(botID string) (*DesktopBotWatch, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out struct {
+		NovncURL    string `json:"novnc_url"`
+		UserControl bool   `json:"user_control"`
+	}
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", nil, &out, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &DesktopBotWatch{
+		NovncURL:    a.absoluteHubPath(out.NovncURL),
+		UserControl: out.UserControl,
+	}, nil
+}
+
 type hubBot struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`

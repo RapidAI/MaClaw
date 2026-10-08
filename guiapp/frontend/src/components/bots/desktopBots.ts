@@ -14,6 +14,14 @@ export interface DesktopBotMessage {
     handoffUrl?: string;
     userControl?: boolean;
     requestId?: string;
+    // Instant "colleague accepted the task" reply. It never carries a handoff
+    // or a result, so result lookups skip it.
+    ack?: boolean;
+    // A user message accepted while that bot was still working. The dispatch
+    // waits for the current run on the shared desktop; the marker is cleared
+    // the moment the dispatch starts, so a page reload can recover the queue
+    // without double-sending.
+    queued?: boolean;
 }
 
 const STORAGE_KEY = 'maclaw.desktopBots.v1';

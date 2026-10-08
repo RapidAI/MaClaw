@@ -135,9 +135,6 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 		intent.LabelFileWrite: {
 			{Capability: coretool.CapabilityFSWriteLocal, Required: true},
 		},
-		intent.LabelFileDelete: {
-			{Capability: coretool.CapabilityFSDeleteLocal, Required: true},
-		},
 		intent.LabelShellCommand: {
 			{Capability: coretool.CapabilityShellExecuteLocal, Required: true, MaxInvocations: 8},
 		},

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, taskStatusBucketFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, taskStatusBucketFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -315,6 +315,55 @@ describe('isActiveTaskRow', () => {
             projectPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math',
             cloudWorkspaceId: 'cws_math',
         })).toBe(true);
+    });
+});
+
+describe('countRunningTaskRows', () => {
+    it('counts durable running rows and skips completed, paused and pending rows', () => {
+        const running = { ...baseProject, id: 'r1', project_path: 'D:/work/tasks/r1', active_workflow: { status: 'running' } };
+        const runningPhase = { ...baseProject, id: 'r2', project_path: 'D:/work/tasks/r2', active_workflow: { phase: 'executing plan' } };
+        const completed = { ...baseProject, id: 'c1', project_path: 'D:/work/tasks/c1', active_workflow: { status: 'completed' } };
+        const paused = { ...baseProject, id: 'p1', project_path: 'D:/work/tasks/p1', active_workflow: { status: 'paused' } };
+        const pending = { ...baseProject, id: 'w1', project_path: 'D:/work/tasks/w1', active_workflow: { status: 'pending_review' } };
+        expect(countRunningTaskRows([running, runningPhase, completed, paused, pending])).toBe(2);
+    });
+
+    it('treats detached busy runs as in progress even when the durable row is stale', () => {
+        const stale = { ...baseProject, id: 's1', project_path: 'D:/work/tasks/stale', active_workflow: { status: 'pending' } };
+        expect(countRunningTaskRows([stale])).toBe(0);
+        expect(countRunningTaskRows([stale], { busyTaskRuns: { projectPaths: ['D:/work/tasks/stale'], expertIds: [] } })).toBe(1);
+        const expertRow = { ...baseProject, id: 's2', project_path: 'D:/work/tasks/expert', tags: ['task_management', 'source:expert:paper-review'] };
+        expect(countRunningTaskRows([expertRow], { busyTaskRuns: { projectPaths: [], expertIds: ['paper-review'] } })).toBe(1);
+    });
+
+    it("counts the visible assistant tab's run via the live signal", () => {
+        const row = { ...baseProject, id: 'v1', project_path: 'D:/work/tasks/visible', active_workflow: { status: 'pending' } };
+        expect(countRunningTaskRows([row], {
+            activeAssistantTaskRunning: true,
+            activeAssistantTask: { projectPath: 'D:\\work\\tasks\\visible' },
+        })).toBe(1);
+        expect(countRunningTaskRows([row], {
+            activeAssistantTask: { projectPath: 'D:\\work\\tasks\\visible' },
+        })).toBe(0);
+    });
+
+    it('matches a cloud row by workspace id when the busy path is the cache path', () => {
+        const cloudRow = {
+            ...baseProject,
+            id: 'cw1',
+            project_path: 'D:/work/tasks/math-book',
+            working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math',
+        };
+        expect(countRunningTaskRows([cloudRow], {
+            busyTaskRuns: { projectPaths: ['C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math/chapter-1.md'], expertIds: [] },
+        })).toBe(1);
+        expect(countRunningTaskRows([cloudRow], {
+            busyTaskRuns: { projectPaths: ['C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_other/chapter-1.md'], expertIds: [] },
+        })).toBe(0);
+    });
+
+    it('returns zero for an empty list', () => {
+        expect(countRunningTaskRows([])).toBe(0);
     });
 });
 

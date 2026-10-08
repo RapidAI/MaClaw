@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
@@ -175,6 +175,12 @@ export const SidebarNavRail = ({
     useEffect(() => {
         if ((!showToolsEntry || proMenuChoices < 2) && proMenuOpen) setProMenuOpen(false);
     }, [showToolsEntry, proMenuChoices, proMenuOpen]);
+    // The popups are position fixed and stay at their open-time viewport spot;
+    // scrolling the nav content under an open menu would leave it detached
+    // from its trigger, so any scroll dismisses the menus.
+    const handleRailScroll = useCallback(() => {
+        closeSiblingMenus();
+    }, [closeSiblingMenus]);
     const selectLibraryMenuItem = (id: string) => {
         if (id === 'knowledge') {
             openSettingsTab('knowledge');
@@ -199,49 +205,56 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} />
-            <div className="snr-spacer" />
-            {hubCheckin?.enabled && (
-                <button
-                    type="button"
-                    className={'sidebar-item left-nav-item left-nav-item--checkin' + (hubCheckin.checkedInToday ? ' checked-in' : '')}
-                    data-testid="sidebar-checkin-nav"
-                    aria-label={checkinTitle}
-                    title={checkinTitle}
-                    disabled={hubCheckin.checkedInToday || hubCheckinPending || !onHubCheckin}
-                    onClick={() => { void onHubCheckin?.(); }}
-                >
-                    <span className="sidebar-icon"><span className={'checkin-nav-icon-badge' + (hubCheckin.checkedInToday ? ' checkin-nav-icon-badge--done' : '')}><CheckinRailIcon /></span></span>
-                    <span className="bot-nav-label">{checkinLabel}</span>
-                </button>
-            )}
-            {botAllowed && (
-                <button
-                    type="button"
-                    className={'sidebar-item left-nav-item left-nav-item--bot' + (navTab === 'bots' ? ' active' : '')}
-                    data-testid="sidebar-bot-nav"
-                    aria-label="Bot"
-                    aria-current={navTab === 'bots' ? 'page' : undefined}
-                    title={lang === 'en' ? 'Bot. Each bot is an instance of this MaClawSrv user. They share this user\'s cloud desktop.' : 'Bot。每个 Bot 是当前用户在 MaClawSrv 上的一个实例，共用云端桌面。'}
-                    onClick={openBots}
-                >
-                    <span className="sidebar-icon"><span className="bot-nav-icon-badge"><BotRailIcon /></span></span>
-                    <span className="bot-nav-label">Bot</span>
-                </button>
-            )}
-            {invitationEnabled && (
-                <button
-                    type="button"
-                    className="sidebar-item left-nav-item left-nav-item--invite"
-                    data-testid="sidebar-invite-nav"
-                    aria-label={inviteTitle}
-                    title={inviteTitle}
-                    onClick={() => setInvitationDialogOpen(true)}
-                >
-                    <span className="sidebar-icon"><span className="invite-nav-icon-badge"><InviteGiftIcon /></span></span>
-                    <span className="bot-nav-label">{inviteLabel}</span>
-                </button>
-            )}
+            {/* Scrollable middle: when the window is too short for the full
+                stack, this wrapper scrolls instead of letting flex crush the
+                items (which clipped the labels in half). The brand above and
+                the system trigger + popup menus below stay outside so they are
+                never clipped by the scroll container. */}
+            <div className="mc-nav-rail__scroll" onScroll={handleRailScroll}>
+                <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} />
+                <div className="snr-spacer" />
+                {hubCheckin?.enabled && (
+                    <button
+                        type="button"
+                        className={'sidebar-item left-nav-item left-nav-item--checkin' + (hubCheckin.checkedInToday ? ' checked-in' : '')}
+                        data-testid="sidebar-checkin-nav"
+                        aria-label={checkinTitle}
+                        title={checkinTitle}
+                        disabled={hubCheckin.checkedInToday || hubCheckinPending || !onHubCheckin}
+                        onClick={() => { void onHubCheckin?.(); }}
+                    >
+                        <span className="sidebar-icon"><span className={'checkin-nav-icon-badge' + (hubCheckin.checkedInToday ? ' checkin-nav-icon-badge--done' : '')}><CheckinRailIcon /></span></span>
+                        <span className="bot-nav-label">{checkinLabel}</span>
+                    </button>
+                )}
+                {botAllowed && (
+                    <button
+                        type="button"
+                        className={'sidebar-item left-nav-item left-nav-item--bot' + (navTab === 'bots' ? ' active' : '')}
+                        data-testid="sidebar-bot-nav"
+                        aria-label="Bot"
+                        aria-current={navTab === 'bots' ? 'page' : undefined}
+                        title={lang === 'en' ? 'Bot. Each bot is an instance of this MaClawSrv user. They share this user\'s cloud desktop.' : 'Bot。每个 Bot 是当前用户在 MaClawSrv 上的一个实例，共用云端桌面。'}
+                        onClick={openBots}
+                    >
+                        <span className="sidebar-icon"><span className="bot-nav-icon-badge"><BotRailIcon /></span></span>
+                        <span className="bot-nav-label">Bot</span>
+                    </button>
+                )}
+                {invitationEnabled && (
+                    <button
+                        type="button"
+                        className="sidebar-item left-nav-item left-nav-item--invite"
+                        data-testid="sidebar-invite-nav"
+                        aria-label={inviteTitle}
+                        title={inviteTitle}
+                        onClick={() => setInvitationDialogOpen(true)}
+                    >
+                        <span className="sidebar-icon"><span className="invite-nav-icon-badge"><InviteGiftIcon /></span></span>
+                        <span className="bot-nav-label">{inviteLabel}</span>
+                    </button>
+                )}
+            </div>
             <div className="mc-legacy-rail-footer">
                 <div
                     className={'sidebar-item left-nav-item ' + (systemMenuOpen || systemPageActive ? 'active' : '')}

@@ -6,15 +6,42 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// TestAdminPageJsIdsConsistent: the panel is hand-written HTML+JS embedded
+// without a build system. A JS element reference that misses its id= throws
+// at runtime exactly like a null dereference elsewhere (the egTestOut vs
+// egressTestOut mismatch broke every dashboard render before being caught on
+// a live browser). Lock the two sets together so such a typo fails here
+// instead of on the panel.
+func TestAdminPageJsIdsConsistent(t *testing.T) {
+	raw, err := os.ReadFile("admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(raw)
+	refs := regexp.MustCompile(`\$\('([A-Za-z0-9_]+)'\)`)
+	ids := regexp.MustCompile(`id="([A-Za-z0-9_]+)"`)
+	known := map[string]bool{}
+	for _, m := range ids.FindAllStringSubmatch(page, -1) {
+		known[m[1]] = true
+	}
+	for _, m := range refs.FindAllStringSubmatch(page, -1) {
+		if !known[m[1]] {
+			t.Errorf("admin.html JS references $('%s') but no id=\"%s\" exists", m[1], m[1])
+		}
+	}
+}
 
 func newAdminTestServer(t *testing.T) (*httptest.Server, *http.Client) {
 	t.Helper()
 	svc := &Service{Run: func(ctx context.Context, args ...string) (string, error) { return "", nil }, AdvertiseHost: "dockerd.example"}
 	stateDir := t.TempDir()
-	srv := httptest.NewServer(Handler(svc, "primary-token", stateDir))
+	srv := httptest.NewServer(Handler(svc, "primary-token", stateDir, nil, nil))
 	t.Cleanup(srv.Close)
 	jar, err := cookiejar.New(nil)
 	if err != nil {

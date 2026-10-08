@@ -42,14 +42,27 @@ type Runner func(ctx context.Context, args ...string) (string, error)
 type Service struct {
 	Run           Runner
 	AdvertiseHost string
-	// ImageSources maps a local image name (maclaw-gui:2) to the public
-	// reference pulled and tagged when that image is missing on this host.
-	// Empty disables source pulls; see ParseImageSources.
-	ImageSources map[string]string
-	// ImagePullTimeout bounds one source pull; zero means DefaultImagePullTimeout.
-	ImagePullTimeout time.Duration
-	userGates        sync.Map
-	pulls            imagePulls
+	// DesktopProxyURL is injected into desktop containers as HTTP(S)_PROXY so
+	// the browser and other tools egress through the forward proxy (see
+	// forwardproxy.go). Empty keeps desktops on the default route. It is also
+	// recorded on the container as maclaw.desktop-proxy: changing it recreates
+	// the desktop so the new value takes effect. Egress, when set, supplies
+	// the effective value per creation (the panel's file-backed config).
+	DesktopProxyURL string
+	Egress          *EgressSource
+	userGates       sync.Map
+}
+
+// desktopProxy resolves the proxy URL the NEXT created desktop receives: the
+// panel's egress config wins wholesale when set (an empty value there means
+// direct egress), the static env-derived field otherwise.
+func (s *Service) desktopProxy() string {
+	if s != nil && s.Egress != nil {
+		if cfg, fromPanel, err := s.Egress.Get(); err == nil && fromPanel {
+			return cfg.DesktopProxyURL
+		}
+	}
+	return s.DesktopProxyURL
 }
 
 // Spec is the desktop Hub asks this service to create for one user.
@@ -101,7 +114,7 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 	if err != nil {
 		return Desktop{}, err
 	}
-	if reason := recreateReason(current, spec); reason != "" {
+	if reason := s.recreateReason(current, spec); reason != "" {
 		// The requested image must exist before anything is torn down: a
 		// missing or unpullable image has to leave the old desktop in place.
 		if err := s.installImage(ctx, spec.Image); err != nil {
@@ -155,6 +168,14 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 	return desktopOf(running, name, "running"), nil
 }
 
+// desktopProxyLabel records the egress proxy URL a container was created
+// with, so changing DESKTOPD_DESKTOP_PROXY_URL recreates the desktop.
+const desktopProxyLabel = "maclaw.desktop-proxy"
+
+// desktopProxyNoProxy keeps container-local traffic off the egress proxy.
+// The browser additionally bypasses loopback targets on its own.
+const desktopProxyNoProxy = "localhost,127.0.0.1,::1"
+
 // containerState is what desktopd reads back from an existing desktop.
 type containerState struct {
 	Exists  bool
@@ -167,6 +188,9 @@ type containerState struct {
 	// ConfigImage is the image name docker run was given. For those older
 	// containers it is the legacy image or this user's state image.
 	ConfigImage string
+	// DesktopProxy is the maclaw.desktop-proxy label: the egress proxy URL
+	// this container was created with ("" before the label existed).
+	DesktopProxy string
 }
 
 // containerImage is the requested image an existing container belongs to.
@@ -193,7 +217,11 @@ func containerImage(c containerState) string {
 // supervisor, which remote_deploy.sh also copies into running containers)
 // must not restart every desktop and drop the user's installed packages.
 // Moving users onto a new image is done by changing the tag.
-func recreateReason(c containerState, spec Spec) string {
+//
+// The desktop proxy label is compared against the service's configured URL:
+// enabling, changing or disabling the egress proxy recreates each desktop the
+// next time it is opened, and the container env always reflects the value.
+func (s *Service) recreateReason(c containerState, spec Spec) string {
 	if !c.Exists {
 		return ""
 	}
@@ -205,6 +233,9 @@ func recreateReason(c containerState, spec Spec) string {
 	}
 	if image := containerImage(c); image != spec.Image {
 		return "image changed from " + image + " to " + spec.Image
+	}
+	if c.DesktopProxy != s.desktopProxy() {
+		return "desktop proxy changed from " + c.DesktopProxy + " to " + s.desktopProxy()
 	}
 	return ""
 }
@@ -624,6 +655,14 @@ func (s *Service) keepUserLayer(ctx context.Context, name string, spec Spec, fro
 	return nil
 }
 
+func (s *Service) installImage(ctx context.Context, image string) error {
+	if _, err := s.docker(ctx, "image", "inspect", "--format", "{{.Id}}", image); err == nil {
+		return nil
+	}
+	_, err := s.docker(ctx, "pull", image)
+	return err
+}
+
 // runContainer starts a new desktop from image. spec.Image is the requested
 // image and is recorded in the maclaw.image label; image may be this user's
 // state image built on top of it.
@@ -652,6 +691,17 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec, imag
 		"--label", desktop.ImageLabel + "=" + spec.Image,
 		"--env", "HOME=/home/desktop",
 		"--env", "MACLAW_DESKTOP_KEY=" + key,
+		// The proxy env is always written — empty when no proxy is configured.
+		// A committed state image inherits the container env, and a stale
+		// HTTP(S)_PROXY from an earlier proxy configuration must not leak
+		// into a desktop recreated after the proxy was disabled or moved.
+		"--env", "HTTP_PROXY=" + s.desktopProxy(),
+		"--env", "HTTPS_PROXY=" + s.desktopProxy(),
+		"--env", "http_proxy=" + s.desktopProxy(),
+		"--env", "https_proxy=" + s.desktopProxy(),
+		"--env", "NO_PROXY=" + desktopProxyNoProxy,
+		"--env", "no_proxy=" + desktopProxyNoProxy,
+		"--label", desktopProxyLabel + "=" + s.desktopProxy(),
 		"--publish", desktop.ProxyPort + "/tcp",
 		"--publish", desktop.VNCPort + "/tcp",
 	}
@@ -666,9 +716,10 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec, imag
 	return err
 }
 
-// inspectFormat prints running|shm|mounts|maclaw.image|config image. Mount
-// and image names cannot contain "|".
-const inspectFormat = `{{.State.Running}}|{{index .Config.Labels "maclaw.shm"}}|{{range .Mounts}}{{.Name}}={{.Destination}} {{end}}|{{index .Config.Labels "` + desktop.ImageLabel + `"}}|{{.Config.Image}}`
+// inspectFormat prints running|shm|mounts|maclaw.image|config image|desktop
+// proxy. Mount and image names cannot contain "|"; the proxy URL is scheme
+// + IP + port (validated by DesktopProxyBind), so it cannot either.
+const inspectFormat = `{{.State.Running}}|{{index .Config.Labels "maclaw.shm"}}|{{range .Mounts}}{{.Name}}={{.Destination}} {{end}}|{{index .Config.Labels "` + desktop.ImageLabel + `"}}|{{.Config.Image}}|{{index .Config.Labels "` + desktopProxyLabel + `"}}`
 
 func (s *Service) inspect(ctx context.Context, name string) (containerState, error) {
 	out, callErr := s.docker(ctx, "inspect", "--format", inspectFormat, name)
@@ -682,7 +733,7 @@ func (s *Service) inspect(ctx context.Context, name string) (containerState, err
 }
 
 func parseInspect(out string) containerState {
-	parts := strings.SplitN(strings.TrimSpace(out), "|", 5)
+	parts := strings.SplitN(strings.TrimSpace(out), "|", 6)
 	state := containerState{Exists: true, Running: parts[0] == "true"}
 	if len(parts) > 1 {
 		state.Shm = labelValue(parts[1])
@@ -695,6 +746,9 @@ func parseInspect(out string) containerState {
 	}
 	if len(parts) > 4 {
 		state.ConfigImage = labelValue(parts[4])
+	}
+	if len(parts) > 5 {
+		state.DesktopProxy = labelValue(parts[5])
 	}
 	return state
 }

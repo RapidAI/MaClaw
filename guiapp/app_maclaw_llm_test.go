@@ -21,8 +21,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"pgregory.net/rapid"
 )
@@ -31,6 +33,26 @@ type appLLMRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f appLLMRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+// stubMaclawLLMHTTPClient routes every MaClaw-scope LLM probe (assignment and
+// vision checks) to an in-process handler so the profile flows stay hermetic.
+func stubMaclawLLMHTTPClient(t *testing.T, handler func(*http.Request) (*http.Response, error)) {
+	t.Helper()
+	old := llmHTTPClientForTest
+	t.Cleanup(func() { llmHTTPClientForTest = old })
+	llmHTTPClientForTest = func(timeout time.Duration) *http.Client {
+		return &http.Client{Timeout: timeout, Transport: appLLMRoundTripFunc(handler)}
+	}
+}
+
+func stubLLMCompletionResponse(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))),
+		Request:    req,
+	}, nil
 }
 
 func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToQAgent(t *testing.T) {
@@ -588,6 +610,10 @@ func TestDualLLMProfilesCodingFollowsAssistant(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
+
+	// Assigning provider-next fires the assignment vision probe; serve it
+	// in-process instead of dialing next.example.test for real.
+	stubMaclawLLMHTTPClient(t, stubLLMCompletionResponse)
 
 	app := &App{testHomeDir: tmpHome}
 	if err := app.SaveConfig(corelib.AppConfig{
@@ -5247,7 +5273,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, trae.NameCN, trae.NameGlobal, lobsterai.Name, "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}
@@ -5255,6 +5281,43 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
 		}
+	}
+
+	traeCN, ok := findProviderByName(providers, trae.NameCN)
+	if !ok {
+		t.Fatalf("providers missing %s: %+v", trae.NameCN, providers)
+	}
+	if traeCN.URL != trae.CNProfile().ChatHost {
+		t.Errorf("Trae 国内版 URL = %q, want %q", traeCN.URL, trae.CNProfile().ChatHost)
+	}
+	if traeCN.AuthType != "oauth" || traeCN.Protocol != "openai" {
+		t.Errorf("Trae 国内版 auth/protocol = %q/%q, want oauth/openai", traeCN.AuthType, traeCN.Protocol)
+	}
+	if got := traeCN.ContextLength; got != trae.DefaultContextLength {
+		t.Errorf("Trae 国内版 ContextLength = %d, want %d", got, trae.DefaultContextLength)
+	}
+	traeGlobal, ok := findProviderByName(providers, trae.NameGlobal)
+	if !ok {
+		t.Fatalf("providers missing %s: %+v", trae.NameGlobal, providers)
+	}
+	if traeGlobal.URL != trae.GlobalProfile().ChatHost {
+		t.Errorf("Trae 国际版 URL = %q, want %q", traeGlobal.URL, trae.GlobalProfile().ChatHost)
+	}
+	if traeGlobal.Model != trae.GlobalProfile().DefaultModel {
+		t.Errorf("Trae 国际版 Model = %q, want %q", traeGlobal.Model, trae.GlobalProfile().DefaultModel)
+	}
+	lobster, ok := findProviderByName(providers, lobsterai.Name)
+	if !ok {
+		t.Fatalf("providers missing %s: %+v", lobsterai.Name, providers)
+	}
+	if lobster.URL != lobsterai.APIBase {
+		t.Errorf("LobsterAI URL = %q, want %q", lobster.URL, lobsterai.APIBase)
+	}
+	if lobster.AuthType != "oauth" || lobster.Protocol != "openai" {
+		t.Errorf("LobsterAI auth/protocol = %q/%q, want oauth/openai", lobster.AuthType, lobster.Protocol)
+	}
+	if lobster.Model != lobsterai.DefaultModel {
+		t.Errorf("LobsterAI Model = %q, want %q", lobster.Model, lobsterai.DefaultModel)
 	}
 
 	kimi, ok := findProviderByName(providers, "Kimi")
@@ -5667,6 +5730,10 @@ func TestSaveMaclawLLMProfilesKeepsOpenCodePaidModel(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
+
+	// Saving the paid model fires the assignment vision probe; serve it
+	// in-process instead of calling the real OpenCode Zen endpoint.
+	stubMaclawLLMHTTPClient(t, stubLLMCompletionResponse)
 
 	app := &App{testHomeDir: tmpHome}
 	if err := app.SaveConfig(corelib.AppConfig{

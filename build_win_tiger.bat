@@ -8,6 +8,27 @@ REM ============================================================================
 
 echo [INFO] Starting TigerClaw build process...
 
+REM -- Build mutex: same lock dir as build_win.bat — the two brand scripts share
+REM    dist\, guiapp\resource_windows_*.syso, guiapp\frontend\dist and the
+REM    service binary names; serialize concurrent runs. --
+set "BUILD_LOCK_DIR=%~dp0.build_win_lock"
+set "LOCK_AGE_MIN=0"
+:acquire_build_lock
+if exist "%BUILD_LOCK_DIR%" (
+    for /f %%a in ('powershell -NoProfile -Command "try { [int]((Get-Date).Subtract((Get-Item '%BUILD_LOCK_DIR%' -ErrorAction Stop).CreationTime)).TotalMinutes } catch { 0 }" 2^>nul') do set "LOCK_AGE_MIN=%%a"
+    if !LOCK_AGE_MIN! gtr 40 (
+        echo [INFO] Build lock is stale !LOCK_AGE_MIN! min old, taking over...
+        rmdir /s /q "%BUILD_LOCK_DIR%" 2>nul
+    )
+)
+mkdir "%BUILD_LOCK_DIR%" 2>nul
+if errorlevel 1 (
+    echo [INFO] Another build_win*.bat run holds the build lock; waiting 30s...
+    ping -n 31 127.0.0.1 >nul
+    goto :acquire_build_lock
+)
+echo %DATE% %TIME% > "%BUILD_LOCK_DIR%\holder.txt"
+
 REM -- Set Environment Variables --
 set "APP_NAME=TigerClaw"
 set "BUILD_TAGS=desktop,production,oem_qianxin"
@@ -289,11 +310,16 @@ for /L %%I in (1,1,10) do (
 )
 exit /b 1
 
+:release_build_lock
+rmdir /s /q "%BUILD_LOCK_DIR%" 2>nul
+exit /b 0
+
 :nsis_missing
 echo [ERROR] NSIS not found at "%NSIS_PATH%". Please install NSIS.
 goto :error
 
 :success
+call :release_build_lock
 echo.
 echo [SUCCESS] TigerClaw build and packaging complete!
 echo Artifacts are in: %OUTPUT_DIR%
@@ -301,6 +327,7 @@ endlocal
 goto :eof
 
 :error
+call :release_build_lock
 echo.
 echo [FAILED] The TigerClaw build process failed. Please check the output above for errors.
 endlocal

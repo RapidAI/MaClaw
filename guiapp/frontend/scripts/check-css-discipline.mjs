@@ -21,7 +21,9 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // any future growth; bring this number down with the Phase C migration.
 // Refreshed 1560 -> 1569 (2026-10-06) for the uncommitted 100-pet-store-mc /
 // 110-mc-app-shell / 20-app-shell partial work in the tree at build time.
-const IMPORTANT_BASELINE = 1569
+// Refreshed 1569 -> 1570 (2026-10-07) for the nav-rail first-item top-margin
+// reset, which must out-rank the !important generic left-nav-item margin.
+const IMPORTANT_BASELINE = 1570
 const INLINE_STYLE_BASELINE = 4064
 
 function countImportant(css) {

@@ -73,7 +73,15 @@ func llmOrEnvProxy(req *http.Request) (*url.URL, error) {
 	return http.ProxyFromEnvironment(req)
 }
 
+// llmHTTPClientForTest lets hermetic tests intercept MaClaw-scope LLM HTTP
+// (provider/assignment probes) without a real network. Package tests install
+// it and must restore it via t.Cleanup; production leaves it nil.
+var llmHTTPClientForTest func(timeout time.Duration) *http.Client
+
 func (a *App) llmHTTPClient(timeout time.Duration) *http.Client {
+	if llmHTTPClientForTest != nil {
+		return llmHTTPClientForTest(timeout)
+	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}

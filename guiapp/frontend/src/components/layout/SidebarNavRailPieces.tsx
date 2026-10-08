@@ -38,7 +38,8 @@ export function useNavMenuToggles(state: NavMenuToggleState) {
         setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop,
     } = state;
 
-    const closeSiblingMenus = (keep: NavMenuKey) => {
+    // keep omitted closes every menu — used by scroll-to-dismiss.
+    const closeSiblingMenus = (keep?: NavMenuKey) => {
         if (keep !== 'system') setSystemMenuOpen(false);
         if (keep !== 'extensions') setExtensionsMenuOpen(false);
         if (keep !== 'library') setLibraryMenuOpen(false);
@@ -58,7 +59,11 @@ export function useNavMenuToggles(state: NavMenuToggleState) {
     const toggleExtensionsMenu = (target: HTMLElement) => {
         if (!extensionsMenuOpen) {
             extensionsMenuOpenerRef.current = target;
-            setExtensionsMenuTop(target.offsetTop + target.offsetHeight / 2);
+            // Viewport coordinates: the popup is position fixed, so the anchor
+            // must survive rail scrolling (offsetTop is layout-relative and
+            // would point at the pre-scroll position).
+            const rect = target.getBoundingClientRect();
+            setExtensionsMenuTop(rect.top + rect.height / 2);
             closeSiblingMenus('extensions');
         }
         setExtensionsMenuOpen(prev => !prev);
@@ -66,7 +71,8 @@ export function useNavMenuToggles(state: NavMenuToggleState) {
     const toggleLibraryMenu = (target: HTMLElement) => {
         if (!libraryMenuOpen) {
             libraryMenuOpenerRef.current = target;
-            setLibraryMenuTop(target.offsetTop + target.offsetHeight / 2);
+            const rect = target.getBoundingClientRect();
+            setLibraryMenuTop(rect.top + rect.height / 2);
             closeSiblingMenus('library');
         }
         setLibraryMenuOpen(prev => !prev);
@@ -74,7 +80,8 @@ export function useNavMenuToggles(state: NavMenuToggleState) {
     const toggleProMenu = (target: HTMLElement) => {
         if (!proMenuOpen) {
             proMenuOpenerRef.current = target;
-            setProMenuTop(target.offsetTop + target.offsetHeight / 2);
+            const rect = target.getBoundingClientRect();
+            setProMenuTop(rect.top + rect.height / 2);
             closeSiblingMenus('pro');
         }
         setProMenuOpen(prev => !prev);
@@ -128,7 +135,7 @@ type SidebarPrimaryNavProps = {
 const railItemLabelStyle = { fontSize: '0.72rem', lineHeight: 1.15, fontWeight: 700, textAlign: 'center', width: '100%' } as const;
 
 const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
-const maclawHeaderStyle = { ...sharedHeaderStyle, height: '64px', padding: '0 0 2px 0', gap: '0' } as const;
+const maclawHeaderStyle = { ...sharedHeaderStyle, height: '56px', padding: '0', gap: '0' } as const;
 const tigerClawHeaderStyle = { ...sharedHeaderStyle, padding: '2px 0 0 0', gap: '2px' } as const;
 
 export const SidebarBrandHeader = ({ brandId, currentIcon, brandSidebarName }: SidebarBrandHeaderProps) => {

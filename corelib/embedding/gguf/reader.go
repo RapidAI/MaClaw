@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sync"
 )
 
 // Open parses a GGUF file header, metadata, and tensor index.
@@ -206,6 +207,9 @@ func readArray(r io.Reader) ([]string, error) {
 	binary.Read(r, binary.LittleEndian, &elemType)
 	binary.Read(r, binary.LittleEndian, &count)
 	if elemType == 8 { // string array
+		if count > maxMetaStringArrayCount {
+			return nil, fmt.Errorf("gguf: meta string array count %d too large (corrupt header?)", count)
+		}
 		out := make([]string, count)
 		for i := uint64(0); i < count; i++ {
 			s, err := readString(r)
@@ -218,14 +222,23 @@ func readArray(r io.Reader) ([]string, error) {
 	}
 	// Float32 arrays — store for later retrieval
 	if elemType == 6 {
+		if count > maxF32ArrayCount {
+			return nil, fmt.Errorf("gguf: float32 array count %d too large (corrupt header?)", count)
+		}
 		buf := make([]byte, count*4)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
-		lastF32Array = make([]float32, count)
+		// Parse into a local slice and publish once: writing the package-global
+		// element-by-element let a concurrent LastF32Array (or a second parser
+		// with count=0) shrink it mid-loop and panic the whole process.
+		arr := make([]float32, count)
 		for i := uint64(0); i < count; i++ {
-			lastF32Array[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+			arr[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 		}
+		lastF32Mu.Lock()
+		lastF32Array = arr
+		lastF32Mu.Unlock()
 		return nil, nil
 	}
 	// Skip non-string arrays
@@ -234,16 +247,35 @@ func readArray(r io.Reader) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("unsupported array elem type %d", elemType)
 	}
+	if count > maxSkipArrayCount {
+		return nil, fmt.Errorf("gguf: array count %d too large (corrupt header?)", count)
+	}
 	skip := make([]byte, int(count)*sz)
 	io.ReadFull(r, skip)
 	return nil, nil
 }
 
-// lastF32Array holds the most recently parsed float32 array.
-var lastF32Array []float32
+// Sanity caps for metadata array counts: real GGUF files stay well below
+// these, so a larger count means a corrupt or truncated header and must fail
+// as an error instead of a huge allocation.
+const (
+	maxMetaStringArrayCount = 1 << 20
+	maxF32ArrayCount        = 1 << 22
+	maxSkipArrayCount       = 1 << 24
+)
+
+// lastF32Array holds the most recently parsed float32 array. The GGUF header
+// parser can run concurrently with consumers (memory-store warmup starts two
+// embedders at once), so every access is serialized.
+var (
+	lastF32Mu    sync.Mutex
+	lastF32Array []float32
+)
 
 // LastF32Array returns and clears the last parsed float32 array.
 func LastF32Array() []float32 {
+	lastF32Mu.Lock()
+	defer lastF32Mu.Unlock()
 	arr := lastF32Array
 	lastF32Array = nil
 	return arr

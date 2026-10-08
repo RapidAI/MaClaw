@@ -425,6 +425,7 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/v1/bots/{id}", DeleteBotUserHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/messages", PostBotMessageHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/desktop-handoff/{token}/{rest...}", GetDesktopHandoffHandler(botSvc))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspace-sessions", CloudWorkspaceIssueInstanceSessionHandler(cloudWorkspaceSvc, identity))

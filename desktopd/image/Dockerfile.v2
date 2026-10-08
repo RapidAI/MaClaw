@@ -18,6 +18,9 @@
 # frontend image would need Docker Hub.
 ARG BASE_IMAGE=debian:bookworm
 ARG APT_MIRROR=
+# Proxy build args (--build-arg HTTP_PROXY=...) are Docker predefined args:
+# they reach the RUN steps without an ARG declaration and stay out of docker
+# history (an explicit ARG declaration would put the proxy URL in it).
 
 # Tiny LD_PRELOAD shim, see close_range_shim.c.
 FROM ${BASE_IMAGE} AS shim

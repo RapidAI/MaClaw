@@ -17,6 +17,8 @@ const LoadConfigMock = vi.fn();
 const EventsOnMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartOpenCodeZenLoginMock = vi.fn();
+const StartZhipuCodingOAuthMock = vi.fn();
+const WaitZhipuCodingOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
 const StartWorkBuddyOAuthMock = vi.fn();
 const StartKimiCodeOAuthMock = vi.fn();
@@ -44,6 +46,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartOpenCodeZenLogin: (...args: unknown[]) => StartOpenCodeZenLoginMock(...args),
+    StartZhipuCodingOAuth: (...args: unknown[]) => StartZhipuCodingOAuthMock(...args),
+    WaitZhipuCodingOAuth: (...args: unknown[]) => WaitZhipuCodingOAuthMock(...args),
+    CancelZhipuCodingOAuth: vi.fn(),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
     StartWorkBuddyOAuth: (...args: unknown[]) => StartWorkBuddyOAuthMock(...args),
     StartKimiCodeOAuth: (...args: unknown[]) => StartKimiCodeOAuthMock(...args),
@@ -78,7 +83,10 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
+vi.mock('../providerLogos', async () => {
+    const actual = await vi.importActual<typeof import('../providerLogos')>('../providerLogos');
+    return { ...actual, PROVIDER_LOGOS: {} };
+});
 vi.mock('../UsageDisplay', () => ({ UsageDisplay: () => <div>OpenAI Usage</div> }));
 vi.mock('../TokenUsagePanel', () => ({ TokenUsagePanel: () => null }));
 vi.mock('../LLMProfileAssignments', () => ({
@@ -1376,6 +1384,97 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(screen.getByText(/Opened OpenCode. Copy the key from API Keys/i)).toBeTruthy();
     });
 
+});
+
+describe('Zhipu (智谱编程) ZCode online login', () => {
+    beforeEach(() => {
+        localStorage.clear();
+        GetMaclawLLMProvidersMock.mockResolvedValue({ providers: [], current: '' });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'ok', supports_vision: false });
+    });
+
+    afterEach(() => {
+        cleanup();
+        vi.clearAllMocks();
+    });
+
+    const zhipuProvider = (overrides: Record<string, unknown> = {}) => ({
+        name: '智谱编程',
+        url: 'https://open.bigmodel.cn/api/anthropic',
+        key: '',
+        model: 'glm-5.3',
+        protocol: 'anthropic',
+        agent_type: 'claude code 2.0',
+        context_length: 400000,
+        import_source: '',
+        is_custom: false,
+        supports_vision: false,
+        ...overrides,
+    });
+
+    it('offers the ZCode login entry next to the API key field', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [zhipuProvider()],
+            current: '智谱编程',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        expect(await screen.findByTestId('zhipu-zcode-login')).toBeTruthy();
+        expect(screen.getByText(/Zhipu online login \(ZCode\)/i)).toBeTruthy();
+        // The API key stays manually editable alongside the online login.
+        expect(screen.getByPlaceholderText('xxxxxxxx.yyyyyyyy')).toBeTruthy();
+    });
+
+    it('does not offer the ZCode login on other providers', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [zhipuProvider({ name: 'DeepSeek', url: 'https://api.deepseek.com/v1', model: 'deepseek-chat', protocol: 'openai', agent_type: '' })],
+            current: 'DeepSeek',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        expect(await screen.findByPlaceholderText('sk-...')).toBeTruthy();
+        expect(screen.queryByTestId('zhipu-zcode-login')).toBeNull();
+    });
+
+    it('runs the online login, refreshes the saved key, and reports success', async () => {
+        StartZhipuCodingOAuthMock.mockResolvedValue({
+            auth_url: 'https://bigmodel.cn/login?appId=zcode&redirect=x&state=y',
+            browser_opened: true,
+        });
+        WaitZhipuCodingOAuthMock.mockResolvedValue('智谱编程 ZCode 登录成功；模型测试通过，图片理解：不支持');
+        GetMaclawLLMProvidersMock
+            .mockResolvedValueOnce({ providers: [zhipuProvider()], current: '智谱编程' })
+            .mockResolvedValue({
+                providers: [zhipuProvider({ key: 'key-secret', connection_test_passed: true })],
+                current: '智谱编程',
+            });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByTestId('zhipu-zcode-login'));
+        await waitFor(() => expect(StartZhipuCodingOAuthMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(WaitZhipuCodingOAuthMock).toHaveBeenCalledTimes(1));
+        // The backend saved the resolved key; the refreshed dialog shows it.
+        expect(await screen.findByText(/ZCode 登录成功/)).toBeTruthy();
+        expect(screen.getByDisplayValue('key-secret')).toBeTruthy();
+    });
+
+    it('surfaces a failed login without clearing the form', async () => {
+        StartZhipuCodingOAuthMock.mockResolvedValue({
+            auth_url: 'https://bigmodel.cn/login?appId=zcode&redirect=x&state=y',
+            browser_opened: false,
+        });
+        WaitZhipuCodingOAuthMock.mockRejectedValue(new Error('智谱登录失败: 授权超时'));
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [zhipuProvider()],
+            current: '智谱编程',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByTestId('zhipu-zcode-login'));
+        expect(await screen.findByText(/智谱登录失败/)).toBeTruthy();
+        // The manual API key field stays untouched and editable.
+        expect(screen.getByPlaceholderText('xxxxxxxx.yyyyyyyy')).toBeTruthy();
+    });
 });
 
 describe('formatProviderTestError', () => {

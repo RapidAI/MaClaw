@@ -44,7 +44,7 @@ require (
 	golang.org/x/image v0.37.0
 	golang.org/x/net v0.47.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.44.0
 	golang.org/x/term v0.37.0
 	golang.org/x/text v0.35.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -61,6 +61,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 )
 
 require (

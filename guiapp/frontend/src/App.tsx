@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetPosition, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, isCurrentBotAccessRead, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -158,7 +158,7 @@ import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
-import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
+import { countRunningTaskRows, isProjectTabOpen } from './components/layout/SidebarTaskManagement';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
@@ -305,7 +305,12 @@ function App() {
             try { void Promise.resolve(logFn(payload)).catch(() => {}); } catch {}
         }
     };
-    logStartupTrace('app-render-begin');
+    // app-render-begin marks "React began rendering"; emit once per mount.
+    // A bare call in the body fired a Wails binding plus a log line on every
+    // paint and dominated ~/.maclaw logs (10k+ lines in one session).
+    useEffect(() => {
+        logStartupTrace('app-render-begin');
+    }, []);
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<corelib.AppConfig | null>(null);
     const reportedBillingTimezoneForAccountRef = useRef("");
@@ -536,6 +541,46 @@ function App() {
     // can outlast the grace window, and pruning against a not-yet-loaded
     // empty list would discard legitimate tabs.
     const [taskListLoaded, setTaskListLoaded] = useState(false);
+    // Windows taskbar badge: mirror the sidebar's running count onto the
+    // taskbar button. countRunningTaskRows shares the live-running matcher
+    // with SidebarTaskManagement, so the badge always agrees with the 进行中
+    // chip. A zero count clears the overlay; pushes are cosmetic and never
+    // block on failure — a missing bridge just defers them (see below).
+    const runningTaskBadgeCount = useMemo(
+        () => countRunningTaskRows(taskItems, { busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask }),
+        [taskItems, busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask],
+    );
+    useEffect(() => {
+        // The Wails bridge can land after first paint (index.html polls up to
+        // 4s for window.go), so a missing binding defers the push instead of
+        // dropping it: a count that never changes again would otherwise never
+        // reach the backend.
+        const push = () => {
+            try {
+                const pushed = SetTaskbarBadgeCount(runningTaskBadgeCount);
+                if (pushed && typeof pushed.catch === 'function') pushed.catch(() => {});
+            } catch {
+                // Binding absent in embedded or test shells.
+            }
+        };
+        const app = (globalThis as any).window?.go?.main?.App;
+        if (app && typeof app.SetTaskbarBadgeCount === 'function') {
+            push();
+            return;
+        }
+        let tries = 0;
+        let timer = 0;
+        const pushWhenReady = () => {
+            const ready = (globalThis as any).window?.go?.main?.App;
+            if (!ready || typeof ready.SetTaskbarBadgeCount !== 'function') {
+                if (++tries < 10) timer = window.setTimeout(pushWhenReady, 500);
+                return;
+            }
+            push();
+        };
+        timer = window.setTimeout(pushWhenReady, 500);
+        return () => window.clearTimeout(timer);
+    }, [runningTaskBadgeCount]);
     // Persist the authoritative list for instant startup render. The snapshot
     // initializer reads it before the first ListTasks; only save once a real
     // list has arrived so an empty cold start never clobbers it.

@@ -154,6 +154,9 @@ export function CancelGitHubCopilotOAuth():Promise<void>;
 export function CancelKimiCodeOAuth():Promise<void>;
 
 export function CancelQoderOAuth():Promise<void>;
+export function CancelTraeOAuth():Promise<void>;
+export function CancelLobsterAIOAuth():Promise<void>;
+export function CancelZhipuCodingOAuth():Promise<void>;
 
 export function CancelNLSkillRun(arg1:string):Promise<void>;
 
@@ -2319,6 +2322,8 @@ export function SetMoAStickyPreset(arg1:string):Promise<void>;
 
 export function SetNLSkillStatus(arg1:string,arg2:string):Promise<void>;
 
+export function SetTaskbarBadgeCount(arg1:number):Promise<void>;
+
 export function VerifyAndActivateNLSkill(arg1:string):Promise<void>;
 
 export function VerifyAndActivateNLSkillWithArgs(arg1:string,arg2:Record<string, any>):Promise<void>;
@@ -2400,6 +2405,9 @@ export function StartCodeGenSSOEmbedded():Promise<main.CodeGenSSOEmbeddedResult>
 export function StartKimiCodeOAuth():Promise<{user_code:string; verification_uri:string; verification_uri_complete:string; browser_opened:boolean}>;
 
 export function StartQoderOAuth(arg1:string):Promise<{auth_url:string; browser_opened:boolean}>;
+export function StartTraeOAuth(arg1:string):Promise<{auth_url:string; browser_opened:boolean}>;
+export function StartLobsterAIOAuth():Promise<{auth_url:string; browser_opened:boolean}>;
+export function StartZhipuCodingOAuth():Promise<{auth_url:string; browser_opened:boolean}>;
 
 export function StartGitHubCopilotOAuth():Promise<main.GitHubCopilotDeviceInfo>;
 
@@ -2606,6 +2614,9 @@ export function WaitCodeGenSSOResult():Promise<main.CodeGenSSOInfo>;
 export function WaitKimiCodeOAuth():Promise<string>;
 
 export function WaitQoderOAuth():Promise<string>;
+export function WaitTraeOAuth():Promise<string>;
+export function WaitLobsterAIOAuth():Promise<string>;
+export function WaitZhipuCodingOAuth():Promise<string>;
 
 export function WaitGitHubCopilotOAuth():Promise<string>;
 
@@ -2661,3 +2672,5 @@ export function TokenBankRevokeGiftLink(arg1:string):Promise<Record<string, any>
 export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
+
+export function WatchDesktopBot(arg1:string):Promise<{novnc_url:string,user_control:boolean}>;

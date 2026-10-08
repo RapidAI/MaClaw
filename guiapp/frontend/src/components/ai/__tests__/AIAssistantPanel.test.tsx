@@ -1246,8 +1246,11 @@ describe('AIAssistantPanel property tests', () => {
             project_path: 'D:/owner-project',
             auto_open_preview: true,
         }));
-        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
-        expect(document.body.textContent || '').not.toContain('project_owner_preview');
+        // The ordinary tab routes coding events through the coding preview
+        // owner tab's project scope (agent write focus follows the run), so
+        // the write surfaces while that project tab still exists.
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('project_owner_preview');
 
         fireEvent.click(getByTestId(`ai-tab-close-${projectTabId}`));
         await waitFor(() => expect(queryByTestId(`ai-tab-${projectTabId}`)).toBeNull());

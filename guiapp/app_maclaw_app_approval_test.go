@@ -131,26 +131,7 @@ func TestSubmitMaclawAppPackageFlagsDependencyVerificationWorkflowIssueDetails(t
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "approval workflow contract verification failed")
-	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one dependency workflow issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 {
-		t.Fatalf("expected one review issue: %#v", detail.ReviewIssues)
-	}
-	issue := detail.ReviewIssues[0]
-	if issue.Path != "apps[0].app.governance.dependencyVerification.workflowContractIssues" || !strings.Contains(issue.Message, "approval workflow contract verification failed: approval workflow contract does not match approval binding") {
-		t.Fatalf("unexpected dependency verification workflow issue: %#v", issue)
-	}
-	if issue.Suggestion != "align workflowSkillId" || issue.Metadata["workflow_skill_id"] != "expense-flow" || issue.Metadata["installed_version"] != "2.0.0" {
-		t.Fatalf("expected carried issue detail metadata: %#v", issue)
-	}
 }
 
 func TestSubmitMaclawAppPackageValidatesApprovalWorkflowContract(t *testing.T) {
@@ -277,19 +258,7 @@ func TestSubmitMaclawAppPackageRequiresApprovalInstanceTestEvidence(t *testing.T
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence.approvalInstance")
-	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one approval instance evidence issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testEvidence.approvalInstance" || !strings.Contains(detail.ReviewIssues[0].Message, "approval instance") {
-		t.Fatalf("unexpected approval instance evidence issue: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestSubmitMaclawAppPackageRequiresApprovalInstanceResultPackage(t *testing.T) {
@@ -337,19 +306,7 @@ func TestSubmitMaclawAppPackageRequiresApprovalInstanceResultPackage(t *testing.
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence.approvalInstance.resultPayload")
-	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one approval result package issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testEvidence.approvalInstance.resultPayload" || !strings.Contains(detail.ReviewIssues[0].Message, "result package") {
-		t.Fatalf("unexpected approval result package issue: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestPlanMaclawAppInstallChecksInstalledApprovalWorkflowVersion(t *testing.T) {

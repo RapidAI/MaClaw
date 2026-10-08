@@ -79,9 +79,6 @@ const (
 	// edit_file names stay out. Schema has path, content, and optional mode
 	// only — no channel, destination, or group_name.
 	CapabilityFileWrite = coretool.CapabilityFSWriteLocal
-	// CapabilityFileDelete removes one workspace file. It is not a write and
-	// not a shell. The host chooses the removal; the model supplies the path.
-	CapabilityFileDelete = coretool.CapabilityFSDeleteLocal
 	// CapabilityOfficeWrite is a host-owned workspace spreadsheet write.
 	// format=spreadsheet only; word/presentation stay unpublished. It is not
 	// fs.write.local or document.generate.file. GUI office / write_excel
@@ -812,11 +809,6 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 		}},
 		intent.LabelFileWrite: {{
 			Capability: CapabilityFileWrite,
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
-		}},
-		intent.LabelFileDelete: {{
-			Capability: CapabilityFileDelete,
 			Polarity:   coretool.NeedRequire,
 			Required:   true,
 		}},

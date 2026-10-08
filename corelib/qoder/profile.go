@@ -21,10 +21,13 @@ const (
 	StoreCN     = "qoder-cn"
 	StoreGlobal = "qoder-global"
 
-	// The two public device-login clients. They carry no secret; the CLI
-	// hardcodes them in its worker runtime (qoder-worker-runtime 1.1.64).
-	ClientIDCN     = "e93fe488-5778-4c35-a6fc-0f54ed7b3139"
-	ClientIDGlobal = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
+	// One public device-login client serves both editions. Both carry no
+	// secret; the CLI hardcodes the id in its worker runtime. Live captures
+	// confirm the pairing: qoderclicn 1.1.64 (qoder.cn) and qodercli 1.1.65
+	// (qoder.com) both open selectAccounts with e883ade2 — using anything else
+	// makes the qoder.cn approval page answer "参数无效" (the older e93fe488 id
+	// still ships inside both binaries but is not accepted for device logins).
+	DeviceClientID = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
 
 	// ClientVersion matches an official CLI release so upstream can tell the
 	// client family apart. MaClaw reports itself as maclaw where a platform
@@ -35,8 +38,8 @@ const (
 	// DefaultModel is the hardcoded fallback model of the official CLI
 	// (Qwen 3.8 Max, 1M context). The login flow replaces it with the
 	// server catalog default when that catalog is readable.
-	DefaultModel          = "qwen3.8-max"
-	DefaultContextWindows = 1000000
+	DefaultModel         = "qwen3.8-max"
+	DefaultContextLength = 1000000
 
 	// ChatBase is the shared model server behind both editions. The official
 	// CLI picks it from a fixed table (api2-v2.qoder.sh for prod) rather than
@@ -59,8 +62,12 @@ type Profile struct {
 	WebOrigin   string // browser login page origin
 	OpenAPIBase string // account/token API (device poll & refresh)
 	InferBase   string // model catalog host (falls back to plain Bearer)
-	ClientID    string
-	ChatURL     string // OpenAI-compatible chat base (protocol-openai URL)
+	// ChatOrigin is the signed chat host used by /algo
+	// agent_chat_generation: Gateway (CN) or the model server (global). It
+	// is NOT derivable from ChatURL, which is the OpenAI-style front.
+	ClientID   string
+	ChatOrigin string
+	ChatURL    string // OpenAI-compatible chat base (protocol-openai URL)
 }
 
 // CNProfile is the domestic edition (qoder.cn).
@@ -72,7 +79,8 @@ func CNProfile() Profile {
 		WebOrigin:   "https://qoder.cn",
 		OpenAPIBase: "https://openapi.qoder.com.cn",
 		InferBase:   "https://gateway.qoder.com.cn",
-		ClientID:    ClientIDCN,
+		ChatOrigin:  "https://gateway.qoder.com.cn",
+		ClientID:    DeviceClientID,
 		ChatURL:     ChatBase,
 	}
 }
@@ -86,7 +94,8 @@ func GlobalProfile() Profile {
 		WebOrigin:   "https://qoder.com",
 		OpenAPIBase: "https://openapi.qoder.sh",
 		InferBase:   "https://api2.qoder.sh",
-		ClientID:    ClientIDGlobal,
+		ChatOrigin:  "https://api2-v2.qoder.sh",
+		ClientID:    DeviceClientID,
 		ChatURL:     ChatBase,
 	}
 }
@@ -127,23 +136,17 @@ func ProfileByStoreID(id string) (Profile, bool) {
 	}
 }
 
-// ProfileByURL resolves the edition for a saved chat base URL.
-func ProfileByURL(raw string) bool {
+// IsChatBaseURL reports whether raw points at the shared model server, so
+// model-fetch callers can route to the Qoder catalog instead of a /models
+// endpoint that does not exist.
+func IsChatBaseURL(raw string) bool {
 	return requestHost(raw) == requestHost(ChatBase)
-}
-
-// Matches reports whether a runtime LLM config targets an edition.
-func Matches(name, rawURL string) bool {
-	if _, ok := ProfileByName(name); ok {
-		return true
-	}
-	return ProfileByURL(rawURL)
 }
 
 // CanonicalChatURL keeps the provider chat base pinned to the shared model
 // server regardless of schema/host typing drift.
 func CanonicalChatURL(raw string) string {
-	if requestHost(raw) == requestHost(ChatBase) {
+	if IsChatBaseURL(raw) {
 		return ChatBase
 	}
 	return strings.TrimRight(strings.TrimSpace(raw), "/")

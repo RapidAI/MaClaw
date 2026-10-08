@@ -1663,3 +1663,126 @@ func TestSrvRejectionMessageForNotFoundAndBareErrors(t *testing.T) {
 		t.Fatalf("nil message = %q", msg)
 	}
 }
+
+func botViewRecordJSON(t *testing.T) string {
+	t.Helper()
+	raw, err := json.Marshal(record{
+		BaseURL:     "http://maclawsrv.example",
+		AccessToken: "secret-token",
+		Bots: []Bot{
+			{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"},
+		},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestHoldDesktopViewOpensAndKeepsTheDesktopUp(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	svc.Desktop = desk
+	ctx := context.Background()
+
+	novnc, keyboard, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desk.open != 1 {
+		t.Fatalf("open=%d, want the hold to start the desktop", desk.open)
+	}
+	if !strings.HasPrefix(novnc, "/api/v1/desktop-handoff/") {
+		t.Fatalf("novnc=%q", novnc)
+	}
+	if keyboard {
+		t.Fatal("keyboard must not go to the person while nobody logged in")
+	}
+	// Polling again must not open the desktop a second time.
+	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil || desk.open != 1 {
+		t.Fatalf("second hold opened=%d err=%v", desk.open, err)
+	}
+	// A run finishing now must leave the desktop up: the human is watching.
+	stopped, err := svc.StopDesktopIfIdle(ctx, "tenant-a", "alice", "inst_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped || desk.stop != 0 {
+		t.Fatal("stop pulled the desktop out from under the open view")
+	}
+	// The hold expires on its own; the next idle stop goes through.
+	svc.Now = func() time.Time { return time.Now().Add(UserDesktopViewHold + time.Minute) }
+	stopped, err = svc.StopDesktopIfIdle(ctx, "tenant-a", "alice", "inst_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stopped || desk.stop != 1 {
+		t.Fatalf("stopped=%v stop=%d, the expired hold must not pin the desktop", stopped, desk.stop)
+	}
+}
+
+func TestHoldDesktopViewRefusesOtherPeopleAndDisabledUsers(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+
+	// A user whose grant lets them in still cannot point the hold at
+	// someone else's bot.
+	svc.CreateGrant(context.Background(), "tenant-a", Grant{Scope: ScopeUser, TargetID: "bob"})
+	if _, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "bob", "bot_alice"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign bot err=%v", err)
+	}
+	if desk, ok := svc.Desktop.(*desktopCounter); !ok || desk.open != 0 {
+		t.Fatal("foreign hold opened the desktop")
+	}
+	// A user with no grant stays disabled and must not reach the desktop.
+	if _, _, err := svc.HoldDesktopView(context.Background(), "tenant-b", "alice", "bot_alice"); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("disabled tenant err=%v", err)
+	}
+}
+
+func TestUserViewHoldSurvivesRestartButExpires(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc1 := NewService(settings)
+	svc1.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	svc1.Now = func() time.Time { return time.Now() }
+	if _, _, err := svc1.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hub restarts. The fresh process restores the fresh hold.
+	svc2 := NewService(settings)
+	desk2 := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	svc2.Desktop = desk2
+	stopped, err := svc2.StopDesktopIfIdle(context.Background(), "tenant-a", "alice", "inst_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped || desk2.stop != 0 {
+		t.Fatal("restart forgot the user view hold")
+	}
+
+	// A persisted hold that was old when the process came up must not pin
+	// the desktop; the view expired long before the restart.
+	old := NewService(settings)
+	old.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	old.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	stopped, err = old.StopDesktopIfIdle(context.Background(), "tenant-a", "alice", "inst_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("a stale restored hold still pins the desktop")
+	}
+}

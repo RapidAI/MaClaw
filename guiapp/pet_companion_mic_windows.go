@@ -151,13 +151,26 @@ func (m *waveMic) Close() error {
 	return nil
 }
 
-func (m *waveMic) deliver(header *waveHeader) {
-	if m == nil || header == nil || header.BytesRecorded < 2 {
+// deliverBuf consumes the recorded data of header i and re-arms it. The OS
+// hands the header reference back through the callback; resolving it against
+// the mic's own prepared headers keeps every access on Go pointers instead of
+// converting the callback's uintptr (or the WAVEHDR.Data field) back into a
+// pointer. The underlying buffers stay runtime-pinned for the mic's lifetime.
+func (m *waveMic) deliverBuf(headerIndex int) {
+	if m == nil || headerIndex < 0 || headerIndex >= len(m.hdrs) {
+		return
+	}
+	header := &m.hdrs[headerIndex]
+	if header.BytesRecorded < 2 {
 		return
 	}
 	n := int(header.BytesRecorded) / 2
+	buf := m.bufs[headerIndex]
+	if 2*n > len(buf) {
+		return
+	}
 	pcm := make([]int16, n)
-	raw := unsafe.Slice((*byte)(unsafe.Pointer(header.Data)), header.BytesRecorded)
+	raw := buf[:2*n]
 	for i := 0; i < n; i++ {
 		pcm[i] = int16(uint16(raw[i*2]) | uint16(raw[i*2+1])<<8)
 	}
@@ -186,7 +199,11 @@ func waveInCallback(hwi, msg, _, param1, _ uintptr) uintptr {
 		return 0
 	}
 	mic := value.(*waveMic)
-	header := (*waveHeader)(unsafe.Pointer(param1))
-	mic.deliver(header)
+	for i := range mic.hdrs {
+		if uintptr(unsafe.Pointer(&mic.hdrs[i])) == param1 {
+			mic.deliverBuf(i)
+			return 0
+		}
+	}
 	return 0
 }

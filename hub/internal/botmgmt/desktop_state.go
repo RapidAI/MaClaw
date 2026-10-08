@@ -43,6 +43,9 @@ type desktopStateRecord struct {
 	// as RFC3339. Without it a restart right after a check would forget the
 	// hold and the next stop would blank the picture the admin is watching.
 	Viewed map[string]string `json:"viewed,omitempty"`
+	// Userviewed is the same hold for a user watching or taking over a
+	// desktop from their own Bot page.
+	Userviewed map[string]string `json:"userviewed,omitempty"`
 }
 
 // ensureDesktopHydrated restores the persisted desktop state into memory once
@@ -124,6 +127,19 @@ func (s *Service) ensureDesktopHydrated(tenantID string) {
 		}
 		s.desktopAdminView[key] = last
 	}
+	for key, stamp := range rec.Desktop.Userviewed {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		last, err := time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			continue
+		}
+		if s.desktopUserView == nil {
+			s.desktopUserView = map[string]time.Time{}
+		}
+		s.desktopUserView[key] = last
+	}
 }
 
 // persistDesktopState writes the in-memory desktop pins and views of this
@@ -192,6 +208,17 @@ func (s *Service) persistDesktopState(tenantID string) {
 			st.Viewed = map[string]string{}
 		}
 		st.Viewed[key] = last.UTC().Format(time.RFC3339)
+	}
+	// A user view hold expires in minutes, so a restart must not resurrect a
+	// stale one and keep the desktop up long after the page closed.
+	for key, last := range s.desktopUserView {
+		if !strings.HasPrefix(key, prefix) || now.Sub(last) >= UserDesktopViewHold {
+			continue
+		}
+		if st.Userviewed == nil {
+			st.Userviewed = map[string]string{}
+		}
+		st.Userviewed[key] = last.UTC().Format(time.RFC3339)
 	}
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {

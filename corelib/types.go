@@ -1053,6 +1053,11 @@ type MaclawLLMConfig struct {
 	WorkBuddyDomain       string `json:"-"`
 	WorkBuddyRefreshToken string `json:"-"`
 
+	// Trae device pair rides the same way: the login-page machine/device ids
+	// the refresh token was minted against. Empty = claims-derived fallback.
+	TraeMachineID string `json:"-"`
+	TraeDeviceID  string `json:"-"`
+
 	// EnablePromptCache hints to the LLM client that the system prompt is
 	// stable across iterations and should be marked for provider-side caching.
 	// When true: Anthropic → cache_control:{type:"ephemeral"} on system block;

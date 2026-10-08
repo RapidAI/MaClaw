@@ -116,7 +116,6 @@ func TestCodingE3NestedRouteInFlightCloseRemote(t *testing.T) {
 func codingE3TransformRaceCommitsSnapshotAcrossInFlightRequest(t *testing.T, family string) {
 	inFlight := make(chan struct{})
 	var once sync.Once
-	var mu sync.Mutex
 	var successorConversation []interface{}
 	run := codingE3StartRun(t, family, func(seq int, conn *websocket.Conn, frame []byte) {
 		if seq == 1 {
@@ -142,7 +141,6 @@ func codingE3TransformRaceCommitsSnapshotAcrossInFlightRequest(t *testing.T, fam
 	case *remoteCodingCallbacks:
 		hooks = cb.agent.buildRemoteCodingLoopHooks(cb)
 	}
-	_ = mu
 	_ = successorConversation
 	go func() {
 		select {

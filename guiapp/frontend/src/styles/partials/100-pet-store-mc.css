@@ -916,7 +916,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-nav-rail .sidebar-header--maclaw { display: none !important; }
 
 /* Reference primary navigation rhythm */
-.sidebar .left-nav-item:not(.left-nav-item--bot):not(.left-nav-item--invite) { width: calc(100% - 20px) !important; min-height: 62px !important; margin: 4px 10px !important; gap: 6px !important; border-radius: 12px !important; }
+.sidebar .left-nav-item:not(.left-nav-item--bot):not(.left-nav-item--invite) { width: calc(100% - 20px) !important; min-height: 52px !important; margin: 2px 10px !important; gap: 6px !important; border-radius: 12px !important; }
 .sidebar .left-nav-item .sidebar-icon { width: 24px; height: 24px; justify-content: center; }
 /* The workbench entry wraps a 32px badge chip in .sidebar-icon; clamping the
    wrapper to 24px makes the badge overflow and paint over the label. */
@@ -927,8 +927,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     justify-content: center;
     align-items: center;
     width: auto;
-    min-height: 62px;
-    margin: 4px 6px;
+    min-height: 52px;
+    margin: 2px 6px;
     gap: 6px;
     border-radius: 12px;
     overflow: visible;
@@ -968,8 +968,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     justify-content: center;
     align-items: center;
     width: auto !important;
-    min-height: 62px !important;
-    margin: 4px 6px !important;
+    min-height: 52px !important;
+    margin: 2px 6px !important;
     gap: 6px;
     border-radius: 12px;
     overflow: visible;
@@ -1055,8 +1055,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     justify-content: center;
     align-items: center;
     width: auto;
-    min-height: 62px;
-    margin: 4px 6px;
+    min-height: 52px;
+    margin: 2px 6px;
     gap: 6px;
     border-radius: 12px;
     overflow: visible;

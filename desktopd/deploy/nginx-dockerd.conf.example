@@ -1,16 +1,21 @@
-# nginx vhost for the desktopd API domain (Hub's desktop service base_url).
-# Production uses dockerd.mypapers.top; replace the server_name and certificate
-# paths. Only the desktopd API on 127.0.0.1:18081 is proxied. The per-user
-# browser (CDP) and screen (noVNC) gate ports are published by Docker and
-# guarded by their own Bearer token; never proxy them through this domain.
+# Nginx vhost template for the desktopd API domain — the Hub's desktop
+# service base_url (as configured in the Hub 桌面服务 form). Copy this file to
+# the Docker host's nginx (e.g. /etc/nginx/conf.d/dockerd.<host>.conf), fill
+# in the domain and certificate paths, then nginx -t && systemctl reload
+# nginx.
+#
+# Only the desktopd API on 127.0.0.1:18081 is proxied. The per-user browser
+# (CDP) and screen (noVNC) gate ports are published to the host by Docker and
+# guarded by their own Bearer token inside the container supervisor — those
+# raw ports must never be proxied through this domain.
 server {
     listen 443 ssl http2;
-    server_name dockerd.example.com;
+    server_name dockerd.example.maclaw.top;
 
-    ssl_certificate /path/to/example.com.wildcard.cert;
-    ssl_certificate_key /path/to/example.com.wildcard.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_certificate     /etc/nginx/ssl/<domain>.crt;
+    ssl_certificate_key /etc/nginx/ssl/<domain>.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
 
     # Screenshots (PNG) come back through this proxy.
     client_max_body_size 32m;
@@ -34,6 +39,6 @@ server {
 
 server {
     listen 80;
-    server_name dockerd.example.com;
+    server_name dockerd.example.maclaw.top;
     return 301 https://$host$request_uri;
 }

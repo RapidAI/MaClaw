@@ -40,13 +40,29 @@ func isMaclawWindowForeground() bool {
 	if hwnd == 0 {
 		return false
 	}
+	// Cheap rejection first: when another app owns the foreground (the normal
+	// background state), skip the window identity search entirely — this probe
+	// runs once per second.
+	if !hwndBelongsToCurrentProcess(hwnd) {
+		return false
+	}
+	// Identity matters here: the process can own several top-level windows
+	// (floating pet uses its own class; dialogs are owned popups). Match the
+	// MAIN window by title/cache like the work-area clamp does, falling back
+	// to the class probe only when the title search has nothing.
+	if main := findMainWindowHWND(); main != 0 {
+		return hwnd == main
+	}
 	return hwnd == findWailsWindowHWND()
 }
 
 // nudgeMainWindowInput performs the minimize -> restore -> foreground cycle
 // that empirically revives a dead WebView2 input pipeline (verified 2026-10-06).
 func nudgeMainWindowInput() {
-	hwnd := findWailsWindowHWND()
+	hwnd := findMainWindowHWND()
+	if hwnd == 0 {
+		hwnd = findWailsWindowHWND()
+	}
 	if hwnd == 0 {
 		return
 	}

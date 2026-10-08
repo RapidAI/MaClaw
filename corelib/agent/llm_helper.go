@@ -14,6 +14,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -236,6 +238,12 @@ func DoSimpleLLMRequestContextWithOptions(parent context.Context, cfg corelib.Ma
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
 	}
 	// A structured control-plane call (intent tree) matches the desktop path:
 	// one JSON body, not a token stream. Several OpenAI-compatible relays

@@ -116,6 +116,10 @@ type Service struct {
 	// must leave the desktop up, or the picture the admin is watching goes
 	// black halfway through the check.
 	desktopAdminView map[string]time.Time
+	// desktopUserView is when this user last watched or took over a desktop
+	// from the Bot page. The hold keeps that live picture up after a run
+	// finishes; without it the VNC frame goes black mid-watch.
+	desktopUserView map[string]time.Time
 	// desktopOpening counts bot commands that have this user's desktop open.
 	// One command failing must not stop the desktop another command is using.
 	desktopOpening map[string]int

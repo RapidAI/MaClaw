@@ -7,7 +7,7 @@ import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIME
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { cancelNamedProviderOAuth, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
-import { isKimiCodeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
+import { isKimiCodeProvider, isLobsterAIProvider, isQoderProvider, isTraeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, selectableAgentType } from "./userAgent";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
@@ -22,7 +22,7 @@ import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard }
 import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
 import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
 import { capabilityModelMenuLabel, hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
-import { LLMConfigProviderShareHeading, TokenBankShareChipButton } from "./TokenBankShareChipButton";
+import { isProviderShareExcluded, LLMConfigProviderShareHeading, TokenBankShareChipButton } from "./TokenBankShareChipButton";
 
 interface Props {
     lang?: string;
@@ -1163,8 +1163,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         </button>
                                         {/* §7.1: only a provider that passed its own connection test and is not
                                             the platform's own service can be shared. Sharing an untested provider
-                                            would publish a credential nobody has proven works. */}
-                                        {p.connection_test_passed === true && !isHubProvider && (
+                                            would publish a credential nobody has proven works. Machine-bound
+                                            credentials (Qoder device tokens) are excluded from both share
+                                            surfaces via isProviderShareExcluded. */}
+                                        {p.connection_test_passed === true && !isHubProvider && !isProviderShareExcluded(p) && (
                                             <TokenBankShareChipButton
                                                 lang={lang ?? "zh-Hans"}
                                                 providerName={p.name}
@@ -1356,8 +1358,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     </div>
                                 )}
 
-                                {/* User-Agent selection */}
-                                {!dlgProvider.import_source && <div style={{ marginBottom: 12 }}>
+                                {/* User-Agent selection. Qoder's chat API carries the device
+                                    token and normalizeQoderProvider always resets agent_type,
+                                    so a selector here would only pick a value that silently
+                                    never persists. */}
+                                {!dlgProvider.import_source && !isQoderProvider(dlgProvider.name) && !isTraeProvider(dlgProvider.name) && !isLobsterAIProvider(dlgProvider.name) && <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>User-Agent</label>
                                     {(() => {
                                         const currentAgent = selectableAgentType(dlgProvider);
@@ -1549,6 +1554,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         focusNonce={openCodeKeyFocusNonce}
                                         onUpdateKey={(key) => dlgUpdateField("key", key)}
                                         onOpenCodeLogin={() => { void handleOpenCodeLogin(); }}
+                                        onZhipuLogin={handleOAuthLogin}
+                                        onZhipuCancel={() => cancelActiveOAuth(dlgProvider.name)}
+                                        zhipuLoginBusy={oauthBusy}
                                     />
                                 ))}
 

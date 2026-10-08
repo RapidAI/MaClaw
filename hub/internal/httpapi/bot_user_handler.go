@@ -55,7 +55,7 @@ func ListBotsHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http
 		}
 		bots, err := svc.BotsForUser(r.Context(), principal.TenantID, principal.UserID)
 		if err != nil {
-			writeBotUserError(w, err)
+			writeBotUserError(w, r, principal, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": bots})
@@ -82,7 +82,7 @@ func PostBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) h
 		}
 		bot, err := svc.CreateBotForUser(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description)
 		if err != nil {
-			writeBotUserError(w, err)
+			writeBotUserError(w, r, principal, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, bot)
@@ -109,7 +109,7 @@ func PatchBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) 
 		}
 		bot, err := svc.UpdateBotForUser(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Name, in.Description)
 		if err != nil {
-			writeBotUserError(w, err)
+			writeBotUserError(w, r, principal, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, bot)
@@ -127,7 +127,7 @@ func DeleteBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator)
 			return
 		}
 		if err := svc.DeleteBotForUser(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id")); err != nil {
-			writeBotUserError(w, err)
+			writeBotUserError(w, r, principal, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -153,7 +153,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity veMachineAuthenticator
 		}
 		reply, err := svc.PostMessage(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content)
 		if err != nil {
-			writeBotUserError(w, err)
+			writeBotUserError(w, r, principal, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, reply)
@@ -173,7 +173,29 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity veMachineAuthenticator)
 		}
 		novnc, userControl, err := svc.DesktopWatch(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
 		if err != nil {
-			writeBotUserError(w, err)
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"novnc_url": novnc, "user_control": userControl})
+	}
+}
+
+// PostBotDesktopWatchHandler POST /api/v1/bots/{id}/desktop
+// Opens or holds this user's desktop while the owner watches it or takes
+// over from the Bot page. The hold expires shortly after the last poll, so
+// a closed page does not pin the desktop forever.
+func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		novnc, userControl, err := svc.HoldDesktopView(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"novnc_url": novnc, "user_control": userControl})

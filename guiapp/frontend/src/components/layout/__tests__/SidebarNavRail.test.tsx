@@ -397,6 +397,38 @@ describe('SidebarNavRail favorite employees', () => {
         expect(css).not.toContain('.snr-invite-divider');
     });
 
+    it('keeps the rail vertical rhythm compact so the bottom pills fit without scrolling', () => {
+        // 13 entries stacked at ~62px each overflowed a 1600x1024 Wails window
+        // and clipped 签到/Bot/推荐 behind the fixed system trigger. The rhythm
+        // below keeps the full stack at roughly 850px; a scroll container is
+        // the fallback for genuinely short windows only.
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        const generic = css.match(/\.sidebar \.left-nav-item:not\(\.left-nav-item--bot\):not\(\.left-nav-item--invite\) \{[^}]+\}/);
+        expect(generic?.[0]).toContain('min-height: 52px !important');
+        expect(generic?.[0]).toContain('margin: 2px 10px !important');
+        // The rail shell itself stays slim around the stack.
+        expect(css).toContain('.mc-nav-rail { padding: 10px 12px !important; }');
+        const bot = css.match(/\.sidebar \.left-nav-item\.left-nav-item--bot \{[^}]+\}/);
+        expect(bot?.[0]).toContain('min-height: 52px');
+        expect(bot?.[0]).toContain('margin: 2px 6px');
+        const checkin = css.match(/\.left-nav-item--checkin\.left-nav-item--checkin \{[\s\S]*?\n\}/);
+        expect(checkin?.[0]).toContain('min-height: 52px !important');
+        expect(checkin?.[0]).toContain('margin: 2px 6px !important');
+        const invite = css.match(/\.sidebar \.left-nav-item\.left-nav-item--invite \{[^}]+\}/);
+        expect(invite?.[0]).toContain('min-height: 52px');
+        expect(invite?.[0]).toContain('margin: 2px 6px');
+        // The fixed system trigger at the rail bottom stays compact too: the
+        // user-requested smaller entry (44x46 box, 34px badge) replaced the
+        // old 52x58 trigger.
+        const profile = css.match(/\.mc-profile-rail \{[^}]+\}/);
+        expect(profile?.[0]).toContain('height: 46px');
+        expect(profile?.[0]).toContain('width: 44px');
+        // The brand-gap reset must out-rank the generic !important margin, so
+        // pin the full (0,5,0) doubled-class selector — a lower-specificity
+        // rewrite would silently lose the cascade and reopen the gap.
+        expect(css).toContain('.mc-nav-rail .mc-nav-rail__scroll > .left-nav-item.left-nav-item:first-child { margin-top: 0 !important; }');
+    });
+
     it('does not poll invitation status while MaClaw is in the background', async () => {
         vi.useFakeTimers();
         renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
@@ -984,5 +1016,36 @@ describe('SidebarNavRail TigerClaw brand', () => {
         expect(rule?.[0]).toContain('padding: 0');
         expect(rule?.[0]).toMatch(/margin-bottom:\s*0\s*!important/);
         expect(rule?.[0]).not.toContain('--mc-accent');
+    });
+});
+
+
+describe('SidebarNavRail scroll wrapper', () => {
+    it('keeps the nav and pills inside the scroll wrapper, the trigger and popups outside', () => {
+        renderRail({
+            lang: 'zh-Hans',
+            hubCheckin: { enabled: true, credits: 5, checkedInToday: false },
+        });
+        const wrapper = document.querySelector('.mc-nav-rail__scroll');
+        expect(wrapper).toBeTruthy();
+        expect(wrapper?.querySelector('[data-testid="sidebar-checkin-nav"]')).toBeTruthy();
+        expect(wrapper?.querySelector('[data-testid="sidebar-settings-nav"]')).toBeTruthy();
+        // The system trigger is a direct rail child so the scroll container
+        // can never clip it.
+        const trigger = document.querySelector('.mc-nav-rail > [data-testid="system-menu-trigger"]');
+        expect(trigger).toBeTruthy();
+
+        fireEvent.click(screen.getByTitle('系统菜单'));
+        const popup = screen.getByTestId('system-popup-menu');
+        expect(wrapper?.contains(popup)).toBe(false);
+    });
+
+    it('closes open popup menus when the scroll wrapper scrolls', () => {
+        renderRail({ lang: 'zh-Hans' });
+        fireEvent.click(screen.getByTitle('系统菜单'));
+        expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+
+        fireEvent.scroll(document.querySelector('.mc-nav-rail__scroll') as Element);
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
     });
 });

@@ -43,22 +43,26 @@ func TestRecreateReasonDecidesImageMigration(t *testing.T) {
 		name      string
 		container containerState
 		spec      Spec
+		proxy     string
 		recreate  bool
 	}{
-		{"no container", containerState{}, spec("maclaw-gui:2"), false},
-		{"legacy container still on legacy image", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: "maclaw-gui:1"}, spec("maclaw-gui:1"), false},
-		{"legacy container from v1 state image stays on v1", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: state}, spec("maclaw-gui:1"), false},
-		{"legacy container moves to v2", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: "maclaw-gui:1"}, spec("maclaw-gui:2"), true},
-		{"legacy state-image container moves to v2", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: state}, spec("maclaw-gui:2"), true},
-		{"labelled v2 container from its state image", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", ConfigImage: state}, spec("maclaw-gui:2"), false},
-		{"labelled container moves to a new tag", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", ConfigImage: "maclaw-gui:2"}, spec("maclaw-gui:3"), true},
-		{"label wins over config image", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", ConfigImage: "maclaw-gui:1"}, spec("maclaw-gui:2"), false},
-		{"shm changed", containerState{Exists: true, Shm: "512m", Mounts: mounts, Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), true},
-		{"shm case only", containerState{Exists: true, Shm: "1G", Mounts: mounts, Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), false},
-		{"private volumes missing", containerState{Exists: true, Shm: "1g", Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), true},
+		{"no container", containerState{}, spec("maclaw-gui:2"), "", false},
+		{"legacy container still on legacy image", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: "maclaw-gui:1"}, spec("maclaw-gui:1"), "", false},
+		{"legacy container from v1 state image stays on v1", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: state}, spec("maclaw-gui:1"), "", false},
+		{"legacy container moves to v2", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: "maclaw-gui:1"}, spec("maclaw-gui:2"), "", true},
+		{"legacy state-image container moves to v2", containerState{Exists: true, Shm: "1g", Mounts: mounts, ConfigImage: state}, spec("maclaw-gui:2"), "", true},
+		{"labelled v2 container from its state image", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", ConfigImage: state}, spec("maclaw-gui:2"), "", false},
+		{"labelled container moves to a new tag", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", ConfigImage: "maclaw-gui:2"}, spec("maclaw-gui:3"), "", true},
+		{"label wins over config image", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", ConfigImage: "maclaw-gui:1"}, spec("maclaw-gui:2"), "", false},
+		{"shm changed", containerState{Exists: true, Shm: "512m", Mounts: mounts, Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), "", true},
+		{"shm case only", containerState{Exists: true, Shm: "1G", Mounts: mounts, Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), "", false},
+		{"private volumes missing", containerState{Exists: true, Shm: "1g", Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), "", true},
+		{"proxy added to an existing desktop", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2"}, spec("maclaw-gui:2"), "http://172.17.0.1:18083", true},
+		{"proxy unchanged", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", DesktopProxy: "http://172.17.0.1:18083"}, spec("maclaw-gui:2"), "http://172.17.0.1:18083", false},
+		{"proxy removed from an existing desktop", containerState{Exists: true, Shm: "1g", Mounts: mounts, Image: "maclaw-gui:2", DesktopProxy: "http://172.17.0.1:18083"}, spec("maclaw-gui:2"), "", true},
 	}
 	for _, tc := range cases {
-		reason := recreateReason(tc.container, tc.spec)
+		reason := (&Service{DesktopProxyURL: tc.proxy}).recreateReason(tc.container, tc.spec)
 		if (reason != "") != tc.recreate {
 			t.Errorf("%s: reason=%q want recreate=%v", tc.name, reason, tc.recreate)
 		}
@@ -96,6 +100,10 @@ func TestParseInspectReadsOldAndNewFormats(t *testing.T) {
 	missing := parseInspect("true||a=/desktops|<no value>|maclaw-gui:1")
 	if missing.Shm != "" || missing.Image != "" || containerImage(missing) != "maclaw-gui:1" {
 		t.Fatalf("missing=%#v", missing)
+	}
+	proxied := parseInspect("true|1g|a=/desktops |maclaw-gui:2|maclaw-gui:2|http://172.17.0.1:18083")
+	if !proxied.Running || proxied.DesktopProxy != "http://172.17.0.1:18083" || proxied.Image != "maclaw-gui:2" {
+		t.Fatalf("proxied=%#v", proxied)
 	}
 }
 
@@ -306,7 +314,7 @@ func TestScreenshotEndpointNeedsTokenAndReturnsPNG(t *testing.T) {
 	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
 		return base64.StdEncoding.EncodeToString(want), nil
 	}}
-	srv := httptest.NewServer(Handler(svc, "primary-token", ""))
+	srv := httptest.NewServer(Handler(svc, "primary-token", "", nil, nil))
 	defer srv.Close()
 	get := func(token string) *http.Response {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/desktops/screenshot?tenant_id=tenant&user_id=alice", nil)

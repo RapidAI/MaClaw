@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { colors } from "./styles";
 import { inputStyle, isOpenCodeProvider, labelStyle, type LLMProvider } from "./LLMConfigPanelShared";
+import { isZhipuCodingProvider } from "./providerLogos";
+import { LLMConfigZhipuLoginSection } from "./LLMConfigZhipuLoginSection";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
@@ -10,6 +12,9 @@ export function LLMConfigApiKeyFields({
     t,
     onUpdateKey,
     onOpenCodeLogin,
+    onZhipuLogin,
+    onZhipuCancel,
+    zhipuLoginBusy,
     focusNonce,
 }: {
     provider: LLMProvider;
@@ -17,14 +22,16 @@ export function LLMConfigApiKeyFields({
     t: Translate;
     onUpdateKey: (key: string) => void;
     onOpenCodeLogin: () => void;
+    onZhipuLogin?: () => void;
+    onZhipuCancel?: () => void;
+    zhipuLoginBusy?: boolean;
     focusNonce?: number;
 }) {
     const isOpenCode = isOpenCodeProvider(provider);
+    const isZhipu = isZhipuCodingProvider(provider.name);
     const isAnthropicStyle = provider.name === "\u667a\u8c31\u7f16\u7a0b" || (provider.protocol || "openai") === "anthropic";
     const keyInputRef = useRef<HTMLInputElement>(null);
-    useEffect(() => {
-        if (focusNonce && isOpenCode) keyInputRef.current?.focus();
-    }, [focusNonce, isOpenCode]);
+    useEffect(() => { if (focusNonce && isOpenCode) keyInputRef.current?.focus(); }, [focusNonce, isOpenCode]);
     return (
         <div>
             {isOpenCode && (
@@ -49,6 +56,9 @@ export function LLMConfigApiKeyFields({
                                 : t("Sign in to OpenCode Zen", "\u767b\u5f55 OpenCode Zen")}
                     </button>
                 </div>
+            )}
+            {isZhipu && onZhipuLogin && (
+                <LLMConfigZhipuLoginSection t={t} busy={!!zhipuLoginBusy} onLogin={onZhipuLogin} onCancel={onZhipuCancel ?? (() => {})} />
             )}
             <label style={labelStyle}>{t("API Key", "API Key")} <span style={{ color: colors.danger }}>*</span></label>
             <input ref={keyInputRef} style={inputStyle} type="password" value={provider.key}

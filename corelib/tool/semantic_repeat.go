@@ -63,9 +63,12 @@ func RepeatFamilyID(id string) string {
 
 // repeatSiblingIndex reports whether the suffix is one this package minted.
 // A capability, adapter, or qualifier value is free to contain "#", so the
-// suffix only splits a family when it is exactly the generated shape.
+// suffix only splits a family when it is exactly the generated shape: the
+// zero-padded index RepeatSiblingNeedID emits, at most MaxRepeatFamilyInvocations
+// (so two or three digits, value between 2 and that ceiling). Longer digit
+// runs cannot be minted and must stay intact.
 func repeatSiblingIndex(suffix string) bool {
-	if len(suffix) < 2 || len(suffix) > 4 {
+	if len(suffix) != 2 && len(suffix) != 3 {
 		return false
 	}
 	for _, r := range suffix {
@@ -74,7 +77,7 @@ func repeatSiblingIndex(suffix string) bool {
 		}
 	}
 	value, err := strconv.Atoi(suffix)
-	return err == nil && value >= 2
+	return err == nil && value >= 2 && value <= MaxRepeatFamilyInvocations
 }
 
 // AppendRepeatSibling adds one more optional invocation of a repeat family

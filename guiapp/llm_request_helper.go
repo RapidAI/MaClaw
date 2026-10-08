@@ -14,6 +14,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -513,6 +515,12 @@ func beginDetachedSimpleLLMRead(ctx context.Context, cfg corelib.MaclawLLMConfig
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration, requestOpts ...simpleLLMRequestOptions) (*llmSimpleResponse, error) {
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc

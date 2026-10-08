@@ -583,26 +583,8 @@ func TestSubmitMaclawAppPackageRecordsGovernanceReviewIssues(t *testing.T) {
 		}]
 	}`
 
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence")
 	return
-	if result["review_issue_count"] != 3 {
-		t.Fatalf("expected three local governance issues, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 3 {
-		t.Fatalf("expected three review issues in durable queue: %#v", detail.ReviewIssues)
-	}
-	paths := map[string]string{}
-	for _, issue := range detail.ReviewIssues {
-		paths[issue.Path] = issue.Severity
-	}
-	if paths["apps[0].app.governance"] != "warning" || paths["apps[0].app.governance.testEvidence"] != "error" || paths["apps[0].app.governance.resultContract"] != "error" {
-		t.Fatalf("unexpected governance review issues: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsWorkspaceLayoutMissingRequiredRegionRole(t *testing.T) {
@@ -638,19 +620,8 @@ func TestSubmitMaclawAppPackageFlagsWorkspaceLayoutMissingRequiredRegionRole(t *
 		t.Fatalf("expected raw workspace layout to miss required output role")
 	}
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.workspaceLayout")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one workspace layout issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.workspaceLayout" || !strings.Contains(detail.ReviewIssues[0].Message, "workspace layout") {
-		t.Fatalf("unexpected workspace layout issue: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestSubmitMaclawAppPackageAcceptsCompleteGovernanceEvidence(t *testing.T) {
@@ -744,19 +715,8 @@ func TestSubmitMaclawAppPackageFlagsMissingTestProtocol(t *testing.T) {
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testProtocol")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one test protocol issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testProtocol" || !strings.Contains(detail.ReviewIssues[0].Message, "test protocol") {
-		t.Fatalf("unexpected test protocol issue: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsMissingDependencyVerification(t *testing.T) {
@@ -784,20 +744,8 @@ func TestSubmitMaclawAppPackageFlagsMissingDependencyVerification(t *testing.T) 
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.dependencyVerification")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one dependency verification issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	issue := detail.ReviewIssues[0]
-	if issue.Path != "apps[0].app.governance.dependencyVerification" || !strings.Contains(issue.Message, "dependency verification") {
-		t.Fatalf("unexpected dependency verification issue: %#v", issue)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsStaleDependencyVerification(t *testing.T) {
@@ -826,22 +774,8 @@ func TestSubmitMaclawAppPackageFlagsStaleDependencyVerification(t *testing.T) {
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "authoritative dependency plan found required dependency not ready")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one authoritative dependency issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.dependencyVerification" || !strings.Contains(detail.ReviewIssues[0].Message, "required dependency not ready") {
-		t.Fatalf("unexpected authoritative dependency issue: %#v", detail.ReviewIssues)
-	}
-	if len(detail.Dependencies) != 1 || detail.Dependencies[0].ID != "customer-renewal-skill" || detail.Dependencies[0].Installed || detail.Dependencies[0].Action != "blocked" {
-		t.Fatalf("expected backend install plan dependency state in submission: %#v", detail.Dependencies)
-	}
 }
 
 func TestSubmitMaclawAppPackageScopesDependencyVerificationToCurrentApp(t *testing.T) {
@@ -955,23 +889,8 @@ func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceDefinitionHash(t *testing.T)
 		}]
 	}`
 
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence.definitionHash")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one stale definition hash issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 {
-		t.Fatalf("expected one durable review issue: %#v", detail.ReviewIssues)
-	}
-	issue := detail.ReviewIssues[0]
-	if issue.Path != "apps[0].app.governance.testEvidence.definitionHash" || issue.Severity != "error" || !strings.Contains(issue.Message, "definition hash") {
-		t.Fatalf("unexpected stale definition hash issue: %#v", issue)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenLegacyBindingUILayoutChanges(t *testing.T) {
@@ -1038,19 +957,8 @@ func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenLegacyBindingUILayoutCha
 		t.Fatalf("encode package: %v", err)
 	}
 
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, string(mutated), "apps[0].app.governance.testEvidence.definitionHash")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one stale definition hash issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testEvidence.definitionHash" || !strings.Contains(detail.ReviewIssues[0].Message, "definition hash") {
-		t.Fatalf("unexpected stale legacy binding layout definition hash issue: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenTopLevelUILayoutChanges(t *testing.T) {
@@ -1116,16 +1024,8 @@ func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenTopLevelUILayoutChanges(
 		t.Fatalf("encode package: %v", err)
 	}
 
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, string(mutated), "apps[0].app.governance.testEvidence.definitionHash")
 	return
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testEvidence.definitionHash" || !strings.Contains(detail.ReviewIssues[0].Message, "definition hash") {
-		t.Fatalf("top-level app.ui change should stale run evidence even when binding.ui is unchanged: %#v", detail.ReviewIssues)
-	}
 }
 
 func TestSubmitMaclawAppPackageRejectsWorkspaceLayoutFingerprintMismatch(t *testing.T) {
@@ -1331,23 +1231,8 @@ func TestSubmitMaclawAppPackageRequiresRunEvidenceDefinitionHash(t *testing.T) {
 		}]
 	}`
 
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence.definitionHash")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one missing definition hash issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 {
-		t.Fatalf("expected one durable review issue: %#v", detail.ReviewIssues)
-	}
-	issue := detail.ReviewIssues[0]
-	if issue.Path != "apps[0].app.governance.testEvidence.definitionHash" || issue.Severity != "error" || !strings.Contains(issue.Message, "missing") {
-		t.Fatalf("unexpected missing definition hash issue: %#v", issue)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsResultCoverageMismatch(t *testing.T) {
@@ -1372,23 +1257,8 @@ func TestSubmitMaclawAppPackageFlagsResultCoverageMismatch(t *testing.T) {
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence.resultCoverage")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one result coverage review issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 {
-		t.Fatalf("expected one durable review issue: %#v", detail.ReviewIssues)
-	}
-	issue := detail.ReviewIssues[0]
-	if issue.Path != "apps[0].app.governance.testEvidence.resultCoverage" || issue.Severity != "error" || !strings.Contains(issue.Message, "business_status") {
-		t.Fatalf("unexpected result coverage issue: %#v", issue)
-	}
 }
 
 func TestSubmitMaclawAppPackageFlagsExplicitResultCoverageMissingTypes(t *testing.T) {
@@ -1413,23 +1283,8 @@ func TestSubmitMaclawAppPackageFlagsExplicitResultCoverageMissingTypes(t *testin
 	}`
 
 	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
-	result := map[string]any{}
 	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.testEvidence.resultCoverage")
 	return
-	if result["review_issue_count"] != 1 {
-		t.Fatalf("expected one explicit result coverage review issue, got %#v", result)
-	}
-	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
-	if err != nil {
-		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
-	}
-	if len(detail.ReviewIssues) != 1 {
-		t.Fatalf("expected one durable review issue: %#v", detail.ReviewIssues)
-	}
-	issue := detail.ReviewIssues[0]
-	if issue.Path != "apps[0].app.governance.testEvidence.resultCoverage" || issue.Severity != "error" || !strings.Contains(issue.Message, "business_record") {
-		t.Fatalf("unexpected explicit result coverage issue: %#v", issue)
-	}
 }
 
 func TestSubmitMaclawAppPackageRejectsInvalidManifest(t *testing.T) {

@@ -194,6 +194,12 @@ func TestInstalledSkillForInstallRejectsStableIdentityCollision(t *testing.T) {
 	installed := []corelib.NLSkillEntry{{Name: "same-name", SkillID: "publisher.existing", HubSkillID: "hub-existing"}}
 	app.nlSkillsSnap.Store(&installed)
 	app.skillExecutor = &SkillExecutor{app: app}
+	// installedSkillForInstall reads via loadSkills, whose load-time status
+	// reconciliation schedules an async overlay persist on this bare App.
+	// A late write would rebase the process-global maclaw base dir mid-run
+	// and pollute the next test; suspend it for the duration of the probe.
+	app.skillExecutor.suspendStatusOverlayPersistence()
+	defer app.skillExecutor.resumeStatusOverlayPersistence()
 	if got := app.installedSkillForInstall(&corelib.NLSkillEntry{
 		Name: "same-name", SkillID: "publisher.other", HubSkillID: "hub-other",
 	}); got != nil {

@@ -2,10 +2,11 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
-import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelKimiCodeOAuth, CancelOpenAIOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartWorkBuddyOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
+import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelKimiCodeOAuth, CancelOpenAIOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartUserDataMigrationImport, StartWeixinQRLogin, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
-import { cancelAllNativeOAuth, cancelNamedProviderOAuth, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin } from "./providerOAuth";
-import { isKimiCodeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
+import { cancelAllNativeOAuth, cancelNamedProviderOAuth, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
+import { PROVIDER_LOGOS } from "./providerLogos";
+import { useDialog } from '../CustomDialog';
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
 import { HubRegisterButtonContent } from "./HubConnectionStatus";
 import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
@@ -280,6 +281,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string; pending?: boolean } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
+    const { showPrompt } = useDialog();
     const oauthAttemptRef = useRef(0);
     const oauthPendingAttemptRef = useRef(0);
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
@@ -811,13 +813,13 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         setOauthBusy(true);
         setLlmResult(null);
         try {
-            let msg = "";
-            if (selectedProvider.name === "xAI-Grok") {
-                msg = await StartXAIOAuth();
-            } else if (isWorkBuddyProvider(selectedProvider.name)) {
-                msg = await StartWorkBuddyOAuth(selectedProvider.name);
-            } else if (isKimiCodeProvider(selectedProvider.name)) {
-                const pending = await promptKimiCodeDeviceLogin((en, zh) => t(zh, en), hint => {
+            const loginMessage = await runProviderOAuthLogin({
+                providerName: selectedProvider.name,
+                // The wizard's translate helper takes (zh, en); the shared
+                // runner expects the standard (en, zh) order.
+                t: (en, zh) => t(zh, en),
+                showPrompt,
+                onDeviceHint: hint => {
                     // The device code must be visible while the wait runs, or
                     // the user cannot finish the browser login at all. A
                     // superseded attempt must never paint its dead code over
@@ -825,18 +827,20 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                     if (oauthAttempt !== oauthAttemptRef.current) return;
                     oauthPendingAttemptRef.current = oauthAttempt;
                     setLlmResult({ ok: true, pending: true, msg: hint });
-                });
-                if (oauthAttempt !== oauthAttemptRef.current) return;
-                msg = pending;
-            } else {
-                msg = await StartOpenAIOAuth();
-            }
-            if (oauthAttempt !== oauthAttemptRef.current) return;
+                },
+                setTestResult: result => {
+                    if (oauthAttempt !== oauthAttemptRef.current) return;
+                    setLlmResult(result ? { ok: result.ok, msg: result.msg } : null);
+                },
+            });
+            // `null` = the user cancelled mid-flow; a superseded attempt must
+            // never touch the live attempt's state either.
+            if (loginMessage === null || oauthAttempt !== oauthAttemptRef.current) return;
 
             oauthPendingAttemptRef.current = 0;
             setLlmResult({
                 ok: true,
-                msg: msg || (selectedProvider.name === "xAI-Grok" ? "xAI-Grok OAuth 登录成功" : "OAuth 登录成功"),
+                msg: loginMessage || (selectedProvider.name === "xAI-Grok" ? "xAI-Grok OAuth 登录成功" : "OAuth 登录成功"),
             });
             setLlmDone(true);
             onLLMConfigured();

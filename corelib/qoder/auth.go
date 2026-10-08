@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,15 +29,23 @@ type DeviceLogin struct {
 	MachineID string // stable per-install machine id (informational upstream)
 }
 
-// AuthURL is the page the user must open in a browser.
+// AuthURL is the page the user must open in a browser. The official CLI hands
+// the browser the query in a fixed order — challenge, challenge_method, nonce,
+// machine_id, client_id (sorted params would put client_id and machine_id in
+// front) — so emit the exact same order for approval-page parity.
 func (l *DeviceLogin) AuthURL(profile Profile) string {
-	params := url.Values{}
-	params.Set("challenge", pkceChallenge(l.verifier))
-	params.Set("challenge_method", "S256")
-	params.Set("nonce", l.nonce)
-	params.Set("machine_id", l.MachineID)
-	params.Set("client_id", profile.ClientID)
-	return strings.TrimRight(profile.WebOrigin, "/") + "/device/selectAccounts?" + params.Encode()
+	values := []struct{ key, value string }{
+		{"challenge", pkceChallenge(l.verifier)},
+		{"challenge_method", "S256"},
+		{"nonce", l.nonce},
+		{"machine_id", l.MachineID},
+		{"client_id", profile.ClientID},
+	}
+	parts := make([]string, 0, len(values))
+	for _, kv := range values {
+		parts = append(parts, url.QueryEscape(kv.key)+"="+url.QueryEscape(kv.value))
+	}
+	return strings.TrimRight(profile.WebOrigin, "/") + "/device/selectAccounts?" + strings.Join(parts, "&")
 }
 
 // Nonce is the login session id shown for correlation.
@@ -70,12 +80,8 @@ func StartLogin(machineID string) (*DeviceLogin, error) {
 	if err != nil {
 		return nil, err
 	}
-	nonce, err := randomUUID()
-	if err != nil {
-		return nil, err
-	}
 	return &DeviceLogin{
-		nonce:     nonce,
+		nonce:     newUUID(),
 		verifier:  verifier,
 		MachineID: strings.TrimSpace(machineID),
 	}, nil
@@ -92,28 +98,27 @@ type Token struct {
 	RefreshTokenExpiresAt int64 // unix seconds (always rotated at refresh)
 }
 
-// pollResponse mirrors the /api/v1/deviceToken/poll payload.
+// pollResponse mirrors the /api/v1/deviceToken/poll payload. Every field
+// carries the key aliases the CLI's tolerant parsers accept.
 type pollResponse struct {
-	Token       string `json:"token"`
-	DeviceToken string `json:"device_token"`
-	AccessToken string `json:"access_token"`
-	// Poll also accepts exchange-style key aliases.
-	AccessTokenAlias         string `json:"access_token_alias"`
-	RefreshToken             string `json:"refresh_token"`
-	RefreshTokenSpelled      string `json:"refreshToken"`
-	UserID                   string `json:"user_id"`
-	UserIDAlt                string `json:"userId"`
-	UID                      string `json:"uid"`
-	UserName                 string `json:"user_name"`
-	UserNameAlt              string `json:"userName"`
-	Name                     string `json:"name"`
-	ExpiresAt                string `json:"expires_at"`
-	ExpiresAtAlt             string `json:"expiresAt"`
-	ExpiresIn                int64  `json:"expires_in"`
-	ExpiresInAlt             int64  `json:"expiresIn"`
-	RefreshTokenExpiresAt    string `json:"refresh_token_expires_at"`
-	RefreshTokenExpiresAtAlt string `json:"refreshTokenExpiresAt"`
-	RefreshTokenExpiresIn    int64  `json:"refresh_token_expires_in"`
+	Token                    string         `json:"token"`
+	DeviceToken              string         `json:"device_token"`
+	AccessToken              string         `json:"access_token"`
+	RefreshToken             string         `json:"refresh_token"`
+	RefreshTokenSpelled      string         `json:"refreshToken"`
+	UserID                   string         `json:"user_id"`
+	UserIDAlt                string         `json:"userId"`
+	UID                      string         `json:"uid"`
+	UserName                 string         `json:"user_name"`
+	UserNameAlt              string         `json:"userName"`
+	Name                     string         `json:"name"`
+	ExpiresAt                stringOrNumber `json:"expires_at"`
+	ExpiresAtAlt             stringOrNumber `json:"expiresAt"`
+	ExpiresIn                stringOrNumber `json:"expires_in"`
+	ExpiresInAlt             stringOrNumber `json:"expiresIn"`
+	RefreshTokenExpiresAt    stringOrNumber `json:"refresh_token_expires_at"`
+	RefreshTokenExpiresAtAlt stringOrNumber `json:"refreshTokenExpiresAt"`
+	RefreshTokenExpiresIn    stringOrNumber `json:"refresh_token_expires_in"`
 }
 
 func (r pollResponse) tokenValue() string {
@@ -122,10 +127,8 @@ func (r pollResponse) tokenValue() string {
 		return r.Token
 	case r.DeviceToken != "":
 		return r.DeviceToken
-	case r.AccessToken != "":
-		return r.AccessToken
 	default:
-		return r.AccessTokenAlias
+		return r.AccessToken
 	}
 }
 
@@ -159,9 +162,8 @@ func (r pollResponse) userNameValue() string {
 }
 
 // tokenFromPoll converts a successful poll payload into a Token.
-// The poll reports time as absolute unix seconds (expires_at) while the
-// refresh reports expires_at for both fields; expires_in is accepted as a
-// relative fallback when no absolute value is present.
+// The poll reports time as an absolute unix-seconds value (expires_at) with
+// expires_in accepted as a relative fallback, mirroring the CLI parsers.
 func tokenFromPoll(r pollResponse, now time.Time) Token {
 	token := Token{
 		AccessToken:  r.tokenValue(),
@@ -169,30 +171,99 @@ func tokenFromPoll(r pollResponse, now time.Time) Token {
 		UserID:       r.userIDValue(),
 		UserName:     r.userNameValue(),
 	}
-	if unix := numericOrUnix(r.ExpiresAt, r.ExpiresIn, now); unix > 0 {
+	if unix := numericOrUnix(firstNonEmpty(r.ExpiresAt, r.ExpiresAtAlt), relativeSeconds(firstNonEmpty(r.ExpiresIn, r.ExpiresInAlt)), now); unix > 0 {
 		token.ExpiresAt = unix
 	}
-	if unix := numericOrUnix(r.RefreshTokenExpiresAt, r.RefreshTokenExpiresIn, now); unix > 0 {
+	if unix := numericOrUnix(firstNonEmpty(r.RefreshTokenExpiresAt, r.RefreshTokenExpiresAtAlt), relativeSeconds(firstNonEmpty(r.RefreshTokenExpiresIn)), now); unix > 0 {
 		token.RefreshTokenExpiresAt = unix
 	}
 	return token
 }
 
-// numericOrUnix prefers an already-unix timestamp string; when instead the
-// server answered with a duration value, convert relative to now.
-func numericOrUnix(absolute string, relative int64, now time.Time) int64 {
-	absolute = strings.TrimSpace(absolute)
-	if absolute == "" {
+func firstNonEmpty(values ...stringOrNumber) stringOrNumber {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// relativeSeconds reads an expires_in-style duration, tolerating numbers and
+// quoted integers alike. Anything unparseable or non-positive is 0.
+func relativeSeconds(value stringOrNumber) int64 {
+	text := strings.TrimSpace(string(value))
+	if text == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		floatValue, floatErr := strconv.ParseFloat(text, 64)
+		if floatErr != nil || !isFinite(floatValue) {
+			return 0
+		}
+		parsed = int64(floatValue)
+	}
+	if parsed <= 0 {
+		return 0
+	}
+	return parsed
+}
+
+// stringOrNumber accepts a JSON string or a bare number for one field, since
+// the CLI's own parsers treat both spellings alike (expires_at arrives as a
+// string in some deployments and as a number in others).
+type stringOrNumber string
+
+func (s *stringOrNumber) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		*s = ""
+		return nil
+	}
+	if text[0] == '"' {
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return err
+		}
+		*s = stringOrNumber(strings.TrimSpace(decoded))
+		return nil
+	}
+	*s = stringOrNumber(text)
+	return nil
+}
+
+// numericOrUnix reads an absolute timestamp when the value looks absolute, and
+// otherwise treats a small number as a duration relative to now, so either
+// server answer lands on a real expiry. Integers, quoted integers, and float
+// literals are all accepted; the refresh/poll endpoints have also been
+// observed answering RFC3339 timestamps ("2026-11-06T13:43:44Z"), which parse
+// as absolute unix seconds. Unparseable values are 0.
+func numericOrUnix(absolute stringOrNumber, relative int64, now time.Time) int64 {
+	text := strings.TrimSpace(string(absolute))
+	if text == "" {
 		if relative > 0 {
 			return now.Unix() + relative
 		}
 		return 0
 	}
 	var value int64
-	if _, err := fmt.Sscanf(absolute, "%d", &value); err != nil {
-		return 0
+	parsed, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		floatValue, floatErr := strconv.ParseFloat(text, 64)
+		if floatErr != nil || !isFinite(floatValue) {
+			// Not numeric — the last accepted spelling is an RFC3339 wall
+			// clock; anything else cannot be turned into an expiry.
+			if ts, terr := time.Parse(time.RFC3339, text); terr == nil {
+				return ts.Unix()
+			}
+			return 0
+		}
+		value = int64(floatValue)
+	} else {
+		value = parsed
 	}
-	if value > now.Unix()-8*365*24*3600 && value < now.Unix()+100*365*24*3600 {
+	if value >= unixEpochFloor {
 		return value
 	}
 	if value > 0 {
@@ -201,15 +272,27 @@ func numericOrUnix(absolute string, relative int64, now time.Time) int64 {
 	return 0
 }
 
+func isFinite(value float64) bool {
+	return !math.IsInf(value, 0) && !math.IsNaN(value)
+}
+
+// unixEpochFloor separates 10-digit absolute unix seconds (2001-09-09 and
+// later) from small relative durations.
+const unixEpochFloor = int64(1_000_000_000)
+
 // RefreshResponse mirrors the /api/v1/deviceToken/refresh payload.
 type refreshResponse struct {
-	DeviceToken           string `json:"device_token"`
-	Token                 string `json:"token"`
-	AccessToken           string `json:"access_token"`
-	RefreshToken          string `json:"refresh_token"`
-	ExpiresAt             string `json:"expires_at"`
-	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
+	DeviceToken           string         `json:"device_token"`
+	Token                 string         `json:"token"`
+	AccessToken           string         `json:"access_token"`
+	RefreshToken          string         `json:"refresh_token"`
+	ExpiresAt             stringOrNumber `json:"expires_at"`
+	RefreshTokenExpiresAt stringOrNumber `json:"refresh_token_expires_at"`
 }
+
+// pollWait is the delay between polls. Tests shorten it; production uses the
+// CLI's one-per-second cadence.
+var pollWait = pollInterval
 
 // PollUntilAuthorized polls once per second until the approval lands, the
 // 5-minute window closes, or ctx ends. A 404 means "no approval yet"; any
@@ -234,7 +317,7 @@ func PollUntilAuthorized(ctx context.Context, profile Profile, login *DeviceLogi
 		if status == http.StatusNotFound {
 			// The approval has not landed yet (matches the CLI: 404 keeps
 			// polling, any other non-200 ends the login).
-			if err := sleepWithContext(ctx, pollInterval); err != nil {
+			if err := sleepWithContext(ctx, pollWait); err != nil {
 				return Token{}, err
 			}
 			continue
@@ -244,7 +327,7 @@ func PollUntilAuthorized(ctx context.Context, profile Profile, login *DeviceLogi
 		}
 		// Transport blips (network, proxy) stay retryable until the deadline
 		// so the user does not lose an approval they already opened.
-		if err := sleepWithContext(ctx, pollInterval); err != nil {
+		if err := sleepWithContext(ctx, pollWait); err != nil {
 			return Token{}, err
 		}
 	}
@@ -284,6 +367,11 @@ func pollOnce(ctx context.Context, endpoint string, login *DeviceLogin) (Token, 
 	return token, resp.StatusCode, nil
 }
 
+// sessionRefreshPath is the OpenAPI endpoint that rotates a device token.
+func sessionRefreshPath(profile Profile) string {
+	return strings.TrimRight(profile.OpenAPIBase, "/") + "/api/v1/deviceToken/refresh"
+}
+
 // Refresh exchanges a refresh token for a fresh device token pair. Both
 // tokens rotate server-side; callers must persist both values when non-empty.
 func Refresh(ctx context.Context, profile Profile, refreshToken, machineID string) (Token, error) {
@@ -302,10 +390,13 @@ func Refresh(ctx context.Context, profile Profile, refreshToken, machineID strin
 				return Token{}, err
 			}
 		}
-		payload, err := postJSON(ctx, strings.TrimRight(profile.OpenAPIBase, "/")+"/api/v1/deviceToken/refresh", body, "")
+		payload, err := postJSON(ctx, sessionRefreshPath(profile), body)
 		if err != nil {
 			var apiErr apiError
 			if errors.As(err, &apiErr) && !apiErr.retryable() {
+				if apiErr.status == http.StatusUnauthorized || apiErr.status == http.StatusForbidden {
+					return Token{}, fmt.Errorf("Qoder 登录已失效，请重新登录")
+				}
 				return Token{}, err
 			}
 			lastErr = err
@@ -353,7 +444,7 @@ func (e apiError) retryable() bool {
 	return e.status >= 500
 }
 
-func postJSON(ctx context.Context, endpoint string, body any, bearer string) (refreshResponse, error) {
+func postJSON(ctx context.Context, endpoint string, body any) (refreshResponse, error) {
 	var payload refreshResponse
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -366,9 +457,6 @@ func postJSON(ctx context.Context, endpoint string, body any, bearer string) (re
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
-	}
 	resp, err := oauth.DoNoFollow(req)
 	if err != nil {
 		return payload, err
@@ -387,12 +475,15 @@ func postJSON(ctx context.Context, endpoint string, body any, bearer string) (re
 	return payload, nil
 }
 
+// truncateForError keeps the first 512 runes of an error body so CJK server
+// messages stay readable instead of ending mid-character.
 func truncateForError(body []byte) string {
 	text := strings.TrimSpace(string(body))
-	if len(text) > 512 {
-		text = text[:512]
+	runes := []rune(text)
+	if len(runes) > 512 {
+		runes = runes[:512]
 	}
-	return text
+	return strings.TrimSpace(string(runes))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -401,17 +492,40 @@ func truncateForError(body []byte) string {
 
 const pkceAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 
-// pkceVerifier mirrors the official CLI: 43–128 chars drawn from the RFC 7636
-// alphabet, with the raw random bytes mapped modulo the alphabet size.
+// pkceVerifier mirrors the official CLI's 43–128-char window over the RFC
+// 7636 alphabet, but samples uniformly with rejection sampling — a raw byte
+// modulo 66 favors the first 58 letters by up to a third, and RFC 7636
+// expects a uniform verifier.
 func pkceVerifier() (string, error) {
-	length := 43 + int(randByte()%86) // window copied from the CLI (43 + 86*rand)
-	buf := make([]byte, length)
+	length := 43 + int(randByte()%86)
+	buf := make([]byte, length+length/2+8) // generous: ~1.5 draws per char covers rejection
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	out := make([]byte, length)
-	for i, b := range buf {
-		out[i] = pkceAlphabet[int(b)%len(pkceAlphabet)]
+	out := make([]byte, 0, length)
+	const alphabetMax = byte(198) // 3 × 66 accepted values
+	for _, b := range buf {
+		if b < alphabetMax {
+			out = append(out, pkceAlphabet[b%byte(len(pkceAlphabet))])
+			if len(out) == length {
+				break
+			}
+		}
+	}
+	for len(out) < length {
+		// Practically unreachable with the >1.5× draw estimate; top up rather
+		// than return a short verifier.
+		if _, err := rand.Read(buf[:]); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if b < alphabetMax {
+				out = append(out, pkceAlphabet[b%byte(len(pkceAlphabet))])
+				if len(out) == length {
+					break
+				}
+			}
+		}
 	}
 	return string(out), nil
 }
@@ -427,16 +541,6 @@ func randByte() byte {
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
-}
-
-func randomUUID() (string, error) {
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	return uuidFormat(raw), nil
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {

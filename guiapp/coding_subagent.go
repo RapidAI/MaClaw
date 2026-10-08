@@ -123,6 +123,8 @@ type CodingSubAgent struct {
 	nestedLoopRelease func()
 	// dynamicLifecycleOwner is an inert D2 bridge until a qualified callback
 	// installs a relay. It carries only host terminal facts to that relay.
+	// Its state is an atomic relay snapshot (no embedded lock), so struct
+	// copies of the agent never copy a mutex value.
 	dynamicLifecycleOwner codingDynamicLifecycleOwner
 
 	// dynamicInvocationIdentity is populated only by a future verified task
@@ -201,8 +203,9 @@ func (s *CodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request codin
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskCancelled, Summary: "read-only child cancelled before execution"}
 	}
 	child := *s
-	// The lifecycle owner contains a mutex and belongs exclusively to the
-	// parent execution. Never copy its lock/relay state into a child attempt.
+	// The lifecycle owner belongs exclusively to the parent execution. A child
+	// attempt starts inert (fresh owner) so it can never install into, close,
+	// or copy the parent's relay reservation.
 	child.dynamicLifecycleOwner = codingDynamicLifecycleOwner{}
 	defer child.releaseNestedLoopContext()
 	// RunReadOnlyChild owns a fresh child Attempt. Binding it here gives the

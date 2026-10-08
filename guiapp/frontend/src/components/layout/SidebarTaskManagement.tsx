@@ -761,7 +761,7 @@ export function isSharedTaskRow(task: Pick<TaskManagementItem, 'tags'>): boolean
  * Building it once per identity change avoids re-coercing and re-deriving
  * the cloud workspace id for every task row on every classification pass.
  */
-type ActiveTaskRowMatchContext = {
+export type ActiveTaskRowMatchContext = {
     expertId: string;
     activePath: string;
     activeWorkspaceId: string;
@@ -810,6 +810,70 @@ export function isActiveTaskRow(
     const ctx = activeTaskRowMatchContext(active);
     if (!ctx) return false;
     return matchesActiveTaskRowContext(proj, ctx);
+}
+
+/** Signals the live-running matcher needs, in the shape App already holds.
+ * Shared between the sidebar classification pass and the taskbar badge so
+ * both count exactly the same rows as in progress. */
+export type LiveRunningRowSignals = {
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] } | null;
+    activeAssistantTaskRunning?: boolean;
+    activeAssistantTask?: ActiveAssistantTaskIdentity | null;
+};
+
+export type LiveRunningRowContext = {
+    busyPathSet: Set<string>;
+    busyExpertSet: Set<string>;
+    busyWorkspaceIdSet: Set<string>;
+    activeRowContext: ActiveTaskRowMatchContext | null;
+    activeAssistantTaskRunning: boolean;
+};
+
+export function liveRunningRowContext(signals?: LiveRunningRowSignals | null): LiveRunningRowContext {
+    const busyTaskRuns = signals?.busyTaskRuns;
+    const busyWorkspaceIdSet = new Set<string>();
+    for (const path of busyTaskRuns?.projectPaths || []) {
+        const id = cloudWorkspaceIdFromPath(path);
+        if (id) busyWorkspaceIdSet.add(id);
+    }
+    return {
+        busyPathSet: new Set(busyTaskRuns?.projectPaths || []),
+        busyExpertSet: new Set(busyTaskRuns?.expertIds || []),
+        busyWorkspaceIdSet,
+        activeRowContext: activeTaskRowMatchContext(signals?.activeAssistantTask),
+        activeAssistantTaskRunning: signals?.activeAssistantTaskRunning === true,
+    };
+}
+
+/** Live execution match for one durable row: the visible assistant tab's run
+ * plus every detached busy run, matched by expert id, project/working path,
+ * or cloud workspace id (mirrors isActiveTaskRow's binding rules). */
+export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningRowContext): boolean {
+    if (ctx.activeAssistantTaskRunning && ctx.activeRowContext && matchesActiveTaskRowContext(task, ctx.activeRowContext)) return true;
+    if (ctx.busyExpertSet.size > 0) {
+        const expertID = expertIDFromTaskTags(task.tags);
+        if (expertID && ctx.busyExpertSet.has(expertID)) return true;
+    }
+    if (ctx.busyPathSet.size > 0) {
+        const target = normalizeProjectSessionPath(task.project_path);
+        if (target && ctx.busyPathSet.has(target)) return true;
+        const workDir = normalizeProjectSessionPath(task.working_dir);
+        if (workDir && ctx.busyPathSet.has(workDir)) return true;
+    }
+    if (ctx.busyWorkspaceIdSet.size > 0) {
+        const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
+        if (rowWorkspaceId && ctx.busyWorkspaceIdSet.has(rowWorkspaceId)) return true;
+    }
+    return false;
+}
+
+/** Number of task rows that count as in progress: live-running rows plus
+ * rows whose durable workflow snapshot still buckets as running. Counted
+ * over the same visible rows the task list renders, so the Windows taskbar
+ * badge always agrees with the sidebar's running chip. */
+export function countRunningTaskRows(tasks: TaskManagementItem[], signals?: LiveRunningRowSignals | null): number {
+    const ctx = liveRunningRowContext(signals);
+    return visibleTaskRows(tasks).filter(task => isLiveRunningTaskRow(task, ctx) || taskStatusBucketFor(task) === 'running').length;
 }
 
 const textForLang = localizeText;
@@ -2036,25 +2100,13 @@ export const SidebarTaskManagement = ({
     // Built once per identity change; the hot loops below match rows against
     // this context instead of re-coercing the identity per row per pass.
     const activeRowContext = useMemo(() => activeTaskRowMatchContext(activeAssistantTask), [activeAssistantTask]);
-    const matchesLiveRunningRow = useCallback((task: TaskManagementItem): boolean => {
-        if (activeAssistantTaskRunning && activeRowContext && matchesActiveTaskRowContext(task, activeRowContext)) return true;
-        if (!busyTaskRuns) return false;
-        if (busyExpertSet.size > 0) {
-            const expertID = expertIDFromTaskTags(task.tags);
-            if (expertID && busyExpertSet.has(expertID)) return true;
-        }
-        if (busyPathSet.size > 0) {
-            const target = normalizeProjectSessionPath(task.project_path);
-            if (target && busyPathSet.has(target)) return true;
-            const workDir = normalizeProjectSessionPath(task.working_dir);
-            if (workDir && busyPathSet.has(workDir)) return true;
-        }
-        if (busyWorkspaceIdSet.size > 0) {
-            const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
-            if (rowWorkspaceId && busyWorkspaceIdSet.has(rowWorkspaceId)) return true;
-        }
-        return false;
-    }, [activeAssistantTaskRunning, activeRowContext, busyTaskRuns, busyPathSet, busyExpertSet, busyWorkspaceIdSet]);
+    const matchesLiveRunningRow = useCallback((task: TaskManagementItem): boolean => isLiveRunningTaskRow(task, {
+        busyPathSet,
+        busyExpertSet,
+        busyWorkspaceIdSet,
+        activeRowContext,
+        activeAssistantTaskRunning,
+    }), [activeAssistantTaskRunning, activeRowContext, busyPathSet, busyExpertSet, busyWorkspaceIdSet]);
     // One classification pass over the visible rows: chip counts, filters,
     // the row pill and the current-task card all consult this key set
     // instead of re-running the matcher for every row on each render.

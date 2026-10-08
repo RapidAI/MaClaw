@@ -148,7 +148,8 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 	}
 
 	user := httptest.NewRecorder()
-	writeBotUserError(user, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/bots/bot_x/messages", nil)
+	writeBotUserError(user, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, err)
 	if user.Code != http.StatusBadGateway ||
 		strings.Contains(user.Body.String(), "401") ||
 		strings.Contains(user.Body.String(), "unauthorized") ||

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
 
@@ -29,7 +30,6 @@ type QoderDeviceInfo struct {
 type qoderLoginFlow struct {
 	ctx        context.Context
 	profile    qoder.Profile
-	machineID  string
 	login      *qoder.DeviceLogin
 	generation uint64
 	finish     func()
@@ -52,24 +52,16 @@ func (a *App) StartQoderOAuth(edition string) (QoderDeviceInfo, error) {
 	parent, finish, claim := a.beginOAuthFlow(qoder.LoginLifetime() + 45*time.Second)
 	a.oauthMu.Lock()
 	ownedGen := a.oauthGeneration
-	a.qoderOwnedGen = ownedGen
 	a.oauthMu.Unlock()
 	login, err := qoder.StartLogin(qoder.MachineID())
 	if err != nil {
 		finish()
-		a.clearQoderOwnedGen(ownedGen)
 		return QoderDeviceInfo{}, fmt.Errorf("Qoder 登录初始化失败: %w", err)
 	}
 	approvalURL := login.AuthURL(profile)
 	if !qoder.IsApprovalURL(approvalURL) {
 		finish()
-		a.clearQoderOwnedGen(ownedGen)
 		return QoderDeviceInfo{}, fmt.Errorf("Qoder 授权地址无效")
-	}
-	if err := parent.Err(); err != nil {
-		finish()
-		a.clearQoderOwnedGen(ownedGen)
-		return QoderDeviceInfo{}, fmt.Errorf("Qoder 登录已取消或超时")
 	}
 	flow := &qoderLoginFlow{
 		ctx:        parent,
@@ -79,9 +71,19 @@ func (a *App) StartQoderOAuth(edition string) (QoderDeviceInfo, error) {
 		finish:     finish,
 		claim:      claim,
 	}
+	// The flow and its generation slot must be published together, and only
+	// while the flow context is still alive. A concurrent second login cancels
+	// this parent before bumping the global slot; storing a dead flow here
+	// would otherwise replace a live one and fail both logins.
 	a.oauthMu.Lock()
+	if parent.Err() != nil {
+		a.oauthMu.Unlock()
+		finish()
+		return QoderDeviceInfo{}, fmt.Errorf("Qoder 登录已取消或超时")
+	}
 	previous := a.qoderLogin
 	a.qoderLogin = flow
+	a.qoderOwnedGen = ownedGen
 	a.oauthMu.Unlock()
 	if previous != nil && previous.finish != nil {
 		// A newer login replaces any older in-flight one.
@@ -117,12 +119,34 @@ func (a *App) WaitQoderOAuth() (string, error) {
 		}
 		return "", fmt.Errorf("Qoder 登录失败: %w", err)
 	}
+	// The model catalog lives behind an extra request; run it before the claim
+	// so the expensive lookup never extends the global OAuth lock hold. It
+	// rides the flow context: if a newer login already replaced this flow, the
+	// fetch is cancelled instead of wasting the request.
+	defaultModel := a.fetchQoderDefaultModel(flow.ctx, flow.profile, token)
 	if err := flow.claim(func() error {
-		return a.saveQoderLogin(flow.profile, token)
+		return a.saveQoderLogin(flow.profile, token, defaultModel)
 	}); err != nil {
 		return "", err
 	}
 	return a.oauthLoginSuccessMessage(flow.profile.Name, flow.profile.Name+" 登录成功")
+}
+
+// fetchQoderDefaultModel reads the server catalog's default key, falling back
+// to the built-in default when the catalog is unreadable. ctx is the owning
+// flow's context: when the flow itself already ended (cancelled or expired)
+// the fetch failure stays silent — that login is gone either way.
+func (a *App) fetchQoderDefaultModel(ctx context.Context, profile qoder.Profile, token qoder.Token) string {
+	catalogCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	_, defaultKey, err := qoder.ListModels(catalogCtx, profile, token.UserID, token.AccessToken)
+	if err != nil || strings.TrimSpace(defaultKey) == "" {
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[qoder] provider=%s model catalog unavailable, keeping the fallback default", profile.Name)
+		}
+		return qoder.DefaultModel
+	}
+	return strings.TrimSpace(defaultKey)
 }
 
 // CancelQoderOAuth stops an in-progress Qoder device login. A login that has
@@ -132,18 +156,30 @@ func (a *App) CancelQoderOAuth() {
 	flow := a.qoderLogin
 	owns := a.qoderOwnedGen != 0 && a.qoderOwnedGen == a.oauthGeneration
 	// A stored flow from an older attempt must not hide the slot consumed by
-	// the login that is starting now.
+	// the login that is currently starting.
 	if flow != nil && flow.generation != a.oauthGeneration {
 		flow = nil
 	} else if flow != nil {
 		a.qoderLogin = nil
 	}
-	if owns {
+	var cancel context.CancelFunc
+	if owns && flow == nil && a.oauthCancel != nil {
+		// Wait owns the flow: its poll context is the global OAuth context, so
+		// cancel it before releasing the lock, or a newer login could be the
+		// one that gets cancelled.
+		a.oauthGeneration++
+		cancel = a.oauthCancel
+		a.oauthCancel = nil
+		a.qoderOwnedGen = 0
+	} else if owns {
 		a.qoderOwnedGen = 0
 	}
 	a.oauthMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if flow != nil && flow.finish != nil {
-		// This flow's own finish cancels its context only; a new login that
+		// This flow's own finish cancels its context only; a login that
 		// already replaced it keeps running.
 		flow.finish()
 	}
@@ -157,37 +193,126 @@ func (a *App) clearQoderOwnedGen(gen uint64) {
 	a.oauthMu.Unlock()
 }
 
+// fetchQoderCatalogModels lists the Qoder server catalog for an already
+// authenticated edition. Both editions share one chat URL, so the edition
+// cannot be told apart from the URL alone: try the configured providers in
+// order and answer with whichever stored token still works. The catalog rides
+// the site inference host behind the official CLI's signed identity contract
+// (UMID fingerprint + WASM request signer), so plain fetches can 404 — when
+// both editions fail to serve a catalog, fall back to the CLI's own hardcoded
+// default model instead of surfacing the upstream error.
+func (a *App) fetchQoderCatalogModels() ([]ProviderModelItem, error) {
+	var lastErr error
+	for _, profile := range []qoder.Profile{qoder.CNProfile(), qoder.GlobalProfile()} {
+		token, uid := a.qoderStoredCredential(profile)
+		if token == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		models, _, err := qoder.ListModels(ctx, profile, uid, token)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		items := make([]ProviderModelItem, 0, len(models))
+		seen := map[string]bool{}
+		for _, model := range models {
+			if !model.Enabled || seen[model.Key] {
+				// The catalog repeats one model across scenes (chat/assistant/
+				// cli ...); the dropdown must list each key once.
+				continue
+			}
+			seen[model.Key] = true
+			name := model.DisplayName
+			if name == "" {
+				name = model.Key
+			}
+			items = append(items, ProviderModelItem{ID: model.Key, Name: name})
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+		lastErr = fmt.Errorf("%s 模型列表为空", profile.Name)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("请先完成 Qoder 登录再获取模型列表")
+		return nil, lastErr
+	}
+	log.Printf("[qoder] model catalog unavailable upstream (%s), serving the CLI default model", lastErr)
+	// The CLI's --list-models at the time of writing shows Qwen3.8-Max; the
+	// key, not the display name, is what the chat API expects.
+	return []ProviderModelItem{{ID: qoder.DefaultModel, Name: "Qwen3.8-Max"}}, nil
+}
+
+// testQoderLLM probes a Qoder provider through the /algo signed chat wire.
+// The edition comes from the provider name when it carries one; otherwise the
+// stored credential decides (the probe tries 国内 then 国际, same as the
+// model catalog path).
+func (a *App) testQoderLLM(cfg corelib.MaclawLLMConfig) (string, error) {
+	model := strings.TrimSpace(cfg.Model)
+	if model == "" {
+		return "", fmt.Errorf("model name is not configured")
+	}
+	var lastErr error
+	if profile, ok := qoder.ProfileByName(cfg.ProviderName); ok {
+		token, uid := a.qoderStoredCredential(profile)
+		if token != "" {
+			text, err := qoder.ChatProbe(context.Background(), profile, uid, token, model, "hello")
+			if err == nil {
+				return text, nil
+			}
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("Qoder 登录凭证缺失；请先完成 OAuth 登录")
+	}
+	return "", lastErr
+}
+
+// qoderStoredCredential resolves the saved device token plus user id for one
+// edition through the normal credential-store path.
+func (a *App) qoderStoredCredential(profile qoder.Profile) (token, uid string) {
+	data := a.GetMaclawLLMProviders()
+	for _, provider := range data.Providers {
+		if !corelib.MaclawLLMProviderNameEqual(provider.Name, profile.Name) || !normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth() {
+			continue
+		}
+		if a.credentialStore != nil {
+			if cred, err := a.credentialStore.Read(profile.StoreID); err == nil && cred != nil && cred.AccessToken != "" {
+				return cred.AccessToken, cred.UserID
+			}
+		}
+		return a.resolveProviderKeyFromStore(provider), ""
+	}
+	return "", ""
+}
+
 // saveQoderLogin persists a completed Qoder login into the provider snapshot
 // and the credential store, then lets the normal post-login probe decide
-// whether this provider is assignable.
-func (a *App) saveQoderLogin(profile qoder.Profile, token qoder.Token) error {
+// whether this provider is assignable. defaultModel comes from the catalog
+// fetch that Wait completed before claiming.
+func (a *App) saveQoderLogin(profile qoder.Profile, token qoder.Token, defaultModel string) error {
 	if strings.TrimSpace(token.AccessToken) == "" {
 		return fmt.Errorf("Qoder 登录未返回访问令牌")
 	}
-	model := ""
-	catalogCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if _, defaultKey, err := qoder.ListModels(catalogCtx, profile, token.AccessToken); err == nil && strings.TrimSpace(defaultKey) != "" {
-		model = strings.TrimSpace(defaultKey)
-	} else {
-		log.Printf("[qoder] provider=%s model catalog unavailable, keeping the fallback default", profile.Name)
-	}
-	if model == "" {
-		model = qoder.DefaultModel
+	if strings.TrimSpace(defaultModel) == "" {
+		defaultModel = qoder.DefaultModel
 	}
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
-		if p.Name != profile.Name || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+		if !corelib.MaclawLLMProviderNameEqual(p.Name, profile.Name) || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			continue
 		}
 		data.Providers[i].URL = qoder.CanonicalChatURL(profile.ChatURL)
 		data.Providers[i].Protocol = "openai"
 		data.Providers[i].AuthType = "oauth"
 		if strings.TrimSpace(data.Providers[i].Model) == "" {
-			data.Providers[i].Model = model
+			data.Providers[i].Model = defaultModel
 		}
 		if data.Providers[i].ContextLength <= 0 {
-			data.Providers[i].ContextLength = qoder.DefaultContextWindows
+			data.Providers[i].ContextLength = qoder.DefaultContextLength
 		}
 		data.Providers[i].Key = token.AccessToken
 		data.Providers[i].OAuthAccessToken = token.AccessToken

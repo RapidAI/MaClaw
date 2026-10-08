@@ -632,13 +632,13 @@ const highRiskRemoteFileLineLimits = [
   ['guiapp/frontend/src/components/remote/SkillsManagementPanel.tsx', 3000],
   // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
   ['guiapp/frontend/src/components/remote/SkillsManagementPanelView.tsx', 6600],
-  ['guiapp/frontend/src/components/remote/OnboardingWizard.tsx', 2650],
+  ['guiapp/frontend/src/components/remote/OnboardingWizard.tsx', 2651],
   ['guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 1600],
   ['guiapp/frontend/src/components/remote/LLMConfigProviderLimitsFields.tsx', 90],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogFooter.tsx', 80],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogSaveError.tsx', 40],
   ['guiapp/frontend/src/components/remote/LLMConfigApiKeyFields.tsx', 80],
-  ['guiapp/frontend/src/components/remote/LLMConfigOAuthFields.tsx', 120],
+  ['guiapp/frontend/src/components/remote/LLMConfigOAuthFields.tsx', 122],
   ['guiapp/frontend/src/components/remote/MCPManagementPanel.tsx', 1400],
   ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];

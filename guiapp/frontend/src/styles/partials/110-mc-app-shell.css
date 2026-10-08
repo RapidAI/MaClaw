@@ -543,7 +543,37 @@
     --theme-page-bg: #0b1220;
 }
 /* Final reference proportion pass: keep the live Wails shell aligned with the supplied desktop mockup. */
-.mc-nav-rail { padding: 20px 12px !important; }
+.mc-nav-rail { padding: 10px 12px !important; }
+/* Height-pressure safety. The rail stacks 13 items; when the window (or DPI
+   scaling) leaves less CSS height than the rail needs, flex squeezes every
+   item below its label and the half-hidden text reads as clipped buttons.
+   The scrollable middle wrapper keeps each item at its natural height and
+   scrolls its own overflow instead. The brand, the system trigger and the
+   popup menus stay outside this wrapper: an ancestor with overflow hidden
+   would clip the fixed-position popup menus. */
+.mc-nav-rail__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The rail stays scrollable when the window is short, but the scrollbar
+     reads as chrome in a 112px rail: hide the bar in every engine
+     (Chromium/WebView2, Firefox, legacy Edge) while keeping wheel/keyboard
+     scrolling. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.mc-nav-rail__scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.mc-nav-rail__scroll > * { flex-shrink: 0; }
+/* Pull the first nav item up to the brand header: the generic left-nav-item
+   top margin is inter-item rhythm, not brand spacing. The doubled class plus
+   the rail ancestors reach specificity (0,5,0), which must out-rank the
+   generic forced margin shorthand in 100-pet-store-mc. */
+.mc-nav-rail .mc-nav-rail__scroll > .left-nav-item.left-nav-item:first-child { margin-top: 0 !important; }
 .mc-nav-rail .sidebar-item { min-height: 66px; }
 .mc-nav-rail .sidebar-logo, .mc-nav-rail .sidebar-header { margin-bottom: 14px; }
 .mc-legacy-rail-footer { display: none !important; }
@@ -552,12 +582,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 58px;
-  margin: 8px 0 4px;
+  width: 44px;
+  height: 46px;
+  margin: 4px 0 2px;
   padding: 0;
   border: 0;
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent;
   color: var(--theme-text-primary);
   cursor: pointer;
@@ -577,24 +607,24 @@
 }
 .mc-profile-rail__avatar--image { object-fit: cover; }
 .mc-profile-rail .mc-profile-rail__avatar--system {
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   border: 1px solid rgba(255, 255, 255, .24);
-  border-radius: 13px;
+  border-radius: 10px;
   background: linear-gradient(145deg, #2b7cf4 0%, var(--mc-accent, #2f6fbc) 58%, #1059c9 100%);
   color: #fff;
   box-shadow: 0 7px 16px rgba(23, 105, 232, .24), inset 0 1px 0 rgba(255, 255, 255, .18);
 }
-.mc-profile-rail__avatar--system svg { width: 25px; height: 25px; display: block; }
+.mc-profile-rail__avatar--system svg { width: 20px; height: 20px; display: block; }
 .mc-profile-rail:hover .mc-profile-rail__avatar,
 .mc-profile-rail:focus-visible .mc-profile-rail__avatar { border-color: var(--mc-accent, #2f6fbc); }
 /* Keep the system-menu trigger visually transparent: the generic office-theme
    .sidebar button rules (hover/active background, 10px radius, inset bar)
-   would otherwise paint a full-size light panel behind the 42px icon square. */
+   would otherwise paint a full-size light panel behind the 34px icon square. */
 .sidebar .mc-profile-rail,
 .sidebar .mc-profile-rail:hover,
 .sidebar .mc-profile-rail[aria-current='page'] {
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent !important;
   box-shadow: none;
 }
@@ -1382,7 +1412,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   justify-content: center;
   height: 64px !important;
   min-height: 64px !important;
-  margin: 0 0 10px !important;
+  margin: 0 0 2px !important;
   padding: 0 !important;
   border-bottom: 0 !important;
   background: transparent !important;

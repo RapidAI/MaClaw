@@ -20,13 +20,28 @@ import (
 // timestamp of the most recent user input event through the existing
 // /maclaw-boot/ping channel (stage=input). The watchdog combines that with
 // system-wide input activity (GetLastInputInfo) and foreground-window state:
-// dead input requires the user to be actively typing/clicking somewhere while
-// this window is foreground yet the page has seen no input events for
-// inputDeadAfter. Recovery escalates nudge (minimize/restore/foreground,
+// dead input requires this window to have been foreground AND the user actively
+// inputting somewhere, continuously for inputDeadAfter, yet the page has seen
+// no input events for inputDeadAfter.
+//
+// The continuous active-foreground requirement is the load-bearing guard
+// against the false positive that made the window visibly minimise itself in
+// normal use: a 30s-tick instantaneous foreground check fired the nudge
+// whenever the user switched back to MaClaw after a couple of minutes
+// elsewhere — the focusing click lands on the native frameless drag region,
+// produces no DOM event, and the tick's stale sysIdle (input to the previous
+// app) completed the "dead" signature on a perfectly healthy page. Sampling
+// the tenure once per second with the user-active condition folded in closes
+// both the obvious variant (any app switch resets the tenure) and the subtle
+// one (a sub-second alt-tab blip a 1s sampler can miss, after minutes of
+// parked-mouse reading, no longer counts as active tenure either). Only input
+// demonstrably routed to this window for minutes without reaching the page
+// counts as dead. Recovery escalates nudge (minimize/restore/foreground,
 // proven fix) -> reload -> repeated escalation logs.
 
 const (
 	inputWatchTick   = 30 * time.Second
+	inputWatchSample = 1 * time.Second  // cheap foreground continuity sampling
 	inputDeadAfter   = 2 * time.Minute  // page input silence that counts as dead
 	inputSysIdleMax  = 45 * time.Second // user counts as "active" while system-wide idle is below this
 	inputNudgeGap    = 90 * time.Second
@@ -85,16 +100,19 @@ func noteFrontendInputEvent(ts int64) {
 
 // inputWatchDecision is the pure policy core of the input watchdog. Input is
 // considered dead only when ALL of these hold: the platform probe is
-// supported, the MaClaw window is foreground, the user is actively producing
-// input somewhere (sysIdle small), and the page has seen no input events for
-// inputDeadAfter (pageIdle large). Any violated condition resets the offense
-// streak. Escalation ladder: 1st offense nudge; one reload once inputNudgeGap
-// has passed since the nudge (tracked by reloads, NOT the offense count — the
-// 30s tick is shorter than the gap, so an offense-numbered branch would be
-// unreachable); afterwards escalate (log loudly + nudge, once per
-// inputEscalateGap). Returns the action plus updated offense/reload counters.
-func inputWatchDecision(pageIdle, sysIdle time.Duration, foreground, supported bool, offenses, reloads int, sinceLastAction time.Duration) (inputWatchAction, int, int) {
-	if !supported || !foreground || pageIdle <= inputDeadAfter || sysIdle >= inputSysIdleMax {
+// supported, the MaClaw window has been foreground continuously for at least
+// inputDeadAfter (foregroundFor — already sampled with the user-active
+// condition folded in, so transient focus gains and parked-mouse idling reset
+// it), the user is still actively producing input at decision time (sysIdle
+// small), and the page has seen no input events for inputDeadAfter (pageIdle
+// large). Any violated condition resets the offense streak. Escalation ladder:
+// 1st offense nudge; one reload once inputNudgeGap has passed since the nudge
+// (tracked by reloads, NOT the offense count — the 30s tick is shorter than
+// the gap, so an offense-numbered branch would be unreachable); afterwards
+// escalate (log loudly + nudge, once per inputEscalateGap). Returns the action
+// plus updated offense/reload counters.
+func inputWatchDecision(pageIdle, sysIdle, foregroundFor time.Duration, supported bool, offenses, reloads int, sinceLastAction time.Duration) (inputWatchAction, int, int) {
+	if !supported || foregroundFor <= inputDeadAfter || pageIdle <= inputDeadAfter || sysIdle >= inputSysIdleMax {
 		return inputWatchNone, 0, 0
 	}
 	offenses++
@@ -115,6 +133,10 @@ func inputWatchDecision(pageIdle, sysIdle time.Duration, foreground, supported b
 }
 
 // watchFrontendInput starts the runtime input-liveness watchdog goroutine.
+// Active-foreground tenure is sampled cheaply every inputWatchSample so the
+// dead-input signature can require an uninterrupted foreground+user-active
+// stay; the page-side checks and recovery actions keep the inputWatchTick
+// cadence.
 func (a *App) watchFrontendInput() {
 	if a == nil {
 		return
@@ -124,13 +146,37 @@ func (a *App) watchFrontendInput() {
 		offenses := 0
 		reloads := 0
 		var lastAction time.Time
+		lastTick := time.Now()
+		var activeForegroundSince time.Time // zero = not (foreground + user-active) now
 		for {
-			time.Sleep(inputWatchTick)
+			time.Sleep(inputWatchSample)
 			if !frontendInputWatchSupported() {
 				return
 			}
-			if a.ctx == nil || !a.frontendHTMLReady.Load() {
+			if a.ctx == nil {
 				continue
+			}
+			// Active-foreground tenure: a 1s sample only counts when the main
+			// window is foreground AND the user just produced input system-wide.
+			// Parked-mouse reading never accumulates it; continuous typing into
+			// the window does — the two signatures we must tell apart.
+			if isMaclawWindowForeground() && systemInputIdleDuration() < inputSysIdleMax {
+				if activeForegroundSince.IsZero() {
+					activeForegroundSince = time.Now()
+				}
+			} else {
+				activeForegroundSince = time.Time{}
+			}
+			if time.Since(lastTick) < inputWatchTick {
+				continue
+			}
+			lastTick = time.Now()
+			if !a.frontendHTMLReady.Load() {
+				continue
+			}
+			foregroundFor := time.Duration(0)
+			if !activeForegroundSince.IsZero() {
+				foregroundFor = time.Since(activeForegroundSince)
 			}
 			// Self-healing injection: also refreshes the report each tick.
 			runtime.WindowExecJS(a.ctx, frontendInputAgentJS)
@@ -140,14 +186,19 @@ func (a *App) watchFrontendInput() {
 			}
 			pageIdle := time.Since(time.UnixMilli(stored))
 			sysIdle := systemInputIdleDuration()
-			foreground := isMaclawWindowForeground()
-			action, n, r := inputWatchDecision(pageIdle, sysIdle, foreground, true, offenses, reloads, time.Since(lastAction))
+			// Skip while a computer-use session is driving the desktop: its
+			// synthetic input keeps sysIdle small and can hover windows other
+			// than the page, mimicking the dead-input signature.
+			if computerUseSessionActive() {
+				continue
+			}
+			action, n, r := inputWatchDecision(pageIdle, sysIdle, foregroundFor, true, offenses, reloads, time.Since(lastAction))
 			offenses, reloads = n, r
 			switch action {
 			case inputWatchNudge:
 				lastAction = time.Now()
-				log.Printf("[input-watch] frontend input stalled (pageIdle=%s sysIdle=%s foreground=%v); nudging window", pageIdle.Round(time.Second), sysIdle.Round(time.Second), foreground)
-				bootLog("input watchdog nudge offenses=%d pageIdle=%s sysIdle=%s", offenses, pageIdle.Round(time.Second), sysIdle.Round(time.Second))
+				log.Printf("[input-watch] frontend input stalled (pageIdle=%s sysIdle=%s foregroundFor=%s); nudging window", pageIdle.Round(time.Second), sysIdle.Round(time.Second), foregroundFor.Round(time.Second))
+				bootLog("input watchdog nudge offenses=%d pageIdle=%s sysIdle=%s foregroundFor=%s", offenses, pageIdle.Round(time.Second), sysIdle.Round(time.Second), foregroundFor.Round(time.Second))
 				captureMainWindowPNG("input-dead-nudge")
 				nudgeMainWindowInput()
 			case inputWatchReload:
