@@ -200,11 +200,17 @@ def main():
     names = release_asset_names()
     r2_base = required_env("R2_PUBLIC_BASE_URL")
     cos_base = required_env("COS_PUBLIC_BASE_URL")
+    # VERIFY_COS_MIRROR=0 pauses the COS half while the mirror upload is
+    # disabled in the workflow (GHA -> COS egress stalls); default keeps the
+    # original two-mirror contract.
+    verify_cos = os.environ.get("VERIFY_COS_MIRROR", "1").strip() not in ("0", "false", "no")
     verify_mirror("R2", r2_base, manifest_name, tag, prefix, asset_dir, names)
-    verify_mirror("COS", cos_base, manifest_name, tag, prefix, asset_dir, names)
+    if verify_cos:
+        verify_mirror("COS", cos_base, manifest_name, tag, prefix, asset_dir, names)
     if prefix == "latest":
         verify_stable_history(r2_base, tag, asset_dir, names)
-        verify_stable_history(cos_base, tag, asset_dir, names)
+        if verify_cos:
+            verify_stable_history(cos_base, tag, asset_dir, names)
 
 
 if __name__ == "__main__":
