@@ -109,7 +109,7 @@ jobs:
         run: flutter test --concurrency=1
       - working-directory: mobile/maclaw_mobile
         run: flutter build apk --debug
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: maclaw-mobile-debug-apk
           path: mobile/maclaw_mobile/build/app/outputs/flutter-apk/app-debug.apk

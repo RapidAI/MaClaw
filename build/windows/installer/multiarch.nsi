@@ -1,5 +1,11 @@
 ﻿Unicode true
 
+; build_params.nsh.tmp is written by the local build_win*.bat flows only.
+; CI passes every value as /D defines (see the "Create NSIS installer" step
+; in .github/workflows/main.yml) and this include has to stay /NONFATAL to
+; keep both paths working. NSIS always logs the miss as "warning 7000";
+; CI's packaging step filters that exact line from its output instead of
+; weakening the local flow's fail-loud behavior.
 !include /NONFATAL "build_params.nsh.tmp"
 
 !ifndef INFO_PROJECTNAME

@@ -65,7 +65,10 @@ export default defineConfig({
     webviewFirstPaintPlugin(),
   ],
   build: {
-    chunkSizeWarningLimit: 1500,
+    // The single-page shell intentionally ships one main chunk (~1.9MB
+    // minified: react + editor + chart stack). 2.5MB keeps that advisory
+    // visible for real regressions without warning on every build.
+    chunkSizeWarningLimit: 2500,
     modulePreload: false,
     rollupOptions: {
       output: {
