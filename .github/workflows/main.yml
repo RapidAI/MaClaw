@@ -2881,27 +2881,16 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
           R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
         run: |
           # Seed the rollback catalogue from the COS mirror when reachable;
           # with COS paused (upload step off) a missing remote history is not
           # fatal - fall back to this release as the single stable entry.
           if ! curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
             echo "COS stable-history.json unavailable (mirror upload paused); seeding from current release"
-            tag="${{ github.ref_name }}"
-            names=$(python3 - <<'PY'
-            import os, pathlib
-            print("\n".join(sorted({line.strip() for line in os.environ.get("RELEASE_ONLY_ASSETS", "").splitlines() if line.strip()})))
-            PY
-            )
-            python3 - "$tag" release-assets > stable-history.json <<'PY'
-            import hashlib, json, os, pathlib, sys
-            tag, asset_dir = sys.argv[1], pathlib.Path(sys.argv[2])
-            names = [line for line in sys.stdin.read().splitlines() if line]
-            print(json.dumps({"stable": tag, "releases": [{"tag": tag, "assets": [
-                {"name": n, "size": (asset_dir / n).stat().st_size,
-                 "sha256": hashlib.file_digest(open(asset_dir / n, "rb"), "sha256").hexdigest()}
-                for n in names if (asset_dir / n).is_file()]}]}, indent=2))
-            PY
+            python3 .github/scripts/seed_stable_history.py
           fi
           wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
       - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
