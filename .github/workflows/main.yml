@@ -2719,7 +2719,7 @@ jobs:
               # Re-runs: a stale asset from an earlier attempt makes the
               # POST return 422. Delete-then-upload; --jq tolerates a
               # missing asset by yielding empty.
-              asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq ".[] | select(.name == \"$name\") | .id" 2>/dev/null)
+              asset_id=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --jq ".[] | select(.name == \"$name\") | .id" 2>/dev/null)
               if [ -n "$asset_id" ]; then
                 echo "asset $name exists (id=$asset_id); replacing"
                 gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
