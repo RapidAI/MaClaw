@@ -2699,11 +2699,15 @@ jobs:
           case "${RELEASE_TAG}" in *-*) prerelease="true";; esac
           args=(-F draft=false -F prerelease="${prerelease}")
           [ -s "${RELEASE_NOTES}" ] && args+=(-F body="@${RELEASE_NOTES}")
-          # Create (or reuse) the release; an existing one just gets patched.
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
-            -F tag_name="${RELEASE_TAG}" "${args[@]}" > release.json 2>/dev/null \
-            || gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
-                 -F tag_name="${RELEASE_TAG}" "${args[@]}" > release.json
+          # Create (or reuse) the release: POST first; on "already_exists"
+          # look the release up BY TAG (GET releases/tags/<tag>) and PATCH it.
+          if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -F tag_name="${RELEASE_TAG}" "${args[@]}" > release.json 2>/dev/null; then
+            echo "release exists; patching"
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .id)" \
+              "${args[@]}" > release.json
+          fi
           release_id=$(python3 -c "import json;print(json.load(open('release.json'))['id'])")
           echo "release id=${release_id}"
           upload_url="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name="
