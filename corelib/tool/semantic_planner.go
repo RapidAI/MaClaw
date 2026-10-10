@@ -803,10 +803,7 @@ func familyBaseSelectionIDs(selections []PlannedSelection, match func(PlannedSel
 		if !match(selection) {
 			continue
 		}
-		family := RepeatFamilyID(selection.NeedID)
-		if family == "" {
-			family = RepeatFamilyID(selection.ID)
-		}
+		family := SelectionRepeatFamily(selection)
 		if current, exists := best[family]; exists && current <= selection.ID {
 			continue
 		}
@@ -827,11 +824,11 @@ func requiredLookupBaseSelectionIDs(plan *ToolPlan, needs []CapabilityNeed) []st
 	requiredFamilies := make(map[string]bool, len(needs))
 	for _, need := range needs {
 		if need.Required && IsLookupCapability(need.Capability) {
-			requiredFamilies[RepeatFamilyID(need.ID)] = true
+			requiredFamilies[RepeatFamilyKey(need.ID)] = true
 		}
 	}
 	return familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
-		return IsLookupCapability(selection.FitProof.MatchedCapability) && requiredFamilies[RepeatFamilyID(selection.NeedID)]
+		return IsLookupCapability(selection.FitProof.MatchedCapability) && requiredFamilies[SelectionRepeatFamily(selection)]
 	})
 }
 
@@ -1086,11 +1083,7 @@ func planningWaveExceedsBudget(kept, wave []PlannedSelection, budget PlanningBud
 }
 
 func plannedFamilyKey(selection PlannedSelection) string {
-	id := strings.TrimSpace(selection.NeedID)
-	if id == "" {
-		id = selection.ID
-	}
-	return RepeatFamilyID(id)
+	return SelectionRepeatFamily(selection)
 }
 
 func selectionFamilySchemaTokens(selection PlannedSelection) int {

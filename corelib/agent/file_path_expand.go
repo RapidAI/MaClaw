@@ -9,7 +9,7 @@ package agent
 // for paging truncated extracts and for unsupported formats.
 //
 // Context safety:
-//   - Per-file and per-turn rune caps (far below office tool max)
+//   - Per-file and per-turn token caps (EstimateTextTokens, far below office tool max)
 //   - Max on-disk size for auto-parse (skip huge binaries without loading)
 //   - History strip removes injected bodies on subsequent turns
 
@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -40,13 +41,15 @@ const (
 	autoExtractHistoryPlaceholder = "[之前已自动解析文档正文，正文已省略]"
 )
 
-// DocumentAutoExtractBudget scales attachment injection to the usable model
-// context. The per-file limit preserves focused reads; the total limit leaves
-// at least half of a 200K+ context window free for prompts, tools, history and
-// subsequent reasoning. Zero retains the desktop-safe defaults.
+// DocumentAutoExtractBudget returns the per-file and total token budgets for
+// one user turn. Callers spend them with EstimateTextTokens. A rune cap of the
+// same magnitude treats one English character as one token and cuts a paper
+// the window can still hold. The total leaves at least half of the usable
+// window for the prompt, tools, history, and the reply. Zero retains the
+// desktop-safe defaults.
 func DocumentAutoExtractBudget(contextTokens int) (perFile, total int) {
 	if contextTokens <= 0 {
-		return defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal
+		return defaultAutoInjectMaxTokensPerFile, defaultAutoInjectMaxTokensTotal
 	}
 	total = contextTokens / 2
 	if total < 40_000 {
@@ -65,20 +68,19 @@ func DocumentAutoExtractBudget(contextTokens int) (perFile, total int) {
 	return perFile, total
 }
 
-// Caps for automatic injection into the *user turn*.
-// Intentionally smaller than the full Office reader's hard max (500k).
+// Caps for automatic injection into the user turn, in EstimateTextTokens.
+// Intentionally smaller than the full Office reader's hard output cap.
 //
-// Rough budget (Chinese-heavy text ≈ 1 token/rune):
-//   - ~80k runes/file leaves ample room in current 200K+ context windows
-//   - ~120k runes total keeps a multi-file turn useful without crowding out
-//     the system prompt, user request, and the agent's working context
+//   - 80k tokens per earlier file keeps a multi-file turn focused
+//   - 120k tokens total leaves room for the prompt, the request, and history
+//     when the caller does not know the model window
 const (
-	defaultAutoInjectMaxRunesPerFile = 80_000
-	defaultAutoInjectMaxRunesTotal   = 120_000
+	defaultAutoInjectMaxTokensPerFile = 80_000
+	defaultAutoInjectMaxTokensTotal   = 120_000
 
-	// autoExtractRemainderSlack is the largest tail the last document may
-	// keep past the remaining budget (conclusion / limitations / references).
-	// It is not extra quota for an arbitrarily long leftover.
+	// autoExtractRemainderSlack is the largest tail reserved inside the last
+	// document's token budget so a conclusion, limitations section, or
+	// reference list survives truncation. It does not raise the budget.
 	autoExtractRemainderSlack = 24_000
 
 	// Keep automatic injection and read_document on the same full-source
@@ -106,6 +108,10 @@ func expandUserSelectedFilePathsWithSettings(text string, settings officeReadSet
 }
 
 func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings officeReadSettings, contextTokens int) string {
+	return expandSelectedFilePaths(text, settings, contextTokens)
+}
+
+func expandSelectedFilePaths(text string, settings officeReadSettings, contextTokens int) string {
 	if strings.TrimSpace(text) == "" {
 		return text
 	}
@@ -140,7 +146,8 @@ func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings offi
 		}
 	}
 	perFile, totalBudget := DocumentAutoExtractBudget(contextTokens)
-	extracted := formatAutoExtractedDocumentsWithSettings(docPaths, perFile, totalBudget, nil, settings)
+	notice := AutoExtractNotice
+	extracted := formatAutoExtractedDocumentsWithSettings(docPaths, perFile, totalBudget, nil, settings, strings.TrimSpace(before))
 	hasExtract := false
 	for _, block := range extracted {
 		if block != "" {
@@ -152,8 +159,8 @@ func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings offi
 	// Rebuild: keep path list, drop legacy tool-call instructions in rest,
 	// append auto-extract bodies.
 	var b strings.Builder
-	// Extract bodies are rune-capped; UTF-8 Chinese ≈ 3 bytes/rune — pre-size to avoid growth thrash.
-	b.Grow(len(text) + totalBudget*3 + 2048)
+	// Token budgets are smaller than the UTF-8 they can hold. Pre-size for CJK.
+	b.Grow(len(text) + totalBudget*4 + 2048)
 	b.WriteString(before)
 	b.WriteString(FilePathPromptPrefix)
 	b.WriteByte('\n')
@@ -168,7 +175,7 @@ func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings offi
 	}
 	if hasExtract {
 		b.WriteByte('\n')
-		b.WriteString(AutoExtractNotice)
+		b.WriteString(notice)
 		b.WriteByte('\n')
 		for _, block := range extracted {
 			if block == "" {
@@ -186,7 +193,7 @@ func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings offi
 // injection (bounded). Returns "" only when the path is not a document type.
 // Soft failures still return a short error block so the model can fall back.
 func FormatAutoExtractedDocument(filePath string) string {
-	blocks := formatAutoExtractedDocumentsWithSettings([]string{filePath}, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, currentOfficeReadSettings())
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{filePath}, defaultAutoInjectMaxTokensPerFile, defaultAutoInjectMaxTokensTotal, nil, currentOfficeReadSettings(), "")
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -194,9 +201,9 @@ func FormatAutoExtractedDocument(filePath string) string {
 }
 
 // FormatAutoExtractedDocuments extracts multiple documents under a shared total
-// rune budget (used by IM multi-attachment paths).
+// token budget (used by IM multi-attachment paths).
 func FormatAutoExtractedDocuments(filePaths []string) []string {
-	return formatAutoExtractedDocumentsWithSettings(filePaths, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, currentOfficeReadSettings())
+	return formatAutoExtractedDocumentsWithSettings(filePaths, defaultAutoInjectMaxTokensPerFile, defaultAutoInjectMaxTokensTotal, nil, currentOfficeReadSettings(), "")
 }
 
 // AppendDocumentExtractsToDescriptions attaches bounded auto-extract blocks to
@@ -250,11 +257,11 @@ func appendDocumentExtractsToDescriptionsWithSettingsAndBudget(fileDescriptions 
 		paths[i] = d.path
 	}
 	perFile, totalBudget := DocumentAutoExtractBudget(contextTokens)
-	remaining := totalBudget - CountInjectedAutoExtractRunes(userText)
+	remaining := totalBudget - CountInjectedAutoExtractTokens(userText)
 	if remaining < 0 {
 		remaining = 0
 	}
-	blocks := formatAutoExtractedDocumentsWithSettings(paths, perFile, remaining, AlreadyAutoExtractedPaths(userText), settings)
+	blocks := formatAutoExtractedDocumentsWithSettings(paths, perFile, remaining, AlreadyAutoExtractedPaths(userText), settings, "")
 	any := false
 	for _, block := range blocks {
 		if block != "" {
@@ -282,7 +289,7 @@ func appendDocumentExtractsToDescriptionsWithSettingsAndBudget(fileDescriptions 
 // accepts a remaining total budget and a set of paths already injected earlier in
 // the same turn (e.g. GUI path marker expand before IM attachments).
 func FormatAutoExtractedDocumentsWithBudget(filePaths []string, totalBudget int, skipPaths map[string]struct{}) []string {
-	return formatAutoExtractedDocuments(filePaths, defaultAutoInjectMaxRunesPerFile, totalBudget, skipPaths)
+	return formatAutoExtractedDocuments(filePaths, defaultAutoInjectMaxTokensPerFile, totalBudget, skipPaths)
 }
 
 // CountInjectedAutoExtractRunes sums injected_chars= from begin markers in text.
@@ -301,10 +308,33 @@ func CountInjectedAutoExtractRunes(text string) int {
 	return sum
 }
 
-// RemainingAutoInjectBudget returns how many runes may still be auto-injected
+// CountInjectedAutoExtractTokens sums injected_tokens= from begin markers.
+// A marker written before that attribute existed spends injected_chars instead.
+// Rune counts are at least the token estimate, so the next file stays inside
+// the window.
+func CountInjectedAutoExtractTokens(text string) int {
+	if text == "" || !strings.Contains(text, AutoExtractBeginMarker) {
+		return 0
+	}
+	sum := 0
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !isAutoExtractBeginLine(trimmed) {
+			continue
+		}
+		if strings.Contains(trimmed, "injected_tokens=") {
+			sum += extractIntAttr(trimmed, "injected_tokens")
+			continue
+		}
+		sum += extractIntAttr(trimmed, "injected_chars")
+	}
+	return sum
+}
+
+// RemainingAutoInjectBudget returns how many tokens may still be auto-injected
 // in this turn given text already expanded (path-marker extracts).
 func RemainingAutoInjectBudget(text string) int {
-	left := defaultAutoInjectMaxRunesTotal - CountInjectedAutoExtractRunes(text)
+	left := defaultAutoInjectMaxTokensTotal - CountInjectedAutoExtractTokens(text)
 	if left < 0 {
 		return 0
 	}
@@ -353,12 +383,12 @@ func indexExtractedPath(out map[string]struct{}, p string) {
 }
 
 func formatAutoExtractedDocuments(filePaths []string, perFile, totalBudget int, skipPaths map[string]struct{}) []string {
-	return formatAutoExtractedDocumentsWithSettings(filePaths, perFile, totalBudget, skipPaths, currentOfficeReadSettings())
+	return formatAutoExtractedDocumentsWithSettings(filePaths, perFile, totalBudget, skipPaths, currentOfficeReadSettings(), "")
 }
 
-func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, totalBudget int, skipPaths map[string]struct{}, settings officeReadSettings) []string {
+func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, totalBudget int, skipPaths map[string]struct{}, settings officeReadSettings, query string) []string {
 	if perFile <= 0 {
-		perFile = defaultAutoInjectMaxRunesPerFile
+		perFile = defaultAutoInjectMaxTokensPerFile
 	}
 	if totalBudget < 0 {
 		totalBudget = 0
@@ -395,14 +425,15 @@ func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, total
 		limit := perFile
 		slack := 0
 		if i == lastInjectable {
-			// Last file uses leftover total budget. A short overshoot is kept
-			// whole; a larger one keeps head+tail so conclusion/references survive.
+			// Last file uses the leftover token budget. The whole file is kept
+			// when its token estimate fits. A longer file keeps a head and a
+			// tail inside that budget. Slack only sizes the tail.
 			limit = budget
 			slack = autoExtractRemainderSlack
 		} else if limit > budget {
 			limit = budget
 		}
-		block, used := formatAutoExtractedDocumentWithSettings(p, limit, slack, settings)
+		block, used := formatAutoExtractedDocumentWithSettings(p, limit, slack, settings, query)
 		out = append(out, block)
 		if used > 0 {
 			budget -= used
@@ -429,76 +460,139 @@ func autoExtractLastInjectableIndex(filePaths []string, skipPaths map[string]str
 	return last
 }
 
-// autoExtractKeepShortTail reports whether a document that overshoots maxRunes
-// by at most slack should still be injected in full. A larger overshoot is
-// truncated at maxRunes so slack cannot become a hidden extra page.
-func autoExtractKeepShortTail(total, maxRunes, slack int) bool {
-	if total <= maxRunes {
-		return true
+// autoExtractFitsBudget reports whether a measured token count is inside the
+// budget. Slack is not extra quota: a document past the budget is truncated,
+// and autoExtractHeadTail keeps the tail inside the budget.
+func autoExtractFitsBudget(tokens, maxTokens int) bool {
+	if maxTokens < 0 {
+		maxTokens = 0
 	}
-	if slack <= 0 || maxRunes < 0 {
-		return false
-	}
-	return total-maxRunes <= slack && total <= maxOfficeReadMaxRunes
+	return tokens <= maxTokens
 }
 
-// autoExtractHeadTail splits a truncated last document into a prefix and a
-// suffix whose sizes sum to maxRunes. The suffix is capped by slack so a
-// paper review still sees limitations/conclusion/references. Earlier files
-// pass slack=0 and receive a prefix only.
-func autoExtractHeadTail(total, maxRunes, slack int) (head, tail int) {
-	if maxRunes < 0 {
-		maxRunes = 0
+// autoExtractHeadTail splits a token budget into a prefix and a suffix that
+// sum to maxTokens. The suffix is capped by slack so a paper review still
+// sees limitations, the conclusion, and references. Earlier files pass
+// slack=0 and receive a prefix only. The counts are tokens, not runes.
+func autoExtractHeadTail(totalTokens, maxTokens, slack int) (head, tail int) {
+	if maxTokens < 0 {
+		maxTokens = 0
 	}
-	if total <= maxRunes {
-		return total, 0
+	if totalTokens <= maxTokens {
+		return totalTokens, 0
 	}
-	if slack <= 0 || maxRunes < 8 {
-		return maxRunes, 0
+	if slack <= 0 || maxTokens < 8 {
+		return maxTokens, 0
 	}
 	tail = slack
-	if capTail := maxRunes / 4; tail > capTail {
+	if capTail := maxTokens / 4; tail > capTail {
 		tail = capTail
 	}
-	if tail <= 0 || tail >= maxRunes {
-		return maxRunes, 0
+	if tail <= 0 || tail >= maxTokens {
+		return maxTokens, 0
 	}
-	return maxRunes - tail, tail
+	return maxTokens - tail, tail
 }
 
-func autoExtractInjectWindow(total, maxRunes, slack int) (head, tail int, truncated bool) {
-	if maxRunes < 0 {
-		maxRunes = 0
+// autoExtractWindow keeps text whose token estimate fits maxTokens. A longer
+// text becomes a head plus, when slack > 0, a tail. Both pieces stay inside
+// maxTokens. headRunes is the rune index where the omitted gap starts.
+// tailRunes is the kept suffix length, or 0 when there is no suffix.
+func autoExtractWindow(text string, maxTokens, slack int) (head, tail string, headRunes, tailRunes, totalRunes, injectedTokens int, truncated bool) {
+	if maxTokens < 0 {
+		maxTokens = 0
 	}
-	if autoExtractKeepShortTail(total, maxRunes, slack) {
-		return total, 0, false
+	runes := []rune(text)
+	totalRunes = len(runes)
+	totalTokens := EstimateTextTokens(text)
+	if autoExtractFitsBudget(totalTokens, maxTokens) {
+		return text, "", totalRunes, 0, totalRunes, totalTokens, false
 	}
-	head, tail = autoExtractHeadTail(total, maxRunes, slack)
-	if head < 0 {
-		head = 0
+	_, tailTokens := autoExtractHeadTail(totalTokens, maxTokens, slack)
+	if tailTokens > 0 && totalRunes > 0 {
+		tailRunes = suffixRunesWithinTokens(runes, tailTokens)
+		if tailRunes >= totalRunes {
+			tailRunes = 0
+		}
 	}
-	if head > total {
-		head = total
-		tail = 0
+	headBudget := maxTokens
+	var prefix []rune
+	if tailRunes > 0 {
+		tail = string(runes[totalRunes-tailRunes:])
+		headBudget -= EstimateTextTokens(tail)
+		if headBudget < 0 {
+			headBudget = 0
+		}
+		prefix = runes[:totalRunes-tailRunes]
+	} else {
+		prefix = runes
 	}
-	if tail > 0 && total-tail < head {
-		tail = 0
+	headRunes = prefixRunesWithinTokens(prefix, headBudget)
+	head = string(prefix[:headRunes])
+	injectedTokens = EstimateTextTokens(head)
+	if tail != "" {
+		injectedTokens += EstimateTextTokens(tail)
 	}
-	return head, tail, true
+	return head, tail, headRunes, tailRunes, totalRunes, injectedTokens, true
 }
 
-func autoExtractContinueChars(total, head, tail, maxRunes int) int {
-	if maxRunes < 0 {
-		maxRunes = 0
+// autoExtractContinueChars is the office(read_document) max_chars for the gap
+// that was not injected. The tool counts runes. A gap that fits the token
+// budget is requested whole; a longer gap is cut to the budget.
+func autoExtractContinueChars(gap string, maxTokens int) int {
+	if maxTokens < 0 {
+		maxTokens = 0
 	}
-	gap := total - head - tail
-	if gap < 0 {
-		gap = 0
+	runes := []rune(gap)
+	if len(runes) == 0 {
+		return 0
 	}
-	if gap < maxRunes {
-		return gap
+	if EstimateTextTokens(gap) <= maxTokens {
+		return len(runes)
 	}
-	return maxRunes
+	return prefixRunesWithinTokens(runes, maxTokens)
+}
+
+func prefixRunesWithinTokens(runes []rune, tokenBudget int) int {
+	if tokenBudget <= 0 || len(runes) == 0 {
+		return 0
+	}
+	if EstimateTextTokens(string(runes)) <= tokenBudget {
+		return len(runes)
+	}
+	lo, hi := 1, len(runes)
+	best := 0
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if EstimateTextTokens(string(runes[:mid])) <= tokenBudget {
+			best = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best
+}
+
+func suffixRunesWithinTokens(runes []rune, tokenBudget int) int {
+	if tokenBudget <= 0 || len(runes) == 0 {
+		return 0
+	}
+	if EstimateTextTokens(string(runes)) <= tokenBudget {
+		return len(runes)
+	}
+	lo, hi := 1, len(runes)
+	best := 0
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if EstimateTextTokens(string(runes[len(runes)-mid:])) <= tokenBudget {
+			best = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best
 }
 
 func isAutoExtractBeginLine(trimmed string) bool {
@@ -597,22 +691,258 @@ func extractIntAttr(line, key string) int {
 	return n
 }
 
-// formatAutoExtractedDocument returns (block, injectedRuneCount).
-// injectedRuneCount is 0 for soft-error blocks (they do not consume the budget).
-func formatAutoExtractedDocument(filePath string, maxRunes int) (string, int) {
-	return formatAutoExtractedDocumentWithSettings(filePath, maxRunes, 0, currentOfficeReadSettings())
+// packPDFPages keeps whole pages inside the token budget: the opening, the
+// ending, and pages that mention the question. A cut in the middle of a page
+// is harder to read than a shorter list of complete pages. omitted is false
+// when the document's token estimate fits, so the caller injects it whole.
+func packPDFPages(text, query string, maxTokens, slack int) (packed string, original int, omitted bool) {
+	original = len([]rune(text))
+	if maxTokens < 0 {
+		maxTokens = 0
+	}
+	if EstimateTextTokens(text) <= maxTokens {
+		return text, original, false
+	}
+	pages := splitPDFPages(text)
+	if len(pages) < 2 || maxTokens < 8 {
+		return text, original, false
+	}
+	note := "\n\n# omitted-pages: middle pages were left out of this excerpt\n\n"
+	noteTokens := EstimateTextTokens(note)
+	if maxTokens <= noteTokens+8 {
+		return text, original, false
+	}
+	budget := maxTokens - noteTokens
+	sepTokens := EstimateTextTokens("\n\n")
+	sizes := make([]int, len(pages))
+	for i, page := range pages {
+		sizes[i] = EstimateTextTokens(page)
+	}
+
+	keep := make([]bool, len(pages))
+	joinedTokens := func(extra int) int {
+		var b strings.Builder
+		first := true
+		for i, page := range pages {
+			if !keep[i] && i != extra {
+				continue
+			}
+			if !first {
+				b.WriteString("\n\n")
+			}
+			first = false
+			b.WriteString(page)
+		}
+		if b.Len() == 0 {
+			return 0
+		}
+		return EstimateTextTokens(b.String())
+	}
+	add := func(i int) bool {
+		if i < 0 || i >= len(pages) || keep[i] {
+			return keep[i]
+		}
+		if joinedTokens(i) > budget {
+			return false
+		}
+		keep[i] = true
+		return true
+	}
+
+	tailBudget := slack
+	if tailBudget < 0 {
+		tailBudget = 0
+	}
+	if cap := budget / 4; tailBudget > cap {
+		tailBudget = cap
+	}
+	tailUsed := 0
+	for i := len(pages) - 1; i >= 1; i-- {
+		// A single oversized ending page must not hide the shorter pages
+		// before it. Stop only once a page could fit the reservation but the
+		// remaining ending budget is already full.
+		if sizes[i] > tailBudget {
+			continue
+		}
+		need := sizes[i]
+		if tailUsed > 0 {
+			need += sepTokens
+		}
+		if tailUsed+need > tailBudget {
+			break
+		}
+		if !add(i) {
+			break
+		}
+		tailUsed += need
+	}
+	add(0)
+
+	type scored struct{ i, score int }
+	middles := make([]scored, 0, len(pages))
+	for i := 1; i < len(pages)-1; i++ {
+		if keep[i] {
+			continue
+		}
+		score := pdfPageScore(pages[i], query)
+		if score > 0 {
+			middles = append(middles, scored{i: i, score: score})
+		}
+	}
+	sort.SliceStable(middles, func(a, b int) bool {
+		if middles[a].score != middles[b].score {
+			return middles[a].score > middles[b].score
+		}
+		return middles[a].i < middles[b].i
+	})
+	for _, item := range middles {
+		add(item.i)
+	}
+	for i := range pages {
+		add(i)
+	}
+
+	kept := 0
+	for _, ok := range keep {
+		if ok {
+			kept++
+		}
+	}
+	if kept == 0 || kept == len(pages) {
+		return text, original, false
+	}
+	var b strings.Builder
+	first := true
+	for i, page := range pages {
+		if !keep[i] {
+			continue
+		}
+		if !first {
+			b.WriteString("\n\n")
+		}
+		first = false
+		b.WriteString(page)
+	}
+	b.WriteString(note)
+	out := b.String()
+	if EstimateTextTokens(out) > maxTokens {
+		return text, original, false
+	}
+	return out, original, true
 }
 
-func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes, slack int, settings officeReadSettings) (string, int) {
+func splitPDFPages(text string) []string {
+	const marker = "## Page "
+	if !strings.Contains(text, marker) {
+		return nil
+	}
+	var idxs []int
+	from := 0
+	for {
+		rel := strings.Index(text[from:], marker)
+		if rel < 0 {
+			break
+		}
+		idxs = append(idxs, from+rel)
+		from += rel + len(marker)
+	}
+	if len(idxs) == 0 {
+		return nil
+	}
+	pages := make([]string, 0, len(idxs)+1)
+	if lead := strings.TrimSpace(text[:idxs[0]]); lead != "" {
+		pages = append(pages, lead)
+	}
+	for i, at := range idxs {
+		end := len(text)
+		if i+1 < len(idxs) {
+			end = idxs[i+1]
+		}
+		page := strings.TrimRight(text[at:end], "\n")
+		if strings.TrimSpace(page) == "" {
+			continue
+		}
+		pages = append(pages, page)
+	}
+	return pages
+}
+
+func pdfPageScore(page, query string) int {
+	query = strings.TrimSpace(query)
+	if query == "" || page == "" {
+		return 0
+	}
+	pageLower := strings.ToLower(page)
+	score := 0
+	for _, token := range pdfQueryTokens(query) {
+		if strings.Contains(pageLower, token) {
+			score += strings.Count(pageLower, token)
+		}
+	}
+	return score
+}
+
+func pdfQueryTokens(query string) []string {
+	var tokens []string
+	var ascii []rune
+	var cjk []rune
+	flushASCII := func() {
+		if len(ascii) >= 2 {
+			tokens = append(tokens, strings.ToLower(string(ascii)))
+		}
+		ascii = ascii[:0]
+	}
+	flushCJK := func() {
+		if len(cjk) >= 2 {
+			tokens = append(tokens, string(cjk))
+			if len(cjk) > 4 {
+				for i := 0; i+2 <= len(cjk); i += 2 {
+					tokens = append(tokens, string(cjk[i:i+2]))
+				}
+			}
+		}
+		cjk = cjk[:0]
+	}
+	for _, r := range query {
+		switch {
+		case unicode.Is(unicode.Han, r):
+			flushASCII()
+			cjk = append(cjk, r)
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
+			flushCJK()
+			ascii = append(ascii, r)
+		default:
+			flushASCII()
+			flushCJK()
+		}
+	}
+	flushASCII()
+	flushCJK()
+	return tokens
+}
+
+func autoExtractPackedBlock(filePath, format, body string, total, injectedTokens int) string {
+	injected := len([]rune(body))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%spath=%q format=%q total_chars=%d injected_chars=%d injected_tokens=%d truncated=true ---\n",
+		AutoExtractBeginMarker, filePath, format, total, injected, injectedTokens)
+	b.WriteString(body)
+	b.WriteString("\n# truncated: true\n# note: 文档较长，本次放进对话的是开头、结尾，以及和问题最相关的完整页。回答时基于这些页，不要声称文档没有正文。\n")
+	fmt.Fprintf(&b, "%spath=%q ---", AutoExtractEndMarker, filePath)
+	return b.String()
+}
+
+func formatAutoExtractedDocument(filePath string, maxTokens int) (string, int) {
+	return formatAutoExtractedDocumentWithSettings(filePath, maxTokens, 0, currentOfficeReadSettings(), "")
+}
+
+func formatAutoExtractedDocumentWithSettings(filePath string, maxTokens, slack int, settings officeReadSettings, query string) (string, int) {
 	filePath = strings.TrimSpace(filePath)
 	if filePath == "" || !IsDocumentFilePath(filePath) {
 		return "", 0
 	}
-	if maxRunes <= 0 {
-		maxRunes = defaultAutoInjectMaxRunesPerFile
-	}
-	if maxRunes > maxOfficeReadMaxRunes {
-		maxRunes = maxOfficeReadMaxRunes
+	if maxTokens <= 0 {
+		maxTokens = defaultAutoInjectMaxTokensPerFile
 	}
 	if slack < 0 {
 		slack = 0
@@ -676,40 +1006,50 @@ func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes, slack in
 	if text == "" {
 		return autoExtractErrorBlock(filePath, format, "文件中没有可读取的文本内容"), 0
 	}
+	if format == "pdf" {
+		if packed, original, omitted := packPDFPages(text, query, maxTokens, slack); omitted {
+			injectedTokens := EstimateTextTokens(packed)
+			return autoExtractPackedBlock(filePath, format, packed, original, injectedTokens), injectedTokens
+		}
+	}
 
-	runes := []rune(text)
-	total := len(runes)
-	head, tail, truncated := autoExtractInjectWindow(total, maxRunes, slack)
-	injected := total
-	nextOffset := -1
-	body := text
+	head, tail, headRunes, tailRunes, total, injectedTokens, truncated := autoExtractWindow(text, maxTokens, slack)
+	injectedRunes := total
 	if truncated {
-		body = string(runes[:head])
-		injected = head + tail
-		nextOffset = head
+		injectedRunes = headRunes + tailRunes
 	}
 
 	var b strings.Builder
-	b.Grow(len(body) + 256)
-	fmt.Fprintf(&b, "%spath=%q format=%q total_chars=%d injected_chars=%d truncated=%v",
-		AutoExtractBeginMarker, filePath, format, total, injected, truncated)
+	b.Grow(len(head) + len(tail) + 256)
+	fmt.Fprintf(&b, "%spath=%q format=%q total_chars=%d injected_chars=%d injected_tokens=%d truncated=%v",
+		AutoExtractBeginMarker, filePath, format, total, injectedRunes, injectedTokens, truncated)
 	if truncated {
-		fmt.Fprintf(&b, " next_offset=%d", nextOffset)
+		fmt.Fprintf(&b, " next_offset=%d", headRunes)
 	}
 	b.WriteString(" ---\n")
-	b.WriteString(body)
+	b.WriteString(head)
 	if truncated {
+		gap := ""
+		if tailRunes > 0 {
+			gapStart := headRunes
+			gapEnd := total - tailRunes
+			if gapEnd > gapStart {
+				gap = string([]rune(text)[gapStart:gapEnd])
+			}
+		} else if headRunes < total {
+			gap = string([]rune(text)[headRunes:])
+		}
 		fmt.Fprintf(&b, "\n\n# truncated: true\n# next_offset: %d\n# continue: office(action=\"read_document\", file_path=%q, offset=%d, max_chars=%d)\n",
-			nextOffset, filePath, nextOffset, autoExtractContinueChars(total, head, tail, maxRunes))
-		if tail > 0 {
+			headRunes, filePath, headRunes, autoExtractContinueChars(gap, maxTokens))
+		if tailRunes > 0 {
 			// The suffix is the document end, not the next contiguous page.
-			fmt.Fprintf(&b, "# tail: offset=%d\n", total-tail)
-			b.WriteString(string(runes[total-tail:]))
+			fmt.Fprintf(&b, "# tail: offset=%d\n", total-tailRunes)
+			b.WriteString(tail)
 		}
 	}
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "%spath=%q ---", AutoExtractEndMarker, filePath)
-	return b.String(), injected
+	return b.String(), injectedTokens
 }
 
 func autoExtractErrorClass(err error) string {

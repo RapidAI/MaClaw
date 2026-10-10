@@ -478,6 +478,23 @@ func (cm *ConversationMemory) FlushNow() error {
 	return cm.flushDirty()
 }
 
+// EnsureStoreFile writes the current snapshot when the store file is absent.
+// An empty memory is not dirty, so NewPersistentConversationMemory's FlushNow
+// leaves a missing file uncreated. The file-companion transcript needs that
+// empty shell on disk before the first message is appended.
+func (cm *ConversationMemory) EnsureStoreFile() error {
+	if cm == nil || strings.TrimSpace(cm.storePath) == "" {
+		return nil
+	}
+	if _, err := os.Stat(cm.storePath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	cm.markDirtyAndScheduleFlush()
+	return cm.FlushNow()
+}
+
 // Stop gracefully shuts down eviction and persistence goroutines.
 func (cm *ConversationMemory) Stop() {
 	cm.stopOnce.Do(func() {
@@ -2055,6 +2072,32 @@ func (cm *ConversationMemory) loadDetachedSession(userID, path string) error {
 	return nil
 }
 
+// LoadSeparateSessionEntries reads one owner's entries from a detached
+// transcript file. It does not start a conversation memory or an agent loop.
+func LoadSeparateSessionEntries(path, userID string) ([]ConversationEntry, error) {
+	userID = strings.TrimSpace(userID)
+	path = strings.TrimSpace(path)
+	if userID == "" || path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var snapshot memorySnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, err
+	}
+	session, ok := snapshot.Sessions[userID]
+	if !ok || len(session.Entries) == 0 {
+		return nil, nil
+	}
+	return append([]ConversationEntry(nil), session.Entries...), nil
+}
+
 func writeMemorySnapshotFile(path string, snapshot memorySnapshot) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
@@ -2196,10 +2239,10 @@ func sanitizeConversationEntryForPersistence(entry ConversationEntry) Conversati
 }
 
 // stripPlainToolCallPersistenceLeak truncates content at the first leaked
-// tool-call markup (<tool_call>, "tool_call": {...}, <|tool_call_begin|>…).
-// A bare English mention of the word "tool_call" — common in reasoning text
-// such as "I'll issue a tool_call to bash" — is not markup and must not
-// truncate the entry.
+// tool-call markup (<tool_call>, <longcat_tool_call>, "tool_call": {...},
+// <|tool_call_begin|>…). A bare English mention of the word "tool_call" —
+// common in reasoning text such as "I'll issue a tool_call to bash" — is not
+// markup and must not truncate the entry.
 func stripPlainToolCallPersistenceLeak(content string) string {
 	lower := strings.ToLower(content)
 	idx := strings.Index(lower, "tool_call")
@@ -2223,6 +2266,9 @@ func stripPlainToolCallPersistenceLeak(content string) string {
 // (including an immediately preceding markup opener such as '<' or '"').
 // Plain-English uses ("the tool_call failed") are not markup.
 func toolCallMarkupCutIndex(lower string, idx int) (int, bool) {
+	if cut, ok := longcatToolCallCut(lower, idx); ok {
+		return cut, true
+	}
 	if idx > 0 {
 		switch lower[idx-1] {
 		case '<', '"', '\'', '|', '`':
@@ -2251,6 +2297,24 @@ func toolCallMarkupCutIndex(lower string, idx int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// longcatToolCallCut recognizes <longcat_tool_call> and </longcat_tool_call>.
+// The word tool_call sits after an underscore, so the generic opener check
+// would leave the "<longcat_" prefix in the stored message.
+func longcatToolCallCut(lower string, idx int) (int, bool) {
+	const prefix = "longcat_"
+	if idx < len(prefix) || lower[idx-len(prefix):idx] != prefix {
+		return 0, false
+	}
+	start := idx - len(prefix)
+	if start > 0 && lower[start-1] == '/' {
+		start--
+	}
+	if start == 0 || lower[start-1] != '<' {
+		return 0, false
+	}
+	return start - 1, true
 }
 
 func sanitizeConversationPersistenceValue(key string, value interface{}) interface{} {

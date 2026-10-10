@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
-import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
+import { EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
+import { openSettingsTab } from '../../utils/settingsNavigation';
 import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
@@ -456,6 +457,33 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
 const CloudComputingIcon = ({ size = 16 }: { size?: number } = {}) => (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
         <path {...CREATE_TASK_ICON_PROPS} d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z" />
+    </svg>
+);
+
+/** Companion: a document being read, with a small mark for the AI reading. */
+const FileCompanionIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M6 3.5h8.2L19 8.2V20.5H6z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M14 3.6V8.2H19" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M8.5 12.5h5M8.5 16h3.2" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M16.1 11.2l.4 1 .95.4-.95.4-.4 1-.4-1-.95-.4.95-.4z" />
+    </svg>
+);
+
+/** Knowledge base: an open book, the same mark as the library menu entry. */
+const KnowledgeEntryIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+);
+
+/** Cloud drive: a cloud sitting on a disk. The disk keeps it from reading as the workspace cloud. */
+const CloudDriveIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M7.6 11.2h8.6a2.2 2.2 0 0 0 .2-4.4 3.5 3.5 0 0 0-6.7 1.05A2.05 2.05 0 0 0 7.6 11.2z" />
+        <ellipse {...CREATE_TASK_ICON_PROPS} cx="12" cy="16.2" rx="7" ry="2.4" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M5 16.2v3.2a7 2.4 0 0 0 14 0v-3.2" />
     </svg>
 );
 
@@ -3988,20 +4016,37 @@ export const SidebarTaskManagement = ({
                 <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
             </button>
             <span className="mc-task-pane__toolbar-end">
+                <span className="mc-task-pane__tool-group">
+                    <button
+                        type="button"
+                        data-testid="task-pane-file-companion"
+                        onClick={() => { void ShowFileCompanion(); }}
+                        aria-label={textForLang(lang, 'Companion', '伴读', '伴讀')}
+                        title={textForLang(lang, 'Open the companion', '打开伴读', '開啟伴讀')}
+                    >
+                        <FileCompanionIcon />
+                    </button>
+                    <button
+                        type="button"
+                        className="mc-task-pane__knowledge"
+                        data-testid="task-knowledge"
+                        onClick={() => openSettingsTab('knowledge', { hideSettingsNav: true })}
+                        aria-label={textForLang(lang, 'Knowledge base', '知识库', '知識庫')}
+                        title={textForLang(lang, 'Open knowledge base', '打开知识库', '開啟知識庫')}
+                    >
+                        <KnowledgeEntryIcon />
+                    </button>
+                </span>
                 <span className="mc-task-pane__toolbar-divider" aria-hidden="true" />
             <span className="mc-task-pane__tool-group">
                 <button
                     type="button"
-                    data-testid="sidebar-theme-toggle"
-                    onClick={() => window.dispatchEvent(new CustomEvent('maclaw:toggle-ai-theme'))}
-                    aria-label={themeToggleLabel}
-                    title={themeToggleLabel}
+                    data-testid="task-cloud-drive"
+                    onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_CLOUD_DRIVE))}
+                    aria-label={textForLang(lang, 'Cloud drive', '云盘', '雲端硬碟')}
+                    title={textForLang(lang, 'Cloud drive, shared with the phone', '云盘，与手机端共享', '雲端硬碟，與手機端共享')}
                 >
-                    {headerThemeMode === 'dark' ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
-                    ) : (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
-                    )}
+                    <CloudDriveIcon />
                 </button>
                 {(showCloudWorkspaceManagement || showCloudWorkspaceCreation) && (
                     <button
@@ -4024,6 +4069,19 @@ export const SidebarTaskManagement = ({
                         <CloudComputingIcon />
                     </button>
                 )}
+                <button
+                    type="button"
+                    data-testid="sidebar-theme-toggle"
+                    onClick={() => window.dispatchEvent(new CustomEvent('maclaw:toggle-ai-theme'))}
+                    aria-label={themeToggleLabel}
+                    title={themeToggleLabel}
+                >
+                    {headerThemeMode === 'dark' ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+                    ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
+                    )}
+                </button>
             </span>
             </span>
             </div>

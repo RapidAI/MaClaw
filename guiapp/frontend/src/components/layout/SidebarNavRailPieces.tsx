@@ -1,4 +1,5 @@
 import { AppsRailIcon, ExpertRailIcon, GossipIcon, ProFeaturesIcon, SettingsIcon, ToolsRailIcon } from './SidebarNavIcons';
+import { requestRailMiddleFocus, useRailMiddleFocus } from './railMiddleFocus';
 import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'react';
 
 /**
@@ -265,10 +266,12 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
     const expertTitle = useProMenu ? proFeaturesLabel : (showToolsEntry ? (utilitiesTitle || labels.experts) : (utilitiesTitle || utilitiesLabel || labels.experts));
     const proPageActive = (showUtilitiesEntry && navTab === 'utilities') || (showWorkflowEntry && navTab === 'workflows');
     const toolLabel = toolsLabel || labels.tools || (isEnglish ? 'Tools' : '工具');
-
-    const emitRailIntent = (name: string) => {
-        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(name));
-    };
+    // Workbench and digital employees share the assistant page. The highlight
+    // follows which middle pane is actually showing, not merely navTab === 'ai'.
+    const middleFocus = useRailMiddleFocus();
+    const assistantSurface = navTab === 'ai';
+    const employeesActive = assistantSurface && middleFocus === 'employees';
+    const workbenchActive = assistantSurface && !employeesActive;
 
     return (
         <>
@@ -277,8 +280,8 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 label={labels.workbench}
                 legacyLabel={aiAssistantLabel}
                 icon={<div className="ai-nav-icon-badge" aria-hidden="true"><HomeRailIcon /></div>}
-                active={navTab === 'ai'}
-                onClick={() => switchTool('ai')}
+                active={workbenchActive}
+                onClick={() => { switchTool('ai'); requestRailMiddleFocus('tasks'); }}
                 title={aiAssistantLabel}
                 aiStyle
             />
@@ -302,7 +305,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 menuTrigger={proMenuAvailable ? { expanded: proMenuOpen, controls: 'pro-features-popup-menu' } : undefined}
             />
             <SemanticNavItem id="tools" label={toolLabel} icon={<ToolsRailIcon />} active={navTab === 'tools'} onClick={() => switchTool('tools')} title={toolsTitle || toolLabel} testId="sidebar-tools-nav" visible={showToolsEntry} />
-            <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={false} onClick={() => { switchTool('ai'); emitRailIntent('maclaw:focus-digital-employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
+            <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={employeesActive} onClick={() => { switchTool('ai'); requestRailMiddleFocus('employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
             <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />
             <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={libraryMenuOpen || navTab === 'files' || knowledgeActive || latexTemplatesActive} current={navTab === 'files' || knowledgeActive || latexTemplatesActive} onClick={event => { if (onToggleLibraryMenu) onToggleLibraryMenu(event.currentTarget); }} title={labels.files} testId="sidebar-files-nav" menuTrigger={{ expanded: libraryMenuOpen, controls: 'library-popup-menu' }} />
             <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings' && !knowledgeActive} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />

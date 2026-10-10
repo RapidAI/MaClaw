@@ -306,6 +306,21 @@ create_app_bundle() {
     <string>MaClaw uses local network to discover and connect to Hub services.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>MaClaw needs photo library access to process screenshots and images.</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>${APP_NAME} File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF

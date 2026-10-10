@@ -96,10 +96,15 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 			return "", err
 		}
 
-		// Post the message to the instance.
-		run, msg, err := svc.PostMessage(ctx, principal, instanceID, "", agentservice.PostMessageInput{
-			Content: actionText,
-		})
+		// SendMessage owns the session. PostMessage with an empty session id
+		// fails before the agent starts.
+		var run *agentservice.Run
+		var msg *agentservice.Message
+		if _, _, targetErr := instanceMessageTarget(ctx, svc, principal, instanceID); targetErr != nil {
+			err = targetErr
+		} else {
+			_, run, msg, err = svc.SendMessage(ctx, principal, instanceID, scheduledTaskMessageInput(task, actionText))
+		}
 		if err != nil {
 			// If the cached instance was deleted, clear cache and retry once.
 			mu.Lock()
@@ -253,21 +258,16 @@ func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, e
 		return "", err
 	}
 	actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
-	var metadata map[string]string
-	if svc != nil && strings.TrimSpace(instanceID) != "" {
-		if inst, instErr := svc.GetInstance(ctx, principal, instanceID); instErr == nil && inst != nil {
-			metadata = inst.Metadata
-			if strings.TrimSpace(inst.ID) != "" {
-				instanceID = inst.ID
-			}
-		}
+	instanceID, metadata, targetErr := instanceMessageTarget(ctx, svc, principal, instanceID)
+	if targetErr != nil {
+		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", targetErr))
 	}
 	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, principal.UserID, principal.TenantID)
 	endUnattended := markDesktopUnattended(instanceID)
 	defer endUnattended()
 	releaseDesktop := occupyUserDesktop(ctx, desktopTenantID, desktopUserID, instanceID)
 	defer releaseDesktop()
-	_, msg, err := svc.PostMessage(ctx, principal, instanceID, "", agentservice.PostMessageInput{Content: actionText})
+	_, _, msg, err := svc.SendMessage(ctx, principal, instanceID, scheduledTaskMessageInput(task, actionText))
 	if err != nil {
 		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", err))
 	}
@@ -275,6 +275,18 @@ func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, e
 		return msg.Content, scheduler.AnnotateRunErrWithContext(ctx, nil)
 	}
 	return "", scheduler.AnnotateRunErrWithContext(ctx, nil)
+}
+
+// scheduledTaskMessageInput keeps one session per task. An empty session id
+// makes PostMessage reject the turn before the agent starts.
+func scheduledTaskMessageInput(task *scheduler.ScheduledTask, content string) agentservice.SendMessageInput {
+	in := agentservice.SendMessageInput{Content: content}
+	if task != nil {
+		if id := strings.TrimSpace(task.ID); id != "" {
+			in.ClientSessionKey = "schedule:" + id
+		}
+	}
+	return in
 }
 
 func runSrvDelegatedSubtask(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, task string) (string, error) {

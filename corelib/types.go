@@ -1089,6 +1089,9 @@ type MaclawLLMConfig struct {
 	WorkflowTypeHint  string `json:"-"`
 	PhaseKindHint     string `json:"-"`
 	TaskTypeHint      string `json:"-"`
+	// ServiceGroupID is a request-only pin for Hub's X-MaClaw-Service-Group-ID.
+	// Empty leaves group selection to the caller's entitlements.
+	ServiceGroupID string `json:"-"`
 
 	// SessionID is a request-only conversation affinity id. OpenCode Go
 	// requires x-opencode-session on every inference request; when set it is

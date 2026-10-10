@@ -97,8 +97,12 @@ describe('useCodePreviewState onAgentFileWrite', () => {
         expect(result.current.state.activeFilePath).toBe('');
         expect(result.current.state.files.has('src/main.cpp')).toBe(true);
 
-        // Same while the pane is already open on the directory tree.
+        // A coding turn starting is not a file change, so the pane stays closed.
         act(() => { eventHandlers.get('code:session_start')?.({ session_id: 'session-1', project_path: 'D:/tasks/linux-sysinfo', auto_open_preview: true }); });
+        expect(result.current.state.active).toBe(false);
+
+        // Same while the pane is already open on the directory tree.
+        act(() => { result.current.reopenPanel(); });
         emitFileUpdate(modifyEvent({
             file_path: 'src/other.cpp',
             content: '// other',
@@ -109,6 +113,22 @@ describe('useCodePreviewState onAgentFileWrite', () => {
         expect(result.current.state.active).toBe(true);
         expect(result.current.state.activeFilePath).toBe('');
         expect(result.current.state.files.has('src/other.cpp')).toBe(true);
+    });
+
+    it('opens the pane on a create or modify after a turn that only read', () => {
+        const onWrite = vi.fn();
+        const { result } = renderHook(() => useCodePreviewState('D:/tasks/linux-sysinfo', true, { onAgentFileWrite: onWrite }));
+
+        act(() => { eventHandlers.get('code:session_start')?.({ session_id: 'session-1', project_path: 'D:/tasks/linux-sysinfo', auto_open_preview: true }); });
+        emitFileUpdate(modifyEvent({ op_type: 'read', original: undefined, force_open: false, auto_open_preview: false }));
+        expect(result.current.state.active).toBe(false);
+        expect(onWrite).not.toHaveBeenCalled();
+
+        emitFileUpdate(modifyEvent({ force_open: true }));
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.activeFilePath).toBe('src/main.cpp');
+        expect(onWrite).toHaveBeenCalledTimes(1);
+        expect(onWrite.mock.calls[0][0]).toMatchObject({ filePath: 'src/main.cpp', opType: 'modify' });
     });
 
     it('notifies for a force-open read so exploration shows the file body', () => {

@@ -30,9 +30,21 @@ var desktopRemoteSession func(ctx context.Context, tenantID, userID string) (des
 // to the Docker service, which may be on another machine.
 var desktopRemoteApp func(ctx context.Context, tenantID, userID, display string, args []string) (string, error)
 
+// desktopRemoteOpen is set by tests. Production asks Hub to start one GUI
+// program on the user's display. The program is argv, not a shell command.
+var desktopRemoteOpen func(ctx context.Context, tenantID, userID, display, program string, args []string) (string, error)
+
+// desktopRemoteInstall is set by tests. Production asks Hub to apt-get install
+// inside the user's desktop container.
+var desktopRemoteInstall func(ctx context.Context, tenantID, userID string, packages []string) (string, error)
+
 // desktopRemoteScreenshot is set by tests. Production asks Hub, which asks the
 // Docker service that owns the user's desktop.
 var desktopRemoteScreenshot func(ctx context.Context, tenantID, userID, display string) ([]byte, error)
+
+// desktopRemoteSavedPath is set by tests that write a screenshot file.
+// Production learns the path from Hub. A value other than DesktopShotPath is ignored.
+var desktopRemoteSavedPath func(name string) string
 
 type desktopHubClient struct {
 	baseURL string
@@ -116,24 +128,164 @@ func (c *desktopHubClient) App(ctx context.Context, tenantID, userID, display st
 	return out.Output, nil
 }
 
-// Screenshot returns a PNG of the user's desktop.
-func (c *desktopHubClient) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+func (c *desktopHubClient) Open(ctx context.Context, tenantID, userID, display, program string, args []string) (string, error) {
 	var out struct {
-		MIME  string `json:"mime"`
-		Image string `json:"image_base64"`
+		Output string `json:"output"`
 	}
-	if err := c.postLimit(ctx, "/api/v1/desktop-services/screenshot", map[string]string{
+	if err := c.post(ctx, "/api/v1/desktop-services/open", map[string]any{
 		"tenant_id": tenantID,
 		"user_id":   userID,
 		"display":   display,
-	}, &out, desktop.MaxScreenshotBytes*2); err != nil {
-		return nil, err
+		"program":   program,
+		"args":      args,
+	}, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+func (c *desktopHubClient) Install(ctx context.Context, tenantID, userID string, packages []string) (string, error) {
+	raw, err := json.Marshal(map[string]any{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"packages":  packages,
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/desktop-services/install", bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: desktop.InstallClientTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("desktop service is unreachable: %s", err.Error())
+	}
+	defer resp.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var parsed struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(payload, &parsed)
+		message := strings.TrimSpace(parsed.Message)
+		if message == "" {
+			message = "desktop service rejected the install"
+		}
+		return "", fmt.Errorf("%s", message)
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	if len(bytes.TrimSpace(payload)) > 0 {
+		if err := json.Unmarshal(payload, &out); err != nil {
+			return "", fmt.Errorf("desktop service returned invalid status")
+		}
+	}
+	return out.Output, nil
+}
+
+func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
+	var out struct {
+		Output string `json:"output"`
+	}
+	if err := c.postLimit(ctx, "/api/v1/desktop-services/file", map[string]any{
+		"tenant_id":  tenantID,
+		"user_id":    userID,
+		"action":     action,
+		"path":       filePath,
+		"content":    content,
+		"old_string": oldString,
+		"new_string": newString,
+	}, &out, 1<<20); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+func (c *desktopHubClient) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	var out struct {
+		Output string `json:"output"`
+	}
+	if err := c.post(ctx, "/api/v1/desktop-services/bash", map[string]any{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"command":   command,
+	}, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+func (c *desktopHubClient) HTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
+	var out struct {
+		Body   string `json:"body"`
+		Status int    `json:"status"`
+		Kind   string `json:"content_type"`
+	}
+	if err := c.postLimit(ctx, "/api/v1/desktop-services/http", map[string]string{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"url":       rawURL,
+	}, &out, 1<<20); err != nil {
+		return "", 0, "", err
+	}
+	return out.Body, out.Status, out.Kind, nil
+}
+
+// Screenshot returns a PNG of the user's desktop.
+func (c *desktopHubClient) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+	data, _, err := c.screenshot(ctx, tenantID, userID, display, "")
+	return data, err
+}
+
+// screenshot returns the PNG and the desktop path when this capture wrote a file.
+// An empty path means the image was captured and no file was written.
+func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
+	var out struct {
+		MIME  string `json:"mime"`
+		Image string `json:"image_base64"`
+		Saved string `json:"saved_path"`
+	}
+	body := map[string]string{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"display":   display,
+	}
+	if strings.TrimSpace(name) != "" {
+		body["name"] = strings.TrimSpace(name)
+	}
+	if err := c.postLimit(ctx, "/api/v1/desktop-services/screenshot", body, &out, desktop.MaxScreenshotBytes*2); err != nil {
+		return nil, "", err
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out.Image))
 	if err != nil || !desktop.IsPNG(data) || len(data) > desktop.MaxScreenshotBytes {
-		return nil, fmt.Errorf("desktop service returned an invalid screenshot")
+		return nil, "", fmt.Errorf("desktop service returned an invalid screenshot")
 	}
-	return data, nil
+	saved := strings.TrimSpace(out.Saved)
+	if strings.TrimSpace(name) == "" || saved != desktop.DesktopShotPath(name) {
+		saved = ""
+	}
+	return data, saved, nil
+}
+
+func desktopRejectedMessage(payload []byte) string {
+	var parsed struct {
+		Message string `json:"message"`
+		Error   any    `json:"error"`
+	}
+	if json.Unmarshal(payload, &parsed) == nil {
+		if message := strings.TrimSpace(parsed.Message); message != "" {
+			return message
+		}
+		if text, ok := parsed.Error.(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return "desktop service rejected the request"
 }
 
 func (c *desktopHubClient) post(ctx context.Context, path string, body any, dest any) error {
@@ -158,7 +310,7 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("desktop service rejected the request")
+		return fmt.Errorf("%s", desktopRejectedMessage(payload))
 	}
 	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
 		if err := json.Unmarshal(payload, dest); err != nil {
@@ -171,12 +323,40 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 // desktopRemoteStop is set by tests. Production asks Hub to stop the desktop.
 var desktopRemoteStop func(ctx context.Context, tenantID, userID string) error
 
+// desktopReleasePlan is the stop-or-keep choice of an owning run whose
+// count could not hit zero because another occupy was still open.
+type desktopReleasePlan struct {
+	holdsAtStart int
+	instanceID   string
+	tenantID     string
+	userID       string
+	callerLeft   bool
+}
+
+// desktopRetiredLogin is a finished login set aside so the open that took
+// the desktop can stop. The count and the person come back if that stop
+// is not accepted.
+type desktopRetiredLogin struct {
+	holds      int
+	prevSpent  int
+	person     string
+	personHeld bool
+}
+
 var (
-	desktopRunsMu  sync.Mutex
-	desktopRuns    = map[string]int{}
-	desktopHolds   = map[string]int{}
-	desktopHandoff    sync.Map
-	desktopAttention sync.Map
+	desktopRunsMu sync.Mutex
+	desktopRuns   = map[string]int{}
+	desktopHolds  = map[string]int{}
+	// desktopSpentHolds is the part of desktopHolds that a finished
+	// login already accounted for while a newer open still had the
+	// desktop. That open's own handoff is the count above this.
+	// An accepted stop clears these maps. A stop that does not land
+	// puts the set-aside login back.
+	desktopSpentHolds    = map[string]int{}
+	desktopRetiredLogins = map[string]desktopRetiredLogin{}
+	desktopReleasePlans  = map[string]desktopReleasePlan{}
+	desktopHandoff       sync.Map
+	desktopAttention     sync.Map
 	// desktopUserGates keep one user's stop and the next start apart.
 	// Stopping writes the website login. Starting during that write would
 	// open another browser and leave the login behind.
@@ -226,6 +406,11 @@ func rememberDesktopOwner(instanceID string, metadata map[string]string, fallbac
 		}
 		if metadata == nil {
 			return account.UserID, account.TenantID
+		}
+		// This instance is a cloud-desktop bot and the person is not on it.
+		// The MaClaw service account is a different desktop from the one noVNC opens.
+		if strings.TrimSpace(metadata["hub_bot"]) == "1" {
+			return "", ""
 		}
 	}
 	if instanceID != "" && account.UserID != "" {
@@ -292,6 +477,9 @@ func noteDesktopHandoff(tenantID, userID, instanceID string) {
 	key := desktopRunKey(tenantID, userID)
 	desktopRunsMu.Lock()
 	desktopHolds[key]++
+	// This open is handing off again. A finished login set aside for it
+	// no longer needs to be put back.
+	delete(desktopRetiredLogins, key)
 	// The reply has not been sent yet. Another bot of this user can still
 	// reach the browser until the run ends. Mark the login now so that bot
 	// cannot switch the page the person is about to use.
@@ -395,13 +583,24 @@ func desktopUnattended(instanceID string) bool {
 // A missing Hub configuration does not start or stop a desktop. The run
 // still clears the logged-in document hold when it ends.
 func occupyUserDesktop(ctx context.Context, tenantID, userID, instanceID string) func() {
+	release, _ := occupyUserDesktopRun(ctx, tenantID, userID, instanceID)
+	return release
+}
+
+// occupyUserDesktopRun is occupyUserDesktop with a flag the async finish
+// sets. A repeated admission occupies before it knows the run already
+// exists. That release only drops the extra count. When it is the release
+// that reaches zero while the owner's choice is still stored, it applies
+// that choice. After the owner has already finished, the same release
+// still must not treat itself as the follow-up that clears the login.
+func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID string) (func(), *bool) {
 	userID = strings.TrimSpace(userID)
 	instanceID = strings.TrimSpace(instanceID)
 	if userID == "" {
-		return func() {}
+		return func() {}, nil
 	}
 	if desktopRemoteSession == nil && desktopRemoteStop == nil && !desktopHubConfigured() {
-		return func() { releaseLoggedInDocument(tenantID, userID) }
+		return func() { releaseLoggedInDocument(tenantID, userID) }, nil
 	}
 	key := desktopRunKey(tenantID, userID)
 	// A failed open still counts. Hub may already have started the desktop,
@@ -411,6 +610,7 @@ func occupyUserDesktop(ctx context.Context, tenantID, userID, instanceID string)
 	// so a stop that is still writing the website login cannot clear it.
 	gate := desktopUserGate(key)
 	var holdsAtStart int
+	owned := true
 	func() {
 		gate.Lock()
 		defer gate.Unlock()
@@ -429,22 +629,40 @@ func occupyUserDesktop(ctx context.Context, tenantID, userID, instanceID string)
 			left = 0
 		}
 		stop := false
+		stopTenant, stopUser, stopInstance := tenantID, userID, instanceID
+		callerLeft := ctx.Err() != nil && !desktopUnattended(instanceID)
 		if left == 0 {
-			handedOff := desktopHolds[key] > holdsAtStart
-			person, _ := desktopPersonInstance.Load(key)
-			personID, _ := person.(string)
-			switch {
-			case handedOff:
-				if instanceID != "" && !desktopUnattended(instanceID) {
-					desktopPersonInstance.Store(key, instanceID)
-				}
-			case personID != "" && personID == instanceID && !desktopUnattended(instanceID):
-				desktopHolds[key] = 0
-				desktopPersonInstance.Delete(key)
-				stop = true
-			case personID != "":
-			default:
-				stop = true
+			plan, planned := desktopReleasePlans[key]
+			delete(desktopReleasePlans, key)
+			if !owned && planned {
+				stop = decideDesktopRelease(key, plan.instanceID, plan.holdsAtStart)
+				stopTenant, stopUser, stopInstance = plan.tenantID, plan.userID, plan.instanceID
+				callerLeft = plan.callerLeft
+			} else if !owned {
+				stop = decideUnownedDesktopRelease(key)
+			} else {
+				stop = decideDesktopRelease(key, instanceID, holdsAtStart)
+			}
+		} else if owned {
+			desktopReleasePlans[key] = desktopReleasePlan{
+				holdsAtStart: holdsAtStart,
+				instanceID:   instanceID,
+				tenantID:     tenantID,
+				userID:       userID,
+				callerLeft:   callerLeft,
+			}
+		}
+		// Snapshot the login this decision saw. A newer open can change
+		// the count or the person before the stop runs, and that newer
+		// handoff has to stay.
+		var stopHolds int
+		var stopPerson string
+		var stopPersonHeld bool
+		if stop {
+			stopHolds = desktopHolds[key]
+			if person, held := desktopPersonInstance.Load(key); held {
+				stopPerson, _ = person.(string)
+				stopPersonHeld = true
 			}
 		}
 		desktopRunsMu.Unlock()
@@ -452,14 +670,21 @@ func occupyUserDesktop(ctx context.Context, tenantID, userID, instanceID string)
 		// already be on this browser. Stopping, or clearing the page lock,
 		// would drop the website login. A scheduled run has nobody waiting,
 		// so it still stops.
-		callerLeft := ctx.Err() != nil && !desktopUnattended(instanceID)
 		// A handoff leaves the desktop up. The page lock stays while the
 		// person is still signing in, and drops only after that continuation
 		// has finished and nobody is waiting.
 		if left == 0 && !callerLeft && !stop {
-			releaseLoggedInDocument(tenantID, userID)
+			releaseLoggedInDocument(stopTenant, stopUser)
 		}
 		if !stop || callerLeft {
+			// The continuation already set the finished login aside. This
+			// open is disconnected before it can stop, so that login has
+			// to come back. A handoff recorded above leaves it unset.
+			if stop && callerLeft {
+				desktopRunsMu.Lock()
+				restoreRetiredDesktopLogin(key)
+				desktopRunsMu.Unlock()
+			}
 			return
 		}
 		// A newer run may already be opening this same desktop. Stopping
@@ -470,15 +695,160 @@ func occupyUserDesktop(ctx context.Context, tenantID, userID, instanceID string)
 		defer gate.Unlock()
 		desktopRunsMu.Lock()
 		busy := desktopRuns[key] > 0
+		if busy {
+			// The continuation already chose to stop. Leaving the old
+			// login markers would make this newer open look unfinished,
+			// so its release would keep the desktop. Set that login
+			// aside. A handoff this open already recorded changes the
+			// count or the person and stays. If the stop is not
+			// accepted, or this open's caller has disconnected, the
+			// login is put back. The page lock stays with this open.
+			retireFinishedDesktopLogin(key, stopHolds, stopPersonHeld, stopPerson)
+		}
 		desktopRunsMu.Unlock()
 		if busy {
 			return
 		}
-		if err := releaseUserDesktop(context.Background(), tenantID, userID, instanceID); err != nil {
+		if err := releaseUserDesktop(context.Background(), stopTenant, stopUser, stopInstance); err != nil {
+			// Hub kept the desktop, or the stop did not land. A login
+			// set aside for this open is still the one a later release
+			// must not shut down.
+			desktopRunsMu.Lock()
+			restoreRetiredDesktopLogin(key)
+			desktopRunsMu.Unlock()
 			return
 		}
-		releaseLoggedInDocument(tenantID, userID)
+		// Drop the handoff only after the stop is accepted. Hub can keep
+		// the desktop, and a disconnect skips the stop. Those paths
+		// put a set-aside login back, so the count and the person stay.
+		// Clearing earlier lets the next repeated admission shut a
+		// desktop that is still up.
+		desktopRunsMu.Lock()
+		desktopHolds[key] = 0
+		delete(desktopSpentHolds, key)
+		delete(desktopRetiredLogins, key)
+		desktopPersonInstance.Delete(key)
+		desktopRunsMu.Unlock()
+		releaseLoggedInDocument(stopTenant, stopUser)
+	}, &owned
+}
+
+// decideUnownedDesktopRelease is the last release of an occupy that did not
+// admit the run, after the owning run already applied its own choice and
+// dropped the saved plan. A live hold or a person still on the desktop
+// means that choice was to keep it. A hold a finished login already
+// accounted for does not count. An accepted stop clears the hold and the
+// person together. When Hub keeps the desktop, both stay.
+// This release must not clear the login itself. With neither signal, the
+// extra open is the only thing left, so it stops.
+func decideUnownedDesktopRelease(key string) bool {
+	if desktopActiveHolds(key) > 0 {
+		return false
 	}
+	if _, held := desktopPersonInstance.Load(key); held {
+		return false
+	}
+	return true
+}
+
+// decideDesktopRelease reports whether the desktop stops once its run count
+// hits zero. The hold baseline belongs to the run that owns the turn.
+func decideDesktopRelease(key, instanceID string, holdsAtStart int) bool {
+	handedOff := desktopActiveHolds(key) > desktopActiveBaseline(key, holdsAtStart)
+	person, _ := desktopPersonInstance.Load(key)
+	personID, _ := person.(string)
+	switch {
+	case handedOff:
+		if instanceID != "" && !desktopUnattended(instanceID) {
+			desktopPersonInstance.Store(key, instanceID)
+		}
+		return false
+	case personID != "" && personID == instanceID && !desktopUnattended(instanceID):
+		// Same bot finished the login. The count and the person stay until
+		// the stop is accepted; see the release that calls this.
+		return true
+	case personID != "":
+		return false
+	default:
+		return true
+	}
+}
+
+// desktopActiveHolds is the handoff count that still means someone is
+// logging in. desktopRunsMu is held. A finished login can leave its count
+// in place while a newer open is using the desktop; that part does not
+// keep the desktop.
+func desktopActiveHolds(key string) int {
+	n := desktopHolds[key] - desktopSpentHolds[key]
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func desktopActiveBaseline(key string, holdsAtStart int) int {
+	n := holdsAtStart - desktopSpentHolds[key]
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// retireFinishedDesktopLogin drops a login the continuation already
+// finished, when a newer open took the desktop before the stop could run.
+// desktopRunsMu is held. A handoff recorded after this decision changes
+// the count or the person and is left in place. The raw count stays so
+// that newer handoff still sits above the baseline its open captured.
+func retireFinishedDesktopLogin(key string, holds int, personHeld bool, personID string) {
+	current, held := desktopPersonInstance.Load(key)
+	currentID, _ := current.(string)
+	if desktopHolds[key] != holds || held != personHeld || currentID != personID {
+		return
+	}
+	// This login was already set aside. A later open can reach the same
+	// decision while the person is gone. Replacing the saved login would
+	// forget who was signing in, and a stop Hub does not accept could
+	// not put that person back.
+	if prev, ok := desktopRetiredLogins[key]; ok && prev.holds == holds && !personHeld {
+		return
+	}
+	prevSpent := desktopSpentHolds[key]
+	desktopRetiredLogins[key] = desktopRetiredLogin{
+		holds:      holds,
+		prevSpent:  prevSpent,
+		person:     personID,
+		personHeld: personHeld,
+	}
+	if holds > 0 {
+		desktopSpentHolds[key] = holds
+	} else {
+		delete(desktopSpentHolds, key)
+	}
+	desktopPersonInstance.Delete(key)
+}
+
+// restoreRetiredDesktopLogin puts a set-aside login back. desktopRunsMu
+// is held. A newer handoff changes the count or stores a person, and
+// that login is left as it is.
+func restoreRetiredDesktopLogin(key string) {
+	retired, ok := desktopRetiredLogins[key]
+	if !ok {
+		return
+	}
+	_, held := desktopPersonInstance.Load(key)
+	if held || desktopHolds[key] != retired.holds || desktopSpentHolds[key] != retired.holds {
+		delete(desktopRetiredLogins, key)
+		return
+	}
+	if retired.prevSpent > 0 {
+		desktopSpentHolds[key] = retired.prevSpent
+	} else {
+		delete(desktopSpentHolds, key)
+	}
+	if retired.personHeld {
+		desktopPersonInstance.Store(key, retired.person)
+	}
+	delete(desktopRetiredLogins, key)
 }
 
 func desktopUserGate(key string) *sync.Mutex {
@@ -519,37 +889,88 @@ func releaseDesktopPerson(instanceID string) {
 		instanceID string
 	}
 	var idle []idleDesktop
+	var unlockPage []idleDesktop
+	// Hold the run lock across both scans. A set-aside login is not in the
+	// live map, and putting it back takes this same lock. Looking first and
+	// deleting later lets that put-back land in between.
+	desktopRunsMu.Lock()
 	desktopPersonInstance.Range(func(key, value any) bool {
 		id, _ := value.(string)
 		if id != instanceID {
 			return true
 		}
-		desktopPersonInstance.Delete(key)
-		if runKey, ok := key.(string); ok {
-			desktopRunsMu.Lock()
-			delete(desktopHolds, runKey)
-			left := desktopRuns[runKey]
-			desktopRunsMu.Unlock()
-			desktopLoginDocument.Delete(runKey)
-			desktopResumeUser.Delete(runKey)
-			tenantID, userID, _ := strings.Cut(runKey, "\x00")
-			// Another bot of this user may still be in the browser. Stopping
-			// here would drop the website login that run is using.
-			if left <= 0 {
-				idle = append(idle, idleDesktop{tenantID: tenantID, userID: userID, runKey: runKey, instanceID: instanceID})
-			}
-			releaseLoggedInDocument(tenantID, userID)
+		runKey, ok := key.(string)
+		if !ok {
+			desktopPersonInstance.Delete(key)
+			return true
 		}
-		desktopResumeFocus.Delete("instance\x00" + instanceID)
+		desktopPersonInstance.Delete(key)
+		delete(desktopHolds, runKey)
+		delete(desktopSpentHolds, runKey)
+		delete(desktopRetiredLogins, runKey)
+		tenantID, userID, _ := strings.Cut(runKey, "\x00")
+		item := idleDesktop{tenantID: tenantID, userID: userID, runKey: runKey, instanceID: instanceID}
+		unlockPage = append(unlockPage, item)
+		// Another bot of this user may still be in the browser. Stopping
+		// here would drop the website login that run is using.
+		if desktopRuns[runKey] <= 0 {
+			idle = append(idle, item)
+		}
 		return true
 	})
+	for runKey, retired := range desktopRetiredLogins {
+		if !retired.personHeld || retired.person != instanceID {
+			continue
+		}
+		current, held := desktopPersonInstance.Load(runKey)
+		currentID, _ := current.(string)
+		if held && currentID != instanceID {
+			// A newer login is on this desktop. Drop only the token that
+			// would put the deleted bot back over them.
+			delete(desktopRetiredLogins, runKey)
+			continue
+		}
+		delete(desktopRetiredLogins, runKey)
+		desktopPersonInstance.Delete(runKey)
+		if held {
+			delete(desktopHolds, runKey)
+			delete(desktopSpentHolds, runKey)
+			tenantID, userID, _ := strings.Cut(runKey, "\x00")
+			item := idleDesktop{tenantID: tenantID, userID: userID, runKey: runKey, instanceID: instanceID}
+			unlockPage = append(unlockPage, item)
+			if desktopRuns[runKey] <= 0 {
+				idle = append(idle, item)
+			}
+			continue
+		}
+		// The hold count stays spent. The next release still decides to
+		// stop. Clearing only that spent count would look like a live
+		// handoff and leave the desktop up with nobody logged in.
+		if desktopRuns[runKey] > 0 {
+			continue
+		}
+		tenantID, userID, _ := strings.Cut(runKey, "\x00")
+		item := idleDesktop{tenantID: tenantID, userID: userID, runKey: runKey, instanceID: instanceID}
+		unlockPage = append(unlockPage, item)
+		idle = append(idle, item)
+	}
+	desktopRunsMu.Unlock()
+	desktopResumeFocus.Delete("instance\x00" + instanceID)
+	for _, item := range unlockPage {
+		desktopLoginDocument.Delete(item.runKey)
+		desktopResumeUser.Delete(item.runKey)
+		releaseLoggedInDocument(item.tenantID, item.userID)
+	}
 	for _, item := range idle {
 		gate := desktopUserGate(item.runKey)
 		gate.Lock()
 		desktopRunsMu.Lock()
 		busy := desktopRuns[item.runKey] > 0
+		current, held := desktopPersonInstance.Load(item.runKey)
+		currentID, _ := current.(string)
+		someoneElse := held && currentID != "" && currentID != item.instanceID
 		desktopRunsMu.Unlock()
-		if !busy {
+		if !busy && !someoneElse {
 			_ = releaseUserDesktop(context.Background(), item.tenantID, item.userID, item.instanceID)
 		}
 		gate.Unlock()

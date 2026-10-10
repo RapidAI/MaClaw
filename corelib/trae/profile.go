@@ -31,8 +31,9 @@ const (
 	// AppID is the SOLO app identity sent as x-app-id on chat requests.
 	AppID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 
-	// UserAgentPrefix builds the "Trae/<ideVersion>" request identity the
-	// upstream expects on chat traffic.
+	// UserAgentPrefix builds the "Trae/<version>" request identity. Login
+	// appends the authorization-page IDE version; chat and the model catalog
+	// append the SOLO client version the model host gates on.
 	UserAgentPrefix = "Trae/"
 
 	// LoginPluginVersion matches the client's tronBuildVersion used by the
@@ -86,7 +87,13 @@ type Profile struct {
 	ClientID       string
 	IDEVersion     string
 	IDEVersionCode string
-	DefaultModel   string
+	// ClientVersion is the SOLO build the model host is told it serves.
+	// llm_utils_chat and get_detail_param offer a config only to a client
+	// new enough for it. IDEVersion stays the build named on the
+	// authorization page; the two are not the same client.
+	ClientVersion     string
+	ClientVersionCode string
+	DefaultModel      string
 }
 
 // AuthHosts lists the account hosts a token exchange/userinfo may ride, in
@@ -119,34 +126,38 @@ func requestHostCase(raw string) string {
 // CNProfile is the domestic realm.
 func CNProfile() Profile {
 	return Profile{
-		ID:             "cn",
-		Name:           NameCN,
-		StoreID:        StoreCN,
-		ConsoleBase:    "https://www.trae.cn",
-		AuthBase:       "https://api.trae.cn",
-		AuthAltBase:    "https://api.trae.com.cn",
-		ChatHost:       "https://trae-api-cn.mchost.guru",
-		ClientID:       SOLOClientID,
-		IDEVersion:     "3.3.67",
-		IDEVersionCode: "20260401",
-		DefaultModel:   "glm-5.2",
+		ID:                "cn",
+		Name:              NameCN,
+		StoreID:           StoreCN,
+		ConsoleBase:       "https://www.trae.cn",
+		AuthBase:          "https://api.trae.cn",
+		AuthAltBase:       "https://api.trae.com.cn",
+		ChatHost:          "https://trae-api-cn.mchost.guru",
+		ClientID:          SOLOClientID,
+		IDEVersion:        "3.3.67",
+		IDEVersionCode:    "20260401",
+		ClientVersion:     "0.1.69",
+		ClientVersionCode: "20260917",
+		DefaultModel:      "glm-5.2",
 	}
 }
 
 // GlobalProfile is the international realm (Singapore deployment).
 func GlobalProfile() Profile {
 	return Profile{
-		ID:             "global",
-		Name:           NameGlobal,
-		StoreID:        StoreGlobal,
-		ConsoleBase:    "https://www.trae.ai",
-		AuthBase:       "https://growsg-normal.trae.ai",
-		AuthAltBase:    "",
-		ChatHost:       "https://coresg-normal.trae.ai",
-		ClientID:       SOLOClientID,
-		IDEVersion:     "3.5.51",
-		IDEVersionCode: "20260401",
-		DefaultModel:   "gpt-5",
+		ID:                "global",
+		Name:              NameGlobal,
+		StoreID:           StoreGlobal,
+		ConsoleBase:       "https://www.trae.ai",
+		AuthBase:          "https://growsg-normal.trae.ai",
+		AuthAltBase:       "",
+		ChatHost:          "https://coresg-normal.trae.ai",
+		ClientID:          SOLOClientID,
+		IDEVersion:        "3.5.51",
+		IDEVersionCode:    "20260401",
+		ClientVersion:     "0.1.69",
+		ClientVersionCode: "20260917",
+		DefaultModel:      "gpt-5",
 	}
 }
 

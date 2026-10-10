@@ -86,7 +86,8 @@ COPY --from=shim /src/libclose_range_shim.so /usr/lib/x86_64-linux-gnu/libclose_
 RUN echo /usr/lib/x86_64-linux-gnu/libclose_range_shim.so > /etc/ld.so.preload
 COPY fcitx5-profile /etc/xdg/fcitx5/profile
 # Debian ships no fcitx5 autostart (it relies on im-config); start it with the XFCE session.
-# Drop the xscreensaver autostart entry as well: a blanked or locked screen breaks agents.
+# Drop xscreensaver's autostart if a later package adds it. Xvfb's own saver
+# still blanks the framebuffer after ten idle minutes; keep_screen_awake turns that off.
 RUN printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Fcitx 5' 'Exec=fcitx5' \
       'X-GNOME-Autostart-Phase=Applications' > /etc/xdg/autostart/org.fcitx.Fcitx5.desktop \
  && rm -f /etc/xdg/autostart/xscreensaver.desktop

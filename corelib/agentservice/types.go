@@ -995,6 +995,18 @@ type PostMessageInput struct {
 	// after the durable run is admitted. Synchronous callers retain the gate
 	// through execution for historical behavior.
 	asyncAdmission bool `json:"-"`
+	// PrepareExecution and FinishExecution run on the detached execution
+	// context, around PostMessage. JSON clients cannot set them. The desktop
+	// message path uses them to hold the desktop and keep the screenshot for
+	// the whole run, after the HTTP request that admitted it has returned.
+	PrepareExecution func(context.Context) context.Context        `json:"-"`
+	FinishExecution  func(context.Context, *Run, *Message, error) `json:"-"`
+	// ExecutionOwner reports whether this call admitted the run. The caller
+	// allocates the bool, still false, before PostMessage. It becomes true
+	// only after durable admission. A nil pointer means the caller treats
+	// this call as the owner. An idempotent replay leaves it false so that
+	// call does not consume the desktop handoff or publish a result.
+	ExecutionOwner *bool `json:"-"`
 }
 
 type SendMessageInput struct {
@@ -1025,6 +1037,12 @@ type SendMessageInput struct {
 	// DatabaseApproval is host-only and is forwarded to PostMessage. Wire
 	// clients/model output cannot provide an approval token through this type.
 	DatabaseApproval *database.ApprovalContext `json:"-"`
+	// PrepareExecution and FinishExecution are forwarded to PostMessageAsync.
+	// They run on the detached execution context. Wire clients cannot set them.
+	PrepareExecution func(context.Context) context.Context        `json:"-"`
+	FinishExecution  func(context.Context, *Run, *Message, error) `json:"-"`
+	// ExecutionOwner is forwarded to PostMessage. See PostMessageInput.
+	ExecutionOwner *bool `json:"-"`
 }
 
 type AgentToolCapability struct {

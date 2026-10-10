@@ -33,12 +33,16 @@ type DynamicProviderDescriptor struct {
 	ReadyUntil           time.Time
 	ChannelScopes        []string
 	InvocationSchema     map[string]interface{}
+	// ModelFunction is set only by a code-reviewed binding whose capability
+	// already has a stable prompt spelling. Empty keeps the opaque grant token.
+	ModelFunction string
 }
 
 // Project converts a verified runtime binding into the common catalog model
 // and its trusted renderer source. The returned AdapterName is an internal
-// resolver identity, never a model-facing function name; CatalogRenderer will
-// replace it with a signed opaque InvocationGrant token.
+// resolver identity, never a vendor tool name. CatalogRenderer shows the
+// stable prompt spelling when ModelFunction names one, and otherwise replaces
+// the adapter with a signed opaque InvocationGrant token.
 func (d DynamicProviderDescriptor) Project() (ProviderSpec, map[string]interface{}, error) {
 	d.Kind = strings.ToLower(strings.TrimSpace(d.Kind))
 	d.ProviderID = strings.TrimSpace(d.ProviderID)
@@ -65,6 +69,12 @@ func (d DynamicProviderDescriptor) Project() (ProviderSpec, map[string]interface
 		return ProviderSpec{}, nil, fmt.Errorf("authorize dynamic invocation schema: %w", err)
 	}
 	adapterName := "dynamic_" + d.Kind + "_" + SchemaDigest([]byte(strings.Join([]string{d.Kind, d.ProviderID, d.ImplementationID, bindingSchemaDigest}, "\x00")))[:24]
+	if function := strings.TrimSpace(d.ModelFunction); function != "" {
+		if !AllowReviewedDynamicPrompt(function) {
+			return ProviderSpec{}, nil, fmt.Errorf("dynamic provider prompt %q is not a reviewed model function", function)
+		}
+		adapterName = reviewedDynamicPromptPrefix + function + ":" + adapterName
+	}
 	provider := ProviderSpec{
 		AdapterName: adapterName,
 		Binding: ProviderBinding{

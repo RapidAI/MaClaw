@@ -51,6 +51,13 @@ describe("TaskMoreActions", () => {
         expect(onRecordSkill).not.toHaveBeenCalled();
     });
 
+    it("does not put the file companion label on the task header", () => {
+        renderMenu();
+
+        expect(screen.queryByTestId("task-open-file-companion")).toBeNull();
+        expect(screen.queryByText("用伴读打开")).toBeNull();
+    });
+
     it("holds the menu item while a recording is still being saved", () => {
         const onRecordSkill = vi.fn();
         renderMenu({ onRecordSkill, recordSkillPending: true });

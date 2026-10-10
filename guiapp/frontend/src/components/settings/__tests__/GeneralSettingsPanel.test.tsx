@@ -11,17 +11,23 @@ const PatchConfigFieldsMock = vi.fn((patch: Partial<corelib.AppConfig>) => new c
 }));
 const LoadConfigMock = vi.fn(() => new corelib.AppConfig({ default_launch_mode: 'local' }));
 const SelectWorkingDirMock = vi.fn();
+const UnregisterFileCompanionLinuxDesktopMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     PatchConfigFields: (patch: Partial<corelib.AppConfig>) => PatchConfigFieldsMock(patch),
     LoadConfig: () => LoadConfigMock(),
     SelectWorkingDir: () => SelectWorkingDirMock(),
+    UnregisterFileCompanionLinuxDesktop: () => UnregisterFileCompanionLinuxDesktopMock(),
 }));
 
 afterEach(() => {
     cleanup();
     vi.clearAllMocks();
 });
+
+function setPlatform(platform: string) {
+    Object.defineProperty(navigator, 'platform', { value: platform, configurable: true });
+}
 
 function renderPanel(configPatch: Partial<corelib.AppConfig> = {}, lang = 'en') {
     const config = new corelib.AppConfig({
@@ -283,5 +289,20 @@ describe('GeneralSettingsPanel', () => {
         fireEvent.blur(input);
 
         expect(PatchConfigFieldsMock).toHaveBeenLastCalledWith({ working_directory: 'D:/new' });
+    });
+
+    it('hides the context-menu removal on Windows', () => {
+        setPlatform('Win32');
+        renderPanel({}, 'zh-Hans');
+        expect(screen.queryByTestId('remove-file-companion-menu')).toBeNull();
+    });
+
+    it('removes the Linux context-menu entry from settings', () => {
+        setPlatform('Linux x86_64');
+        renderPanel({}, 'zh-Hans');
+        const button = screen.getByTestId('remove-file-companion-menu');
+        expect(button.textContent).toContain('移除右键打开项');
+        fireEvent.click(button);
+        expect(UnregisterFileCompanionLinuxDesktopMock).toHaveBeenCalledTimes(1);
     });
 });

@@ -970,6 +970,13 @@
     background: transparent;
 }
 
+/* Home knowledge entry: the category rail is not part of this page. */
+#App[data-nav-tab='settings'] .settings-shell.settings-shell--solo {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "content";
+}
+
 #App[data-nav-tab='settings'] .settings-top-tabs {
     /* Sticky sizes this item to its content, so it never becomes the scrollport. */
     position: static;
@@ -1127,6 +1134,14 @@
         height: auto;
         min-height: auto;
         overflow: visible;
+    }
+
+    /* The desktop solo rule uses a 1fr row. That row collapses to 0 when this
+       breakpoint makes the shell height indefinite, so size the page to its content. */
+    #App[data-nav-tab='settings'] .settings-shell.settings-shell--solo {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto;
+        grid-template-areas: "content";
     }
 
     #App[data-nav-tab='settings'] .settings-top-tabs {
@@ -3385,7 +3400,7 @@
 .atbn-urgent-open { background: none; border: none; padding: 0; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
 
 /* AssistantReasoningPanel.tsx */
-.arp-label { flex: 0 0 auto; white-space: nowrap; }
+.arp-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .arp-object { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: 0.78; }
 .arp-step { font-size: 10px; font-weight: 600; opacity: .72; flex: 0 0 auto; white-space: nowrap; }
 .arp-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: .72; }

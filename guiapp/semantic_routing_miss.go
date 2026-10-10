@@ -286,6 +286,22 @@ func semanticUnmetOnlyBudget(unmet []tool.UnmetNeed) bool {
 	return true
 }
 
+func semanticUnmetOnlyReasons(unmet []tool.UnmetNeed, reasons ...string) bool {
+	if len(unmet) == 0 {
+		return false
+	}
+	allowed := make(map[string]bool, len(reasons))
+	for _, reason := range reasons {
+		allowed[reason] = true
+	}
+	for _, item := range unmet {
+		if !allowed[item.ReasonCode] {
+			return false
+		}
+	}
+	return true
+}
+
 func semanticUnmetHasReason(err error, reason string) bool {
 	var unmet semanticUnmetNeedsError
 	if !errors.As(err, &unmet) {

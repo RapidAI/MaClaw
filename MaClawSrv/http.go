@@ -2605,6 +2605,23 @@ func (s *HTTPServer) requireExistingTenantUser(w http.ResponseWriter, r *http.Re
 	return true
 }
 
+// messageResponseWriteBudget is how long a synchronous /messages handler may
+// stay silent before flushing. http.Server.WriteTimeout is 120s from the
+// moment the request headers are read, and a silent handler does not reset
+// it. Hub's message client and the maclawsrv proxy wait the same 30 minutes.
+const messageResponseWriteBudget = 30 * time.Minute
+
+// allowMessageResponseWrite replaces the server write deadline for this
+// request. Call it after the desktop is occupied: that wait can run past
+// the original 120s, and a deadline that has already expired can still be
+// moved forward before the body is flushed.
+func allowMessageResponseWrite(w http.ResponseWriter) {
+	if w == nil {
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(messageResponseWriteBudget))
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

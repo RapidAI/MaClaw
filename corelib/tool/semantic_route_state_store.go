@@ -634,7 +634,7 @@ func routeArtifactHasCurrentConsumer(ref RouteArtifactRef, plan ToolPlan) bool {
 			// and report route_state_corrupt on the next retire (2026-08-26,
 			// office×2 budget).
 			if strings.TrimSpace(dependency.ArtifactID) == "" &&
-				RepeatFamilyID(dependency.ProducerSelection) == RepeatFamilyID(ref.ProducerSelection) {
+				RepeatFamilyKey(dependency.ProducerSelection) == RepeatFamilyKey(ref.ProducerSelection) {
 				return true
 			}
 		}

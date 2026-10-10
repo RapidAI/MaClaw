@@ -2,9 +2,13 @@ package guiapp
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // ---------------------------------------------------------------------------
@@ -499,15 +503,66 @@ func TestShouldStickyMergePreviewScan(t *testing.T) {
 	}
 }
 
+func TestEmitCodingWorkbenchSourcePreviewForceOpenRequiresTurnChanges(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte("int main(){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "old.cpp"), []byte("int old(){return 1;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.cpp"), []byte("int neu(){return 2;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	var captured []CodeFileEvent
+	app.codePreviewEventObserver = func(evt CodeFileEvent) { captured = append(captured, evt) }
+	app.codeEventEmitter = NewCodeEventEmitter(app)
+
+	// Read-only turn: sticky history and a tree full of sources are not changes.
+	got := emitCodingWorkbenchSourcePreview(app, "turn-read", dir, nil, nil, []string{"old.cpp"}, true, true)
+	if len(got) != 0 || len(captured) != 0 {
+		t.Fatalf("read-only turn emitted preview paths=%v events=%d", got, len(captured))
+	}
+
+	got = emitCodingWorkbenchSourcePreview(app, "turn-edit", dir, []string{"snake.cpp"}, nil, []string{"old.cpp"}, true, true)
+	if len(got) != 1 || got[0] != "snake.cpp" {
+		t.Fatalf("emitted = %#v, want only snake.cpp", got)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured %d events, want the edited file", len(captured))
+	}
+	if captured[0].FilePath != "snake.cpp" || captured[0].OpType != "modify" || !captured[0].ForceOpen {
+		t.Fatalf("event = %+v, want force-open modify of snake.cpp", captured[0])
+	}
+
+	captured = nil
+	got = emitCodingWorkbenchSourcePreview(app, "turn-create", dir, nil, []string{"new.cpp"}, []string{"old.cpp"}, true, true)
+	if len(got) != 1 || got[0] != "new.cpp" {
+		t.Fatalf("emitted = %#v, want only new.cpp", got)
+	}
+	if len(captured) != 1 || captured[0].FilePath != "new.cpp" || captured[0].OpType != "create" || !captured[0].ForceOpen {
+		t.Fatalf("event = %+v, want force-open create of new.cpp", captured[0])
+	}
+
+	captured = nil
+	got = emitCodingWorkbenchSourcePreview(app, "arm", dir, nil, nil, []string{"old.cpp"}, false, false)
+	if len(got) != 1 || got[0] != "old.cpp" {
+		t.Fatalf("arm restore emitted %#v, want old.cpp", got)
+	}
+	if len(captured) != 1 || captured[0].ForceOpen || captured[0].OpType != "read" || captured[0].FilePath != "old.cpp" {
+		t.Fatalf("arm event = %+v, want a non-opening sticky read", captured[0])
+	}
+}
+
 func TestEmitCodingWorkbenchSourcePreviewRoutesToManagedTaskTab(t *testing.T) {
-	// End-of-turn scan + route path: files under execDir, ProjectPath must be tab path.
+	// Route rewrite for a file list built under execDir. End-of-turn emit does
+	// not scan; this checks the lower-level event builder and tab path only.
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "hello.cpp"), []byte("int main(){return 0;}\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	tabPath := normalizeProjectSessionPath(`D:\data\tasks\cpp-hello-managed`)
-	// Exercise the same selection path emitCodingWorkbenchSourcePreview uses when
-	// turn audit is empty (allowScan + route override).
 	scanned := listCodingWorkbenchPreviewSources(tmpDir, 8)
 	if len(scanned) == 0 || scanned[0] != "hello.cpp" {
 		t.Fatalf("scan = %#v, want hello.cpp", scanned)
@@ -779,6 +834,230 @@ func TestRemotePreviewOutputIsTruncated(t *testing.T) {
 	if !remotePreviewOutputIsTransportTruncated("prefix\r\n... (truncated) ...\r\nsuffix") {
 		t.Fatal("expected CRLF SSH truncation marker to be detected")
 	}
+}
+
+func TestRemotePreviewCaptureIsTheWholeFileNotAnAgentPage(t *testing.T) {
+	if remotePreviewMaxCaptureBytes() >= 1<<20 || remotePreviewMaxCaptureBytes() <= 0 {
+		t.Fatalf("preview capture budget = %d, want a positive size under the 1MB exec-channel cap", remotePreviewMaxCaptureBytes())
+	}
+	decoded := decodeRemotePythonCommandForTest(t, remotePreviewFileCommand("/home/znsoft/prj8/src/i18n.cpp"))
+	for _, want := range []string{"preview_file.read", remotePreviewEndPrefix, "preview_truncated", "bytes="} {
+		if !strings.Contains(decoded, want) {
+			t.Fatalf("preview command missing %q\n%s", want, decoded)
+		}
+	}
+	for _, banned := range []string{"shown >= limit", "limit = 100", "limit = 2000", "[remote read_file truncated:"} {
+		if strings.Contains(decoded, banned) {
+			t.Fatalf("preview command still uses the agent page protocol %q\n%s", banned, decoded)
+		}
+	}
+	python, err := exec.LookPath("python")
+	if err != nil {
+		t.Skip("python is not on PATH")
+	}
+	scriptPath := filepath.Join(t.TempDir(), "preview.py")
+	if err := os.WriteFile(scriptPath, []byte(decoded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(python, "-m", "py_compile", scriptPath).CombinedOutput(); err != nil {
+		t.Fatalf("preview python does not compile: %v\n%s\n%s", err, out, decoded)
+	}
+}
+
+func remotePreviewTestCapture(content string, truncated bool) string {
+	bit := "0"
+	if truncated {
+		bit = "1"
+	}
+	return content + "\n" + remotePreviewEndPrefix + bit + " bytes=" + strconv.Itoa(len(content)) + "]\n"
+}
+
+func TestParseRemotePreviewCapture(t *testing.T) {
+	content, truncated, ok := parseRemotePreviewCapture(remotePreviewTestCapture("int main() {}", false))
+	if !ok || truncated || content != "int main() {}" {
+		t.Fatalf("complete file = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	content, truncated, ok = parseRemotePreviewCapture(remotePreviewTestCapture("line", true))
+	if !ok || !truncated || content != "line" {
+		t.Fatalf("budget cut = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	content, truncated, ok = parseRemotePreviewCapture(remotePreviewTestCapture("the word truncated is source", false))
+	if !ok || truncated || content != "the word truncated is source" {
+		t.Fatalf("source text must not become a truncated preview: %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	content, truncated, ok = parseRemotePreviewCapture(remotePreviewTestCapture("kept\n", false))
+	if !ok || truncated || content != "kept\n" {
+		t.Fatalf("trailing newline = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	framed := remotePreviewTestCapture("    int x;  \n", false)
+	content, truncated, ok = parseRemotePreviewCapture("channel-noise\n" + framed)
+	if !ok || truncated || content != "    int x;  \n" {
+		t.Fatalf("channel prefix = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	content, truncated, ok = parseRemotePreviewCapture("NOISE" + remotePreviewTestCapture("int x;\n", false))
+	if !ok || truncated || content != "int x;\n" {
+		t.Fatalf("glued channel prefix = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	content, truncated, ok = parseRemotePreviewCapture(remotePreviewTestCapture("", false))
+	if !ok || truncated || content != "" {
+		t.Fatalf("empty file = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	if _, _, ok = parseRemotePreviewCapture("hello\n" + remotePreviewEndPrefix + "0 bytes=99]\n"); ok {
+		t.Fatal("a trailer whose byte count does not fit the capture must be rejected")
+	}
+	if _, _, ok = parseRemotePreviewCapture("hello\n" + remotePreviewEndPrefix + "0]\n"); ok {
+		t.Fatal("a trailer without its byte count must be rejected")
+	}
+	if _, _, ok = parseRemotePreviewCapture("no trailer\n"); ok {
+		t.Fatal("a capture without the completeness trailer must be rejected")
+	}
+	if _, _, ok = parseRemotePreviewCapture(remotePreviewBinaryMarker + "\n"); ok {
+		t.Fatal("binary capture must not become a text preview")
+	}
+	if _, _, ok = parseRemotePreviewCapture(""); ok {
+		t.Fatal("empty capture must be rejected")
+	}
+	mention := "see " + remotePreviewBinaryMarker + " in a comment\n"
+	if _, _, ok = parseRemotePreviewCapture(mention); ok {
+		t.Fatal("a source mention of the binary marker is not a preview")
+	}
+	if remotePreviewCaptureIsBinary(mention) {
+		t.Fatal("a source mention of the binary marker must not be classified as a binary file")
+	}
+	if !remotePreviewCaptureIsBinary(remotePreviewBinaryMarker + "\n") {
+		t.Fatal("the binary marker alone is a binary capture")
+	}
+	if !remotePreviewCaptureIsBinary("channel-noise\n" + remotePreviewBinaryMarker + "\n") {
+		t.Fatal("a channel prefix must not hide the binary signal")
+	}
+	marked := "see " + remotePreviewBinaryMarker + "\n"
+	content, truncated, ok = parseRemotePreviewCapture(remotePreviewTestCapture(marked, false))
+	if !ok || truncated || content != marked || remotePreviewCaptureIsBinary(remotePreviewTestCapture(marked, false)) {
+		t.Fatalf("marker text inside a framed file = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+}
+
+func TestRemotePreviewDeliveryDoesNotTreatOldCutAsCurrentTruncation(t *testing.T) {
+	original, missing, truncated := remotePreviewDelivery("old-head", true, false, false)
+	if original != "" || !missing || truncated {
+		t.Fatalf("shrunk file: original=%q missing=%v truncated=%v", original, missing, truncated)
+	}
+	original, missing, truncated = remotePreviewDelivery("old full", false, false, false)
+	if original != "old full" || missing || truncated {
+		t.Fatalf("whole file: original=%q missing=%v truncated=%v", original, missing, truncated)
+	}
+	original, missing, truncated = remotePreviewDelivery("old-head", true, true, false)
+	if original != "" || !missing || !truncated {
+		t.Fatalf("still over budget: original=%q missing=%v truncated=%v", original, missing, truncated)
+	}
+	original, missing, truncated = remotePreviewDelivery("", false, false, true)
+	if original != "" || !missing || truncated {
+		t.Fatalf("missing before-image: original=%q missing=%v truncated=%v", original, missing, truncated)
+	}
+}
+
+func TestRemoteReadFilePageIsNotPreviewTruncation(t *testing.T) {
+	page := "1\tline\n[remote read_file truncated: showing lines 1-100; call again with offset=101]\n"
+	if !remotePreviewOutputIsTruncated(page) {
+		t.Fatal("the agent page marker still means the model should request the next page")
+	}
+	if _, _, ok := parseRemotePreviewCapture(page); ok {
+		t.Fatal("an agent page must not parse as preview file bytes")
+	}
+	numbered := "1\tline\n2\tmore\n"
+	if _, _, ok := parseRemotePreviewCapture(numbered); ok {
+		t.Fatal("numbered agent output is not the file")
+	}
+}
+
+func TestPreviewCaptureKeepsSourceBytesThatTerminalCompactionRemoves(t *testing.T) {
+	raw := remotePreviewTestCapture("    int x;  \n", false)
+	content, truncated, ok := parseRemotePreviewCapture(raw)
+	if !ok || truncated || content != "    int x;  \n" {
+		t.Fatalf("capture = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+	compacted, _, compactedOK := parseRemotePreviewCapture(remote.CompactPtyOutput(raw))
+	if compactedOK && compacted == content {
+		t.Fatal("terminal compaction rewrites source bytes and must not be the preview capture")
+	}
+}
+
+func TestRemotePreviewScriptPreservesFileBytes(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		t.Skip("python is not on PATH")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "i18n.cpp")
+	body := []byte("    const char *s = \"sys\";  \n字符串\n")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, ok := runRemotePreviewScript(t, python, path)
+	if !ok || truncated || content != string(body) {
+		t.Fatalf("preview bytes = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+
+	markerPath := filepath.Join(dir, "marker.cpp")
+	markerBody := []byte("note [remote preview end truncated=0 bytes=1]\nkept\n")
+	if err := os.WriteFile(markerPath, markerBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, ok = runRemotePreviewScript(t, python, markerPath)
+	if !ok || truncated || content != string(markerBody) {
+		t.Fatalf("trailer text inside the file = %q truncated=%v ok=%v", content, truncated, ok)
+	}
+
+	budget := remotePreviewMaxCaptureBytes()
+	exactPath := filepath.Join(dir, "exact.cpp")
+	exact := strings.Repeat("a", budget)
+	if err := os.WriteFile(exactPath, []byte(exact), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, ok = runRemotePreviewScript(t, python, exactPath)
+	if !ok || truncated || content != exact {
+		t.Fatalf("file that fills the budget must stay whole: len=%d truncated=%v ok=%v", len(content), truncated, ok)
+	}
+	head := strings.Repeat("a", budget-len("字"))
+	largePath := filepath.Join(dir, "boundary.cpp")
+	if err := os.WriteFile(largePath, []byte(head+"字tail"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, ok = runRemotePreviewScript(t, python, largePath)
+	if !ok || !truncated || content != head+"字" {
+		t.Fatalf("complete character on the budget boundary was dropped: len=%d truncated=%v ok=%v", len(content), truncated, ok)
+	}
+
+	midHead := strings.Repeat("b", budget-1)
+	midPath := filepath.Join(dir, "midrune.cpp")
+	if err := os.WriteFile(midPath, []byte(midHead+"字"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, ok = runRemotePreviewScript(t, python, midPath)
+	if !ok || !truncated || content != midHead {
+		t.Fatalf("partial rune leaked or a complete byte was dropped: len=%d truncated=%v ok=%v", len(content), truncated, ok)
+	}
+
+	emoji := "😀"
+	emojiHead := strings.Repeat("c", budget-len(emoji))
+	emojiPath := filepath.Join(dir, "emoji.cpp")
+	if err := os.WriteFile(emojiPath, []byte(emojiHead+emoji+"tail"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, ok = runRemotePreviewScript(t, python, emojiPath)
+	if !ok || !truncated || content != emojiHead+emoji {
+		t.Fatalf("complete 4-byte character on the budget boundary was dropped: len=%d truncated=%v ok=%v", len(content), truncated, ok)
+	}
+}
+
+func runRemotePreviewScript(t *testing.T, python, path string) (string, bool, bool) {
+	t.Helper()
+	script := decodeRemotePythonCommandForTest(t, remotePreviewFileCommand(path))
+	out, err := exec.Command(python, "-c", script).Output()
+	if err != nil {
+		t.Fatalf("preview script for %s: %v", path, err)
+	}
+	return parseRemotePreviewCapture(string(out))
 }
 
 func TestRemoteSourcePreviewRequiresFirstFileRange(t *testing.T) {

@@ -67,7 +67,7 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
     const accent = !remote && isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : productAccent;
     const accentStrong = !remote && isDark
         ? CODING_BANNER_LOCAL_DARK_ACCENT_STRONG
-        : (t.titleText || t.text || (isDark ? "#dbe7f5" : "#17263c"));
+        : (t.titleText || t.text || (isDark ? "#dbe7f5" : "#526277"));
     const surface = isDark
         ? `color-mix(in srgb, ${accent} 6%, ${t.titleBarBg || t.bg})`
         : (t.bg || t.titleBarBg);

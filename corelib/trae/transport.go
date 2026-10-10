@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -75,22 +78,59 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	_ = req.Body.Close()
 	token, originalStream := prepareBody(payload, profile)
-	outgoing, err := http.NewRequestWithContext(req.Context(), http.MethodPost,
-		profile.ChatHost+ChatPath, bytes.NewReader(token))
-	if err != nil {
-		return nil, err
+	// The rewritten body always asks for a stream. Accept follows that body,
+	// not the caller's original stream flag: the flag only decides whether
+	// the answer is aggregated after it comes back.
+	var last *http.Response
+	for i, fn := range chatFunctionOrder {
+		if err := req.Context().Err(); err != nil {
+			return nil, err
+		}
+		body := withChatFunction(token, fn)
+		sent := body
+		outgoing, err := http.NewRequestWithContext(req.Context(), http.MethodPost,
+			profile.ChatHost+ChatPath, bytes.NewReader(sent))
+		if err != nil {
+			return nil, err
+		}
+		outgoing.Header = req.Header.Clone()
+		// The clone still carries the OpenAI body's length. Each pool attempt
+		// is a different JSON document, so that length must not go upstream.
+		outgoing.Header.Del("Content-Length")
+		outgoing.Header.Del("Transfer-Encoding")
+		applyChatHeaders(profile, outgoing.Header, req.Header.Get("Authorization"), true)
+		outgoing.ContentLength = int64(len(sent))
+		outgoing.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(sent)), nil
+		}
+		resp, err := base.RoundTrip(outgoing)
+		if err != nil || resp == nil {
+			return resp, err
+		}
+		last = resp
+		// 4001/4023 means this function's catalog does not list config_name.
+		// The next pool may. A refusal that already produced output, or any
+		// other status, is the answer.
+		if resp.StatusCode != http.StatusOK || i == len(chatFunctionOrder)-1 {
+			return translateResponse(req.Context(), resp, profile, body, originalStream), nil
+		}
+		reject, peekErr := consumeFunctionRejection(resp)
+		if peekErr != nil {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return upstreamFailure(resp, peekErr.Error()), nil
+		}
+		if !reject {
+			return translateResponse(req.Context(), resp, profile, body, originalStream), nil
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 	}
-	outgoing.Header = req.Header.Clone()
-	applyChatHeaders(profile, outgoing.Header, req.Header.Get("Authorization"), originalStream)
-	outgoing.ContentLength = int64(len(token))
-	outgoing.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(token)), nil
+	if last == nil {
+		return nil, fmt.Errorf("trae: no upstream response")
 	}
-	resp, err := base.RoundTrip(outgoing)
-	if err != nil || resp == nil {
-		return resp, err
-	}
-	return translateResponse(req.Context(), resp, profile, token, originalStream), nil
+	return translateResponse(req.Context(), last, profile, token, originalStream), nil
 }
 
 // adaptTarget reports calls aimed at a SOLO chat endpoint. A request to the
@@ -144,12 +184,24 @@ func soloSessionKey(authorization string) string {
 // pair derived from the access token's claims. Chat and catalog callers must
 // agree on it or the upstream starts treating the endpoints as two clients.
 func stampSoloAccountFamily(profile Profile, h http.Header, sessionKey string) {
-	h.Set("User-Agent", UserAgentPrefix+profile.IDEVersion)
+	// The model host gates its catalog on the SOLO client version, not the
+	// IDE build named on the authorization page. "default" and an April IDE
+	// version are not offered the current configs, and the host then answers
+	// 4001 for a config_name that client was never given.
+	version := strings.TrimSpace(profile.ClientVersion)
+	if version == "" {
+		version = profile.IDEVersion
+	}
+	versionCode := strings.TrimSpace(profile.ClientVersionCode)
+	if versionCode == "" {
+		versionCode = profile.IDEVersionCode
+	}
+	h.Set("User-Agent", UserAgentPrefix+version)
 	h.Set("x-app-id", AppID)
-	h.Set("X-App-Version", "default")
-	h.Set("X-Ide-Version", profile.IDEVersion)
-	h.Set("X-Ide-Version-Code", profile.IDEVersionCode)
-	h.Set("X-App-Version-Code", profile.IDEVersionCode)
+	h.Set("X-App-Version", version)
+	h.Set("X-Ide-Version", version)
+	h.Set("X-Ide-Version-Code", versionCode)
+	h.Set("X-App-Version-Code", versionCode)
 	h.Set("X-Ide-Version-Type", "stable")
 	h.Set("X-Device-Type", "windows")
 	h.Set("X-OS-Version", "1.0")
@@ -201,9 +253,28 @@ func accountContext(key string) (AccountIdentity, jwtClaims) {
 	return IdentityForUserID(uid), claims
 }
 
+// soloChatFunction is the SOLO Work pool this client asks first. config_name
+// is valid only inside a pool that lists it.
+const soloChatFunction = "solo_work_lite"
+
+// chatFunctionOrder is every chat pool on the model host. The host answers
+// 4001 as soon as config_name is absent from the named pool (glm-5.2 is
+// served from chat_v3 on the current CN catalog, and from solo_work_lite on
+// the SOLO Work catalog). SOLO Work stays first because this client signs in
+// on the SOLO line; the rest are the same host's other chat pools.
+var chatFunctionOrder = []string{
+	soloChatFunction,
+	"chat_v3",
+	"solo_agent",
+	"solo_agent_lite",
+}
+
 // prepareBody converts one OpenAI chat payload into a SOLO llm_utils_chat
-// body: content strings become text chips, the model doubles as config_name,
-// and the SOLO function pool is pinned. Returns (body, originalStream).
+// body. The result is a new object: llm_utils_chat rejects OpenAI fields it
+// does not define (thinking, reasoning_effort, enable_thinking) with code
+// 4001 "param is invalid". Content strings become text chips, the model
+// doubles as config_name, and the SOLO function pool is pinned. Returns
+// (body, originalStream).
 func prepareBody(payload []byte, profile Profile) ([]byte, bool) {
 	var obj map[string]any
 	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
@@ -211,21 +282,216 @@ func prepareBody(payload []byte, profile Profile) ([]byte, bool) {
 	}
 	originalStream, _ := obj["stream"].(bool)
 	rewriteMessages(obj)
+	normalizeToolChoice(obj)
+	normalizeTools(obj)
 	model := strings.TrimSpace(asString(obj["model"]))
 	if model == "" {
 		model = profile.DefaultModel
 	}
-	obj["model"] = model
-	obj["config_name"] = model
-	obj["function"] = "solo_work_lite"
-	obj["stream"] = true
-	normalizeToolChoice(obj)
-	normalizeTools(obj)
-	out, err := json.Marshal(obj)
+	solo := map[string]any{
+		"model":       model,
+		"config_name": model,
+		"function":    soloChatFunction,
+		"stream":      true,
+		"request_id":  randomUUID(),
+		"session_id":  randomUUID(),
+	}
+	if messages, ok := obj["messages"]; ok {
+		solo["messages"] = messages
+	}
+	if n, ok := positiveTokenLimit(obj["max_tokens"]); ok {
+		solo["max_tokens"] = n
+	} else if n, ok := positiveTokenLimit(obj["max_completion_tokens"]); ok {
+		solo["max_tokens"] = n
+	}
+	if temp, ok := obj["temperature"].(float64); ok {
+		solo["temperature"] = temp
+	}
+	if tools, ok := obj["tools"]; ok {
+		solo["tools"] = tools
+	}
+	if choice, ok := obj["tool_choice"]; ok {
+		solo["tool_choice"] = choice
+	}
+	if parallel, ok := obj["parallel_tool_calls"].(bool); ok {
+		if _, hasTools := solo["tools"]; hasTools {
+			solo["parallel_tool_calls"] = parallel
+		}
+	}
+	out, err := json.Marshal(solo)
 	if err != nil {
 		return payload, originalStream
 	}
 	return out, originalStream
+}
+
+func positiveTokenLimit(raw any) (int, bool) {
+	number, ok := raw.(float64)
+	if !ok || number <= 0 || number >= 1e9 {
+		return 0, false
+	}
+	return int(number), true
+}
+
+// withChatFunction rewrites one prepared body for a single pool attempt.
+// request_id belongs to that HTTP request. session_id stays, so the retries
+// remain one conversation.
+func withChatFunction(body []byte, fn string) []byte {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return body
+	}
+	obj["function"] = fn
+	obj["request_id"] = randomUUID()
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func randomUUID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return randomHex(16)
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(raw[:])
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+}
+
+// wrongFunctionCode reports the business codes that mean "this function's
+// catalog does not contain config_name". 1005 is a plan-quota refusal and
+// is not one of them.
+func wrongFunctionCode(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "4001", "4023":
+		return true
+	default:
+		return false
+	}
+}
+
+// consumeFunctionRejection reads just enough of a 200 to tell a membership
+// refusal (JSON envelope or a leading error event, no output yet) from a
+// real answer. A real answer is stitched back onto the remaining body so
+// translation still sees every byte. A refusal leaves the original body in
+// place for the caller to close.
+func consumeFunctionRejection(resp *http.Response) (bool, error) {
+	if resp == nil || resp.Body == nil || resp.StatusCode != http.StatusOK {
+		return false, nil
+	}
+	var buf bytes.Buffer
+	tmp := make([]byte, 2048)
+	for buf.Len() < 64<<10 {
+		n, err := resp.Body.Read(tmp)
+		if n > 0 {
+			buf.Write(tmp[:n])
+		}
+		eof := err == io.EOF
+		if buf.Len() > 0 {
+			decided, reject := classifyFunctionPrefix(buf.Bytes(), eof)
+			if decided {
+				if reject {
+					return true, nil
+				}
+				attachPrefix(resp, buf.Bytes())
+				return false, nil
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				return false, err
+			}
+			attachPrefix(resp, buf.Bytes())
+			return false, nil
+		}
+		if n == 0 {
+			// A reader that reports no progress must not spin this loop.
+			attachPrefix(resp, buf.Bytes())
+			return false, nil
+		}
+	}
+	attachPrefix(resp, buf.Bytes())
+	return false, nil
+}
+
+func attachPrefix(resp *http.Response, prefix []byte) {
+	resp.Body = &prefixBody{prefix: append([]byte(nil), prefix...), rest: resp.Body}
+}
+
+func classifyFunctionPrefix(raw []byte, eof bool) (decided, reject bool) {
+	text := strings.TrimLeft(string(raw), " \t\r\n")
+	if text == "" {
+		return eof, false
+	}
+	if text[0] == '{' {
+		if !json.Valid([]byte(text)) {
+			return eof, false
+		}
+		var envelope struct {
+			Code any `json:"code"`
+		}
+		if json.Unmarshal([]byte(text), &envelope) != nil {
+			return true, false
+		}
+		return true, wrongFunctionCode(anyTrim(envelope.Code))
+	}
+	if !strings.HasPrefix(text, "event:") && !strings.HasPrefix(text, "data:") && !strings.HasPrefix(text, "id:") {
+		return true, false
+	}
+	if !strings.Contains(text, "\n\n") && !eof {
+		return false, false
+	}
+	scanner := &sseScanner{}
+	events := scanner.step([]byte(text))
+	if eof {
+		events = append(events, scanner.close()...)
+	}
+	if len(events) == 0 {
+		return eof, false
+	}
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		switch event.kind {
+		case "error":
+			return true, wrongFunctionCode(fmt.Sprintf("%d", event.errorCode))
+		case "output", "done":
+			return true, false
+		}
+	}
+	// metadata and token_usage can lead an error event. Deciding here would
+	// pin a pool before the host has said whether config_name belongs to it.
+	return eof, false
+}
+
+// prefixBody replays bytes already pulled off an upstream body, then the rest.
+type prefixBody struct {
+	prefix []byte
+	rest   io.ReadCloser
+	off    int
+}
+
+func (p *prefixBody) Read(b []byte) (int, error) {
+	if p.off < len(p.prefix) {
+		n := copy(b, p.prefix[p.off:])
+		p.off += n
+		return n, nil
+	}
+	if p.rest == nil {
+		return 0, io.EOF
+	}
+	return p.rest.Read(b)
+}
+
+func (p *prefixBody) Close() error {
+	if p.rest == nil {
+		return nil
+	}
+	return p.rest.Close()
 }
 
 func asString(raw any) string {
@@ -500,11 +766,15 @@ func parseSoloLine(eventName, dataLine string) (*soloEvent, error) {
 	case "done":
 		event.finishReason, _ = raw["finish_reason"].(string)
 	case "error":
-		if value, ok := raw["code"].(float64); ok {
-			event.errorCode = int64(value)
+		// The host sends code as a JSON number or a string. A string left the
+		// code at 0, so a 4001 membership refusal was kept as the answer.
+		if n, err := strconv.ParseInt(anyTrim(raw["code"]), 10, 64); err == nil {
+			event.errorCode = n
 		}
-		event.errorMessage, _ = raw["message"].(string)
-		event.errorMessage = strings.TrimSpace(event.errorMessage)
+		event.errorMessage = strings.TrimSpace(asString(raw["message"]))
+		if event.errorMessage == "" {
+			event.errorMessage = strings.TrimSpace(asString(raw["msg"]))
+		}
 	}
 	return event, nil
 }

@@ -4,7 +4,11 @@ import {
     assistantLiveActivityLabel,
     assistantLiveActivityObject,
     assistantLiveReasoningSource,
+    assistantMessageIsLiveRound,
     assistantMessageOwnsLiveActivity,
+    assistantMessageOwnsLiveActivityAt,
+    codingBubbleHostsLiveTitle,
+    codingShownLiveLabel,
     codingTimelineLastThoughtIndex,
     codingTimelineLiveThoughtIndex,
     extractInFlightToolName,
@@ -162,15 +166,52 @@ describe('assistantLiveActivity', () => {
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '\n\n<!--maclaw-tool:call-1-->\n\n' }, false)).toBe(true);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '先看天气。\n\n<!--maclaw-tool:call-1-->' }, false)).toBe(false);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: 'It is sunny.' }, false)).toBe(false);
+        expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: 'It is sunny.' }, false, true, true)).toBe(true);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: 'It is sunny.' }, true)).toBe(true);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '' }, true, false)).toBe(false);
         expect(assistantMessageOwnsLiveActivity({ role: 'user', content: '' }, true)).toBe(false);
         expect(assistantMessageOwnsLiveActivity(undefined, true)).toBe(false);
     });
 
+    it('keeps one live host for the round identified by requestId', () => {
+        const roundId = 'desktop-ai-round';
+        const steered = [
+            { role: 'user', content: '查资料' },
+            { role: 'assistant', content: '', requestId: roundId },
+            { role: 'system', content: 'note' },
+            { role: 'user', kind: 'guideInjection', content: '测试mcp工具', requestId: roundId },
+        ];
+        expect(assistantMessageIsLiveRound(steered, 1)).toBe(true);
+        expect(assistantMessageOwnsLiveActivityAt(steered, 1, true)).toBe(true);
+        expect(assistantMessageOwnsLiveActivityAt(steered, 3, true)).toBe(false);
+        const sameRoundWithoutBadge = [
+            { role: 'assistant', content: '', requestId: roundId },
+            { role: 'user', content: '补充一句', requestId: roundId },
+        ];
+        expect(assistantMessageIsLiveRound(sameRoundWithoutBadge, 0)).toBe(true);
+        const unboundSteer = [
+            { role: 'assistant', content: '', requestId: roundId },
+            { role: 'user', kind: 'guideInjection', content: '测试mcp工具' },
+        ];
+        expect(assistantMessageIsLiveRound(unboundSteer, 0)).toBe(false);
+        expect(assistantMessageOwnsLiveActivityAt(unboundSteer, 0, true)).toBe(false);
+        const followUp = [
+            { role: 'assistant', content: 'Done.', requestId: roundId },
+            { role: 'user', content: 'And now?' },
+        ];
+        expect(assistantMessageIsLiveRound(followUp, 0)).toBe(false);
+        expect(assistantMessageOwnsLiveActivityAt(followUp, 0, false)).toBe(false);
+        expect(assistantMessageIsLiveRound(undefined, 0)).toBe(false);
+        expect(assistantMessageOwnsLiveActivityAt(undefined, 0, true)).toBe(false);
+    });
+
     it('uses progressive status copy in zh and en', () => {
         expect(assistantLiveActivityLabel('thinking', 'zh-Hans')).toBe('正在思考');
         expect(assistantLiveActivityLabel('calling_tool', 'zh-Hans')).toBe('正在调用工具');
+        expect(assistantLiveActivityLabel('calling_tool', 'zh-Hans', 'todo_write')).toBe('正在调用工具 todo_write');
+        expect(assistantLiveActivityLabel('calling_tool', 'en', 'todo_write')).toBe('Calling todo_write');
+        expect(assistantLiveActivityLabel('calling_tool', 'zh-Hant', 'todo_write')).toBe('正在呼叫工具 todo_write');
+        expect(assistantLiveActivityLabel('editing_file', 'zh-Hans', 'edit_file')).toBe('正在编辑文件');
         expect(assistantLiveActivityLabel('accessing_model', 'zh-Hans')).toBe('正在访问模型');
         expect(assistantLiveActivityLabel('analyzing', 'zh-Hans')).toBe('正在分析任务');
         expect(assistantLiveActivityLabel('syncing_context', 'zh-Hans')).toBe('正在同步上下文');
@@ -191,6 +232,15 @@ describe('assistantLiveActivity', () => {
         expect(codingTimelineLiveThoughtIndex(timeline, true)).toBe(2);
         expect(codingTimelineLiveThoughtIndex(timeline, false)).toBe(-1);
         expect(codingTimelineLiveThoughtIndex([{ kind: 'thinking' }, { kind: 'progress' }], true)).toBe(-1);
+        expect(codingTimelineLiveThoughtIndex([
+            { kind: 'thinking', content: 'Earlier.' },
+            { kind: 'progress' },
+        ], true, 'calling_tool')).toBe(0);
+        expect(codingTimelineLiveThoughtIndex([
+            { kind: 'thinking', content: 'Earlier.' },
+            { kind: 'progress' },
+        ], true, 'editing_file')).toBe(-1);
+        expect(codingTimelineLiveThoughtIndex([{ kind: 'progress' }], true, 'calling_tool')).toBe(-1);
         expect(codingTimelineLiveThoughtIndex([], true)).toBe(-1);
         expect(codingTimelineLiveThoughtIndex(undefined, true)).toBe(-1);
         expect(codingTimelineLastThoughtIndex(timeline)).toBe(2);
@@ -241,6 +291,43 @@ describe('assistantLiveActivity', () => {
             timelineOwnsLiveThought: true,
         })).toBeUndefined();
         expect(resolveStandaloneLiveActivityLabel({
+            liveLabel: '正在调用工具 todo_write',
+            liveKind: 'calling_tool',
+            coding: true,
+            lastAssistantOwnsLive: true,
+            timelineOwnsLiveThought: false,
+            bubbleHostsLiveTitle: true,
+        })).toBeUndefined();
+        expect(resolveStandaloneLiveActivityLabel({
+            liveLabel: '正在调用工具 todo_write',
+            liveKind: 'calling_tool',
+            coding: true,
+            lastAssistantOwnsLive: true,
+            timelineOwnsLiveThought: false,
+        })).toBe('正在调用工具 todo_write');
+        expect(resolveStandaloneLiveActivityLabel({
+            liveLabel: '正在编辑文件',
+            liveKind: 'editing_file',
+            coding: true,
+            lastAssistantOwnsLive: true,
+            timelineOwnsLiveThought: false,
+            bubbleHostsLiveTitle: true,
+        })).toBeUndefined();
+        expect(codingBubbleHostsLiveTitle(undefined, true)).toBe(false);
+        expect(codingBubbleHostsLiveTitle({ reasoningLive: true, content: '' }, false)).toBe(false);
+        expect(codingBubbleHostsLiveTitle({ reasoningLive: true, content: '已开始作答' }, true)).toBe(true);
+        expect(codingBubbleHostsLiveTitle({ reasoningLive: true, content: '已开始作答' }, true, false)).toBe(false);
+        expect(codingBubbleHostsLiveTitle({ content: '已开始作答' }, true)).toBe(false);
+        expect(codingBubbleHostsLiveTitle({ content: '已开始作答' }, true, true, 'calling_tool')).toBe(true);
+        expect(codingBubbleHostsLiveTitle({ content: '已开始作答' }, true, true, 'thinking')).toBe(false);
+        expect(codingBubbleHostsLiveTitle({ content: '已开始作答' }, true, true, 'editing_file')).toBe(false);
+        expect(codingShownLiveLabel(true, '正在调用工具 todo_write', 'calling_tool', { content: '已开始作答' })).toBe('正在调用工具 todo_write');
+        expect(codingShownLiveLabel(true, '正在思考', 'thinking', { content: '已开始作答' })).toBeUndefined();
+        expect(codingShownLiveLabel(true, '正在编辑文件', 'editing_file', { content: '已开始作答' })).toBeUndefined();
+        expect(codingShownLiveLabel(true, '正在编辑文件', 'editing_file', { reasoningLive: true, content: '' })).toBe('正在编辑文件');
+        expect(codingBubbleHostsLiveTitle({ reasoningLive: false, content: '' }, true)).toBe(false);
+        expect(codingBubbleHostsLiveTitle({ reasoningLive: true, content: '', codingTimeline: [{}] }, true)).toBe(false);
+        expect(resolveStandaloneLiveActivityLabel({
             liveLabel: '正在思考',
             coding: true,
             lastAssistantOwnsLive: false,
@@ -276,8 +363,8 @@ describe('assistantLiveActivity', () => {
             modelId: 'auto',
             isHubService: true,
         })).toBe('MaClaw official auto model');
-        expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'ssh' })).toBe('ssh 工具');
-        expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'nsfc-figure' })).toBe('nsfc-figure 工具');
+        expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'ssh' })).toBe('');
+        expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'nsfc-figure' })).toBe('');
         expect(assistantLiveActivityObject('remote_exec', 'zh-Hans', { toolName: 'ssh' })).toBe('ssh 工具');
         expect(assistantLiveActivityObject('fetching_page', 'zh-Hans', { toolName: 'web_fetch' })).toBe('');
         expect(assistantLiveActivityObject('listing_dir', 'zh-Hans', { toolName: 'list_dir' })).toBe('');

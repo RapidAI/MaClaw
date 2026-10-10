@@ -328,6 +328,16 @@ func TestEditionProfiles(t *testing.T) {
 	if p, ok := ProfileByName("Qoder 国际版"); !ok || p.StoreID != StoreGlobal {
 		t.Fatalf("ProfileByName global")
 	}
+	// Signed chat is not the shared OpenAI front. api2-v2 answers /algo with 404.
+	if CNProfile().ChatOrigin != "https://gateway.qoder.com.cn" {
+		t.Fatalf("cn chat origin %s", CNProfile().ChatOrigin)
+	}
+	if GlobalProfile().ChatOrigin != "https://api3.qoder.sh" {
+		t.Fatalf("global chat origin %s", GlobalProfile().ChatOrigin)
+	}
+	if CNProfile().ChatURL != ChatBase || GlobalProfile().ChatURL != ChatBase {
+		t.Fatal("both editions must keep the shared OpenAI front")
+	}
 }
 
 func TestIsChatBaseURLMatchesSharedModelServer(t *testing.T) {

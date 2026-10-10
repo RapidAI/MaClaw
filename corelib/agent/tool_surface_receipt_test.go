@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
@@ -156,6 +157,67 @@ func receiptRequestBody(t *testing.T, tools interface{}) io.ReadCloser {
 		t.Fatal(err)
 	}
 	return io.NopCloser(strings.NewReader(string(data)))
+}
+
+// TestQoderEncoderNestsUnderToolSurfaceReceipt is the production failure mode:
+// Qoder's COSY body is not JSON. The tool-surface gate must verify the
+// agent_chat JSON, and only then may the encoder replace those bytes.
+func TestQoderEncoderNestsUnderToolSurfaceReceipt(t *testing.T) {
+	definitions := receiptDefinitions()
+	var networkBody []byte
+	var networkURL string
+	network := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		networkURL = req.URL.String()
+		networkBody, _ = io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		var buf bytes.Buffer
+		encoded, _ := json.Marshal(`{"choices":[{"delta":{"content":"ok"},"index":0}]}`)
+		buf.WriteString("data:{\"headers\":{},\"body\":")
+		buf.Write(encoded)
+		buf.WriteString("}\n\ndata:[DONE]\n\n")
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(bytes.NewReader(buf.Bytes())),
+			Request:    req,
+		}, nil
+	})
+	client, err := newToolSurfaceReceiptHTTPClient(&http.Client{Transport: network}, definitions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := qoder.WrapClientWithEdition(client, "01a11487-c7fa-7aab-b1b4-0ec70fcd5743", qoder.StoreCN)
+	payload, err := json.Marshal(map[string]interface{}{
+		"model":    "qfmodel",
+		"stream":   true,
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "北京有多大?"}},
+		"tools":    []interface{}{definitions[0], definitions[1]},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, qoder.ChatBase+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer dtetesttoken")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := wrapped.Do(request)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer response.Body.Close()
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	if json.Valid(networkBody) {
+		t.Fatalf("network saw JSON, want COSY ciphertext: %s", networkBody)
+	}
+	if !strings.Contains(networkURL, "gateway.qoder.com.cn") || !strings.Contains(networkURL, "agent_chat_generation") {
+		t.Fatalf("signed URL = %s", networkURL)
+	}
 }
 
 func TestToolSurfaceReceiptAcceptsCanonicalWireReplacement(t *testing.T) {

@@ -1455,8 +1455,11 @@ func TestExtractOfficeTextWithEngine_DoesNotFallbackWhenOfficeReadTextIsTooLarge
 	defer restoreObserver()
 
 	text, format, err := ExtractOfficeTextWithFormat(path, "docx")
-	if !errors.Is(err, ErrOfficeReadOutputTooLarge) || text != "" || format != "docx" {
-		t.Fatalf("output-limit fallback result = text=%q format=%q err=%v", text, format, err)
+	if !errors.Is(err, ErrOfficeReadOutputTooLarge) || format != "docx" {
+		t.Fatalf("output-limit fallback result = text length %d format=%q err=%v", len([]rune(text)), format, err)
+	}
+	if text == "" || len([]rune(text)) > maxOfficeReadTextRunes || strings.Contains(text, "legacy body") || !strings.Contains(text, "omitted-middle") {
+		t.Fatalf("output-limit fallback result = text length %d format=%q err=%v", len([]rune(text)), format, err)
 	}
 	if got.ErrorClass != "output_too_large" || got.FallbackUsed || got.LegacyOK || got.LegacySize != 0 || got.LegacyTokens != 0 {
 		t.Fatalf("output-limit fallback must not reopen legacy parser: %#v", got)

@@ -79,7 +79,15 @@ type srvPrincipalIntentClassifier struct {
 // observe only one of two concurrent tenants.
 type srvIntentLeaseBook struct {
 	mu    sync.Mutex
-	items map[string]map[srvIntentPrincipalID]time.Time
+	items map[string]map[srvIntentPrincipalID]srvIntentLease
+}
+
+// srvIntentLease is one principal's claim on an utterance. hubBot remembers
+// that the turn was a hub bot, because a late tree retries on a background
+// context that no longer carries the request marker.
+type srvIntentLease struct {
+	until  time.Time
+	hubBot bool
 }
 
 // srvDynamicIntentClassifier is the process classifier so the embedding model
@@ -90,7 +98,7 @@ func newSrvPrincipalIntentClassifier(svc *agentservice.Service) *srvPrincipalInt
 	c := &srvPrincipalIntentClassifier{
 		svc:    svc,
 		client: &http.Client{Timeout: srvIntentTreeHTTPTimeout},
-		leases: srvIntentLeaseBook{items: map[string]map[srvIntentPrincipalID]time.Time{}},
+		leases: srvIntentLeaseBook{items: map[string]map[srvIntentPrincipalID]srvIntentLease{}},
 	}
 	c.tree = c.defaultIntentTree
 	c.uic = intent.New(intent.Config{
@@ -159,7 +167,7 @@ func (c *srvPrincipalIntentClassifier) ClassifyDynamicIntent(ctx context.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	c.rememberPrincipal(p, userText)
+	c.rememberPrincipal(p, userText, agentservice.HubBotLLMGroup(ctx))
 	ctx = context.WithValue(ctx, srvIntentPrincipalContextKey{}, p)
 	result := c.uic.ClassifyContext(ctx, intent.MessageContext{Text: userText, UserID: p.UserID})
 	return projectSrvReadOnlyLookupForPlanning(result), nil
@@ -172,7 +180,7 @@ func (c *srvPrincipalIntentClassifier) timeNow() time.Time {
 	return time.Now()
 }
 
-func (c *srvPrincipalIntentClassifier) rememberPrincipal(p agentservice.Principal, text string) {
+func (c *srvPrincipalIntentClassifier) rememberPrincipal(p agentservice.Principal, text string, hubBot bool) {
 	if c == nil || strings.TrimSpace(text) == "" || (p.TenantID == "" && p.UserID == "") {
 		return
 	}
@@ -180,15 +188,23 @@ func (c *srvPrincipalIntentClassifier) rememberPrincipal(p agentservice.Principa
 	c.leases.mu.Lock()
 	defer c.leases.mu.Unlock()
 	if c.leases.items == nil {
-		c.leases.items = map[string]map[srvIntentPrincipalID]time.Time{}
+		c.leases.items = map[string]map[srvIntentPrincipalID]srvIntentLease{}
 	}
 	c.sweepLeasesLocked(now)
 	bucket := c.leases.items[text]
 	if bucket == nil {
-		bucket = map[srvIntentPrincipalID]time.Time{}
+		bucket = map[srvIntentPrincipalID]srvIntentLease{}
 		c.leases.items[text] = bucket
 	}
-	bucket[srvIntentPrincipalID{tenantID: p.TenantID, userID: p.UserID}] = now.Add(srvIntentLeaseTTL)
+	id := srvIntentPrincipalID{tenantID: p.TenantID, userID: p.UserID}
+	lease := bucket[id]
+	// A bot pin stays for this utterance. A later non-bot remember of the
+	// same principal must not clear it while the late tree can still run.
+	if hubBot {
+		lease.hubBot = true
+	}
+	lease.until = now.Add(srvIntentLeaseTTL)
+	bucket[id] = lease
 }
 
 func (c *srvPrincipalIntentClassifier) principalForLateTree(text string) (agentservice.Principal, bool) {
@@ -203,8 +219,8 @@ func (c *srvPrincipalIntentClassifier) principalForLateTree(text string) (agents
 	usable := 0
 	tombstones := 0
 	var found agentservice.Principal
-	for id, expiry := range bucket {
-		if now.Before(expiry) {
+	for id, lease := range bucket {
+		if now.Before(lease.until) {
 			usable++
 			found = agentservice.Principal{TenantID: id.tenantID, UserID: id.userID}
 			continue
@@ -222,8 +238,8 @@ func (c *srvPrincipalIntentClassifier) principalForLateTree(text string) (agents
 
 func (c *srvPrincipalIntentClassifier) sweepLeasesLocked(now time.Time) {
 	for text, bucket := range c.leases.items {
-		for id, expiry := range bucket {
-			if !now.Before(expiry.Add(srvIntentLeaseGrace)) {
+		for id, lease := range bucket {
+			if !now.Before(lease.until.Add(srvIntentLeaseGrace)) {
 				delete(bucket, id)
 			}
 		}
@@ -253,7 +269,7 @@ func (c *srvPrincipalIntentClassifier) classifyTree(ctx, parentCtx context.Conte
 	return c.tree(ctx, parentCtx, p, systemPrompt, userText)
 }
 
-func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context, p agentservice.Principal, systemPrompt, userText string) (string, error) {
+func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, parentCtx context.Context, p agentservice.Principal, systemPrompt, userText string) (string, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -272,6 +288,10 @@ func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context,
 	// hint the hub reads that text and can send this call to the slow code
 	// model, which misses the fusion budget. Third-party endpoints stay
 	// unmarked: the hint must not turn them into hub-managed calls.
+	// A hub bot's viewer token would otherwise spend the owner's other
+	// service groups. The late tree no longer has the turn context, so the
+	// lease recorded at classify time carries the same pin.
+	llmConfig = c.hubBotLLMConfig(ctx, parentCtx, p, userText, llmConfig)
 	llmConfig = srvIntentLLMConfig(llmConfig)
 	if ctx != nil && ctx.Err() != nil {
 		return "", ctx.Err()
@@ -293,6 +313,28 @@ func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, _ context.Context,
 		return "", err
 	}
 	return response.Content, nil
+}
+
+func (c *srvPrincipalIntentClassifier) hubBotLLMConfig(ctx, parentCtx context.Context, p agentservice.Principal, userText string, cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if agentservice.HubBotLLMGroup(ctx) || agentservice.HubBotLLMGroup(parentCtx) || c.leaseHubBot(p, userText) {
+		return agentservice.PinHubBotLLMServiceGroup(cfg)
+	}
+	return cfg
+}
+
+func (c *srvPrincipalIntentClassifier) leaseHubBot(p agentservice.Principal, text string) bool {
+	if c == nil || strings.TrimSpace(text) == "" {
+		return false
+	}
+	now := c.timeNow()
+	c.leases.mu.Lock()
+	defer c.leases.mu.Unlock()
+	bucket := c.leases.items[text]
+	lease, ok := bucket[srvIntentPrincipalID{tenantID: p.TenantID, userID: p.UserID}]
+	if !ok || !now.Before(lease.until) {
+		return false
+	}
+	return lease.hubBot
 }
 
 func srvIntentLLMConfig(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {

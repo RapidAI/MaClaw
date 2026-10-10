@@ -132,7 +132,11 @@ func (g *Generator) Generate(spec Spec) ([]byte, error) {
 
 	endY += 8
 	pdf.SetLineWidth(0.5)
-	pdf.SetStrokeColor(200, 200, 200)
+	if spec.Colorful {
+		pdf.SetStrokeColor(29, 78, 216)
+	} else {
+		pdf.SetStrokeColor(200, 200, 200)
+	}
 	pdf.Line(layout.marginX, endY, layout.marginX+layout.contentW, endY)
 	endY += 12
 
@@ -233,16 +237,20 @@ func buildTitleHTML(spec Spec) string {
 	projectLine := strings.TrimSpace(spec.ProjectName)
 	brand := strings.TrimSpace(spec.Brand)
 	var sb strings.Builder
+	titleColor, subtitleColor, projectColor, brandColor := "#1a1a2e", "#888", "#16213e", "#666"
+	if spec.Colorful {
+		titleColor, subtitleColor, projectColor, brandColor = "#1d4ed8", "#0f766e", "#7c3aed", "#1d4ed8"
+	}
 	sb.WriteString("<center>")
-	sb.WriteString(fmt.Sprintf(`<p style="font-size:18pt; color:#1a1a2e"><b>%s</b></p>`, escapeHTML(title)))
+	sb.WriteString(fmt.Sprintf(`<p style="font-size:18pt; color:%s"><b>%s</b></p>`, titleColor, escapeHTML(title)))
 	if subtitle != "" {
-		sb.WriteString(fmt.Sprintf(`<p style="font-size:9pt; color:#888">%s</p>`, escapeHTML(subtitle)))
+		sb.WriteString(fmt.Sprintf(`<p style="font-size:9pt; color:%s">%s</p>`, subtitleColor, escapeHTML(subtitle)))
 	}
 	if projectLine != "" && projectLine != title {
-		sb.WriteString(fmt.Sprintf(`<p style="font-size:11pt; color:#16213e">%s</p>`, escapeHTML(projectLine)))
+		sb.WriteString(fmt.Sprintf(`<p style="font-size:11pt; color:%s">%s</p>`, projectColor, escapeHTML(projectLine)))
 	}
 	if brand != "" {
-		sb.WriteString(fmt.Sprintf(`<p style="font-size:9pt; color:#666">%s</p>`, escapeHTML(brand)))
+		sb.WriteString(fmt.Sprintf(`<p style="font-size:9pt; color:%s">%s</p>`, brandColor, escapeHTML(brand)))
 	}
 	sb.WriteString("</center>")
 	return sb.String()
@@ -322,12 +330,27 @@ func addFooter(pdf *gopdf.GoPdf, layout pdfPageLayout, spec Spec) {
 		return
 	}
 	pdf.SetLineWidth(0.3)
-	pdf.SetStrokeColor(220, 220, 220)
+	if spec.Colorful {
+		pdf.SetStrokeColor(29, 78, 216)
+	} else {
+		pdf.SetStrokeColor(220, 220, 220)
+	}
 	pdf.Line(layout.marginX, layout.footerY, layout.marginX+layout.contentW, layout.footerY)
-	pdf.SetY(layout.footerY + 4)
 	_ = pdf.SetFont("regular", "", 8)
-	pdf.SetTextColor(120, 120, 120)
-	_ = pdf.Cell(nil, strings.Join(footerParts, " · "))
+	if spec.Colorful {
+		pdf.SetTextColor(15, 118, 110)
+	} else {
+		pdf.SetTextColor(120, 120, 120)
+	}
+	// InsertHTMLBox leaves X at the end of the last line, and SetY does not
+	// move X. A Cell from that point runs off the right edge. Draw from the
+	// left margin and wrap inside the content width. The box height is the
+	// space under the rule, so a second line stays on this page.
+	pdf.SetXY(layout.marginX, layout.footerY+4)
+	_ = pdf.MultiCell(&gopdf.Rect{
+		W: layout.contentW,
+		H: layout.marginY - 4,
+	}, strings.Join(footerParts, " · "))
 }
 
 func normalizePaperSize(paperSize string) (string, error) {
@@ -405,19 +428,26 @@ func (g *Generator) newMeasurementPDF(layout pdfPageLayout) (*gopdf.GoPdf, error
 	return pdf, nil
 }
 
-func (g *Generator) measureMarkdownHeight(layout pdfPageLayout, currentY float64, markdown string) (float64, error) {
+// markdownMeasureBoxH is only for measuring. InsertHTMLBox drops an image that
+// crosses the bottom of its box and still returns the height of the text it
+// drew. A page-sized box therefore hides a chart, and the pager keeps a page
+// that will not draw it. This box is tall enough to count every chart. The
+// caller compares that height with the space above the footer.
+const markdownMeasureBoxH = 1e6
+
+func (g *Generator) measureMarkdownHeight(layout pdfPageLayout, currentY float64, markdown string, colorful bool) (float64, error) {
 	pdf, err := g.newMeasurementPDF(layout)
 	if err != nil {
 		return 0, err
 	}
-	endY, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, layout.pageH, markdownToHTML(markdown), defaultHTMLBoxOption())
+	endY, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, markdownMeasureBoxH, markdownToHTMLMode(markdown, colorful), defaultHTMLBoxOption())
 	if err != nil {
 		return 0, err
 	}
 	return endY - currentY, nil
 }
 
-func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, blocks []string) (int, error) {
+func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, blocks []string, colorful bool) (int, error) {
 	if len(blocks) == 0 {
 		return 0, nil
 	}
@@ -430,11 +460,11 @@ func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, block
 	for low <= high {
 		mid := (low + high) / 2
 		candidate := strings.Join(blocks[:mid], "\n\n")
-		height, err := g.measureMarkdownHeight(layout, currentY, candidate)
+		fits, err := g.markdownFits(layout, currentY, candidate, remainH, colorful)
 		if err != nil {
 			return 0, err
 		}
-		if height <= remainH {
+		if fits {
 			best = mid
 			low = mid + 1
 		} else {
@@ -444,7 +474,7 @@ func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, block
 	return best, nil
 }
 
-func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, baseBlocks, parts []string) (int, error) {
+func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, baseBlocks, parts []string, colorful bool) (int, error) {
 	if len(parts) == 0 {
 		return 0, nil
 	}
@@ -459,11 +489,11 @@ func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, b
 		candidateParts := append([]string{}, baseBlocks...)
 		candidateParts = append(candidateParts, strings.Join(parts[:mid], "\n"))
 		candidate := strings.Join(candidateParts, "\n\n")
-		height, err := g.measureMarkdownHeight(layout, currentY, candidate)
+		fits, err := g.markdownFits(layout, currentY, candidate, remainH, colorful)
 		if err != nil {
 			return 0, err
 		}
-		if height <= remainH {
+		if fits {
 			best = mid
 			low = mid + 1
 		} else {
@@ -471,6 +501,17 @@ func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, b
 		}
 	}
 	return best, nil
+}
+
+// markdownFits reports whether markdown stays above the footer. The height
+// comes from a tall measurement box, so a chart InsertHTMLBox would have
+// dropped on the page is still counted.
+func (g *Generator) markdownFits(layout pdfPageLayout, currentY float64, markdown string, remainH float64, colorful bool) (bool, error) {
+	height, err := g.measureMarkdownHeight(layout, currentY, markdown, colorful)
+	if err != nil {
+		return false, err
+	}
+	return height <= remainH, nil
 }
 
 func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, firstPageY float64, spec Spec) error {
@@ -481,7 +522,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 	}
 	currentY := firstPageY
 	for len(blocks) > 0 {
-		fitCount, err := g.fitBlockPrefix(layout, currentY, blocks)
+		fitCount, err := g.fitBlockPrefix(layout, currentY, blocks, spec.Colorful)
 		if err != nil {
 			return err
 		}
@@ -490,7 +531,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 		if fitCount < len(blocks) {
 			nextParts := splitMarkdownBlockForFilling(blocks[fitCount])
 			if len(nextParts) > 1 {
-				extraCount, err := g.fitBlockPartPrefix(layout, currentY, pageBlocks, nextParts)
+				extraCount, err := g.fitBlockPartPrefix(layout, currentY, pageBlocks, nextParts, spec.Colorful)
 				if err != nil {
 					return err
 				}
@@ -505,11 +546,20 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			}
 		}
 		if len(pageBlocks) == 0 {
+			// The title page starts below the header. An image that does not
+			// fit there still fits at the top of the next page. Splitting it
+			// would cut the path on the dots in the file name.
+			if currentY > layout.marginY+1 {
+				addFooter(pdf, layout, spec)
+				pdf.AddPage()
+				currentY = layout.marginY
+				continue
+			}
 			subBlocks := splitOversizedMarkdownBlock(blocks[0])
 			if len(subBlocks) == 0 {
 				return fmt.Errorf("正文块过大，无法分页渲染")
 			}
-			fitCount, err = g.fitBlockPartPrefix(layout, currentY, nil, subBlocks)
+			fitCount, err = g.fitBlockPartPrefix(layout, currentY, nil, subBlocks, spec.Colorful)
 			if err != nil {
 				return err
 			}
@@ -524,7 +574,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			}
 		}
 		pageMarkdown := strings.Join(pageBlocks, "\n\n")
-		if _, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, layout.pageH, markdownToHTML(pageMarkdown), defaultHTMLBoxOption()); err != nil {
+		if _, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, layout.pageH, markdownToHTMLMode(pageMarkdown, spec.Colorful), defaultHTMLBoxOption()); err != nil {
 			return err
 		}
 		addFooter(pdf, layout, spec)
@@ -621,7 +671,7 @@ func splitParagraphForFilling(text string) []string {
 	if text == "" {
 		return nil
 	}
-	if isMarkdownListItem(text) {
+	if isMarkdownListItem(text) || isMarkdownImageLine(text) {
 		return []string{text}
 	}
 	parts := splitTextByPunctuation(text)
@@ -632,6 +682,10 @@ func splitParagraphForFilling(text string) []string {
 		parts = splitPlainTextByLength(text, 80)
 	}
 	return parts
+}
+
+func isMarkdownImageLine(text string) bool {
+	return markdownImageRe.MatchString(strings.TrimSpace(text))
 }
 
 func isMarkdownListItem(text string) bool {
@@ -757,6 +811,11 @@ func splitLongMarkdownBlock(block string, maxChars int) []string {
 		}
 		if current.Len() > 0 && len(candidate) > maxChars {
 			flush()
+		}
+		if isMarkdownImageLine(line) {
+			flush()
+			chunks = append(chunks, line)
+			continue
 		}
 		if len(line) > maxChars {
 			flush()

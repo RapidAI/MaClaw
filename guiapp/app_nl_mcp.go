@@ -406,6 +406,11 @@ func (r *MCPRegistry) Update(entry corelib.MCPServerEntry) error {
 					}
 				}
 			}
+			if (endpointChanged || authChanged) && r.app != nil {
+				// The old tools/list belonged to a different transport. Drop its
+				// contracts now; the next successful observation republishes them.
+				r.app.revokeReviewedMCPServerContracts(entry.ID)
+			}
 			return nil
 		}
 	}
@@ -431,6 +436,7 @@ func (r *MCPRegistry) Unregister(serverID string) error {
 				if err := clearMCPRuntimeSyncState(serverID); err != nil {
 					return fmt.Errorf("clear MCP runtime sync state: %w", err)
 				}
+				r.app.revokeReviewedMCPServerContracts(serverID)
 			}
 			return nil
 		}
@@ -877,44 +883,29 @@ func (r *MCPRegistry) healthCheckContextMode(ctx context.Context, serverID strin
 		r.recordFailure(serverID)
 		return fmt.Errorf("health check failed: %w", err)
 	}
-	if strict {
-		if err := validateMCPJSONRPCSuccess(parsed, "tools/list"); err != nil {
-			r.recordFailure(serverID)
-			return fmt.Errorf("health check failed: %w", err)
-		}
-		if err := validateMCPToolsListResult(parsed); err != nil {
-			r.recordFailure(serverID)
-			return fmt.Errorf("health check failed: %w", err)
+	// Strict and ordinary probes share one observation. A body that is not a
+	// tools array must not replace the cache, revoke a reviewed contract, or
+	// mark the server healthy.
+	views, observeErr := observedMCPToolList(parsed)
+	if observeErr != nil {
+		r.recordFailure(serverID)
+		return fmt.Errorf("health check failed: %w", observeErr)
+	}
+	if strict && r.app != nil {
+		// A configuration update can race an in-flight probe. Never publish
+		// tools or mark the new configuration ready based on a response from
+		// the old endpoint/auth contract; the update path already reset the
+		// durable runtime state to pending. Treat the stale response as an
+		// obsolete probe and let the next checked cycle evaluate the new copy.
+		current, findErr := r.findServer(serverID)
+		if findErr != nil || current == nil || !reflect.DeepEqual(*current, *target) {
+			return nil
 		}
 	}
-
-	// Parse and cache the tool list from the response (tools/list returns
-	// the same data GetServerTools needs, so we cache it here to avoid a
-	// redundant round-trip when the management panel displays tool counts).
-	// NOTE: MCP protocol uses camelCase "inputSchema" in the wire format,
-	// but MCPToolView uses snake_case "input_schema" for internal/Wails
-	// serialization. We use mcpWireToolView to bridge the mismatch.
-	var toolsResult struct {
-		Result struct {
-			Tools []mcpWireToolView `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(parsed, &toolsResult); err == nil {
-		if strict && r.app != nil {
-			// A configuration update can race an in-flight probe. Never publish
-			// tools or mark the new configuration ready based on a response from
-			// the old endpoint/auth contract; the update path already reset the
-			// durable runtime state to pending. Treat the stale response as an
-			// obsolete probe and let the next checked cycle evaluate the new copy.
-			current, findErr := r.findServer(serverID)
-			if findErr != nil || current == nil || !reflect.DeepEqual(*current, *target) {
-				return nil
-			}
-		}
-		r.mu.Lock()
-		r.toolsCache[serverID] = mcpWireToolsToViews(toolsResult.Result.Tools)
-		r.mu.Unlock()
-	}
+	r.mu.Lock()
+	r.toolsCache[serverID] = views
+	r.mu.Unlock()
+	r.publishReviewedMCPContracts(serverID, views)
 
 	r.mu.Lock()
 	h := r.getOrCreateHealth(serverID)
@@ -976,6 +967,28 @@ func validateMCPToolsListResult(payload []byte) error {
 	return nil
 }
 
+// observedMCPToolList is the only parse that counts as a completed tools/list.
+// An HTTP 200 body that is an error object, or that simply omits the tools
+// array, is not an observation: callers must leave the previous cache and
+// contracts untouched.
+func observedMCPToolList(payload []byte) ([]MCPToolView, error) {
+	if err := validateMCPJSONRPCSuccess(payload, "tools/list"); err != nil {
+		return nil, err
+	}
+	if err := validateMCPToolsListResult(payload); err != nil {
+		return nil, err
+	}
+	var toolsResult struct {
+		Result struct {
+			Tools []mcpWireToolView `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &toolsResult); err != nil {
+		return nil, fmt.Errorf("MCP tools/list returned invalid JSON: %w", err)
+	}
+	return mcpWireToolsToViews(toolsResult.Result.Tools), nil
+}
+
 func (r *MCPRegistry) recordFailure(serverID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -985,7 +998,9 @@ func (r *MCPRegistry) recordFailure(serverID string) {
 	if h.FailCount >= 3 {
 		h.Status = mcpHealthStatusUnavailable
 	} else {
-		h.Status = mcpHealthStatusSlow
+		// A failed probe is not a slow success. slow is reserved for a
+		// tools/list that completed above the latency threshold.
+		h.Status = mcpHealthStatusDegraded
 	}
 }
 
@@ -993,9 +1008,23 @@ func (r *MCPRegistry) recordSuccess(serverID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	h := r.getOrCreateHealth(serverID)
-	h.FailCount = 0
-	h.LastCheck = time.Now()
-	h.Status = mcpHealthStatusHealthy
+	switch normalizeMCPHealthStatus(h.Status) {
+	case mcpHealthStatusHealthy, mcpHealthStatusSlow:
+		// The last tools/list already completed. A later tools/call confirms
+		// that observation and clears a latency mark; it is not a new list.
+		h.FailCount = 0
+		h.LastCheck = time.Now()
+		h.Status = mcpHealthStatusHealthy
+	case mcpHealthStatusDegraded:
+		// The call succeeded, so the failure streak ended. Readiness still
+		// waits for the next tools/list; this cache was excluded because the
+		// last list probe failed.
+		h.FailCount = 0
+		h.LastCheck = time.Now()
+		h.Status = mcpHealthStatusDegraded
+	default:
+		// unknown and unavailable are not repaired by a tools/call.
+	}
 }
 
 func (r *MCPRegistry) getOrCreateHealth(serverID string) *mcpHealthState {
@@ -1151,12 +1180,14 @@ func (r *MCPRegistry) RemoveUnhealthy() {
 
 	servers := r.loadServers()
 	var kept []corelib.MCPServerEntry
+	var removed []string
 	for _, s := range servers {
 		h, ok := r.health[s.ID]
 		if ok && h.FailCount >= 3 && s.Source != corelib.MCPSourceManual && s.Source != "" {
 			// Auto-discovered server with >= 3 consecutive failures — remove it.
 			delete(r.health, s.ID)
 			delete(r.toolsCache, s.ID)
+			removed = append(removed, s.ID)
 			log.Printf("[MCPRegistry] removed unhealthy auto-discovered server %s (%s)", s.ID, s.Source)
 			continue
 		}
@@ -1165,6 +1196,11 @@ func (r *MCPRegistry) RemoveUnhealthy() {
 
 	if len(kept) != len(servers) {
 		_ = r.saveServers(kept)
+	}
+	if r.app != nil {
+		for _, serverID := range removed {
+			r.app.revokeReviewedMCPServerContracts(serverID)
+		}
 	}
 }
 
@@ -1216,24 +1252,17 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		log.Printf("[MCPRegistry] GetServerTools failed for %s: %v", serverID, err)
 		return nil
 	}
-
-	// Use mcpWireToolView with camelCase "inputSchema" to match MCP wire format.
-	var result struct {
-		Result struct {
-			Tools []mcpWireToolView `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(parsed, &result); err != nil {
-		log.Printf("[MCPRegistry] GetServerTools JSON unmarshal error for %s: %v", serverID, err)
+	views, err := observedMCPToolList(parsed)
+	if err != nil {
+		log.Printf("[MCPRegistry] GetServerTools observation failed for %s: %v", serverID, err)
 		return nil
 	}
-
-	views := mcpWireToolsToViews(result.Result.Tools)
 
 	// Update cache.
 	r.mu.Lock()
 	r.toolsCache[serverID] = views
 	r.mu.Unlock()
+	r.publishReviewedMCPContracts(serverID, views)
 
 	return views
 }
@@ -1686,26 +1715,18 @@ func (r *MCPRegistry) ProbeEndpoint(target *corelib.MCPServerEntry) MCPEndpointT
 		return MCPEndpointTestResult{Message: fmt.Sprintf("Failed to parse response: %v", err), Latency: latency}
 	}
 
-	// Parse tool list from response.
-	var toolsResult struct {
-		Result struct {
-			Tools []mcpWireToolView `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(parsed, &toolsResult); err != nil {
+	views, observeErr := observedMCPToolList(parsed)
+	if observeErr != nil {
 		return MCPEndpointTestResult{
-			Success: true,
-			Message: "Connected successfully but could not parse tool list",
+			Message: fmt.Sprintf("tools/list did not return a tool list: %v", observeErr),
 			Latency: latency,
 		}
 	}
-
-	tools := mcpWireToolsToViews(toolsResult.Result.Tools)
-	msg := fmt.Sprintf("Connected successfully. %d tool(s) available.", len(tools))
+	msg := fmt.Sprintf("Connected successfully. %d tool(s) available.", len(views))
 	return MCPEndpointTestResult{
 		Success: true,
 		Message: msg,
-		Tools:   tools,
+		Tools:   views,
 		Latency: latency,
 	}
 }

@@ -42,6 +42,17 @@ const LIGHT_HEADER_COMMENT = `/* ── Light Mode Palette Schemes ── */
  * explicit classic scheme remains available for users who prefer the older
  * blue-gray surfaces. */`;
 
+/** Original light-scheme secondaries. Chrome ink mixes these, not the lightened display secondary. */
+const LIGHT_TEXT_ANCHOR: Record<AssistantLightScheme["id"], string> = {
+    fluent: "#46586f",
+    default: "#44546a",
+    notion: "#55534e",
+    linear: "#3c3e44",
+    github: "#424a53",
+    stripe: "#3c4257",
+    vercel: "#404040",
+};
+
 const LIGHT_SCHEME_COMMENTS: Record<AssistantLightScheme["id"], string> = {
     fluent: "/* WCAG AA contrast fixes (lightness-only): primary #2f78d0→#2e75cb (was 4.45:1 on white), success #16a34a→#11813a, warning #d97706→#aa5d05, danger #e5484d→#dc1f25. */",
     default: "/* WCAG AA contrast fix (lightness-only): success #4f7f6f→#4b796a (was 4.23:1 on success-bg). */",
@@ -58,7 +69,11 @@ const DARK_SHADOWS = `    /* UI polish: dark-mode shadow scale (black-based, mir
     --shadow-lg: 0 8px 28px -6px rgba(0, 0, 0, 0.55);
     --shadow-xl: 0 12px 40px -8px rgba(0, 0, 0, 0.60);`;
 
-function renderSchemeVars(vars: AssistantDarkScheme["cssVars"] | AssistantLightScheme["cssVars"]): string {
+function renderSchemeVars(
+    vars: AssistantDarkScheme["cssVars"] | AssistantLightScheme["cssVars"],
+    textAnchor?: string,
+): string {
+    const anchorLine = textAnchor ? [`    --mc-text-anchor: ${textAnchor};`] : [];
     return [
         `    --theme-primary: ${vars.primary};`,
         `    --theme-primary-strong: ${vars.primaryStrong};`,
@@ -69,6 +84,7 @@ function renderSchemeVars(vars: AssistantDarkScheme["cssVars"] | AssistantLightS
         `    --theme-text-primary: ${vars.textPrimary};`,
         `    --theme-text-secondary: ${vars.textSecondary};`,
         `    --theme-text-muted: ${vars.textMuted};`,
+        ...anchorLine,
         `    --theme-border: ${vars.border};`,
         `    --theme-border-subtle: ${vars.borderSubtle};`,
         `    --theme-success: ${vars.success};`,
@@ -102,7 +118,7 @@ export function renderThemeSchemesCss(): string {
     blocks.push(LIGHT_HEADER_COMMENT);
     for (const scheme of assistantLightSchemes) {
         blocks.push(
-            `${LIGHT_SCHEME_COMMENTS[scheme.id]}\n[data-ai-light-scheme='${scheme.id}'] {\n${renderSchemeVars(scheme.cssVars)}\n}`
+            `${LIGHT_SCHEME_COMMENTS[scheme.id]}\n[data-ai-light-scheme='${scheme.id}'] {\n${renderSchemeVars(scheme.cssVars, LIGHT_TEXT_ANCHOR[scheme.id])}\n}`
         );
     }
 

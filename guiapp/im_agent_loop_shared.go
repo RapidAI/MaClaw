@@ -1216,6 +1216,18 @@ func (c *sharedAgentLoopCallbacks) recordSemanticLookupEvidence(selection tool.P
 	c.semanticLookupEvidence = result
 }
 
+// recordCompletedSemanticLookupEvidence stores a finished web-search body.
+// Builtin, MCP, and Skill selections all complete through
+// executeBoundSemanticSelectionCanonicalWithContext, but only a terminal
+// success is evidence. A failure, an unknown transport, or a receipt that
+// has not landed must not replace the last trusted body.
+func (c *sharedAgentLoopCallbacks) recordCompletedSemanticLookupEvidence(selection tool.PlannedSelection, result tool.SelectionExecutionResult) {
+	if !result.Succeeded || result.Unknown || result.AwaitingReceipt {
+		return
+	}
+	c.recordSemanticLookupEvidence(selection, result.Result)
+}
+
 func (c *sharedAgentLoopCallbacks) flushHostOwnedCurrentChannelFileDelivery(resp *IMAgentResponse) {
 	if c == nil || c.skipHostAutoFileDelivery || c.semanticSurface == nil || strings.TrimSpace(c.semanticDeliveryFileData) != "" {
 		return
@@ -1948,19 +1960,12 @@ func pendingDownloadSibling(surface *semanticCallSurface, prototype tool.Planned
 	if surface == nil {
 		return "", false
 	}
-	family := tool.RepeatFamilyID(prototype.NeedID)
-	if family == "" {
-		family = tool.RepeatFamilyID(prototype.ID)
-	}
+	family := tool.SelectionRepeatFamily(prototype)
 	if family == "" {
 		return "", false
 	}
 	for _, selection := range surface.plan.Selections {
-		id := selection.NeedID
-		if id == "" {
-			id = selection.ID
-		}
-		if tool.RepeatFamilyID(id) != family && tool.RepeatFamilyID(selection.ID) != family {
+		if !tool.SelectionInRepeatFamily(selection, family) {
 			continue
 		}
 		if surface.completed[selection.ID] || surface.materialized[selection.ID] {
@@ -2571,6 +2576,11 @@ func (c *sharedAgentLoopCallbacks) BuildTools(userText string) []map[string]inte
 func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, iteration int) []map[string]interface{} {
 	_ = iteration
 	if c == nil {
+		return nil
+	}
+	if fileCompanionToolsDisabled(c.userID) {
+		c.semanticSurface = nil
+		c.setVisibleToolDefinitions(nil)
 		return nil
 	}
 	if petCompanionToolsDisabled(c.userID) {
@@ -3981,7 +3991,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	}
 	if !execResult.Succeeded || semanticSelectionFailed(result) {
 		delete(c.semanticSurface.pendingArtifacts, selection.ID)
-		return c.retireRejectedSemanticTool(functionName, selection.ID, result)
+		return c.retireRejectedSemanticTool(functionName, selection.ID, result, execResult.ReasonCode)
 	}
 	if err := c.registerSemanticArtifacts(selection.ID); err != nil {
 		return "[system rejected] artifact_route_state_record_failed"
@@ -4220,7 +4230,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		if semanticSelectionIsDynamic(selected) && semanticReplanFailureEligible(result.ReasonCode) && c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
 			return result.Result
 		}
-		return c.retireRejectedSemanticTool(functionName, selected.ID, result.Result)
+		return c.retireRejectedSemanticTool(functionName, selected.ID, result.Result, result.ReasonCode)
 	}
 	// CompleteWithArtifacts made the immutable route projection visible in the
 	// same transaction as selection success. The callback-local list is now
@@ -4320,7 +4330,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName
 	}
 	if !execResult.Succeeded || semanticSelectionFailed(result) {
 		delete(c.semanticSurface.pendingArtifacts, selection.ID)
-		return c.retireRejectedSemanticTool(functionName, selection.ID, result)
+		return c.retireRejectedSemanticTool(functionName, selection.ID, result, execResult.ReasonCode)
 	}
 	if err := c.registerSemanticArtifacts(selection.ID); err != nil {
 		return "[system rejected] artifact_route_state_record_failed"
@@ -4343,9 +4353,20 @@ func removeToolDefinitionByName(definitions []map[string]interface{}, functionNa
 // refusals never reach here — they leave the grant live for a corrected
 // retry (see executeCoordinatedSemanticToolCall). The retired lookup remains
 // solely for durable same-host-call replay.
-func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, selectionID, result string) string {
+func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, selectionID, result, reasonCode string) string {
 	if c == nil || c.semanticSurface == nil {
 		return "[system rejected] semantic tool surface is unavailable"
+	}
+	// A settled file write or remote command spent its node. List the next
+	// call before the refresh below, so the following request still has it.
+	// An unsettled attempt must not grow the plan: the command may still be
+	// running. Binding recovery and cancellation are not a finished command.
+	// noteSpentRemoteCommand must not list again. Refresh marks the new
+	// node issued, and a second ensure would append another call that no
+	// grant has been given yet.
+	if repeatSelectionSpent(c.semanticSurface, selectionID) && tool.SettledIterativeListingAllowed(tool.SelectionExecutionResult{ReasonCode: reasonCode}) {
+		c.ensureNextObligationFileWrite(selectionID)
+		c.ensureNextIterativeRemoteCommand(selectionID)
 	}
 	if err := c.retireSemanticToolSurface(functionName, selectionID); err != nil {
 		return "[system rejected] semantic_plan_retire_failed"
@@ -4353,9 +4374,11 @@ func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, sele
 	return c.noteSpentRemoteCommand(selectionID, result)
 }
 
-// noteSpentRemoteCommand tells the loop that a settled remote-command failure
-// spent the published wave. The loop then lists the next call in this same
-// turn. An unsettled attempt stays silent so the same command is not run twice.
+// noteSpentRemoteCommand keeps a settled remote failure from narrating a
+// turn limit. The next command was listed once, before refresh. This
+// function does not append another node: after refresh that node is
+// issued, and appending here would queue a second unissued command.
+// An unsettled attempt stays silent so the same command is not run twice.
 func (c *sharedAgentLoopCallbacks) noteSpentRemoteCommand(selectionID, result string) string {
 	if c == nil || c.semanticSurface == nil || strings.Contains(result, tool.RepeatWaveListedMarker) {
 		return result
@@ -4367,6 +4390,8 @@ func (c *sharedAgentLoopCallbacks) noteSpentRemoteCommand(selectionID, result st
 	if !repeatSelectionSpent(c.semanticSurface, selectionID) {
 		return result
 	}
+	// The next command is a plan node. A prose promise here is what the model
+	// repeated as "稍后自动继续" after the host then refused the call.
 	note := semanticSpentBudgetNote(c.semanticSurface, selectionID)
 	if note == "" {
 		return result
@@ -4411,10 +4436,12 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 		return "", fmt.Errorf("semantic tool surface is unavailable")
 	}
 	// A successful file edit leaves the next write on the following request.
-	// Waiting for the model to call a name that has already left the surface
-	// is the usage-limit denial: the tool vanished, the model called it, and
-	// the reply said this turn was finished.
+	// A settled remote command leaves the next call the same way. Waiting for
+	// the model to call a name that has already left the surface is the
+	// usage-limit denial: the tool vanished, the model called it, and the
+	// reply said this turn was finished.
 	c.ensureNextObligationFileWrite(selectionID)
+	c.ensureNextIterativeRemoteCommand(selectionID)
 	var err error
 	if c.semanticHoldDependantIssue {
 		// Hold only the host-owned generate unlock. Same-family repeats
@@ -4448,11 +4475,23 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 // lists it. A baseline or archetype companion stays at the wave it was given.
 // An unissued sibling already in the plan is left to that refresh.
 func (c *sharedAgentLoopCallbacks) ensureNextObligationFileWrite(selectionID string) {
-	if c == nil || c.semanticSurface == nil {
+	c.ensureNextIterativeSibling(selectionID, obligationLocalFileWrite, "file write")
+}
+
+// ensureNextIterativeRemoteCommand appends one shell.execute.remote_host
+// sibling when the call that just settled spent the published wave. The
+// following refresh lists it. Stopping after one extra call and reporting a
+// turn usage limit is what ended the unfinished file-cn install.
+func (c *sharedAgentLoopCallbacks) ensureNextIterativeRemoteCommand(selectionID string) {
+	c.ensureNextIterativeSibling(selectionID, obligationRemoteCommand, "remote command")
+}
+
+func (c *sharedAgentLoopCallbacks) ensureNextIterativeSibling(selectionID string, owns func(tool.ToolPlan, tool.PlannedSelection) bool, kind string) {
+	if c == nil || c.semanticSurface == nil || owns == nil {
 		return
 	}
 	selection, found := semanticSelectionByID(c.semanticSurface.plan, selectionID)
-	if !found || !obligationLocalFileWrite(c.semanticSurface.plan, selection) {
+	if !found || !owns(c.semanticSurface.plan, selection) {
 		return
 	}
 	if familyHasUnissuedSibling(c.semanticSurface, selection, selectionID) {
@@ -4470,29 +4509,33 @@ func (c *sharedAgentLoopCallbacks) ensureNextObligationFileWrite(selectionID str
 		}
 	}
 	if err != nil {
-		log.Printf("[semantic] next file write was not listed: %v", err)
+		log.Printf("[semantic] next %s was not listed: %v", kind, err)
 		return
 	}
 	c.semanticSurface.plan = updated
 }
 
 func obligationLocalFileWrite(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
-	if !tool.IterativeLocalFileWrite(selection) {
+	return obligationIterativeFamily(plan, selection, tool.IterativeLocalFileWrite(selection))
+}
+
+func obligationRemoteCommand(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
+	return obligationIterativeFamily(plan, selection, tool.IterativeRemoteCommand(selection))
+}
+
+// obligationIterativeFamily is true when selection is the iterative capability
+// and the family still contains the task's own need. A family made only of
+// baseline or archetype companions keeps the wave it was given.
+func obligationIterativeFamily(plan tool.ToolPlan, selection tool.PlannedSelection, iterative bool) bool {
+	if !iterative {
 		return false
 	}
-	family := tool.RepeatFamilyID(selection.NeedID)
-	if family == "" {
-		family = tool.RepeatFamilyID(selection.ID)
-	}
+	family := tool.SelectionRepeatFamily(selection)
 	if family == "" {
 		return false
 	}
 	for _, other := range plan.Selections {
-		otherFamily := tool.RepeatFamilyID(other.NeedID)
-		if otherFamily == "" {
-			otherFamily = tool.RepeatFamilyID(other.ID)
-		}
-		if otherFamily != family {
+		if !tool.SelectionInRepeatFamily(other, family) {
 			continue
 		}
 		if !companionPlannedSelection(other) {
@@ -4510,30 +4553,9 @@ func familyHasUnissuedSibling(surface *semanticCallSurface, prototype tool.Plann
 	if surface == nil {
 		return false
 	}
-	family := tool.RepeatFamilyID(prototype.NeedID)
-	if family == "" {
-		family = tool.RepeatFamilyID(prototype.ID)
-	}
-	if family == "" {
-		return false
-	}
-	for _, other := range surface.plan.Selections {
-		if other.ID == exceptID {
-			continue
-		}
-		otherFamily := tool.RepeatFamilyID(other.NeedID)
-		if otherFamily == "" {
-			otherFamily = tool.RepeatFamilyID(other.ID)
-		}
-		if otherFamily != family {
-			continue
-		}
-		if surface.completed[other.ID] || surface.materialized[other.ID] {
-			continue
-		}
-		return true
-	}
-	return false
+	return tool.RepeatFamilyHasUnissuedSibling(surface.plan, prototype, exceptID, func(id string) bool {
+		return surface.completed[id] || surface.materialized[id]
+	})
 }
 
 func hostOwnedGenerateSelection(selection tool.PlannedSelection) bool {
@@ -4819,6 +4841,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 		return tool.SelectionExecutionResult{Result: "[system rejected] semantic tool surface is unavailable", ReasonCode: "semantic_surface_unavailable"}
 	}
 	if result, handled := c.executeSemanticDynamicProviderWithContext(ctx, selection, string(canonicalArgs.CanonicalJSON)); handled {
+		c.recordCompletedSemanticLookupEvidence(selection, result)
 		return result
 	}
 	// An external/sensitive selection may never pass through the legacy text
@@ -4855,8 +4878,9 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	if semanticSelectionAwaitsReceipt(selection) || semanticSpecifiedTargetAwaitsGateway(selection, c.effectivePlatform()) {
 		return tool.SelectionExecutionResult{Result: result, AwaitingReceipt: true, ReasonCode: "selection_awaiting_receipt"}
 	}
-	c.recordSemanticLookupEvidence(selection, result)
-	return tool.SelectionExecutionResult{Result: result, Succeeded: true}
+	completed := tool.SelectionExecutionResult{Result: result, Succeeded: true}
+	c.recordCompletedSemanticLookupEvidence(selection, completed)
+	return completed
 }
 
 func (c *sharedAgentLoopCallbacks) usesUnifiedDynamicEffectCoordinator(selection tool.PlannedSelection) bool {

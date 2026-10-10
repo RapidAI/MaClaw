@@ -13,6 +13,8 @@ interface InputHistoryAutocompleteProps {
     onAccept: (index: number) => void | boolean;
     theme: Theme;
     lang: string;
+    testId?: string;
+    itemTestIdPrefix?: string;
 }
 
 function renderMatchLabel(item: string, prefix: string): ReactNode {
@@ -49,6 +51,8 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
     onAccept,
     theme: t,
     lang,
+    testId = "ai-input-history-autocomplete",
+    itemTestIdPrefix = "ai-input-history-item",
 }: InputHistoryAutocompleteProps) {
     const listRef = useRef<HTMLDivElement>(null);
     const activeRef = useRef<HTMLButtonElement | null>(null);
@@ -91,7 +95,7 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
             role="listbox"
             id={listboxId}
             aria-label={isZh ? "历史输入补全" : "History autocomplete"}
-            data-testid="ai-input-history-autocomplete"
+            data-testid={testId}
             style={{
                 position: "absolute",
                 left: 0,
@@ -122,7 +126,7 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
                         id={optionId}
                         aria-selected={active}
                         title={item}
-                        data-testid={`ai-input-history-item-${index}`}
+                        data-testid={`${itemTestIdPrefix}-${index}`}
                         data-active={active ? "true" : "false"}
                         onMouseEnter={() => onSelectIndex(index)}
                         onMouseDown={(e) => {

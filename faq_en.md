@@ -130,6 +130,8 @@ server {
 | Hub Go code | MaClawProviderClient.TimeoutSec | 600 (default) | Hub → HubCenter HTTP timeout |
 | HubCenter Go code | proxyStreamingHTTPClient | ResponseHeaderTimeout=600s | HubCenter → backend API first-byte timeout |
 
+A desktop bot's synchronous `/messages` call does not use this SSE table. That request writes no bytes until the response headers, so the Hub client, the `location /` blocks on `hub.mypapers.top` and `maclawsrv.mypapers.top`, and the maclawsrv per-request write deadline must be lengthened together. The shared budget is 30 minutes. See [docs/bot-message-timeout-ops-zh.md](docs/bot-message-timeout-ops-zh.md). `location /api/llm/` on the same Hub vhost stays at 600 seconds.
+
 ## 19. How different models affect long content generation
 
 | Model Type | Reasoning silent period | Long tool call risk | Recommendation |

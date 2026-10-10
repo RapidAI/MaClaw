@@ -183,16 +183,19 @@ func ArtifactBindingMatchesContract(binding ArtifactBinding, contract ArtifactCo
 	return ArtifactContractMatches(ArtifactContract{Kind: binding.Kind, MIMEType: binding.MIMEType}, contract)
 }
 
-// ProducerArtifactPublished reports a RouteState artifact published by
-// producerSelection that satisfies contract. Empty producer or no match
-// fail closed so a host cannot auto-deliver from an unpublished producer.
+// ProducerArtifactPublished reports a RouteState artifact in producerSelection's
+// repeat family that satisfies contract. Delivery readiness and delivery
+// itself must agree: a revision stored on a later sibling, or under the bare
+// need, is the same publication as the base the consumer names. An empty
+// family or no match fails closed so a host cannot auto-deliver from an
+// unpublished producer.
 func ProducerArtifactPublished(refs []RouteArtifactRef, producerSelection string, contract ArtifactContract) bool {
-	producerSelection = strings.TrimSpace(producerSelection)
-	if producerSelection == "" {
+	producerFamily := RepeatFamilyKey(producerSelection)
+	if producerFamily == "" {
 		return false
 	}
 	for _, candidate := range refs {
-		if candidate.ProducerSelection != producerSelection {
+		if RepeatFamilyKey(candidate.ProducerSelection) != producerFamily {
 			continue
 		}
 		if ArtifactContractMatches(ArtifactContract{Kind: candidate.Kind, MIMEType: candidate.MIMEType, Required: true}, contract) {
@@ -251,14 +254,14 @@ func ValidateBoundArtifactDependency(dep ArtifactDependency, contract ArtifactCo
 // to the first sibling must still reach a later revision of the same meaning;
 // across families the lookup stays fail-closed.
 func NewestFamilyProducerArtifact(refs []RouteArtifactRef, producerSelection string, contract ArtifactContract) (ArtifactRef, bool) {
-	producerFamily := RepeatFamilyID(producerSelection)
+	producerFamily := RepeatFamilyKey(producerSelection)
 	if producerFamily == "" {
 		return ArtifactRef{}, false
 	}
 	var source ArtifactRef
 	for _, candidate := range refs {
 		ref := candidate.ArtifactRef()
-		if RepeatFamilyID(ref.ProducerSelection) != producerFamily {
+		if RepeatFamilyKey(ref.ProducerSelection) != producerFamily {
 			continue
 		}
 		if !ArtifactContractMatches(ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}, contract) {

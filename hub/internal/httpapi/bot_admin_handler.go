@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -61,6 +62,14 @@ func writeBotError(w http.ResponseWriter, err error) {
 func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.MachinePrincipal, err error) {
 	log.Printf("[hub-bot] user bot request failed method=%s path=%s tenant=%q user=%q err=%v",
 		r.Method, r.URL.Path, principalTenant(principal), principalUser(principal), err)
+	if r != nil {
+		botlog.Write(r.PathValue("id"), "hub.user_error", err,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"tenant", principalTenant(principal),
+			"user", principalUser(principal),
+		)
+	}
 	switch {
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable),
 		errors.Is(err, botmgmt.ErrNotConfigured),
@@ -134,6 +143,45 @@ func PutBotSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepo
 			"admin_secret_set":     view.AdminSecretSet,
 			"token_changed":        in.AccessToken != nil,
 			"admin_secret_changed": in.AdminSecret != nil,
+		})
+		writeJSON(w, http.StatusOK, view)
+	}
+}
+
+// PutBotLLMSettingsAdminHandler PUT /api/admin/bots/llm
+func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		var in struct {
+			Current   string                     `json:"current"`
+			Providers []botmgmt.LLMProviderInput `json:"providers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		view, err := svc.SaveLLMSettings(r.Context(), botTenantID(r), in.Current, in.Providers)
+		if err != nil {
+			writeBotError(w, err)
+			return
+		}
+		providers := make([]map[string]any, 0, len(view.LLM.Providers))
+		for _, item := range view.LLM.Providers {
+			providers = append(providers, map[string]any{
+				"id":       item.ID,
+				"name":     item.Name,
+				"protocol": item.Protocol,
+				"url":      item.URL,
+				"model":    item.Model,
+				"key_set":  item.KeySet,
+			})
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.llm.update", map[string]any{
+			"current":   view.LLM.Current,
+			"providers": providers,
 		})
 		writeJSON(w, http.StatusOK, view)
 	}

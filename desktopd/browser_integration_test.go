@@ -101,6 +101,47 @@ print(sup.shared_browser_key({"DISPLAY": ":21.0"}), sup.shared_browser_key({"DIS
 	}
 }
 
+func TestWatchKeepsTheScreenFromBlanking(t *testing.T) {
+	out := runSupervisorPython(t, `
+calls = []
+def fake_call(argv, **kwargs):
+    calls.append((list(argv), (kwargs.get("env") or {}).get("DISPLAY")))
+    return 0
+sup.subprocess.call = fake_call
+sup.shutil.which = lambda name: "/usr/bin/" + name if name == "xset" else None
+sup.keep_screen_awake(20)
+sup.shutil.which = lambda name: None
+sup.keep_screen_awake(20)
+print("\n".join("%s %s" % (" ".join(argv), display) for argv, display in calls))
+print("calls", len(calls))
+`)
+	for _, want := range []string{"xset s off :20", "xset s noblank :20", "xset s reset :20", "xset -dpms :20"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("screen saver command %s missing from %s", want, out)
+		}
+	}
+	if !strings.Contains(out, "calls 4") {
+		t.Fatalf("missing xset still tried to change the display: %s", out)
+	}
+	raw, err := os.ReadFile("image/desktop_supervisor.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	start := text[strings.Index(text, "def start_desktop("):]
+	start = start[:strings.Index(start, "\ndef ")]
+	xvfb := strings.Index(start, `"Xvfb"`)
+	awake := strings.Index(start, "keep_screen_awake(")
+	if xvfb < 0 || awake < 0 || awake < xvfb || !strings.Contains(start, `"-s", "0"`) {
+		t.Fatal("a new display still starts with the ten-minute blank")
+	}
+	watch := text[strings.Index(text, "def watch_vnc("):]
+	watch = watch[:strings.Index(watch, "\ndef ")]
+	if !strings.Contains(watch, "keep_screen_awake(") {
+		t.Fatal("the watcher does not keep the screen awake")
+	}
+}
+
 func TestClosedBrowserDoesNotStartASecondDesktopSession(t *testing.T) {
 	code := `
 me = os.getpid()

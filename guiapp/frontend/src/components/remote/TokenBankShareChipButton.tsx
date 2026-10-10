@@ -83,7 +83,7 @@ type TokenBankShareChipButtonProps = {
     onShared?: (shareID: string) => void;
     showToast?: (message: string) => void;
     onRequestVerification?: () => void;
-    /** `chip` is the small grid mark. `badge` is the labeled mark on the config title. `deposit` is the text button on the Token Bank provider list. */
+    /** `chip` is the corner mark on a provider button. `badge` is the labeled mark on the config title. `deposit` is the text button on the Token Bank provider list. */
     appearance?: 'chip' | 'badge' | 'deposit';
 };
 
@@ -233,8 +233,8 @@ export function TokenBankShareChipButton({
                 title={deposit ? undefined : displayProviderLabel(t('Token Bank', 'Token 银行', 'Token 銀行'), providerName)}
                 disabled={preparing || depositBusy}
                 onClick={(event) => {
-                    // The chip itself is a button that selects the provider;
-                    // this nested button must not also select it.
+                    // The mark sits on the provider chip. A click here shares;
+                    // it must not bubble into a parent that selects the provider.
                     event.stopPropagation();
                     void start();
                 }}

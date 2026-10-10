@@ -1486,10 +1486,16 @@ func sentenceDotCount(text string) int {
 	return n
 }
 
-// codingWorkbenchContinueCue is a bare resume after a stopped coding plan.
+// codingWorkbenchContinueCue is a resume after a stopped coding plan.
 // "继续" stays out of parseCodingExecRetryCommand because workflow document
 // confirmation also owns that word; here it only resumes a plan that already
 // started and still has steps that did not pass.
+//
+// The checklist in StepStatuses is that plan once the agent has published it.
+// An exact token list treated "继续呀" as a new request. The single-task path
+// then deleted the checklist and replaced the understanding with a generic
+// restatement, so the next turn started over. A continue head with no new
+// requirement is the same resume. Residual work ("继续完善界面") is not.
 func codingWorkbenchContinueCue(userText string) bool {
 	if semanticBareContinueQuery(userText) {
 		return true
@@ -1498,8 +1504,94 @@ func codingWorkbenchContinueCue(userText string) bool {
 	case codingExecRetryActionResume, codingExecRetryActionFailed:
 		return true
 	default:
+		return codingContinueUtteranceHasNoNewRequirement(userText)
+	}
+}
+
+// codingContinueUtteranceHasNoNewRequirement reports a continue act whose
+// payload is only politeness or a discourse particle. The unfinished
+// checklist is the requirement. Anything left after the continue head is a
+// new request and must not resume.
+func codingContinueUtteranceHasNoNewRequirement(userText string) bool {
+	text := strings.ToLower(strings.TrimSpace(acpInnerUserRequest(userText)))
+	text = strings.Trim(text, codingContinueTrimRunes)
+	if text == "" {
 		return false
 	}
+	text = peelCodingContinueFillers(text)
+	for _, stem := range codingContinueStems {
+		if !strings.HasPrefix(text, stem) {
+			continue
+		}
+		if codingContinueRemainderEmpty(text[len(stem):]) {
+			return true
+		}
+	}
+	return false
+}
+
+// Longest first, so "继续执行" is the head of "继续执行呀" and is not split
+// into "继续" plus a leftover requirement "执行".
+var codingContinueStems = []string{
+	"继续远程编码", "繼續遠程編碼", "继续远端编码", "繼續遠端編碼",
+	"继续执行", "繼續執行", "继续编码", "繼續編碼", "继续任务", "繼續任務",
+	"继续做", "繼續做", "接着做", "接著做",
+	"continue execution", "continue coding", "resume coding", "keep going",
+	"继续", "繼續", "接着", "接著", "continue",
+}
+
+const codingContinueTrimRunes = "。.!！?？~～、,，;；:：\"'“”‘’…⋯ \t"
+
+// Leading fillers carry no requirement. Longest first so "那么" is not peeled
+// down to "么".
+var codingContinueFillers = []string{
+	"那么", "那麼", "那就", "请你", "請你", "麻烦你", "麻煩你",
+	"帮我", "幫我", "麻烦", "麻煩", "请", "請", "你就", "您", "你", "再", "那",
+}
+
+func peelCodingContinueFillers(text string) string {
+	for i := 0; i < 4; i++ {
+		trimmed := strings.Trim(text, codingContinueTrimRunes)
+		next := trimmed
+		for _, filler := range codingContinueFillers {
+			if strings.HasPrefix(next, filler) {
+				next = strings.Trim(strings.TrimPrefix(next, filler), codingContinueTrimRunes)
+				break
+			}
+		}
+		if next == trimmed {
+			return trimmed
+		}
+		text = next
+	}
+	return strings.Trim(text, codingContinueTrimRunes)
+}
+
+// codingContinueParticles are discourse particles. They are matched only as a
+// trailing suffix, so "下载" does not lose its "下" and "完善" stays a request.
+var codingContinueParticles = []string{
+	"一下子", "一下", "please", "thanks",
+	"呀", "啊", "吧", "呢", "了", "哦", "喔", "噢", "哈", "嘛", "呐", "哇", "哟", "呦", "嘞", "咯",
+	"做", "干", "幹", "下",
+}
+
+func codingContinueRemainderEmpty(rest string) bool {
+	rest = strings.Trim(rest, codingContinueTrimRunes)
+	for rest != "" {
+		stripped := false
+		for _, particle := range codingContinueParticles {
+			if !strings.HasSuffix(rest, particle) {
+				continue
+			}
+			rest = strings.Trim(strings.TrimSuffix(rest, particle), codingContinueTrimRunes)
+			stripped = true
+			break
+		}
+		if !stripped {
+			return false
+		}
+	}
+	return true
 }
 
 func codingPlanStepWasStarted(status string) bool {
@@ -1532,7 +1624,10 @@ func selectIncompleteCodingPlanTasks(userText string, mem stickyCodingWorkbenchM
 	if len(mem.StepStatuses) == 0 {
 		return nil, false
 	}
-	started := false
+	// PlanRunStarted survives the pending rewrite in reopen. Without it, a
+	// continue that stops before the runner marks a step running looks like
+	// an approval that never started, and the next continue deletes the list.
+	started := mem.PlanRunStarted
 	incomplete := make(map[int]codingWorkbenchStepStatus)
 	for _, st := range mem.StepStatuses {
 		if codingPlanStepWasStarted(st.Status) {
@@ -1647,6 +1742,11 @@ func (h *IMMessageHandler) reopenIncompleteCodingPlanSteps(userID string, mem st
 		}
 		if strings.TrimSpace(stored.ExecutionPlan) == "" && strings.TrimSpace(mem.ExecutionPlan) != "" {
 			stored.ExecutionPlan = mem.ExecutionPlan
+		}
+		// This reopen is itself the evidence the checklist already ran.
+		stored.PlanRunStarted = true
+		if codingGenericContinueRestatement(stored.RequirementRestatement) {
+			stored.RequirementRestatement = truncateRunesForSubAgent(strings.TrimSpace(mem.RequirementRestatement), 400)
 		}
 		now := time.Now().Unix()
 		for i := range stored.StepStatuses {
@@ -1786,7 +1886,7 @@ func codingPlanResumePromptMemory(mem stickyCodingWorkbenchMemory) stickyCodingW
 	}
 	// The short-follow-up restatement says "only the change you just named"
 	// and that change is the word 继续. Drop it so the unfinished step runs.
-	if strings.Contains(rest, "上继续你这次提出的改动") {
+	if codingGenericContinueRestatement(rest) {
 		mem.RequirementRestatement = ""
 		rest = ""
 	}
@@ -1801,15 +1901,99 @@ func codingPlanResumePromptMemory(mem stickyCodingWorkbenchMemory) stickyCodingW
 	return mem
 }
 
+// codingGenericContinueRestatement is the host paraphrase of a short
+// follow-up. It names no requirement. Using it as the resume goal makes the
+// next step re-derive the work.
+func codingGenericContinueRestatement(text string) bool {
+	return strings.Contains(strings.TrimSpace(text), "上继续你这次提出的改动")
+}
+
 // codingPlanResumeGoal is the original request, not the word "继续".
 func codingPlanResumeGoal(userText string, mem stickyCodingWorkbenchMemory) string {
 	for _, candidate := range []string{mem.SessionPlan, mem.RequirementRestatement, mem.LastUserText} {
 		candidate = strings.TrimSpace(candidate)
-		if candidate != "" && !codingWorkbenchContinueCue(candidate) {
-			return candidate
+		if candidate == "" || codingWorkbenchContinueCue(candidate) || codingGenericContinueRestatement(candidate) {
+			continue
 		}
+		return candidate
 	}
 	return strings.TrimSpace(userText)
+}
+
+// codingPlanResumeUnderstanding replaces the host paraphrase of a bare
+// continue. That sentence names no requirement, and the checklist UI shows
+// it as 需求理解. The original goal takes its place. Clear it when no goal
+// survived. A specific restatement is left as stored.
+func codingPlanResumeUnderstanding(userText string, mem stickyCodingWorkbenchMemory) (text string, replace bool) {
+	if !codingGenericContinueRestatement(mem.RequirementRestatement) {
+		return "", false
+	}
+	goal := strings.TrimSpace(codingPlanResumeGoal(userText, mem))
+	if goal == "" || goal == strings.TrimSpace(userText) || codingWorkbenchContinueCue(goal) || codingGenericContinueRestatement(goal) {
+		return "", true
+	}
+	return goal, true
+}
+
+// codingChecklistResumePlanMarkdown records an agent checklist as the
+// orchestrator plan. StepStatuses alone are not owned: the next todo_write
+// is allowed to replace them, so a continue that just restored the list
+// loses it again inside the resumed turn. A checklist shorter than the
+// multi-step minimum stays a single task and may still mirror inner todos.
+// Titles that are only the todo id are not briefs. applyTodoWrite stores a
+// missing brief as that id, and owning those rows would block the todo_write
+// that replaces "1" with the real steps.
+func codingChecklistResumePlanMarkdown(userText string, mem stickyCodingWorkbenchMemory) string {
+	if strings.TrimSpace(mem.ExecutionPlan) != "" || len(mem.StepStatuses) < codingWorkbenchPlanMinTasks {
+		return ""
+	}
+	steps := append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Index < steps[j].Index })
+	tasks := make([]*v2.TaskItem, 0, len(steps))
+	real := 0
+	for _, st := range steps {
+		title := strings.TrimSpace(st.Title)
+		if st.Index <= 0 || title == "" {
+			continue
+		}
+		if !codingStepTitleIsIdentityToken(title, st.Index) {
+			real++
+		}
+		tasks = append(tasks, taskFromCodingStepStatus(st))
+	}
+	if real < codingWorkbenchPlanMinTasks {
+		return ""
+	}
+	return formatCodingWorkbenchPlanMarkdown(codingPlanResumeGoal(userText, mem), tasks)
+}
+
+// codingStepTitleIsIdentityToken reports a checklist title that is only the
+// todo id. A missing brief is stored as that id: the 1-based row, a T-label,
+// or a numeric id that no longer matches the row after a merge.
+func codingStepTitleIsIdentityToken(title string, index int) bool {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return true
+	}
+	if index > 0 {
+		n := strconv.Itoa(index)
+		if title == n || strings.EqualFold(title, "T"+n) {
+			return true
+		}
+	}
+	body := title
+	if len(body) > 1 && (body[0] == 'T' || body[0] == 't') {
+		body = body[1:]
+	}
+	if body == "" {
+		return false
+	}
+	for _, r := range body {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Digit / T-numbered steps only. Bare markdown bullets (- item) are NOT counted — they appear in ordinary "fix: - a - b" lists and would false-trigger multi-step plans.
@@ -1876,6 +2060,12 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// understanding over.
 	if execute, ok := selectIncompleteCodingPlanTasks(userText, sessionMem); ok {
 		log.Printf("[coding-plan] resume incomplete plan user=%s steps=%d", userID, len(execute))
+		if md := codingChecklistResumePlanMarkdown(userText, sessionMem); md != "" {
+			sessionMem.ExecutionPlan = md
+		}
+		if text, replace := codingPlanResumeUnderstanding(userText, sessionMem); replace {
+			sessionMem.RequirementRestatement = text
+		}
 		h.reopenIncompleteCodingPlanSteps(userID, sessionMem, execute)
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("继续未完成的计划：剩余 %d 步", len(execute)))

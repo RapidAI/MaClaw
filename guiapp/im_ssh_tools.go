@@ -117,21 +117,21 @@ func (h *IMMessageHandler) sshExecRuntimeBoundContext(ctx context.Context, sessi
 // The binding contract matches sshExecRuntimeBoundContext: the session must be
 // alive and still match the frozen remote coding target; no reconnect, no
 // background-task upgrade and no session substitution are ever attempted.
-func (h *IMMessageHandler) sshExecChannelContext(ctx context.Context, sessionID, command string, waitSeconds int, expectedIdentity, workDir string) (string, error) {
+func (h *IMMessageHandler) sshExecChannelResult(ctx context.Context, sessionID, command string, waitSeconds int, expectedIdentity, workDir string) (remote.SSHExecResult, error) {
 	if h == nil {
-		return "", fmt.Errorf("remote coding runtime handler is unavailable")
+		return remote.SSHExecResult{}, fmt.Errorf("remote coding runtime handler is unavailable")
 	}
 	sessionID, command = strings.TrimSpace(sessionID), strings.TrimSpace(command)
 	if sessionID == "" || command == "" || strings.TrimSpace(expectedIdentity) == "" || strings.TrimSpace(workDir) == "" {
-		return "", fmt.Errorf("remote coding runtime binding is incomplete")
+		return remote.SSHExecResult{}, fmt.Errorf("remote coding runtime binding is incomplete")
 	}
 	mgr := h.ensureSSHManager()
 	if mgr == nil {
-		return "", fmt.Errorf("remote coding runtime session manager is unavailable")
+		return remote.SSHExecResult{}, fmt.Errorf("remote coding runtime session manager is unavailable")
 	}
 	session, ok := mgr.Get(sessionID)
 	if !ok || !guiRuntimeSSHSessionAlive(session) || guiRemoteCodingTargetIdentity(h, sessionID, workDir) != expectedIdentity {
-		return "", fmt.Errorf("verified remote coding session is unavailable; no reconnect was attempted")
+		return remote.SSHExecResult{}, fmt.Errorf("verified remote coding session is unavailable; no reconnect was attempted")
 	}
 	if waitSeconds <= 0 {
 		waitSeconds = 15
@@ -139,7 +139,11 @@ func (h *IMMessageHandler) sshExecChannelContext(ctx context.Context, sessionID,
 	if waitSeconds > 600 {
 		waitSeconds = 600
 	}
-	result, err := mgr.ExecCommandChannel(ctx, sessionID, command, time.Duration(waitSeconds)*time.Second)
+	return mgr.ExecCommandChannel(ctx, sessionID, command, time.Duration(waitSeconds)*time.Second)
+}
+
+func (h *IMMessageHandler) sshExecChannelContext(ctx context.Context, sessionID, command string, waitSeconds int, expectedIdentity, workDir string) (string, error) {
+	result, err := h.sshExecChannelResult(ctx, sessionID, command, waitSeconds, expectedIdentity, workDir)
 	if err != nil {
 		return "", err
 	}

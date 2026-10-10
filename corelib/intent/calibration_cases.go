@@ -254,5 +254,9 @@ func ProductionCases() []CalibrationCase {
 		{Message: "刷新一下知识库里的这个来源", ExpectedLabel: LabelKnowledgeAdmin, Note: "admin maintenance, not retrieval"},
 		{Message: "禁用这个知识库数据源", ExpectedLabel: LabelKnowledgeAdmin},
 		{Message: "run the knowledge quality maintenance plan", ExpectedLabel: LabelKnowledgeAdmin},
+
+		{Message: "查一下今天上午的工作日志", ExpectedLabel: LabelWorklogRead, Note: "external time-block record, not knowledge or todos"},
+		{Message: "上午添加： windows构建服务维护与修复，100%", ExpectedLabel: LabelWorklogUpdate, Note: "time block plus completion percent is a work record"},
+		{Message: "把修复登录问题加到任务列表里", ExpectedLabel: LabelTaskTrack, Note: "local todo wording stays task_track"},
 	}
 }

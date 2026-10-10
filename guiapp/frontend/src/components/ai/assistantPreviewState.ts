@@ -1,5 +1,5 @@
 import { sanitizeAIAssistantStreamText, type ChatMessage } from "./useAIAssistant";
-import { cloneCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
+import { changedPreviewFilePath, cloneCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
 import type { WorkflowUIState } from "./useWorkflowState";
 import type { AITab } from "./AITabTypes";
 import { normalizeProjectSessionPath, projectSessionKey } from "./aiAssistantPanelSessionUtils";
@@ -61,10 +61,14 @@ export function codePreviewEventsEnabled(sourcePreviewAllowed: boolean, expertId
  * Identity-preserving: returns the same object when no change is needed.
  */
 export function withCodePreviewVisibleIfContent(state: CodePreviewUIState): CodePreviewUIState {
-    if (state.userClosed || state.active || state.files.size === 0) {
-        return state;
-    }
-    return { ...state, active: true };
+    if (state.userClosed || state.active) return state;
+    // Reads fill background tabs while the pane stays closed. Restoring those
+    // tabs must not pop the directory over the chat. A real edit does, and the
+    // body has to be that file rather than whichever read was last touched.
+    const path = changedPreviewFilePath(state);
+    if (!path) return state;
+    if (path === state.activeFilePath) return { ...state, active: true };
+    return { ...state, active: true, activeFilePath: path };
 }
 
 /** Preview mode label for persistence / tab snapshots. */

@@ -2278,6 +2278,221 @@ func TestContinueCueDoesNotMatchANewRequest(t *testing.T) {
 	}
 }
 
+func TestColloquialContinueResumesTheUnfinishedChecklist(t *testing.T) {
+	// 2026-10-09: the user sent "继续呀" while the agent checklist was 0/5
+	// and T1 was still running. Exact "继续" resumed. "继续呀" did not, so
+	// the single-task path deleted those steps and the turn started over
+	// at 需求理解.
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	mem := stickyCodingWorkbenchMemory{
+		TurnCount:              18,
+		SessionPlan:            "开发一个图形界面版的贪吃蛇",
+		RequirementRestatement: "在已有工作（开发一个图形界面版的贪吃蛇）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "Add selectable food types", Status: codingStepRunning},
+			{Index: 2, Title: "Draw a more snake-like body", Status: codingStepPending},
+			{Index: 3, Title: "Refine the playfield", Status: codingStepPending},
+			{Index: 4, Title: "Rebuild and run the self-test", Status: codingStepPending},
+			{Index: 5, Title: "Leave unrelated features alone", Status: codingStepPending},
+		},
+	}
+	for _, utter := range []string{"继续呀", "继续啊", "接着做", "继续执行呀", "那么继续一下", "continue please", acpProgrammingUserText("D:/repo", "继续呀")} {
+		if !codingWorkbenchShouldResumeIncompletePlan(utter, mem) {
+			t.Fatalf("%q should resume the unfinished checklist", utter)
+		}
+	}
+	for _, utter := range []string{"继续完善，加入图形界面", "继续把食物改成星星", "那么把速度再降一半", "go online"} {
+		if codingWorkbenchShouldResumeIncompletePlan(utter, mem) {
+			t.Fatalf("%q must stay a new request", utter)
+		}
+	}
+	// The paraphrase is already what the checklist UI has stored.
+	h.updateStickyCodingWorkbenchMemory(userID, func(stored *stickyCodingWorkbenchMemory) {
+		*stored = mem
+	})
+	tasks, _, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续呀", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !planned || len(tasks) != 5 {
+		t.Fatalf("planned=%v steps=%d", planned, len(tasks))
+	}
+	if tasks[0].Title != "Add selectable food types" || tasks[4].Title != "Leave unrelated features alone" {
+		t.Fatalf("resumed titles = %q / %q", tasks[0].Title, tasks[4].Title)
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID)
+	if len(stored.StepStatuses) != 5 {
+		t.Fatalf("checklist collapsed to %d", len(stored.StepStatuses))
+	}
+	if stored.StepStatuses[0].Title != "Add selectable food types" || stored.StepStatuses[0].Status != codingStepPending {
+		t.Fatalf("T1 was not kept and reopened: %+v", stored.StepStatuses[0])
+	}
+	if stored.StepStatuses[4].Status != codingStepPending {
+		t.Fatalf("later steps were dropped: %+v", stored.StepStatuses)
+	}
+	if !strings.Contains(stored.ExecutionPlan, "Add selectable food types") || !strings.Contains(stored.ExecutionPlan, mem.SessionPlan) {
+		t.Fatalf("resumed checklist was not recorded as the plan: %q", stored.ExecutionPlan)
+	}
+	if strings.Contains(stored.ExecutionPlan, "上继续你这次提出的改动") {
+		t.Fatalf("generic continue paraphrase became the plan goal: %q", stored.ExecutionPlan)
+	}
+	if stored.RequirementRestatement != mem.SessionPlan {
+		t.Fatalf("需求理解 stayed on the continue paraphrase: %q", stored.RequirementRestatement)
+	}
+	if !stored.PlanRunStarted {
+		t.Fatal("reopen dropped the evidence that this checklist already ran")
+	}
+	// Reopen leaves every unfinished step pending. A second continue before
+	// the runner marks one running is still this plan.
+	again, _, againPlanned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续呀", "D:/repo", stored,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !againPlanned || len(again) != 5 || again[0].Title != "Add selectable food types" {
+		t.Fatalf("second continue dropped the reopened checklist: planned=%v tasks=%v", againPlanned, again)
+	}
+	if !stickyHasOrchestratedPlanSteps(stored) {
+		t.Fatal("resumed checklist must be orchestrator-owned")
+	}
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "需求理解", Status: codingAgentTodoInProgress},
+	})
+	after := h.getStickyCodingWorkbenchMemory(userID)
+	if len(after.StepStatuses) != 5 || after.StepStatuses[0].Title != "Add selectable food types" {
+		t.Fatalf("inner todo_write replaced the restored plan: %+v", after.StepStatuses)
+	}
+}
+
+func TestResumeDoesNotOwnIdentityTokenChecklist(t *testing.T) {
+	// A missing brief is stored as the todo id. Two such rows still resume,
+	// but they are not an orchestrator plan: the next todo_write has to be
+	// able to replace "1"/"2" with the real steps.
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	mem := stickyCodingWorkbenchMemory{
+		SessionPlan: "开发一个图形界面版的贪吃蛇",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "1", Status: codingStepRunning},
+			{Index: 2, Title: "2", Status: codingStepPending},
+		},
+	}
+	tasks, plan, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续呀", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !planned || len(tasks) != 2 || plan != "" {
+		t.Fatalf("planned=%v steps=%d plan=%q", planned, len(tasks), plan)
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID)
+	if stored.ExecutionPlan != "" {
+		t.Fatalf("id-only checklist was owned: %q", stored.ExecutionPlan)
+	}
+	if stickyHasOrchestratedPlanSteps(stored) {
+		t.Fatal("id-only checklist must stay agent-owned")
+	}
+	if len(stored.StepStatuses) != 2 || stored.StepStatuses[0].Status != codingStepPending || stored.StepStatuses[0].Title != "1" {
+		t.Fatalf("resume did not keep the id row: %+v", stored.StepStatuses)
+	}
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "Add selectable food types", Status: codingAgentTodoInProgress},
+		{ID: "2", Content: "Draw a more snake-like body", Status: codingAgentTodoPending},
+	})
+	after := h.getStickyCodingWorkbenchMemory(userID)
+	if len(after.StepStatuses) != 2 || after.StepStatuses[0].Title != "Add selectable food types" {
+		t.Fatalf("todo_write could not replace id titles: %+v", after.StepStatuses)
+	}
+	for _, mem := range []stickyCodingWorkbenchMemory{
+		{StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "T1", Status: codingStepFailed},
+			{Index: 2, Title: "T2", Status: codingStepPending},
+		}},
+		{StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "3", Status: codingStepRunning},
+			{Index: 2, Title: "T9", Status: codingStepPending},
+		}},
+		{StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "Add selectable food types", Status: codingStepRunning},
+			{Index: 2, Title: "2", Status: codingStepPending},
+		}},
+	} {
+		if md := codingChecklistResumePlanMarkdown("继续呀", mem); md != "" {
+			t.Fatalf("checklist without two real briefs was owned: %q", md)
+		}
+	}
+}
+
+func TestResumeDoesNotInventAPlanForOneStep(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	mem := stickyCodingWorkbenchMemory{
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "验证构建", Status: codingStepFailed},
+		},
+	}
+	_, plan, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续呀", "D:/repo", mem,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !planned || plan != "" {
+		t.Fatalf("a one-step checklist stays a single task, planned=%v plan=%q", planned, plan)
+	}
+	if got := h.getStickyCodingWorkbenchMemory(userID).ExecutionPlan; got != "" {
+		t.Fatalf("one-step resume invented a plan: %q", got)
+	}
+}
+
+func TestFreshPendingPlanIsNotAStoppedRun(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.PlanRunStarted = true
+		mem.ExecutionPlan = "### T1: old\n### T2: plan"
+	})
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "explore", Status: codingStepPending},
+		{Index: 2, Title: "implement", Status: codingStepPending},
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.PlanRunStarted {
+		t.Fatal("a newly seeded pending plan kept the previous run")
+	}
+	if codingWorkbenchShouldResumeIncompletePlan("继续", mem) {
+		t.Fatal("an unstarted approval must not resume")
+	}
+}
+
+func TestResumeUnderstandingDropsGenericContinue(t *testing.T) {
+	generic := "在已有工作（系统信息查看）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。"
+	text, replace := codingPlanResumeUnderstanding("继续呀", stickyCodingWorkbenchMemory{
+		RequirementRestatement: generic,
+		LastUserText:           "继续",
+	})
+	if !replace || text != "" {
+		t.Fatalf("text=%q replace=%v", text, replace)
+	}
+	_, replace = codingPlanResumeUnderstanding("继续呀", stickyCodingWorkbenchMemory{
+		RequirementRestatement: "改进画面，食物可以选择",
+	})
+	if replace {
+		t.Fatal("a specific understanding must stay")
+	}
+}
+
+func TestResumeGoalSkipsGenericContinueRestatement(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		RequirementRestatement: "在已有工作（系统信息查看）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。",
+		LastUserText:           "改进画面，食物可以选择",
+	}
+	if got := codingPlanResumeGoal("继续呀", mem); got != mem.LastUserText {
+		t.Fatalf("goal=%q", got)
+	}
+}
+
 func TestFinalizeRejectsForwardDepends(t *testing.T) {
 	tasks := finalizeCodingWorkbenchTasks([]*v2.TaskItem{
 		{Title: "a", Description: "a", DependsOn: []int{2}}, // forward dep invalid

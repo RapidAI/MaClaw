@@ -532,6 +532,10 @@ export interface ChatMessage {
     localFilePaths?: string[];
     thumbnailBase64?: string;
     imageKey?: string;
+    /**
+     * Round id. The assistant placeholder of a turn carries it. A user row
+     * with the same id was steered into that round and is not a new turn.
+     */
     requestId?: string;
     /** Runtime owner. Project-tab messages must never be treated as local chat context. */
     sessionKey?: string;
@@ -1316,6 +1320,59 @@ function updateMessageById(messages: ChatMessage[], messageId: string | null, up
     }
     const next = [...messages];
     next[index] = updated;
+    return next;
+}
+
+// One round has one id. When the backend replaces the id, every row already
+// stamped with the old one moves with it, including a steer that landed first.
+function reassignRoundRequestId(messages: ChatMessage[], oldRequestId: string, nextRequestId: string): ChatMessage[] {
+    const previous = oldRequestId.trim();
+    const next = nextRequestId.trim();
+    if (!previous || !next || previous === next) return messages;
+    let changed = false;
+    const updated = messages.map((message) => {
+        if ((message.requestId || '').trim() !== previous) return message;
+        changed = true;
+        return { ...message, requestId: next };
+    });
+    return changed ? updated : messages;
+}
+
+// Put a steer inside its own round: copy that assistant row's id, and insert
+// after the row (and after steers already in the round). Appending at the tail
+// once a later turn exists makes that later user row end the new turn.
+function insertRoundSteer(
+    messages: ChatMessage[],
+    assistantMessageId: string,
+    fallbackRequestId: string,
+    create: (requestId: string) => ChatMessage,
+): ChatMessage[] {
+    const hostId = assistantMessageId.trim();
+    let hostIndex = -1;
+    if (hostId) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i]?.id === hostId && messages[i]?.role === 'assistant') {
+                hostIndex = i;
+                break;
+            }
+        }
+    }
+    const requestId = (hostIndex >= 0 ? messages[hostIndex]?.requestId || '' : fallbackRequestId).trim();
+    const steer = create(requestId);
+    if (hostIndex < 0) return [...messages, steer];
+    let insertAt = hostIndex + 1;
+    while (insertAt < messages.length) {
+        const message = messages[insertAt];
+        if (message?.role === 'assistant') break;
+        if (message?.role === 'user') {
+            const laterRound = (message.requestId || '').trim();
+            if (!requestId || laterRound !== requestId) break;
+        }
+        insertAt += 1;
+    }
+    if (insertAt >= messages.length) return [...messages, steer];
+    const next = messages.slice();
+    next.splice(insertAt, 0, steer);
     return next;
 }
 
@@ -3365,10 +3422,12 @@ function createUserMessage(content: string, sessionKey?: string): ChatMessage {
     };
 }
 
-function createGuideInjectionMessage(content: string, sessionKey?: string): ChatMessage {
+function createGuideInjectionMessage(content: string, sessionKey?: string, requestId?: string): ChatMessage {
+    const roundId = requestId?.trim() || '';
     return {
         ...createUserMessage(content, sessionKey),
         kind: 'guideInjection',
+        requestId: roundId || undefined,
     };
 }
 
@@ -5268,6 +5327,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     userText: outgoingText,
                 } as ActiveRound;
                 replaceInFlightRoundRequestId(requestId, reassignedRound);
+                setMessages(prev => reassignRoundRequestId(prev, requestId, responseRequestId));
                 if (response.deferred) {
                     startResponseTimeout({ generation, assistantMessageId, requestId: responseRequestId, source: 'ai' });
                 }
@@ -6183,6 +6243,23 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return result;
     }, [activeSessionKeyForEvents, clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, forgetInFlightRound, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
+    // The round still writing this session. A steer belongs to that round.
+    const inFlightRoundForSession = (sessionKey: string): ActiveRound | undefined => {
+        const targetSessionKey = normalizeRuntimeSessionKey(sessionKey);
+        const activeCandidate = activeRoundRef.current;
+        let expectedRound = activeCandidate.phase !== 'idle'
+            && normalizeRuntimeSessionKey(activeCandidate.sessionKey || 'desktop-user') === targetSessionKey
+            ? activeCandidate
+            : undefined;
+        for (const candidate of inFlightRoundsByRequestRef.current.values()) {
+            if (candidate.phase === 'idle' || !candidate.requestId.trim()) continue;
+            if (normalizeRuntimeSessionKey(candidate.sessionKey || 'desktop-user') !== targetSessionKey) continue;
+            if (!expectedRound || candidate.generation > expectedRound.generation) {
+                expectedRound = candidate;
+            }
+        }
+        return expectedRound;
+    };
     // injectSupplementary sends a supplementary message into the running
     // agent loop without cancelling it. An explicit session owner prevents
     // async callers from following a later tab switch into the wrong loop.
@@ -6191,9 +6268,15 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const normalizedSessionKey = sessionKey?.trim() || activeSessionKeyForEvents().trim() || 'desktop-user';
             const accepted = await InjectAIAssistantSupplementaryForSession(text, normalizedSessionKey);
             if (accepted) {
-                // Show the injected text as a user message in the chat area
-                // so the user has visual confirmation.
-                setMessages(prev => [...prev, createUserMessage(text, normalizedSessionKey)]);
+                // Same round as the assistant still writing. Copy that row's id
+                // inside the update, after any reassignment already queued.
+                const round = inFlightRoundForSession(normalizedSessionKey);
+                const assistantMessageId = round?.assistantMessageId || '';
+                const fallbackRequestId = round?.requestId.trim() || '';
+                setMessages(prev => insertRoundSteer(prev, assistantMessageId, fallbackRequestId, requestId => ({
+                    ...createUserMessage(text, normalizedSessionKey),
+                    requestId: requestId || undefined,
+                })));
             }
             return accepted;
         } catch {
@@ -6207,22 +6290,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 		const startedAtResetEpoch = sessionResetEpochsRef.current.get(normalizedOwnerSessionKey) || 0;
         const normalizedLaunchId = launchId?.trim() || '';
 		const targetSessionKey = normalizeRuntimeSessionKey(normalizedSessionKey);
-		const activeCandidate = activeRoundRef.current;
-		let expectedRound = activeCandidate.phase !== 'idle'
-			&& normalizeRuntimeSessionKey(activeCandidate.sessionKey || 'desktop-user') === targetSessionKey
-			? activeCandidate
-			: undefined;
-		// Parallel project tabs keep non-visible rounds in this map. Binding only
-		// to activeRoundRef would silently drop expected-turn protection whenever
-		// the user steers a busy tab whose round is currently detached.
-		for (const candidate of inFlightRoundsByRequestRef.current.values()) {
-			if (candidate.phase === 'idle' || !candidate.requestId.trim()) continue;
-			if (normalizeRuntimeSessionKey(candidate.sessionKey || 'desktop-user') !== targetSessionKey) continue;
-			if (!expectedRound || candidate.generation > expectedRound.generation) {
-				expectedRound = candidate;
-			}
-		}
-			const expectedRequestId = expectedRound?.requestId.trim() || '';
+		// Same round the assistant is still writing, including a detached
+		// project tab whose round is not the visible one. The transport id is
+		// fixed here so a retry stays the same operation. The transcript row
+		// copies the assistant message at insertion, which is the id the live
+		// title compares.
+		const round = inFlightRoundForSession(targetSessionKey);
+		const expectedRequestId = round?.requestId.trim() || '';
+		const assistantMessageId = round?.assistantMessageId || '';
 		const displayedLaunchKey = normalizedLaunchId
 			? `${normalizedSessionKey}\u0000${normalizedLaunchId}`
 			: '';
@@ -6232,7 +6307,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 				if (displayedGuideLaunchIdsRef.current.has(displayedLaunchKey)) return;
 				displayedGuideLaunchIdsRef.current.add(displayedLaunchKey);
 			}
-			setMessages(prev => [...prev, createGuideInjectionMessage(text, normalizedSessionKey)]);
+			setMessages(prev => insertRoundSteer(
+				prev,
+				assistantMessageId,
+				expectedRequestId,
+				requestId => createGuideInjectionMessage(text, normalizedSessionKey, requestId),
+			));
 		};
         const inject = () => normalizedLaunchId
 			? InjectAIAssistantGuideReferenceForSessionWithID(text, normalizedSessionKey, normalizedLaunchId, expectedRequestId)

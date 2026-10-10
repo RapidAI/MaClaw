@@ -2830,6 +2830,55 @@ func TestSemanticHostRejectResponseForPolicyDenied(t *testing.T) {
 	}
 }
 
+func TestSemanticHostRejectResponseSeparatesUnreadinessFromAbsence(t *testing.T) {
+	generic := semanticHostRejectResponse()
+	notReady := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{
+		Unmet: []tool.UnmetNeed{{NeedID: "need:record.update.worklog:abc", ReasonCode: tool.CatalogCoverageReasonNotReady}},
+	})
+	if notReady == nil || notReady.Error != "semantic_provider_not_ready" || strings.Contains(notReady.Text, "未覆盖") || !strings.Contains(notReady.Text, "尚未就绪") {
+		t.Fatalf("not ready = %#v", notReady)
+	}
+	incomplete := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{
+		Unmet: []tool.UnmetNeed{{NeedID: "need:record.read.worklog:abc", ReasonCode: tool.CatalogCoverageReasonIncomplete}},
+	})
+	if incomplete == nil || incomplete.Error != "semantic_catalog_incomplete" || strings.Contains(incomplete.Text, "未覆盖") || !strings.Contains(incomplete.Text, "尚未准备") {
+		t.Fatalf("incomplete = %#v", incomplete)
+	}
+	absent := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{
+		Unmet: []tool.UnmetNeed{{NeedID: "need:record.update.worklog:abc", ReasonCode: "no_feasible_provider"}},
+	})
+	if absent == nil || absent.Text != generic.Text || absent.Error != generic.Error {
+		t.Fatalf("absent provider = %#v", absent)
+	}
+	mixed := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{Unmet: []tool.UnmetNeed{
+		{NeedID: "need:record.update.worklog:abc", ReasonCode: "no_feasible_provider"},
+		{NeedID: "need:record.read.worklog:abc", ReasonCode: tool.CatalogCoverageReasonNotReady},
+	}})
+	if mixed == nil || mixed.Text != generic.Text {
+		t.Fatalf("mixed absence and unreadiness = %#v", mixed)
+	}
+	denied := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{Unmet: []tool.UnmetNeed{
+		{NeedID: "need:record.update.worklog:abc", ReasonCode: "policy_denied"},
+		{NeedID: "need:record.read.worklog:abc", ReasonCode: tool.CatalogCoverageReasonNotReady},
+	}})
+	if denied == nil || denied.Error != "semantic_policy_denied" {
+		t.Fatalf("policy must win over unreadiness: %#v", denied)
+	}
+	stale := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{
+		Unmet: []tool.UnmetNeed{{NeedID: "need:record.update.worklog:abc", ReasonCode: tool.CatalogCoverageReasonStale}},
+	})
+	if stale == nil || stale.Error != "semantic_catalog_stale" || strings.Contains(stale.Text, "未覆盖") || !strings.Contains(stale.Text, "尚未完成刷新") {
+		t.Fatalf("stale = %#v", stale)
+	}
+	staleAndAbsent := semanticHostRejectResponseForPlanError(semanticUnmetNeedsError{Unmet: []tool.UnmetNeed{
+		{NeedID: "need:record.update.worklog:abc", ReasonCode: "no_feasible_provider"},
+		{NeedID: "need:record.read.worklog:abc", ReasonCode: tool.CatalogCoverageReasonStale},
+	}})
+	if staleAndAbsent == nil || staleAndAbsent.Text != generic.Text {
+		t.Fatalf("stale mixed with absence = %#v", staleAndAbsent)
+	}
+}
+
 func TestRoutingMissLeftoverDoesNotPinGenerateOnVE(t *testing.T) {
 	ctx := &LoopContext{
 		Platform: "ve_group_executor",

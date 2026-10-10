@@ -51,8 +51,13 @@ type LLMClassifyRequest struct {
 
 // LLMClassifyResult holds the response from a lightweight LLM call.
 type LLMClassifyResult struct {
-	// Text is the raw LLM response, trimmed of whitespace.
-	Text string
+	// Text is the message body, trimmed. Classifiers keep reading this field.
+	// Reasoning is the provider reasoning channel, also trimmed. It is not
+	// copied into Text: a chain-of-thought fallback would false-match a
+	// one-word classifier. Callers that need it, such as desktop-bot
+	// understanding, read it themselves.
+	Text      string
+	Reasoning string
 
 	// InputTokens and OutputTokens track usage for cost monitoring.
 	InputTokens  int
@@ -140,10 +145,12 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	}
 
 	text := ""
+	reasoning := ""
 	inputTokens := 0
 	outputTokens := 0
 	if resp != nil && len(resp.Choices) > 0 {
 		text = strings.TrimSpace(resp.Choices[0].Message.Content)
+		reasoning = strings.TrimSpace(resp.Choices[0].Message.ReasoningContent)
 	}
 	if resp != nil && resp.Usage != nil {
 		inputTokens = resp.Usage.PromptTokens
@@ -155,6 +162,7 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 
 	return &LLMClassifyResult{
 		Text:         text,
+		Reasoning:    reasoning,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		Latency:      latency,

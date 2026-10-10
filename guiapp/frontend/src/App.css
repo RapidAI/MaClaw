@@ -35,8 +35,10 @@
     --theme-page-bg: #f4f7fb;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f0f4f9;
-    --theme-text-primary: #1c2733;
-    --theme-text-secondary: #44546a;
+    /* Light shell retints these again on [data-ai-light-scheme] to the
+       assistant-title gray. This fallback matches that Fluent ink. */
+    --theme-text-primary: #526277;
+    --theme-text-secondary: #546479;
     --theme-text-muted: #657384;
     /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
     --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
@@ -3112,18 +3114,36 @@ body {
 .assistant-reasoning-body > div > :not(pre):not(.assistant-reasoning-segment) { opacity: 0.88; }
 .assistant-reasoning-body .assistant-reasoning-segment > :not(pre) { opacity: 0.88; }
 .assistant-reasoning-summary::-webkit-details-marker { display: none; }
+/* Centered stroke. A › glyph sits on the em baseline and rides below the label. */
+.assistant-reasoning-summary {
+    --reasoning-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.6 2.2 8.2 6 3.6 9.8' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
 .assistant-reasoning-summary::before {
-    content: "›";
-    display: inline-block;
-    width: 10px;
-    margin-right: 2px;
-    font-size: 16px;
-    line-height: 1;
+    content: "";
+    display: block;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    align-self: center;
+    background: currentColor;
+    -webkit-mask-image: var(--reasoning-chevron);
+    mask-image: var(--reasoning-chevron);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: 8px 8px;
+    mask-size: 8px 8px;
     transform: rotate(0deg);
     transition: transform 120ms ease;
 }
 details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
-.assistant-reasoning-summary--plain::before { content: none; width: 0; margin: 0; }
+.assistant-reasoning-summary--plain::before {
+    content: none;
+    background: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+}
 /* Live activity title: a highlight walks through the glyphs only.
    Same idea as Codex — do not restyle the row background. */
 .assistant-reasoning-live-label {
@@ -13835,43 +13855,64 @@ button.tbk-pill {
  * Colours come from the shared theme tokens in 00-tokens.css. No hardcoded
  * surfaces, so the dialog follows the app's dark/light switch. */
 
-.llm-config-tokenbank-btn {
+/* Corner mark on a tested provider chip. Two classes beat the settings panel's 36px button floor. */
+.llm-config-provider-chip-slot {
+    position: relative;
+    display: inline-flex;
+    align-self: center;
+    max-width: 100%;
+}
+
+.llm-config-provider-grid {
+    align-items: center;
+    padding-top: 8px;
+}
+
+.llm-config-provider-grid .llm-config-tokenbank-btn {
+    position: absolute;
+    top: -4px;
+    right: -2px;
+    z-index: 2;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    align-self: center;
-    flex: 0 0 auto;
-    width: 26px;
-    height: 26px;
-    min-height: 26px;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    min-height: 22px;
     padding: 0;
-    margin-left: 2px;
+    margin: 0;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
     border-radius: 999px;
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
+    box-shadow: 0 0 0 2px var(--theme-surface);
     cursor: pointer;
+    line-height: 0;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.llm-config-tokenbank-btn:hover:not(:disabled) {
+/* The drawn mark stays 22px. The extra box only enlarges the click target, and it stays inside the row gap. */
+.llm-config-provider-grid .llm-config-tokenbank-btn::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+}
+
+.llm-config-provider-grid .llm-config-tokenbank-btn:hover:not(:disabled) {
     border-color: var(--theme-primary);
     color: var(--theme-primary-strong);
     background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
 }
 
-.llm-config-tokenbank-btn:focus-visible {
+.llm-config-provider-grid .llm-config-tokenbank-btn:focus-visible {
     outline: 2px solid var(--theme-primary);
     outline-offset: 2px;
 }
 
-/* The settings panel forces a 36px ink button. Keep this mark a small outline circle. */
+/* Later settings rules repaint every non-submit button with office ink. Restore the mark color. */
 .settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
-    width: 26px;
-    height: 26px;
-    min-height: 26px;
     border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-    background: var(--theme-surface);
     color: var(--theme-primary-strong);
 }
 
@@ -13951,6 +13992,7 @@ button.tbk-pill {
         border-color: ButtonText;
         background: ButtonFace;
         color: ButtonText;
+        box-shadow: none;
         forced-color-adjust: none;
     }
 }
@@ -19425,6 +19467,13 @@ button.tbk-pill {
     background: transparent;
 }
 
+/* Home knowledge entry: the category rail is not part of this page. */
+#App[data-nav-tab='settings'] .settings-shell.settings-shell--solo {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "content";
+}
+
 #App[data-nav-tab='settings'] .settings-top-tabs {
     /* Sticky sizes this item to its content, so it never becomes the scrollport. */
     position: static;
@@ -19582,6 +19631,14 @@ button.tbk-pill {
         height: auto;
         min-height: auto;
         overflow: visible;
+    }
+
+    /* The desktop solo rule uses a 1fr row. That row collapses to 0 when this
+       breakpoint makes the shell height indefinite, so size the page to its content. */
+    #App[data-nav-tab='settings'] .settings-shell.settings-shell--solo {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto;
+        grid-template-areas: "content";
     }
 
     #App[data-nav-tab='settings'] .settings-top-tabs {
@@ -21840,7 +21897,7 @@ button.tbk-pill {
 .atbn-urgent-open { background: none; border: none; padding: 0; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
 
 /* AssistantReasoningPanel.tsx */
-.arp-label { flex: 0 0 auto; white-space: nowrap; }
+.arp-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .arp-object { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: 0.78; }
 .arp-step { font-size: 10px; font-weight: 600; opacity: .72; flex: 0 0 auto; white-space: nowrap; }
 .arp-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: .72; }
@@ -22213,9 +22270,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #eef5ff;
-    --theme-text-primary: #17263c;
-    --theme-text-secondary: #46586f;
+    --theme-text-primary: #526277;
+    --theme-text-secondary: #546479;
     --theme-text-muted: #56677c;
+    --mc-text-anchor: #46586f;
     --theme-border: #c9ddf6;
     --theme-border-subtle: #dde9fa;
     --theme-success: #11813a;
@@ -22237,9 +22295,10 @@ button.tbk-pill {
     --theme-page-bg: #f6f8fa;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f6f8fa;
-    --theme-text-primary: #1f2328;
-    --theme-text-secondary: #424a53;
+    --theme-text-primary: #4f5a66;
+    --theme-text-secondary: #59636d;
     --theme-text-muted: #656d76;
+    --mc-text-anchor: #424a53;
     --theme-border: #d0d7de;
     --theme-border-subtle: #e1e7ed;
     --theme-success: #1a7f37;
@@ -22261,9 +22320,10 @@ button.tbk-pill {
     --theme-page-bg: #f4f7fb;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f0f4f9;
-    --theme-text-primary: #1c2733;
-    --theme-text-secondary: #44546a;
+    --theme-text-primary: #516074;
+    --theme-text-secondary: #5a697b;
     --theme-text-muted: #657384;
+    --mc-text-anchor: #44546a;
     --theme-border: #d9e1ec;
     --theme-border-subtle: #e8eef5;
     --theme-success: #4b796a;
@@ -22285,9 +22345,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #fbfbfa;
-    --theme-text-primary: #37352f;
-    --theme-text-secondary: #55534e;
+    --theme-text-primary: #5b5f63;
+    --theme-text-secondary: #666768;
     --theme-text-muted: #73716e;
+    --mc-text-anchor: #55534e;
     --theme-border: #e9e9e7;
     --theme-border-subtle: #f1f1ef;
     --theme-success: #0f7b6c;
@@ -22309,9 +22370,10 @@ button.tbk-pill {
     --theme-page-bg: #fbfbfd;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f5f5f8;
-    --theme-text-primary: #1b1c20;
-    --theme-text-secondary: #3c3e44;
+    --theme-text-primary: #4c525c;
+    --theme-text-secondary: #5a6069;
     --theme-text-muted: #6b7078;
+    --mc-text-anchor: #3c3e44;
     --theme-border: #e4e5ea;
     --theme-border-subtle: #eeeff2;
     --theme-success: #1b805d;
@@ -22333,9 +22395,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f8f9fa;
-    --theme-text-primary: #1a1f36;
-    --theme-text-secondary: #3c4257;
+    --theme-text-primary: #4c5568;
+    --theme-text-secondary: #596376;
     --theme-text-muted: #697386;
+    --mc-text-anchor: #3c4257;
     --theme-border: #e3e8ee;
     --theme-border-subtle: #f0f2f5;
     --theme-success: #0b8159;
@@ -22357,9 +22420,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #fafafa;
-    --theme-text-primary: #171717;
-    --theme-text-secondary: #404040;
+    --theme-text-primary: #4e535a;
+    --theme-text-secondary: #5f6165;
     --theme-text-muted: #737373;
+    --mc-text-anchor: #404040;
     --theme-border: #e5e5e5;
     --theme-border-subtle: #f0f0f0;
     --theme-success: #11824d;
@@ -23062,7 +23126,10 @@ button[aria-busy='true']::after, [data-loading='true']::after {
   font-variant-numeric: tabular-nums;
   font-weight: 650;
 }
-:where(.muted, .secondary-text, [class*='muted']) { color: var(--office-muted) !important; }
+/* Scheme text roles. !important plus --office-muted pinned every muted class
+   to the inherited rail gray and beat the component's own secondary or muted color. */
+:where(.muted, [class*='muted']) { color: var(--theme-text-muted, var(--office-muted)); }
+:where(.secondary-text) { color: var(--theme-text-secondary, var(--office-muted)); }
 
 /* Group rhythm for dense lists */
 :where(.list-group, .task-group, .notification-group, .file-group) + :where(.list-group, .task-group, .notification-group, .file-group) {
@@ -23091,6 +23158,7 @@ button[aria-busy='true']::after, [data-loading='true']::after {
 /* Enhanced contrast support */
 @media (prefers-contrast: more) {
   [data-ai-theme='dark'] { --office-line: #68718a; --office-muted: #d0d5e2; }
+  [data-ai-theme='dark'] :where(.muted, [class*='muted'], .secondary-text) { color: var(--office-muted); }
   .sidebar .left-nav-item.active,
   .sidebar-task-row.is-active,
   [aria-selected='true'] { outline: 2px solid var(--office-accent); outline-offset: -2px; }
@@ -24211,7 +24279,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:var(--theme-surface); border-bottom:1px solid var(--theme-border); user-select:none; cursor:default; }
 .mc-task-execution-header[data-window-drag] { --wails-draggable: drag; }
-.mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--theme-text-primary); }
+.mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--mc-chrome-ink, var(--theme-text-primary)); }
 .mc-task-execution-header span { color:var(--mc-accent, #2f6fbc); font-size:13px; }
 .mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
 .mc-task-execution-actions button { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
@@ -24288,8 +24356,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
 /* Title keeps the first line. Status and created-at share the second, so a
    long name cannot push the meta onto a third line under the 72px header.
-   Clip each line itself; clipping the whole heading cuts the status dot halo. */
-.mc-task-execution-heading > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.35; }
+   Clip the title element itself. The digital-employee bar uses the same
+   strong with no inner text span, so ellipsis cannot move onto a child.
+   The kind icon is a sibling, out of flow, in the header's left padding. */
+.mc-task-execution-title-row { position: relative; min-width: 0; max-width: 100%; }
+.mc-task-execution-heading > .mc-task-execution-title,
+.mc-task-execution-title-row > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.35; }
+.mc-task-execution-header .mc-task-execution-kind { position: absolute; top: 50%; right: calc(100% + 3px); display: flex; align-items: center; justify-content: center; color: var(--mc-chrome-ink, var(--theme-text-primary)); line-height: 0; transform: translateY(-50%); }
+.mc-task-execution-header .mc-task-execution-kind svg { display: block; width: 15px; height: 15px; }
 .mc-task-execution-subline { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .mc-task-execution-subline .mc-task-execution-status { flex: 0 0 auto; }
 .mc-task-execution-subline .mc-task-execution-meta { flex: 1 1 auto; min-width: 0; }
@@ -24304,17 +24378,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
    online/offline is a live indicator, not a task outcome. */
 .mc-task-execution-status--online { border-color: color-mix(in srgb, var(--theme-success) 32%, var(--theme-border)); background: var(--theme-success-bg); color: var(--theme-success) !important; }
 .mc-task-execution-status--online i { background: var(--theme-success); box-shadow: 0 0 0 3px rgba(27,182,106,.12); }
-.mc-task-execution-status--pending { border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border)); background: var(--theme-warning-bg); color: var(--theme-warning) !important; }
-.mc-task-execution-status--pending i { background: var(--theme-warning); box-shadow: 0 0 0 3px rgba(243,154,36,.14); }
+.mc-task-execution-status--pending { border-color: var(--mc-wait-border, color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border))); background: var(--mc-wait-bg, color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface))); color: var(--mc-wait, var(--theme-text-secondary)) !important; }
+.mc-task-execution-status--pending i { background: var(--mc-wait, var(--theme-text-secondary)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc-wait, var(--theme-text-secondary)) 18%, transparent); }
 .mc-task-execution-status--failed,
 .mc-task-execution-status--cancelled { border-color: color-mix(in srgb, var(--theme-danger) 32%, var(--theme-border)); background: var(--theme-danger-bg); color: var(--theme-danger) !important; }
 .mc-task-execution-status--failed i,
 .mc-task-execution-status--cancelled i { background: var(--theme-danger); box-shadow: 0 0 0 3px rgba(224,90,90,.12); }
 .mc-task-execution-meta { color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title{font-size:16px}}
+@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title,.mc-task-execution-title-row > .mc-task-execution-title{font-size:16px}}
 
-/* Workbench task pane: New Task is its own action. Theme and cloud sit in
-   a later cluster with a real gap, so they do not read as part of creating. */
+/* Workbench task pane: New Task is its own action. Knowledge sits in the open
+   stretch before the divider; theme and cloud stay in the later cluster. */
 .mc-task-pane__title {
     margin: 0 8px 8px;
     min-height: 0;
@@ -24458,7 +24532,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane__toolbar-divider {
     width: 1px;
     height: 16px;
-    margin: 0 4px 0 2px;
+    margin: 0 4px;
     background: var(--theme-border-subtle, #e6edf5);
 }
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__toolbar > button.mc-task-pane__create-group {
@@ -24515,7 +24589,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     color: #fff;
     box-shadow: 0 3px 8px rgba(23, 105, 232, .28);
 }
-/* Theme and cloud sit at the trailing end of the toolbar, past the divider. */
 .mc-task-pane__tool-group {
     display: inline-flex;
     align-items: center;
@@ -24545,6 +24618,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     background: var(--theme-primary-soft) !important;
     border-color: transparent !important;
     color: var(--theme-primary) !important;
+}
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__knowledge:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 1px;
 }
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button:disabled {
     cursor: default;
@@ -24731,9 +24808,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   --theme-page-bg: #f0f6ff;
   --theme-surface: #f0f6ff;
   --theme-surface-muted: #ffffff;
-  --theme-text-primary: #26364a;
-  --theme-text-secondary: #52657d;
-  --theme-text-muted: #8a9bb0;
+  /* Text ink comes from the light-scheme chrome rule. Local text
+     tokens here overrode that rule with a near-black primary and a
+     muted gray that failed contrast on this blue surface. */
   --theme-border: #dbe6f2;
   --theme-border-subtle: #e6edf5;
 }
@@ -24756,6 +24833,88 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: color-mix(in srgb, var(--theme-primary) 10%, transparent) !important;
   border-color: transparent !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent) !important;
+}
+/* Rail flyout menus (system, extensions, library, professional features) share
+   SystemPopupMenu. Inside .sidebar the office-theme button rules paint a
+   violet hover and a left inset bar, and native button appearance paints a
+   white bordered face. Hover is a lighter primary wash. The open page uses
+   the same wash and hairline as .mc-nav-rail .sidebar-item.active. */
+.spm-menu {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-lg, 14px);
+  border: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+  box-shadow: var(--shadow-md, 0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10));
+  white-space: nowrap;
+  max-width: calc(100vw - 80px);
+  overflow-x: auto;
+}
+/* Light rail rebinds --theme-surface to the rail fill. The card white is
+   --theme-surface-muted, same swap the status panel uses. */
+.sidebar[data-ai-theme='light'] .spm-menu {
+  background: var(--theme-surface-muted);
+}
+.spm-menu > .spm-item {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-primary);
+  font: inherit;
+  line-height: 1.15;
+  cursor: pointer;
+  position: relative;
+  transform: none;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+.spm-menu > .spm-item:hover,
+.spm-menu > .spm-item:focus-visible,
+.spm-menu > .spm-item:active {
+  background: color-mix(in srgb, var(--theme-primary) 8%, transparent);
+  border-color: transparent;
+  color: var(--theme-text-primary);
+  transform: none;
+}
+/* Beat .sidebar button[aria-current='page'] (violet fill + left bar). */
+.spm-menu > .spm-item[aria-current='page'],
+.spm-menu > .spm-item[aria-current='page']:hover,
+.spm-menu > .spm-item[aria-current='page']:focus-visible,
+.spm-menu > .spm-item[aria-current='page']:active {
+  background: color-mix(in srgb, var(--theme-primary) 10%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent) !important;
+  color: var(--theme-text-primary) !important;
+}
+.spm-menu > .spm-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary) 48%, transparent) !important;
+  outline-offset: -2px;
+}
+/* Same glyph treatment as the rail: grayscale the stroke, do not tint it. */
+.spm-menu .spm-icon {
+  color: var(--theme-text-primary);
+  opacity: 1;
+}
+.spm-menu .spm-icon svg {
+  filter: grayscale(1) saturate(0) brightness(0.68);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spm-menu > .spm-item { transition: none; }
+}
+@media (prefers-contrast: more) {
+  .spm-menu > .spm-item[aria-current='page'] {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: -2px;
+  }
 }
 .mc-sidebar-shell { width: 308px !important; min-width: 308px !important; }
 .mc-sidebar-drag-strip { width: 428px !important; }
@@ -24951,7 +25110,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-welcome__title,
 #App[data-ai-theme='dark'] .mc-task-execution h1,
 #App[data-ai-theme='dark'] .mc-task-execution h2,
-#App[data-ai-theme='dark'] .mc-task-execution-header strong { color: var(--theme-text-primary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-header strong,
+#App[data-ai-theme='dark'] .mc-task-execution-header .mc-task-execution-kind { color: var(--theme-text-primary) !important; }
 #App[data-ai-theme='dark'] .mc-header-search,
 #App[data-ai-theme='dark'] .mc-header-search-wrap,
 #App[data-ai-theme='dark'] .mc-header-notification,
@@ -24970,7 +25130,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-task-execution-status { background: var(--theme-primary-soft) !important; border-color: var(--theme-border) !important; color: var(--theme-primary-strong) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--completed { background: color-mix(in srgb, var(--mc-done) 14%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--mc-done) 42%, var(--theme-border)) !important; color: var(--mc-done) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--online { background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-success) 48%, var(--theme-border)) !important; color: var(--theme-success) !important; }
-#App[data-ai-theme='dark'] .mc-task-execution-status--pending { background: color-mix(in srgb, var(--theme-warning) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-warning) 48%, var(--theme-border)) !important; color: var(--theme-warning) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--failed,
 #App[data-ai-theme='dark'] .mc-task-execution-status--cancelled { background: color-mix(in srgb, var(--theme-danger) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-danger) 48%, var(--theme-border)) !important; color: var(--theme-danger) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-meta { color: var(--theme-text-muted) !important; }
@@ -25126,7 +25285,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   width: 100%;
   box-sizing: border-box;
 }
-.mc-workbench-status-card__heading { margin-bottom: 5px; font-size: 13px; }
+.mc-workbench-status-card__heading { margin-bottom: 5px; font-size: 13px; color: var(--mc-chrome-ink, inherit); }
 .mc-workbench-status-card__heading-signals {
   display: flex;
   align-items: center;
@@ -25595,6 +25754,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution-header {
     padding-inline: 14px;
   }
+  .mc-task-execution-header .mc-task-execution-kind { right: calc(100% + 1px); }
+  .mc-task-execution-header .mc-task-execution-kind svg { width: 12px; height: 12px; }
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
     padding-top: 16px !important;
     /* The continuation composer is in normal flow on every viewport.  The
@@ -25758,13 +25919,15 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   line-height: 1.35 !important;
 }
 /* overflow:hidden ellipsis clips bold CJK when the line box is 1.2.
-   Beats `.sidebar-task-row [class*='title']` (weight 650). Idle titles match
-   the left rail labels; only the selected row uses primary ink. */
+   Beats `.sidebar-task-row [class*='title']` (weight 650). The workspace
+   path is inline secondary, so the name stays on primary. Secondary and
+   rail gray left the name no darker than that path. The selected row is
+   marked by its background. */
 .mc-task-pane .sidebar-task-row .stsm-row-title {
   line-height: 1.35;
   font-weight: 600;
   letter-spacing: 0;
-  color: var(--office-muted, var(--theme-text-muted));
+  color: var(--theme-text-primary);
   /* The task-type glyph trails the title. The generic `.stsm-row-title`
      `flex: 1` would absorb all free space and push the glyph against the
      timestamp, so the title shrinks to its content instead; it still ellipsizes
@@ -26270,7 +26433,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: color-mix(in srgb, var(--mc-done) 14%, var(--theme-surface)) !important;
   color: var(--mc-done) !important;
 }
-#App[data-ai-theme='dark'] .mc-task-execution-status[data-status='pending'],
 #App[data-ai-theme='dark'] .mc-execution-step[data-status='pending'],
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid^='coding-step-'][data-status='pending'] {
   background: color-mix(in srgb, var(--theme-warning) 16%, var(--theme-surface)) !important;
@@ -26393,6 +26555,14 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 [data-testid='ai-panel-root'][data-ai-view='welcome'] [data-testid='ai-titlebar-primary-actions'],
 [data-testid='ai-panel-root'][data-ai-view='welcome'] [data-testid='ai-titlebar-tools-group'] > .ai-titlebar-tool {
   display: none !important;
+}
+/* File companion is a home action. Keep this one control when the rest of
+   the tool row is hidden, including the max-width 1200px tool collapse. */
+[data-testid='ai-panel-root'][data-ai-view='welcome'] [data-testid='ai-titlebar-tools-group'] > .ai-titlebar-tool[data-testid='open-file-companion'] {
+  display: inline-flex !important;
+  width: auto;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 /* The home composer owns the single visible rounded surface.  This overrides
@@ -26606,7 +26776,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-size: 13px;
   line-height: 1.35;
   letter-spacing: 0;
-  color: var(--office-muted, var(--theme-text-muted));
+  color: var(--theme-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -27222,6 +27392,7 @@ input.mdoc-search:focus-visible {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 /* Embedded slot + persistent portal host for the cloud drive preview pane.
    The host div is moved between the slot (embedded) and document.body
@@ -27248,19 +27419,118 @@ input.mdoc-search:focus-visible {
 }
 .mdoc-preview-header {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
-  padding: 18px 24px;
+  flex-shrink: 0;
+  padding: 12px 16px 10px;
   border-bottom: 1px solid var(--theme-border-subtle, #e8eef5);
+  background: var(--theme-surface, #ffffff);
+  position: relative;
+  z-index: 1;
+}
+.mdoc-preview-heading {
+  min-width: 0;
 }
 .mdoc-preview-title {
-  flex: 1;
   min-width: 0;
-  font-weight: 750;
-  font-size: 1.25rem;
+  font-weight: 700;
+  font-size: 1.05rem;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.mdoc-preview-subtitle {
+  min-width: 0;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-secondary, #546479);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+/* A group wraps only when the preview is narrower than its labels. */
+.mdoc-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mdoc-toolbar-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+}
+.mdoc-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  min-height: 16px;
+  margin: 6px 2px;
+  background: var(--theme-border, #d9e1ec);
+  flex: 0 0 1px;
+}
+.mdoc-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mdoc-toolbar-btn:not(:has(span)):has(svg) {
+  width: 32px;
+  padding: 0;
+}
+.mdoc-toolbar-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.mdoc-toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mdoc-toolbar-btn--danger {
+  color: var(--theme-danger, #c43d34);
+}
+.mdoc-toolbar-btn--danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 35%, var(--theme-border, #d9e1ec));
+  background: color-mix(in srgb, var(--theme-danger, #c43d34) 8%, var(--theme-surface, #ffffff));
+  color: var(--theme-danger, #c43d34);
+}
+/* Named accent, not "primary": button[class*='primary'] would force the
+   office-accent fill and a hover lift that covers the viewer toolbar. */
+.mdoc-toolbar-btn--accent {
+  border-color: transparent;
+  background: var(--theme-primary, #2f6fbc);
+  color: var(--theme-on-primary, #ffffff);
+}
+.mdoc-toolbar-btn--accent:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--theme-primary-strong, #235a9e);
+  color: var(--theme-on-primary, #ffffff);
+  transform: none;
+  filter: none;
 }
 .mdoc-audio-grid {
   display: grid;
@@ -27448,6 +27718,258 @@ input.cwshare-url {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Keep the companion product title clear of the file tabs.
+   The window must not grow with the tab list. The filename row scrolls
+   inside itself and does not show a horizontal scrollbar. When the names
+   do not fit, << and >> sit outside that row, at its two ends, and move
+   the names. The row shrinks and does not grow, so free space stays after
+   打开文件 instead of between the last filename and that button. 打开文件
+   is the next title-bar item and keeps its own width. The gap after it
+   holds the document actions and 关闭 on the right. */
+.file-companion-window {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.file-companion-titlebar {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.file-companion-titlebar .mc-header-brand {
+  margin-right: 12px;
+}
+.file-companion-titlebar-files {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 4px;
+  overflow: hidden;
+}
+.file-companion-titlebar-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  /* hidden still accepts scrollLeft. auto paints a horizontal bar on Windows. */
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex-wrap: nowrap;
+}
+.file-companion-titlebar-tabs::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.file-companion-titlebar-gap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.file-companion-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* File companion chrome uses the same surface, border, and hover as title-bar tools. */
+.file-companion-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  gap: 6px;
+  white-space: nowrap;
+}
+.file-companion-tool-icon {
+  display: block;
+  flex: 0 0 auto;
+}
+/* The mark plus the 6px gap widens each action. Two pixels less padding
+   on each side keeps 关闭 from being the first control the title bar clips. */
+.file-companion-tool:has(.file-companion-tool-icon) {
+  padding: 0 10px;
+}
+/* The shared busy spinner brings its own left margin for inline buttons.
+   These tools are flex, so that margin stacks on top of the icon gap. */
+.file-companion-tool[aria-busy="true"]::after {
+  margin-left: 0;
+}
+.file-companion-tool:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-tool--close {
+  margin-left: 8px;
+}
+.file-companion-tool--close:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #b42318 28%, var(--theme-border, #d9e1ec));
+  background: rgba(180, 35, 24, 0.08);
+  color: #9a3412;
+}
+.file-companion-tab {
+  flex: 0 1 220px;
+  max-width: 240px;
+  min-width: 72px;
+  gap: 6px;
+  padding: 0 6px 0 10px;
+}
+.file-companion-titlebar-tabs > .file-companion-tab {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 240px;
+  overflow: hidden;
+}
+.file-companion-tab-nudge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font: 700 13px/1 "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  letter-spacing: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-companion-tab-nudge:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-tab-nudge:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.file-companion-titlebar > .file-companion-tab--open {
+  flex: 0 0 auto;
+  max-width: none;
+  min-width: max-content;
+  padding: 0 12px;
+}
+.file-companion-tab-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+.file-companion-tab-close:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.file-companion-tab[aria-selected="true"] {
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-tab-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.file-companion-send {
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: var(--theme-primary, #2f6fbc);
+  color: #ffffff;
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.file-companion-send:hover:not(:disabled) {
+  background: var(--theme-primary-strong, #235a9e);
+}
+.file-companion-send:disabled {
+  background: #cbd5e1;
+  cursor: default;
+}
+.file-companion-send[aria-busy="true"] {
+  background: var(--theme-primary, #2f6fbc);
+  color: #ffffff;
+}
+.file-companion-split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.file-companion-split-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-companion-split-handle {
+  flex: 0 0 12px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: transparent;
+}
+.file-companion-split-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: #e2e8f0;
+}
+.file-companion-split-handle:hover::before,
+.file-companion-split-handle:focus-visible::before,
+.file-companion-split-handle:active::before {
+  left: 4px;
+  width: 3px;
+  background: var(--theme-primary, #2f6fbc);
+}
+.file-companion-split-handle:focus-visible {
+  outline: none;
+}
+.file-companion-chat {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #f8fafc;
 }
 
 /* ── Code preview: change-focused diff view ────────────────────────────────
@@ -28187,14 +28709,15 @@ input.cwshare-url {
   }
 }
 
-/* Compact rail popups: anchor to the actual rail width after it shrinks to
-   84px / 64px. A fixed 112px left offset floats the menu 28–48px away. */
+/* Compact rail popups: SystemPopupMenu sets left from the rail's laid-out
+   right edge. Do not set left here. On position:fixed, a percentage left is
+   the viewport width, which pushes the menu off-screen once the rail shrinks
+   to 84px / 64px. These rules only keep the item row inside the viewport. */
 @media (max-width: 1200px) {
   .mc-nav-rail [data-testid='system-popup-menu'],
   .mc-nav-rail [data-testid='extensions-popup-menu'],
   .mc-nav-rail [data-testid='library-popup-menu'],
   .mc-nav-rail [data-testid='pro-features-popup-menu'] {
-    left: calc(100% + 8px) !important;
     max-width: calc(100vw - 96px) !important;
   }
 }
@@ -28203,7 +28726,6 @@ input.cwshare-url {
   .mc-nav-rail [data-testid='extensions-popup-menu'],
   .mc-nav-rail [data-testid='library-popup-menu'],
   .mc-nav-rail [data-testid='pro-features-popup-menu'] {
-    left: calc(100% + 6px) !important;
     max-width: calc(100vw - 76px) !important;
   }
 }
@@ -29172,8 +29694,9 @@ input.cwshare-url {
     .mobile-documents-body { flex-direction: column; overflow: hidden; }
     .mobile-documents-list-pane { width: 100% !important; min-width: 0 !important; height: 42%; flex: 0 0 42%; border-right: 0 !important; border-bottom: 1px solid var(--theme-border, #d9e1ec); }
     .mobile-documents-preview-pane { min-height: 0; }
-    .mobile-documents-preview-header { padding: 14px 16px !important; flex-wrap: wrap; }
-    .mobile-documents-preview-header > .mobile-documents-btn { min-height: 38px; padding: 0 11px; }
+    .mobile-documents-preview-header { padding: 14px 16px !important; }
+    .mdoc-preview-actions .mdoc-toolbar-btn { height: 38px; min-height: 38px; padding: 0 11px; }
+    .mdoc-preview-actions .mdoc-toolbar-btn:not(:has(span)):has(svg) { width: 38px; padding: 0; }
     .mobile-documents-preview-body { padding: 18px !important; }
 }
 
@@ -29296,6 +29819,12 @@ input.cwshare-url {
   --mc-done: color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary));
   --mc-done-bg: color-mix(in srgb, var(--theme-primary) 7%, var(--mc-muted-surface));
   --mc-done-border: color-mix(in srgb, var(--theme-primary) 26%, var(--mc-line));
+  /* Header "needs action" pill. Warning amber fought the cool shell, and a
+     primary-heavy mix read as a second running chip. Use the title ink, with
+     only a light primary wash so it stays a chip. */
+  --mc-wait: var(--mc-chrome-ink, var(--theme-text-secondary));
+  --mc-wait-bg: color-mix(in srgb, var(--theme-primary) 6%, var(--mc-surface));
+  --mc-wait-border: color-mix(in srgb, var(--theme-primary) 22%, var(--mc-line));
 }
 
 #App .sidebar,
@@ -29335,18 +29864,14 @@ input.cwshare-url {
 #App .top-header__title,
 #App .mc-header-brand,
 #App .mc-task-pane__title,
-#App .mc-task-execution-header strong,
 #App .mc-task-execution h1,
 #App .mc-task-execution h2,
 #App .mc-welcome__title {
   color: var(--mc-ink) !important;
 }
 #App .mc-header-ready,
-#App .mc-task-execution-meta,
 #App .mc-task-execution [class*='timestamp'],
-#App .mc-task-execution [class*='meta'],
-#App .mc-workbench-status-card__row,
-#App .mc-workbench-status-card__online {
+#App .mc-task-execution [class*='meta'] {
   color: var(--mc-copy) !important;
 }
 
@@ -29612,10 +30137,6 @@ input.cwshare-url {
 }
 #App .mc-task-execution [data-testid='coding-agent-file-change-row'] { border-color: transparent !important; }
 
-#App .mc-workbench-status-card__row strong,
-#App .mc-workbench-status-card__model strong {
-  color: var(--mc-ink) !important;
-}
 #App .mc-task-pane [aria-label*='count'],
 #App .mc-task-pane .count,
 #App .mc-task-pane [class*='count'] {
@@ -29652,7 +30173,11 @@ input.cwshare-url {
   border-color: color-mix(in srgb, var(--mc-done) 30%, var(--mc-line)) !important;
   color: var(--mc-done) !important;
 }
-#App .mc-task-execution-status[data-status='pending'],
+#App .mc-task-execution-status[data-status='pending'] {
+  background: var(--mc-wait-bg) !important;
+  border-color: var(--mc-wait-border) !important;
+  color: var(--mc-wait) !important;
+}
 #App .mc-execution-step[data-status='pending'] {
   background: color-mix(in srgb, var(--theme-warning) 11%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--mc-line)) !important;
@@ -29775,7 +30300,7 @@ input.cwshare-url {
 
 /* Keep the workbench status card aligned with the shared theme tokens. */
 #App .mc-workbench-status-card__online {
-  color: var(--mc-copy) !important;
+  color: var(--mc-chrome-ink, var(--mc-copy)) !important;
 }
 #App .mc-workbench-status-card__online i,
 #App .mc-workbench-status-card__online.is-online i {
@@ -29795,10 +30320,10 @@ input.cwshare-url {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-danger, #c43d34) 14%, var(--mc-surface)) !important;
 }
 #App .mc-workbench-status-card__row {
-  color: var(--mc-copy) !important;
+  color: var(--mc-chrome-ink, var(--mc-copy)) !important;
 }
 #App button.mc-workbench-status-card__row:hover:not(:disabled) {
-  color: var(--mc-ink) !important;
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App button.mc-workbench-status-card__row:active:not(:disabled) {
   color: var(--mc-accent-strong) !important;
@@ -29809,7 +30334,7 @@ input.cwshare-url {
   border-radius: 8px;
 }
 #App button.mc-workbench-status-card__im:hover {
-  color: var(--mc-ink) !important;
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App button.mc-workbench-status-card__im:active {
   color: var(--mc-accent-strong) !important;
@@ -29819,8 +30344,9 @@ input.cwshare-url {
   outline-offset: 2px;
   border-radius: 8px;
 }
-#App .mc-workbench-status-card__row strong {
-  color: var(--mc-ink) !important;
+#App .mc-workbench-status-card__row strong,
+#App .mc-workbench-status-card__model strong {
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App .mc-workbench-status-card__model-mark {
   color: var(--mc-accent) !important;
@@ -29830,6 +30356,18 @@ input.cwshare-url {
 }
 #App .mc-workbench-status-card__meter > span {
   background: var(--mc-accent) !important;
+}
+
+/* Light-only. Titles and interface text use the AI assistant title ink:
+   darker than the left rail, not near-black. --mc-text-anchor is the scheme's
+   original secondary, so the mix does not follow --theme-text-secondary.
+   Secondary sits between that ink and the scheme muted color. Muted is left
+   on the scheme: the rail gray is under 4.5:1 on the light-blue sidebar. */
+[data-ai-light-scheme]:not([data-ai-theme='dark']) {
+  --mc-chrome-ink: color-mix(in srgb, var(--office-muted, #6b7285) 38%, var(--mc-text-anchor, #46586f));
+  --theme-text-primary: var(--mc-chrome-ink);
+  --office-ink: var(--mc-chrome-ink);
+  --theme-text-secondary: color-mix(in srgb, var(--mc-chrome-ink) 55%, var(--theme-text-muted));
 }
 
 /* ===== 新任务配置条弹层（src/components/ai/task-config）===== */

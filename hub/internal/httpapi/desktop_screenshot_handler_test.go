@@ -75,3 +75,35 @@ func TestDesktopScreenshotHandlerRelaysThePNG(t *testing.T) {
 		t.Fatalf("non-PNG reply status=%d", w.Code)
 	}
 }
+
+func TestDesktopScreenshotHandlerReturnsTheSavedPath(t *testing.T) {
+	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "desktop-api-token")
+	var gotName string
+	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		gotName = in.Name
+		if in.Name != "" {
+			w.Header().Set("X-Desktop-Saved-Path", "/home/desktop/Desktop/"+in.Name)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(screenshotPNG)
+	}))
+	t.Cleanup(docker.Close)
+	handler := PostDesktopScreenshotHandler(desktopPoolFake(t, newDesktopSettingsMem(), docker.URL))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/screenshot", strings.NewReader(`{"tenant_id":"tenant-a","user_id":"alice","display":":20","name":"baidu_screenshot.png"}`))
+	req.Header.Set("Authorization", "Bearer desktop-api-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || gotName != "baidu_screenshot.png" {
+		t.Fatalf("status=%d name=%q body=%s", w.Code, gotName, w.Body.String())
+	}
+	var out struct {
+		Saved string `json:"saved_path"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Saved != "/home/desktop/Desktop/baidu_screenshot.png" {
+		t.Fatalf("saved=%q err=%v", out.Saved, err)
+	}
+}

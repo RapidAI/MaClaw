@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
@@ -44,6 +45,40 @@ func TestProjectToolResultKeepsSSHStatusInline(t *testing.T) {
 		if projection.Spilled || projection.Preview != raw {
 			t.Fatalf("%s status was truncated: spilled=%v preview=%d raw=%d", toolName, projection.Spilled, len(projection.Preview), len(raw))
 		}
+	}
+}
+
+func TestProjectToolResultKeepsDesktopFileAndCommand(t *testing.T) {
+	file := "int main(){}\n" + strings.Repeat("a", 20_000)
+	if len(file) <= MaxToolResultLen || len(file) > desktop.ToolResultMax {
+		t.Fatalf("fixture len=%d", len(file))
+	}
+	projection, err := ProjectToolResult("desktop", "owner", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Spilled || projection.Preview != file {
+		t.Fatalf("file was cut: spilled=%v preview=%d raw=%d", projection.Spilled, len(projection.Preview), len(file))
+	}
+	cmd := strings.Repeat("note\n", 900) + "a.c:1: error: expected ';'\n(exit 1)"
+	if len(cmd) <= MaxToolResultLen || len(cmd) > desktop.ToolResultMax {
+		t.Fatalf("command fixture len=%d", len(cmd))
+	}
+	projection, err = ProjectToolResult("desktop", "owner", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Spilled || projection.Preview != cmd || !strings.Contains(projection.Preview, "(exit 1)") {
+		t.Fatalf("command was cut: spilled=%v preview=%d", projection.Spilled, len(projection.Preview))
+	}
+	huge := strings.Repeat("x", desktop.ToolResultMax) + "\na.c:1: error: expected ';'\n(exit 1)"
+	got := PreviewToolResultForTool("desktop", huge)
+	if !strings.Contains(got, "expected ';'") || !strings.Contains(got, "(exit 1)") {
+		t.Fatalf("command tail dropped")
+	}
+	longFile := "int main(void) {\n" + strings.Repeat("a", desktop.ToolResultMax)
+	if !strings.HasPrefix(PreviewToolResultForTool("desktop", longFile), "int main(void)") {
+		t.Fatal("file head dropped")
 	}
 }
 
@@ -343,7 +378,7 @@ func TestHistoryHandoffMergesEarlierCheckpoint(t *testing.T) {
 
 func TestHistoryHandoffKeepsTaggedFileLists(t *testing.T) {
 	entry := historyHandoffEntry([]ConversationEntry{{
-		Role: "user",
+		Role:    "user",
 		Content: "[对话历史摘要]\n登录校验已修好\n\n<read-files>\nlogin.go\n</read-files>\n<modified-files>\nsession.go\n</modified-files>",
 	}})
 	text, _ := entry.Content.(string)

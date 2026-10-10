@@ -439,7 +439,10 @@ func visibleDesktopPage(preferredID string, targets []TargetInfo) string {
 			mu.Lock()
 			attention[i] = att
 			answered++
-			wake := att.focused || answered == len(candidates)
+			// A focused network-error window must not end the wait. The
+			// loaded page can still be answering, and that is the session
+			// the person is using.
+			wake := (att.focused && !att.failed) || answered == len(candidates)
 			mu.Unlock()
 			if wake {
 				signal()
@@ -458,18 +461,49 @@ func visibleDesktopPage(preferredID string, targets []TargetInfo) string {
 	mu.Lock()
 	snapshot := append([]pageAttention(nil), attention...)
 	mu.Unlock()
-	for i, att := range snapshot {
-		if att.focused {
-			return candidates[i].ID
-		}
+	return pickVisibleDesktopPage(preferredID, candidates, snapshot)
+}
+
+// pickVisibleDesktopPage chooses the page the person is using. A network-error
+// window often sits in front of the logged-in one and still reports focus.
+// Raising that error covers the session the person can already see.
+func pickVisibleDesktopPage(preferredID string, candidates []TargetInfo, snapshot []pageAttention) string {
+	if id := firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return att.focused && !att.failed
+	}); id != "" {
+		return id
 	}
-	for i, att := range snapshot {
-		if att.visible && candidates[i].ID == preferredID {
-			return preferredID
-		}
+	if id := firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return att.visible && !att.failed && id == preferredID
+	}); id != "" {
+		return id
 	}
+	if id := firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return att.visible && !att.failed
+	}); id != "" {
+		return id
+	}
+	if id := firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return att.focused
+	}); id != "" {
+		return id
+	}
+	if id := firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return att.visible && id == preferredID
+	}); id != "" {
+		return id
+	}
+	return firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return att.visible
+	})
+}
+
+func firstMatchingPage(candidates []TargetInfo, snapshot []pageAttention, match func(pageAttention, string) bool) string {
 	for i, att := range snapshot {
-		if att.visible {
+		if i >= len(candidates) {
+			break
+		}
+		if match(att, candidates[i].ID) {
 			return candidates[i].ID
 		}
 	}
@@ -483,6 +517,9 @@ func pageIsVisible(wsURL string) bool {
 type pageAttention struct {
 	visible bool
 	focused bool
+	// failed is a Chrome network-error document. The address bar still shows
+	// the site that did not load.
+	failed bool
 }
 
 func pageAttentionWithin(wsURL string, budget time.Duration) pageAttention {
@@ -495,7 +532,8 @@ func pageAttentionWithin(wsURL string, budget time.Duration) pageAttention {
 	}
 	defer client.Close()
 	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    "JSON.stringify({v:document.visibilityState,f:document.hasFocus()})",
+		"expression": "JSON.stringify({v:document.visibilityState,f:document.hasFocus()," +
+			"e:!!(document.getElementById('main-frame-error')||document.querySelector('body.neterror')||location.protocol==='chrome-error:')})",
 		"returnByValue": true,
 	}, budget)
 	if err != nil {
@@ -513,9 +551,10 @@ func attentionFromValue(raw string) pageAttention {
 		var parsed struct {
 			V string `json:"v"`
 			F bool   `json:"f"`
+			E bool   `json:"e"`
 		}
 		if json.Unmarshal([]byte(raw), &parsed) == nil {
-			return pageAttention{visible: parsed.V == "visible", focused: parsed.F}
+			return pageAttention{visible: parsed.V == "visible", focused: parsed.F, failed: parsed.E}
 		}
 	}
 	return pageAttention{}
@@ -640,7 +679,8 @@ func sharedDesktopRealPage(raw string) bool {
 	url := strings.TrimSpace(raw)
 	// A data tab is only a place to receive a saved login. Staying on it
 	// leaves the website the person signed into in another tab.
-	return url != "" && url != "about:blank" && !strings.HasPrefix(strings.ToLower(url), "data:") && !strings.HasPrefix(url, "chrome://") && !strings.HasPrefix(url, "chrome-untrusted://")
+	lower := strings.ToLower(url)
+	return url != "" && url != "about:blank" && !strings.HasPrefix(lower, "data:") && !strings.HasPrefix(lower, "chrome://") && !strings.HasPrefix(lower, "chrome-untrusted://") && !strings.HasPrefix(lower, "chrome-error:")
 }
 
 func focusSharedDesktopPage(session *Session) error {

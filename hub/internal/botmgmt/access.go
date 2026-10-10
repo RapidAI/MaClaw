@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,15 +47,32 @@ type DesktopControl interface {
 
 // Reply is the text from one MaClawSrv instance, plus a desktop handoff URL
 // when that instance paused for a login or captcha.
+// ReplyImage is one desktop screenshot shown in the bot chat.
+// Data is standard base64, without a data: URL prefix.
+type ReplyImage struct {
+	MIME string `json:"mime"`
+	Data string `json:"data"`
+}
+
 type Reply struct {
-	Text               string `json:"text"`
-	NovncURL           string `json:"novnc_url,omitempty"`
-	Handoff            bool   `json:"handoff,omitempty"`
-	AttentionReason    string `json:"attention_reason,omitempty"`
-	AskUserInputType   string `json:"ask_user_input_type,omitempty"`
-	AskUserSecretName  string `json:"ask_user_secret_name,omitempty"`
-	AskUserQuestion    string `json:"ask_user_question,omitempty"`
-	AskUserOptionsJSON string `json:"ask_user_options_json,omitempty"`
+	Text               string       `json:"text"`
+	NovncURL           string       `json:"novnc_url,omitempty"`
+	Handoff            bool         `json:"handoff,omitempty"`
+	AttentionReason    string       `json:"attention_reason,omitempty"`
+	AskUserInputType   string       `json:"ask_user_input_type,omitempty"`
+	AskUserSecretName  string       `json:"ask_user_secret_name,omitempty"`
+	AskUserQuestion    string       `json:"ask_user_question,omitempty"`
+	AskUserOptionsJSON string       `json:"ask_user_options_json,omitempty"`
+	Images             []ReplyImage `json:"images,omitempty"`
+	Files              []ReplyFile  `json:"files,omitempty"`
+}
+
+// ReplyFile is one document the bot produced for this chat.
+// Data is standard base64, without a data: URL prefix.
+type ReplyFile struct {
+	Name string `json:"name"`
+	MIME string `json:"mime"`
+	Data string `json:"data"`
 }
 
 func (s *Service) Enabled(ctx context.Context, tenantID, userID string) (bool, error) {
@@ -182,6 +200,150 @@ func (s *Service) DeleteBotForUser(ctx context.Context, tenantID, userID, botID 
 	return s.DeleteBot(ctx, tenantID, botID)
 }
 
+type replyAttachment struct {
+	Type     string `json:"type"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+	Data     string `json:"data"`
+}
+
+// replyImages keeps the latest desktop screenshot. Anything that is not a
+// PNG or JPEG, or that is too large to be one screenshot, stays off the reply.
+func replyImageData(raw string) (string, bool) {
+	const maxShot = 1_200_000
+	data := strings.TrimSpace(raw)
+	if data == "" || len(data) > maxShot || len(data)%4 != 0 {
+		return "", false
+	}
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if c == '=' {
+			if i < len(data)-2 {
+				return "", false
+			}
+			continue
+		}
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/') {
+			return "", false
+		}
+	}
+	return data, true
+}
+
+// replyFiles keeps the latest file on this reply. The chat does not choose a
+// type. A path-like name, or a payload that is not base64, stays off the
+// reply. A screenshot stays on Images.
+func replyFiles(attachments []replyAttachment) []ReplyFile {
+	const maxFile = 200_000
+	for i := len(attachments) - 1; i >= 0; i-- {
+		item := attachments[i]
+		if strings.TrimSpace(item.Type) != "file" {
+			continue
+		}
+		name := replyFileName(item.FileName)
+		mime := replyFileMIME(item.MimeType)
+		if name == "" || mime == "" {
+			continue
+		}
+		data, ok := replyFileData(item.Data, maxFile)
+		if !ok {
+			continue
+		}
+		return []ReplyFile{{Name: name, MIME: mime, Data: data}}
+	}
+	return nil
+}
+
+func replyFileName(raw string) string {
+	name := strings.TrimSpace(raw)
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") || strings.HasPrefix(name, ".") {
+		return ""
+	}
+	if len([]rune(name)) > 80 {
+		return ""
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	return name
+}
+
+func replyFileMIME(raw string) string {
+	mime := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	if mime == "" {
+		return "application/octet-stream"
+	}
+	parts := strings.Split(mime, "/")
+	if len(parts) != 2 || !replyMIMEToken(parts[0]) || !replyMIMEToken(parts[1]) {
+		return ""
+	}
+	return mime
+}
+
+func replyMIMEToken(part string) bool {
+	if part == "" || len(part) > 127 {
+		return false
+	}
+	for i := 0; i < len(part); i++ {
+		c := part[i]
+		letter := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if i == 0 {
+			if !letter {
+				return false
+			}
+			continue
+		}
+		if !letter && c != '.' && c != '+' && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func replyFileData(raw string, max int) (string, bool) {
+	data := strings.TrimSpace(raw)
+	if data == "" || len(data) > max || len(data)%4 != 0 {
+		return "", false
+	}
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if c == '=' {
+			if i < len(data)-2 {
+				return "", false
+			}
+			continue
+		}
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/') {
+			return "", false
+		}
+	}
+	return data, true
+}
+
+func replyImages(attachments []replyAttachment) []ReplyImage {
+	for i := len(attachments) - 1; i >= 0; i-- {
+		item := attachments[i]
+		if strings.TrimSpace(item.Type) != "image" {
+			continue
+		}
+		mime := strings.ToLower(strings.TrimSpace(item.MimeType))
+		if mime != "image/png" && mime != "image/jpeg" {
+			continue
+		}
+		data, ok := replyImageData(item.Data)
+		if !ok {
+			continue
+		}
+		return []ReplyImage{{MIME: mime, Data: data}}
+	}
+	return nil
+}
+
 // PostMessage sends one command to that user's MaClawSrv instance.
 // It opens the user's cloud desktop first. MaClawSrv stops the desktop when
 // this user has no run left. A transport failure here also stops it, because
@@ -190,52 +352,104 @@ func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, cont
 	return s.PostMessagePhase(ctx, tenantID, userID, botID, content, "")
 }
 
+// BotAdmission is one desktop command MaClawSrv has accepted.
+// Settled means the reply is already in Reply. Otherwise RunID keeps
+// running after this call returns, and DesktopRunResult reports it later.
+type BotAdmission struct {
+	Accepted bool
+	Settled  bool
+	RunID    string
+	Reply    Reply
+}
+
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
 // leaves the body as content plus the session key, so an older client keeps
 // working. plan and execute travel as message metadata bot_phase.
 func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID, content, phase string) (Reply, error) {
+	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, false)
+	return admission.Reply, err
+}
+
+// AdmitDesktopMessage accepts the command and returns as soon as MaClawSrv
+// has a run. The desktop stays occupied until that run finishes. The reply
+// is read later with DesktopRunResult. A server that still answers in this
+// call returns Settled with the reply.
+func (s *Service) AdmitDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase string) (BotAdmission, error) {
+	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, true)
+}
+
+func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase string, admit bool) (BotAdmission, error) {
 	content = strings.TrimSpace(content)
+	phase = strings.TrimSpace(phase)
 	if content == "" {
-		return Reply{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
+		return BotAdmission{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
 	}
+	pipelineStarted := time.Now()
 	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
-		return Reply{}, err
+		traceBot(botID, "load_user", err, "tenant", tenantID, "user", userID)
+		return BotAdmission{}, err
 	}
 	index := indexOf(rec.Bots, botID)
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
-		return Reply{}, ErrNotFound
+		traceBot(botID, "load_bot", ErrNotFound, "tenant", tenantID, "user", userID)
+		return BotAdmission{}, ErrNotFound
 	}
+	botID = rec.Bots[index].ID
+	instanceID := rec.Bots[index].InstanceID
+	traceBot(botID, "post_begin", nil,
+		"tenant", tenantID,
+		"user", userID,
+		"instance", instanceID,
+		"phase", phase,
+		"content_len", strconv.Itoa(len(content)),
+		"srv", botlogHost(rec.BaseURL),
+	)
 	if err := configured(rec); err != nil {
-		return Reply{}, err
+		traceBot(botID, "configured", err, "dur_ms", traceMS(time.Since(pipelineStarted)))
+		return BotAdmission{}, err
 	}
 	// The person finished logging in and sent the next command. The agent
 	// uses the same browser now. The keyboard is returned only after this
 	// command is counted, so a stop cannot shut the browser in between.
-	instanceID := rec.Bots[index].InstanceID
+	step := time.Now()
 	novnc, opened, err := s.openDesktop(ctx, tenantID, userID, instanceID, botID)
+	traceBot(botID, "open_desktop", err,
+		"instance", instanceID,
+		"opened", traceYes(opened),
+		"novnc", traceYes(strings.TrimSpace(novnc) != ""),
+		"dur_ms", traceMS(time.Since(step)),
+	)
 	if err != nil {
 		// The desktop did not change hands. If this bot was already waiting
 		// for a login, the person still needs the keyboard on that browser.
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
-		return Reply{}, err
+		return BotAdmission{}, err
 	}
 	var payload struct {
 		Message struct {
-			Content  string            `json:"content"`
-			Metadata map[string]string `json:"metadata"`
+			Content     string            `json:"content"`
+			Metadata    map[string]string `json:"metadata"`
+			Attachments []replyAttachment `json:"attachments"`
 		} `json:"message"`
 		DesktopHandoff  bool   `json:"desktop_handoff"`
 		AttentionReason string `json:"attention_reason"`
 		Error           string `json:"error"`
+		Async           bool   `json:"async"`
+		Run             struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"run"`
 	}
 	// The token exchange is a remote call: keep it off s.mu, so one slow
 	// MaClawSrv cannot stall every other user's command.
+	step = time.Now()
 	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
+	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
 	if tokenErr != nil {
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
-		return Reply{}, tokenErr
+		return BotAdmission{}, tokenErr
 	}
 	instancePath := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID)
 	// Keep the rest of this instance and rewrite only the desktop owner.
@@ -243,34 +457,147 @@ func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID,
 	// already has, and the next command would not be the same instance.
 	// If those settings cannot be read, skip the write. A partial map would
 	// replace them and the next command would not be this same bot.
-	metadata, metaErr := s.desktopIdentityMetadata(ctx, fresh, token, instancePath, userID, tenantID)
+	step = time.Now()
+	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID)
+	traceBot(botID, "read_instance", metaErr, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
 	if metaErr != nil {
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
-		return Reply{}, metaErr
+		return BotAdmission{}, metaErr
 	}
-	if err := s.doAuth(ctx, fresh, token, http.MethodPatch, instancePath, map[string]any{
+	step = time.Now()
+	// MaClawSrv treats any metadata body as a change: it rewrites the instance
+	// and records an audit event. Skip that when the identity is already set.
+	if !writeMetadata {
+		traceBot(botID, "patch_instance", nil, "instance", instanceID, "skipped", "yes", "dur_ms", traceMS(time.Since(step)))
+	} else if err := s.authAsOwner(ctx, tenantID, userID, &fresh, &token, http.MethodPatch, instancePath, map[string]any{
 		"metadata": metadata,
 	}, nil); err != nil {
+		traceBot(botID, "patch_instance", err, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
-		return Reply{}, err
+		return BotAdmission{}, err
+	} else {
+		traceBot(botID, "patch_instance", nil, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
+	}
+	step = time.Now()
+	llmErr := s.ensureBotOwnerLLM(ctx, tenantID, fresh, userID)
+	traceBot(botID, "owner_llm", llmErr,
+		"group", botLLMServiceGroupID,
+		"dur_ms", traceMS(time.Since(step)),
+	)
+	if llmErr != nil {
+		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		return BotAdmission{}, llmErr
 	}
 	path := instancePath + "/messages"
+	messageMeta := map[string]string{"bot_id": rec.Bots[index].ID}
+	if phase == "plan" || phase == "execute" {
+		messageMeta["bot_phase"] = phase
+	}
 	messageBody := map[string]any{
 		"content":            content,
 		"client_session_key": rec.Bots[index].ID,
+		"metadata":           messageMeta,
 	}
-	switch strings.TrimSpace(phase) {
-	case "plan", "execute":
-		messageBody["metadata"] = map[string]string{"bot_phase": strings.TrimSpace(phase)}
+	step = time.Now()
+	postCtx := ctx
+	if admit {
+		postCtx = preferAsync(ctx)
 	}
-	callErr := s.doAuth(ctx, fresh, token, http.MethodPost, path, messageBody, &payload)
-	if callErr != nil {
+	callErr := s.authAsOwner(postCtx, tenantID, userID, &fresh, &token, http.MethodPost, path, messageBody, &payload)
+	// MaClaw checks readiness before it opens the desktop or starts the
+	// agent, so this 400 did not run the command. A wiped model config is
+	// the case the skip cannot see; push it once more and send the same
+	// command again.
+	if llmConfigIncomplete(callErr) {
+		gate, repaired, repairErr := s.repairIncompleteOwnerLLM(ctx, tenantID, fresh, userID)
+		traceBot(botID, "owner_llm_repair", repairErr, "instance", instanceID, "retried", traceYes(repaired))
+		if repairErr != nil {
+			callErr = repairErr
+		} else if repaired {
+			callErr = s.authAsOwner(postCtx, tenantID, userID, &fresh, &token, http.MethodPost, path, messageBody, &payload)
+			if llmConfigIncomplete(callErr) {
+				s.noteOwnerLLMRepairFailed(ctx, tenantID, userID, gate)
+			}
+		}
+	}
+	if callErr == nil {
+		s.clearOwnerLLMRepairNote(ctx, tenantID, userID)
+	}
+	traceBot(botID, "post_message", callErr,
+		"instance", instanceID,
+		"phase", phase,
+		"timeout", traceYes(desktopCallTimedOut(callErr)),
+		"dur_ms", traceMS(time.Since(step)),
+	)
+	// A 202 is the run id, not a finished command and not a timeout.
+	// The desktop stays with that run until the follow-up sees it end.
+	if admit && callErr == nil && payload.Async && strings.TrimSpace(payload.Run.ID) != "" &&
+		strings.TrimSpace(payload.Message.Content) == "" && strings.TrimSpace(payload.Error) == "" && !payload.DesktopHandoff {
+		s.followAdmittedDesktopRun(admittedDesktopFollow{
+			TenantID:   tenantID,
+			UserID:     userID,
+			BotID:      botID,
+			InstanceID: instanceID,
+			Novnc:      novnc,
+			RunID:      payload.Run.ID,
+			Phase:      phase,
+			Opened:     opened,
+			Started:    pipelineStarted,
+		})
+		traceBot(botID, "admit", nil,
+			"instance", instanceID,
+			"run", payload.Run.ID,
+			"phase", phase,
+			"dur_ms", traceMS(time.Since(pipelineStarted)),
+		)
+		return BotAdmission{Accepted: true, RunID: payload.Run.ID}, nil
+	}
+	reply, settleErr := s.settleDesktopCommand(tenantID, userID, botID, instanceID, novnc, opened, desktopCommandBody{
+		CallErr:     callErr,
+		Text:        payload.Message.Content,
+		Error:       payload.Error,
+		Handoff:     payload.DesktopHandoff,
+		Attention:   payload.AttentionReason,
+		Metadata:    payload.Message.Metadata,
+		Attachments: payload.Message.Attachments,
+	})
+	if settleErr != nil {
+		return BotAdmission{}, settleErr
+	}
+	traceBot(botID, "post_end", nil,
+		"instance", instanceID,
+		"phase", phase,
+		"text_len", strconv.Itoa(len(reply.Text)),
+		"images", strconv.Itoa(len(reply.Images)),
+		"handoff", traceYes(reply.Handoff),
+		"attention", reply.AttentionReason,
+		"ask", traceYes(reply.AskUserQuestion != "" || reply.AskUserSecretName != ""),
+		"dur_ms", traceMS(time.Since(pipelineStarted)),
+	)
+	return BotAdmission{Settled: true, Reply: reply}, nil
+}
+
+// desktopCommandBody is the MaClawSrv message result, whether it arrived on
+// the admitting call or on a later read of the run.
+type desktopCommandBody struct {
+	CallErr     error
+	Text        string
+	Error       string
+	Handoff     bool
+	Attention   string
+	Metadata    map[string]string
+	Attachments []replyAttachment
+}
+
+func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
+	if body.CallErr != nil {
 		// The instance may already be waiting for a login. Stopping here
 		// would close that browser before the person can use it. A failed
 		// continuation did not take the keyboard, so the person keeps it.
-		if !desktopCallTimedOut(callErr) {
+		if !desktopCallTimedOut(body.CallErr) {
 			s.restoreDesktopKeyboard(tenantID, userID, botID)
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
 		} else {
@@ -287,29 +614,31 @@ func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID,
 			}
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 		}
-		return Reply{}, callErr
+		return Reply{}, body.CallErr
 	}
-	text := strings.TrimSpace(payload.Message.Content)
-	if text == "" && strings.TrimSpace(payload.Error) != "" {
-		text = strings.TrimSpace(payload.Error)
+	text := strings.TrimSpace(body.Text)
+	if text == "" && strings.TrimSpace(body.Error) != "" {
+		text = strings.TrimSpace(body.Error)
 	}
-	if text == "" && payload.DesktopHandoff {
+	if text == "" && body.Handoff {
 		text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
 	}
 	if text == "" {
+		emptyErr := fmt.Errorf("%w: instance returned no result", ErrSrv)
+		traceBot(botID, "empty_result", emptyErr, "instance", instanceID, "handoff", traceYes(body.Handoff))
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
-		return Reply{}, fmt.Errorf("%w: instance returned no result", ErrSrv)
+		return Reply{}, emptyErr
 	}
-	reply := Reply{Text: text}
-	if meta := payload.Message.Metadata; meta != nil {
+	reply := Reply{Text: text, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
+	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
 		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
 		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
 	}
-	reason := strings.TrimSpace(payload.AttentionReason)
-	if payload.DesktopHandoff {
+	reason := strings.TrimSpace(body.Attention)
+	if body.Handoff {
 		// The login is already decided. This open may not have returned a
 		// picture yet; a later session can still publish one. Clearing the
 		// hold here would let the next failure close the browser before the
@@ -338,18 +667,21 @@ func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID,
 // desktopIdentityMetadata is this Hub user on the instance, plus any
 // metadata the instance already had. The desktop key is the Hub user.
 // Other fields stay so this bot remains the same instance.
-func (s *Service) desktopIdentityMetadata(ctx context.Context, rec record, token, instancePath, userID, tenantID string) (map[string]string, error) {
+func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, token *string, instancePath, userID, tenantID string) (map[string]string, bool, error) {
 	var existing struct {
 		ID       string            `json:"id"`
 		Metadata map[string]string `json:"metadata"`
 	}
-	if err := s.doAuth(ctx, rec, token, http.MethodGet, instancePath, nil, &existing); err != nil {
-		return nil, err
+	if rec == nil {
+		return nil, false, fmt.Errorf("%w: instance settings were not read", ErrSrv)
+	}
+	if err := s.authAsOwner(ctx, tenantID, userID, rec, token, http.MethodGet, instancePath, nil, &existing); err != nil {
+		return nil, false, err
 	}
 	// An empty reply is not an instance with no settings. Writing over it
 	// would drop the configuration this bot already has.
 	if strings.TrimSpace(existing.ID) == "" {
-		return nil, fmt.Errorf("%w: instance settings were not read", ErrSrv)
+		return nil, false, fmt.Errorf("%w: instance settings were not read", ErrSrv)
 	}
 	metadata := map[string]string{}
 	for key, value := range existing.Metadata {
@@ -358,7 +690,22 @@ func (s *Service) desktopIdentityMetadata(ctx context.Context, rec record, token
 	metadata["hub_bot"] = "1"
 	metadata["hub_user_id"] = userID
 	metadata["hub_tenant_id"] = tenantID
-	return metadata, nil
+	// Bot turns always bill the reserved free group. A group copied from an
+	// older instance would send this user's other entitlements instead.
+	metadata["llm_service_group_id"] = botLLMServiceGroupID
+	return metadata, !metadataEqual(existing.Metadata, metadata), nil
+}
+
+func metadataEqual(current, next map[string]string) bool {
+	if len(current) != len(next) {
+		return false
+	}
+	for key, value := range next {
+		if current[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) beginDesktopUse(tenantID, userID, instanceID string) {
@@ -805,7 +1152,10 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if err != nil {
 		return Bot{}, err
 	}
-	meta := map[string]string{"hub_bot": "1"}
+	meta := map[string]string{
+		"hub_bot":              "1",
+		"llm_service_group_id": botLLMServiceGroupID,
+	}
 	if ownerUserID != "" {
 		meta["hub_user_id"] = ownerUserID
 		meta["hub_tenant_id"] = tenantID

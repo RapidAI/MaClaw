@@ -33,6 +33,26 @@ describe('aiAssistantProjectTabState', () => {
         expect(merged[1].content).toBe('duplicate');
     });
 
+    it('places a live row that arrives late beside the round it belongs to', () => {
+        const merged = mergeChatMessages(
+            [
+                { id: 'a', role: 'assistant', content: '', requestId: 'round-a' },
+                { id: 'next-user', role: 'user', content: 'next' },
+                { id: 'b', role: 'assistant', content: '', requestId: 'round-b' },
+            ],
+            [
+                { id: 'a', role: 'assistant', content: 'done', requestId: 'round-a' },
+                { id: 'steer', role: 'user', content: 'guide', requestId: 'round-a' },
+                { id: 'next-user', role: 'user', content: 'next' },
+                { id: 'b', role: 'assistant', content: 'working', requestId: 'round-b' },
+            ],
+        );
+
+        expect(merged.map((message) => message.id)).toEqual(['a', 'steer', 'next-user', 'b']);
+        expect(merged[0].content).toBe('done');
+        expect(merged[3].content).toBe('working');
+    });
+
     it('replaces a saved project placeholder with the live final assistant response', () => {
         const merged = mergeChatMessages(
             [{ id: 'assistant-1', role: 'assistant', content: '', requestId: 'req-1', sessionKey: 'desktop-user:D:/tasks/weather' }],

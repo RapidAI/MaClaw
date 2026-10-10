@@ -2,10 +2,12 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -18,10 +20,44 @@ import (
 // Hosts construct it from their Service and a sealed, versioned capability
 // registry during bootstrap, then retain it in authenticated lifecycle code.
 // It is not an Agent tool and must never be handed to request execution.
+
+// ObservedMCPTool is one tools/list entry the host lifecycle already holds.
+// The publisher accepts the name and schema only so it can compute the binding
+// digest. Description and any caller-supplied digest are not inputs.
+type ObservedMCPTool struct {
+	Name        string
+	InputSchema map[string]interface{}
+}
+
+// MCPToolObserver is a Service-free view of one server's last successful
+// tools/list. observed is false on a cache miss; that must not be treated as
+// an empty server. The observer does not discover or start a provider.
+type MCPToolObserver interface {
+	ObservedMCPTools(ctx context.Context, principal Principal, serverID string) ([]ObservedMCPTool, bool, error)
+}
+
+// SkillObserver is a Service-free view of the installed Skill set. observed
+// is false when the host has not loaded that set. Package descriptions are
+// not a capability source.
+type SkillObserver interface {
+	ObservedSkills(ctx context.Context, principal Principal) ([]corelib.NLSkillEntry, bool, error)
+}
+
+// ReviewedBindingSource returns the code-reviewed declaration templates.
+// A test can replace it; production uses ReviewedMCPCapabilityContracts or
+// ReviewedSkillCapabilityContracts. Templates must not carry a digest.
+type ReviewedBindingSource func() map[string]DynamicCapabilityContract
+
+// DynamicCapabilityContractPublisher publishes only declarations the host
+// lifecycle has already reviewed. See the constructor comments above.
 type DynamicCapabilityContractPublisher struct {
-	svc       *Service
-	registry  *coretool.CapabilityRegistry
-	contracts DynamicCapabilityContractRegistry
+	svc           *Service
+	registry      *coretool.CapabilityRegistry
+	contracts     DynamicCapabilityContractRegistry
+	mcp           MCPToolObserver
+	skills        SkillObserver
+	mcpBindings   ReviewedBindingSource
+	skillBindings ReviewedBindingSource
 }
 
 // NewDynamicCapabilityContractPublisher binds publication to the Service's
@@ -38,47 +74,315 @@ func NewDynamicCapabilityContractPublisher(svc *Service, registry *coretool.Capa
 	return &DynamicCapabilityContractPublisher{svc: svc, registry: registry, contracts: svc.dynamicCapabilities}, nil
 }
 
+// NewLifecycleDynamicCapabilityContractPublisher binds publication to a host
+// contract registry and a sealed vocabulary without requiring Service. The
+// GUI lifecycle uses this. MCP names, Skill names, and caller-supplied digests
+// still cannot create a capability: PublishReviewedMCPObservation and
+// PublishReviewedSkillObservation copy only the reviewed templates and write
+// the digest from the observation.
+func NewLifecycleDynamicCapabilityContractPublisher(contracts DynamicCapabilityContractRegistry, registry *coretool.CapabilityRegistry, mcp MCPToolObserver, skills SkillObserver) (*DynamicCapabilityContractPublisher, error) {
+	if contracts == nil {
+		return nil, fmt.Errorf("dynamic capability publisher requires a contract registry")
+	}
+	if registry == nil || strings.TrimSpace(registry.Version()) == "" || !registry.Sealed() {
+		return nil, fmt.Errorf("dynamic capability publisher requires a sealed, versioned capability registry")
+	}
+	return &DynamicCapabilityContractPublisher{
+		registry:      registry,
+		contracts:     contracts,
+		mcp:           mcp,
+		skills:        skills,
+		mcpBindings:   ReviewedMCPCapabilityContracts,
+		skillBindings: ReviewedSkillCapabilityContracts,
+	}, nil
+}
+
+// UseReviewedBindings replaces the production templates. A nil map leaves
+// that family on its current source. Tests pass a fixture map; production
+// hosts do not call this.
+func (p *DynamicCapabilityContractPublisher) UseReviewedBindings(mcp, skills map[string]DynamicCapabilityContract) {
+	if p == nil {
+		return
+	}
+	if mcp != nil {
+		copied := cloneReviewedBindingTemplates(mcp)
+		p.mcpBindings = func() map[string]DynamicCapabilityContract { return copied }
+	}
+	if skills != nil {
+		copied := cloneReviewedBindingTemplates(skills)
+		p.skillBindings = func() map[string]DynamicCapabilityContract { return copied }
+	}
+}
+
 // PublishObservedMCP resolves the exact ready MCP tool from the Service-owned
-// runtime inventory, binds the contract to its current closed schema digest,
-// and only then publishes it. The caller may name a binding to review, but it
-// cannot supply a schema digest or provider-produced capability declaration.
+// runtime inventory, or from the lifecycle observer when the host has no
+// Service. It binds the contract to the current closed schema digest. The
+// caller may name a binding to review, but a schema digest on the contract
+// is discarded and computed here.
 func (p *DynamicCapabilityContractPublisher) PublishObservedMCP(ctx context.Context, principal Principal, serverID, toolName string, contract DynamicCapabilityContract) error {
-	if p == nil || p.svc == nil {
-		return fmt.Errorf("dynamic capability publisher is unavailable")
-	}
-	tools, err := p.svc.GetMCPServerTools(ctx, principal, serverID)
+	tool, err := p.observeMCPTool(ctx, principal, serverID, toolName)
 	if err != nil {
-		return fmt.Errorf("observe MCP binding: %w", err)
+		return err
 	}
-	for _, tool := range tools {
-		if strings.TrimSpace(tool.Name) != strings.TrimSpace(toolName) {
-			continue
-		}
-		contract.ObservedBindingDigest = dynamicMCPObservedBindingDigest(serverID, tool.Name, tool.InputSchema)
-		return p.publishObservedMCP(principal, serverID, tool.Name, contract)
-	}
-	return fmt.Errorf("MCP tool %q/%q is not ready", strings.TrimSpace(serverID), strings.TrimSpace(toolName))
+	contract.ObservedBindingDigest = dynamicMCPObservedBindingDigest(serverID, tool.Name, tool.InputSchema)
+	return p.publishObservedMCP(principal, serverID, tool.Name, contract)
 }
 
 // PublishObservedSkill binds a reviewed declaration to the installed Skill's
 // immutable stable ID plus content/version digest. It never accepts package
 // descriptions, triggers, or market metadata as a source of capability.
 func (p *DynamicCapabilityContractPublisher) PublishObservedSkill(ctx context.Context, principal Principal, stableID string, contract DynamicCapabilityContract) error {
-	if p == nil || p.svc == nil {
+	entry, err := p.observeSkill(ctx, principal, stableID)
+	if err != nil {
+		return err
+	}
+	contract.ObservedBindingDigest = dynamicSkillObservedBindingDigest(skillStableID(entry), entry.Version, skillContentDigest(entry))
+	return p.publishObservedSkill(principal, skillStableID(entry), contract)
+}
+
+// PublishReviewedMCPObservation publishes the reviewed subset of one server's
+// tools/list and revokes reviewed names that this observation no longer
+// contains. Call it only after a real observation. A cache miss must not call
+// it: an empty slice is a real empty server and does revoke. Tools whose
+// names are not in the server-agnostic reviewed map stay unpublished.
+// Digests are computed here; templates that already carry one are overwritten.
+// Servers with no capability identity cannot match a product-scoped binding.
+func (p *DynamicCapabilityContractPublisher) PublishReviewedMCPObservation(principal Principal, serverID string, tools []ObservedMCPTool) error {
+	return p.PublishReviewedMCPObservationForCapability(principal, serverID, MCPCapabilityIdentity{}, tools)
+}
+
+// PublishReviewedMCPObservationForCapability is PublishReviewedMCPObservation
+// with the installed server's capability identity. The identity only selects
+// a code-reviewed binding. It does not supply provisions, effects, or quality.
+func (p *DynamicCapabilityContractPublisher) PublishReviewedMCPObservationForCapability(principal Principal, serverID string, identity MCPCapabilityIdentity, tools []ObservedMCPTool) error {
+	if p == nil || p.contracts == nil || p.registry == nil {
 		return fmt.Errorf("dynamic capability publisher is unavailable")
 	}
-	entries, err := p.svc.ListSkills(ctx, principal)
-	if err != nil {
-		return fmt.Errorf("observe Skill binding: %w", err)
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return fmt.Errorf("MCP contract requires server identity")
 	}
-	for _, entry := range entries {
-		if strings.TrimSpace(skillStableID(entry)) != strings.TrimSpace(stableID) {
+	reviewed := p.mcpContractsForObservation(identity)
+	seen := make(map[string]ObservedMCPTool, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
 			continue
 		}
-		contract.ObservedBindingDigest = dynamicSkillObservedBindingDigest(skillStableID(entry), entry.Version, skillContentDigest(entry))
-		return p.publishObservedSkill(principal, skillStableID(entry), contract)
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = tool
 	}
-	return fmt.Errorf("Skill %q is not installed", strings.TrimSpace(stableID))
+	var errs []error
+	for name, tool := range seen {
+		template, ok := reviewed[name]
+		if !ok {
+			continue
+		}
+		contract := cloneDynamicCapabilityContract(template)
+		contract.ObservedBindingDigest = dynamicMCPObservedBindingDigest(serverID, name, tool.InputSchema)
+		if err := p.publishObservedMCP(principal, serverID, name, contract); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for name := range reviewed {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		if err := p.contracts.RevokeMCPContract(principal, serverID, name); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, binding := range ReviewedMCPCapabilityBindings() {
+		name := strings.TrimSpace(binding.ToolName)
+		if name == "" {
+			continue
+		}
+		if _, ok := reviewed[name]; ok {
+			continue
+		}
+		if _, ok := p.contracts.ResolveMCPDynamicContract(context.Background(), principal, serverID, name); !ok {
+			continue
+		}
+		if err := p.contracts.RevokeMCPContract(principal, serverID, name); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// PublishReviewedSkillObservation is the Skill counterpart. Only exact stable
+// IDs in the reviewed map are published. An observed list that omits a
+// reviewed ID revokes it. Unlisted skills stay unpublished.
+func (p *DynamicCapabilityContractPublisher) PublishReviewedSkillObservation(principal Principal, entries []corelib.NLSkillEntry) error {
+	if p == nil || p.contracts == nil || p.registry == nil {
+		return fmt.Errorf("dynamic capability publisher is unavailable")
+	}
+	reviewed := p.skillContractTemplates()
+	seen := make(map[string]corelib.NLSkillEntry, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(skillStableID(entry))
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = entry
+	}
+	var errs []error
+	for id, entry := range seen {
+		template, ok := reviewed[id]
+		if !ok {
+			continue
+		}
+		contract := cloneDynamicCapabilityContract(template)
+		contract.ObservedBindingDigest = dynamicSkillObservedBindingDigest(skillStableID(entry), entry.Version, skillContentDigest(entry))
+		if err := p.publishObservedSkill(principal, id, contract); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for id := range reviewed {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		if err := p.contracts.RevokeSkillContract(principal, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RevokeObservedMCPServer drops every contract bound to one server after the
+// server itself is removed or its transport identity changes. A cache miss
+// is not a removal.
+func (p *DynamicCapabilityContractPublisher) RevokeObservedMCPServer(principal Principal, serverID string) error {
+	if p == nil || p.contracts == nil {
+		return fmt.Errorf("dynamic capability publisher is unavailable")
+	}
+	return p.contracts.RevokeMCPServerContracts(principal, serverID)
+}
+
+func (p *DynamicCapabilityContractPublisher) observeMCPTool(ctx context.Context, principal Principal, serverID, toolName string) (ObservedMCPTool, error) {
+	if p == nil || (p.svc == nil && p.mcp == nil) {
+		return ObservedMCPTool{}, fmt.Errorf("dynamic capability publisher is unavailable")
+	}
+	serverID = strings.TrimSpace(serverID)
+	toolName = strings.TrimSpace(toolName)
+	if p.svc != nil {
+		tools, err := p.svc.GetMCPServerTools(ctx, principal, serverID)
+		if err != nil {
+			return ObservedMCPTool{}, fmt.Errorf("observe MCP binding: %w", err)
+		}
+		for _, tool := range tools {
+			if strings.TrimSpace(tool.Name) != toolName {
+				continue
+			}
+			return ObservedMCPTool{Name: tool.Name, InputSchema: tool.InputSchema}, nil
+		}
+		return ObservedMCPTool{}, fmt.Errorf("MCP tool %q/%q is not ready", serverID, toolName)
+	}
+	tools, observed, err := p.mcp.ObservedMCPTools(ctx, principal, serverID)
+	if err != nil {
+		return ObservedMCPTool{}, fmt.Errorf("observe MCP binding: %w", err)
+	}
+	if !observed {
+		return ObservedMCPTool{}, fmt.Errorf("MCP server %q is not observed", serverID)
+	}
+	for _, tool := range tools {
+		if strings.TrimSpace(tool.Name) != toolName {
+			continue
+		}
+		return ObservedMCPTool{Name: strings.TrimSpace(tool.Name), InputSchema: tool.InputSchema}, nil
+	}
+	return ObservedMCPTool{}, fmt.Errorf("MCP tool %q/%q is not ready", serverID, toolName)
+}
+
+func (p *DynamicCapabilityContractPublisher) observeSkill(ctx context.Context, principal Principal, stableID string) (corelib.NLSkillEntry, error) {
+	if p == nil || (p.svc == nil && p.skills == nil) {
+		return corelib.NLSkillEntry{}, fmt.Errorf("dynamic capability publisher is unavailable")
+	}
+	stableID = strings.TrimSpace(stableID)
+	if p.svc != nil {
+		entries, err := p.svc.ListSkills(ctx, principal)
+		if err != nil {
+			return corelib.NLSkillEntry{}, fmt.Errorf("observe Skill binding: %w", err)
+		}
+		for _, entry := range entries {
+			if strings.TrimSpace(skillStableID(entry)) != stableID {
+				continue
+			}
+			return entry, nil
+		}
+		return corelib.NLSkillEntry{}, fmt.Errorf("Skill %q is not installed", stableID)
+	}
+	entries, observed, err := p.skills.ObservedSkills(ctx, principal)
+	if err != nil {
+		return corelib.NLSkillEntry{}, fmt.Errorf("observe Skill binding: %w", err)
+	}
+	if !observed {
+		return corelib.NLSkillEntry{}, fmt.Errorf("Skill inventory is not observed")
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(skillStableID(entry)) != stableID {
+			continue
+		}
+		return entry, nil
+	}
+	return corelib.NLSkillEntry{}, fmt.Errorf("Skill %q is not installed", stableID)
+}
+
+func (p *DynamicCapabilityContractPublisher) mcpContractTemplates() map[string]DynamicCapabilityContract {
+	if p != nil && p.mcpBindings != nil {
+		if templates := p.mcpBindings(); templates != nil {
+			return templates
+		}
+	}
+	return ReviewedMCPCapabilityContracts()
+}
+
+// mcpContractsForObservation joins the server-agnostic tool-name map with
+// identity-scoped bindings that match this server. A scoped tool name that
+// is already server-agnostic stays server-agnostic. An identity that does
+// not match contributes no row.
+func (p *DynamicCapabilityContractPublisher) mcpContractsForObservation(identity MCPCapabilityIdentity) map[string]DynamicCapabilityContract {
+	out := cloneReviewedBindingTemplates(p.mcpContractTemplates())
+	for _, binding := range ReviewedMCPCapabilityBindings() {
+		name := strings.TrimSpace(binding.ToolName)
+		if name == "" {
+			continue
+		}
+		if _, exists := out[name]; exists {
+			continue
+		}
+		if !identity.matchesReviewedMCP(binding) {
+			continue
+		}
+		out[name] = cloneDynamicCapabilityContract(binding.Contract)
+	}
+	return out
+}
+
+func (p *DynamicCapabilityContractPublisher) skillContractTemplates() map[string]DynamicCapabilityContract {
+	if p != nil && p.skillBindings != nil {
+		if templates := p.skillBindings(); templates != nil {
+			return templates
+		}
+	}
+	return ReviewedSkillCapabilityContracts()
+}
+
+func cloneReviewedBindingTemplates(in map[string]DynamicCapabilityContract) map[string]DynamicCapabilityContract {
+	out := make(map[string]DynamicCapabilityContract, len(in))
+	for name, contract := range in {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out[name] = cloneDynamicCapabilityContract(contract)
+	}
+	return out
 }
 
 // publishObservedMCP is intentionally private: callers holding a publisher

@@ -502,6 +502,170 @@ print("ok")</arg_value>
 	}
 }
 
+func TestParseContentToolCallsDetailed_LongcatArgKey(t *testing.T) {
+	content := "<longcat_tool_call>ssh_read_file\n" +
+		"<longcat_arg_key>path</longcat_arg_key>\n" +
+		"<longcat_arg_value>/home/znsoft/prj8/src/tui.cpp</longcat_arg_value>\n" +
+		"<longcat_arg_key>offset</longcat_arg_key>\n" +
+		"<longcat_arg_value>401</longcat_arg_value>\n" +
+		"<longcat_arg_key>limit</longcat_arg_key>\n" +
+		"<longcat_arg_value>400</longcat_arg_value>\n" +
+		"</longcat_tool_call>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("longcat arg pairs = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "ssh_read_file" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("arguments: %v %q", err, calls[0].Function.Arguments)
+	}
+	if args["path"] != "/home/znsoft/prj8/src/tui.cpp" {
+		t.Fatalf("path = %#v", args["path"])
+	}
+	if args["offset"] != float64(401) || args["limit"] != float64(400) {
+		t.Fatalf("numeric args = %#v", args)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatJSONAndBareName(t *testing.T) {
+	content := "<longcat_tool_call>\n{\"name\":\"ssh_bash\",\"arguments\":{\"command\":\"ls\"}}\n</longcat_tool_call>\n" +
+		"<longcat_tool_call>ssh_list_dir</longcat_tool_call>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 2 {
+		t.Fatalf("longcat json = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "ssh_bash" || calls[0].Function.Arguments != `{"command":"ls"}` {
+		t.Fatalf("first call = %s %s", calls[0].Function.Name, calls[0].Function.Arguments)
+	}
+	if calls[1].Function.Name != "ssh_list_dir" || calls[1].Function.Arguments != "{}" {
+		t.Fatalf("second call = %s %s", calls[1].Function.Name, calls[1].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatKeepsTextValues(t *testing.T) {
+	content := "<longcat_tool_call>ssh_write_file\n" +
+		"<longcat_arg_key>path</longcat_arg_key>\n" +
+		"<longcat_arg_value>401</longcat_arg_value>\n" +
+		"<longcat_arg_key>content</longcat_arg_key>\n" +
+		"<longcat_arg_value>{\"a\":1}</longcat_arg_value>\n" +
+		"<longcat_arg_key>query</longcat_arg_key>\n" +
+		"<longcat_arg_value>[\"China only tropical province\"]</longcat_arg_value>\n" +
+		"</longcat_tool_call>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("longcat text values = calls=%#v malformed=%v", calls, malformed)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("arguments: %v %q", err, calls[0].Function.Arguments)
+	}
+	if args["path"] != "401" || args["content"] != `{"a":1}` || args["query"] != `["China only tropical province"]` {
+		t.Fatalf("text args = %#v", args)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatUnlistedTextKeyStaysString(t *testing.T) {
+	content := "<longcat_tool_call>ssh_write_file\n" +
+		"<longcat_arg_key>old_content</longcat_arg_key>\n" +
+		"<longcat_arg_value>401</longcat_arg_value>\n" +
+		"<longcat_arg_key>task_id</longcat_arg_key>\n" +
+		"<longcat_arg_value>12</longcat_arg_value>\n" +
+		"<longcat_arg_key>id</longcat_arg_key>\n" +
+		"<longcat_arg_value>99</longcat_arg_value>\n" +
+		"<longcat_arg_key>message</longcat_arg_key>\n" +
+		"<longcat_arg_value>true</longcat_arg_value>\n" +
+		"<longcat_arg_key>start_line</longcat_arg_key>\n" +
+		"<longcat_arg_value>10</longcat_arg_value>\n" +
+		"</longcat_tool_call>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("unlisted keys = calls=%#v malformed=%v", calls, malformed)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("arguments: %v %q", err, calls[0].Function.Arguments)
+	}
+	if args["old_content"] != "401" || args["task_id"] != "12" || args["id"] != "99" || args["message"] != "true" {
+		t.Fatalf("text args = %#v", args)
+	}
+	if args["start_line"] != float64(10) {
+		t.Fatalf("start_line = %#v", args["start_line"])
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatMissingCloseDoesNotMerge(t *testing.T) {
+	content := "<longcat_tool_call>ssh_read_file\n" +
+		"<longcat_arg_key>path</longcat_arg_key>\n" +
+		"<longcat_arg_value>/tmp/a.cpp</longcat_arg_value>\n" +
+		"<longcat_tool_call>ssh_bash\n" +
+		"<longcat_arg_key>command</longcat_arg_key>\n" +
+		"<longcat_arg_value>ls</longcat_arg_value>\n" +
+		"</longcat_tool_call>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 2 {
+		t.Fatalf("split calls = %#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "ssh_read_file" || calls[1].Function.Name != "ssh_bash" {
+		t.Fatalf("names = %s %s", calls[0].Function.Name, calls[1].Function.Name)
+	}
+	if strings.Contains(calls[0].Function.Arguments, "command") || !strings.Contains(calls[1].Function.Arguments, `"ls"`) {
+		t.Fatalf("arguments merged: %s | %s", calls[0].Function.Arguments, calls[1].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatInsideToolCallIsNotStolen(t *testing.T) {
+	content := `<tool_call>{"name":"write_file","arguments":{"path":"notes.md","content":"<longcat_tool_call>ssh_read_file</longcat_tool_call>"}}</tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "write_file" {
+		t.Fatalf("stolen = %#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "longcat_tool_call") {
+		t.Fatalf("file text dropped: %s", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatUnclosedCompleteStillRuns(t *testing.T) {
+	content := "<longcat_tool_call>ssh_read_file\n" +
+		"<longcat_arg_key>path</longcat_arg_key>\n" +
+		"<longcat_arg_value>/tmp/a.cpp</longcat_arg_value>\n"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "ssh_read_file" {
+		t.Fatalf("unclosed complete = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"/tmp/a.cpp"`) {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatUnclosedIsMalformed(t *testing.T) {
+	content := "<longcat_tool_call>ssh_read_file\n<longcat_arg_key>path</longcat_arg_key>\n<longcat_arg_value>/tmp/a"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if len(calls) != 0 || !malformed {
+		t.Fatalf("unclosed incomplete = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestHoldContentToolCallStream_UnicodeBeforeMarker(t *testing.T) {
+	// U+0130 lowercases to two runes, so a lowered copy would shift the cut.
+	const lead = "İ"
+	s := lead + "<longcat_tool_call>"
+	visible, hold, suppress := HoldContentToolCallStream(s, false)
+	if !suppress || hold != "" || visible != lead {
+		t.Fatalf("visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LongcatWordIsNotACall(t *testing.T) {
+	content := "LongCat writes longcat_tool_call in its prompt, then answers."
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if len(calls) != 0 || malformed {
+		t.Fatalf("prose = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
 func TestParseContentToolCallsDetailed_QwenFunctionEq(t *testing.T) {
 	content := `<function=bash>
 <parameter=command>python gen_poster_v4.py</parameter>

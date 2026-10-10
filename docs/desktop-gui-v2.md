@@ -65,7 +65,7 @@ curl -sI -H "Authorization: Bearer $T" \
 | 共用浏览器 | 面板/底部 dock 的“网络浏览器”、应用菜单、`xdg-open`/`exo-open`、`x-www-browser` 都进入**同一个**受监管 Chromium(同 profile、同登录态、带 CDP):有窗口就恢复并激活(含最小化窗口),带链接就作为新标签打开;浏览器被关掉/崩溃时只重启浏览器(恢复 CDP 与登录态),不会再起第二套桌面。实现见 `desktop_supervisor.py browser` 与 `/usr/bin/maclaw-browser`、`/etc/chromium.d/zz-maclaw-shared-browser` |
 | 中文输入 | fcitx5 + 拼音,默认输入法列表 `keyboard-us` + `pinyin`,**Ctrl+Space** 切换;`GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx`,`LANG=zh_CN.UTF-8` |
 | 字体 | Noto Sans/Serif CJK SC(fontconfig 默认中文字体),emoji 字体 |
-| 软件安装 | 容器内是 root,可以 `apt-get install`;装到 `/opt`、`/usr/local` 的东西在每用户卷里,重建容器也保留 |
+| 软件安装 | 容器内是 root,可以 `apt-get install`;装到 `/opt`、`/usr/local` 的东西在每用户卷里,重建容器也保留。执行阶段的 desktop `action=install` 用包名调用 `apt-get update` 和 `apt-get install -y`，不经过 shell。安装前先等这次打开桌面时后台的 apt 源测速；若安装更早拿到锁，就由安装自己测完并写源。上次安装若被时间预算打断，这一次会先等 dpkg 的锁（dpkg 自己不等），再 `dpkg --configure -a`。拆到一半、configure 配不完的包，在源更新成功后用不带包名的 `apt-get -f install` 补完，再安装这次要的包。配置失败而源更新也失败时，带回配置这一步的错误。失败时只带回 apt 日志末尾。apt 在 20 分钟停下并说明是超时，不把下载进度当成失败原因；送回这句的客户端和写截止再多等一分钟。计划阶段只把包名写进安排 |
 | apt 源 | 镜像只带 `deb.debian.org`(构建用的 `APT_MIRROR` 不进成品)。每次打开桌面,supervisor 在后台测 `deb.debian.org` 与 `mirrors.tencent.com`(直连与经 `HTTP(S)_PROXY` 各一次),把更快的写进 `/etc/apt/sources.list.d/debian.sources`,有出口代理时写 `/etc/apt/apt.conf.d/90maclaw-proxy`(选中的源若直连更快则对它 `DIRECT`),并让 sudo 保留代理变量(`/etc/sudoers.d/maclaw-proxy-env`);结果在 `/var/lib/maclaw/apt-mirror.json`,24 小时或代理变化后重测。容器环境变量 `MACLAW_APT_MIRROR` 覆盖:主机名/URL(多个用逗号分隔则在其中测速)、`off` 保留自己的源。手动重测:`python3 /desktop_supervisor.py apt-mirror`。用户自己改成其他镜像站的 debian.sources 不会被覆盖 |
 | 分辨率 | 默认 `1440x900x24`;容器环境变量 `MACLAW_DESKTOP_GEOMETRY=1920x1080x24` 覆盖(格式 `宽x高[x色深]`,非法值回退默认) |
 | 工具 | noVNC/websockify、x11vnc、xdotool、ImageMagick `import`、scrot、at-spi2(无障碍树) |
@@ -196,6 +196,8 @@ deploy_desktopd.cmd docker-host.example
 **备份 → desktopd(含镜像构建)→ Hub → MaClawSrv → 验证 → 冒烟 → 切换 Hub 镜像**。
 在 Hub 配置切换之前,已有用户继续用 `maclaw-gui:1`,不会被迁移。
 
+`hub.mypapers.top` 上已经在跑的桌面不要走 4.1 的脚本。同一桌面逻辑只在三个 Go 二进制里时,按第 4.4 节替换二进制。
+
 ### 4.1 Windows(原有脚本)
 
 ```bat
@@ -278,6 +280,89 @@ DESKTOPD_ADVERTISE_HOST=dockerd.example.com DESKTOPD_IMAGE_FROM=pull \
   iptables 规则绕过 ufw,所以 ufw 不放行也能从公网访问;这些端口只靠每桌面 token 保护。
   需要收紧时在 `DOCKER-USER` 链限制来源,而不是改 ufw。
 
+### 4.4 hub.mypapers.top 只替换三个二进制
+
+同一桌面（bot 的文件、命令、浏览器和容器网络上的 `web_search` / `web_fetch` 使用 noVNC 那个人的容器，家目录 `/home/desktop`）编在 maclawsrv、hub、desktopd 三个二进制里。容器里的 supervisor 和镜像 `maclaw-gui:2` 本来就把 `HOME` 放在 `/home/desktop`。这类发布不重建镜像，不把 supervisor 拷进正在运行的容器，不重启 Docker。
+
+不要用 `deploy_desktopd.cmd` 和 `desktopd/remote_deploy.sh`。那个脚本会重写 `/etc/systemd/system/maclaw-desktopd.service`（`StandardOutput=append:` 在这台机器上解析失败）、默认构建镜像，并对每个 `maclaw-desktop-*` 容器执行 `docker cp` supervisor。不要用 `deploy_maclawsrv.cmd` 附带的 `build/maclawsrv_deploy/remote_deploy_maclawsrv.sh`。它会重写 `/data/soft/maclaw_srv/start.sh` 和 `maclawsrv.service`。Hub 用目录里已有的 `start.sh`，不覆盖 `configs/config.yaml`，不停 `/data/soft/hubcenter/maclaw-hubcenter`。
+
+主机是 `maclawsrv.mypapers.top`（与 `hub.mypapers.top`、`dockerd.mypapers.top` 同一台）。常规二进制替换不改 nginx、单元文件和已有 `.env`。Hub 机器人要连上这台人的云桌面，还要有下面的连接配置。desktopd 收到停止信号时只关掉自己的 HTTP 服务，已有容器继续跑。重启这三个进程会丢掉当时还在进行的对话。
+
+本机交叉编译（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`，用当前工作区，不只编译 HEAD）：
+
+```bash
+go build -ldflags "-s -w -X main.serviceVersion=20261010.samedesktop -X main.serviceCommit=<git>-dirty -X main.serviceBuiltAt=<RFC3339>" -o maclawsrv ./MaClawSrv
+go build -ldflags "-s -w" -o maclaw-hub ./hub/cmd/hub
+go build -ldflags "-s -w" -o desktopd ./desktopd/cmd/desktopd
+```
+
+主机上先备份再覆盖，`chmod 755`，然后只重启已有进程：
+
+```bash
+systemctl restart maclawsrv.service
+( cd /data/soft/hub && ./start.sh )
+systemctl restart maclaw-desktopd.service
+```
+
+maclawsrv 启动后大约 3 秒才监听，立刻访问会 connection refused。确认：
+
+```bash
+curl -fsS --max-time 3 http://127.0.0.1:18080/version
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 3 http://127.0.0.1:9399/api/mobile/bootstrap
+systemctl show maclawsrv.service maclaw-desktopd.service -p Id,MainPID,ActiveState --no-page
+docker ps -a --filter name=maclaw-desktop- --format '{{.ID}} {{.Status}} {{.Names}}'
+```
+
+Hub 二进制没有 `/version`。用新 pid 和 `sha256sum /data/soft/hub/maclaw-hub` 确认。`/api/mobile/bootstrap` 返回 401 表示 Hub 在听。
+
+2026-10-10 这次替换的结果：
+
+| 项 | 值 |
+| --- | --- |
+| maclawsrv `/version` | `20261010.samedesktop`，commit `5e3bfe7b-dirty`，built_at `2026-10-09T22:58:46Z`，MainPID 1034 |
+| hub | start.sh 报出的 pid 1093 |
+| desktopd | 单元 `maclaw-desktopd.service`，MainPID 1099 |
+| HubCenter | pid 11326，未重启 |
+| 已运行的桌面容器 | `ba5d94bd0611`（`maclaw-desktop-af24af109248707f`）发布前后都是 Up，浏览器没有被这次替换重启 |
+| Hub 探测 | `127.0.0.1:9399 /api/mobile/bootstrap` 返回 401 |
+
+SHA256：
+
+- maclawsrv `19b2f52aa3b42b6964024f98f4c967c37c656a2540c8836bfdec013687e71f6d`
+- maclaw-hub `fc5853d5075b45907389b5539ab9caa91976b4a76eb57a5d6a698c4775bb1874`
+- desktopd `afdc48cb23b8d814d27080acd7747a646cfea43ab0e4967ca95dfdf5ab730184`
+
+备份在二进制旁边，不要覆盖：
+
+- `/data/soft/maclaw_srv/bin/maclawsrv.bak-samedesktop-20261010`（上一份是 `20261010.desktop`）
+- `/data/soft/hub/maclaw-hub.bak-samedesktop-20261010`
+- `/data/soft/maclaw_desktopd/bin/desktopd.bak-samedesktop-20261010`
+
+回滚是把这三份备份拷回原名，`chmod 755`，再按上面三条命令重启。桌面 GUI 不在这次发布里，要等单独构建。
+
+#### 连接配置（2026-10-10 07:41 CST）
+
+`20261010.samedesktop` 上线后，Bot 1 执行「打开百度、截屏、把图片放到桌面」时，`app_list`、`screenshot` 等桌面工具都返回 `this bot's desktop is the person's cloud desktop, and the connection is not configured`。当时 maclawsrv 进程没有这两个变量，hub 进程没有 `MACLAW_DESKTOP_API_TOKEN`。人在页面里打开 noVNC 走登录态的桌面接口，不读这组变量，所以画面还能开。
+
+这次只补连接，没有换二进制，没有重启 desktopd、Docker、HubCenter，也没有启动或停止已有桌面容器：
+
+- `/data/soft/hub/desktop-api.env` 权限 600，一行 `MACLAW_DESKTOP_API_TOKEN`（64 个十六进制字符）。值只留在这台机器上，文档、仓库和日志都不记录。
+- `/data/soft/hub/start.sh` 在 `APP_DIR=` 之后，若该文件存在则 `set -a` 再 source。仓库 `hub/start.sh` 有同样几行。以后替换二进制时不要覆盖这份 `start.sh`，否则 hub 进程会丢掉这个变量。备份是 `/data/soft/hub/start.sh.bak-desktop-api-20261010`。
+- `/data/soft/maclaw_srv/.env` 追加 `MACLAW_HUB_URL=http://127.0.0.1:9399` 和同一个 token，文件权限仍是 600。备份是 `/data/soft/maclaw_srv/.env.bak-desktop-api-20261010`。systemd 的 `EnvironmentFile` 只在 maclawsrv 启动时读入，所以执行了 `systemctl restart maclawsrv.service`。Hub 用已有的 `start.sh` 重启后才带上 token。
+- `DESKTOPD_TOKEN` 是 desktopd 自己的钥匙，和这组变量无关。
+
+确认时没有打开真实用户桌面。向 `POST /api/v1/desktop-services/session` 提交一段非法 JSON，并带上这个 Bearer：返回 400，表示鉴权已通过、请求在打开容器之前被拒绝。不带或带错时仍是 401。`/api/mobile/bootstrap` 仍是 401。两边进程里 token 长度都是 64，maclawsrv 的 `MACLAW_HUB_URL` 长度是 21。
+
+| 项 | 值 |
+| --- | --- |
+| maclawsrv `/version` | 仍是 `20261010.samedesktop`，MainPID 21705，07:41:07 CST 日志 `maclawsrv listening` |
+| hub | start.sh 报出的 pid 21772 |
+| desktopd | MainPID 仍是 1099，状态 active |
+| HubCenter | pid 仍是 11326 |
+| 桌面容器 `ba5d94bd0611` | 配置写入之前已在 2026-10-10 07:34:17 CST 以退出码 0 结束（`StartedAt` `2026-10-09T20:44:23Z`）。这次重启没有对它执行启动或停止 |
+
+重启 maclawsrv 和 hub 会丢掉当时还在进行的对话。把原来的桌面请求再发一次后，Hub 会打开这同一个容器。这次配置探测只证明接口认这把钥匙，还没有替用户完成百度截图。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为
@@ -314,7 +399,7 @@ Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键
 
 Hub 的 `/api/v1/desktop-services/*`(MaClawSrv 远程调用、截图)需要 Hub 进程环境变量
 `MACLAW_DESKTOP_API_TOKEN`,MaClawSrv 的 `.env` 里配同一个值和 `MACLAW_HUB_URL`;未设置时
-这些接口一律返回 401。
+这些接口一律返回 401。`hub.mypapers.top` 上这组变量的落点见第 4.4 节。
 
 ## 6. 从 maclaw-gui:1 迁移
 
@@ -366,8 +451,8 @@ curl -fsS -X POST -H "Authorization: Bearer $MACLAW_DESKTOP_API_TOKEN" -H 'Conte
   'import sys,json,base64; d=json.load(sys.stdin); open("desk.png","wb").write(base64.b64decode(d["image_base64"])); print(d["mime"], d["bytes"])'
 ```
 
-**Agent**:MaClawSrv 的 `desktop` 工具 `{"action":"screenshot"}`。配置了 `MACLAW_HUB_URL` +
-`MACLAW_DESKTOP_API_TOKEN` 时走 Hub,否则截本机 `maclaw-gui` 容器;图片附给支持视觉的模型
+**Agent**:MaClawSrv 的 `desktop` 工具 `{"action":"screenshot"}`。`MACLAW_HUB_URL` 与
+`MACLAW_DESKTOP_API_TOKEN` 都存在时走 Hub,操作 noVNC 那个人的云桌面。Hub 机器人缺任一变量时工具直接失败,返回 `this bot's desktop is the person's cloud desktop, and the connection is not configured`,不会改去截本机 `maclaw-gui`。没有绑定云桌面的调用仍可以走本机容器。图片附给支持视觉的模型
 (过大时转 JPEG),对话历史里只有尺寸说明,像素坐标与 `app_run` 点击坐标一致。
 
 ## 8. 验证与冒烟
@@ -435,7 +520,7 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
 - **新主机首次启动 desktopd**:本机没有 `maclaw-gui:2` 时会在后台从 ghcr.io 拉取约 800MB;大陆主机可能
   很慢,在拉完之前打开桌面会返回“still being pulled”。不需要时设 `DESKTOPD_IMAGE_SOURCE=off` 并在主机上构建。
 - **Hub 未设 `MACLAW_DESKTOP_API_TOKEN`**:`/api/v1/desktop-services/*` 全部 401,MaClawSrv 远程截图
-  和远程桌面会失败;Hub 管理页不受影响。
+  和远程桌面会失败;Hub 管理页不受影响。`hub.mypapers.top` 已按第 4.4 节写入这组变量。Hub 机器人缺这组变量时工具直接失败,不会改去截本机 `maclaw-gui`。
 - **旧镜像建出的容器里任务栏浏览器打不开**(“无法执行默认网络浏览器/输入输出错误”):原因是 XFCE 默认浏览器
   走 `sensible-browser → /usr/bin/chromium`,以 root 且无 `--no-sandbox` 直接退出,即使启动也是另一个无登录、
   无 CDP 的 profile。已修复:新 supervisor 在每次 `ensure`(打开桌面)时写入共用浏览器配置,所以已有容器只需

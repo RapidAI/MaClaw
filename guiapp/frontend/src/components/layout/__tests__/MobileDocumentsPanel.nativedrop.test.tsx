@@ -33,7 +33,11 @@ function installRuntime() {
   };
 }
 
-function installApp(initial: { items?: unknown[]; failImport?: boolean }) {
+function installApp(initial: {
+  items?: unknown[];
+  failImport?: boolean;
+  importResult?: unknown | ((path: string) => unknown);
+}) {
   const importCalls: string[] = [];
   const bytesCalls: string[] = [];
   let failImport = !!initial.failImport;
@@ -46,6 +50,10 @@ function installApp(initial: { items?: unknown[]; failImport?: boolean }) {
         ImportMobileDocumentFromPath: async (path: string) => {
           importCalls.push(path);
           if (failImport) throw new Error('import failed');
+          const custom = typeof initial.importResult === 'function'
+            ? initial.importResult(path)
+            : initial.importResult;
+          if (custom) return custom;
           return { id: `draft-${importCalls.length}`, title: '文件', source_filename: path.split(/[\\/]/).pop() };
         },
         ImportMobileDocumentBytes: async (name: string, _b64: string) => {
@@ -131,6 +139,46 @@ describe('MobileDocumentsPanel native file-drop channel', () => {
     rt.fire(['D:\\资料\\数据表.xlsx']);
     await waitFor(() => expect(app.importCalls).toHaveLength(2));
     expect(await screen.findByText(/已添加 1 个文件/)).toBeTruthy();
+  });
+
+  it('skips a duplicate upload and names the file already in the cloud drive', async () => {
+    const rt = installRuntime();
+    installApp({
+      items: [{ id: 'existing-1', title: '已有文件', source_filename: '已有文件.pdf' }],
+      importResult: {
+        id: 'existing-1',
+        title: '已有文件',
+        duplicate: true,
+        duplicate_of_title: '已有文件',
+      },
+    });
+    renderPanel();
+    expect(await screen.findByRole('region', { name: '云盘' })).toBeTruthy();
+
+    rt.fire(['C:\\下载\\新文件.pdf']);
+    expect(await screen.findByText('「新文件.pdf」与云盘中的「已有文件」内容相同，已跳过上传，避免重复占用空间。')).toBeTruthy();
+    expect(screen.queryByText(/已添加/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('reports a new file and a skipped duplicate together', async () => {
+    const rt = installRuntime();
+    installApp({
+      items: [{ id: 'existing-1', title: '已有文件', source_filename: '已有文件.pdf' }],
+      importResult: (path: string) => (
+        path.endsWith('重复.pdf')
+          ? { id: 'existing-1', title: '已有文件', duplicate: true, duplicate_of_title: '已有文件' }
+          : { id: 'new-1', title: '季度报告', source_filename: '季度报告.pdf' }
+      ),
+    });
+    renderPanel();
+    expect(await screen.findByRole('region', { name: '云盘' })).toBeTruthy();
+
+    rt.fire(['C:\\下载\\季度报告.pdf', 'C:\\下载\\重复.pdf']);
+    const banner = await screen.findByText(/已添加 1 个文件/);
+    expect(banner.textContent).toContain('「重复.pdf」与云盘中的「已有文件」内容相同，已跳过上传。');
+    expect(banner.textContent).not.toContain('避免重复占用空间');
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('registers the native channel while open and releases it on close', async () => {

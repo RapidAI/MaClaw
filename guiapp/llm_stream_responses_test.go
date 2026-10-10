@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -521,5 +522,48 @@ func TestResponsesAPIStreamReasoningSummaryPartAddedDoesNotDuplicateDeltas(t *te
 	}
 	if got, want := resp.Choices[0].Message.ReasoningContent, "Streamed summary."; got != want {
 		t.Fatalf("reasoning_content = %q, want one copy of %q", got, want)
+	}
+}
+
+func TestResponsesAPIStreamCommentHeartbeatResetsIdleTimer(t *testing.T) {
+	previous := responsesSSEIdleTimeout
+	responsesSSEIdleTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { responsesSSEIdleTimeout = previous })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		flusher.Flush()
+		// Longer than the idle bound, but each comment arrives well inside it.
+		// The comment has no blank line, so it is not an SSE event.
+		deadline := time.Now().Add(700 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if _, err := fmt.Fprint(w, ": ping\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(40 * time.Millisecond)
+		}
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"ok\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesAPILLMRequestStream returned error: %v", err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
 	}
 }

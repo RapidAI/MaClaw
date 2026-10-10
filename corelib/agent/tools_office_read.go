@@ -473,6 +473,12 @@ func extractOfficeTextCachedVersion(filePath, key string, version officeExtractF
 	}()
 
 	text, format, err = extractOfficeTextWithSettings(filePath, settings)
+	// Chat and read_document share this cache. A retained head/tail is already
+	// inside the cap, so they can inject or page it. ExtractOfficeText itself
+	// still returns the error and does not store the partial body as a full read.
+	if errors.Is(err, errOfficeReadOutputTooLarge) && officeReadTextWithinRetention(text) {
+		err = nil
+	}
 	if err == nil {
 		text = strings.TrimSpace(text)
 	}
@@ -714,6 +720,11 @@ func extractOfficeTextWithSettings(filePath string, settings officeReadSettings)
 	if format == "unknown" || format == "" {
 		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log）", ext)
 	}
+	// Keep the retained head/tail with the error. Public callers that check the
+	// error still fail closed. The chat cache accepts this window and injects it.
+	if errors.Is(err, errOfficeReadOutputTooLarge) && officeReadTextWithinRetention(text) {
+		return text, kind, err
+	}
 	return "", kind, err
 }
 
@@ -923,6 +934,9 @@ func validateLegacyOfficeText(text, format string, err error) (string, string, e
 		return text, format, err
 	}
 	if err := validateOfficeReadText(text); err != nil {
+		if errors.Is(err, errOfficeReadOutputTooLarge) {
+			return officeReadRetainWindow(text), format, err
+		}
 		return "", format, err
 	}
 	return text, format, nil

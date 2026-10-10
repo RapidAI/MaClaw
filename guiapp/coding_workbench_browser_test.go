@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -735,11 +736,24 @@ func TestRemoteWorkbenchFilePreviewCommandIsOneProcess(t *testing.T) {
 		"path is not a file",
 		"os.path.lexists(fd_path)",
 		"/proc/self/fd/",
-		"[remote read_file truncated:",
-		"[remote read_file binary/non-UTF8:",
+		remotePreviewEndPrefix,
+		"bytes=",
+		remotePreviewBinaryMarker,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "shown >= limit") || strings.Contains(script, "[remote read_file truncated:") {
+		t.Fatalf("directory preview must not use the agent page protocol\n%s", script)
+	}
+	if python, err := exec.LookPath("python"); err == nil {
+		scriptPath := filepath.Join(t.TempDir(), "dirpreview.py")
+		if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(python, "-m", "py_compile", scriptPath).CombinedOutput(); err != nil {
+			t.Fatalf("directory preview python does not compile: %v\n%s\n%s", err, out, script)
 		}
 	}
 	if strings.Contains(script, "@@") {

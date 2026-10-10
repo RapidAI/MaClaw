@@ -1541,9 +1541,15 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
 		if llmEndpointStreamRequested(body) {
 			tail := &openAIStreamTail{}
-			streamReq := r.WithContext(withOpenAIStreamTail(ctx, tail))
+			keepalive := newStreamKeepaliveSlot()
+			streamReq := r.WithContext(withStreamKeepalive(withOpenAIStreamTail(ctx, tail), keepalive))
 			var deducted *float64
-			defer func() { flushOpenAIStreamTail(w, tail, deducted) }()
+			defer func() {
+				// Join the comment writer before the held finish chunk. That
+				// chunk is the next body write, and it shares the raw writer.
+				keepalive.halt()
+				flushOpenAIStreamTail(w, tail, deducted)
+			}()
 			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedModelRequest(w, streamReq, providerReg, authorizedModel, body, requestedModel, selectedModelDebug)
 			logStatusCode = statusCode
 			logProviderID = strings.TrimSpace(usedProviderID)
@@ -1903,7 +1909,13 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			return
 		}
 		if llmEndpointStreamRequested(body) {
-			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedResponsesRequest(w, r, providerReg, authorizedModel, body, chatBody, requestedModel, responseModel, selectedModelDebug)
+			keepalive := newStreamKeepaliveSlot()
+			streamReq := r.WithContext(withStreamKeepalive(ctx, keepalive))
+			// The copy returns before the ledger write. Comments have to keep
+			// flowing until that write finishes and this handler returns,
+			// because the client is still blocked in Read waiting for EOF.
+			defer keepalive.halt()
+			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedResponsesRequest(w, streamReq, providerReg, authorizedModel, body, chatBody, requestedModel, responseModel, selectedModelDebug)
 			logStatusCode = statusCode
 			logProviderID = strings.TrimSpace(usedProviderID)
 			logUpstreamStatus = statusCode
@@ -2239,7 +2251,7 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 			if streamModel == "" {
 				streamModel = externalModel
 			}
-			usageStat, wroteStream, copyErr := writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug)
+			usageStat, wroteStream, copyErr := writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug, streamKeepaliveFrom(request.Context()))
 			_ = resp.Body.Close()
 			if copyErr != nil {
 				return statusCode, providerID, chargedIDs, usageStat, wroteStream, copyErr
@@ -2302,13 +2314,13 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 		var wroteStream bool
 		var copyErr error
 		if rawResponses {
-			usageStat, wroteStream, copyErr = writeRawResponsesStreamResponse(w, resp, provider, model, selectedModelDebug)
+			usageStat, wroteStream, copyErr = writeRawResponsesStreamResponse(w, resp, provider, model, selectedModelDebug, streamKeepaliveFrom(request.Context()))
 		} else {
 			streamModel := strings.TrimSpace(responseModel)
 			if streamModel == "" {
 				streamModel = externalModel
 			}
-			usageStat, wroteStream, copyErr = writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug)
+			usageStat, wroteStream, copyErr = writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug, streamKeepaliveFrom(request.Context()))
 		}
 		_ = resp.Body.Close()
 		release()
@@ -2464,7 +2476,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 				return statusCode, providerID, nil, corelib.TokenUsageStat{}, false, fmt.Errorf("%s", strings.TrimSpace(string(bodyBytes)))
 			}
 			provider := maclawOfficialStreamProvider()
-			usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug, openAIStreamTailFrom(request.Context()))
+			usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug, openAIStreamTailFrom(request.Context()), streamKeepaliveFrom(request.Context()))
 			_ = resp.Body.Close()
 			if copyErr != nil {
 				return statusCode, providerID, chargedIDs, usageStat, wroteStream, copyErr
@@ -2513,7 +2525,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 			log.Printf("[LLM-V1] provider %q returned %d for stream, trying next provider", provider.ID, statusCode)
 			continue
 		}
-		usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug, nil)
+		usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug, nil, streamKeepaliveFrom(request.Context()))
 		_ = resp.Body.Close()
 		release()
 		if copyErr != nil {
@@ -2661,7 +2673,175 @@ func openLLMStreamRequest(r *http.Request, p *im.LLMProvider, body map[string]an
 	return resp, release, nil
 }
 
-func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug, tail *openAIStreamTail) (corelib.TokenUsageStat, bool, error) {
+// openAIStreamKeepaliveInterval is how often Hub writes an SSE comment after
+// it has committed a 200 text/event-stream response. The desktop client aborts
+// a body that delivers no bytes for 4 minutes (corelib/llm SSEIdleTimeout).
+// Upstream comment heartbeats are not copied: they are not model data, and a
+// non-comment ping dialect must not be forwarded as content. Hub therefore
+// owns the client-facing liveness signal from the first committed header
+// until the handler has finished the synchronous ledger write. That write
+// sits between the copy returning and the held finish chunk (or EOF), and
+// the client is still blocked in Read for the whole of it. The interval
+// stays well under that idle bound and under a 60s reverse-proxy read timeout.
+// Tests shrink this var; they must not call t.Parallel while it is overridden.
+var openAIStreamKeepaliveInterval = 15 * time.Second
+
+// A comment line only. The blank line that would terminate an SSE event is
+// omitted: openai-go v1.12 ignores the comment, then dispatches that empty
+// event and fails json.Unmarshal. The desktop idle timer resets on the bytes
+// themselves, so the missing terminator does not delay liveness.
+const openAIStreamKeepaliveFrame = ": ping\n"
+
+// streamKeepaliveSlot lets the HTTP handler own the comment goroutine after
+// the copy returns. The copy publishes its stop function here. The handler
+// joins it only once the synchronous credit flush has finished, and before
+// any later write to the raw ResponseWriter (the held finish chunk).
+type streamKeepaliveSlot struct {
+	mu   sync.Mutex
+	stop func()
+}
+
+type streamKeepaliveKey struct{}
+
+func newStreamKeepaliveSlot() *streamKeepaliveSlot {
+	return &streamKeepaliveSlot{}
+}
+
+func withStreamKeepalive(ctx context.Context, slot *streamKeepaliveSlot) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if slot == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, streamKeepaliveKey{}, slot)
+}
+
+func streamKeepaliveFrom(ctx context.Context) *streamKeepaliveSlot {
+	if ctx == nil {
+		return nil
+	}
+	slot, _ := ctx.Value(streamKeepaliveKey{}).(*streamKeepaliveSlot)
+	return slot
+}
+
+// arm publishes stop. A second arm on the same request joins the previous
+// goroutine first so two comment writers cannot share one ResponseWriter.
+func (s *streamKeepaliveSlot) arm(stop func()) {
+	if s == nil || stop == nil {
+		return
+	}
+	s.mu.Lock()
+	prev := s.stop
+	s.stop = stop
+	s.mu.Unlock()
+	if prev != nil {
+		prev()
+	}
+}
+
+// halt joins the comment goroutine. It is safe to call more than once.
+func (s *streamKeepaliveSlot) halt() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	stop := s.stop
+	s.stop = nil
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// streamBodyWriter serializes body writes with the keepalive goroutine and
+// flushes each frame before releasing the lock, so a comment cannot land
+// inside another SSE event.
+type streamBodyWriter struct {
+	mu      sync.Mutex
+	w       io.Writer
+	flusher http.Flusher
+}
+
+func newStreamBodyWriter(w io.Writer, flusher http.Flusher) *streamBodyWriter {
+	return &streamBodyWriter{w: w, flusher: flusher}
+}
+
+func (s *streamBodyWriter) Write(p []byte) (int, error) {
+	if s == nil || len(p) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	written := 0
+	for written < len(p) {
+		n, err := s.w.Write(p[written:])
+		written += n
+		if n == 0 && err == nil {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			if written > 0 && s.flusher != nil {
+				s.flusher.Flush()
+			}
+			return written, err
+		}
+	}
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+	return written, nil
+}
+
+func (s *streamBodyWriter) writeKeepalive() error {
+	_, err := s.Write([]byte(openAIStreamKeepaliveFrame))
+	return err
+}
+
+// startKeepalive writes a comment on each tick until the returned stop
+// function has waited for the goroutine to leave. interval <= 0 disables it.
+func (s *streamBodyWriter) startKeepalive(interval time.Duration) func() {
+	if s == nil || interval <= 0 {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := s.writeKeepalive(); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(stop) })
+		<-done
+	}
+}
+
+// releaseKeepalive starts the comment goroutine. A nil slot means the caller
+// owns it and must invoke the returned func. A non-nil slot transfers
+// ownership to the handler, which joins the goroutine after the ledger write;
+// the returned func is then a no-op so the copy's defer does not stop comments early.
+func (s *streamBodyWriter) releaseKeepalive(slot *streamKeepaliveSlot) func() {
+	stop := s.startKeepalive(openAIStreamKeepaliveInterval)
+	if slot == nil {
+		return stop
+	}
+	slot.arm(stop)
+	return func() {}
+}
+
+func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug, tail *openAIStreamTail, keepalive *streamKeepaliveSlot) (corelib.TokenUsageStat, bool, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
@@ -2674,6 +2854,14 @@ func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provi
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
 	tail.markStarted()
+	bodyWriter := newStreamBodyWriter(w, flusher)
+	stopKeepalive := bodyWriter.releaseKeepalive(keepalive)
+	defer stopKeepalive()
+	// The first body byte has to leave before any proxy idle bound, while the
+	// scanner is still blocked on the first upstream line.
+	if err := bodyWriter.writeKeepalive(); err != nil {
+		return corelib.TokenUsageStat{}, true, err
+	}
 
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -2706,10 +2894,9 @@ func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provi
 			// same chunk are written now so the last tokens are not delayed.
 			immediate := tail.retain(eventBuf.Bytes())
 			if len(immediate) > 0 {
-				if _, err := w.Write(immediate); err != nil {
+				if _, err := bodyWriter.Write(immediate); err != nil {
 					return err
 				}
-				flusher.Flush()
 			}
 		}
 		event = event[:0]
@@ -2734,7 +2921,7 @@ func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provi
 	return applyProviderUsageCost(usage, provider), true, nil
 }
 
-func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, selectedModelDebug *llmservice.ModelSelectionDebug, keepalive *streamKeepaliveSlot) (corelib.TokenUsageStat, bool, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
@@ -2761,6 +2948,12 @@ func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response,
 	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
+	bodyWriter := newStreamBodyWriter(w, flusher)
+	stopKeepalive := bodyWriter.releaseKeepalive(keepalive)
+	defer stopKeepalive()
+	if err := bodyWriter.writeKeepalive(); err != nil {
+		return corelib.TokenUsageStat{}, true, err
+	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	usage := corelib.TokenUsageStat{}
@@ -2773,24 +2966,28 @@ func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response,
 			event = event[:0]
 			return nil
 		}
+		var eventBuf bytes.Buffer
 		for _, line := range event {
 			if isSSECommentLine(line) {
 				continue
 			}
 			trimmed := strings.TrimSpace(string(line))
-			if _, err := w.Write(append(append([]byte(nil), line...), '\n')); err != nil {
-				return err
-			}
+			eventBuf.Write(line)
+			eventBuf.WriteByte('\n')
 			if strings.HasPrefix(trimmed, "data:") {
 				if chunkUsage := responsesStreamUsageFromLine(line); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 || chunkUsage.CachedInputTokens > 0 || chunkUsage.CacheWriteTokens > 0 {
 					usage = chunkUsage
 				}
 			}
 		}
-		if _, err := w.Write([]byte("\n")); err != nil {
+		if eventBuf.Len() == 0 {
+			event = event[:0]
+			return nil
+		}
+		eventBuf.WriteByte('\n')
+		if _, err := bodyWriter.Write(eventBuf.Bytes()); err != nil {
 			return err
 		}
-		flusher.Flush()
 		event = event[:0]
 		return nil
 	}
@@ -2811,21 +3008,26 @@ func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response,
 	if err := scanner.Err(); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
 	}
-	flusher.Flush()
 	return applyProviderUsageCost(usage, provider), true, nil
 }
 
-func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, responseModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
-	flusher, ok := w.(http.Flusher)
+func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, responseModel string, selectedModelDebug *llmservice.ModelSelectionDebug, keepalive *streamKeepaliveSlot) (corelib.TokenUsageStat, bool, error) {
+	flusher, ok := rw.(http.Flusher)
 	if !ok {
 		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
 	}
 	reader := bufio.NewReaderSize(resp.Body, 4096)
 	if !looksLikeOpenAIStream(resp, reader) {
-		return writeOpenAIChatNonStreamAsResponsesStreamResponse(w, flusher, reader, resp.StatusCode, provider, model, responseModel, selectedModelDebug)
+		return writeOpenAIChatNonStreamAsResponsesStreamResponse(rw, flusher, reader, resp.StatusCode, provider, model, responseModel, selectedModelDebug)
 	}
-	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
-	w.WriteHeader(resp.StatusCode)
+	setOpenAIStreamResponseHeaders(rw, provider, model, selectedModelDebug)
+	rw.WriteHeader(resp.StatusCode)
+	w := newStreamBodyWriter(rw, flusher)
+	stopKeepalive := w.releaseKeepalive(keepalive)
+	defer stopKeepalive()
+	if err := w.writeKeepalive(); err != nil {
+		return corelib.TokenUsageStat{}, true, err
+	}
 	respID := fmt.Sprintf("resp_hub_%d", time.Now().UnixNano())
 	msgID := "msg_" + respID
 	seq := 1
@@ -2844,7 +3046,6 @@ func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.
 		return applyProviderUsageCost(usage, provider), true, err
 	}
 	seq++
-	flusher.Flush()
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var eventLines [][]byte
@@ -2916,7 +3117,6 @@ func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.
 					return false, err
 				}
 				seq++
-				flusher.Flush()
 			}
 			for _, rawTool := range anySlice(delta["tool_calls"]) {
 				tool := mapFromProviderHandlerAny(rawTool)
@@ -2974,7 +3174,6 @@ func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.
 					}
 					seq++
 					acc.PendingArguments = ""
-					flusher.Flush()
 				}
 			}
 			if legacy := mapFromProviderHandlerAny(delta["function_call"]); legacy != nil {
@@ -3028,7 +3227,6 @@ func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.
 					}
 					seq++
 					acc.PendingArguments = ""
-					flusher.Flush()
 				}
 			}
 		}
@@ -3175,7 +3373,6 @@ func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.
 	}); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
 	}
-	flusher.Flush()
 	return applyProviderUsageCost(usage, provider), true, nil
 }
 
@@ -3432,7 +3629,14 @@ func writeHubResponsesSSE(w io.Writer, event string, payload map[string]any) err
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(data))
+	// One Write keeps a concurrent keepalive from splicing into the frame.
+	frame := make([]byte, 0, len(event)+len(data)+16)
+	frame = append(frame, "event: "...)
+	frame = append(frame, event...)
+	frame = append(frame, "\ndata: "...)
+	frame = append(frame, data...)
+	frame = append(frame, "\n\n"...)
+	_, err = w.Write(frame)
 	return err
 }
 
@@ -5009,6 +5213,21 @@ func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.
 	return status, models, providerReg, serviceReg, nil
 }
 
+// llmEndpointForcedServiceGroup pins a request to one group.
+// An endpoint API key stays on the group that key was issued for.
+// A viewer request that names system-free — the header a bot turn sends —
+// uses that reserved free group. Billing still follows the viewer principal,
+// so the usage record stays on the associated Hub user.
+func llmEndpointForcedServiceGroup(ctx context.Context, r *http.Request) (string, bool) {
+	if apiKeyAuth, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
+		return apiKeyAuth.ServiceGroupID, true
+	}
+	if r != nil && llmservice.IsSystemFreeServiceGroup(r.Header.Get(llmpool.ServiceGroupIDHeader)) {
+		return llmservice.SystemFreeServiceGroupID, true
+	}
+	return "", false
+}
+
 func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, userID string, email string, providerReg *im.LLMProviderRegistry) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *llmservice.Registry, error) {
 	reg, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
@@ -5024,8 +5243,8 @@ func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Re
 		status *llmservice.ServiceStatus
 		models []llmservice.AuthorizedModel
 	)
-	if apiKeyAuth, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
-		status, models, err = llmservice.ResolveStatusForForcedServiceGroup(reg, apiKeyAuth.ServiceGroupID, externalLLMBaseURL(r))
+	if groupID, forced := llmEndpointForcedServiceGroup(ctx, r); forced {
+		status, models, err = llmservice.ResolveStatusForForcedServiceGroup(reg, groupID, externalLLMBaseURL(r))
 	} else {
 		status, models, err = llmservice.ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, userID, email, externalLLMBaseURL(r))
 	}

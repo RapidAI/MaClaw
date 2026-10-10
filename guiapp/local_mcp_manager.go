@@ -265,6 +265,7 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 		if stateErr := m.recordRuntimeSyncReady(entry.ID); stateErr != nil {
 			syncErrors = append(syncErrors, fmt.Errorf("persist runtime readiness for %s: %w", entry.ID, stateErr))
 		}
+		m.publishReviewedServerTools(entry.ID, tools)
 	}
 	return errors.Join(syncErrors...)
 }
@@ -471,6 +472,7 @@ func (m *LocalMCPManager) clientForOwner(serverID, ownerID string) (*LocalMCPCli
 		return nil, fmt.Errorf("persist runtime readiness for %s: %w", serverID, stateErr)
 	}
 	log.Printf("[LocalMCP] started owner-scoped client server=%s owner=%q elapsed=%s", serverID, ownerID, time.Since(start).Round(time.Millisecond))
+	m.publishReviewedServerTools(serverID, client.GetTools())
 	return client, nil
 }
 

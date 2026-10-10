@@ -4,9 +4,9 @@
   var copy = {
     zh: {
       title: 'Bot \u7ba1\u7406',
-      subtitle: '\u5bf9\u63a5 MaClawSrv\uff0c\u5e76\u8bbe\u7f6e Bot \u4f7f\u7528\u7684 Docker \u670d\u52a1\u3002Bot \u7531\u7528\u6237\u5728 MaClaw \u5ba2\u6237\u7aef\u521b\u5efa\u3002',
+      subtitle: '\u5bf9\u63a5 MaClawSrv\uff0c\u5e76\u8bbe\u7f6e Bot \u4f7f\u7528\u7684 Docker \u670d\u52a1\u4e0e LLM\u3002Bot \u7531\u7528\u6237\u5728 MaClaw \u5ba2\u6237\u7aef\u521b\u5efa\u3002',
       nav: 'Bot \u7ba1\u7406',
-      navDesc: '\u5bf9\u63a5 MaClawSrv \u4e0e Docker \u670d\u52a1',
+      navDesc: '\u5bf9\u63a5 MaClawSrv\u3001Docker \u670d\u52a1\u4e0e LLM',
       connection: '\u5bf9\u63a5 MaClawSrv',
       url: 'MaClawSrv \u5730\u5740',
       token: '\u8bbf\u95ee\u4ee4\u724c',
@@ -73,13 +73,40 @@
       created: '\u521b\u5efa\u65f6\u95f4',
       readOnly: '\u53ea\u8bfb',
       remove: '\u5220\u9664',
-      failed: '\u64cd\u4f5c\u5931\u8d25'
+      failed: '\u64cd\u4f5c\u5931\u8d25',
+      llmTitle: 'LLM \u8bbe\u7f6e',
+      llmHint: '\u9ed8\u8ba4\u4f7f\u7528 system-free \u670d\u52a1\u7ec4\u3002\u53ef\u4ee5\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0cMaClawSrv \u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u6267\u884c\u64cd\u4f5c\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002',
+      llmDefaultHint: 'Hub \u9ed8\u8ba4\u514d\u8d39\u670d\u52a1\u7ec4',
+      llmUse: '\u4f7f\u7528',
+      llmAdd: '\u6dfb\u52a0\u670d\u52a1\u5546',
+      llmName: '\u540d\u79f0',
+      llmProtocol: '\u534f\u8bae',
+      llmURL: '\u63a5\u53e3\u5730\u5740',
+      llmKey: 'API Key',
+      llmModel: '\u6a21\u578b',
+      llmSave: '\u4fdd\u5b58 LLM \u8bbe\u7f6e',
+      llmEmpty: '\u8fd8\u6ca1\u6709\u5176\u5b83\u670d\u52a1\u5546\u3002\u5f53\u524d\u4f7f\u7528 system-free\u3002',
+      llmRemove: '\u79fb\u9664',
+      llmSaved: '\u5df2\u4fdd\u5b58 LLM \u8bbe\u7f6e',
+      llmSavedStale: '\u5df2\u4fdd\u5b58\u3002\u4e4b\u540e\u7684\u4fee\u6539\u5c1a\u672a\u5199\u5165\uff0c\u8bf7\u518d\u4fdd\u5b58\u4e00\u6b21\u3002',
+      llmNeedName: '\u8bf7\u586b\u5199\u670d\u52a1\u5546\u540d\u79f0',
+      llmDuplicateName: '\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d',
+      llmLimit: '\u6700\u591a\u6dfb\u52a0 8 \u4e2a\u670d\u52a1\u5546',
+      llmBadProtocol: '\u534f\u8bae\u53ea\u80fd\u662f OpenAI \u6216 Anthropic',
+      llmBadURL: '\u63a5\u53e3\u5730\u5740\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934',
+      llmNeedModel: '\u8bf7\u586b\u5199\u6a21\u578b',
+      llmNeedKey: '\u8bf7\u586b\u5199\u65b0\u670d\u52a1\u5546\u7684 API Key',
+      llmBadKey: 'API Key \u65e0\u6548',
+      llmReservedName: '\u8fd9\u4e2a\u540d\u79f0\u5df2\u4fdd\u7559',
+      llmKeyKeep: '\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u5bc6\u94a5',
+      llmBadCurrent: '\u8bf7\u9009\u62e9 system-free \u6216\u4e00\u4e2a\u5df2\u6dfb\u52a0\u7684\u670d\u52a1\u5546',
+      llmKeySet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58'
     },
     en: {
       title: 'Bot management',
-      subtitle: 'Connect MaClawSrv and set the Docker service bots use. Users create bots in the MaClaw app.',
+      subtitle: 'Connect MaClawSrv and set the Docker service and LLM bots use. Users create bots in the MaClaw app.',
       nav: 'Bot management',
-      navDesc: 'MaClawSrv connection and Docker service',
+      navDesc: 'MaClawSrv connection, Docker service, and LLM',
       connection: 'MaClawSrv connection',
       url: 'MaClawSrv URL',
       token: 'Access token',
@@ -146,7 +173,34 @@
       created: 'Created',
       readOnly: 'Read-only',
       remove: 'Delete',
-      failed: 'Request failed'
+      failed: 'Request failed',
+      llmTitle: 'LLM settings',
+      llmHint: 'MaClawSrv uses the system-free service group by default. Add an OpenAI or Anthropic provider, and MaClawSrv calls the selected one. The next bot action writes the saved settings.',
+      llmDefaultHint: 'Hub default free service group',
+      llmUse: 'Use',
+      llmAdd: 'Add provider',
+      llmName: 'Name',
+      llmProtocol: 'Protocol',
+      llmURL: 'API URL',
+      llmKey: 'API key',
+      llmModel: 'Model',
+      llmSave: 'Save LLM settings',
+      llmEmpty: 'No other providers. system-free is in use.',
+      llmRemove: 'Remove',
+      llmSaved: 'LLM settings saved',
+      llmSavedStale: 'Saved. Later edits are not stored yet. Save again.',
+      llmNeedName: 'Enter a provider name',
+      llmDuplicateName: 'Provider names must be unique',
+      llmLimit: 'At most 8 providers can be added',
+      llmBadProtocol: 'Protocol must be OpenAI or Anthropic',
+      llmBadURL: 'The API URL must start with http:// or https://',
+      llmNeedModel: 'Enter a model',
+      llmNeedKey: 'Enter an API key for the new provider',
+      llmBadKey: 'The API key is invalid',
+      llmReservedName: 'This name is reserved',
+      llmKeyKeep: 'Leave blank to keep the saved key',
+      llmBadCurrent: 'Choose system-free or a provider you added',
+      llmKeySet: 'Key saved'
     }
   };
 
@@ -189,6 +243,16 @@
     if (raw.indexOf('HTTP 403') !== -1) return t.srvTokenForbidden + srvReason(raw);
     if (raw.indexOf('HTTP 404') !== -1 || raw.indexOf('check the MaClawSrv URL') !== -1) return t.srvNotFound + srvReason(raw);
     if (raw.indexOf('MaClawSrv rejected the instance request') !== -1) return t.srvRejected + srvReason(raw);
+    if (raw.indexOf('llm provider url') !== -1) return t.llmBadURL;
+    if (raw.indexOf('llm provider protocol') !== -1) return t.llmBadProtocol;
+    if (raw.indexOf('llm provider name is reserved') !== -1) return t.llmReservedName;
+    if (raw.indexOf('llm provider name is duplicated') !== -1) return t.llmDuplicateName;
+    if (raw.indexOf('llm provider name is required') !== -1) return t.llmNeedName;
+    if (raw.indexOf('llm provider limit') !== -1) return t.llmLimit;
+    if (raw.indexOf('llm provider key is invalid') !== -1) return t.llmBadKey;
+    if (raw.indexOf('llm provider key') !== -1) return t.llmNeedKey;
+    if (raw.indexOf('llm provider model') !== -1) return t.llmNeedModel;
+    if (raw.indexOf('llm current') !== -1) return t.llmBadCurrent;
     return raw || t.failed;
   }
 
@@ -209,6 +273,11 @@
     setLabel('botAdminHint', t.adminHint);
     setLabel('botSave', t.save);
     setLabel('botTest', t.test);
+    setLabel('botLLMTitle', t.llmTitle);
+    setLabel('botLLMHint', t.llmHint);
+    setLabel('botLLMAdd', t.llmAdd);
+    setLabel('botLLMSave', t.llmSave);
+    if (panel._botView) renderLLM(panel._botView);
     setLabel('botAccessTitle', t.access);
     setLabel('botAccessHint', t.accessHint);
     setLabel('botGlobalLabel', t.global);
@@ -255,7 +324,16 @@
       + '#tab-bots .bot-field-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px}'
       + '#tab-bots .bot-field-head label{margin-bottom:0}'
       + '#tab-bots label{display:block;margin:0 0 5px;font-size:11px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:#64748b}'
-      + '#tab-bots input:not([type=checkbox]),#tab-bots select{display:block;width:100%;height:36px;margin:0}'
+      + '#tab-bots input:not([type=checkbox]):not([type=radio]),#tab-bots select{display:block;width:100%;height:36px;margin:0}'
+      + '#tab-bots input[type=radio]{width:16px;height:16px;min-height:16px;margin:2px 0 0;flex:0 0 auto;accent-color:#2563eb}'
+      + '#tab-bots .bot-llm-list{display:grid;gap:8px}'
+      + '#tab-bots .bot-llm-choice{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px 12px;border:1px solid #dbe7ff;border-radius:10px;background:#f8fbff;text-transform:none;letter-spacing:0;font-size:13px;font-weight:400;color:inherit}'
+      + '#tab-bots .bot-llm-choice strong{display:block;font-size:13px;font-weight:650;color:#172033}'
+      + '#tab-bots .bot-llm-choice small{display:block;margin-top:2px;font-size:11px;line-height:1.45;color:#64748b}'
+      + '#tab-bots .bot-llm-provider{display:grid;gap:8px;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff}'
+      + '#tab-bots .bot-llm-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;align-items:end}'
+      + '#tab-bots .bot-llm-remove{grid-column:1 / -1;justify-self:start}'
+      + '#tab-bots .bot-llm-remove{height:36px;min-height:36px;padding:0 10px;font-size:12px}'
       + '#tab-bots .bot-field-note{margin:6px 0 0;font-size:11px;line-height:1.5;color:#64748b}'
       + '#tab-bots .bot-status{margin:0;font-size:12px;line-height:1.45;color:#64748b}'
       + '#tab-bots .bot-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap}'
@@ -318,7 +396,7 @@
       + '#tab-bots #botDesktopHost > section > h3::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:999px;background:#2563eb;vertical-align:middle}'
       + '#tab-bots #botDesktopHost > section > h3 + p{padding-bottom:11px;border-bottom:1px solid #eef2f7}'
       + '#tab-bots #desktopHint,#tab-bots #desktopAssignHint,#tab-bots #desktopRunHint{margin:0;font-size:11px;line-height:1.5;color:#64748b}'
-      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}}'
+      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}}'
       + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}}'
       + '</style>'
       + '<div class="bot-page">'
@@ -341,6 +419,15 @@
       + '<button type="button" class="btn-primary" id="botSave"></button>'
       + '<button type="button" class="btn-secondary" id="botTest"></button></div>'
       + '<p class="bot-status" id="botConnStatus"></p></div>'
+      + '</section>'
+      + '<section class="item bot-section">'
+      + '<div class="item-head"><div><h3 class="item-title" id="botLLMTitle"></h3>'
+      + '<p class="item-meta" id="botLLMHint"></p></div><span class="badge" id="botLLMBadge"></span></div>'
+      + '<div id="botLLMList" class="bot-llm-list"></div>'
+      + '<div class="bot-foot"><div class="bot-actions">'
+      + '<button type="button" class="btn-secondary" id="botLLMAdd"></button>'
+      + '<button type="button" class="btn-primary" id="botLLMSave"></button></div>'
+      + '<p class="bot-status" id="botLLMStatus"></p></div>'
       + '</section>'
       + '<section class="item bot-section">'
       + '<div class="item-head"><div><h3 class="item-title" id="botAccessTitle"></h3>'
@@ -366,6 +453,11 @@
       + '</div>';
     byID('botSave').addEventListener('click', saveConnection);
     byID('botTest').addEventListener('click', testConnection);
+    byID('botLLMAdd').addEventListener('click', addLLMProvider);
+    byID('botLLMSave').addEventListener('click', saveLLM);
+    byID('botLLMList').addEventListener('input', onLLMListEdit);
+    byID('botLLMList').addEventListener('change', onLLMListEdit);
+    byID('botLLMList').addEventListener('click', onLLMListClick);
     byID('botGlobal').addEventListener('change', toggleGlobal);
     byID('botOrgFilter').addEventListener('compositionstart', function () { orgState().composing = true; });
     byID('botOrgFilter').addEventListener('compositionend', function () {
@@ -420,6 +512,7 @@
     setCredState(byID('botAdminState'), !!view.admin_secret_set, text().adminSet, text().adminMissing);
     var access = grantSummary(view);
     renderConnBadge(view);
+    renderLLM(view);
     renderAccess(access);
     renderBots(view);
     renderGrants(view, access);
@@ -1229,6 +1322,234 @@
     if (!raw) return '';
     var match = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
     return match ? match[1] + ' ' + match[2] : raw;
+  }
+
+  function llmDraft() {
+    var panel = byID('tab-bots');
+    if (!panel._llmDraft) panel._llmDraft = { current: 'system-free', providers: [] };
+    return panel._llmDraft;
+  }
+
+  function draftFromLLM(view) {
+    var llm = view && view.llm || {};
+    var providers = Array.isArray(llm.providers) ? llm.providers : [];
+    return {
+      current: llm.current || 'system-free',
+      providers: providers.map(function (item) {
+        return {
+          id: String(item.id || ''),
+          name: String(item.name || ''),
+          protocol: String(item.protocol || '').toLowerCase() === 'anthropic' ? 'anthropic' : 'openai',
+          url: String(item.url || ''),
+          model: String(item.model || ''),
+          key: '',
+          key_set: !!item.key_set
+        };
+      })
+    };
+  }
+
+  function newLLMProviderID() {
+    var alphabet = 'abcdef0123456789';
+    var out = 'lp_';
+    for (var i = 0; i < 16; i += 1) out += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+    return out;
+  }
+
+  function llmCurrentLabel(draft) {
+    if (!draft || !draft.current || draft.current === 'system-free') return 'system-free';
+    var match = (draft.providers || []).filter(function (item) { return item.id === draft.current; })[0];
+    if (!match) return 'system-free';
+    return String(match.name || '').trim() || text().llmName;
+  }
+
+  function syncLLMBadge() {
+    var badge = byID('botLLMBadge');
+    if (!badge) return;
+    var draft = llmDraft();
+    var selected = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : 'system-free';
+    badge.className = 'badge ' + (selected === 'system-free' ? 'info' : 'ok');
+    badge.textContent = llmCurrentLabel(draft);
+  }
+
+  function renderLLM(view) {
+    var panel = byID('tab-bots');
+    if (!panel || !byID('botLLMList')) return;
+    // The live inputs already hold a newer edit. Rebuilding the list would
+    // drop focus and replace those fields, even though the draft kept the values.
+    if (panel._llmDirty) return;
+    panel._llmDraft = draftFromLLM(view);
+    paintLLM();
+  }
+
+  function paintLLM() {
+    var list = byID('botLLMList');
+    if (!list) return;
+    var t = text();
+    var draft = llmDraft();
+    var current = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : 'system-free';
+    draft.current = current;
+    var rows = (draft.providers || []).map(function (item) {
+      var id = escapeHtml(item.id);
+      var protocol = item.protocol === 'anthropic' ? 'anthropic' : 'openai';
+      return '<div class="bot-llm-provider">'
+        + '<label class="bot-llm-choice"><input id="botLLMCurrent_' + id + '" type="radio" name="botLLMCurrent" value="' + id + '"' + (current === item.id ? ' checked' : '') + '>'
+        + '<span><strong id="botLLMUse_' + id + '">' + escapeHtml(t.llmUse) + ' ' + escapeHtml(item.name || t.llmName) + '</strong>'
+        + (item.key_set ? '<small>' + escapeHtml(t.llmKeySet) + '</small>' : '') + '</span></label>'
+        + '<div class="bot-llm-grid">'
+        + '<div class="bot-field"><label for="botLLMName_' + id + '">' + escapeHtml(t.llmName) + '</label><input id="botLLMName_' + id + '" value="' + escapeHtml(item.name) + '" autocomplete="off"></div>'
+        + '<div class="bot-field"><label for="botLLMProtocol_' + id + '">' + escapeHtml(t.llmProtocol) + '</label><select id="botLLMProtocol_' + id + '">'
+        + '<option value="openai"' + (protocol === 'openai' ? ' selected' : '') + '>OpenAI</option>'
+        + '<option value="anthropic"' + (protocol === 'anthropic' ? ' selected' : '') + '>Anthropic</option></select></div>'
+        + '<div class="bot-field bot-field-wide"><label for="botLLMUrl_' + id + '">' + escapeHtml(t.llmURL) + '</label><input id="botLLMUrl_' + id + '" value="' + escapeHtml(item.url) + '" autocomplete="off" spellcheck="false"></div>'
+        + '<div class="bot-field"><label for="botLLMModel_' + id + '">' + escapeHtml(t.llmModel) + '</label><input id="botLLMModel_' + id + '" value="' + escapeHtml(item.model) + '" autocomplete="off" spellcheck="false"></div>'
+        + '<div class="bot-field"><label for="botLLMKey_' + id + '">' + escapeHtml(t.llmKey) + '</label><input id="botLLMKey_' + id + '" type="password" autocomplete="new-password" value="' + escapeHtml(item.key) + '" placeholder="' + escapeHtml(item.key_set ? t.llmKeyKeep : '') + '"></div>'
+        + '<button type="button" class="btn-secondary bot-llm-remove" id="botLLMRemove_' + id + '">' + escapeHtml(t.llmRemove) + '</button>'
+        + '</div></div>';
+    }).join('');
+    var empty = (draft.providers || []).length ? '' : '<p class="bot-empty">' + escapeHtml(t.llmEmpty) + '</p>';
+    list.innerHTML = '<label class="bot-llm-choice"><input id="botLLMCurrent_system-free" type="radio" name="botLLMCurrent" value="system-free"' + (current === 'system-free' ? ' checked' : '') + '>'
+      + '<span><strong>system-free</strong><small>' + escapeHtml(t.llmDefaultHint) + '</small></span></label>'
+      + empty + rows;
+    syncLLMBadge();
+  }
+
+  function llmProviderFromID(id) {
+    return llmDraft().providers.filter(function (item) { return item.id === id; })[0] || null;
+  }
+
+  function onLLMListEdit(event) {
+    var target = event && event.target;
+    if (!target || !target.id) return;
+    var panel = byID('tab-bots');
+    if (target.id.indexOf('botLLMCurrent_') === 0) {
+      llmDraft().current = target.value || 'system-free';
+      if (panel) panel._llmDirty = true;
+      // Rebuilding the list here drops the focused field and the key the
+      // administrator just typed. The radio group already shows the choice.
+      syncLLMBadge();
+      return;
+    }
+    var match = target.id.match(/^botLLM(Name|Protocol|Url|Model|Key)_(.+)$/);
+    if (!match) return;
+    var item = llmProviderFromID(match[2]);
+    if (!item) return;
+    var field = { Name: 'name', Protocol: 'protocol', Url: 'url', Model: 'model', Key: 'key' }[match[1]];
+    item[field] = target.value;
+    if (panel) panel._llmDirty = true;
+    if (field === 'name') {
+      var use = byID('botLLMUse_' + item.id);
+      if (use) use.textContent = text().llmUse + ' ' + (String(item.name || '').trim() || text().llmName);
+      if (llmDraft().current === item.id) syncLLMBadge();
+    }
+  }
+
+  function onLLMListClick(event) {
+    var target = event && event.target;
+    if (!target || !target.id || target.id.indexOf('botLLMRemove_') !== 0) return;
+    var id = target.id.slice('botLLMRemove_'.length);
+    var draft = llmDraft();
+    draft.providers = draft.providers.filter(function (item) { return item.id !== id; });
+    if (draft.current === id) draft.current = 'system-free';
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
+    paintLLM();
+  }
+
+  function addLLMProvider() {
+    var draft = llmDraft();
+    if ((draft.providers || []).length >= 8) {
+      showToast(text().llmLimit, 'error');
+      return;
+    }
+    var id = newLLMProviderID();
+    draft.providers.push({ id: id, name: '', protocol: 'openai', url: '', model: '', key: '', key_set: false });
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
+    paintLLM();
+    var name = byID('botLLMName_' + id);
+    if (name && name.focus) name.focus();
+  }
+
+  // MaClaw treats these display names as one provider. The same set is
+  // MaclawLLMProviderNameEqual on the server.
+  var llmSameProviderNames = {
+    '\u667a\u8c31\u7f16\u7a0b': true,
+    '\u667a\u8c31 glm (coding)': true,
+    'zhipu glm coding': true
+  };
+
+  function llmNamesConflict(left, right) {
+    if (left === right) return true;
+    return !!llmSameProviderNames[left] && !!llmSameProviderNames[right];
+  }
+
+  function llmDraftError(draft) {
+    var t = text();
+    var seenNames = [];
+    var providers = draft.providers || [];
+    for (var i = 0; i < providers.length; i += 1) {
+      var item = providers[i];
+      var name = String(item.name || '').trim();
+      var protocol = String(item.protocol || '').toLowerCase();
+      var keyName = name.toLowerCase();
+      if (!name) return t.llmNeedName;
+      if (keyName === 'hub-llm' || keyName === 'system-free') return t.llmReservedName;
+      if (seenNames.some(function (seen) { return llmNamesConflict(seen, keyName); })) return t.llmDuplicateName;
+      seenNames.push(keyName);
+      if (protocol !== 'openai' && protocol !== 'anthropic') return t.llmBadProtocol;
+      if (!validServiceUrl(item.url)) return t.llmBadURL;
+      if (!String(item.model || '').trim()) return t.llmNeedModel;
+      if (!String(item.key || '').trim() && !item.key_set) return t.llmNeedKey;
+    }
+    if (draft.current !== 'system-free' && !providers.some(function (item) { return item.id === draft.current; })) return t.llmBadCurrent;
+    return '';
+  }
+
+  function llmRequestBody(draft) {
+    return {
+      current: draft.current || 'system-free',
+      providers: (draft.providers || []).map(function (item) {
+        var out = {
+          id: item.id,
+          name: String(item.name || '').trim(),
+          protocol: String(item.protocol || '').toLowerCase(),
+          url: String(item.url || '').trim(),
+          model: String(item.model || '').trim()
+        };
+        var key = String(item.key || '').trim();
+        if (key) out.key = key;
+        return out;
+      })
+    };
+  }
+
+  function saveLLM() {
+    var panel = byID('tab-bots');
+    if (panel && panel._llmSaving) return;
+    var draft = llmDraft();
+    var error = llmDraftError(draft);
+    if (error) {
+      showToast(error, 'error');
+      return;
+    }
+    var sent = JSON.stringify(llmRequestBody(draft));
+    if (panel) panel._llmSaving = true;
+    var button = byID('botLLMSave');
+    if (button) button.disabled = true;
+    return api('/api/admin/bots/llm', { method: 'PUT', body: sent }).then(function (view) {
+      // The request stored one draft. A keystroke after it left is another
+      // draft, so the success line must not say the form now on screen is saved.
+      var same = !!(panel && JSON.stringify(llmRequestBody(llmDraft())) === sent);
+      if (same) panel._llmDirty = false;
+      render(view || {});
+      showToast(same ? text().llmSaved : text().llmSavedStale, same ? 'success' : 'info');
+    }).catch(function (err) {
+      showToast(messageOf(err), 'error');
+    }).then(function () {
+      if (panel) panel._llmSaving = false;
+      if (button) button.disabled = false;
+    });
   }
 
   function validServiceUrl(value) {

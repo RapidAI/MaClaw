@@ -123,6 +123,7 @@ func (a *App) detectMissingCoreTools() string {
 // CheckEnvironment checks and installs base environment (Node.js, Git)
 // Tools are checked and updated in background after base environment is ready
 func (a *App) CheckEnvironment(force bool) {
+	noteEnvironmentCheckEntry()
 	go func() {
 		// If in init mode, always force
 		if a.IsInitMode {

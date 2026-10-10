@@ -100,9 +100,17 @@ export const MCPIcon = () => (
     </svg>
 );
 
-/** Bot - 天线圆头，和数字员工的人形图标区分开。 */
-export const BotRailIcon = () => (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-bot-icon">
+/** Bot - 天线圆头，和数字员工的人形图标区分开。侧栏默认 22px；标题等处传入 size / testId。 */
+export const BotRailIcon = ({
+    size = 22,
+    testId = 'sidebar-bot-icon',
+    className,
+}: {
+    size?: number;
+    testId?: string;
+    className?: string;
+} = {}) => (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid={testId}>
         <path d="M12 7V4" />
         <circle cx="12" cy="3.2" r="1" fill="currentColor" stroke="none" />
         <rect x="5" y="7" width="14" height="12" rx="4" />

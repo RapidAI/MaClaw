@@ -999,7 +999,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"语义判据：用户目标是维护一个任务/待办列表的状态本身，而不是执行某个任务。" +
 				"边界：「定时自动执行的任务」→ schedule_manage；「长期自主推进的目标」→ goal_manage；" +
 				"「从工作流面板启动的多阶段项目」→ workflow_task；「在当前对话里使用某个 skill」不是待办；「单阶段导出 PDF」→ document_generate；" +
-				"「直接动手做编码任务」→ coding。",
+				"「直接动手做编码任务」→ coding；" +
+				"「上午/下午时段加一条完成百分比」→ worklog_update，那是外部工时记录，不是本地待办。",
 			EmbedTexts: []string{
 				"帮我建一个待办清单",
 				"把修复登录问题加到任务列表里",
@@ -1105,6 +1106,44 @@ func DefaultDefinitions() []IntentDefinition {
 				"disable a stale knowledge base source",
 				"run the knowledge quality maintenance plan",
 				"show knowledge base stats and health",
+			},
+			ToolNames: []string{},
+		},
+		{
+			Label:  LabelWorklogRead,
+			Domain: "工时记录 (Work Record)",
+			TreeText: "用户要查询已经记在外部工时/工作记录里的一条时段记录，不修改它。" +
+				"语义判据：用户目标是读取某日某时段的工作记录内容、时长或完成度。" +
+				"边界：「本地待办清单」→ task_track；「知识库检索」→ knowledge_read；「MIS 表单」→ business_data；" +
+				"「把完成百分比写进上午/下午记录」→ worklog_update。",
+			EmbedTexts: []string{
+				"查一下今天上午的工作日志",
+				"看看上午那段工时记了什么",
+				"列出今天的工时记录",
+				"工作日志里 09:30 到 12:00 那条是什么",
+				"show this morning's work log",
+				"what is recorded in today's worklog",
+				"query the afternoon time entry",
+				"read the work record for 09:30-12:00",
+			},
+			ToolNames: []string{},
+		},
+		{
+			Label:  LabelWorklogUpdate,
+			Domain: "工时记录 (Work Record)",
+			TreeText: "用户要把一条外部工时记录补上、改写或标完成百分比。典型说法是时段加事项加百分比，例如「上午添加：某项工作，100%」。" +
+				"语义判据：用户目标是修改外部时间块工作记录本身，而不是执行那项工作，也不是维护本地待办。" +
+				"边界：「加到任务列表/待办」→ task_track；「记到知识库」→ knowledge_write；「MIS 报销或请假」→ business_data；" +
+				"「只查询工时记录」→ worklog_read。",
+			EmbedTexts: []string{
+				"上午添加： windows构建服务维护与修复，100%",
+				"上午添加：OfficeRead review与优化，60%",
+				"把上午的工时补上这项，完成度 100%",
+				"修改上午工作日志，内容追加一段，时长不变",
+				"下午添加：接口联调，80%",
+				"append this morning's work log to 100%",
+				"update the 09:30-12:00 work record, keep the duration",
+				"把完成百分比写进上午的工时记录",
 			},
 			ToolNames: []string{},
 		},

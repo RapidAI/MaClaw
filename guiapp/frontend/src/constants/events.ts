@@ -169,6 +169,13 @@ export type OpenCreateCodingTaskDetail = {
 export const EVENT_OPEN_NEW_TASK_WIZARD = "maclaw:open-new-task-wizard";
 
 /**
+ * Task-pane toolbar entry for the phone-shared cloud drive. App switches to
+ * the files page. This is not the assistant overlay (maclaw:open-files with
+ * an empty detail) and not the cloud-workspace manager.
+ */
+export const EVENT_OPEN_CLOUD_DRIVE = "maclaw:open-cloud-drive";
+
+/**
  * Dispatched when the new-task wizard cannot open at all. A running turn does
  * not emit this: the welcome page covers that conversation and the turn keeps
  * running. Sidebar surfaces listen so a hard block still explains itself.

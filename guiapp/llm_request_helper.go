@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
@@ -613,6 +614,12 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	startedAt := time.Now()
 	if client == nil {
 		client = llm.SharedHTTPClient
+	}
+	if qoder.Matches(cfg) {
+		// This branch posts the JSON body itself, so it never reaches the SDK
+		// wrap. An unsigned POST to the OpenAI front is a 401, and the
+		// classifier then never runs.
+		client = qoder.WrapClientForConfig(client, cfg)
 	}
 	httpResp, err := client.Do(req)
 	if err != nil {

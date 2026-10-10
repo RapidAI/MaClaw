@@ -306,6 +306,7 @@ export const AppSidebarShell = ({
 					showToolsEntry={showToolsEntry}
                     utilitiesLabel={utilitiesLabel}
                     settingsTab={settingsTab}
+                    // Background runs only. The rail adds in-progress bot tasks.
                     runningTaskCount={workbenchTaskCounts?.background ?? backgroundTaskCount}
                     onOpenBackgroundTasks={onOpenBackgroundTasks}
                 />        {navTab === 'ai' && (

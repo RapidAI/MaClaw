@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+    cloudDriveCompanionAvailable,
+    companionSupportsFileName,
     filePreviewKindFromName,
     previewSourceName,
     isChromeLessPreviewKind,
@@ -59,6 +61,53 @@ describe('isChromeLessPreviewKind', () => {
         expect(previewShouldMaterialize('html', true)).toBe(true);
         expect(previewShouldMaterialize('code', true)).toBe(true);
         expect(previewShouldMaterialize('markdown', true)).toBe(false);
+    });
+});
+
+describe('companionSupportsFileName', () => {
+    it('accepts companion preview and text names and rejects code or archives', () => {
+        expect(companionSupportsFileName('paper.pdf')).toBe(true);
+        expect(companionSupportsFileName('brief.DOCX')).toBe(true);
+        expect(companionSupportsFileName('deck.pptx')).toBe(true);
+        expect(companionSupportsFileName('sheet.xlsx')).toBe(true);
+        expect(companionSupportsFileName('notes.md')).toBe(true);
+        expect(companionSupportsFileName('page.html')).toBe(true);
+        expect(companionSupportsFileName('readme.txt')).toBe(true);
+        expect(companionSupportsFileName('paper.tex')).toBe(true);
+        expect(companionSupportsFileName('photo.jpg')).toBe(true);
+        expect(companionSupportsFileName('main.go')).toBe(false);
+        expect(companionSupportsFileName('lib.zip')).toBe(false);
+        expect(companionSupportsFileName('book.epub')).toBe(false);
+        expect(companionSupportsFileName('')).toBe(false);
+    });
+});
+
+describe('cloudDriveCompanionAvailable', () => {
+    it('follows the original filename and treats an extensionless note as markdown', () => {
+        expect(cloudDriveCompanionAvailable({
+            sourceFilename: 'paper.pdf',
+            title: 'paper',
+            hasOriginal: true,
+        })).toBe(true);
+        expect(cloudDriveCompanionAvailable({
+            sourceFilename: 'app.go',
+            hasOriginal: true,
+            hasText: true,
+        })).toBe(false);
+        expect(cloudDriveCompanionAvailable({
+            title: '会议纪要',
+            hasText: true,
+        })).toBe(true);
+        expect(cloudDriveCompanionAvailable({
+            title: '会议纪要',
+        })).toBe(false);
+        expect(cloudDriveCompanionAvailable({
+            sourceFilename: 'notes.md',
+        })).toBe(true);
+        expect(cloudDriveCompanionAvailable({
+            title: 'missing.pdf',
+            hasText: true,
+        })).toBe(false);
     });
 });
 

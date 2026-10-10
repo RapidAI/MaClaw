@@ -112,7 +112,11 @@ describe("TaskExecutionHeading", () => {
                 title={listedName}
             />,
         );
-        expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(listedName);
+        const heading = screen.getByRole("heading", { level: 2 });
+        expect(heading.textContent).toBe(listedName);
+        expect(heading.querySelector("[data-testid='task-execution-kind']")).toBeNull();
+        expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("local");
+        expect(screen.getByTestId("task-execution-kind").querySelector("svg")?.getAttribute("data-icon")).toBe("folder");
     });
 
     it("shows a local path, a remote server, and a cloud workspace name", () => {
@@ -131,6 +135,9 @@ describe("TaskExecutionHeading", () => {
         expect(localMeta.textContent).toContain("D:/work/app");
         expect(localMeta.textContent).not.toContain("本地");
         expect(localMeta.getAttribute("title")).toContain("D:/work/app");
+        expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("local");
+        expect(screen.getByTestId("task-execution-kind").getAttribute("title")).toBe("本地");
+        expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("北京天气");
 
         rerender(
             <TaskExecutionHeading
@@ -148,6 +155,8 @@ describe("TaskExecutionHeading", () => {
         expect(remoteMeta.textContent).toContain("www.driverdevelopment.com:2222/home/ubuntu/app");
         expect(remoteMeta.textContent).not.toContain("你好呀-1");
         expect(remoteMeta.getAttribute("title")).toBe("由你创建 · 10/03 05:15 · www.driverdevelopment.com:2222/home/ubuntu/app");
+        expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("remote");
+        expect(screen.getByTestId("task-execution-kind").querySelector("svg")?.getAttribute("data-icon")).toBe("server");
 
         rerender(
             <TaskExecutionHeading
@@ -164,6 +173,7 @@ describe("TaskExecutionHeading", () => {
         const remoteOverCloud = screen.getByTestId("task-execution-meta");
         expect(remoteOverCloud.textContent).toContain("home.rapidai.tech:55/home/rapidrec");
         expect(remoteOverCloud.textContent).not.toMatch(/cloud-workspaces|云端工作区/);
+        expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("remote");
 
         rememberCloudWorkspaceDisplayName("cws_abc", "标书项目");
         try {
@@ -180,6 +190,9 @@ describe("TaskExecutionHeading", () => {
             const cloudMeta = screen.getByTestId("task-execution-meta");
             expect(cloudMeta.textContent).toContain("标书项目");
             expect(cloudMeta.textContent).not.toMatch(/cloud-workspaces/);
+            expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("cloud");
+            expect(screen.getByTestId("task-execution-kind").querySelector("svg")?.getAttribute("data-icon")).toBe("cloud");
+            expect(screen.getByTestId("task-execution-kind").getAttribute("title")).toBe("云端");
             act(() => { rememberCloudWorkspaceDisplayName("cws_abc", "新名称"); });
             expect(screen.getByTestId("task-execution-meta").textContent).toContain("新名称");
         } finally {

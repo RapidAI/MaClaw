@@ -133,7 +133,13 @@ const TOOL_ACTIVITY_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
     "delegating",
 ]);
 
-export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang: string): string {
+export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang: string, toolName?: string): string {
+    if (kind === "calling_tool") {
+        const name = normalizeLiveToolName(toolName);
+        if (name) {
+            return localizeText(lang, `Calling ${name}`, `正在调用工具 ${name}`, `正在呼叫工具 ${name}`);
+        }
+    }
     switch (kind) {
         case "thinking":
             return localizeText(lang, "Thinking", "正在思考", "正在思考");
@@ -207,6 +213,8 @@ export function assistantLiveActivityObject(
     if (TOOL_ACTIVITY_KINDS.has(kind)) {
         const toolName = normalizeLiveToolName(ctx?.toolName);
         if (!toolName || isImpliedToolName(kind, toolName)) return "";
+        // The generic title already includes the name ("正在调用工具 todo_write").
+        if (kind === "calling_tool") return "";
         return formatLiveToolObject(lang, toolName);
     }
     return "";
@@ -496,29 +504,115 @@ function liveActivityFromStatusText(text: string): AssistantLiveActivityKind | n
     return null;
 }
 
-/** Last assistant owns the live header only while it is still the in-flight round. */
+function codingLiveAnswerStarted(msg: { reasoningLive?: boolean; content?: string } | undefined): boolean {
+    return !!msg && (msg.reasoningLive === false
+        || (msg.reasoningLive !== true && !!String(msg.content || "").trim()));
+}
+
+/**
+ * True when the coding bubble's thinking panel is showing the live title.
+ * The label is passed only while this message owns the round. An empty
+ * placeholder renders no bubble. Once the answer starts, only "正在调用工具"
+ * stays on this panel. Named steps keep their trailing bar.
+ */
+export function codingBubbleHostsLiveTitle(
+    msg: {
+        codingTimeline?: readonly unknown[];
+        reasoningLive?: boolean;
+        content?: string;
+    } | undefined,
+    hasVisibleBody: boolean,
+    ownsLive = true,
+    liveKind?: AssistantLiveActivityKind | null,
+): boolean {
+    if (!ownsLive || !hasVisibleBody || !msg || (msg.codingTimeline?.length ?? 0) > 0) return false;
+    // Named steps such as editing keep a trailing bar. Generic thinking folds.
+    if (codingLiveAnswerStarted(msg) && liveKind !== "calling_tool") return false;
+    return true;
+}
+
+/**
+ * True when this assistant message is still the round being written.
+ * A later user row continues the round only when it carries the same
+ * requestId. Any other user row is the next turn. System notes are not turns.
+ */
+export function assistantMessageIsLiveRound(
+    messages: ReadonlyArray<{ role?: string; requestId?: string }> | undefined,
+    index: number,
+): boolean {
+    if (!messages || index < 0 || index >= messages.length) return false;
+    if (messages[index]?.role !== "assistant") return false;
+    let lastAssistant = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]?.role === "assistant") {
+            lastAssistant = i;
+            break;
+        }
+    }
+    if (index !== lastAssistant) return false;
+    const roundId = (messages[index]?.requestId || "").trim();
+    for (let i = index + 1; i < messages.length; i++) {
+        const later = messages[i];
+        if (later?.role !== "user") continue;
+        const laterRound = (later.requestId || "").trim();
+        if (!roundId || laterRound !== roundId) return false;
+    }
+    return true;
+}
+
+/** Last assistant owns the live header while that round is still in flight. Pass busy for a coding tool pause. */
 export function assistantMessageOwnsLiveActivity(
     msg: { role?: string; content?: string } | undefined,
     streaming: boolean,
     isNewestMessage = true,
+    busy = false,
 ): boolean {
     if (!msg || msg.role !== "assistant" || !isNewestMessage) return false;
-    if (streaming) return true;
+    if (streaming || busy) return true;
     return !assistantBodyBesidesToolCalls(msg.content);
 }
 
+/** Ownership from the transcript: one round, one live-title host. */
+export function assistantMessageOwnsLiveActivityAt(
+    messages: ReadonlyArray<{ role?: string; content?: string; requestId?: string }> | undefined,
+    index: number,
+    streaming: boolean,
+    busy = false,
+): boolean {
+    if (!assistantMessageIsLiveRound(messages, index)) return false;
+    return assistantMessageOwnsLiveActivity(messages?.[index], streaming, true, busy);
+}
+
+/** Label kept on a coding thought. After the answer starts, only a generic tool call stays. */
+export function codingShownLiveLabel(
+    ownsLive: boolean,
+    liveLabel: string | undefined,
+    liveKind: AssistantLiveActivityKind | null | undefined,
+    msg: { reasoningLive?: boolean; content?: string } | undefined,
+): string | undefined {
+    if (!ownsLive || !liveLabel) return undefined;
+    if (codingLiveAnswerStarted(msg) && liveKind !== "calling_tool") return undefined;
+    return liveLabel;
+}
+
 /**
- * Coding timeline: the live sheen belongs on the last thought only when that
- * thought is also the last timeline item (still thinking). Tool/edit steps
- * after it get a trailing live header instead of relabeling an earlier thought.
+ * Coding timeline: the live sheen belongs on the last thought while that
+ * thought is still the last item. A generic tool call has no trail row, so
+ * its title stays on the latest thought. Named steps such as edit keep a
+ * trailing header instead of relabeling that thought.
  */
 export function codingTimelineLiveThoughtIndex(
-    timeline: Array<{ kind?: string }> | undefined,
+    timeline: Array<{ kind?: string; content?: string }> | undefined,
     ownsLive: boolean,
+    liveKind?: AssistantLiveActivityKind | null,
 ): number {
     if (!ownsLive || !timeline?.length) return -1;
     const last = timeline.length - 1;
-    return timeline[last]?.kind === "thinking" ? last : -1;
+    if (timeline[last]?.kind === "thinking") return last;
+    // "正在调用工具" has no trail row of its own. Keep that status as the
+    // thinking-panel title instead of a second bar under the transcript.
+    if (liveKind === "calling_tool") return codingTimelineLastThoughtIndex(timeline);
+    return -1;
 }
 
 /** Latest reasoning node in a coding turn, even when a tool row follows it. Blank thoughts are skipped. */
@@ -556,6 +650,8 @@ export function resolveStandaloneLiveActivityLabel(opts: {
     lastAssistantOwnsLive: boolean;
     lastMessageRole?: string;
     timelineOwnsLiveThought?: boolean;
+    /** Coding bubble is already rendering this same live title. */
+    bubbleHostsLiveTitle?: boolean;
 }): string | undefined {
     if (!opts.liveLabel) return undefined;
     if (opts.coding) {
@@ -563,6 +659,7 @@ export function resolveStandaloneLiveActivityLabel(opts: {
         // Require an explicit tool kind so a missing kind cannot resurrect the
         // extra "正在思考" bar between the transcript and the plan.
         if (!opts.liveKind || isGenericCodingLiveKind(opts.liveKind) || opts.timelineOwnsLiveThought) return undefined;
+        if (opts.bubbleHostsLiveTitle) return undefined;
         return opts.liveLabel;
     }
     if (!opts.lastAssistantOwnsLive && opts.lastMessageRole !== "assistant") return opts.liveLabel;

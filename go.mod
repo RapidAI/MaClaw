@@ -153,4 +153,5 @@ replace github.com/shakinm/xlsReader => github.com/Vantagics/LegacyOfficeReader 
 
 replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 
-// replace github.com/wailsapp/wails/v2 v2.11.0 => C:\Users\yong\go\pkg\mod
+// Patched Darwin launch-file batch hook. Do not point this at the module cache.
+replace github.com/wailsapp/wails/v2 => ./third_party/wails

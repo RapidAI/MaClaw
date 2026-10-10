@@ -138,12 +138,7 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	// directly contradicts the phase prompt and can cause the LLM to self-confirm.
 	isV2WorkflowLoop := workflowAgentLoop && h.isWorkflowV2Active(policyOwnerID)
 	if !profile.IsLight() && !isV2WorkflowLoop && !loopContextIsSemanticManaged(loopCtx) {
-		platformKind := normalizeIMMessagePlatformKind(msg.Platform)
-		if platformKind.IsDesktop() {
-			systemPrompt += desktopWorkflowDocOverride()
-		} else if platformKind.IsKnown() || msg.Platform != "" {
-			systemPrompt += imWorkflowDocDeliveryRule()
-		}
+		systemPrompt += workflowDocDeliverySection(msg.UserID, msg.Platform)
 	}
 
 	totalPromptBuild := time.Since(promptBuildStart)
@@ -156,6 +151,12 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 }
 
 func buildAssistantBindingPrompt(binding *agent.AssistantBinding) string {
+	// Companion turns store their instructions in InitialPrompt and do not
+	// set BotProfileID. The shared builder drops that prompt, so the model
+	// never sees 「你是文件伴读」. Other mode-only bindings stay empty.
+	if binding != nil && strings.TrimSpace(binding.Mode) == desktopLaunchFileCompanion {
+		return strings.TrimSpace(binding.InitialPrompt)
+	}
 	return agentruntime.BuildAssistantBindingPrompt(binding)
 }
 
@@ -385,10 +386,17 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// self-confirm and re-emit documents within a single response.
 	deps.PostCorePrinciples = func(b *strings.Builder) {
 		platform := ""
+		turnUserID := promptUserID
 		if loopCtx != nil {
 			platform = runtimePlatformFromLoopContext(loopCtx)
+			if id := strings.TrimSpace(loopCtx.UserID); id != "" {
+				turnUserID = id
+			}
 		}
-		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressV2CodingRules, platform, loopContextIsSemanticManaged(loopCtx))
+		// Companion has no tools. The coding contract tells the model to
+		// prefer a PDF and attach an action hint, which it then narrates.
+		suppressCoding := suppressV2CodingRules || fileCompanionTurnWithoutTools(turnUserID, platform)
+		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressCoding, platform, loopContextIsSemanticManaged(loopCtx))
 	}
 
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.
@@ -486,6 +494,26 @@ func desktopWorkflowDocOverride() string {
 // per-template PhasePrompt changes.
 func imWorkflowDocDeliveryRule() string {
 	return agentruntime.IMWorkflowDocumentDeliveryPrompt()
+}
+
+// workflowDocDeliverySection is the channel document-delivery contract.
+// file-companion is an unknown non-empty platform, so the old
+// "known IM or any non-empty platform" branch handed it the IM rule that
+// orders the closer 「已生成 [阶段名称] 的 PDF 版本」. Companion cannot
+// generate that PDF. Unknown bridges other than file-companion still get
+// the IM rule; desktop still gets the desktop override.
+func workflowDocDeliverySection(userID, platform string) string {
+	if fileCompanionTurnWithoutTools(userID, platform) {
+		return ""
+	}
+	kind := normalizeIMMessagePlatformKind(platform)
+	if kind.IsDesktop() {
+		return desktopWorkflowDocOverride()
+	}
+	if kind.IsKnown() || strings.TrimSpace(platform) != "" {
+		return imWorkflowDocDeliveryRule()
+	}
+	return ""
 }
 
 func appendCodingWorkflowContract(b *strings.Builder) {

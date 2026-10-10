@@ -96,6 +96,14 @@ type IMAgentResponse struct {
 	AskUserSecretName      string `json:"ask_user_secret_name,omitempty"`
 	AskUserQuestion        string `json:"ask_user_question,omitempty"`
 	AskUserOptionsJSON     string `json:"ask_user_options_json,omitempty"`
+	// DesktopImages are screenshots that could not be written on this machine.
+	// A saved screenshot is DesktopShotPaths, and those bytes stay out of the transcript.
+	DesktopImages []DesktopBotImage `json:"desktop_images,omitempty"`
+	// DesktopShotPaths are screenshots written under the maclaw data directory.
+	DesktopShotPaths []string `json:"desktop_shot_paths,omitempty"`
+	// DesktopFiles are documents that could not be written locally. The bubble
+	// still offers those bytes as a download. A saved document is LocalFilePaths.
+	DesktopFiles []DesktopBotFile `json:"desktop_files,omitempty"`
 	// CodingRuntimeTaskID / CodingRuntimeAttemptID are opaque ledger references
 	// for hosts such as ACP. They are projection metadata only: clients cannot
 	// use them to replay a prior model or tool invocation.

@@ -8,6 +8,8 @@ import { openSettingsTab } from '../../utils/settingsNavigation';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { buildUserRankingURL, systemRankingLabel, useSidebarHubRanking } from './sidebarHubRanking';
 import { useSidebarHubAccess } from './useSidebarHubAccess';
+import { useInProgressBotTaskCount } from './useInProgressBotTaskCount';
+import { desktopBotAccountId } from '../bots/desktopBots';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import type { SidebarHubCheckin } from '../../types/appShell';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
@@ -38,7 +40,7 @@ type SidebarNavRailProps = {
     utilitiesLabel?: string;
     /** Current settings tab, used to highlight the library entry for the Knowledge page. */
     settingsTab?: string;
-    /** Live running-task count, mirrored from the workbench status card. */
+    /** Live background-task count. The rail adds in-progress bot tasks itself. */
     runningTaskCount?: number;
     /** Opens System > Monitor with the background-task view selected. */
     onOpenBackgroundTasks?: () => void;
@@ -117,10 +119,10 @@ export const SidebarNavRail = ({
     const resolvedToolsLabel = toolsNavLabel(lang);
     const resolvedToolsTitle = toolsPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
-    // The workbench status card owns the detailed breakdown (see
-    // WorkbenchTaskCounts); the rail only mirrors the running total as a badge on
-    // the Tasks entry, so the two readouts can never disagree.
-    const runningTaskTotal = Math.max(0, Math.trunc(Number(runningTaskCount) || 0));
+    // Background runs plus bot tasks still in progress. Scheduled tasks and
+    // passthrough commands stay off this badge; they are not running.
+    const botTaskCount = useInProgressBotTaskCount(desktopBotAccountId(config), botAllowed);
+    const runningTaskTotal = Math.max(0, Math.trunc(Number(runningTaskCount) || 0)) + botTaskCount;
     const extensionsLabel = lang === 'zh-Hans' ? '扩展' : lang === 'zh-Hant' ? '擴展' : 'Extensions';
     // Check-in copy: highlighted (amber) until today's reward is claimed, then gray.
     const checkinLabel = lang === 'zh-Hans' ? '签到' : lang === 'zh-Hant' ? '簽到' : 'Check-in';
@@ -140,6 +142,9 @@ export const SidebarNavRail = ({
     // stays highlighted while the page is open.
     const latexTemplatesActive = navTab === LATEX_TEMPLATES_NAV_TAB;
     const systemPageActive = navTab === 'about' || (navTab === 'gossip' && gossipAllowed);
+    const systemActiveId = systemPageActive ? navTab : undefined;
+    const extensionsActiveId = navTab === 'skills' || navTab === 'mcp' ? navTab : undefined;
+    const libraryActiveId = navTab === 'files' ? 'documents' : knowledgeActive ? 'knowledge' : latexTemplatesActive ? LATEX_TEMPLATES_NAV_TAB : undefined;
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'about', icon: <AboutIcon />, label: t('about'), visible: true },
         { id: 'gossip', icon: <GossipIcon />, label: t('gossip'), visible: gossipAllowed },
@@ -279,6 +284,7 @@ export const SidebarNavRail = ({
                     onClose={() => setSystemMenuOpen(false)}
                     returnFocus={() => systemMenuOpenerRef.current}
                     ariaLabel={systemLabel}
+                    activeId={systemActiveId}
                 />
             )}
             {extensionsMenuOpen && (
@@ -292,6 +298,7 @@ export const SidebarNavRail = ({
                     excludeTriggerSelector='[data-testid="sidebar-extensions-nav"]'
                     menuId="extensions-popup-menu"
                     testIdPrefix="extensions-menu"
+                    activeId={extensionsActiveId}
                 />
             )}
             {libraryMenuOpen && (
@@ -305,6 +312,7 @@ export const SidebarNavRail = ({
                     excludeTriggerSelector='[data-testid="sidebar-files-nav"]'
                     menuId="library-popup-menu"
                     testIdPrefix="library-menu"
+                    activeId={libraryActiveId}
                 />
             )}
             {proMenuOpen && (

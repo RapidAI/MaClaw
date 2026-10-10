@@ -84,6 +84,10 @@ func TestSingleInstanceUniqueIDIsBrandScoped(t *testing.T) {
 	if got := singleInstanceUniqueID(); got != "maclaw-lock" {
 		t.Fatalf("default singleInstanceUniqueID() = %q, want maclaw-lock", got)
 	}
+	// Companion lock is a suffix of that historical id, not a replacement.
+	if got := fileCompanionLockID(); got != "maclaw-lock-file-companion" {
+		t.Fatalf("fileCompanionLockID() = %q, want maclaw-lock-file-companion", got)
+	}
 }
 
 func TestDefaultWebviewUserDataPathIsBrandScoped(t *testing.T) {

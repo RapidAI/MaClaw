@@ -304,7 +304,7 @@ func withSemanticPetitionParentFamilies(ctx context.Context, plan tool.ToolPlan)
 		if id == "" {
 			id = strings.TrimSpace(selection.ID)
 		}
-		if family := tool.RepeatFamilyID(id); family != "" {
+		if family := tool.RepeatFamilyKey(id); family != "" {
 			families[family] = struct{}{}
 		}
 	}
@@ -323,7 +323,7 @@ func semanticNeedsForPetitionWhitelist(needs []tool.CapabilityNeed, ctx context.
 	templates := imSemanticIntentRuleSet[label]
 	kept := make([]tool.CapabilityNeed, 0, len(needs))
 	for _, need := range needs {
-		if family := tool.RepeatFamilyID(need.ID); family != "" {
+		if family := tool.RepeatFamilyKey(need.ID); family != "" {
 			if _, ok := families[family]; ok {
 				kept = append(kept, need)
 				continue

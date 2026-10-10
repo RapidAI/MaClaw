@@ -130,6 +130,73 @@ func mustJSON(v any) string {
 	return string(raw)
 }
 
+func TestRunInstallPostsPackageNames(t *testing.T) {
+	var body struct {
+		Packages []string `json:"packages"`
+	}
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		if r.Header.Get("Authorization") != "Bearer install-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"output":"installed: libreoffice"}`))
+	}))
+	defer server.Close()
+	pool := New(&memSettings{}, memDir{})
+	view, err := pool.CreateServer(context.Background(), "tenant-a", Server{
+		Name: "install", BaseURL: server.URL, AccessToken: "install-token", Memory: "3g", CPUs: "1.5", ShmSize: "1g",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(context.Background(), "tenant-a", Assignment{Scope: ScopeUser, TargetID: "alice", ServerID: view.ID}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := pool.RunInstall(context.Background(), "tenant-a", "alice", []string{"libreoffice"})
+	if err != nil || out != "installed: libreoffice" || path != "/v1/desktops/install" || len(body.Packages) != 1 || body.Packages[0] != "libreoffice" {
+		t.Fatalf("out=%q path=%s packages=%v err=%v", out, path, body.Packages, err)
+	}
+	if _, err := pool.RunInstall(context.Background(), "tenant-a", "alice", []string{"libreoffice;reboot"}); err == nil {
+		t.Fatal("shell metacharacter was forwarded")
+	}
+}
+
+func TestRunOpenPostsTheProgram(t *testing.T) {
+	var body struct {
+		Program string   `json:"program"`
+		Args    []string `json:"args"`
+		Display string   `json:"display"`
+	}
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"output":"opened xterm"}`))
+	}))
+	defer server.Close()
+	pool := New(&memSettings{}, memDir{})
+	view, err := pool.CreateServer(context.Background(), "tenant-a", Server{
+		Name: "open", BaseURL: server.URL, AccessToken: "open-token", Memory: "3g", CPUs: "1.5", ShmSize: "1g",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(context.Background(), "tenant-a", Assignment{Scope: ScopeUser, TargetID: "alice", ServerID: view.ID}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := pool.RunOpen(context.Background(), "tenant-a", "alice", ":20", "xterm", []string{"-geometry", "80x24"})
+	if err != nil || out != "opened xterm" || path != "/v1/desktops/open" || body.Program != "xterm" || body.Display != ":20" || len(body.Args) != 2 {
+		t.Fatalf("out=%q path=%s body=%+v err=%v", out, path, body, err)
+	}
+	path = ""
+	if _, err := pool.RunOpen(context.Background(), "tenant-a", "alice", ":20", "bash", []string{"-c", "echo hi"}); err == nil || path != "" {
+		t.Fatalf("shell was forwarded: path=%s err=%v", path, err)
+	}
+}
+
 func TestAuthorizedUsersListsOnlyAssignedUsers(t *testing.T) {
 	candidates := testPoolCandidates()
 	assignments := func(global bool) []Assignment {

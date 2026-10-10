@@ -24,6 +24,8 @@ var (
 	contentFunctionEqBlockRe      = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>(.*?)</function>`)
 	contentFunctionEqOpenRe       = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
 	contentGLMArgPairRe           = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
+	contentLongcatArgPairRe       = regexp.MustCompile(`(?is)<longcat_arg_key>\s*(.*?)\s*</longcat_arg_key>\s*<longcat_arg_value>(.*?)</longcat_arg_value>`)
+	longcatJSONNumberRe           = regexp.MustCompile(`^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$`)
 	contentQwenParamEqRe          = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
 	contentLeadingToolNameRe      = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
 	contentSpecialTokenRe         = regexp.MustCompile(`<\|[^|<>\n]+\|>`)
@@ -72,6 +74,16 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 		if calls, malformed := parseDSMLContentToolCalls(content); len(calls) > 0 || malformed {
 			return calls, malformed
 		}
+	}
+	// LongCat writes <longcat_tool_call>, which <tool_call> does not match.
+	// A tag that appears only inside an earlier <tool_call> body is file
+	// text, not a second call.
+	if idx := indexASCIIFold(content, "<longcat_tool_call"); idx >= 0 && !earlierStructuredToolCallMarker(content, idx) {
+		calls, malformed := parseLongcatContentToolCalls(content)
+		if malformed && len(calls) == 0 {
+			logMalformedContentToolCall(content)
+		}
+		return calls, malformed
 	}
 	matches := contentXMLToolCallBlockRe.FindAllStringSubmatch(content, -1)
 	var calls []ToolCall
@@ -327,6 +339,182 @@ func parseMarkupToolCallArguments(body string) (json.RawMessage, bool) {
 	return nil, false
 }
 
+// parseLongcatContentToolCalls reads LongCat's native tool XML.
+// Thinking models emit a function name plus <longcat_arg_key> pairs.
+// LongCat-Flash emits one JSON object in the same tag. Each open tag starts
+// a call, so a missing close cannot swallow the next call.
+func parseLongcatContentToolCalls(content string) ([]ToolCall, bool) {
+	var calls []ToolCall
+	malformed := false
+	saw := false
+	const openTag = "<longcat_tool_call>"
+	const closeTag = "</longcat_tool_call>"
+	for {
+		rel := indexASCIIFold(content, "<longcat_tool_call")
+		if rel < 0 {
+			break
+		}
+		saw = true
+		content = content[rel:]
+		if !asciiHasPrefix(content, openTag) {
+			malformed = true
+			break
+		}
+		content = content[len(openTag):]
+		closeRel := indexASCIIFold(content, closeTag)
+		nextRel := indexASCIIFold(content, "<longcat_tool_call")
+		end := closeRel
+		closed := closeRel >= 0
+		if nextRel >= 0 && (!closed || nextRel < closeRel) {
+			end = nextRel
+			closed = false
+		}
+		// end == 0 means the next open is already the current head. Parsing
+		// that empty span and slicing by zero would spin.
+		if end == 0 {
+			malformed = true
+			continue
+		}
+		body := content
+		if end >= 0 {
+			body = content[:end]
+			if closed {
+				content = content[end+len(closeTag):]
+			} else {
+				content = content[end:]
+			}
+		} else {
+			content = ""
+		}
+		call, ok := parseLongcatToolCallBody(body)
+		if ok {
+			calls = append(calls, call)
+		} else {
+			malformed = true
+		}
+		if end < 0 {
+			break
+		}
+	}
+	if !saw {
+		return nil, false
+	}
+	return calls, malformed
+}
+
+func earlierStructuredToolCallMarker(content string, before int) bool {
+	if before <= 0 {
+		return false
+	}
+	head := content[:before]
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "<function="} {
+		if indexASCIIFold(head, marker) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func parseLongcatToolCallBody(body string) (ToolCall, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ToolCall{}, false
+	}
+	if strings.HasPrefix(body, "{") {
+		if call, ok := parseContentJSONToolCallPayload(body); ok {
+			return call, true
+		}
+	}
+	name, rest, ok := splitLeadingToolName(body)
+	if !ok && contentLeadingToolNameRe.FindString(body) == body {
+		name = body
+		rest = ""
+		ok = true
+	}
+	if !ok || name == "" {
+		return ToolCall{}, false
+	}
+	if rest == "" {
+		return normalizePlainContentToolCall(name, json.RawMessage(`{}`))
+	}
+	args, ok := parseLongcatArgPairs(rest)
+	if !ok {
+		return ToolCall{}, false
+	}
+	return normalizePlainContentToolCall(name, args)
+}
+
+func parseLongcatArgPairs(body string) (json.RawMessage, bool) {
+	if indexASCIIFold(body, "<longcat_tool_call") >= 0 {
+		return nil, false
+	}
+	locs := contentLongcatArgPairRe.FindAllStringSubmatchIndex(body, -1)
+	if len(locs) == 0 {
+		if strings.TrimSpace(body) == "" {
+			return json.RawMessage(`{}`), true
+		}
+		return nil, false
+	}
+	args := make(map[string]interface{}, len(locs))
+	cursor := 0
+	for _, loc := range locs {
+		if len(loc) < 6 || strings.TrimSpace(body[cursor:loc[0]]) != "" {
+			return nil, false
+		}
+		key := strings.TrimSpace(html.UnescapeString(body[loc[2]:loc[3]]))
+		if key == "" {
+			return nil, false
+		}
+		if _, exists := args[key]; exists {
+			return nil, false
+		}
+		args[key] = coerceLongcatArgValue(key, body[loc[4]:loc[5]])
+		cursor = loc[1]
+	}
+	if strings.TrimSpace(body[cursor:]) != "" {
+		return nil, false
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// coerceLongcatArgValue numbers only known integer keys. Every other key stays
+// a string, so an id, a path, or a one-line JSON document is not dropped by a
+// string-only argument reader. Readers that accept numeric strings still see
+// a number for the keys listed here; local file tools accept only numbers.
+func coerceLongcatArgValue(key, raw string) interface{} {
+	value := strings.TrimSpace(html.UnescapeString(raw))
+	if value == "" || strings.ContainsAny(value, "\r\n") || !longcatArgKeyIsNumber(key) {
+		return value
+	}
+	if longcatJSONNumberRe.MatchString(value) {
+		return json.Number(value)
+	}
+	return value
+}
+
+func longcatArgKeyIsNumber(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "offset", "limit", "lines", "num_lines", "line_count",
+		"start", "start_line", "startline", "end", "end_line",
+		"tail", "tail_lines", "max_results", "timeout", "timeout_seconds",
+		"max_chars", "max_affected_rows", "count", "port",
+		"duration_ms", "delta_x", "delta_y",
+		"context", "before_context", "after_context",
+		"width", "max_slides", "slide_offset", "max_rows",
+		"x", "y",
+		"wait_seconds", "token_budget", "max_turns",
+		"stale_after_days", "max_actions", "min_failure_runs",
+		"max_items", "max_file_bytes", "max_file_mb":
+		return true
+	default:
+		return false
+	}
+}
+
 func marshalMarkupArgPairs(pairs [][]string) (json.RawMessage, bool) {
 	args := make(map[string]interface{}, len(pairs))
 	for _, p := range pairs {
@@ -366,6 +554,8 @@ func logMalformedContentToolCall(content string) {
 	kind := "unknown"
 	lower := strings.ToLower(content)
 	switch {
+	case strings.Contains(lower, "<longcat_tool_call"):
+		kind = "longcat"
 	case strings.Contains(lower, "<function="):
 		kind = "function"
 	case strings.Contains(lower, "<arg_key>"):
@@ -640,9 +830,11 @@ func dropPartialContentToolCallOnFlush(suffix string) bool {
 	if strings.HasPrefix(collapsed, "<|") {
 		return true
 	}
-	lower := strings.ToLower(strings.TrimLeft(suffix, " \t\r\n"))
-	if strings.HasPrefix(lower, "<tool_call") || strings.HasPrefix(lower, "<turn: tool_call") || strings.HasPrefix(lower, "<function=") {
-		return true
+	trimmed := strings.TrimLeft(suffix, " \t\r\n")
+	for _, marker := range []string{"<longcat_tool_call", "<tool_call", "<turn: tool_call", "<function="} {
+		if asciiHasPrefix(trimmed, marker) {
+			return true
+		}
 	}
 	return couldBecomeLeakedLineOrientedToolLine(suffix)
 }
@@ -693,11 +885,22 @@ func couldBeLeakedToolNamePrefix(ident string) bool {
 	return strings.HasPrefix(leaked, lower) && len(lower) >= 5
 }
 
+// contentToolCallASCIIMarkers are matched without copying a lowercased buffer.
+// Indexes stay in the original string when a rune's lowercase form is longer.
+var contentToolCallASCIIMarkers = []string{
+	"<longcat_tool_call",
+	"<tool_call",
+	"<turn: tool_call",
+	"<function=",
+	"tool_call\n",
+	"tool_call\r\n",
+	"tool_call {",
+}
+
 func firstContentToolCallMarkerIndex(s string) int {
-	lower := strings.ToLower(s)
 	best := -1
-	for _, marker := range []string{"<tool_call", "<turn: tool_call", "<function=", "tool_call\n", "tool_call\r\n", "tool_call {"} {
-		if idx := strings.Index(lower, marker); idx >= 0 && (best < 0 || idx < best) {
+	for _, marker := range contentToolCallASCIIMarkers {
+		if idx := indexASCIIFold(s, marker); idx >= 0 && (best < 0 || idx < best) {
 			best = idx
 		}
 	}
@@ -711,15 +914,14 @@ func firstContentToolCallMarkerIndex(s string) int {
 }
 
 func contentToolCallMarkerSuffixLen(s string) int {
-	lower := strings.ToLower(s)
 	best := 0
-	for _, marker := range []string{"<tool_call", "<turn: tool_call", "<function=", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+	for _, marker := range contentToolCallASCIIMarkers {
 		max := len(marker) - 1
-		if len(lower) < max {
-			max = len(lower)
+		if len(s) < max {
+			max = len(s)
 		}
 		for i := max; i > best; i-- {
-			if strings.HasSuffix(lower, marker[:i]) {
+			if asciiFoldEqual(s[len(s)-i:], marker[:i]) {
 				best = i
 				break
 			}
@@ -1097,10 +1299,30 @@ func indexASCIIFold(s, needle string) int {
 	if n == 0 || len(s) < n {
 		return -1
 	}
-	for i := 0; i+n <= len(s); i++ {
+	first := needle[0]
+	alt := first
+	if first >= 'a' && first <= 'z' {
+		alt = first - ('a' - 'A')
+	}
+	for i := 0; i+n <= len(s); {
+		rest := s[i:]
+		j := strings.IndexByte(rest, first)
+		if alt != first {
+			if k := strings.IndexByte(rest, alt); k >= 0 && (j < 0 || k < j) {
+				j = k
+			}
+		}
+		if j < 0 {
+			return -1
+		}
+		i += j
+		if i+n > len(s) {
+			return -1
+		}
 		if asciiFoldEqual(s[i:i+n], needle) {
 			return i
 		}
+		i++
 	}
 	return -1
 }
@@ -1116,6 +1338,10 @@ func asciiFoldEqual(s, lowerNeedle string) bool {
 		}
 	}
 	return true
+}
+
+func asciiHasPrefix(s, lowerPrefix string) bool {
+	return len(s) >= len(lowerPrefix) && asciiFoldEqual(s[:len(lowerPrefix)], lowerPrefix)
 }
 
 func parenCallWrappedAtLineStart(s string, abs int) bool {

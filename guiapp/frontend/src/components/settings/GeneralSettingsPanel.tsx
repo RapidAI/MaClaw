@@ -6,6 +6,7 @@ import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { miniAppEntryLabel } from '../../i18n/maclawMiniAppLabels';
 import { expertsEntryLabel } from '../../i18n/utilitiesLabels';
 import { GeneralSettingsOptionGrid } from './GeneralSettingsOptionGrid';
+import { LinuxFileCompanionSettings } from './LinuxFileCompanionSettings';
 
 type GeneralSettingsPanelProps = {
     config: corelib.AppConfig | null;
@@ -305,6 +306,8 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                 </label>
             </div>
         </section>
+
+        <LinuxFileCompanionSettings />
 
         <GeneralSettingsOptionGrid effectiveConfig={effectiveConfig} lang={lang} saveConfigPatch={saveConfigPatch} />
     </div>;

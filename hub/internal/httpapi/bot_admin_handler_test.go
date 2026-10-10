@@ -105,6 +105,28 @@ func TestBotSettingsSaveIsAuditedWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestBotLLMSettingsSaveIsAuditedWithoutTheKey(t *testing.T) {
+	svc := botmgmt.NewService(&botSettingsMem{})
+	audit := &botAuditMem{}
+	body := `{"current":"lp_abcdef0123456789","providers":[{"id":"lp_abcdef0123456789","name":"OpenAI","protocol":"openai","url":"https://api.openai.com/v1","key":"sk-live-secret","model":"gpt-4o"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/bots/llm", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-1", Scope: "tenant", TenantID: "tenant-a"}))
+	rec := httptest.NewRecorder()
+	PutBotLLMSettingsAdminHandler(svc, audit).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-live-secret") || !strings.Contains(rec.Body.String(), `"key_set":true`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if len(audit.logs) != 1 || audit.logs[0].Action != "bot.llm.update" || audit.logs[0].AdminUserID != "admin-1" {
+		t.Fatalf("audit = %+v", audit.logs)
+	}
+	if strings.Contains(audit.logs[0].PayloadJSON, "sk-live-secret") || !strings.Contains(audit.logs[0].PayloadJSON, `"protocol":"openai"`) {
+		t.Fatalf("audit payload = %s", audit.logs[0].PayloadJSON)
+	}
+}
+
 func TestBotGrantChangesAreAudited(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	audit := &botAuditMem{}

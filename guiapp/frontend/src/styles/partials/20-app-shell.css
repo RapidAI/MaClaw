@@ -1661,18 +1661,36 @@
 .assistant-reasoning-body > div > :not(pre):not(.assistant-reasoning-segment) { opacity: 0.88; }
 .assistant-reasoning-body .assistant-reasoning-segment > :not(pre) { opacity: 0.88; }
 .assistant-reasoning-summary::-webkit-details-marker { display: none; }
+/* Centered stroke. A › glyph sits on the em baseline and rides below the label. */
+.assistant-reasoning-summary {
+    --reasoning-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.6 2.2 8.2 6 3.6 9.8' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
 .assistant-reasoning-summary::before {
-    content: "›";
-    display: inline-block;
-    width: 10px;
-    margin-right: 2px;
-    font-size: 16px;
-    line-height: 1;
+    content: "";
+    display: block;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    align-self: center;
+    background: currentColor;
+    -webkit-mask-image: var(--reasoning-chevron);
+    mask-image: var(--reasoning-chevron);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: 8px 8px;
+    mask-size: 8px 8px;
     transform: rotate(0deg);
     transition: transform 120ms ease;
 }
 details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
-.assistant-reasoning-summary--plain::before { content: none; width: 0; margin: 0; }
+.assistant-reasoning-summary--plain::before {
+    content: none;
+    background: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+}
 /* Live activity title: a highlight walks through the glyphs only.
    Same idea as Codex — do not restyle the row background. */
 .assistant-reasoning-live-label {

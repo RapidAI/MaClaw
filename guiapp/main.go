@@ -221,8 +221,9 @@ func Main(v string) {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 			// Binary live-record append (POST /maclaw-record/v1/append) + no-store static assets.
+			// Companion mode also marks index.html so the shell skips the main app.
 			Middleware: func(next http.Handler) http.Handler {
-				return recordAudioAssetMiddleware(app, noStoreAssetMiddleware(next))
+				return fileCompanionAssetMiddleware(app, next)
 			},
 		},
 		BackgroundColour: bgColour,
@@ -256,8 +257,16 @@ func Main(v string) {
 	bootLog("webview userDataPath=%s", webviewUserDataPath)
 	bootLog("window %dx%d frameless=%v startMaximised=%v", envCheckWidth, envCheckHeight, frameless, startMaximised)
 
-	// Platform specific tray/menu setup
-	setupTray(app, appOptions)
+	launch := classifyDesktopLaunch(args)
+	applyDesktopLaunchOptions(app, appOptions, launch)
+
+	// The companion process has no tray. A Darwin empty-arg launch stays on
+	// the main lock but hides until the launch-file batch hook.
+	if launch.Mode != desktopLaunchFileCompanion {
+		setupTray(app, appOptions)
+	} else {
+		bootLog("file-companion skip tray")
+	}
 
 	bootLog("wails.Run starting")
 	err := wails.Run(appOptions)

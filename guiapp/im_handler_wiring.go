@@ -1282,7 +1282,7 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 	// LLM request just to rewrite a message before the main Agent can respond.
 	// BM25 plus optional local embedding provides enough pruning; uncertain
 	// conditional tools stay hidden and can be discovered explicitly later.
-	routeMessage := markdownFileWritePlanningText(userMessage, loopHistory(ctx))
+	routeMessage := semanticManagedPlanningText(userMessage, loopHistory(ctx))
 	routeOpts := tool.RouteOptions{
 		SkipUnifiedClassifier: skipUnifiedClassifier,
 		PreferEmbeddingOnly:   true,

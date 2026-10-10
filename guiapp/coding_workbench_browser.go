@@ -1216,7 +1216,7 @@ func remoteWorkbenchFilePreviewCommand(root, path string) string {
 	script := strings.NewReplacer(
 		"@@ROOT@@", base64EncodeString(root),
 		"@@PATH@@", base64EncodeString(path),
-	).Replace(`import base64, os, pathlib, stat, sys
+	).Replace(`import base64, os, stat, sys
 root = os.path.realpath(base64.b64decode('@@ROOT@@').decode('utf-8'))
 requested = base64.b64decode('@@PATH@@').decode('utf-8')
 target = os.path.realpath(requested)
@@ -1230,39 +1230,24 @@ except OSError as exc:
     raise SystemExit(str(exc))
 if not stat.S_ISREG(info.st_mode):
     raise SystemExit("path is not a file")
-p = pathlib.Path(target)
-start = 1
-limit = 2000
-shown = 0
-last_lineno = 0
 try:
-    with p.open('r', encoding='utf-8', errors='strict') as handle:
-        live = target
-        fd_path = '/proc/self/fd/' + str(handle.fileno())
-        # lexists does not follow the link. exists() stats the target and
-        # returns false when that stat is denied, which would skip this check.
-        if os.path.lexists(fd_path):
-            try:
-                live = os.path.realpath(fd_path)
-            except OSError:
-                live = target
-        if not inside(live):
-            raise SystemExit("path outside remote work_dir")
-        for lineno, line in enumerate(handle, start=1):
-            last_lineno = lineno
-            if lineno < start:
-                continue
-            if shown >= limit:
-                sys.stdout.write('\n[remote read_file truncated: showing lines %d-%d; call again with offset=%d]\n' % (start, lineno - 1, lineno))
-                break
-            sys.stdout.write(f'{lineno}\t{line}')
-            shown += 1
-except UnicodeDecodeError:
-    sys.stdout.write('[remote read_file binary/non-UTF8: %d bytes; text line range unavailable for offset=%d limit=%d]\n' % (info.st_size, start, limit))
-    sys.exit(0)
-if shown == 0 and start > last_lineno:
-    sys.stdout.write('[remote read_file EOF: offset %d is beyond scanned file length %d]\n' % (start, last_lineno))
+    preview_file = open(target, 'rb')
+except OSError as exc:
+    raise SystemExit(str(exc))
+with preview_file:
+    live = target
+    fd_path = '/proc/self/fd/' + str(preview_file.fileno())
+    # lexists does not follow the link. exists() stats the target and
+    # returns false when that stat is denied, which would skip this check.
+    if os.path.lexists(fd_path):
+        try:
+            live = os.path.realpath(fd_path)
+        except OSError:
+            live = target
+    if not inside(live):
+        raise SystemExit("path outside remote work_dir")
 `)
+	script += indentNonEmptyLines(remotePreviewCapturePythonBody(), "    ") + "\n"
 	return remotePythonCommand(script)
 }
 
@@ -1282,16 +1267,13 @@ func (a *App) getRemoteCodingWorkbenchFilePreview(projectPath, relativePath stri
 	if err != nil {
 		return CodingWorkbenchFilePreview{}, err
 	}
-	content := extractRemoteReadPreviewContent(raw)
-	// The marker is also a legal string inside a text file. Treat it as binary
-	// only when the read produced no numbered source lines.
-	if strings.TrimSpace(content) == "" && strings.Contains(raw, "[remote read_file binary/non-UTF8:") {
-		return CodingWorkbenchFilePreview{}, fmt.Errorf("binary files cannot be previewed")
+	content, truncated, ok := parseRemotePreviewCapture(raw)
+	if !ok {
+		if remotePreviewCaptureIsBinary(raw) {
+			return CodingWorkbenchFilePreview{}, fmt.Errorf("binary files cannot be previewed")
+		}
+		return CodingWorkbenchFilePreview{}, fmt.Errorf("remote preview was not captured intact")
 	}
-	// Only protocol markers indicate truncation. A source file may legitimately
-	// contain the word "truncated" and must not receive a misleading preview
-	// warning just because of its contents.
-	truncated := remotePreviewOutputIsTruncated(raw)
 	if utf8.RuneCountInString(content) > codingWorkbenchBrowserMaxRunes {
 		content = string([]rune(content)[:codingWorkbenchBrowserMaxRunes])
 		truncated = true

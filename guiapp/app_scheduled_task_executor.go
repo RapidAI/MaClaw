@@ -84,6 +84,11 @@ func (a *App) scheduledTaskHandler(task *scheduler.ScheduledTask, fallback *IMMe
 // This ensures scheduled tasks fire for desktop-only users.
 func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
+		// A bot schedule runs on that bot and reports in its chat. It does
+		// not enter the host agent.
+		if task != nil && strings.TrimSpace(task.DesktopBotID) != "" {
+			return a.executeDesktopBotScheduledTask(ctx, task)
+		}
 		// App-owned automation tasks run their bound skill instead of a
 		// free-form agent action.
 		if _, ok := maclawAppAutomationAppIDFromTask(task); ok {
@@ -156,6 +161,11 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 // This upgrades the local executor when Hub connectivity is available.
 func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) scheduler.TaskExecutor {
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
+		// A bot schedule runs on that bot and reports in its chat. It does
+		// not enter the host agent or the Hub owner channel.
+		if task != nil && strings.TrimSpace(task.DesktopBotID) != "" {
+			return a.executeDesktopBotScheduledTask(ctx, task)
+		}
 		// App-owned automation tasks run their bound skill instead of a
 		// free-form agent action.
 		if _, ok := maclawAppAutomationAppIDFromTask(task); ok {

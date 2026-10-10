@@ -3,43 +3,64 @@
  * Colours come from the shared theme tokens in 00-tokens.css. No hardcoded
  * surfaces, so the dialog follows the app's dark/light switch. */
 
-.llm-config-tokenbank-btn {
+/* Corner mark on a tested provider chip. Two classes beat the settings panel's 36px button floor. */
+.llm-config-provider-chip-slot {
+    position: relative;
+    display: inline-flex;
+    align-self: center;
+    max-width: 100%;
+}
+
+.llm-config-provider-grid {
+    align-items: center;
+    padding-top: 8px;
+}
+
+.llm-config-provider-grid .llm-config-tokenbank-btn {
+    position: absolute;
+    top: -4px;
+    right: -2px;
+    z-index: 2;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    align-self: center;
-    flex: 0 0 auto;
-    width: 26px;
-    height: 26px;
-    min-height: 26px;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    min-height: 22px;
     padding: 0;
-    margin-left: 2px;
+    margin: 0;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
     border-radius: 999px;
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
+    box-shadow: 0 0 0 2px var(--theme-surface);
     cursor: pointer;
+    line-height: 0;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.llm-config-tokenbank-btn:hover:not(:disabled) {
+/* The drawn mark stays 22px. The extra box only enlarges the click target, and it stays inside the row gap. */
+.llm-config-provider-grid .llm-config-tokenbank-btn::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+}
+
+.llm-config-provider-grid .llm-config-tokenbank-btn:hover:not(:disabled) {
     border-color: var(--theme-primary);
     color: var(--theme-primary-strong);
     background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
 }
 
-.llm-config-tokenbank-btn:focus-visible {
+.llm-config-provider-grid .llm-config-tokenbank-btn:focus-visible {
     outline: 2px solid var(--theme-primary);
     outline-offset: 2px;
 }
 
-/* The settings panel forces a 36px ink button. Keep this mark a small outline circle. */
+/* Later settings rules repaint every non-submit button with office ink. Restore the mark color. */
 .settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
-    width: 26px;
-    height: 26px;
-    min-height: 26px;
     border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-    background: var(--theme-surface);
     color: var(--theme-primary-strong);
 }
 
@@ -119,6 +140,7 @@
         border-color: ButtonText;
         background: ButtonFace;
         color: ButtonText;
+        box-shadow: none;
         forced-color-adjust: none;
     }
 }

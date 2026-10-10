@@ -23,7 +23,11 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // 110-mc-app-shell / 20-app-shell partial work in the tree at build time.
 // Refreshed 1569 -> 1570 (2026-10-07) for the nav-rail first-item top-margin
 // reset, which must out-rank the !important generic left-nav-item margin.
-const IMPORTANT_BASELINE = 1570
+// Refreshed 1570 -> 1574 (2026-10-09) so rail flyout items can beat the
+// office-theme .sidebar button[aria-current] fill and the violet focus ring.
+// Refreshed 1574 -> 1572 (2026-10-09) after dropping the compact-rail popup
+// left overrides. Those percentages were viewport-sized on position:fixed.
+const IMPORTANT_BASELINE = 1572
 const INLINE_STYLE_BASELINE = 4064
 
 function countImportant(css) {

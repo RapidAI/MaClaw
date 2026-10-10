@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -2526,6 +2527,13 @@ func (a *App) SendDesktopBotTask(botID, text, phase string) (*IMAgentResponse, e
 	phase = strings.TrimSpace(phase)
 	requestID := fmt.Sprintf("desktop-bot-%d", time.Now().UnixNano())
 	log.Printf("[desktop bot] enqueue request_id=%s user=%q instance=%q phase=%s text_len=%d", requestID, userID, instanceID, phase, len(text))
+	botlog.Write(botID, "gui.enqueue", nil,
+		"request_id", requestID,
+		"user", userID,
+		"instance", instanceID,
+		"phase", phase,
+		"text_len", fmt.Sprintf("%d", len(text)),
+	)
 	go a.finishDesktopBotTask(requestID, sessionKey, botID, text, phase)
 	return &IMAgentResponse{
 		RequestID:    requestID,

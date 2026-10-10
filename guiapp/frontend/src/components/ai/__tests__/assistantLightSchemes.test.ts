@@ -116,6 +116,49 @@ describe("assistant light schemes", () => {
         expect(contrastRatio(scheme.assistantTheme.sendBtnColor, scheme.assistantTheme.sendBtnBg)).toBeGreaterThanOrEqual(4.5);
     });
 
+    it("keeps light interface ink darker than the rail and off near-black", () => {
+        const css = readFileSync(resolve(frontendSrc, "styles/partials/120-app-responsive.css"), "utf8");
+        const shell = readFileSync(resolve(frontendSrc, "styles/partials/110-mc-app-shell.css"), "utf8");
+        expect(css).toContain("[data-ai-light-scheme]:not([data-ai-theme='dark'])");
+        expect(css).toContain("--theme-text-primary: var(--mc-chrome-ink)");
+        expect(css).toContain("--theme-text-secondary: color-mix(in srgb, var(--mc-chrome-ink) 55%, var(--theme-text-muted))");
+        expect(css).toContain("--mc-text-anchor");
+        expect(css).not.toContain("--theme-text-muted: var(--office-muted)");
+        const office = readFileSync(resolve(frontendSrc, "styles/partials/100-pet-store-mc.css"), "utf8");
+        expect(office).not.toContain(":where(.muted, .secondary-text, [class*='muted']) { color: var(--office-muted) !important; }");
+        expect(office).toContain(":where(.muted, [class*='muted']) { color: var(--theme-text-muted, var(--office-muted)); }");
+        expect(office).toContain(":where(.secondary-text) { color: var(--theme-text-secondary, var(--office-muted)); }");
+        expect(shell).not.toMatch(/\.stsm-row-title \{[^}]*office-muted/);
+        expect(shell).toMatch(/\.stsm-row-title \{[^}]*color: var\(--theme-text-primary\)/);
+        expect(shell).not.toMatch(/--theme-text-primary:\s*#26364a/);
+        expect(shell).not.toMatch(/--theme-text-muted:\s*#8a9bb0/);
+        const sidebarSurface = "#f0f6ff";
+        for (const scheme of assistantLightSchemes) {
+            const primary = relativeLuminance(scheme.cssVars.textPrimary);
+            const secondary = relativeLuminance(scheme.cssVars.textSecondary);
+            const muted = relativeLuminance(scheme.cssVars.textMuted);
+            const quote = relativeLuminance(scheme.assistantTheme.quoteText);
+            expect(primary, scheme.id).not.toBeNull();
+            expect(secondary, scheme.id).not.toBeNull();
+            expect(muted, scheme.id).not.toBeNull();
+            expect(primary!, scheme.id).toBeLessThan(secondary!);
+            expect(secondary!, scheme.id).toBeLessThan(muted!);
+            expect(quote, scheme.id).not.toBeNull();
+            expect(quote!, scheme.id).toBeGreaterThan(primary!);
+            expect(quote!, scheme.id).toBeLessThan(muted!);
+            expect(contrastRatio(scheme.cssVars.textPrimary, scheme.cssVars.pageBg), scheme.id).toBeGreaterThanOrEqual(4.5);
+            expect(contrastRatio(scheme.cssVars.textSecondary, scheme.cssVars.pageBg), scheme.id).toBeGreaterThanOrEqual(4.5);
+            expect(contrastRatio(scheme.cssVars.textMuted, scheme.cssVars.pageBg), scheme.id).toBeGreaterThanOrEqual(4.5);
+            expect(contrastRatio(scheme.cssVars.textSecondary, sidebarSurface), scheme.id).toBeGreaterThanOrEqual(4.5);
+            expect(contrastRatio(scheme.assistantTheme.text, scheme.assistantTheme.bg), scheme.id).toBeGreaterThanOrEqual(4.5);
+            expect(primary!, scheme.id).toBeGreaterThan(relativeLuminance("#17263c")!);
+            expect(scheme.assistantTheme.boldColor).toBe(scheme.assistantTheme.text);
+            expect(scheme.assistantTheme.pathColor).toBe(scheme.cssVars.textSecondary);
+            expect(scheme.assistantTheme.promptColor).toBe(scheme.cssVars.textSecondary);
+            expect(scheme.assistantTheme.italicColor).toBe(scheme.cssVars.textSecondary);
+        }
+    });
+
     it("keeps CSS scheme tokens in sync with TypeScript palettes", () => {
         const css = readFileSync(resolve(frontendSrc, "styles/generated/themeSchemes.generated.css"), "utf8");
         for (const scheme of assistantLightSchemes) {

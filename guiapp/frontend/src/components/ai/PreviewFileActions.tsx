@@ -98,8 +98,13 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
         if (uploading) return;
         setUploading(true);
         try {
-            await ImportMobileDocumentFromPath(absPath);
-            flash(true, isZh ? "已上传到云盘" : "Uploaded to cloud drive");
+            const draft = await ImportMobileDocumentFromPath(absPath);
+            if (draft?.duplicate) {
+                const held = draft.duplicate_of_title || draft.title || (isZh ? "已有文件" : "an existing file");
+                flash(true, isZh ? `云盘中已有相同内容（${held}），未再次上传` : `Already in the cloud drive (${held}). Not uploaded again.`);
+            } else {
+                flash(true, isZh ? "已上传到云盘" : "Uploaded to cloud drive");
+            }
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err || "");
             flash(false, message || (isZh ? "上传失败" : "Upload failed"));

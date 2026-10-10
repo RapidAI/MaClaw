@@ -9,7 +9,7 @@ import (
 // vocabulary for dynamic providers. A host must construct a new registry
 // version when it changes a capability contract; it must never append
 // provider-discovered vocabulary to this registry at runtime.
-const ReviewedDynamicCapabilityRegistryVersion = "dynamic-capabilities-v40"
+const ReviewedDynamicCapabilityRegistryVersion = "dynamic-capabilities-v41"
 
 const (
 	// CapabilityInformationLookup is a read-only retrieval outcome served by
@@ -220,11 +220,17 @@ const (
 	// CapabilityTaskTrack is a host-owned local todo-list mutation. Field
 	// presence decides create/update/delete/list; the model schema has no
 	// action soup. It is not goal.manage.long_running,
-	// schedule.administer.local, or agent.delegate.subtask. GUI task names
-	// and delegate/depends_on stay out. The host process observes the
-	// session task store, so the handler result is the local completion
-	// receipt.
+	// schedule.administer.local, agent.delegate.subtask, or the external
+	// time-block work record (record.read.worklog / record.update.worklog).
+	// GUI task names and delegate/depends_on stay out. The host process
+	// observes the session task store, so the handler result is the local
+	// completion receipt.
 	CapabilityTaskTrack = coretool.CapabilityTaskTrackLocal
+	// CapabilityRecordReadWorklog reads one external time-block work record.
+	// CapabilityRecordUpdateWorklog appends or updates that record. The query
+	// implementation must not be selected for the mutation.
+	CapabilityRecordReadWorklog   = coretool.CapabilityRecordReadWorklog
+	CapabilityRecordUpdateWorklog = coretool.CapabilityRecordUpdateWorklog
 	// CapabilityGoalManage is a host-owned long-running goal record. Field
 	// presence decides create/get/complete/fail; the model schema has no
 	// action soup. It is not task.track.local, schedule.administer.local,
@@ -705,6 +711,24 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 	}); err != nil {
 		return nil, err
 	}
+	if err := registry.Register(coretool.CapabilityDescriptor{
+		ID:      CapabilityRecordReadWorklog,
+		Version: "v1",
+		Summary: "Read one external time-block work record without changing it.",
+		Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+		Owner:   "semantic-routing-review",
+	}); err != nil {
+		return nil, err
+	}
+	if err := registry.Register(coretool.CapabilityDescriptor{
+		ID:      CapabilityRecordUpdateWorklog,
+		Version: "v1",
+		Summary: "Append or update one external time-block work record. This is not the local todo list.",
+		Effects: []coretool.EffectClass{coretool.EffectExternalEffect},
+		Owner:   "semantic-routing-review",
+	}); err != nil {
+		return nil, err
+	}
 	if err := registry.Seal(); err != nil {
 		return nil, err
 	}
@@ -889,6 +913,20 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 		}},
 		intent.LabelKnowledgeAdmin: {{
 			Capability: CapabilityKnowledgeAdmin,
+			Polarity:   coretool.NeedRequire,
+			Required:   true,
+		}},
+		intent.LabelWorklogRead: {{
+			Capability: CapabilityRecordReadWorklog,
+			Polarity:   coretool.NeedRequire,
+			Required:   true,
+		}},
+		intent.LabelWorklogUpdate: {{
+			Capability: CapabilityRecordReadWorklog,
+			Polarity:   coretool.NeedRequire,
+			Required:   false,
+		}, {
+			Capability: CapabilityRecordUpdateWorklog,
 			Polarity:   coretool.NeedRequire,
 			Required:   true,
 		}},

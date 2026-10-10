@@ -332,6 +332,32 @@ describe('AssistantPreviewPane', () => {
         expect(screen.getByText('answer')).toBeTruthy();
     });
 
+    it('switches from workflow progress to the file when an agent edit focuses it', () => {
+        const { rerender } = renderPane();
+        expect(screen.getByRole('tab', { name: 'Progress' }).getAttribute('aria-selected')).toBe('true');
+
+        rerender(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                fileFocusNonce={1}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByText('answer')).toBeTruthy();
+    });
+
     it('keeps source preview available when an agent task view is visible', () => {
         render(
             <AssistantPreviewPane

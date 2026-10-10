@@ -134,6 +134,12 @@ const (
 	LabelSessionManage    IntentLabel = "session_manage"
 	LabelDelegateTask     IntentLabel = "delegate_task"
 	LabelKnowledgeAdmin   IntentLabel = "knowledge_admin"
+	// LabelWorklogRead and LabelWorklogUpdate maintain an external time-block
+	// work record. They are not task_track (local todos) and not business_data
+	// (MIS forms). A completion percent on a morning/afternoon block is an
+	// update of that record; "add it to the todo list" stays task_track.
+	LabelWorklogRead   IntentLabel = "worklog_read"
+	LabelWorklogUpdate IntentLabel = "worklog_update"
 
 	LabelAmbiguous IntentLabel = "ambiguous"
 	LabelUnknown   IntentLabel = "unknown"
@@ -190,6 +196,8 @@ func AllLabels() []IntentLabel {
 		LabelSessionManage,
 		LabelDelegateTask,
 		LabelKnowledgeAdmin,
+		LabelWorklogRead,
+		LabelWorklogUpdate,
 		LabelAmbiguous,
 		LabelUnknown,
 	}

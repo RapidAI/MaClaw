@@ -409,8 +409,139 @@ describe('useAIAssistant property tests', () => {
 		expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
 			'change direction', 'desktop-user', 'buf-active', request.request_id,
 		);
+		expect(result.current.messages.find(message => message.content === 'change direction')).toMatchObject({
+			role: 'user',
+			kind: 'guideInjection',
+			requestId: request.request_id,
+		});
 		pending.resolve({ text: 'done', error: '', fields: null, actions: null, request_id: request.request_id || '' });
 		await act(async () => { await pending.promise; });
+	});
+
+	it('stamps a steer with the assistant row after the backend reassigns the request id', async () => {
+		(SendAIAssistantMessage as any).mockImplementationOnce(async () => ({
+			text: '',
+			error: '',
+			fields: null,
+			actions: null,
+			request_id: 'backend-live-round',
+			deferred: true,
+		}));
+		const { result } = renderAssistantHook();
+
+		await act(async () => {
+			await result.current.sendMessage('active work');
+		});
+
+		await act(async () => {
+			expect(await result.current.guideLaunchReference('steer after reassignment', 'desktop-user', 'buf-reassigned')).toBe(true);
+		});
+
+		expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
+			'steer after reassignment', 'desktop-user', 'buf-reassigned', 'backend-live-round',
+		);
+		const assistant = result.current.messages.find(message => message.role === 'assistant');
+		expect(assistant?.requestId).toBe('backend-live-round');
+		expect(result.current.messages.find(message => message.content === 'steer after reassignment')).toMatchObject({
+			role: 'user',
+			kind: 'guideInjection',
+			requestId: 'backend-live-round',
+		});
+	});
+
+	it('moves a steer captured under the client id when the backend reassigns the round', async () => {
+		const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; deferred: boolean }>();
+		const acceptance = deferred<boolean>();
+		(SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+		(InjectAIAssistantGuideReferenceForSessionWithID as any).mockImplementationOnce(() => acceptance.promise);
+		const { result } = renderAssistantHook();
+
+		await act(async () => {
+			void result.current.sendMessage('active work');
+			await Promise.resolve();
+		});
+		const request = parseSentRequest();
+		let guide!: Promise<boolean>;
+		act(() => {
+			guide = result.current.guideLaunchReference('steer during send', 'desktop-user', 'buf-during');
+		});
+		pending.resolve({
+			text: '',
+			error: '',
+			fields: null,
+			actions: null,
+			request_id: 'backend-live-round',
+			deferred: true,
+		});
+		await act(async () => { await pending.promise; });
+		acceptance.resolve(true);
+		await act(async () => { expect(await guide).toBe(true); });
+
+		expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
+			'steer during send', 'desktop-user', 'buf-during', request.request_id,
+		);
+		const assistant = result.current.messages.find(message => message.role === 'assistant');
+		expect(assistant?.requestId).toBe('backend-live-round');
+		expect(result.current.messages.find(message => message.content === 'steer during send')).toMatchObject({
+			role: 'user',
+			kind: 'guideInjection',
+			requestId: 'backend-live-round',
+		});
+	});
+
+	it('keeps a late steer inside the round that accepted it', async () => {
+		const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; deferred: boolean }>();
+		const acceptance = deferred<boolean>();
+		(SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+		(InjectAIAssistantGuideReferenceForSessionWithID as any).mockImplementationOnce(() => acceptance.promise);
+		const { result } = renderAssistantHook();
+
+		await act(async () => {
+			void result.current.sendMessage('first turn');
+			await Promise.resolve();
+		});
+		const firstRequest = parseSentRequest();
+		let guide!: Promise<boolean>;
+		act(() => {
+			guide = result.current.guideLaunchReference('late steer', 'desktop-user', 'buf-late-next');
+		});
+		pending.resolve({
+			text: 'first done',
+			error: '',
+			fields: null,
+			actions: null,
+			request_id: firstRequest.request_id || '',
+			deferred: false,
+		});
+		await act(async () => { await pending.promise; });
+
+		(SendAIAssistantMessage as any).mockImplementationOnce(async (req: { request_id?: string }) => ({
+			text: '',
+			error: '',
+			fields: null,
+			actions: null,
+			request_id: req.request_id || '',
+			deferred: true,
+		}));
+		await act(async () => {
+			void result.current.sendMessage('second turn');
+			await Promise.resolve();
+		});
+		const secondRequest = parseSentRequest(1);
+		acceptance.resolve(true);
+		await act(async () => { expect(await guide).toBe(true); });
+
+		const contents = result.current.messages.map(message => message.content);
+		const steerAt = contents.indexOf('late steer');
+		expect(steerAt).toBeGreaterThan(contents.indexOf('first turn'));
+		expect(steerAt).toBeLessThan(contents.indexOf('second turn'));
+		expect(result.current.messages[steerAt]).toMatchObject({
+			role: 'user',
+			kind: 'guideInjection',
+			requestId: firstRequest.request_id,
+		});
+		expect(result.current.messages.find(message => message.role === 'assistant' && message.requestId === secondRequest.request_id)?.requestId)
+			.toBe(secondRequest.request_id);
 	});
 
 	it('binds a guide to a detached busy project round after the visible round changes', async () => {

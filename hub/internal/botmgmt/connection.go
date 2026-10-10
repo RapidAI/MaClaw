@@ -74,7 +74,7 @@ func upstreamUnauthorized(err error) bool {
 // It never fails: the raw token is the best there is to fall back to.
 func (s *Service) sharedBearer(ctx context.Context, rec record) string {
 	if rec.Connection != nil {
-		if token, err := s.exchangeToken(ctx, rec, rec.Connection.APIKey, rec.Connection.APISecret, rec.Connection.UserID); err == nil {
+		if token, _, err := s.exchangeToken(ctx, rec, rec.Connection.APIKey, rec.Connection.APISecret, rec.Connection.UserID); err == nil {
 			return token
 		}
 	}

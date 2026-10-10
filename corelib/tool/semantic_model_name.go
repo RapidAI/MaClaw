@@ -17,15 +17,50 @@ func SemanticModelFunctionName(adapter string) string {
 	if name, ok := semanticModelFunctionNames[adapter]; ok {
 		return name
 	}
+	if name, ok := reviewedDynamicPromptName(adapter); ok {
+		return name
+	}
 	if semanticStableHostAdapter(adapter) {
 		return adapter
 	}
 	return ""
 }
 
+// reviewedDynamicPromptPrefix marks an internal dynamic adapter whose
+// reviewed binding implements a capability that already has a stable prompt
+// spelling. The suffix is the ordinary dynamic adapter id. Vendor tool names
+// never appear in this prefix.
+const reviewedDynamicPromptPrefix = "reviewed-prompt:"
+
+// AllowReviewedDynamicPrompt is the sealed set of prompt spellings a
+// code-reviewed dynamic implementation may render as. It is not a vendor
+// tool allowlist.
+func AllowReviewedDynamicPrompt(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "web_search":
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewedDynamicPromptName(adapter string) (string, bool) {
+	rest, ok := strings.CutPrefix(adapter, reviewedDynamicPromptPrefix)
+	if !ok {
+		return "", false
+	}
+	name, suffix, ok := strings.Cut(rest, ":")
+	if !ok || !strings.HasPrefix(suffix, "dynamic_") || !AllowReviewedDynamicPrompt(name) {
+		return "", false
+	}
+	return name, true
+}
+
 // RenderedSemanticFunctionName is the model-visible function for a selection.
-// Known host adapters use a stable prompt name. Dynamic MCP/Skill adapters
-// keep the rotating grant token so provider identity does not leak.
+// Known host adapters use a stable prompt name. A dynamic adapter uses that
+// same prompt name only when its reviewed binding opted into the sealed
+// prompt set. Every other dynamic MCP/Skill adapter keeps the rotating grant
+// token so provider identity does not leak.
 func RenderedSemanticFunctionName(adapter, grantToken string) string {
 	if name := SemanticModelFunctionName(adapter); name != "" {
 		return name

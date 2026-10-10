@@ -8,7 +8,7 @@ import (
 
 // StandardResponse represents a normalized successful MCP tool response.
 type StandardResponse struct {
-	Status   string `json:"status"`    // always "ok"
+	Status   string `json:"status"` // always "ok"
 	ServerID string `json:"server_id"`
 	ToolName string `json:"tool_name"`
 	Result   string `json:"result"` // original response content
@@ -16,7 +16,7 @@ type StandardResponse struct {
 
 // StandardError represents a normalized MCP error response.
 type StandardError struct {
-	Status       string `json:"status"`        // always "error"
+	Status       string `json:"status"` // always "error"
 	ServerID     string `json:"server_id"`
 	ToolName     string `json:"tool_name"`
 	ErrorCode    string `json:"error_code"`    // category from ClassifyError
@@ -75,6 +75,127 @@ func NormalizeResponse(serverID, toolName, rawResponse string) (*StandardRespons
 		ToolName: toolName,
 		Result:   rawResponse,
 	}, nil
+}
+
+// ToolCallError is a completed tools/call. The transport returned a JSON-RPC
+// error or result.isError, so the tool did not produce a successful body.
+// Callers must not treat the message as lookup evidence.
+type ToolCallError struct {
+	Message string
+}
+
+func (e *ToolCallError) Error() string {
+	if e == nil || strings.TrimSpace(e.Message) == "" {
+		return "unknown tool error"
+	}
+	return e.Message
+}
+
+// ToolCallContent projects a tools/call payload to the tool body. Remote
+// transports return a JSON-RPC envelope; local transports return the result
+// object. Neither envelope, server id, nor tool name is part of the body.
+// Text content is joined in order. A payload that is not a tool result is
+// returned unchanged. isError and a JSON-RPC error are ToolCallError.
+func ToolCallContent(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		return raw, nil
+	}
+	if rawErr, ok := envelope["error"]; ok && !jsonRawNull(rawErr) {
+		return "", &ToolCallError{Message: jsonRPCErrorMessage(rawErr)}
+	}
+	resultRaw := json.RawMessage(raw)
+	if rawResult, ok := envelope["result"]; ok {
+		if jsonRawNull(rawResult) {
+			return "", nil
+		}
+		resultRaw = rawResult
+	} else if _, ok := envelope["content"]; !ok {
+		if _, ok := envelope["isError"]; !ok {
+			return raw, nil
+		}
+	}
+	return projectMCPToolResult(resultRaw)
+}
+
+func projectMCPToolResult(raw json.RawMessage) (string, error) {
+	if len(raw) > 0 && raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			return text, nil
+		}
+	}
+	var result struct {
+		Content json.RawMessage `json:"content"`
+		IsError bool            `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return string(raw), nil
+	}
+	texts := mcpTextContent(result.Content)
+	if result.IsError {
+		message := strings.Join(texts, "\n")
+		if strings.TrimSpace(message) == "" {
+			message = "unknown tool error"
+		}
+		return "", &ToolCallError{Message: message}
+	}
+	if len(texts) > 0 {
+		return strings.Join(texts, "\n"), nil
+	}
+	return string(raw), nil
+}
+
+func mcpTextContent(raw json.RawMessage) []string {
+	if jsonRawNull(raw) {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		return []string{text}
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		if part.Type != "" && part.Type != "text" {
+			continue
+		}
+		texts = append(texts, part.Text)
+	}
+	return texts
+}
+
+func jsonRPCErrorMessage(raw json.RawMessage) string {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil {
+		if message := strings.TrimSpace(body.Message); message != "" {
+			return message
+		}
+	}
+	return "mcp tool call failed"
+}
+
+func jsonRawNull(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed == "" || trimmed == "null"
 }
 
 // FormatForLLM formats a StandardResponse or StandardError as a human-readable

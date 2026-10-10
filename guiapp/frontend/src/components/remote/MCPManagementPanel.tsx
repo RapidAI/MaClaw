@@ -27,7 +27,7 @@ interface MCPServerView {
     headers?: Record<string, string>; // custom HTTP headers
     capability?: MCPServerCapabilityRef;
     tools: MCPToolView[];
-    health_status: "healthy" | "slow" | "unavailable" | "unknown" | "checking";
+    health_status: "healthy" | "slow" | "degraded" | "unavailable" | "unknown" | "checking";
     fail_count: number;
     last_check_at: string;
     created_at: string;
@@ -1100,6 +1100,7 @@ function RemoteMCPPanel({ translate }: Props) {
         switch (status) {
             case "healthy": return "var(--theme-success)";
             case "slow": return "var(--theme-primary)";
+            case "degraded": return "var(--theme-warning)";
             case "unavailable": return "var(--theme-danger)";
             case "checking": return colors.textMuted;
             default: return colors.textMuted; // "unknown"
@@ -1109,6 +1110,7 @@ function RemoteMCPPanel({ translate }: Props) {
         switch (status) {
             case "healthy": return "var(--theme-success-bg)";
             case "slow": return "var(--theme-info-bg)";
+            case "degraded": return "var(--theme-warning-bg)";
             case "unavailable": return "var(--theme-danger-bg)";
             case "checking": return colors.surfaceMuted;
             default: return colors.surfaceMuted;
@@ -1118,6 +1120,7 @@ function RemoteMCPPanel({ translate }: Props) {
         switch (status) {
             case "healthy": return "var(--theme-success)";
             case "slow": return "var(--theme-primary)";
+            case "degraded": return "var(--theme-warning)";
             case "unavailable": return "var(--theme-danger)";
             case "checking": return colors.border;
             default: return colors.border;
@@ -1127,6 +1130,7 @@ function RemoteMCPPanel({ translate }: Props) {
         switch (status) {
             case "healthy": return translate("mcpHealthy");
             case "slow": return translate("mcpSlow");
+            case "degraded": return translate("mcpDegraded");
             case "unavailable": return translate("mcpUnavailable");
             case "checking": return translate("mcpChecking");
             default: return translate("mcpNotChecked"); // "unknown"

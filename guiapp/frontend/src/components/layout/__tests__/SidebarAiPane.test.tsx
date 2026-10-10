@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type React from 'react';
 import { SidebarAiPane, isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeMiddleTabs } from '../SidebarAiPane';
+import { acknowledgeRailMiddleFocus, peekPendingRailMiddleFocus, railMiddleFocus, requestRailMiddleFocus, resetRailMiddleFocusForTests } from '../railMiddleFocus';
 
 vi.mock('../SidebarToolSelector', () => ({ SidebarToolSelector: () => <div data-testid="tool-selector" /> }));
 vi.mock('../SidebarTaskManagement', () => ({ SidebarTaskManagement: () => <div data-testid="task-management" /> }));
@@ -12,57 +14,65 @@ vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: ({ enabled
 
 const noop = vi.fn();
 
+const visibleEmployeeStatus = { visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } };
+
+function paneProps(status: any, overrides: Partial<React.ComponentProps<typeof SidebarAiPane>> = {}): React.ComponentProps<typeof SidebarAiPane> {
+    return {
+        taskManagementPaneWidth: 260,
+        lang: 'en',
+        aiThemeMode: 'light',
+        maclawLLMOnline: true,
+        remoteActivationStatus: {},
+        qqBotStatus: '',
+        telegramStatus: '',
+        weixinStatus: '',
+        lansengerStatus: '',
+        config: { group_discussion: { enabled: true } },
+        activeTool: 'codex',
+        toolDropdownOpen: false,
+        setToolDropdownOpen: noop,
+        tasks: [],
+        renamingTaskPath: null,
+        setRenamingTaskPath: noop,
+        renameValue: '',
+        setRenameValue: noop,
+        resumeTask: noop,
+        continueWorkflowProject: noop,
+        createTask: noop,
+        refreshTasks: noop,
+        taskContextMenu: null,
+        setTaskContextMenu: noop,
+        renameTask: async () => undefined,
+        pinTask: async () => undefined,
+        hideTask: async () => undefined,
+        sidebarCurrentProviderTokenUsage: { provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 },
+        sidebarHubCredits: null,
+        formatSidebarTokens: (value) => String(value),
+        formatSidebarHubExpiry: () => '',
+        formatSidebarHubTotalCredits: () => '',
+        formatSidebarHubUsedCredits: () => '',
+        formatSidebarCredit: (value) => String(value),
+        unlimitedHubCreditText: 'Unlimited',
+        noHubAuthorizationText: 'No auth',
+        showHubCreditAction: false,
+        openHubCreditsPage: noop,
+        handleTaskManagementResizeStart: noop,
+        isTaskManagementResizing: false,
+        switchTool: noop,
+        digitalEmployeeFeatureStatus: status,
+        ...overrides,
+    };
+}
+
 function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof SidebarAiPane>> = {}) {
-    render(
-        <SidebarAiPane
-            taskManagementPaneWidth={260}
-            lang="en"
-            aiThemeMode="light"
-            maclawLLMOnline
-            remoteActivationStatus={{}}
-            qqBotStatus=""
-            telegramStatus=""
-            weixinStatus=""
-            lansengerStatus=""
-            config={{ group_discussion: { enabled: true } }}
-            activeTool="codex"
-            toolDropdownOpen={false}
-            setToolDropdownOpen={noop}
-            tasks={[]}
-            renamingTaskPath={null}
-            setRenamingTaskPath={noop}
-            renameValue=""
-            setRenameValue={noop}
-            resumeTask={noop}
-            continueWorkflowProject={noop}
-            createTask={noop}
-            refreshTasks={noop}
-            taskContextMenu={null}
-            setTaskContextMenu={noop}
-            renameTask={async () => undefined}
-            pinTask={async () => undefined}
-            hideTask={async () => undefined}
-            sidebarCurrentProviderTokenUsage={{ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
-            sidebarHubCredits={null}
-            formatSidebarTokens={(value) => String(value)}
-            formatSidebarHubExpiry={() => ''}
-            formatSidebarHubTotalCredits={() => ''}
-            formatSidebarHubUsedCredits={() => ''}
-            formatSidebarCredit={(value) => String(value)}
-            unlimitedHubCreditText="Unlimited"
-            noHubAuthorizationText="No auth"
-            showHubCreditAction={false}
-            openHubCreditsPage={noop}
-            handleTaskManagementResizeStart={noop}
-            isTaskManagementResizing={false}
-            switchTool={noop}
-            digitalEmployeeFeatureStatus={status}
-            {...overrides}
-        />,
-    );
+    return render(<SidebarAiPane {...paneProps(status, overrides)} />);
 }
 
 describe('SidebarAiPane digital employee tabs', () => {
+    beforeEach(() => {
+        resetRailMiddleFocusForTests();
+    });
+
     it('exposes a wide pointer-capture resize handle for the task pane', () => {
         const onResize = vi.fn();
         renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 }, { handleTaskManagementResizeStart: onResize });
@@ -192,5 +202,70 @@ describe('SidebarAiPane digital employee tabs', () => {
 
         expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
         expect(screen.queryByTestId('history-sessions')).toBeNull();
+    });
+
+    it('drops a stale digital-employee highlight when the pane remounts on the task list', () => {
+        acknowledgeRailMiddleFocus('employees');
+        renderPane(visibleEmployeeStatus);
+
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(railMiddleFocus()).toBe('tasks');
+    });
+
+    it('shows digital employees when the rail click happened before the pane mounted', () => {
+        requestRailMiddleFocus('employees');
+        renderPane(visibleEmployeeStatus);
+
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).toBe('none');
+        expect(peekPendingRailMiddleFocus()).toBeNull();
+        expect(railMiddleFocus()).toBe('employees');
+    });
+
+    it('keeps that pre-mount click under StrictMode', () => {
+        requestRailMiddleFocus('employees');
+        render(
+            <StrictMode>
+                <SidebarAiPane {...paneProps(visibleEmployeeStatus)} />
+            </StrictMode>,
+        );
+
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(railMiddleFocus()).toBe('employees');
+    });
+
+    it('returns to the task list when the workbench rail intent fires', () => {
+        renderPane(visibleEmployeeStatus);
+
+        act(() => { requestRailMiddleFocus('employees'); });
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(railMiddleFocus()).toBe('employees');
+
+        act(() => { requestRailMiddleFocus('tasks'); });
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(railMiddleFocus()).toBe('tasks');
+        expect(peekPendingRailMiddleFocus()).toBeNull();
+    });
+
+    it('holds a digital-employee intent until the feature gate opens', () => {
+        const hidden = { visible: false, reason: 'no_digital_employees', actual_count: 0 };
+        requestRailMiddleFocus('employees');
+        const view = renderPane(hidden, { showDigitalEmployeeNavigation: false });
+
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(peekPendingRailMiddleFocus()).toBe('employees');
+        expect(railMiddleFocus()).toBe('tasks');
+
+        act(() => { requestRailMiddleFocus('employees'); });
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(railMiddleFocus()).toBe('tasks');
+
+        view.rerender(<SidebarAiPane {...paneProps(hidden, { showDigitalEmployeeNavigation: true })} />);
+
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(peekPendingRailMiddleFocus()).toBeNull();
+        expect(railMiddleFocus()).toBe('employees');
     });
 });

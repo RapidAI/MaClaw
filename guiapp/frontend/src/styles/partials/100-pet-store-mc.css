@@ -687,7 +687,10 @@ button[aria-busy='true']::after, [data-loading='true']::after {
   font-variant-numeric: tabular-nums;
   font-weight: 650;
 }
-:where(.muted, .secondary-text, [class*='muted']) { color: var(--office-muted) !important; }
+/* Scheme text roles. !important plus --office-muted pinned every muted class
+   to the inherited rail gray and beat the component's own secondary or muted color. */
+:where(.muted, [class*='muted']) { color: var(--theme-text-muted, var(--office-muted)); }
+:where(.secondary-text) { color: var(--theme-text-secondary, var(--office-muted)); }
 
 /* Group rhythm for dense lists */
 :where(.list-group, .task-group, .notification-group, .file-group) + :where(.list-group, .task-group, .notification-group, .file-group) {
@@ -716,6 +719,7 @@ button[aria-busy='true']::after, [data-loading='true']::after {
 /* Enhanced contrast support */
 @media (prefers-contrast: more) {
   [data-ai-theme='dark'] { --office-line: #68718a; --office-muted: #d0d5e2; }
+  [data-ai-theme='dark'] :where(.muted, [class*='muted'], .secondary-text) { color: var(--office-muted); }
   .sidebar .left-nav-item.active,
   .sidebar-task-row.is-active,
   [aria-selected='true'] { outline: 2px solid var(--office-accent); outline-offset: -2px; }

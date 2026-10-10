@@ -1060,6 +1060,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		cb.OnToken(delta)
 	}
+	// Latest desktop image from this turn. The finish check reads it; the
+	// worker's own report does not stand in for it.
+	var latestShot *ToolModelImage
 
 	for iteration := 0; iteration < maxIter; iteration++ {
 		iterationStreamed.Reset()
@@ -2176,14 +2179,34 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			denial := blankBecauseNameless && streamedDenialAfterSearch(answer, historyDelta)
 			if blankBecauseNameless && answer != "" && answer != strings.TrimSpace(reasoningContent) && !denial {
 				log.Printf("[agent-loop] keeping streamed answer after nameless tool call (%d runes)", len([]rune(answer)))
+				next, nudge, cont := gateDesktopReply(cb, userText, answer, historyDelta, latestShot, iteration+1 < maxIter)
+				if cont {
+					conversation = append(conversation, map[string]interface{}{
+						"role":              "assistant",
+						"content":           answer,
+						"reasoning_content": reasoningContent,
+					})
+					historyDelta = append(historyDelta, ConversationEntry{
+						Role:             "assistant",
+						Content:          answer,
+						ReasoningContent: reasoningContent,
+						FinishReason:     "stop",
+					})
+					conversation = append(conversation, map[string]interface{}{
+						"role":    "user",
+						"content": nudge,
+					})
+					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+					continue
+				}
 				historyDelta = append(historyDelta, ConversationEntry{
 					Role:             "assistant",
-					Content:          answer,
+					Content:          next,
 					ReasoningContent: reasoningContent,
 					FinishReason:     "stop",
 				})
 				return finish(LoopResult{
-					Text:       answer,
+					Text:       next,
 					Iterations: iteration + 1,
 					ToolCalls:  totalToolCalls,
 				})
@@ -2230,6 +2253,29 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
 					}
 				}
+				// The text is often the report written beside an earlier tool
+				// call. A clean finish already checks that report; this stop
+				// publishes it too.
+				next, nudge, cont := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
+				if cont {
+					conversation = append(conversation, map[string]interface{}{
+						"role":              "assistant",
+						"content":           content,
+						"reasoning_content": "",
+					})
+					historyDelta = append(historyDelta, ConversationEntry{
+						Role:         "assistant",
+						Content:      content,
+						FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
+					})
+					conversation = append(conversation, map[string]interface{}{
+						"role":    "user",
+						"content": nudge,
+					})
+					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+					continue
+				}
+				text = next
 				return finish(LoopResult{
 					Text:       text,
 					Iterations: iteration + 1,
@@ -2486,6 +2532,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					historyDelta = dropStoredFactNudgeSuffix(historyDelta)
 				}
 			}
+			// After every other rewrite. A lookup fold must not put an
+			// unchecked draft back into the reply.
+			next, message, cont := gateDesktopReply(cb, userText, finalText, historyDelta, latestShot, iteration+1 < maxIter)
+			if cont {
+				disposeSurface(ToolSurfaceResponseSettled)
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": message,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: message})
+				continue
+			}
+			finalText = next
 			// Note: we do NOT call cb.OnToken here. The final text is returned
 			// via LoopResult.Text, and the caller (handleChatSend) sends it as
 			// ChatResponseMsg. Calling OnToken would cause duplicate display.
@@ -2846,6 +2905,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"tool_call_id": tc.ID,
 				"content":      result,
 			})
+			if n := len(execResult.ModelImages); n > 0 {
+				shot := execResult.ModelImages[n-1]
+				latestShot = &shot
+			} else if strings.TrimSpace(tc.Function.Name) == "desktop" {
+				// A later desktop action can change the screen. The picture
+				// from the previous action is not the current one.
+				latestShot = nil
+			}
 			conversation = appendComputerUseVisionImages(conversation, cfg, execResult.ModelImages)
 			historyDelta = append(historyDelta, ConversationEntry{
 				Role:        "tool",
@@ -2905,8 +2972,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if text == "" {
 				text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
 			}
+			// Same report as an empty stop: the sentence beside the failed
+			// calls is not a checked finish.
+			next, nudge, cont := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
+			if cont {
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": nudge,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				continue
+			}
 			return finish(LoopResult{
-				Text:       text,
+				Text:       next,
 				Iterations: iteration + 1,
 				ToolCalls:  totalToolCalls,
 				HardExit:   true,

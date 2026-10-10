@@ -434,6 +434,7 @@ func (a *App) closeSemanticInvocationStore() {
 	a.semanticHostCallJournal = nil
 	a.semanticArtifactStore = nil
 	a.semanticDynamicContracts = nil
+	a.semanticDynamicPublisher = nil
 	a.semanticInvocationKey = nil
 	a.semanticInvocationMu.Unlock()
 	if coordinator != nil {

@@ -30,6 +30,26 @@ type responsesItemAccum struct {
 	args     strings.Builder
 }
 
+// responsesSSEIdleTimeout is how long the Responses reader waits between body
+// bytes. Tests shrink it; they must not call t.Parallel while it is overridden.
+var responsesSSEIdleTimeout = guiSSEIdleTimeout
+
+// sseActivityReader reports every delivered body byte. The Responses scanner
+// only returns a token once an event is complete, and a keepalive comment is
+// not an event.
+type sseActivityReader struct {
+	r      io.Reader
+	onByte func()
+}
+
+func (s sseActivityReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 && s.onByte != nil {
+		s.onByte()
+	}
+	return n, err
+}
+
 // classifyResponsesAPIHTTPError maps Responses API HTTP errors to user-facing text.
 // Shared classification comes from corelib; this layer adds Responses-specific
 // bare-status phrasing and attaches endpoint/model for debugging.
@@ -200,13 +220,14 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	var streamErr error
 
 	// -----------------------------------------------------------------------
-	// SSE idle timeout watchdog (same pattern as OpenAI/Anthropic paths)
+	// SSE idle timeout watchdog (same pattern as OpenAI/Anthropic paths).
+	// Idle means no body bytes. A comment heartbeat is ": ping\n" with no
+	// blank line, so it never completes an SSE event: openai-go dispatches
+	// that empty event and fails json.Unmarshal. Resetting only when Scan
+	// returns would treat a live heartbeat as silence.
 	// -----------------------------------------------------------------------
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Split(scanResponsesSSEEvent)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-
-	idleTimer := time.NewTimer(guiSSEIdleTimeout)
+	idleFor := responsesSSEIdleTimeout
+	idleTimer := time.NewTimer(idleFor)
 	defer idleTimer.Stop()
 	var sseTimedOut atomic.Bool
 	watchdogDone := make(chan struct{})
@@ -217,13 +238,19 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if metrics != nil {
 				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
 			}
-			log.Printf("[LLM Stream] Responses API SSE idle timeout (%v) — aborting stalled request", guiSSEIdleTimeout)
+			log.Printf("[LLM Stream] Responses API SSE idle timeout (%v) — aborting stalled request", idleFor)
 			resp.Body.Close()
 		case <-watchdogDone:
 		case <-reqCtx.Done():
 		}
 	}()
 	defer close(watchdogDone)
+
+	scanner := bufio.NewScanner(sseActivityReader{r: resp.Body, onByte: func() {
+		idleTimer.Reset(idleFor)
+	}})
+	scanner.Split(scanResponsesSSEEvent)
+	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
 	// -----------------------------------------------------------------------
 	// SSE event loop — Responses API uses named events (event: + data: pairs).
@@ -234,7 +261,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	firstSSEWaitStartedAt := time.Now()
 
 	for scanner.Scan() {
-		idleTimer.Reset(guiSSEIdleTimeout)
+		idleTimer.Reset(idleFor)
 		evtType, payload, ok := parseResponsesSSEEvent(scanner.Text())
 		if !ok {
 			continue
@@ -422,7 +449,7 @@ postLoop:
 		if metrics != nil {
 			metrics.IdleTimeoutCount++
 		}
-		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", guiSSEIdleTimeout, endpoint)
+		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", idleFor, endpoint)
 	}
 
 	// -----------------------------------------------------------------------

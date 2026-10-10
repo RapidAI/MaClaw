@@ -40,6 +40,16 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
+    /**
+     * Channel switch from settings. `false` means the user already turned it
+     * off, so the chip must drop "已连接" immediately. The gateway event can
+     * lag until the socket read and any in-flight handler finish.
+     * Omit the prop to keep the live gateway status.
+     */
+    qqBotEnabled?: boolean;
+    telegramEnabled?: boolean;
+    weixinEnabled?: boolean;
+    lansengerEnabled?: boolean;
     backgroundTaskCount?: number;
     /** Live counts for the task-monitor tabs shown on the workbench status card. */
     workbenchTaskCounts?: WorkbenchTaskCounts;
@@ -138,6 +148,18 @@ const textForLang = localizeText;
 
 type IMChannelSnapshot = { label: string; status: string };
 
+function displayedIMChannelStatus(enabled: boolean | undefined, status: string): string {
+    if (enabled === false) return 'disconnected';
+    return status;
+}
+
+/** True when the legacy switch or any multi-bot profile is turned on. */
+export function isLansengerChannelEnabled(config: { lansenger_enabled?: boolean; lansenger_bots?: Array<{ enabled?: boolean }> } | null | undefined): boolean {
+    if (config?.lansenger_enabled === true) return true;
+    const bots = config?.lansenger_bots;
+    return Array.isArray(bots) && bots.some((bot) => bot?.enabled === true);
+}
+
 function imWorkbenchStatusText(
     kind: IMConnectionKind,
     channels: IMChannelSnapshot[],
@@ -217,6 +239,10 @@ export const SidebarSystemStatus = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
+    qqBotEnabled,
+    telegramEnabled,
+    weixinEnabled,
+    lansengerEnabled,
     backgroundTaskCount = 0,
     workbenchTaskCounts,
     onOpenBackgroundTasks,
@@ -553,10 +579,10 @@ export const SidebarSystemStatus = ({
             ? `${textForLang(lang, 'Local cache hit', '\u672c\u5730\u7f13\u5b58\u547d\u4e2d', '\u672c\u5730\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Hits', '\u547d\u4e2d', '\u547d\u4e2d')} ${cachedRequests}/${cacheRequests}`
             : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;
     const imChannels: IMChannelSnapshot[] = [
-        { label: textForLang(lang, 'WeChat', '微信', '微信'), status: weixinStatus },
-        { label: textForLang(lang, 'QQ', 'QQ', 'QQ'), status: qqBotStatus },
-        { label: 'Telegram', status: telegramStatus },
-        ...(showLansenger ? [{ label: textForLang(lang, 'Lansenger', '蓝信', '藍信'), status: lansengerStatus }] : []),
+        { label: textForLang(lang, 'WeChat', '微信', '微信'), status: displayedIMChannelStatus(weixinEnabled, weixinStatus) },
+        { label: textForLang(lang, 'QQ', 'QQ', 'QQ'), status: displayedIMChannelStatus(qqBotEnabled, qqBotStatus) },
+        { label: 'Telegram', status: displayedIMChannelStatus(telegramEnabled, telegramStatus) },
+        ...(showLansenger ? [{ label: textForLang(lang, 'Lansenger', '蓝信', '藍信'), status: displayedIMChannelStatus(lansengerEnabled, lansengerStatus) }] : []),
     ];
     const imKind = aggregateIMConnectionKind(imChannels.map((channel) => channel.status));
     const imOnline = imKind === 'online';

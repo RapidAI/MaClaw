@@ -337,6 +337,7 @@ export function AssistantPreviewPane({
     const previousShowWorkflowRef = useRef(showWorkflowPreview);
     const previousShowAgentRef = useRef(showAgentView);
     const previousShowConflictRef = useRef(showConflict);
+    const previousFileFocusRef = useRef(0);
 
     useEffect(() => {
         const codeOpened = showCodePreview && !previousShowCodeRef.current;
@@ -387,6 +388,15 @@ export function AssistantPreviewPane({
             return;
         }
     }, [showAgentView, showCodePreview, showWorkflowPreview, showConflict]);
+
+    // A file the agent just created or modified must land on the file body,
+    // even when the workflow progress tab was already in front.
+    useEffect(() => {
+        const fileFocused = fileFocusNonce > previousFileFocusRef.current;
+        previousFileFocusRef.current = fileFocusNonce;
+        if (!fileFocused || !showCodePreview || showAgentView || showConflict) return;
+        setActiveMode("code");
+    }, [fileFocusNonce, showAgentView, showCodePreview, showConflict]);
 
     const docPreviewTheme = useMemo(() => ({
         isDark: theme.isDark === true,

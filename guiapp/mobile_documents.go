@@ -2,7 +2,9 @@ package guiapp
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,19 +35,23 @@ type MobileDocumentDraftImage struct {
 
 // MobileDocumentDraftSummary is a Hub-shared emergency draft visible on desktop.
 type MobileDocumentDraftSummary struct {
-	ID                string                     `json:"id"`
-	Title             string                     `json:"title"`
-	Template          string                     `json:"template"`
-	UpdatedAt         string                     `json:"updated_at"`
-	RuneCount         int                        `json:"rune_count"`
-	Preview           string                     `json:"preview"`
-	Markdown          string                     `json:"markdown,omitempty"`
-	HasOriginal       bool                       `json:"has_original,omitempty"`
-	SourceFilename    string                     `json:"source_filename,omitempty"`
-	SourceContentType string                     `json:"source_content_type,omitempty"`
-	SourceSize        int                        `json:"source_size,omitempty"`
-	SourceDownloadURL string                     `json:"source_download_url,omitempty"`
-	Images            []MobileDocumentDraftImage `json:"images,omitempty"`
+	ID                  string                     `json:"id"`
+	Title               string                     `json:"title"`
+	Template            string                     `json:"template"`
+	UpdatedAt           string                     `json:"updated_at"`
+	RuneCount           int                        `json:"rune_count"`
+	Preview             string                     `json:"preview"`
+	Markdown            string                     `json:"markdown,omitempty"`
+	HasOriginal         bool                       `json:"has_original,omitempty"`
+	SourceFilename      string                     `json:"source_filename,omitempty"`
+	SourceContentType   string                     `json:"source_content_type,omitempty"`
+	SourceSize          int                        `json:"source_size,omitempty"`
+	SourceStorageSize   int                        `json:"source_storage_size,omitempty"`
+	SourceDownloadURL   string                     `json:"source_download_url,omitempty"`
+	Images              []MobileDocumentDraftImage `json:"images,omitempty"`
+	Duplicate           bool                       `json:"duplicate,omitempty"`
+	DuplicateOfTitle    string                     `json:"duplicate_of_title,omitempty"`
+	DuplicateOfFilename string                     `json:"duplicate_of_filename,omitempty"`
 }
 
 // MobileLibraryAudio describes the original recording behind an audio item.
@@ -731,6 +737,9 @@ func (a *App) ImportMobileDocumentFromPath(path string) (*MobileDocumentDraftSum
 	if a == nil {
 		return nil, fmt.Errorf("app is not initialized")
 	}
+	if err := a.fileCompanionRejectUngranted(path); err != nil {
+		return nil, err
+	}
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("path is required")
@@ -756,6 +765,20 @@ func (a *App) ImportMobileDocumentFromPath(path string) (*MobileDocumentDraftSum
 	defer f.Close()
 	if info.Size() == 0 {
 		return nil, fmt.Errorf("file is empty")
+	}
+	hasher := sha256.New()
+	n, err := io.Copy(hasher, f)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if n == 0 {
+		return nil, fmt.Errorf("file is empty")
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if dup, ok := a.skipDuplicateMobileDocument(hex.EncodeToString(hasher.Sum(nil)), n, filepath.Base(path)); ok {
+		return dup, nil
 	}
 	return a.uploadMobileDocumentOriginalReader(filepath.Base(path), f, contentTypeForMobileImport(path))
 }
@@ -792,7 +815,216 @@ func (a *App) ImportMobileDocumentBytes(filename, contentBase64 string) (*Mobile
 	if len(raw) > mobileDocumentMaxStoredBytes*4 {
 		return nil, fmt.Errorf("file too large to compress safely")
 	}
+	sum := sha256.Sum256(raw)
+	if dup, ok := a.skipDuplicateMobileDocument(hex.EncodeToString(sum[:]), int64(len(raw)), filepath.Base(filename)); ok {
+		return dup, nil
+	}
 	return a.uploadMobileDocumentOriginalReader(filepath.Base(filename), bytes.NewReader(raw), contentTypeForMobileImport(filename))
+}
+
+// skipDuplicateMobileDocument reports an existing cloud original with these
+// bytes. A Hub that answers the content-hash probe is trusted, including a
+// negative answer. A missing route cannot be trusted: the document list is
+// checked and same-size originals are hashed, so opening the same file again
+// does not create another copy.
+func (a *App) skipDuplicateMobileDocument(contentSHA string, size int64, filename string) (*MobileDocumentDraftSummary, bool) {
+	if a == nil || size <= 0 {
+		return nil, false
+	}
+	contentSHA = strings.ToLower(strings.TrimSpace(contentSHA))
+	if len(contentSHA) != sha256.Size*2 {
+		return nil, false
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, false
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, false
+	}
+	found, answered := a.probeDuplicateMobileDocument(hubURL, viewerToken, contentSHA, size)
+	if found != nil {
+		return found, true
+	}
+	if answered {
+		return nil, false
+	}
+	return a.duplicateFromDocumentLibrary(hubURL, viewerToken, contentSHA, size, filename)
+}
+
+// probeDuplicateMobileDocument asks Hub whether this account already holds
+// these original bytes. answered is true only when Hub explicitly says no.
+func (a *App) probeDuplicateMobileDocument(hubURL, viewerToken, contentSHA string, size int64) (*MobileDocumentDraftSummary, bool) {
+	body, err := json.Marshal(map[string]any{
+		"sha256": contentSHA,
+		"size":   size,
+	})
+	if err != nil {
+		return nil, false
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/documents/upload/duplicate", bytes.NewReader(body))
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, true
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, false
+	}
+	dup, _ := payload["duplicate"].(bool)
+	if !dup {
+		return nil, true
+	}
+	out := duplicateSummaryFromUploadPayload(payload)
+	if strings.TrimSpace(out.ID) == "" {
+		return nil, false
+	}
+	return out, true
+}
+
+func mobileDraftByteSizeMatches(d MobileDocumentDraftSummary, size int64) bool {
+	if size <= 0 || !d.HasOriginal || strings.TrimSpace(d.ID) == "" {
+		return false
+	}
+	if int64(d.SourceSize) == size {
+		return true
+	}
+	return d.SourceStorageSize > 0 && int64(d.SourceStorageSize) == size
+}
+
+// duplicateFromDocumentLibrary hashes same-size cloud originals when the Hub
+// has no content-hash probe. Filename matches are checked first.
+func (a *App) duplicateFromDocumentLibrary(hubURL, viewerToken, contentSHA string, size int64, filename string) (*MobileDocumentDraftSummary, bool) {
+	drafts, err := a.ListMobileDocumentDrafts(200, false)
+	if err != nil {
+		return nil, false
+	}
+	base := strings.ToLower(filepath.Base(strings.TrimSpace(filename)))
+	ordered := make([]MobileDocumentDraftSummary, 0)
+	rest := make([]MobileDocumentDraftSummary, 0)
+	for _, d := range drafts {
+		if !mobileDraftByteSizeMatches(d, size) {
+			continue
+		}
+		if base != "" && strings.EqualFold(filepath.Base(d.SourceFilename), base) {
+			ordered = append(ordered, d)
+			continue
+		}
+		rest = append(rest, d)
+	}
+	ordered = append(ordered, rest...)
+	for _, d := range ordered {
+		sum, n, hashErr := a.hashMobileDocumentOriginal(hubURL, viewerToken, &d)
+		if hashErr != nil || n != size || sum != contentSHA {
+			continue
+		}
+		title := strings.TrimSpace(d.Title)
+		name := strings.TrimSpace(d.SourceFilename)
+		if title == "" {
+			title = name
+		}
+		if title == "" {
+			title = d.ID
+		}
+		out := d
+		out.Markdown = ""
+		out.Preview = ""
+		out.Duplicate = true
+		out.DuplicateOfTitle = title
+		out.DuplicateOfFilename = name
+		return &out, true
+	}
+	return nil, false
+}
+
+func (a *App) hashMobileDocumentOriginal(hubURL, viewerToken string, draft *MobileDocumentDraftSummary) (string, int64, error) {
+	if draft == nil {
+		return "", 0, fmt.Errorf("draft is required")
+	}
+	req, err := http.NewRequest(http.MethodGet, mobileDocumentSourceURL(hubURL, draft), nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return "", 0, fmt.Errorf("download original failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(resp.Body, mobileDocumentOriginalMaxBytes+1))
+	if err != nil {
+		return "", 0, err
+	}
+	if n > mobileDocumentOriginalMaxBytes {
+		return "", 0, fmt.Errorf("decoded original file exceeds 400MB safety limit")
+	}
+	if n == 0 {
+		return "", 0, fmt.Errorf("original file is empty")
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+func mobileDocumentSourceURL(hubURL string, draft *MobileDocumentDraftSummary) string {
+	sourcePath := ""
+	if draft != nil {
+		sourcePath = strings.TrimSpace(draft.SourceDownloadURL)
+		if sourcePath == "" {
+			sourcePath = "/api/mobile/documents/drafts/" + url.PathEscape(strings.TrimSpace(draft.ID)) + "/source"
+		}
+	}
+	if strings.HasPrefix(sourcePath, "http://") || strings.HasPrefix(sourcePath, "https://") {
+		return sourcePath
+	}
+	if !strings.HasPrefix(sourcePath, "/") {
+		sourcePath = "/" + sourcePath
+	}
+	return strings.TrimRight(hubURL, "/") + sourcePath
+}
+
+func duplicateSummaryFromUploadPayload(uploadPayload map[string]any) *MobileDocumentDraftSummary {
+	var out *MobileDocumentDraftSummary
+	if draftMap, ok := uploadPayload["draft"].(map[string]any); ok {
+		out = mobileDraftSummaryFromMap(draftMap)
+	} else {
+		out = &MobileDocumentDraftSummary{}
+	}
+	out.Duplicate = true
+	if strings.TrimSpace(out.ID) == "" {
+		out.ID = stringFromAny(uploadPayload["draft_id"])
+	}
+	if title := stringFromAny(uploadPayload["duplicate_of_title"]); title != "" {
+		out.DuplicateOfTitle = title
+	} else {
+		out.DuplicateOfTitle = out.Title
+	}
+	if name := stringFromAny(uploadPayload["duplicate_of_filename"]); name != "" {
+		out.DuplicateOfFilename = name
+	} else {
+		out.DuplicateOfFilename = out.SourceFilename
+	}
+	return out
 }
 
 // uploadMobileDocumentOriginal POSTs the original bytes to Hub upload API.
@@ -881,6 +1113,13 @@ func (a *App) uploadMobileDocumentOriginalReader(filename string, raw io.Reader,
 	var uploadPayload map[string]any
 	if err := json.Unmarshal(data, &uploadPayload); err != nil {
 		return nil, fmt.Errorf("decode upload response: %w", err)
+	}
+	if dup, _ := uploadPayload["duplicate"].(bool); dup {
+		out := duplicateSummaryFromUploadPayload(uploadPayload)
+		if strings.TrimSpace(out.ID) == "" {
+			return nil, fmt.Errorf("Hub upload returned an empty draft id")
+		}
+		return out, nil
 	}
 	if draftMap, ok := uploadPayload["draft"].(map[string]any); ok {
 		out := mobileDraftSummaryFromMap(draftMap)
@@ -1191,6 +1430,20 @@ func (a *App) MaterializeMobileDocumentOriginal(draftID string) (string, error) 
 	if draft == nil || !draft.HasOriginal {
 		return "", fmt.Errorf("this draft has no original file on Hub")
 	}
+	return a.materializeMobileDocumentOriginal(id, draft)
+}
+
+func (a *App) materializeMobileDocumentOriginal(id string, draft *MobileDocumentDraftSummary) (string, error) {
+	if draft == nil || !draft.HasOriginal {
+		return "", fmt.Errorf("this draft has no original file on Hub")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = strings.TrimSpace(draft.ID)
+	}
+	if id == "" {
+		return "", fmt.Errorf("draft id is required")
+	}
 	filename := mobileDraftOriginalFilename(draft)
 	dir := filepath.Join(os.TempDir(), "maclaw_mobile_originals", sanitizeMobileOriginalFilename(id))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -1251,6 +1504,244 @@ func (a *App) OpenMobileDocumentOriginal(draftID string) (string, error) {
 	return dest, nil
 }
 
+// OpenMobileDocumentInFileCompanion opens the cloud document in the companion window.
+func (a *App) OpenMobileDocumentInFileCompanion(draftID string) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(draftID)
+	if id == "" {
+		return "", fmt.Errorf("draft id is required")
+	}
+	draft, err := a.GetMobileDocumentDraft(id)
+	if err != nil {
+		return "", err
+	}
+	if draft == nil || strings.TrimSpace(draft.ID) == "" {
+		return "", fmt.Errorf("draft not found")
+	}
+	var path string
+	if draft.HasOriginal {
+		name := mobileDraftOriginalFilename(draft)
+		if !companionSupportsFilename(name) {
+			return "", fmt.Errorf("companion does not support this file")
+		}
+		// Preview refreshes the shared hub cache when the file size changes.
+		// Companion can save markdown, text, and HTML back into the path it
+		// opened, so those originals get a separate file. PDF and other
+		// read-only previews keep using the shared cache.
+		if companionKeepsLocalEdits(name) {
+			path, err = a.openCompanionEditableOriginal(id, draft)
+		} else {
+			path, err = a.materializeMobileDocumentOriginal(id, draft)
+		}
+	} else {
+		path, err = a.materializeMobileDocumentCompanionText(draft)
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("companion file path is empty")
+	}
+	if err := a.LaunchFileCompanion([]string{path}); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (a *App) materializeMobileDocumentCompanionText(draft *MobileDocumentDraftSummary) (string, error) {
+	if draft == nil {
+		return "", fmt.Errorf("draft not found")
+	}
+	body := draft.Markdown
+	if strings.TrimSpace(body) == "" {
+		body = draft.Preview
+	}
+	if strings.TrimSpace(body) == "" {
+		return "", fmt.Errorf("this draft has no text to open in companion")
+	}
+	id := strings.TrimSpace(draft.ID)
+	if id == "" {
+		return "", fmt.Errorf("draft id is required")
+	}
+	dir := filepath.Join(os.TempDir(), "maclaw_mobile_originals", sanitizeMobileOriginalFilename(id))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, sanitizeMobileOriginalFilename(companionTextFilename(draft)))
+	// A later open focuses the same file. Rewriting it would drop edits the
+	// companion already saved into this temp copy.
+	if info, statErr := os.Stat(dest); statErr == nil && !info.IsDir() && info.Size() > 0 {
+		return dest, nil
+	}
+	if err := os.WriteFile(dest, []byte(body), 0o600); err != nil {
+		return "", fmt.Errorf("write companion text: %w", err)
+	}
+	return dest, nil
+}
+
+// companionSourceStampSuffix records the hub snapshot last copied into the
+// companion-owned original. A matching file is still that snapshot and can be
+// refreshed. A different file is a companion edit and is left in place.
+const companionSourceStampSuffix = ".source-sha256"
+
+// companionKeepsLocalEdits is true for extensions the companion window saves.
+// It follows fileCompanionTextExtension, except an empty extension: that gate
+// also accepts extensionless files, which this cloud-drive action does not open.
+func companionKeepsLocalEdits(name string) bool {
+	if strings.TrimSpace(filepath.Ext(name)) == "" {
+		return false
+	}
+	return fileCompanionTextExtension(name)
+}
+
+func companionEditableOriginalPath(id string, draft *MobileDocumentDraftSummary) string {
+	id = strings.TrimSpace(id)
+	if id == "" && draft != nil {
+		id = strings.TrimSpace(draft.ID)
+	}
+	name := sanitizeMobileOriginalFilename(mobileDraftOriginalFilename(draft))
+	return filepath.Join(os.TempDir(), "maclaw_mobile_originals", sanitizeMobileOriginalFilename(id), "companion", name)
+}
+
+func (a *App) openCompanionEditableOriginal(id string, draft *MobileDocumentDraftSummary) (string, error) {
+	dest := companionEditableOriginalPath(id, draft)
+	stampPath := dest + companionSourceStampSuffix
+	if info, statErr := os.Stat(dest); statErr == nil && !info.IsDir() && info.Size() > 0 {
+		sum, sumErr := mobileOriginalSHA256(dest)
+		stamp, stampErr := os.ReadFile(stampPath)
+		if sumErr != nil || stampErr != nil || sum != strings.TrimSpace(string(stamp)) {
+			return dest, nil
+		}
+		src, srcErr := a.materializeMobileDocumentOriginal(id, draft)
+		if srcErr != nil {
+			return dest, nil
+		}
+		srcSum, srcSumErr := mobileOriginalSHA256(src)
+		if srcSumErr != nil || srcSum == sum {
+			return dest, nil
+		}
+		if err := copyMobileOriginalFile(src, dest); err != nil {
+			return "", err
+		}
+		_ = os.WriteFile(stampPath, []byte(srcSum), 0o600)
+		return dest, nil
+	}
+	src, err := a.materializeMobileDocumentOriginal(id, draft)
+	if err != nil {
+		return "", err
+	}
+	if err := copyMobileOriginalFile(src, dest); err != nil {
+		return "", err
+	}
+	sum, err := mobileOriginalSHA256(dest)
+	if err != nil {
+		_ = os.Remove(dest)
+		return "", err
+	}
+	if err := os.WriteFile(stampPath, []byte(sum), 0o600); err != nil {
+		_ = os.Remove(dest)
+		_ = os.Remove(stampPath)
+		return "", err
+	}
+	return dest, nil
+}
+
+func mobileOriginalSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func copyMobileOriginalFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("companion source is not a file")
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return err
+	}
+	tmp := dest + fmt.Sprintf(".%d.part", time.Now().UnixNano())
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(dest)
+		if err2 := os.Rename(tmp, dest); err2 != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("write companion original: %w", err2)
+		}
+	}
+	return nil
+}
+
+func companionTextFilename(draft *MobileDocumentDraftSummary) string {
+	name := ""
+	if draft != nil {
+		name = strings.TrimSpace(draft.SourceFilename)
+		if name == "" {
+			name = strings.TrimSpace(draft.Title)
+		}
+	}
+	name = filepath.Base(name)
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".md", ".markdown", ".txt", ".text", ".log", ".html", ".htm":
+		return name
+	}
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	base = strings.TrimSpace(base)
+	if base == "" || base == "." {
+		base = "document"
+	}
+	return base + ".md"
+}
+
+// companionSupportsFilename matches companionSupportsFileName in
+// guiapp/frontend/src/components/preview/filePreviewKind.ts. Code and unknown
+// binaries stay out: the companion window shows 此文件类型暂不支持预览 for them.
+func companionSupportsFilename(name string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(name))) {
+	case ".md", ".markdown", ".txt", ".text", ".log", ".html", ".htm",
+		".pdf", ".tex", ".latex", ".ltx", ".docx", ".pptx",
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tif", ".tiff", ".heic",
+		".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v",
+		".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".oga",
+		".doc", ".docm", ".dot", ".dotx", ".wps", ".wpt", ".rtf", ".odt",
+		".xls", ".xlsx", ".xlsm", ".xlsb", ".et", ".ett", ".ods",
+		".ppt", ".pptm", ".pps", ".ppsx", ".dps", ".dpt", ".odp":
+		return true
+	default:
+		return false
+	}
+}
+
 func mobileDraftOriginalFilename(draft *MobileDocumentDraftSummary) string {
 	if draft == nil {
 		return "original.bin"
@@ -1293,18 +1784,7 @@ func (a *App) downloadMobileDocumentOriginal(draft *MobileDocumentDraftSummary) 
 	if hubURL == "" || viewerToken == "" {
 		return "", nil, fmt.Errorf("MaClaw Hub login is required to download originals")
 	}
-	sourcePath := strings.TrimSpace(draft.SourceDownloadURL)
-	if sourcePath == "" {
-		sourcePath = "/api/mobile/documents/drafts/" + url.PathEscape(strings.TrimSpace(draft.ID)) + "/source"
-	}
-	fullURL := sourcePath
-	if !strings.HasPrefix(sourcePath, "http://") && !strings.HasPrefix(sourcePath, "https://") {
-		if !strings.HasPrefix(sourcePath, "/") {
-			sourcePath = "/" + sourcePath
-		}
-		fullURL = hubURL + sourcePath
-	}
-	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+	req, err := http.NewRequest(http.MethodGet, mobileDocumentSourceURL(hubURL, draft), nil)
 	if err != nil {
 		return "", nil, err
 	}

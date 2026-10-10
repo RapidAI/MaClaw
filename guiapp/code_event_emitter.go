@@ -64,9 +64,9 @@ func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...str
 	e.emitSessionStart(sessionID, false, projectPath...)
 }
 
-// EmitSessionStartAutoOpen is used by pure-coding / CodingSubAgent turns so the
-// right-hand source panel stays open across multi-turn session_start events.
-// Frontend auto_open keeps existing file tabs (does not clear the map).
+// EmitSessionStartAutoOpen is used by pure-coding / CodingSubAgent turns so a
+// new turn keeps existing file tabs and the current pane visibility.
+// It does not pop the pane. A create/modify event opens the changed file.
 func (e *CodeEventEmitter) EmitSessionStartAutoOpen(sessionID string, projectPath ...string) {
 	e.emitSessionStart(sessionID, true, projectPath...)
 }

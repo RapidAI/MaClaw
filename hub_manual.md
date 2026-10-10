@@ -322,6 +322,8 @@ server {
 }
 ```
 
+上面的示例把站点和长连接放在同一个 `location /`。生产上的 `hub.mypapers.top` 把 `/api/llm/` 单独拆出。桌面 Bot 的同步消息打在 `location /` 上，30 分钟预算、自定义 nginx 的重载方式，以及不能跟着改的 location，见 [docs/bot-message-timeout-ops-zh.md](docs/bot-message-timeout-ops-zh.md)。
+
 ## 13. Hub 向默认 Hub Center 注册流程
 
 注册链路如下：

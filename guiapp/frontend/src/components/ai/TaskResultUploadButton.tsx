@@ -11,9 +11,12 @@ export function taskResultUploadSupported(filePath: string): boolean {
 export function TaskResultUploadButton({ filePath, lang }: { filePath: string; lang: string }) {
     const [status, setStatus] = React.useState<"idle" | "uploading" | "done" | "error">("idle");
     const [errorMsg, setErrorMsg] = React.useState("");
+    const [alreadyThere, setAlreadyThere] = React.useState(false);
     const en = lang === "en";
     const title = status === "done"
-        ? (en ? "Uploaded to the cloud drive. Phone app → Documents can open it." : "已上传到云盘，手机端「文档」可直接打开。")
+        ? (alreadyThere
+            ? (en ? "This file is already in the cloud drive. Not uploaded again." : "云盘中已有相同内容，未再次上传。")
+            : (en ? "Uploaded to the cloud drive. Phone app → Documents can open it." : "已上传到云盘，手机端「文档」可直接打开。"))
         : status === "error"
             ? ((en ? "Upload failed" : "上传失败") + (errorMsg ? `: ${errorMsg}` : ""))
             : (en ? "Upload to cloud drive" : "上传到云盘");
@@ -23,9 +26,11 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
         if (status === "uploading" || status === "done") return;
         setStatus("uploading");
         setErrorMsg("");
+        setAlreadyThere(false);
         void ImportMobileDocumentFromPath(filePath)
             .then((draft) => {
                 if (draft && draft.id) {
+                    setAlreadyThere(!!draft.duplicate);
                     setStatus("done");
                 } else {
                     setStatus("error");

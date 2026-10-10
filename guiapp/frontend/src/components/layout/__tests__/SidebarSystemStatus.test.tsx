@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { SidebarSystemStatus } from '../SidebarSystemStatus';
+import { isLansengerChannelEnabled, SidebarSystemStatus } from '../SidebarSystemStatus';
 import type { SidebarHubCredits } from '../../../types/appShell';
 
 const baseCredits: SidebarHubCredits = {
@@ -28,6 +28,10 @@ function renderStatus(credits: SidebarHubCredits, options: {
     telegramStatus?: string;
     weixinStatus?: string;
     lansengerStatus?: string;
+    qqBotEnabled?: boolean;
+    telegramEnabled?: boolean;
+    weixinEnabled?: boolean;
+    lansengerEnabled?: boolean;
     showLansenger?: boolean;
     openIMSettingsPage?: () => void;
 } = {}) {
@@ -46,6 +50,10 @@ function renderStatus(credits: SidebarHubCredits, options: {
             telegramStatus={options.telegramStatus ?? ''}
             weixinStatus={options.weixinStatus ?? ''}
             lansengerStatus={options.lansengerStatus ?? ''}
+            qqBotEnabled={options.qqBotEnabled}
+            telegramEnabled={options.telegramEnabled}
+            weixinEnabled={options.weixinEnabled}
+            lansengerEnabled={options.lansengerEnabled}
             backgroundTaskCount={3}
             workbenchTaskCounts={options.workbenchTaskCounts ?? { background: 3, scheduled: 1, passthrough: 4 }}
             onOpenBackgroundTasks={options.onOpenBackgroundTasks}
@@ -1109,6 +1117,38 @@ describe('SidebarSystemStatus IM status', () => {
         fireEvent.click(row);
         expect(openIMSettingsPage).toHaveBeenCalledTimes(1);
         expect(openLLMSettingsPage).not.toHaveBeenCalled();
+    });
+
+    it('drops QQ from the online list as soon as the QQ switch is off', () => {
+        renderStatus(baseCredits, {
+            weixinStatus: 'connected',
+            qqBotStatus: 'connected',
+            qqBotEnabled: false,
+            weixinEnabled: true,
+        });
+
+        const row = screen.getByTestId('workbench-im-status');
+        expect(row.textContent).toContain('微信');
+        expect(row.textContent).not.toContain('QQ');
+        expect(row.getAttribute('title')).toContain('QQ: 未连接');
+        expect(row.getAttribute('title')).not.toContain('QQ: 已连接');
+        expect(row.getAttribute('title')).toContain('微信: 已连接');
+    });
+
+    it('hides Lansenger only when the legacy switch and every bot profile are off', () => {
+        expect(isLansengerChannelEnabled({ lansenger_enabled: false, lansenger_bots: [{ enabled: true }] })).toBe(true);
+        expect(isLansengerChannelEnabled({ lansenger_enabled: false, lansenger_bots: [{ enabled: false }] })).toBe(false);
+        expect(isLansengerChannelEnabled({ lansenger_enabled: true })).toBe(true);
+
+        renderStatus(baseCredits, {
+            showLansenger: true,
+            lansengerStatus: 'connected',
+            lansengerEnabled: false,
+            weixinEnabled: false,
+        });
+        const row = screen.getByTestId('workbench-im-status');
+        expect(row.textContent).not.toContain('蓝信');
+        expect(row.getAttribute('title')).toContain('蓝信: 未连接');
     });
 
     it('shows connecting, paused, expired, and error states when no channel is online', () => {

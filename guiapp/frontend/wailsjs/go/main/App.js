@@ -46,6 +46,10 @@ export function GetReferralRegistrationStatus(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetReferralRegistrationStatus'](arg1, arg2, arg3);
 }
 
+export function SendFileCompanionMessage(arg1) {
+  return window['go']['main']['App']['SendFileCompanionMessage'](arg1);
+}
+
 export function SendReferralRegistrationEmail(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SendReferralRegistrationEmail'](arg1, arg2, arg3, arg4);
 }
@@ -1135,6 +1139,42 @@ export function ExportTextFile(arg1, arg2) {
   return window['go']['main']['App']['ExportTextFile'](arg1, arg2);
 }
 
+export function FileCompanionUIReady() {
+  return window['go']['main']['App']['FileCompanionUIReady']();
+}
+
+export function FileCompanionOpen(arg1) {
+  return window['go']['main']['App']['FileCompanionOpen'](arg1);
+}
+
+export function FileCompanionSaveText(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FileCompanionSaveText'](arg1, arg2, arg3);
+}
+
+export function FileCompanionAppendText(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FileCompanionAppendText'](arg1, arg2, arg3);
+}
+
+export function FileCompanionImportKnowledge(arg1) {
+  return window['go']['main']['App']['FileCompanionImportKnowledge'](arg1);
+}
+
+export function FileCompanionUploadCloud(arg1) {
+  return window['go']['main']['App']['FileCompanionUploadCloud'](arg1);
+}
+
+export function FileCompanionReplaceOffice(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionReplaceOffice'](arg1, arg2);
+}
+
+export function ClearFileCompanionChat(arg1) {
+  return window['go']['main']['App']['ClearFileCompanionChat'](arg1);
+}
+
+export function UnregisterFileCompanionLinuxDesktop() {
+  return window['go']['main']['App']['UnregisterFileCompanionLinuxDesktop']();
+}
+
 export function FetchCodeGenModels() {
   return window['go']['main']['App']['FetchCodeGenModels']();
 }
@@ -1409,6 +1449,10 @@ export function GetExperienceGovernanceSummary(arg1) {
 
 export function GetExperienceLearningSnapshot() {
   return window['go']['main']['App']['GetExperienceLearningSnapshot']();
+}
+
+export function GetFileCompanionBoot() {
+  return window['go']['main']['App']['GetFileCompanionBoot']();
 }
 
 export function GetFramelessTopInset() {
@@ -3011,6 +3055,18 @@ export function KnowledgeUpdateURLDomainPolicies(arg1) {
   return window['go']['main']['App']['KnowledgeUpdateURLDomainPolicies'](arg1);
 }
 
+export function LaunchFileCompanion(arg1) {
+  return window['go']['main']['App']['LaunchFileCompanion'](arg1);
+}
+
+export function ChooseFileCompanionFiles() {
+  return window['go']['main']['App']['ChooseFileCompanionFiles']();
+}
+
+export function ShowFileCompanion() {
+  return window['go']['main']['App']['ShowFileCompanion']();
+}
+
 export function LaunchInstallerAndExit(arg1, arg2) {
   return window['go']['main']['App']['LaunchInstallerAndExit'](arg1, arg2);
 }
@@ -3472,6 +3528,10 @@ export function OpenMaclawAppWorkspaceFromInstall(arg1) {
   return window['go']['main']['App']['OpenMaclawAppWorkspaceFromInstall'](arg1);
 }
 
+export function OpenMobileDocumentInFileCompanion(arg1) {
+  return window['go']['main']['App']['OpenMobileDocumentInFileCompanion'](arg1);
+}
+
 export function OpenMobileDocumentOriginal(arg1) {
   return window['go']['main']['App']['OpenMobileDocumentOriginal'](arg1);
 }
@@ -3802,6 +3862,10 @@ export function RateHubSkill(arg1, arg2) {
 
 export function ReadBBS() {
   return window['go']['main']['App']['ReadBBS']();
+}
+
+export function ReadDesktopBotShot(arg1) {
+  return window['go']['main']['App']['ReadDesktopBotShot'](arg1);
 }
 
 export function ReadErrorLog() {
@@ -4420,6 +4484,22 @@ export function SendBtwQuery(arg1, arg2) {
 
 export function SendDesktopBotTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendDesktopBotTask'](arg1, arg2, arg3);
+}
+
+export function UnderstandDesktopBotTask(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UnderstandDesktopBotTask'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ArmDesktopBotSchedule(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['ArmDesktopBotSchedule'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function ListDesktopBotSchedules(arg1) {
+  return window['go']['main']['App']['ListDesktopBotSchedules'](arg1);
+}
+
+export function DeleteDesktopBotSchedule(arg1, arg2) {
+  return window['go']['main']['App']['DeleteDesktopBotSchedule'](arg1, arg2);
 }
 
 export function DesktopBotAccess() {
@@ -5406,12 +5486,12 @@ export function TokenBankWithdrawGift(arg1, arg2, arg3) {
   return window['go']['main']['App']['TokenBankWithdrawGift'](arg1, arg2, arg3);
 }
 
-export function WatchDesktopBot(arg1) {
-  return window['go']['main']['App']['WatchDesktopBot'](arg1);
+export function WatchDesktopBot(arg1, arg2) {
+  return window['go']['main']['App']['WatchDesktopBot'](arg1, arg2);
 }
 
-export function ReleaseDesktopBotWatch(arg1) {
-  return window['go']['main']['App']['ReleaseDesktopBotWatch'](arg1);
+export function ReleaseDesktopBotWatch(arg1, arg2) {
+  return window['go']['main']['App']['ReleaseDesktopBotWatch'](arg1, arg2);
 }
 
 export function SaveBotSecret(arg1, arg2) {

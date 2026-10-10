@@ -309,6 +309,30 @@ func TestScreenshotCapturesTheUsersDisplay(t *testing.T) {
 	}
 }
 
+func TestScreenshotSaveWritesTheDesktopFile(t *testing.T) {
+	want := testPNG(t)
+	var script string
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		script = args[len(args)-1]
+		return base64.StdEncoding.EncodeToString(want), nil
+	}}
+	data, saved, err := svc.CaptureScreenshot(context.Background(), "tenant", "alice", ":20", "baidu_screenshot.png")
+	if err != nil || !bytes.Equal(data, want) || saved != "/home/desktop/Desktop/baidu_screenshot.png" {
+		t.Fatalf("saved=%q err=%v", saved, err)
+	}
+	if !strings.Contains(script, `cp "$f" /home/desktop/Desktop/baidu_screenshot.png`) || !strings.Contains(script, "mkdir -p /home/desktop/Desktop") {
+		t.Fatalf("script=%s", script)
+	}
+	called := false
+	svc.Run = func(context.Context, ...string) (string, error) {
+		called = true
+		return "", nil
+	}
+	if _, _, err := svc.CaptureScreenshot(context.Background(), "tenant", "alice", ":20", "../secret.png"); err == nil || called {
+		t.Fatalf("bad name err=%v called=%v", err, called)
+	}
+}
+
 func TestScreenshotEndpointNeedsTokenAndReturnsPNG(t *testing.T) {
 	want := testPNG(t)
 	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {

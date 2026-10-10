@@ -2,6 +2,7 @@ import React from 'react'
 import {createRoot} from 'react-dom/client'
 import './style.css'
 import App from './App'
+import FileCompanionWindow, { readFileCompanionBootFlag } from './components/filecompanion/FileCompanionWindow'
 import { DialogProvider } from './components/CustomDialog'
 import { ToastProvider } from './components/Toast'
 import { KnowledgeImportProvider } from './components/settings/KnowledgeImportContext'
@@ -102,7 +103,7 @@ try {
             <ToastProvider>
                 <KnowledgeImportProvider>
                     <DialogProvider>
-                        <App/>
+                        {readFileCompanionBootFlag() ? <FileCompanionWindow /> : <App />}
                     </DialogProvider>
                 </KnowledgeImportProvider>
             </ToastProvider>

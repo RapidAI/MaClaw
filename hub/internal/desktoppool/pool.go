@@ -500,6 +500,151 @@ func (p *Pool) RunApp(ctx context.Context, tenantID, userID, display string, arg
 	return out.Output, nil
 }
 
+// RunOpen asks the user's Docker service to start one GUI program on the
+// desktop display. The program is argv, not a shell command.
+func (p *Pool) RunOpen(ctx context.Context, tenantID, userID, display, program string, args []string) (string, error) {
+	if _, err := desktop.OpenArgv(program, args); err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   display,
+		"program":   program,
+		"args":      args,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/open", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunInstall asks the user's Docker service to apt-get install. The client
+// waits one minute past the apt budget so the stop sentence can be read.
+func (p *Pool) RunInstall(ctx context.Context, tenantID, userID string, packages []string) (string, error) {
+	names, err := desktop.PackageNames(packages)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"packages":  names,
+	}
+	client := &http.Client{Timeout: desktop.InstallClientTimeout}
+	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/install", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunFile forwards a read, write, edit, list, or bytes fetch to the user's desktop container.
+// bytes is the base64 of the file. A PDF stays intact across the JSON string.
+func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "read", "write", "edit", "list", "bytes":
+	default:
+		return "", fmt.Errorf("%w: file action is invalid", ErrInvalidInput)
+	}
+	if action == "list" && strings.TrimSpace(filePath) == "" {
+		filePath = desktop.ContainerHome
+	}
+	if action != "list" || strings.TrimSpace(filePath) != "" {
+		resolved, err := desktop.ContainerPath(filePath)
+		if err != nil {
+			return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+		}
+		filePath = resolved
+	}
+	if action == "write" && len(content) > desktop.FileContentMax {
+		return "", fmt.Errorf("%w: file is too large", ErrInvalidInput)
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id":  store.NormalizeTenantID(tenantID),
+		"user_id":    strings.TrimSpace(userID),
+		"action":     action,
+		"path":       filePath,
+		"content":    content,
+		"old_string": oldString,
+		"new_string": newString,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/file", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunBash runs one command in the user's desktop container.
+func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	if _, err := desktop.BashArgs("container", command); err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"command":   strings.TrimSpace(command),
+	}
+	client := &http.Client{Timeout: 2 * time.Minute}
+	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/bash", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunHTTP fetches one URL from inside the user's desktop container.
+func (p *Pool) RunHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
+	if _, err := desktop.PublicURL(rawURL); err != nil {
+		return "", 0, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", 0, "", err
+	}
+	var out struct {
+		Body   string `json:"body"`
+		Status int    `json:"status"`
+		Kind   string `json:"content_type"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"url":       strings.TrimSpace(rawURL),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/http", body, &out); err != nil {
+		return "", 0, "", err
+	}
+	return out.Body, out.Status, out.Kind, nil
+}
+
 // maxScreenshotBytes bounds one PNG read from a Docker service.
 const maxScreenshotBytes = 16 << 20
 
@@ -507,44 +652,53 @@ var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 
 // Screenshot returns a PNG of the user's desktop from the Docker service that
 // owns the user. An empty display means the service's default (:20).
-func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	raw, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"tenant_id": store.NormalizeTenantID(tenantID),
 		"user_id":   strings.TrimSpace(userID),
 		"display":   strings.TrimSpace(display),
-	})
+	}
+	name = strings.TrimSpace(name)
+	if name != "" {
+		body["name"] = name
+	}
+	raw, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server.BaseURL, "/")+"/v1/desktops/screenshot", bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrService, err.Error())
+		return nil, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
 	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrService, err.Error())
+		return nil, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
 	defer resp.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxScreenshotBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrService, err.Error())
+		return nil, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if len(payload) > 1<<20 {
 			payload = payload[:1<<20]
 		}
-		return nil, upstream.NewStatusError(ErrService, resp.StatusCode, payload)
+		return nil, "", upstream.NewStatusError(ErrService, resp.StatusCode, payload)
 	}
 	if len(payload) > maxScreenshotBytes || !bytes.HasPrefix(payload, pngSignature) {
-		return nil, fmt.Errorf("%w: screenshot is not a PNG image", ErrService)
+		return nil, "", fmt.Errorf("%w: screenshot is not a PNG image", ErrService)
 	}
-	return payload, nil
+	saved := strings.TrimSpace(resp.Header.Get("X-Desktop-Saved-Path"))
+	if name == "" || saved != desktop.DesktopShotPath(name) {
+		saved = ""
+	}
+	return payload, saved, nil
 }
 
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
@@ -607,6 +761,13 @@ func (p *Pool) departmentChain(ctx context.Context, userID string) []string {
 }
 
 func (p *Pool) call(ctx context.Context, server Server, method, path string, body any, dest any) error {
+	return p.callClient(ctx, p.client(), server, method, path, body, dest)
+}
+
+func (p *Pool) callClient(ctx context.Context, client *http.Client, server Server, method, path string, body any, dest any) error {
+	if client == nil {
+		client = p.client()
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -617,7 +778,7 @@ func (p *Pool) call(ctx context.Context, server Server, method, path string, bod
 	}
 	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.client().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrService, err.Error())
 	}

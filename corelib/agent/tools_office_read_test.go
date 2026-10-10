@@ -1609,7 +1609,11 @@ func TestValidateLegacyOfficeTextUsesSharedRetainedContentLimit(t *testing.T) {
 	if text, format, err := validateLegacyOfficeText(atLimit, "docx", nil); err != nil || format != "docx" || text != atLimit {
 		t.Fatalf("at-limit legacy text = text length %d format=%q err=%v", len([]rune(text)), format, err)
 	}
-	if text, format, err := validateLegacyOfficeText(atLimit+"文", "docx", nil); !errors.Is(err, ErrOfficeReadOutputTooLarge) || text != "" || format != "docx" {
+	text, format, err := validateLegacyOfficeText(atLimit+"文", "docx", nil)
+	if !errors.Is(err, ErrOfficeReadOutputTooLarge) || format != "docx" {
+		t.Fatalf("oversized legacy text = text length %d format=%q err=%v", len([]rune(text)), format, err)
+	}
+	if text == "" || len([]rune(text)) > MaxOfficeReadTextRunes || !strings.Contains(text, "omitted-middle") || !strings.HasPrefix(text, "文") || !strings.HasSuffix(strings.TrimRight(text, "\n"), "文") {
 		t.Fatalf("oversized legacy text = text length %d format=%q err=%v", len([]rune(text)), format, err)
 	}
 }

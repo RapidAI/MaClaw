@@ -341,8 +341,8 @@ func (s *acpHostSession) onMaclawReadRemoteFile(raw json.RawMessage) (any, *acpa
 	if limit <= 0 {
 		limit = 500
 	}
-	if limit > 2000 {
-		limit = 2000
+	if limit > remoteReadFileMaxLines {
+		limit = remoteReadFileMaxLines
 	}
 	hub := s.app.ensureHubClient()
 	if hub == nil {

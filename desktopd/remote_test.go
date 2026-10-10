@@ -2,6 +2,10 @@ package desktopd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -663,6 +667,168 @@ func TestBatchedAppCommandReachesXdotool(t *testing.T) {
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "xdotool mousemove") || strings.Count(joined, "click") != 16 {
 		t.Fatalf("batch was split: %s", joined)
+	}
+	got = nil
+	out, err = svc.App(context.Background(), "tenant", "alice", ":20", []string{"type", "--delay", "20", "int main() {\rreturn 0;\r}"})
+	if err != nil || out != "ok" || !strings.Contains(strings.Join(got, " "), "int main() {\rreturn 0;\r}") {
+		t.Fatalf("out=%q err=%v args=%v", out, err, got)
+	}
+	if _, err := svc.App(context.Background(), "tenant", "alice", ":20", []string{"type", "line\nline"}); err == nil {
+		t.Fatal("a newline argument was forwarded to xdotool")
+	}
+}
+
+func TestOpenStartsAProgramDetached(t *testing.T) {
+	var got []string
+	ran := 0
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		ran++
+		got = append([]string(nil), args...)
+		return "", nil
+	}}
+	out, err := svc.Open(context.Background(), "tenant", "alice", ":20", "xterm", []string{"-geometry", "80x24"})
+	if err != nil || out != "opened xterm" {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	joined := strings.Join(got, " ")
+	if ran != 1 || len(got) < 8 || got[0] != "exec" || got[1] != "-d" || got[2] != "-w" || got[3] != "/home/desktop" || !strings.Contains(joined, "DISPLAY=:20") || !strings.Contains(joined, "unix:path=/tmp/.maclaw-dbus-20") || !strings.Contains(joined, "HOME=/home/desktop") || !strings.Contains(joined, "XMODIFIERS=@im=none") || !strings.Contains(joined, "GTK_IM_MODULE=gtk-im-context-simple") || !strings.Contains(joined, "QT_IM_MODULE=compose") || strings.Contains(joined, "GTK_IM_MODULE=fcitx") || strings.Contains(joined, "GTK_IM_MODULE=xim") || strings.Contains(joined, "@im=fcitx") || strings.Contains(joined, "--disable-server") || got[len(got)-1] != "80x24" {
+		t.Fatalf("docker args=%v", got)
+	}
+	termOut, err := svc.Open(context.Background(), "tenant", "alice", ":20", "xfce4-terminal", []string{"--geometry", "80x24"})
+	if err != nil || termOut != "opened xfce4-terminal" || !strings.Contains(strings.Join(got, " "), "xfce4-terminal --disable-server --geometry 80x24") {
+		t.Fatalf("out=%q err=%v args=%v", termOut, err, got)
+	}
+	for _, arg := range got {
+		if arg == "sh" || arg == "bash" || arg == "xdotool" || arg == "-c" {
+			t.Fatalf("launch used a shell: %v", got)
+		}
+	}
+	ran = 0
+	if _, err := svc.Open(context.Background(), "tenant", "alice", ":20", "bash", []string{"-c", "echo hi"}); err == nil || ran != 0 {
+		t.Fatalf("shell was started: err=%v ran=%d", err, ran)
+	}
+	ran = 0
+	if _, err := svc.Open(context.Background(), "tenant", "alice", ":20", "chromium", nil); err == nil || ran != 0 {
+		t.Fatalf("browser was started: err=%v ran=%d", err, ran)
+	}
+}
+
+func TestInstallRunsAptGet(t *testing.T) {
+	var calls [][]string
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if strings.Contains(strings.Join(args, " "), "apt-get install") {
+			return "Setting up libreoffice", nil
+		}
+		return "", nil
+	}}
+	out, err := svc.Install(context.Background(), "tenant", "alice", []string{"libreoffice", "libreoffice"})
+	if err != nil || !strings.Contains(out, "installed: libreoffice") || !strings.Contains(out, "Setting up libreoffice") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if len(calls) != 5 {
+		t.Fatalf("calls=%d", len(calls))
+	}
+	wait := strings.Join(calls[0], " ")
+	repair := strings.Join(calls[1], " ")
+	update := strings.Join(calls[2], " ")
+	fix := strings.Join(calls[3], " ")
+	install := strings.Join(calls[4], " ")
+	if !strings.Contains(wait, "python3") || !strings.Contains(wait, "LOCK_NB") || !strings.Contains(wait, "configure_apt") || strings.Contains(wait, "apt-get") || strings.Contains(wait, "sh ") {
+		t.Fatalf("wait=%s", wait)
+	}
+	if !strings.Contains(repair, "python3") || !strings.Contains(repair, "lockf") || !strings.Contains(repair, "set_inheritable") || !strings.Contains(repair, "execvp") || !strings.Contains(repair, "'dpkg'") || !strings.Contains(repair, "'--force-confold'") || strings.Contains(repair, "sh ") || strings.Contains(repair, "apt-get") {
+		t.Fatalf("repair=%s", repair)
+	}
+	if !strings.Contains(update, "apt-get update") || strings.Contains(update, "sh ") {
+		t.Fatalf("update=%s", update)
+	}
+	if !strings.Contains(fix, "apt-get -f install") || strings.Contains(fix, " libreoffice") || strings.Contains(fix, "sh ") || strings.Contains(fix, "apt-get install -y") {
+		t.Fatalf("fix=%s", fix)
+	}
+	if !strings.Contains(install, "apt-get install -y") || strings.Contains(install, "apt-get -f install") || !strings.Contains(install, " libreoffice") || strings.Contains(install, "sh ") {
+		t.Fatalf("install=%s", install)
+	}
+	if _, err := svc.Install(context.Background(), "tenant", "alice", []string{"libreoffice;reboot"}); err == nil {
+		t.Fatal("shell metacharacter was accepted")
+	}
+}
+
+func TestInstallStopsWhenTheContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	svc := &Service{Run: func(ctx context.Context, args ...string) (string, error) {
+		return strings.Repeat("Get:1 http://deb.debian.org progress\n", 40), ctx.Err()
+	}}
+	out, err := svc.Install(ctx, "tenant", "alice", []string{"libreoffice"})
+	if err == nil || out != "" || strings.Contains(err.Error(), "time budget") || strings.Contains(err.Error(), "Get:1") || !errors.Is(err, context.Canceled) {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+func TestInstallReportsADeadlineInsteadOfAptProgress(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	svc := &Service{Run: func(ctx context.Context, args ...string) (string, error) {
+		return strings.Repeat("Get:1 http://deb.debian.org progress\n", 40), ctx.Err()
+	}}
+	out, err := svc.Install(ctx, "tenant", "alice", []string{"libreoffice"})
+	if err == nil || out != "" || !strings.Contains(err.Error(), "time budget") || strings.Contains(err.Error(), "Get:1") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+func TestInstallLimitsAptToTheBudget(t *testing.T) {
+	var installCtx context.Context
+	svc := &Service{Run: func(ctx context.Context, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "apt-get install") {
+			installCtx = ctx
+		}
+		return "", nil
+	}}
+	if _, err := svc.Install(context.Background(), "tenant", "alice", []string{"vim"}); err != nil {
+		t.Fatal(err)
+	}
+	if installCtx == nil {
+		t.Fatal("apt-get install did not run")
+	}
+	deadline, ok := installCtx.Deadline()
+	remaining := time.Until(deadline)
+	if !ok || remaining <= desktop.InstallBudget-time.Minute || remaining > desktop.InstallBudget {
+		t.Fatalf("deadline ok=%v remaining=%s budget=%s", ok, remaining, desktop.InstallBudget)
+	}
+}
+
+func TestInstallFailureReportsTheAptEnding(t *testing.T) {
+	ending := "E: Unable to locate package libreoffice"
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "apt-get install") {
+			return "PROGRESS-HEAD" + strings.Repeat("x", 4000) + "\n" + ending, errString("exit status 100")
+		}
+		return "", nil
+	}}
+	srv := httptest.NewServer(Handler(svc, "primary-token", "", nil, nil))
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/desktops/install", strings.NewReader(`{"tenant_id":"tenant","user_id":"alice","packages":["libreoffice"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer primary-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadGateway || body.Error != body.Message || !strings.Contains(body.Error, ending) || strings.Contains(body.Error, "PROGRESS-HEAD") {
+		t.Fatalf("status=%d body=%+v", resp.StatusCode, body)
 	}
 }
 

@@ -84,6 +84,11 @@ type stickyCodingWorkbenchMemory struct {
 	SkipNextPlan bool `json:"skip_next_plan,omitempty"`
 	// StepStatuses is live Todo status for the active multi-step plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// PlanRunStarted is set once the checklist leaves the unstarted approval.
+	// Reopen puts unfinished steps back to pending for the next run. Pending
+	// alone must not look like a plan that never started, or the next
+	// continue deletes the checklist.
+	PlanRunStarted bool `json:"plan_run_started,omitempty"`
 	// ProjectInstructions is cached AGENTS.md / CLAUDE.md content.
 	ProjectInstructions       string   `json:"project_instructions,omitempty"`
 	ProjectInstructionSources []string `json:"project_instruction_sources,omitempty"`

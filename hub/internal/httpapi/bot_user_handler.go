@@ -154,9 +154,78 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity veMachineAuthenticator
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
 			return
 		}
+		if wantsAsyncBotReply(r) {
+			admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase)
+			if err != nil {
+				writeBotUserError(w, r, principal, err)
+				return
+			}
+			if admission.Accepted && !admission.Settled {
+				writeJSON(w, http.StatusAccepted, map[string]any{
+					"accepted": true,
+					"run_id":   admission.RunID,
+					"status":   "running",
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, admission.Reply)
+			return
+		}
 		reply, err := svc.PostMessagePhase(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase)
 		if err != nil {
 			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, reply)
+	}
+}
+
+// wantsAsyncBotReply is the desktop client's request to accept the command
+// before the run finishes. The reply is read from the run afterwards.
+func wantsAsyncBotReply(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("async")), "true") {
+		return true
+	}
+	for _, value := range r.Header.Values("Prefer") {
+		for _, part := range strings.Split(value, ",") {
+			token := strings.TrimSpace(part)
+			if i := strings.IndexByte(token, ';'); i >= 0 {
+				token = strings.TrimSpace(token[:i])
+			}
+			if strings.EqualFold(token, "respond-async") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetBotRunHandler GET /api/v1/bots/{id}/runs/{runID}
+// A running command answers 202. The finished reply is the same object as a
+// synchronous message. One poll does not cancel the run.
+func GetBotRunHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		reply, done, err := svc.DesktopRunResult(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		if !done {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"accepted": true,
+				"status":   "running",
+				"run_id":   r.PathValue("runID"),
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, reply)
@@ -202,19 +271,20 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity veMachineAuthenti
 			return
 		}
 		botID := r.PathValue("id")
-		release, ok := botWatchRelease(w, r)
+		release, epoch, ok := botWatchRelease(w, r)
 		if !ok {
 			return
 		}
+		ctx := botmgmt.WithDesktopWatchEpoch(r.Context(), epoch)
 		if release {
-			if err := svc.ReleaseUserDesktopView(r.Context(), principal.TenantID, principal.UserID, botID); err != nil {
+			if err := svc.ReleaseUserDesktopView(ctx, principal.TenantID, principal.UserID, botID); err != nil {
 				writeBotUserError(w, r, principal, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"released": true})
 			return
 		}
-		novnc, userControl, err := svc.HoldDesktopView(r.Context(), principal.TenantID, principal.UserID, botID)
+		novnc, userControl, err := svc.HoldDesktopView(ctx, principal.TenantID, principal.UserID, botID)
 		if err != nil {
 			writeBotUserError(w, r, principal, err)
 			return
@@ -227,28 +297,33 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity veMachineAuthenti
 	}
 }
 
-// botWatchRelease reads an optional {"release":true}. An empty body is a hold.
-// EOF is not a bad request: the viewer poll posts no body.
-func botWatchRelease(w http.ResponseWriter, r *http.Request) (bool, bool) {
+// botWatchRelease reads an optional {"release":true,"epoch":n}. An empty body
+// is a hold. EOF is not a bad request: the viewer poll posts no body.
+// Epoch identifies one open of the page. Zero means an older client.
+func botWatchRelease(w http.ResponseWriter, r *http.Request) (bool, int64, bool) {
 	if r.Body == nil {
-		return false, true
+		return false, 0, true
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
-		return false, false
+		return false, 0, false
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return false, true
+		return false, 0, true
 	}
 	var in struct {
-		Release bool `json:"release"`
+		Release bool  `json:"release"`
+		Epoch   int64 `json:"epoch"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
-		return false, false
+		return false, 0, false
 	}
-	return in.Release, true
+	if in.Epoch < 0 {
+		in.Epoch = 0
+	}
+	return in.Release, in.Epoch, true
 }
 
 // GetDesktopHandoffHandler proxies noVNC through Hub. The token in the path

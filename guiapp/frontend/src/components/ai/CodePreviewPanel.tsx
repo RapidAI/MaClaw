@@ -26,7 +26,7 @@ import { PreviewFileActions } from './PreviewFileActions';
 import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview, isVisualFilePreview } from '../preview/FilePreviewView';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
-import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
+import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, previewBodyShowsFile, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
 import { buildDiffRows, computeDiff, computeDiffRowStats, type DiffLine, type DiffRow } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
@@ -921,13 +921,15 @@ export function CodePreviewPanel({
         }).catch(() => {});
         return () => { cancelled = true; };
     }, [cloudMode, cloudWorkspaceId, cloudWorkspaceName]);
-    // Every source-preview opening starts with the project tree. Source files
-    // remain open beside it. The newer focus nonce wins, and a file focus only
-    // shows that file while it is still open.
+    // A created or modified file is why the pane opened: show that file (its
+    // diff when the prior text is known), not the working-directory listing.
+    // A plain read, or no file yet, still starts on the tree when there is a
+    // project. The newer focus nonce wins after that, so a later tree choice
+    // stays on the directory until the next file focus.
     const [workspaceActive, setWorkspaceActive] = useState(() => {
         if (embedded) return false;
-        const fileOpen = Boolean(activeFilePath && files.has(activeFilePath));
-        if (fileOpen && fileFocusNonce > treeFocusNonce) return false;
+        const active = activeFilePath ? files.get(activeFilePath) : undefined;
+        if (previewBodyShowsFile(active, fileFocusNonce, treeFocusNonce)) return false;
         if (fileFocusNonce !== 0 || treeFocusNonce !== 0) return true;
         return Boolean(projectPath);
     });
@@ -1026,10 +1028,11 @@ export function CodePreviewPanel({
     useEffect(() => {
         if (embedded || (fileFocusNonce === 0 && treeFocusNonce === 0)) return;
         const path = focusPathRef.current;
-        const fileOpen = Boolean(path && focusFilesRef.current.has(path));
+        const file = path ? focusFilesRef.current.get(path) : undefined;
         // Directory refresh must not rerun this. A file opened from the tree
-        // stays up until the next explicit file or tree choice.
-        setWorkspaceActive(!(fileFocusNonce > treeFocusNonce && fileOpen));
+        // stays up until the next explicit file or tree choice. Tied focus
+        // still shows a create/modify so the body cannot stay on the tree.
+        setWorkspaceActive(!previewBodyShowsFile(file, fileFocusNonce, treeFocusNonce));
     }, [embedded, fileFocusNonce, treeFocusNonce]);
 
     useEffect(() => {

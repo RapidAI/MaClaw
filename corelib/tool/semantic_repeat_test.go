@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The first sibling must keep the identity a non-repeating need always had.
@@ -225,6 +226,85 @@ func TestLiveGrantNameForCapability(t *testing.T) {
 	}
 }
 
+func TestRepeatFamilyHasUnissuedSiblingMatchesSelectionID(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	prototype := PlannedSelection{ID: "selection:" + base, NeedID: base, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteRemoteHost}}
+	idOnly := "selection:" + RepeatSiblingNeedID(base, 1)
+	plan := ToolPlan{Selections: []PlannedSelection{
+		prototype,
+		{ID: idOnly, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteRemoteHost}},
+	}}
+	if !RepeatFamilyHasUnissuedSibling(plan, prototype, prototype.ID, func(string) bool { return false }) {
+		t.Fatal("a sibling stored only as a selection id was invisible, so the host would append another")
+	}
+	if RepeatFamilyHasUnissuedSibling(plan, prototype, prototype.ID, func(id string) bool { return id == idOnly }) {
+		t.Fatal("an issued selection-id sibling still blocked the next command")
+	}
+}
+
+func TestRepeatFamilyKeyCollapsesSelectionSpelling(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	bareSibling := RepeatSiblingNeedID(base, 1)
+	ready := []PlannedSelection{
+		{ID: "selection:" + base, NeedID: ""},
+		{ID: bareSibling},
+	}
+	exposed := NextRepeatSelections(RepeatExposure{Ready: ready})
+	if len(exposed) != 1 {
+		t.Fatalf("two spellings of one family were both exposed: %#v", exposed)
+	}
+	// An empty-NeedID prototype used to mint selection:selection:need#NN,
+	// which the exposure closure then treated as a second family.
+	plan := ToolPlan{Selections: ready}
+	updated, id, ok := AppendRepeatSibling(plan, "selection:"+base)
+	if !ok {
+		t.Fatal("empty-NeedID remote prototype refused the next command")
+	}
+	if strings.HasPrefix(strings.TrimPrefix(id, "selection:"), "selection:") {
+		t.Fatalf("next command minted a second spelling: %s", id)
+	}
+	if RepeatFamilyKey(id) != base {
+		t.Fatalf("next command left the family: %s", id)
+	}
+	if id == bareSibling || id == "selection:"+bareSibling {
+		t.Fatalf("next command reused the bare sibling id %s", id)
+	}
+	_ = updated
+	if !SettledIterativeListingAllowed(SelectionExecutionResult{ReasonCode: "selection_execution_failed"}) {
+		t.Fatal("a settled command failure must list the next call")
+	}
+	if SettledIterativeListingAllowed(SelectionExecutionResult{Unknown: true}) ||
+		SettledIterativeListingAllowed(SelectionExecutionResult{AwaitingReceipt: true}) ||
+		SettledIterativeListingAllowed(SelectionExecutionResult{ReasonCode: "dynamic_binding_stale"}) ||
+		SettledIterativeListingAllowed(SelectionExecutionResult{ReasonCode: "dynamic_execution_cancelled"}) {
+		t.Fatal("unknown, waiting, binding recovery, and cancellation must not list another call")
+	}
+}
+
+func TestCeilingSiblingSharesThePublishedFamily(t *testing.T) {
+	base := "need:fs.write.local:abc123def456"
+	kept := []PlannedSelection{{ID: "selection:" + base, NeedID: base}}
+	// A ceiling stored only as selection:+need used to bill a second family
+	// and hide its artifact from the consumer bound to the base.
+	extra := []PlannedSelection{{ID: "selection:" + RepeatSiblingNeedID(base, 1)}}
+	if families, _ := budgetChargeAgainst(kept, extra); families != 0 {
+		t.Fatalf("id-only ceiling counted as its own family: %d", families)
+	}
+	bases := familyBaseSelectionIDs(append(kept, extra...), func(PlannedSelection) bool { return true })
+	if len(bases) != 1 || bases[0] != "selection:"+base {
+		t.Fatalf("after-edge bases=%v", bases)
+	}
+	bare := RepeatSiblingNeedID(base, 1)
+	got, ok := NewestFamilyProducerArtifact([]RouteArtifactRef{{
+		ArtifactID: "art-1", Kind: "document", MIMEType: "application/pdf",
+		IntegrityDigest: "abc", ProducerSelection: bare, ProducerPurposeDigest: "purpose",
+		CreatedAt: time.Unix(10, 0).UTC(),
+	}}, "selection:"+base, ArtifactContract{Kind: "document", MIMEType: "application/pdf"})
+	if !ok || got.ID != "art-1" {
+		t.Fatalf("revision stored as a bare need was invisible: ok=%v id=%s", ok, got.ID)
+	}
+}
+
 func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	base := "need:artifact.acquire.remote:abc"
 	plan := ToolPlan{}
@@ -340,6 +420,48 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	}
 	if _, _, openedCap := AppendRepeatSibling(capped, capped.Selections[0].ID); openedCap {
 		t.Fatal("file write extended past the turn cap")
+	}
+	remoteBase := "need:shell.execute.remote_host:abc123def456"
+	remotePlan := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + remoteBase, NeedID: remoteBase, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteRemoteHost}},
+		{ID: "selection:" + RepeatSiblingNeedID(remoteBase, 1), NeedID: RepeatSiblingNeedID(remoteBase, 1), FitProof: FitProof{MatchedCapability: CapabilityShellExecuteRemoteHost}},
+	}}
+	remoteExtended, remoteID, openedRemote := AppendRepeatSibling(remotePlan, remotePlan.Selections[1].ID)
+	if !openedRemote || len(remoteExtended.Selections) != 3 || !strings.Contains(remoteID, "#03") {
+		t.Fatalf("remote command id=%q selections=%d", remoteID, len(remoteExtended.Selections))
+	}
+	if remoteExtended.Selections[len(remoteExtended.Selections)-1].Continuation {
+		t.Fatal("the next remote command was marked as a one-shot continuation")
+	}
+	remoteAgain, _, openedRemoteAgain := AppendRepeatSibling(remoteExtended, remoteExtended.Selections[1].ID)
+	if !openedRemoteAgain || len(remoteAgain.Selections) != 4 {
+		t.Fatal("a remote command stopped after one extra call")
+	}
+	remoteMaterialized := map[string]bool{}
+	for _, selection := range remoteAgain.Selections {
+		remoteMaterialized[selection.ID] = true
+	}
+	if note := RepeatFamilySpentBudgetNote(remoteAgain, remoteAgain.Selections[len(remoteAgain.Selections)-1].ID, remoteMaterialized, nil); note != "" {
+		t.Fatalf("remote command note promised another call: %q", note)
+	}
+	inherited := remoteAgain
+	inherited.Selections = append([]PlannedSelection(nil), remoteAgain.Selections...)
+	inherited.Selections[len(inherited.Selections)-1].Continuation = true
+	clearedRemote, _, openedCleared := AppendRepeatSibling(inherited, inherited.Selections[len(inherited.Selections)-1].ID)
+	if !openedCleared || clearedRemote.Selections[len(clearedRemote.Selections)-1].Continuation {
+		t.Fatal("the next remote command inherited Continuation from its prototype")
+	}
+	singleRemote := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:" + remoteBase, NeedID: remoteBase, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteRemoteHost},
+	}}}
+	if _, _, openedSingle := AppendRepeatSibling(singleRemote, singleRemote.Selections[0].ID); !openedSingle {
+		t.Fatal("a single remote command must extend when the task is unfinished")
+	}
+	localProof := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:" + remoteBase, NeedID: remoteBase, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal},
+	}}}
+	if _, _, openedLocal := AppendRepeatSibling(localProof, localProof.Selections[0].ID); openedLocal {
+		t.Fatal("a local-shell proof must not extend because its id mentions the remote capability")
 	}
 	mismatched := ToolPlan{Selections: []PlannedSelection{{
 		ID:       "selection:" + writeBase,

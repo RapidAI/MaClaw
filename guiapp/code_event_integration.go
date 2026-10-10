@@ -196,16 +196,15 @@ const codingWorkbenchPreviewEmitMaxFiles = 40
 // code preview for pure-coding workbench turns.
 //
 // Multi-turn note: pure-coding session_start (auto_open) keeps open tabs.
-// Sticky history is merged at end-of-turn (and on arm restore). Only when both
-// the current turn and sticky are empty — and allowScan is true — do we fall
-// back to a shallow project source scan (arm/restore should pass allowScan=false).
+// Arm/restore (forceOpen=false) may refill tabs from sticky history. It does
+// not walk the tree. A directory listing is not a file change.
 //
-// forceOpen=false on arm/restore so we never hijack an active session
-// (frontend mismatch+forceOpen wipes to a single file).
-// forceOpen=true at end-of-turn so the panel opens and shows the full batch.
+// forceOpen=true is end-of-turn. It emits only files this turn created or
+// modified, and it opens the pane on those files. Sticky history and a project
+// scan are not changes, so they must not pop the preview or steal the file.
 //
-// Sticky / scan hits are emitted as *modified* (not create) so restore does not
-// paint every tab as a dirty new file.
+// Sticky hits are emitted as reads. They refill tabs after a restart.
+// They are not a change, so they must not pop the pane or replace an edit.
 //
 // diskProjectPath is where files are read (exec / working_dir).
 // routeProjectPath is optional and sets CodeFileEvent.ProjectPath for tab routing
@@ -224,8 +223,22 @@ func emitCodingWorkbenchSourcePreview(app *App, sessionID, diskProjectPath strin
 	turnModified := filterExistingProjectRelPaths(projectPath, uniqueSortedSubAgentStrings(filesModified))
 	turnCreated := filterExistingProjectRelPaths(projectPath, uniqueSortedSubAgentStrings(filesCreated))
 	sticky := filterExistingProjectRelPaths(projectPath, uniqueSortedSubAgentStrings(stickyFiles))
+	turnPaths := make(map[string]bool, len(turnModified)+len(turnCreated))
+	for _, p := range turnModified {
+		turnPaths[p] = true
+	}
+	for _, p := range turnCreated {
+		turnPaths[p] = true
+	}
+	// End-of-turn force-open is evidence that this turn wrote files. Replaying
+	// sticky tabs, or scanning the tree because the audit is empty, used to pop
+	// the working directory after a read-only turn (the agent only read a file).
+	if forceOpen {
+		sticky = nil
+		allowScan = false
+	}
 
-	// Prefer current-turn paths, then fill from sticky (session_start wipe recovery).
+	// Prefer current-turn paths, then fill from sticky (arm/restore only).
 	modified := mergePreviewPathsPreferFirst(turnModified, sticky, codingWorkbenchPreviewEmitMaxFiles)
 
 	// Created stays turn-only; drop paths already covered as modified; cap total emits.
@@ -248,7 +261,8 @@ func emitCodingWorkbenchSourcePreview(app *App, sessionID, diskProjectPath strin
 		if !allowScan {
 			return nil
 		}
-		// Last resort: shallow project scan (end-of-turn / recovery only).
+		// No production caller reaches this. forceOpen disables the scan, and
+		// arm/restore passes allowScan false. A directory listing is not a change.
 		modified = listCodingWorkbenchPreviewSources(projectPath, 24)
 	}
 	if len(modified) == 0 && len(created) == 0 {
@@ -257,7 +271,12 @@ func emitCodingWorkbenchSourcePreview(app *App, sessionID, diskProjectPath strin
 
 	inputs := make([]subAgentCodeEventInput, 0, len(modified)+len(created))
 	for _, p := range modified {
-		inputs = append(inputs, subAgentCodeEventInput{path: p, created: false, forceOpen: forceOpen})
+		inputs = append(inputs, subAgentCodeEventInput{
+			path:       p,
+			created:    false,
+			forceOpen:  forceOpen,
+			background: !turnPaths[p],
+		})
 	}
 	for _, p := range created {
 		inputs = append(inputs, subAgentCodeEventInput{path: p, created: true, forceOpen: forceOpen})
@@ -484,8 +503,9 @@ func emitCodingSubAgentCodeSessionStart(app *App, sessionID string, projectPath 
 	if app == nil || app.codeEventEmitter == nil {
 		return
 	}
-	// Keep the right-hand source panel open while clearing files for the new turn.
-	// Without auto_open, pure-coding tabs flicker closed on every session_start.
+	// auto_open keeps existing file tabs and the current pane visibility so a
+	// new turn does not clear them. It must not pop the pane: a turn that only
+	// reads has no file change. A later create/modify event opens the file.
 	app.codeEventEmitter.EmitSessionStartAutoOpen(sessionID, projectPath...)
 }
 
@@ -565,10 +585,11 @@ func buildCodingSubAgentCodeFileEvents(sessionID, projectPath string, filesModif
 }
 
 type subAgentCodeEventInput struct {
-	path      string
-	created   bool
-	forceOpen bool
-	original  *string
+	path       string
+	created    bool
+	forceOpen  bool
+	original   *string
+	background bool // sticky refill: a read, not a create/modify
 }
 
 func buildCodingSubAgentCodeFileEventsForPaths(sessionID, projectPath string, inputFiles []subAgentCodeEventInput) []CodeFileEvent {
@@ -610,7 +631,9 @@ func buildCodingSubAgentCodeFileEventsForPaths(sessionID, projectPath string, in
 
 		opType := "modify"
 		var original string
-		if input.created {
+		if input.background {
+			opType = "read"
+		} else if input.created {
 			opType = "create"
 		} else if input.original != nil {
 			original = *input.original

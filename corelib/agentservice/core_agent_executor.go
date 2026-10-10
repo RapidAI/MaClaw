@@ -13,12 +13,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -399,6 +401,8 @@ type coreAgentCallbacks struct {
 	dynamicSemanticInitialized    bool
 	dynamicSemanticManaged        bool
 	loopID                        string
+	botID                         string
+	botRound                      int32
 	onToken                       func(string)
 	onToolCall                    func(string)
 	onToolResult                  func(name, result string)
@@ -444,18 +448,24 @@ type coreAgentCallbacks struct {
 	imFileHandler    func(args map[string]interface{}) string
 
 	// messageMetadata/sessionMetadata are inbound transport facts only.
-	messageMetadata            map[string]string
-	sessionMetadata            map[string]string
-	trustedDestinationID       string
-	inboundChannelScope        string
-	scheduleDispatchBindings   *ScheduleDispatchBindingStore
-	lastAdministeredScheduleID string
-	delegateSubtask            func(context.Context, Principal, string) (string, error)
-	delegateChild              bool
-	trustedSSH                 func(context.Context, Principal, string) (string, error)
-	trustedBrowser             func(context.Context, Principal, string, string) (string, error)
-	trustedComputerUse         func(context.Context, Principal, string) (string, error)
-	executor                   *CoreAgentExecutor
+	messageMetadata map[string]string
+	// desktopOutcomeIdleContinues counts finishes that had not called the
+	// desktop yet. desktopOutcomeMissContinues counts finishes whose tool
+	// results and screenshot did not meet the request. They are separate so
+	// an early reminder cannot use up the repair rounds.
+	desktopOutcomeIdleContinues int
+	desktopOutcomeMissContinues int
+	sessionMetadata             map[string]string
+	trustedDestinationID        string
+	inboundChannelScope         string
+	scheduleDispatchBindings    *ScheduleDispatchBindingStore
+	lastAdministeredScheduleID  string
+	delegateSubtask             func(context.Context, Principal, string) (string, error)
+	delegateChild               bool
+	trustedSSH                  func(context.Context, Principal, string) (string, error)
+	trustedBrowser              func(context.Context, Principal, string, string) (string, error)
+	trustedComputerUse          func(context.Context, Principal, string) (string, error)
+	executor                    *CoreAgentExecutor
 	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
 	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
 	dispatcherOnce sync.Once
@@ -521,7 +531,28 @@ func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
 // coding workflow phase is wrapped in the shared durable runtime. The latter
 // path stays in agentservice so Principal/Tenant/User/Instance/Session are
 // constructed and authorized by Service before any model or tool call.
-func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (res *ExecuteResult, err error) {
+	botID := botlog.FromMeta(req.Message.Metadata)
+	started := time.Now()
+	if botID != "" {
+		phase := strings.TrimSpace(req.Message.Metadata["bot_phase"])
+		botlog.Write(botID, "srv.execute_begin", nil,
+			"instance", strings.TrimSpace(req.Instance.ID),
+			"session", strings.TrimSpace(req.Session.ID),
+			"phase", phase,
+			"content_len", strconv.Itoa(len(req.Message.Content)),
+		)
+		defer func() {
+			n := 0
+			if res != nil {
+				n = len(res.Content)
+			}
+			botlog.Write(botID, "srv.execute_end", err,
+				"dur_ms", strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+				"content_len", strconv.Itoa(n),
+			)
+		}()
+	}
 	if e == nil {
 		return nil, errors.New("core agent executor is nil")
 	}
@@ -580,6 +611,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	llmCfg = applyHubBotLLMServiceGroup(llmCfg, req.Instance.Metadata)
 	resources, err := e.resourcesForUser(req.Principal.TenantID, req.Principal.UserID, req.DataDir)
 	if err != nil {
 		return nil, err
@@ -649,6 +681,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		dynamicOperationScope:    firstNonEmptyDynamicOperationScope(req.Message.ID, req.Session.ID),
 		taskRelation:             trustedTaskRelationForExecute(req),
 		loopID:                   fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
+		botID:                    botlog.FromMeta(req.Message.Metadata),
 		onToken:                  wrapVisibleChatTokenCallback(req.OnToken),
 		onToolCall:               req.OnToolCall,
 		onToolResult:             req.OnToolResult,
@@ -1308,6 +1341,51 @@ func convertHistoryToEntries(history []Message, currentID string) []agent.Conver
 	return entries
 }
 
+// hubBotLLMServiceGroupID is Hub's reserved free group. Bot turns pin it so
+// usage stays on the owner's viewer token instead of another bound group.
+const hubBotLLMServiceGroupID = "system-free"
+
+func applyHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig, metadata map[string]string) corelib.MaclawLLMConfig {
+	if strings.TrimSpace(metadata["hub_bot"]) != "1" {
+		return cfg
+	}
+	return PinHubBotLLMServiceGroup(cfg)
+}
+
+// PinHubBotLLMServiceGroup marks one request for Hub's system-free group.
+// Callers still send the header only when the endpoint is first-party Hub.
+func PinHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	cfg.ServiceGroupID = hubBotLLMServiceGroupID
+	return cfg
+}
+
+type hubBotLLMGroupKey struct{}
+
+// WithHubBotLLMGroup records that this turn's side calls, including the
+// semantic intent tree, belong to a hub bot and must use system-free.
+func WithHubBotLLMGroup(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, hubBotLLMGroupKey{}, hubBotLLMServiceGroupID)
+}
+
+// HubBotLLMGroup reports whether ctx was marked by WithHubBotLLMGroup.
+func HubBotLLMGroup(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	group, _ := ctx.Value(hubBotLLMGroupKey{}).(string)
+	return strings.TrimSpace(group) == hubBotLLMServiceGroupID
+}
+
+func contextWithHubBotLLMGroup(ctx context.Context, metadata map[string]string) context.Context {
+	if strings.TrimSpace(metadata["hub_bot"]) != "1" {
+		return ctx
+	}
+	return WithHubBotLLMGroup(ctx)
+}
+
 func (c *coreAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.llmCfg }
 
 func (c *coreAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
@@ -1623,11 +1701,21 @@ func applySSHActionEnum(c *coreAgentCallbacks, specs []coreToolSpec) {
 		if specs[i].Name != "ssh" {
 			continue
 		}
-		props, _ := specs[i].Parameters["properties"].(map[string]interface{})
+		if specs[i].Parameters == nil {
+			continue
+		}
+		// CoreToolJSONSchema shares the registry property table. The enum
+		// belongs on this spec only.
+		params := agent.CloneToolDefinitionMap(specs[i].Parameters)
+		if params == nil {
+			continue
+		}
+		props, _ := params["properties"].(map[string]interface{})
 		if props == nil {
 			continue
 		}
 		props["action"] = map[string]interface{}{"type": "string", "enum": sshAllowedActions(c.allowSSHFileTransfer)}
+		specs[i].Parameters = params
 	}
 }
 
@@ -2112,6 +2200,22 @@ func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agen
 // and the ExecuteToolStructured preamble guards all stay on the path.
 func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string) agent.ToolExecutionResult {
 	name, argsJSON, _ = agentruntime.CanonicalizeToolCallJSON(name, argsJSON)
+	if c != nil && c.botUsesContainer() {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "web_search" || trimmed == "web_fetch" {
+			return c.ExecuteToolStructured(name, argsJSON)
+		}
+		if c.botMissesContainer(trimmed) {
+			return agent.ToolExecutionResult{Result: "Error: " + botContainerToolReason, Outcome: agent.ToolExecutionOutcomeError}
+		}
+	}
+	// A managed turn would otherwise hand the name ssh to the bound-session
+	// command. A bot uses the same connect, exec, and background tool as a
+	// digital employee. When this account cannot open a host, that handler
+	// is what says so.
+	if c != nil && c.dynamicSemanticManaged && c.botUsesContainer() && strings.TrimSpace(name) == "ssh" {
+		return c.ExecuteToolStructured(name, argsJSON)
+	}
 	if c != nil && c.runtimeToolInvoker != nil && c.runtimeToolExposed(name) {
 		if !c.IsToolAllowed(strings.TrimSpace(name)) {
 			return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: tool %s is not allowed by current policy", name), Outcome: agent.ToolExecutionOutcomeError}
@@ -2321,8 +2425,12 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	}
 	// A short bot command is classified as a light turn. The cloud desktop is
 	// still how that bot does the work, so the module tool stays visible even
-	// when a semantic grant uses the same name.
+	// when a semantic grant uses the same name. ssh stays for the same reason
+	// when this account can open a remote host.
 	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) {
+		return true
+	}
+	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {
 		return true
 	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
@@ -2334,45 +2442,12 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 }
 
 // desktopBotKeepsLoggedInBrowser is a Hub bot whose cloud desktop is on this
-// turn. web_fetch and web_search would open another browser and miss the
-// login the person just left in the desktop.
+// turn. A short follow-up would otherwise be a light turn and hide that desktop.
 func (c *coreAgentCallbacks) desktopBotKeepsLoggedInBrowser() bool {
 	if c == nil || strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot"]) != "1" {
 		return false
 	}
 	return c.runtimeToolExposed("desktop")
-}
-
-func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) []map[string]interface{} {
-	if !c.desktopBotKeepsLoggedInBrowser() {
-		return tools
-	}
-	kept := make([]map[string]interface{}, 0, len(tools))
-	for _, tool := range tools {
-		if c.missesDesktopLogin(tooldef.Name(tool)) {
-			continue
-		}
-		kept = append(kept, tool)
-	}
-	return kept
-}
-
-func (c *coreAgentCallbacks) missesDesktopLogin(name string) bool {
-	if !c.desktopBotKeepsLoggedInBrowser() {
-		return false
-	}
-	if desktopLeavesLoggedInBrowser(name) {
-		return true
-	}
-	surface := c.dynamicSemanticSurface
-	if surface == nil {
-		return false
-	}
-	grant, ok := surface.grants[strings.TrimSpace(name)]
-	if !ok {
-		return false
-	}
-	return desktopLeavesLoggedInBrowser(grant.AdapterName)
 }
 
 func desktopLeavesLoggedInBrowser(name string) bool {
@@ -2403,8 +2478,8 @@ func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allow
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
-	if c != nil && c.missesDesktopLogin(name) {
-		return false, "use the desktop browser; a separate web tool does not have this user's login"
+	if c != nil && c.botMissesContainer(name) {
+		return false, botContainerToolReason
 	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil && c.dynamicSemanticSurface.HasGrant(name) {
 		// Dynamic semantic calls use an opaque grant as their function name.
@@ -2514,6 +2589,9 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
 		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
 	}
+	if c != nil && c.botMissesContainer(strings.TrimSpace(name)) {
+		return agent.ToolExecutionResult{Result: "Error: " + botContainerToolReason, Outcome: agent.ToolExecutionOutcomeError}
+	}
 	switch strings.TrimSpace(name) {
 	case "record_audio":
 		// Desktop/mobile hosts honor the interactive marker in their own
@@ -2535,6 +2613,9 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 	case "ssh":
 		if !c.canUseSSH() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		if action := strings.TrimSpace(agent.StringArg(args, "action")); action != "" && c.botUsesContainer() && strings.TrimSpace(c.messageMetadata["bot_phase"]) == "plan" && !botSSHPlanAction(action) {
+			return agent.ToolExecutionResult{Result: "Error: plan phase blocks ssh " + action + " until the user confirms", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		if c.runtimeRemoteBinding != nil {
 			resources := c.runtimeParentExecutor.sshResourcesForUser(c.principal.TenantID, c.principal.UserID)
@@ -2800,12 +2881,18 @@ func (c *coreAgentCallbacks) OnToken(delta string) {
 func (c *coreAgentCallbacks) OnProgress(string) {}
 func (c *coreAgentCallbacks) OnToolCall(name string) {
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+	if c != nil && c.botID != "" {
+		botlog.Write(c.botID, "srv.tool_start", nil, "tool", name, "loop", c.loopID)
+	}
 	if c.onToolCall != nil {
 		c.onToolCall(name)
 	}
 }
 func (c *coreAgentCallbacks) OnToolResult(name string) {
 	log.Printf("[tool-call] done name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+	if c != nil && c.botID != "" {
+		botlog.Write(c.botID, "srv.tool_done", nil, "tool", name, "loop", c.loopID)
+	}
 	if c.onToolResult != nil {
 		// Full tool payload is not available on this callback surface; hosts that
 		// need the body should use post-run artifacts. Name-only is enough for
@@ -2834,7 +2921,17 @@ func (c *coreAgentCallbacks) LLMRequestContext(int) (context.Context, func(error
 	if c == nil || c.ctx == nil {
 		return context.Background(), func(error) {}, nil
 	}
+	if c.botID != "" {
+		round := atomic.AddInt32(&c.botRound, 1)
+		botlog.Write(c.botID, "srv.llm_round", nil,
+			"round", strconv.Itoa(int(round)),
+			"model", c.llmCfg.Model,
+			"provider", botlog.Host(c.llmCfg.URL),
+			"wire", c.llmCfg.WireAPI,
+		)
+	}
 	if err := c.ctx.Err(); err != nil {
+		botlog.Write(c.botID, "srv.llm_round", err, "round", "cancelled")
 		return nil, nil, err
 	}
 	return c.ctx, func(error) {}, nil

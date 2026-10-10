@@ -530,6 +530,154 @@ func PostDesktopAppHandler(pool *desktoppool.Pool) http.HandlerFunc {
 	}
 }
 
+// PostDesktopOpenHandler forwards a request to start one GUI program.
+// The program is argv, not a shell line.
+func PostDesktopOpenHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string   `json:"tenant_id"`
+			UserID   string   `json:"user_id"`
+			Display  string   `json:"display"`
+			Program  string   `json:"program"`
+			Args     []string `json:"args"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		output, err := pool.RunOpen(r.Context(), in.TenantID, in.UserID, in.Display, in.Program, in.Args)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": output})
+	}
+}
+
+// PostDesktopInstallHandler forwards a package install from MaClawSrv to the
+// user's Docker service. The package list is apt-get argv, not a shell line.
+func PostDesktopInstallHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string   `json:"tenant_id"`
+			UserID   string   `json:"user_id"`
+			Packages []string `json:"packages"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		output, err := pool.RunInstall(r.Context(), in.TenantID, in.UserID, in.Packages)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": output})
+	}
+}
+
+// PostDesktopFileHandler forwards a container file read, write, edit, list, or bytes fetch.
+func PostDesktopFileHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID  string `json:"tenant_id"`
+			UserID    string `json:"user_id"`
+			Action    string `json:"action"`
+			Path      string `json:"path"`
+			Content   string `json:"content"`
+			OldString string `json:"old_string"`
+			NewString string `json:"new_string"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		output, err := pool.RunFile(r.Context(), in.TenantID, in.UserID, in.Action, in.Path, in.Content, in.OldString, in.NewString)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": output})
+	}
+}
+
+// PostDesktopBashHandler runs one command in the user's desktop container.
+func PostDesktopBashHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			Command  string `json:"command"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		output, err := pool.RunBash(r.Context(), in.TenantID, in.UserID, in.Command)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": output})
+	}
+}
+
+// PostDesktopHTTPHandler fetches one URL through the desktop container's network.
+func PostDesktopHTTPHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			URL      string `json:"url"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		body, status, kind, err := pool.RunHTTP(r.Context(), in.TenantID, in.UserID, in.URL)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"body": body, "status": status, "content_type": kind})
+	}
+}
+
 // PostDesktopScreenshotHandler returns a PNG of the user's cloud desktop for
 // MaClawSrv's desktop tool. It uses the same desktop API token as /app, and
 // the image travels base64-encoded in JSON like the other desktop replies.
@@ -546,20 +694,25 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			TenantID string `json:"tenant_id"`
 			UserID   string `json:"user_id"`
 			Display  string `json:"display"`
+			Name     string `json:"name"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
 			return
 		}
-		png, err := pool.Screenshot(r.Context(), in.TenantID, in.UserID, in.Display)
+		png, saved, err := pool.Screenshot(r.Context(), in.TenantID, in.UserID, in.Display, in.Name)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"mime":         "image/png",
 			"image_base64": base64.StdEncoding.EncodeToString(png),
 			"bytes":        len(png),
-		})
+		}
+		if saved != "" {
+			body["saved_path"] = saved
+		}
+		writeJSON(w, http.StatusOK, body)
 	}
 }

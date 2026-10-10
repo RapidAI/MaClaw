@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -45,6 +46,11 @@ type MCPToolEntry struct {
 	// Contract is control-plane supplied. An inventory item without one is
 	// ready for management/diagnostics but quarantined from Agent execution.
 	Contract DynamicCapabilityContract
+	// CapabilityGlobalKey and InstalledCapabilityID are the installed server's
+	// capability ref. They select a code-reviewed binding. They are not a
+	// provision, and an instance id alone does not admit a product.
+	CapabilityGlobalKey   string
+	InstalledCapabilityID string
 }
 
 // MCPDynamicContractResolver is the only extension point that translates a
@@ -63,6 +69,11 @@ type MCPToolBinding struct {
 	ToolName       string
 	SchemaDigest   string
 	ContractDigest string
+	// ArgumentFields renames model arguments to observed tool fields after the
+	// model schema has been authorized. Empty means the model schema is the
+	// observed schema. It is not part of StableID: the invocation schema digest
+	// already changes when the model contract changes.
+	ArgumentFields map[string]string
 }
 
 func (b MCPToolBinding) StableID() string {
@@ -185,7 +196,7 @@ func (b *MCPToolBridge) SetMCPDynamicContractResolver(resolver MCPDynamicContrac
 // the Service's MCP runtime.
 func NewMCPToolBridge(svc *Service) *MCPToolBridge {
 	bridge := &MCPToolBridge{
-		svc:       svc,
+		svc: svc,
 		// Tools are actually invoked through this client, so it carries the
 		// same SSRF guard as the probe path (2026-09-09 re-review).
 		client:    mcphttp.NewPrivateHTTPClient(30 * time.Second),
@@ -434,36 +445,20 @@ func (b *MCPToolBridge) callRemoteTool(runtime *userMCPRuntime, entry corelib.MC
 	return parseMCPToolCallResult(payload)
 }
 
-// parseMCPToolCallResult extracts text content from a tools/call response.
+// parseMCPToolCallResult projects a tools/call payload to its text body.
+// A completed tool error stays a string so the legacy agent loop can classify
+// it with the same "Error:" marker as its other adapter failures. The semantic
+// catalog treats that same error as a failed selection instead.
 func parseMCPToolCallResult(raw json.RawMessage) (string, error) {
-	// MCP tools/call result format:
-	// {"content": [{"type": "text", "text": "..."}, ...], "isError": false}
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// Fallback: return raw JSON as string.
-		return string(raw), nil
-	}
-	var texts []string
-	for _, c := range result.Content {
-		if c.Type == "text" && c.Text != "" {
-			texts = append(texts, c.Text)
+	text, err := mcphttp.ToolCallContent(string(raw))
+	if err != nil {
+		var toolErr *mcphttp.ToolCallError
+		if errors.As(err, &toolErr) {
+			return "Error: " + toolErr.Error(), nil
 		}
+		return "", err
 	}
-	if len(texts) == 0 {
-		// No text content — return raw JSON.
-		return string(raw), nil
-	}
-	combined := strings.Join(texts, "\n")
-	if result.IsError {
-		return "Error: " + combined, nil
-	}
-	return combined, nil
+	return text, nil
 }
 
 // SetMCPToolProvider wires the MCP tool provider into the executor.

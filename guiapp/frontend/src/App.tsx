@@ -165,6 +165,7 @@ import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughComman
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
+import { useOpenCloudDriveTab } from './components/layout/useOpenCloudDriveTab';
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
@@ -194,6 +195,7 @@ import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
 import { DesktopBotWorkspace } from './components/bots/DesktopBotWorkspace';
+import { desktopBotAccountId } from './components/bots/desktopBots';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
 import {
@@ -607,6 +609,8 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
+    // The home knowledge button opens the panel without the settings category rail.
+    const [settingsNavHidden, setSettingsNavHidden] = useState(false);
     const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
@@ -1111,14 +1115,19 @@ function App() {
     }, []);
     useEffect(() => {
         const openSettings = (e: Event) => {
-            const detail = (e as CustomEvent<{ tab?: string }>).detail;
+            const detail = (e as CustomEvent<{ tab?: string; hideSettingsNav?: boolean }>).detail;
             const tab = resolveSettingsTabId(detail?.tab, { hideVirtualEmployee: !veNavigationAvailable });
             setNavTabNow('settings');
             selectSettingsTab(tab);
+            setSettingsNavHidden(tab === 'knowledge' && detail?.hideSettingsNav === true);
         };
         window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
         return () => window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
     }, [setNavTabNow, selectSettingsTab, veNavigationAvailable]);
+    useEffect(() => {
+        if (navTab === 'settings' && settingsTab === 'knowledge') return;
+        setSettingsNavHidden(false);
+    }, [navTab, settingsTab]);
     const openMISDataSettings = useCallback(() => {
         setNavTabNow('settings');
         selectSettingsTab('misData');
@@ -2652,6 +2661,8 @@ function App() {
         }
         setNavTabNow(tool);
         setToolDropdownOpen(false);
+        // The gear and other rail entries open the full settings page, rail included.
+        if (tool === 'settings') setSettingsNavHidden(false);
         if (tool === 'message') {
             switchTool('ai');
             return;
@@ -2740,6 +2751,8 @@ function App() {
         window.addEventListener(OPEN_FILE_LIBRARY_EVENT, revealFileLibrary);
         return () => window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, revealFileLibrary);
     }, [setNavTabNow]);
+
+    useOpenCloudDriveTab(navTabRef, setNavTabNow);
 
     useEffect(() => {
         const openExpertFromSearch = (event: Event) => {
@@ -4628,12 +4641,13 @@ function App() {
     }, [remoteSessions, activeTool]);
 
     // Track manageable background loops, scheduled tasks, and passthrough
-    // commands for the sidebar badge and workbench status card.
+    // commands for the sidebar badge and workbench status card. The badge
+    // stays on the rail after the workbench unmounts, so this refresh must
+    // not stop when the user opens 任务监控.
     const [sidebarBgLoops, setSidebarBgLoops] = useState<any[]>([]);
     const [sidebarScheduledTasks, setSidebarScheduledTasks] = useState<any[]>([]);
     const [sidebarPassthroughCommands, setSidebarPassthroughCommands] = useState<any[]>([]);
     useEffect(() => {
-        if (navTab !== 'ai') return;
         let cancelled = false;
         const refresh = async () => {
             const [loops, scheduled, passthrough] = await Promise.allSettled([
@@ -4662,7 +4676,7 @@ function App() {
             if (typeof cleanupLoops === "function") cleanupLoops(); else safeEventsOff("background-loops-changed");
             if (typeof cleanupScheduled === "function") cleanupScheduled(); else safeEventsOff("scheduled-tasks-changed");
         };
-    }, [navTab]);
+    }, []);
 
     const activeBackgroundLoopCount = useMemo(() => countActiveBackgroundLoops(sidebarBgLoops), [sidebarBgLoops]);
     const scheduledTaskCount = useMemo(() => countVisibleScheduledTasks(sidebarScheduledTasks), [sidebarScheduledTasks]);
@@ -5661,7 +5675,7 @@ ${instruction}`;
                     windowMaximized={windowMaximized}
                 />}
                 {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' || navTab === 'bots' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
-                {navTab === 'bots' && <DesktopBotWorkspace lang={lang} userId={String((config as any)?.remote_user_id || (config as any)?.remote_email || 'local')} />}
+                {navTab === 'bots' && <DesktopBotWorkspace lang={lang} userId={desktopBotAccountId(config)} />}
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (
@@ -5669,6 +5683,7 @@ ${instruction}`;
                             tabs={settingsTabOptions}
                             activeTab={resolvedSettingsTab}
                             onChangeTab={selectSettingsTab}
+                            hideNav={settingsNavHidden && resolvedSettingsTab === 'knowledge'}
                             lang={lang}
                             t={t}
                             localizeText={localizeText}
@@ -5782,6 +5797,7 @@ ${instruction}`;
                             localizeText={localizeText}
                             initialSessionTab={remoteInitialSessionTab}
                             onSessionTabChange={setRemoteInitialSessionTab}
+                            botUserId={desktopBotAccountId(config)}
                         />
                     )}
                     {navTab === 'api-store' && (
@@ -6779,5 +6795,4 @@ ${instruction}`;
         </div>
     );
 }
-
 export default App;

@@ -62,8 +62,16 @@ const (
 	// be granted the one that can also change it, and the restricted workflow
 	// states that deny mutation denied the lookup with it — a planning turn
 	// could not read the data it was planning against.
-	CapabilityBusinessDataRead     CapabilityID = "business.data.read"
-	CapabilityBusinessDataMIS      CapabilityID = "business.data.mis"
+	CapabilityBusinessDataRead CapabilityID = "business.data.read"
+	CapabilityBusinessDataMIS  CapabilityID = "business.data.mis"
+	// CapabilityRecordReadWorklog and CapabilityRecordUpdateWorklog are one
+	// external time-block work record, split so a lookup cannot receive the
+	// mutation and an append cannot be satisfied by the query tool.
+	// task.track.local is the local todo list. business.data.mis is the MIS
+	// form integration. Neither outcome is this record, and the product or
+	// server brand must not appear in the ID.
+	CapabilityRecordReadWorklog    CapabilityID = "record.read.worklog"
+	CapabilityRecordUpdateWorklog  CapabilityID = "record.update.worklog"
 	CapabilityInteractionAskUser   CapabilityID = "interaction.ask.user"
 	CapabilityGovernanceInspectExp CapabilityID = "governance.inspect.experience"
 )
@@ -313,6 +321,16 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			ID: CapabilityBusinessDataMIS, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Operate business data through the MIS integration.",
 			Effects: []EffectClass{EffectSensitive},
+		},
+		{
+			ID: CapabilityRecordReadWorklog, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Read one external time-block work record without changing it.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
+			ID: CapabilityRecordUpdateWorklog, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Append or update one external time-block work record. This is not the local todo list.",
+			Effects: []EffectClass{EffectExternalEffect},
 		},
 		{
 			ID: CapabilityInteractionAskUser, Version: "v1", Owner: builtinCapabilityOntologyOwner,

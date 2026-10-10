@@ -238,7 +238,10 @@ func runServer(ctx context.Context) error {
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
+		// Ordinary responses. Synchronous /messages replaces this per request
+		// in allowMessageResponseWrite because that handler writes nothing
+		// until the turn finishes.
+		WriteTimeout: 120 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}

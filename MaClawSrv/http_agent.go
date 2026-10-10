@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	transporthttp "github.com/RapidAI/CodeClaw/MaClawSrv/transport/http"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -144,32 +147,120 @@ func (s *HTTPServer) handleGetInstanceBootstrap(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, sanitizeInstanceBootstrapForAPI(s.svc.DataRoot(), out))
 }
 
+// instanceMessageTarget loads the instance for a message send. A missing or
+// not-ready instance returns the error PostMessage would, before any caller
+// opens the desktop. That open counts as a run, and the matching stop on the
+// way out races the next send of the same command.
+func instanceMessageTarget(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, instanceID string) (string, map[string]string, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if svc == nil {
+		return instanceID, nil, nil
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil || inst == nil {
+		return instanceID, nil, err
+	}
+	if id := strings.TrimSpace(inst.ID); id != "" {
+		instanceID = id
+	}
+	if inst.Ready {
+		return instanceID, inst.Metadata, nil
+	}
+	return instanceID, inst.Metadata, fmt.Errorf("instance is not ready: %s", inst.ReadyReason)
+}
+
+func (s *HTTPServer) messageTarget(r *http.Request, p agentservice.Principal) (string, map[string]string, error) {
+	if r == nil {
+		return "", nil, nil
+	}
+	svc := (*agentservice.Service)(nil)
+	if s != nil {
+		svc = s.svc
+	}
+	return instanceMessageTarget(r.Context(), svc, p, r.PathValue("instanceId"))
+}
+
 func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SendMessageInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	botID := strings.TrimSpace(in.ClientSessionKey)
+	phase := ""
+	if in.Metadata != nil {
+		phase = strings.TrimSpace(in.Metadata["bot_phase"])
+		if botID == "" {
+			botID = strings.TrimSpace(in.Metadata["bot_id"])
+		}
+	}
+	started := time.Now()
+	status := http.StatusOK
+	var callErr error
+	var detail []string
+	if botID != "" {
+		botlog.Write(botID, "srv.http_begin", nil,
+			"instance", r.PathValue("instanceId"),
+			"phase", phase,
+			"content_len", strconv.Itoa(len(in.Content)),
+		)
+		defer func() {
+			fields := []string{
+				"instance", r.PathValue("instanceId"),
+				"phase", phase,
+				"http_status", strconv.Itoa(status),
+				"dur_ms", strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+			}
+			fields = append(fields, detail...)
+			botlog.Write(botID, "srv.http_end", callErr, fields...)
+		}()
+	}
 	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
 		if in.ClientMessageID != "" && strings.TrimSpace(in.ClientMessageID) != key {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key does not match client_message_id"})
+			status = http.StatusBadRequest
+			callErr = errors.New("Idempotency-Key does not match client_message_id")
+			writeJSON(w, status, map[string]string{"error": callErr.Error()})
 			return
 		}
 		in.ClientMessageID = key
 	}
 	if isReservedCodingRuntimeMetadata(in.Metadata) || isReservedCodingRuntimeMetadata(in.SessionMetadata) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "coding runtime metadata must be created by an explicit workflow runtime endpoint"})
+		status = http.StatusBadRequest
+		callErr = errors.New("coding runtime metadata must be created by an explicit workflow runtime endpoint")
+		writeJSON(w, status, map[string]string{"error": callErr.Error()})
 		return
 	}
 	wantsAsync, asyncErr := transporthttp.WantsAsyncResponse(r)
 	if asyncErr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": asyncErr.Error()})
+		status = http.StatusBadRequest
+		callErr = asyncErr
+		writeJSON(w, status, map[string]string{"error": asyncErr.Error()})
 		return
 	}
+	instanceID, metadata, notReady := s.messageTarget(r, p)
+	if notReady != nil {
+		callErr = notReady
+		status = errorStatusCode(notReady)
+		if strings.Contains(notReady.Error(), "instance is not ready:") {
+			detail = []string{"ready", "no"}
+		}
+		writeRedactedError(w, callErr, s.svc.DataRoot())
+		return
+	}
+	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	shotID := strings.TrimSpace(r.PathValue("instanceId"))
 	if wantsAsync {
+		// Occupy, the screenshot, and the handoff live on the detached run.
+		// Returning 202 from this request must not release the desktop.
+		ownsRun := false
+		in.ExecutionOwner = &ownsRun
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun)
 		sess, run, err := s.svc.SendMessageAsync(r.Context(), p, r.PathValue("instanceId"), in)
 		if err != nil {
+			callErr = err
 			if run != nil {
-				writeJSON(w, http.StatusAccepted, map[string]any{
+				status = http.StatusAccepted
+				detail = []string{"run", run.ID, "run_status", string(run.Status), "async", "true"}
+				writeJSON(w, status, map[string]any{
 					"async":      true,
 					"session":    sess,
 					"run":        sanitizeRunPtrForAPI(s.svc.DataRoot(), run),
@@ -178,13 +269,16 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 				})
 				return
 			}
+			status = http.StatusBadGateway
 			writeRedactedError(w, err, s.svc.DataRoot())
 			return
 		}
+		status = http.StatusAccepted
+		detail = []string{"run", run.ID, "run_status", string(run.Status), "async", "true"}
 		statusURL := fmt.Sprintf("/api/v1/instances/%s/runs/%s", r.PathValue("instanceId"), run.ID)
 		w.Header().Set("Preference-Applied", "respond-async")
 		w.Header().Set("Location", statusURL)
-		writeJSON(w, http.StatusAccepted, map[string]any{
+		writeJSON(w, status, map[string]any{
 			"async":      true,
 			"session":    sess,
 			"run":        sanitizeRunPtrForAPI(s.svc.DataRoot(), run),
@@ -192,33 +286,49 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		})
 		return
 	}
-	instanceID := r.PathValue("instanceId")
-	var metadata map[string]string
-	if s.svc != nil {
-		if inst, instErr := s.svc.GetInstance(r.Context(), p, instanceID); instErr == nil && inst != nil {
-			metadata = inst.Metadata
-			if strings.TrimSpace(inst.ID) != "" {
-				instanceID = inst.ID
-			}
-		}
-	}
-	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
-	releaseDesktop := occupyUserDesktop(r.Context(), desktopTenantID, desktopUserID, r.PathValue("instanceId"))
+	releaseDesktop := occupyUserDesktop(r.Context(), desktopTenantID, desktopUserID, shotID)
 	defer releaseDesktop()
-	sess, run, msg, err := s.svc.SendMessage(r.Context(), p, r.PathValue("instanceId"), in)
-	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, r.PathValue("instanceId"))
+	allowMessageResponseWrite(w)
+	shotCtx, shot := withDesktopShotSlot(r.Context())
+	sess, run, msg, err := s.svc.SendMessage(shotCtx, p, shotID, in)
+	imageCount := 0
+	fileCount := 0
+	if err == nil {
+		imageCount = attachDesktopShot(msg, shot)
+		fileCount = attachDesktopFile(msg, shot)
+	}
+	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
 	if err != nil {
+		callErr = err
+		textLen := 0
+		if msg != nil {
+			textLen = len(msg.Content)
+		}
 		if run != nil {
-			status := http.StatusBadGateway
+			status = http.StatusBadGateway
 			if run.Status == agentservice.RunStatusCancelled {
 				status = http.StatusConflict
 			}
+			detail = []string{"run", run.ID, "run_status", string(run.Status), "text_len", strconv.Itoa(textLen), "images", strconv.Itoa(imageCount), "files", strconv.Itoa(fileCount), "handoff", strconv.FormatBool(handoff), "attention", attention}
 			writeJSON(w, status, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "desktop_handoff": handoff, "attention_reason": attention})
 			return
 		}
+		status = http.StatusBadGateway
+		detail = []string{"handoff", strconv.FormatBool(handoff), "attention", attention}
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	textLen := 0
+	if msg != nil {
+		textLen = len(msg.Content)
+	}
+	runID := ""
+	runStatus := ""
+	if run != nil {
+		runID = run.ID
+		runStatus = string(run.Status)
+	}
+	detail = []string{"run", runID, "run_status", runStatus, "text_len", strconv.Itoa(textLen), "images", strconv.Itoa(imageCount), "files", strconv.Itoa(fileCount), "handoff", strconv.FormatBool(handoff), "attention", attention}
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "desktop_handoff": handoff, "attention_reason": attention})
 }
 
@@ -363,7 +473,21 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": asyncErr.Error()})
 		return
 	}
+	instanceID, metadata, notReady := s.messageTarget(r, p)
+	if notReady != nil {
+		writeRedactedError(w, notReady, s.svc.DataRoot())
+		return
+	}
+	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	shotID := strings.TrimSpace(r.PathValue("instanceId"))
+	botID := ""
+	if in.Metadata != nil {
+		botID = strings.TrimSpace(in.Metadata["bot_id"])
+	}
 	if wantsAsync {
+		ownsRun := false
+		in.ExecutionOwner = &ownsRun
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun)
 		run, err := s.svc.PostMessageAsync(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
@@ -379,21 +503,17 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 		})
 		return
 	}
-	instanceID := r.PathValue("instanceId")
-	var metadata map[string]string
-	if s.svc != nil {
-		if inst, instErr := s.svc.GetInstance(r.Context(), p, instanceID); instErr == nil && inst != nil {
-			metadata = inst.Metadata
-			if strings.TrimSpace(inst.ID) != "" {
-				instanceID = inst.ID
-			}
-		}
-	}
-	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
-	releaseDesktop := occupyUserDesktop(r.Context(), desktopTenantID, desktopUserID, r.PathValue("instanceId"))
+	releaseDesktop := occupyUserDesktop(r.Context(), desktopTenantID, desktopUserID, shotID)
 	defer releaseDesktop()
-	run, msg, err := s.svc.PostMessage(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
-	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, r.PathValue("instanceId"))
+	allowMessageResponseWrite(w)
+	shotCtx, shot := withDesktopShotSlot(r.Context())
+	run, msg, err := s.svc.PostMessage(shotCtx, p, shotID, r.PathValue("sessionId"), in)
+	if err == nil {
+		publishDesktopReply(msg, shot)
+	} else if msg != nil {
+		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
+	}
+	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
 	if err != nil {
 		if run != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "desktop_handoff": handoff, "attention_reason": attention})
@@ -411,7 +531,85 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, sanitizeRunPtrForAPI(s.svc.DataRoot(), out))
+	writeJSON(w, http.StatusOK, desktopRunAPIBody(s.svc.DataRoot(), out))
+}
+
+// desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
+// returns as soon as the run exists. Finish stores the screenshot and the
+// handoff so a later read of the run can deliver them.
+func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool) (
+	func(context.Context) context.Context,
+	func(context.Context, *agentservice.Run, *agentservice.Message, error),
+) {
+	var release func()
+	var occupyOwned *bool
+	var shot *desktopShotSlot
+	prepare := func(ctx context.Context) context.Context {
+		release, occupyOwned = occupyUserDesktopRun(ctx, tenantID, userID, instanceID)
+		next, slot := withDesktopShotSlot(ctx)
+		shot = slot
+		botlog.Write(botID, "srv.desktop_prepare", nil, "instance", instanceID)
+		return next
+	}
+	finish := func(_ context.Context, run *agentservice.Run, msg *agentservice.Message, err error) {
+		owner := owns == nil || *owns
+		if occupyOwned != nil {
+			*occupyOwned = owner
+		}
+		defer func() {
+			if release != nil {
+				release()
+			}
+		}()
+		// A repeated Idempotency-Key still occupies, then returns the run
+		// that is already executing. Release that extra count here. Taking
+		// the handoff or storing a result would publish the other run early.
+		if !owner {
+			runID := ""
+			runStatus := ""
+			if run != nil {
+				runID = run.ID
+				runStatus = string(run.Status)
+			}
+			botlog.Write(botID, "srv.desktop_finish", err,
+				"instance", instanceID,
+				"run", runID,
+				"status", runStatus,
+				"replay", "yes",
+			)
+			return
+		}
+		images := 0
+		files := 0
+		if err == nil {
+			images, files = publishDesktopReply(msg, shot)
+		} else if msg != nil {
+			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
+		}
+		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
+		storeDesktopTurnResult(run, msg, handoff, attention)
+		runID := ""
+		runStatus := ""
+		if run != nil {
+			runID = run.ID
+			runStatus = string(run.Status)
+		}
+		textLen := 0
+		if msg != nil {
+			textLen = len(msg.Content)
+		}
+		botlog.Write(botID, "srv.desktop_finish", err,
+			"instance", instanceID,
+			"run", runID,
+			"status", runStatus,
+			"text_len", strconv.Itoa(textLen),
+			"images", strconv.Itoa(images),
+			"files", strconv.Itoa(files),
+			"handoff", strconv.FormatBool(handoff),
+			"attention", attention,
+		)
+	}
+	return prepare, finish
 }
 
 func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

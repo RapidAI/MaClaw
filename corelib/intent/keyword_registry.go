@@ -84,6 +84,9 @@ func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 		LabelDatabase: 38,
 		// file_delete ranks after file_write so "写入文件" stays a write.
 		LabelFileDelete: 39,
+		// Work-record labels rank after task_track so "任务列表" stays a todo.
+		LabelWorklogRead:   40,
+		LabelWorklogUpdate: 41,
 	}
 
 	type entryKey struct {
@@ -337,4 +340,11 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "知识库维护", Label: LabelKnowledgeAdmin, Strength: Strong},
 	{Keyword: "禁用知识库", Label: LabelKnowledgeAdmin, Strength: Strong},
 	{Keyword: "knowledge maintenance", Label: LabelKnowledgeAdmin, Strength: Weak},
+
+	{Keyword: "工作日志", Label: LabelWorklogRead, Strength: Strong},
+	{Keyword: "工时记录", Label: LabelWorklogRead, Strength: Strong},
+	{Keyword: "work log", Label: LabelWorklogRead, Strength: Weak},
+	{Keyword: "修改工作日志", Label: LabelWorklogUpdate, Strength: Strong},
+	{Keyword: "补工时", Label: LabelWorklogUpdate, Strength: Strong},
+	{Keyword: "update the work log", Label: LabelWorklogUpdate, Strength: Weak},
 }

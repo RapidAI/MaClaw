@@ -760,6 +760,30 @@ def start_browser(profile, env, log, chrome_port):
     wait_for(lambda: browser_pid(profile) and port_open(chrome_port), "chromium profile %s" % profile)
 
 
+def keep_screen_awake(display):
+    """Keep this display's framebuffer from going black.
+
+    Xvfb blanks the picture after ten minutes with no input. Watching does
+    not send input, so the desktop someone is looking at goes black, and
+    taking over attaches to that same black frame. The window session can
+    turn blanking back on after it starts, so the watcher repeats this.
+    """
+    if shutil.which("xset") is None:
+        return
+    env = os.environ.copy()
+    env["DISPLAY"] = ":%d" % int(display)
+    for argv in (
+        ["xset", "s", "off"],
+        ["xset", "s", "noblank"],
+        ["xset", "s", "reset"],
+        ["xset", "-dpms"],
+    ):
+        try:
+            subprocess.call(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            return
+
+
 def session_alive(pids, display):
     """True while this desktop's X server and window session still run.
 
@@ -804,10 +828,12 @@ def start_desktop(key, display):
     for name in ("proxy", "vgate", "vnc", "x11vnc", "fluxbox", "dbus", "xvfb"):
         kill_pid(pids.pop(name, None))
     clear_stale_display(display)
-    xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset"], env, log)
+    # -s 0 disables the server's own ten-minute blank before any client connects.
+    xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset", "-s", "0"], env, log)
     pids["xvfb"] = xvfb.pid
     write_pids(key, pids)
     wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
+    keep_screen_awake(display)
     token = desktop_token_for(key)
     vnc = start_vnc(env, log, display, token) if token else None
     if vnc is not None:
@@ -851,6 +877,7 @@ def start_desktop(key, display):
 
 def restart_browser(key, display, profile, env, log, chrome_port, pids):
     """Start only the browser on a desktop whose session is still running."""
+    keep_screen_awake(display)
     bus = Path("/tmp/.maclaw-dbus-%d" % display)
     if pid_alive(pids.get("dbus")) and bus.exists():
         env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
@@ -2616,6 +2643,7 @@ def watch_vnc(key, display):
             if desktop_running(key):
                 ensure_vnc(key, display)
                 ensure_proxy(key, display)
+                keep_screen_awake(display)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             lock_file.close()

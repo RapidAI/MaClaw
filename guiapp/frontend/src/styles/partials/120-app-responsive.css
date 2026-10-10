@@ -457,14 +457,15 @@
   }
 }
 
-/* Compact rail popups: anchor to the actual rail width after it shrinks to
-   84px / 64px. A fixed 112px left offset floats the menu 28–48px away. */
+/* Compact rail popups: SystemPopupMenu sets left from the rail's laid-out
+   right edge. Do not set left here. On position:fixed, a percentage left is
+   the viewport width, which pushes the menu off-screen once the rail shrinks
+   to 84px / 64px. These rules only keep the item row inside the viewport. */
 @media (max-width: 1200px) {
   .mc-nav-rail [data-testid='system-popup-menu'],
   .mc-nav-rail [data-testid='extensions-popup-menu'],
   .mc-nav-rail [data-testid='library-popup-menu'],
   .mc-nav-rail [data-testid='pro-features-popup-menu'] {
-    left: calc(100% + 8px) !important;
     max-width: calc(100vw - 96px) !important;
   }
 }
@@ -473,7 +474,6 @@
   .mc-nav-rail [data-testid='extensions-popup-menu'],
   .mc-nav-rail [data-testid='library-popup-menu'],
   .mc-nav-rail [data-testid='pro-features-popup-menu'] {
-    left: calc(100% + 6px) !important;
     max-width: calc(100vw - 76px) !important;
   }
 }
@@ -1442,8 +1442,9 @@
     .mobile-documents-body { flex-direction: column; overflow: hidden; }
     .mobile-documents-list-pane { width: 100% !important; min-width: 0 !important; height: 42%; flex: 0 0 42%; border-right: 0 !important; border-bottom: 1px solid var(--theme-border, #d9e1ec); }
     .mobile-documents-preview-pane { min-height: 0; }
-    .mobile-documents-preview-header { padding: 14px 16px !important; flex-wrap: wrap; }
-    .mobile-documents-preview-header > .mobile-documents-btn { min-height: 38px; padding: 0 11px; }
+    .mobile-documents-preview-header { padding: 14px 16px !important; }
+    .mdoc-preview-actions .mdoc-toolbar-btn { height: 38px; min-height: 38px; padding: 0 11px; }
+    .mdoc-preview-actions .mdoc-toolbar-btn:not(:has(span)):has(svg) { width: 38px; padding: 0; }
     .mobile-documents-preview-body { padding: 18px !important; }
 }
 
@@ -1566,6 +1567,12 @@
   --mc-done: color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary));
   --mc-done-bg: color-mix(in srgb, var(--theme-primary) 7%, var(--mc-muted-surface));
   --mc-done-border: color-mix(in srgb, var(--theme-primary) 26%, var(--mc-line));
+  /* Header "needs action" pill. Warning amber fought the cool shell, and a
+     primary-heavy mix read as a second running chip. Use the title ink, with
+     only a light primary wash so it stays a chip. */
+  --mc-wait: var(--mc-chrome-ink, var(--theme-text-secondary));
+  --mc-wait-bg: color-mix(in srgb, var(--theme-primary) 6%, var(--mc-surface));
+  --mc-wait-border: color-mix(in srgb, var(--theme-primary) 22%, var(--mc-line));
 }
 
 #App .sidebar,
@@ -1605,18 +1612,14 @@
 #App .top-header__title,
 #App .mc-header-brand,
 #App .mc-task-pane__title,
-#App .mc-task-execution-header strong,
 #App .mc-task-execution h1,
 #App .mc-task-execution h2,
 #App .mc-welcome__title {
   color: var(--mc-ink) !important;
 }
 #App .mc-header-ready,
-#App .mc-task-execution-meta,
 #App .mc-task-execution [class*='timestamp'],
-#App .mc-task-execution [class*='meta'],
-#App .mc-workbench-status-card__row,
-#App .mc-workbench-status-card__online {
+#App .mc-task-execution [class*='meta'] {
   color: var(--mc-copy) !important;
 }
 
@@ -1882,10 +1885,6 @@
 }
 #App .mc-task-execution [data-testid='coding-agent-file-change-row'] { border-color: transparent !important; }
 
-#App .mc-workbench-status-card__row strong,
-#App .mc-workbench-status-card__model strong {
-  color: var(--mc-ink) !important;
-}
 #App .mc-task-pane [aria-label*='count'],
 #App .mc-task-pane .count,
 #App .mc-task-pane [class*='count'] {
@@ -1922,7 +1921,11 @@
   border-color: color-mix(in srgb, var(--mc-done) 30%, var(--mc-line)) !important;
   color: var(--mc-done) !important;
 }
-#App .mc-task-execution-status[data-status='pending'],
+#App .mc-task-execution-status[data-status='pending'] {
+  background: var(--mc-wait-bg) !important;
+  border-color: var(--mc-wait-border) !important;
+  color: var(--mc-wait) !important;
+}
 #App .mc-execution-step[data-status='pending'] {
   background: color-mix(in srgb, var(--theme-warning) 11%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--mc-line)) !important;
@@ -2045,7 +2048,7 @@
 
 /* Keep the workbench status card aligned with the shared theme tokens. */
 #App .mc-workbench-status-card__online {
-  color: var(--mc-copy) !important;
+  color: var(--mc-chrome-ink, var(--mc-copy)) !important;
 }
 #App .mc-workbench-status-card__online i,
 #App .mc-workbench-status-card__online.is-online i {
@@ -2065,10 +2068,10 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-danger, #c43d34) 14%, var(--mc-surface)) !important;
 }
 #App .mc-workbench-status-card__row {
-  color: var(--mc-copy) !important;
+  color: var(--mc-chrome-ink, var(--mc-copy)) !important;
 }
 #App button.mc-workbench-status-card__row:hover:not(:disabled) {
-  color: var(--mc-ink) !important;
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App button.mc-workbench-status-card__row:active:not(:disabled) {
   color: var(--mc-accent-strong) !important;
@@ -2079,7 +2082,7 @@
   border-radius: 8px;
 }
 #App button.mc-workbench-status-card__im:hover {
-  color: var(--mc-ink) !important;
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App button.mc-workbench-status-card__im:active {
   color: var(--mc-accent-strong) !important;
@@ -2089,8 +2092,9 @@
   outline-offset: 2px;
   border-radius: 8px;
 }
-#App .mc-workbench-status-card__row strong {
-  color: var(--mc-ink) !important;
+#App .mc-workbench-status-card__row strong,
+#App .mc-workbench-status-card__model strong {
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App .mc-workbench-status-card__model-mark {
   color: var(--mc-accent) !important;
@@ -2100,6 +2104,18 @@
 }
 #App .mc-workbench-status-card__meter > span {
   background: var(--mc-accent) !important;
+}
+
+/* Light-only. Titles and interface text use the AI assistant title ink:
+   darker than the left rail, not near-black. --mc-text-anchor is the scheme's
+   original secondary, so the mix does not follow --theme-text-secondary.
+   Secondary sits between that ink and the scheme muted color. Muted is left
+   on the scheme: the rail gray is under 4.5:1 on the light-blue sidebar. */
+[data-ai-light-scheme]:not([data-ai-theme='dark']) {
+  --mc-chrome-ink: color-mix(in srgb, var(--office-muted, #6b7285) 38%, var(--mc-text-anchor, #46586f));
+  --theme-text-primary: var(--mc-chrome-ink);
+  --office-ink: var(--mc-chrome-ink);
+  --theme-text-secondary: color-mix(in srgb, var(--mc-chrome-ink) 55%, var(--theme-text-muted));
 }
 
 /* ===== 新任务配置条弹层（src/components/ai/task-config）===== */

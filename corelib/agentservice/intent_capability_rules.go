@@ -175,6 +175,16 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 		intent.LabelKnowledgeAdmin: {
 			{Capability: coretool.CapabilityKnowledgeAdminMaintenance, Required: true},
 		},
+		intent.LabelWorklogRead: {
+			{Capability: coretool.CapabilityRecordReadWorklog, Required: true},
+		},
+		intent.LabelWorklogUpdate: {
+			// The read is how a later confirmation can see the same record.
+			// It is not a substitute for the mutation: a query implementation
+			// must not satisfy the required update.
+			{Capability: coretool.CapabilityRecordReadWorklog, Required: false},
+			{Capability: coretool.CapabilityRecordUpdateWorklog, Required: true},
+		},
 		intent.LabelScheduleManage: {
 			{Capability: coretool.CapabilityScheduleAdministerLocal, Required: true},
 		},

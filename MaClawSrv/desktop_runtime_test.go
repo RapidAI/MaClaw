@@ -9,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
@@ -31,7 +32,13 @@ func TestDesktopModuleAdvertisesToolWhenConfigured(t *testing.T) {
 	if desktopCDPAddr() != "http://127.0.0.1:9222" {
 		t.Fatalf("addr=%q", desktopCDPAddr())
 	}
-	tools, err := desktopRuntimeModule{}.Tools(context.Background(), agentruntime.TurnRequest{})
+	plain, err := desktopRuntimeModule{}.Tools(context.Background(), agentruntime.TurnRequest{})
+	if err != nil || len(plain) != 0 {
+		t.Fatalf("digital employee tools=%v err=%v", plain, err)
+	}
+	tools, err := desktopRuntimeModule{}.Tools(context.Background(), agentruntime.TurnRequest{
+		Input: agentservice.ExecuteRequest{Instance: agentservice.Instance{Metadata: map[string]string{"hub_bot": "1"}}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +53,13 @@ func TestDesktopModuleAdvertisesToolWhenConfigured(t *testing.T) {
 
 func TestDesktopPromptContinuesOnTheLoggedInSite(t *testing.T) {
 	t.Setenv(desktopCDPEnv, "http://127.0.0.1:9222/")
-	prompt, err := desktopRuntimeModule{}.ContributePrompt(context.Background(), agentruntime.TurnRequest{})
+	plain, err := desktopRuntimeModule{}.ContributePrompt(context.Background(), agentruntime.TurnRequest{})
+	if err != nil || plain != "" {
+		t.Fatalf("digital employee prompt=%q err=%v", plain, err)
+	}
+	prompt, err := desktopRuntimeModule{}.ContributePrompt(context.Background(), agentruntime.TurnRequest{
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "execute"}}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,33 +439,48 @@ func TestDeletedBotStopsTheDesktopWhenNothingElseIsUsingIt(t *testing.T) {
 }
 
 func TestAppRunUsesOneXdotoolCall(t *testing.T) {
-	var calls int
-	var argv []string
+	var calls [][]string
 	previous := desktopRemoteApp
 	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
-		calls++
-		argv = append([]string(nil), args...)
+		calls = append(calls, append([]string(nil), args...))
 		return "ok", nil
 	}
 	t.Cleanup(func() { desktopRemoteApp = previous })
 	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
 		"steps": []any{
 			map[string]any{"action": "focus", "name": "Notes"},
-			map[string]any{"action": "type", "text": "hi"},
+			map[string]any{"action": "type", "text": "int main() {\nreturn 0;\n}"},
 			map[string]any{"action": "key", "key": "Return"},
 		},
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || text != "ok" {
+		t.Fatalf("calls=%d text=%q err=%v argv=%v", len(calls), text, err, calls)
 	}
-	if calls != 1 || text != "ok" {
-		t.Fatalf("calls=%d text=%q argv=%v", calls, text, argv)
+	want := []string{
+		"type --delay 20 --args 1 -- int main() { key Return",
+		"type --delay 20 --args 1 -- return 0; key Return",
+		"type --delay 20 --args 1 -- }",
+		"key Return",
 	}
-	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "windowactivate") || !strings.Contains(joined, "type") || !strings.Contains(joined, "key") {
-		t.Fatalf("argv=%v", argv)
+	// keyup is its own call. The Whisker Menu is unmapped next, then focus.
+	// Nothing sits between focus and the first type: a keyup there can
+	// move the window. keyup is not a prefix on the type argv, because
+	// xdotool stops the rest of one process when a keysym fails.
+	if len(calls) != len(want)+3 || strings.Join(calls[0], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[1], " ") != strings.Join(desktopWhiskerDismiss, " ") {
+		t.Fatalf("calls=%v", calls)
 	}
-	// A focus read has to see the window switch before the type is sent.
+	focus := strings.Join(calls[2], " ")
+	if strings.Contains(focus, "type") || strings.Contains(focus, "keyup") || !strings.Contains(focus, "windowactivate --sync") {
+		t.Fatalf("focus shared a command with type: %v", calls[2])
+	}
+	for i, line := range want {
+		got := strings.Join(calls[i+3], " ")
+		if got != line || strings.Contains(got, "search") || strings.Contains(got, "keyup") {
+			t.Fatalf("call %d=%v", i+3, calls[i+3])
+		}
+	}
+	// The password read raises the browser, so focus is sent after the
+	// read and type follows with an empty window stack.
 	var guarded [][]string
 	reads := 0
 	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
@@ -462,24 +490,745 @@ func TestAppRunUsesOneXdotoolCall(t *testing.T) {
 	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
 		"steps": []any{
 			map[string]any{"action": "focus", "name": "Notes"},
-			map[string]any{"action": "type", "text": "hi"},
+			map[string]any{"action": "type", "text": "hi\nthere"},
 			map[string]any{"action": "key", "key": "Return"},
 		},
 	}, func() error {
 		reads++
+		if len(guarded) != 0 {
+			return fmt.Errorf("focus ran before the password read")
+		}
 		return nil
 	})
-	if err != nil || text != "ok" || reads != 1 || len(guarded) != 3 {
+	if err != nil || text != "ok" || reads != 1 || len(guarded) != 6 {
 		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, guarded)
 	}
-	if !strings.Contains(strings.Join(guarded[0], " "), "windowactivate") || strings.Contains(strings.Join(guarded[0], " "), "type") {
-		t.Fatalf("focus was not delivered alone: %v", guarded[0])
+	if strings.Join(guarded[0], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(guarded[1], " ") != strings.Join(desktopWhiskerDismiss, " ") {
+		t.Fatalf("release=%v", guarded[:2])
 	}
-	if strings.Join(guarded[1], " ") != "type --delay 20 hi" {
-		t.Fatalf("type call=%v", guarded[1])
+	focus = strings.Join(guarded[2], " ")
+	if strings.Contains(focus, "type") || strings.Contains(focus, "keyup") || !strings.Contains(focus, "windowactivate --sync") {
+		t.Fatalf("focus was chained with type: %v", guarded[2])
 	}
-	if strings.Join(guarded[2], " ") != "key Return" {
-		t.Fatalf("return call=%v", guarded[2])
+	if strings.Join(guarded[3], " ") != "type --delay 20 --args 1 -- hi key Return" || strings.Join(guarded[4], " ") != "type --delay 20 --args 1 -- there" || strings.Join(guarded[5], " ") != "key Return" {
+		t.Fatalf("keys=%v", guarded)
+	}
+	guarded = nil
+	reads = 0
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 10, "y": 20},
+			map[string]any{"action": "type", "text": "hi"},
+		},
+	}, func() error {
+		reads++
+		// The fake answers "ok", which is not a window id. The click records
+		// the window before the modifier release, unmaps the menu, then the
+		// text step records the window again before the read. Nothing is typed yet.
+		if reads == 1 && (len(guarded) != 5 || guarded[0][0] != "getactivewindow" || guarded[1][0] != "keyup" || strings.Join(guarded[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !strings.Contains(strings.Join(guarded[3], " "), "click") || strings.Join(guarded[4], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Contains(strings.Join(guarded[3], " "), "type")) {
+			return fmt.Errorf("click was not delivered before the read: %v", guarded)
+		}
+		return nil
+	})
+	if err != nil || text != "ok" || reads != 1 || len(guarded) != 6 {
+		t.Fatalf("click reads=%d text=%q err=%v calls=%v", reads, text, err, guarded)
+	}
+	if strings.Join(guarded[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(guarded[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(guarded[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(guarded[3], " ") != "mousemove --sync 10 20 click 1" || strings.Join(guarded[4], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(guarded[5], " ") != "type --delay 20 --args 1 -- hi" {
+		t.Fatalf("click then type=%v", guarded)
+	}
+	for _, call := range guarded {
+		if len(call) > 0 && call[0] == "windowactivate" {
+			t.Fatalf("non-numeric window id was activated: %v", guarded)
+		}
+	}
+	calls = nil
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return "ok", nil
+	}
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "type", "text": "hello\n    return 0;\n   \n-Wall"},
+		},
+	}, nil)
+	if err != nil || text != "ok" || len(calls) != 7 {
+		t.Fatalf("blank line calls=%d text=%q err=%v argv=%v", len(calls), text, err, calls)
+	}
+	if calls[0][0] != "getactivewindow" || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "type --delay 20 --args 1 -- hello key Return" || strings.Join(calls[5], " ") != "key Return" {
+		t.Fatalf("blank line=%v", calls)
+	}
+	if calls[4][len(calls[4])-3] != "    return 0;" || calls[4][len(calls[4])-2] != "key" {
+		t.Fatalf("indent=%v", calls[4])
+	}
+	if got := calls[6]; len(got) != 7 || got[0] != "type" || got[5] != "--" || got[6] != "-Wall" {
+		t.Fatalf("dash line=%v", calls[6])
+	}
+}
+
+func TestAppRunClickThenTypeRestoresTheClickedWindow(t *testing.T) {
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "8388609\n", nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "8388609", nil
+		}
+		if len(args) > 0 && args[0] == "type" {
+			return "", nil
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	reads := 0
+	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 10, "y": 20},
+			map[string]any{"action": "key", "key": "Return"},
+			map[string]any{"action": "type", "text": "hi\nthere"},
+		},
+	}, func() error {
+		reads++
+		// The click restores its window before the click. The text step
+		// records the window after that click and before this read. The
+		// post-click activate has not run yet.
+		if reads == 1 && (len(calls) != 7 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || !strings.Contains(strings.Join(calls[4], " "), "click") || calls[5][0] != "key" || calls[6][0] != "getactivewindow") {
+			return fmt.Errorf("window was read after the browser could raise: %v", calls)
+		}
+		activates := 0
+		for _, call := range calls {
+			if len(call) > 0 && call[0] == "type" {
+				return fmt.Errorf("text ran before the password read: %v", calls)
+			}
+			if len(call) > 0 && call[0] == "windowactivate" {
+				activates++
+			}
+		}
+		if activates != 1 {
+			return fmt.Errorf("post-click activate ran before the read: %v", calls)
+		}
+		return nil
+	})
+	if err != nil || text != "ok" || reads != 1 || len(calls) != 10 {
+		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 10 20 click 1" || strings.Join(calls[5], " ") != "key Return" || strings.Join(calls[6], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[7], " ") != "windowactivate --sync 8388609" || strings.Join(calls[8], " ") != "type --delay 20 --args 1 -- hi key Return" || strings.Join(calls[9], " ") != "type --delay 20 --args 1 -- there" {
+		t.Fatalf("restore=%v", calls)
+	}
+	// The next text step reads again. The first line may have moved the
+	// focus, and this step's password read can raise Chromium once more.
+	calls = nil
+	reads = 0
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 4, "y": 5},
+			map[string]any{"action": "type", "text": "a"},
+			map[string]any{"action": "key", "key": "b"},
+		},
+	}, func() error {
+		reads++
+		if reads == 2 {
+			if len(calls) != 9 || calls[7][0] != "type" || calls[8][0] != "getactivewindow" {
+				return fmt.Errorf("second read saw the wrong window: %v", calls)
+			}
+		}
+		return nil
+	})
+	if err != nil || text != "ok" || reads != 2 || len(calls) != 11 {
+		t.Fatalf("second text reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 4 5 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[6], " ") != "windowactivate --sync 8388609" || strings.Join(calls[7], " ") != "type --delay 20 --args 1 -- a" || strings.Join(calls[8], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[9], " ") != "windowactivate --sync 8388609" || strings.Join(calls[10], " ") != "key b" {
+		t.Fatalf("second text=%v", calls)
+	}
+	// A missing id does not cancel the type. The click already landed.
+	calls = nil
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "", fmt.Errorf("exit status 1")
+		}
+		return "typed", nil
+	}
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 1, "y": 2},
+			map[string]any{"action": "type", "text": "hi"},
+		},
+	}, func() error { return nil })
+	if err != nil || text != "typed" || len(calls) != 6 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !strings.Contains(strings.Join(calls[3], " "), "click") || calls[4][0] != "getactivewindow" || calls[5][0] != "type" {
+		t.Fatalf("text=%q err=%v calls=%v", text, err, calls)
+	}
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "windowactivate" {
+			t.Fatalf("failed window read was activated: %v", calls)
+		}
+	}
+}
+
+func TestAppRunTypeWithoutAClickRestoresTheFocusedWindow(t *testing.T) {
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "8388609\n", nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "8388609", nil
+		}
+		if len(args) > 0 && args[0] == "type" {
+			return "", nil
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	reads := 0
+	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "type", "text": "pwd"},
+		},
+	}, func() error {
+		reads++
+		if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") {
+			return fmt.Errorf("window was read after the browser could raise: %v", calls)
+		}
+		return nil
+	})
+	if err != nil || text != "" || reads != 1 || len(calls) != 5 {
+		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- pwd" {
+		t.Fatalf("type only=%v", calls)
+	}
+}
+
+func TestDesktopWindowIsBrowser(t *testing.T) {
+	for _, class := range []string{"Chromium", "chromium", "google-chrome", "Firefox", "microsoft-edge"} {
+		if !desktopWindowIsBrowser(class) {
+			t.Fatalf("%s was not a browser", class)
+		}
+	}
+	for _, class := range []string{"", "Xfce4-terminal", "xfce4-terminal", "XTerm", "Mousepad", "Terminal"} {
+		if desktopWindowIsBrowser(class) {
+			t.Fatalf("%s was treated as a browser", class)
+		}
+	}
+}
+
+// A dead browser debug socket used to cancel every app_run type, including
+// a command aimed at the terminal the person is watching. The class of that
+// window decides. The command and its Enter still go to xdotool.
+func TestAppRunTypesIntoATerminalWhenTheBrowserSocketIsDown(t *testing.T) {
+	const command = "echo hi"
+	browserDown := fmt.Errorf("desktop browser: discover targets: unexpected HTTP 500")
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) >= 2 && args[0] == "getactivewindow" && args[1] == "getwindowname" {
+			return "8388609\nTerminal 终端 -", nil
+		}
+		if len(args) >= 2 && args[0] == "getactivewindow" && args[1] == "getwindowclassname" {
+			return "Xfce4-terminal", nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "8388609", nil
+		}
+		if len(args) >= 4 && args[0] == "search" && args[3] == desktopWhiskerMenuName {
+			return "", fmt.Errorf("exit status 1")
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	reads := 0
+	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "focus", "name": "Terminal 终端 -"},
+			map[string]any{"action": "type", "text": command + "\n"},
+		},
+	}, func() error {
+		reads++
+		if len(calls) != 0 {
+			return fmt.Errorf("xdotool ran before the browser read: %v", calls)
+		}
+		return browserDown
+	})
+	if err != nil || reads != 1 || text != "" {
+		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if len(calls) != 5 || strings.Join(calls[0], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[1], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[2], " ") != "search --onlyvisible --name Terminal 终端 - windowactivate --sync" || strings.Join(calls[3], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- echo hi key Return" {
+		t.Fatalf("named terminal=%v", calls)
+	}
+	calls = nil
+	reads = 0
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "type", "text": "pwd\n"},
+		},
+	}, func() error {
+		reads++
+		if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") {
+			return fmt.Errorf("window was read after the browser could raise: %v", calls)
+		}
+		return browserDown
+	})
+	if err != nil || reads != 1 || text != "" || len(calls) != 6 {
+		t.Fatalf("focused reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- pwd key Return" {
+		t.Fatalf("focused terminal=%v", calls)
+	}
+	// A password field in the browser is not the terminal. The command still runs.
+	calls = nil
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "focus", "name": "Terminal 终端 -"},
+			map[string]any{"action": "type", "text": command + "\n"},
+		},
+	}, func() error { return fmt.Errorf("not_password_field") })
+	if err != nil || text != "" || !containsArg(calls[len(calls)-1], command) || !containsArg(calls[len(calls)-1], "Return") {
+		t.Fatalf("password behind the terminal text=%q err=%v calls=%v", text, err, calls)
+	}
+}
+
+func TestAppRunKeepsABrowserTypeClosedWhenTheBrowserSocketIsDown(t *testing.T) {
+	const secret = "s3cret-value"
+	browserDown := fmt.Errorf("desktop browser: discover targets: unexpected HTTP 500")
+	var calls [][]string
+	class := "Chromium"
+	readWindow := true
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) >= 2 && args[0] == "getactivewindow" && args[1] == "getwindowname" {
+			if !readWindow {
+				return "", fmt.Errorf("exit status 1")
+			}
+			return "100\n百度一下，你就知道 - Chromium", nil
+		}
+		if len(args) >= 2 && args[0] == "getactivewindow" && args[1] == "getwindowclassname" {
+			if class == "" {
+				return "", fmt.Errorf("exit status 1")
+			}
+			return class, nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "100", nil
+		}
+		if len(args) >= 4 && args[0] == "search" && args[3] == desktopWhiskerMenuName {
+			return "", fmt.Errorf("exit status 1")
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	refuse := func(steps []any) {
+		t.Helper()
+		calls = nil
+		_, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+			"steps": steps,
+		}, func() error { return browserDown })
+		if err == nil || !strings.Contains(err.Error(), "desktop browser") || strings.Contains(err.Error(), secret) {
+			t.Fatalf("err=%v calls=%v", err, calls)
+		}
+		for _, call := range calls {
+			if containsArg(call, secret) || (len(call) > 0 && call[0] == "type") {
+				t.Fatalf("text reached xdotool: %v", calls)
+			}
+		}
+	}
+	refuse([]any{
+		map[string]any{"action": "focus", "name": "Chromium"},
+		map[string]any{"action": "type", "text": secret},
+	})
+	calls = nil
+	_, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "focus", "name": "Chromium"},
+			map[string]any{"action": "type", "text": secret},
+		},
+	}, func() error { return fmt.Errorf("not_password_field") })
+	if err == nil || err.Error() != "not_password_field" || strings.Contains(err.Error(), secret) {
+		t.Fatalf("password field err=%v", err)
+	}
+	for _, call := range calls {
+		if containsArg(call, secret) || (len(call) > 0 && call[0] == "type") {
+			t.Fatalf("password field was typed: %v", calls)
+		}
+	}
+	refuse([]any{map[string]any{"action": "type", "text": secret}})
+	// The window was focused, and its class could not be read.
+	class = ""
+	refuse([]any{
+		map[string]any{"action": "focus", "name": "Terminal"},
+		map[string]any{"action": "type", "text": secret},
+	})
+	// No window id and no named focus: do not ask for a class, and do not type.
+	class = "Xfce4-terminal"
+	readWindow = false
+	calls = nil
+	_, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{map[string]any{"action": "type", "text": secret}},
+	}, func() error { return browserDown })
+	if err == nil || !strings.Contains(err.Error(), "desktop browser") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unread window err=%v", err)
+	}
+	if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || containsArg(calls[0], secret) {
+		t.Fatalf("unread window calls=%v", calls)
+	}
+}
+
+func TestAppRunSkipsWindowRestoreWhenTheBrowserStaysPut(t *testing.T) {
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "8388609\n", nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "8388609", nil
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	reads := 0
+	text, err := desktopAppRun(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 10, "y": 20},
+			map[string]any{"action": "type", "text": "hi"},
+		},
+	}, func() error {
+		reads++
+		// The browser will not raise, so the text step does not record
+		// again. The click still records before Super keyup and activates
+		// before the click, or the menu takes it.
+		if len(calls) != 5 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || !strings.Contains(strings.Join(calls[4], " "), "click") {
+			return fmt.Errorf("click was not delivered before the read: %v", calls)
+		}
+		return nil
+	}, func() bool { return false })
+	if err != nil || text != "ok" || reads != 1 || len(calls) != 6 {
+		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 10 20 click 1" || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- hi" {
+		t.Fatalf("stayed=%v", calls)
+	}
+	// No click has released modifiers yet. Super keyup opens the menu, so
+	// the focused window is recorded before that release and put back after.
+	calls = nil
+	reads = 0
+	text, err = desktopAppRun(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "type", "text": "pwd"},
+			map[string]any{"action": "key", "key": "b"},
+		},
+	}, func() error {
+		reads++
+		if reads == 1 && (len(calls) != 1 || calls[0][0] != "getactivewindow") {
+			return fmt.Errorf("release ran before the window was recorded: %v", calls)
+		}
+		return nil
+	}, func() bool { return false })
+	if err != nil || text != "ok" || reads != 2 || len(calls) != 6 {
+		t.Fatalf("release reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- pwd" || strings.Join(calls[5], " ") != "key b" {
+		t.Fatalf("release=%v", calls)
+	}
+	// The first read can raise Chromium. The next line is on the browser
+	// that read just attached, so it must not activate the earlier window.
+	calls = nil
+	reads = 0
+	raises := true
+	text, err = desktopAppRun(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 4, "y": 5},
+			map[string]any{"action": "type", "text": "a"},
+			map[string]any{"action": "key", "key": "b"},
+		},
+	}, func() error {
+		reads++
+		if reads == 1 {
+			raises = false
+		}
+		return nil
+	}, func() bool { return raises })
+	if err != nil || text != "ok" || reads != 2 || len(calls) != 9 {
+		t.Fatalf("second reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
+	}
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 4 5 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[6], " ") != "windowactivate --sync 8388609" || strings.Join(calls[7], " ") != "type --delay 20 --args 1 -- a" || strings.Join(calls[8], " ") != "key b" {
+		t.Fatalf("second=%v", calls)
+	}
+}
+
+func TestDesktopAppBrowserRaisesOnlyWhenTheReadWillCoverTheWindow(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "tenant-raise", UserID: "alice", InstanceID: "raise-bot"}
+	if !desktopAppBrowserRaises(nil, scope, "http://cdp") {
+		t.Fatal("nil binding did not raise")
+	}
+	if !desktopAppBrowserRaises(&desktopBinding{}, scope, "http://cdp") {
+		t.Fatal("missing session did not raise")
+	}
+	session := &browser.BrowserAgentSession{}
+	binding := &desktopBinding{session: session, addr: "http://cdp"}
+	if !desktopAppBrowserRaises(binding, scope, "http://other") {
+		t.Fatal("different browser did not raise")
+	}
+	previous := desktopSessionConnected
+	desktopSessionConnected = func(got *browser.BrowserAgentSession) bool {
+		return got == session
+	}
+	t.Cleanup(func() { desktopSessionConnected = previous })
+	if desktopAppBrowserRaises(binding, scope, "http://cdp") {
+		t.Fatal("connected browser with no resume raised")
+	}
+	resumeKey := desktopResumeKey(scope)
+	desktopResumeFocus.Store(resumeKey, true)
+	t.Cleanup(func() { desktopResumeFocus.Delete(resumeKey) })
+	if !desktopAppBrowserRaises(binding, scope, "http://cdp") {
+		t.Fatal("login resume did not raise")
+	}
+	desktopSessionConnected = func(*browser.BrowserAgentSession) bool { return false }
+	if !desktopAppBrowserRaises(binding, scope, "http://cdp") {
+		t.Fatal("dead connection did not raise")
+	}
+}
+
+func TestAppRunClickThenTypeStopsWhenTheWindowCannotBeRestored(t *testing.T) {
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "8388609", nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "cannot activate", fmt.Errorf("exit status 1")
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 10, "y": 20},
+			map[string]any{"action": "type", "text": "secret-line"},
+		},
+	}, func() error { return nil })
+	if err == nil || strings.Contains(text, "secret-line") || strings.Contains(err.Error(), "secret-line") {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+	if len(calls) != 4 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" {
+		t.Fatalf("calls=%v", calls)
+	}
+	for _, call := range calls {
+		if len(call) > 0 && (call[0] == "type" || call[0] == "mousemove") {
+			t.Fatalf("clicked or typed into the menu: %v", calls)
+		}
+	}
+}
+
+func TestAppRunKeyupFailureStillClicks(t *testing.T) {
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && (args[0] == "keyup" || (args[0] == "search" && containsArg(args, desktopWhiskerMenuName))) {
+			return "xdo_send_keysequence_window reported an error for string 'Super_R'", fmt.Errorf("exit status 1")
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 8, "y": 9},
+			map[string]any{"action": "type", "text": "hello\nworld"},
+		},
+	}, nil)
+	if err != nil || text != "ok" || len(calls) != 6 {
+		t.Fatalf("text=%q err=%v calls=%v", text, err, calls)
+	}
+	if calls[0][0] != "getactivewindow" || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || !containsArg(calls[1], "Alt_L") || !containsArg(calls[1], "Super_R") || !containsArg(calls[1], "--delay") || !containsArg(calls[1], "0") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") {
+		t.Fatalf("release=%v", calls[:3])
+	}
+	if strings.Join(calls[3], " ") != "mousemove --sync 8 9 click 1" || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- hello key Return" || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- world" {
+		t.Fatalf("input=%v", calls[3:])
+	}
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "windowactivate" {
+			t.Fatalf("non-numeric window id was activated: %v", calls)
+		}
+	}
+	keyups := 0
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "keyup" {
+			keyups++
+		}
+	}
+	if keyups != 1 {
+		t.Fatalf("keyups=%d calls=%v", keyups, calls)
+	}
+}
+
+func TestAppRunClosesTheWhiskerMenuInsteadOfRestoringIt(t *testing.T) {
+	var calls [][]string
+	previous := desktopRemoteApp
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "12345\nWhisker Menu\n", nil
+		}
+		if len(args) > 0 && args[0] == "search" && containsArg(args, desktopWhiskerMenuName) {
+			return "12345\n", nil
+		}
+		if len(args) > 0 && args[0] == "key" && containsArg(args, "Escape") {
+			return "escape failed", fmt.Errorf("exit status 1")
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteApp = previous })
+	text, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 3, "y": 4},
+		},
+	}, nil)
+	if err != nil || text != "ok" || strings.Contains(text, "escape failed") || strings.Contains(text, "12345") {
+		t.Fatalf("text=%q err=%v calls=%v", text, err, calls)
+	}
+	if len(calls) != 5 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "key Escape" || strings.Join(calls[4], " ") != "mousemove --sync 3 4 click 1" {
+		t.Fatalf("menu=%v", calls)
+	}
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "windowactivate" {
+			t.Fatalf("whisker menu was activated: %v", calls)
+		}
+		if len(call) > 0 && call[0] == "search" && containsArg(call, "Escape") {
+			t.Fatalf("escape was sent with search: %v", calls)
+		}
+	}
+
+	calls = nil
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "8388609\nTerminal\n", nil
+		}
+		if len(args) > 0 && args[0] == "search" && containsArg(args, desktopWhiskerMenuName) {
+			return "", fmt.Errorf("exit status 1")
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "8388609", nil
+		}
+		if len(args) > 0 && args[0] == "key" && containsArg(args, "Escape") {
+			return "escaped", nil
+		}
+		return "landed", nil
+	}
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 6, "y": 7},
+		},
+	}, nil)
+	if err != nil || text != "landed" || strings.Contains(text, "escaped") {
+		t.Fatalf("text=%q err=%v calls=%v", text, err, calls)
+	}
+	if len(calls) != 5 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 6 7 click 1" {
+		t.Fatalf("terminal=%v", calls)
+	}
+	for _, call := range calls {
+		if containsArg(call, "Escape") {
+			t.Fatalf("escape sent when the menu was closed: %v", calls)
+		}
+	}
+
+	calls = nil
+	desktopRemoteApp = func(_ context.Context, _, _, _ string, args []string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "getactivewindow" {
+			return "8388609\n", nil
+		}
+		if len(args) > 0 && args[0] == "search" && containsArg(args, desktopWhiskerMenuName) {
+			return "777\n", nil
+		}
+		if len(args) > 0 && args[0] == "key" && containsArg(args, "Escape") {
+			return "nope", nil
+		}
+		if len(args) > 0 && args[0] == "windowactivate" {
+			return "8388609", nil
+		}
+		return "landed", nil
+	}
+	text, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{
+			map[string]any{"action": "click", "x": 1, "y": 2},
+		},
+	}, nil)
+	if err != nil || text != "landed" || strings.Contains(text, "nope") || strings.Contains(text, "777") {
+		t.Fatalf("text=%q err=%v calls=%v", text, err, calls)
+	}
+	if len(calls) != 6 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "key Escape" || strings.Join(calls[4], " ") != "windowactivate --sync 8388609" || strings.Join(calls[5], " ") != "mousemove --sync 1 2 click 1" {
+		t.Fatalf("opened=%v", calls)
+	}
+}
+
+func TestAppOpenStartsTheProgramAndFocusExplainsAMissingWindow(t *testing.T) {
+	previousSession := desktopRemoteSession
+	previousOpen := desktopRemoteOpen
+	previousApp := desktopRemoteApp
+	var gotProgram string
+	var gotArgs []string
+	var gotDisplay string
+	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
+		return desktopEndpoint{CDP: "http://127.0.0.1:1", Display: ":20"}, nil
+	}
+	desktopRemoteOpen = func(_ context.Context, _, _, display, program string, args []string) (string, error) {
+		gotDisplay = display
+		gotProgram = program
+		gotArgs = append([]string(nil), args...)
+		return "opened " + program, nil
+	}
+	desktopRemoteApp = func(context.Context, string, string, string, []string) (string, error) {
+		return "exit status 1", fmt.Errorf("desktop app command failed: exit status 1")
+	}
+	t.Cleanup(func() {
+		desktopRemoteSession = previousSession
+		desktopRemoteOpen = previousOpen
+		desktopRemoteApp = previousApp
+	})
+	turn := agentruntime.TurnRequest{
+		Scope: agentruntime.Scope{TenantID: "tenant-open", UserID: "alice", InstanceID: "open-bot"},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "execute"}}},
+	}
+	text, err := (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
+		"action":  "app_open",
+		"program": "xterm",
+		"args":    []any{"-geometry", "80x24"},
+	})
+	if err != nil || text != "opened xterm" || gotProgram != "xterm" || gotDisplay != ":20" || strings.Join(gotArgs, " ") != "-geometry 80x24" {
+		t.Fatalf("text=%q program=%s display=%s args=%v err=%v", text, gotProgram, gotDisplay, gotArgs, err)
+	}
+	gotProgram = ""
+	_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
+		"action":  "app_open",
+		"program": "bash",
+		"args":    []any{"-c", "echo hi"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "app_open") || gotProgram != "" {
+		t.Fatalf("shell err=%v program=%s", err, gotProgram)
+	}
+	_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
+		"action":  "app_open",
+		"program": "/usr/bin/chromium",
+	})
+	if err == nil || !strings.Contains(err.Error(), "browser") || gotProgram != "" {
+		t.Fatalf("browser err=%v program=%s", err, gotProgram)
+	}
+	_, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant-open", UserID: "alice"}, ":20", "app_run", map[string]any{
+		"steps": []any{map[string]any{"action": "focus", "name": "xterm"}},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "not open") || !strings.Contains(err.Error(), "app_open") || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("focus err=%v", err)
 	}
 }
 

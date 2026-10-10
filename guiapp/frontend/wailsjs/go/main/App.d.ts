@@ -37,6 +37,8 @@ export function ClaimReferralHandoff(arg1:string,arg2:string):Promise<main.Refer
 
 export function GetReferralRegistrationStatus(arg1:string,arg2:string,arg3:string):Promise<main.ReferralRegistrationStatus>;
 
+export function SendFileCompanionMessage(arg1:Record<string, any>):Promise<void>;
+
 export function SendReferralRegistrationEmail(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.RemoteRegistrationContactResult>;
 
 export function RegisterReferralEmail(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
@@ -574,6 +576,22 @@ export function ExportTaskResultFile(arg1:string):Promise<string>;
 
 export function ExportTextFile(arg1:string,arg2:string):Promise<string>;
 
+export function FileCompanionUIReady():Promise<Array<string>>;
+
+export function FileCompanionOpen(arg1:string):Promise<Record<string, any>>;
+
+export function FileCompanionSaveText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
+export function FileCompanionAppendText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
+export function FileCompanionImportKnowledge(arg1:string):Promise<knowledge.DirectoryImportResult>;
+
+export function FileCompanionUploadCloud(arg1:string):Promise<main.MobileDocumentDraftSummary>;
+
+export function FileCompanionReplaceOffice(arg1:string,arg2:string):Promise<void>;
+
+export function ClearFileCompanionChat(arg1:string):Promise<void>;
+
 export function FetchCodeGenModels():Promise<Array<main.CodeGenModelItem>>;
 
 export function FetchNews():Promise<Array<main.NewsArticle>>;
@@ -712,6 +730,8 @@ export function GetExperienceExtractor():Promise<main.ExperienceExtractor>;
 export function GetExperienceGovernanceSummary(arg1:main.ExperienceRoutingSignalQuery):Promise<Record<string, any>>;
 
 export function GetExperienceLearningSnapshot():Promise<main.ExperienceLearningSnapshot>;
+
+export function GetFileCompanionBoot():Promise<Record<string, any>>;
 
 export function GetFramelessTopInset():Promise<number>;
 
@@ -1515,6 +1535,14 @@ export function KnowledgeUpdateSourceMetadata(arg1:knowledge.SourceUpdateRequest
 
 export function KnowledgeUpdateURLDomainPolicies(arg1:knowledge.URLDomainPolicyUpdateRequest):Promise<knowledge.URLDomainPolicyUpdateResult>;
 
+export function LaunchFileCompanion(arg1:Array<string>):Promise<void>;
+
+export function ChooseFileCompanionFiles():Promise<Array<string>>;
+
+export function ShowFileCompanion():Promise<void>;
+
+export function UnregisterFileCompanionLinuxDesktop():Promise<void>;
+
 export function LaunchInstallerAndExit(arg1:string,arg2:string):Promise<void>;
 
 export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,arg5:string,arg6:string,arg7:boolean):Promise<void>;
@@ -1740,6 +1768,8 @@ export function OpenMaclawAppBusinessWorkspace(arg1:main.MaclawAppBusinessOperat
 
 export function OpenMaclawAppWorkspaceFromInstall(arg1:main.MaclawAppOpenWorkspaceInput):Promise<Record<string, any>>;
 
+export function OpenMobileDocumentInFileCompanion(arg1:string):Promise<string>;
+
 export function OpenMobileDocumentOriginal(arg1:string):Promise<string>;
 
 export function OpenMobileMeetingRecordingAudio(arg1:string):Promise<string>;
@@ -1904,6 +1934,8 @@ export function QuitApp():Promise<void>;
 export function RateHubSkill(arg1:string,arg2:number):Promise<void>;
 
 export function ReadBBS():Promise<string>;
+
+export function ReadDesktopBotShot(arg1:string):Promise<{ mime?: string; data?: string }>;
 
 export function ReadErrorLog():Promise<Array<string>>;
 
@@ -2213,11 +2245,19 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
+export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number}}>;
+
+export function ArmDesktopBotSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:number,arg8:number):Promise<string>;
+
+export function ListDesktopBotSchedules(arg1:string):Promise<Array<{id:string,name:string,action:string,interval_minutes:number,hour:number,minute:number,day_of_week:number,next_run_at?:string,status?:string}>>;
+
+export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
+
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
-export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string}>>;
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string}>>;
 
-export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,title:string,description:string,instance_id:string}>;
+export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string}>;
 
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string):Promise<void>;
 
@@ -2673,9 +2713,9 @@ export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function WatchDesktopBot(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string}>;
+export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string}>;
 
-export function ReleaseDesktopBotWatch(arg1:string):Promise<void>;
+export function ReleaseDesktopBotWatch(arg1:string,arg2:number):Promise<void>;
 
 export function SaveBotSecret(arg1:string,arg2:string):Promise<void>;
 

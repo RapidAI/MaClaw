@@ -93,6 +93,9 @@ func (s *Service) SendMessageAsync(ctx context.Context, p Principal, instanceID 
 		OnToolCall:         in.OnToolCall,
 		OnToolResult:       in.OnToolResult,
 		DatabaseApproval:   cloneDatabaseApproval(in.DatabaseApproval),
+		PrepareExecution:   in.PrepareExecution,
+		FinishExecution:    in.FinishExecution,
+		ExecutionOwner:     in.ExecutionOwner,
 	})
 	if err != nil {
 		return sess, run, err
@@ -347,6 +350,12 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		return nil, nil, err
 	}
 	admitted = true
+	// Replay returns above this line. The pointer stays false for that
+	// call, so its finish hook can release a repeated occupy without
+	// taking the handoff the executing run still owns.
+	if in.ExecutionOwner != nil {
+		*in.ExecutionOwner = true
+	}
 	// Queue wait is measured from request ingress to durable admission. For
 	// asynchronous callers this captures scheduler/storage back-pressure while
 	// remaining meaningful for synchronous GUI and TUI turns.
@@ -623,7 +632,14 @@ func (s *Service) PostMessageAsync(ctx context.Context, p Principal, instanceID,
 	runCh := make(chan Run, 1)
 	doneCh := make(chan error, 1)
 	in.asyncAdmission = true
+	var admittedRunID string
+	var admittedRun *Run
 	in.onRunCreated = func(run Run) {
+		if admittedRun == nil {
+			admittedRunID = run.ID
+			saved := run
+			admittedRun = &saved
+		}
 		select {
 		case runCh <- run:
 		default:
@@ -636,8 +652,54 @@ func (s *Service) PostMessageAsync(ctx context.Context, p Principal, instanceID,
 		execCtx := agentruntime.WithCorrelationID(context.Background(), correlationID)
 		execCtx = agentruntime.WithTraceID(execCtx, traceID)
 		execCtx = agentruntime.WithSpanID(execCtx, spanID)
-		_, _, err := s.PostMessage(execCtx, p, instanceID, sessionID, in)
-		doneCh <- err
+		var run *Run
+		var msg *Message
+		var execErr error
+		finished := false
+		// Execute panics used to skip Finish. The desktop count then never
+		// dropped and the run stayed running, so both pollers waited forever.
+		// Finish runs once. A panic inside Finish still releases through
+		// Finish's own defer and still reports completion here.
+		defer func() {
+			if rec := recover(); rec != nil {
+				execErr = fmt.Errorf("execution panicked: %v", rec)
+				owns := in.ExecutionOwner == nil || *in.ExecutionOwner
+				if owns && admittedRunID != "" {
+					failed, failErr := s.failPanickedRun(p, instanceID, admittedRunID, execErr.Error())
+					if failErr == nil && failed != nil && admittedRun != nil {
+						admittedRun.Status = failed.Status
+						admittedRun.Error = failed.Error
+					}
+				}
+				if !finished && in.FinishExecution != nil {
+					finishRun := run
+					if finishRun == nil {
+						finishRun = admittedRun
+					}
+					func() {
+						defer func() { _ = recover() }()
+						in.FinishExecution(execCtx, finishRun, msg, execErr)
+					}()
+				}
+			}
+			select {
+			case doneCh <- execErr:
+			default:
+			}
+		}()
+		// The caller context ended at admission. Prepare and finish stay on
+		// this background context, so a disconnected client does not release
+		// the desktop or drop the result.
+		if in.PrepareExecution != nil {
+			if next := in.PrepareExecution(execCtx); next != nil {
+				execCtx = next
+			}
+		}
+		run, msg, execErr = s.PostMessage(execCtx, p, instanceID, sessionID, in)
+		if in.FinishExecution != nil {
+			finished = true
+			in.FinishExecution(execCtx, run, msg, execErr)
+		}
 	}()
 	// Prefer an already-admitted run even when the caller context was canceled
 	// at the same instant; once a run id exists it is the useful retry/poll

@@ -9,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -34,7 +35,7 @@ func (h *IMMessageHandler) semanticDynamicInventory(ctx context.Context, userID 
 	if contracts == nil {
 		return semanticDynamicInventory{coverage: semanticDynamicCoverage("catalog_incomplete", "catalog_incomplete")}, nil
 	}
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: strings.TrimSpace(userID)}
+	principal := semanticContractPrincipal(agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: strings.TrimSpace(userID)})
 	if principal.UserID == "" {
 		return semanticDynamicInventory{coverage: semanticDynamicCoverage("catalog_incomplete", "catalog_incomplete")}, nil
 	}
@@ -64,6 +65,19 @@ func (h *IMMessageHandler) semanticDynamicInventoryForPrincipal(ctx context.Cont
 
 func semanticDesktopTenantID() string { return "desktop" }
 
+// semanticContractPrincipal collapses a desktop project session onto the
+// desktop owner for dynamic-contract lookup only. Session residue and the
+// invocation scope keep the raw session id. Coding principals such as
+// "principal" are left unchanged.
+func semanticContractPrincipal(principal agentservice.Principal) agentservice.Principal {
+	principal.TenantID = strings.TrimSpace(principal.TenantID)
+	principal.UserID = strings.TrimSpace(principal.UserID)
+	if trustedDesktopPrincipal(principal.UserID) {
+		principal.UserID = desktopUserID
+	}
+	return principal
+}
+
 func semanticDynamicCoverage(mcpReason, skillReason string) tool.CatalogCoverage {
 	return tool.CatalogCoverage{State: tool.CatalogCoverageIncomplete, ReasonCode: tool.CatalogCoverageReasonIncomplete, Families: []tool.CatalogCoverageFamily{
 		{Kind: "mcp", State: tool.CatalogCoverageIncomplete, ReasonCode: normalizedSemanticCoverageReason(mcpReason)},
@@ -92,12 +106,13 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 	}
 
 	entries := make([]agentservice.MCPToolEntry, 0)
+	localCapability := map[string]*corelib.MCPServerCapabilityRef{}
 	if registry != nil {
 		for _, server := range registry.ListServers() {
-			if normalizeMCPHealthStatus(server.HealthStatus) != mcpHealthStatusHealthy {
+			if !mcpHealthObservationSucceeded(server.HealthStatus) {
 				return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
 			}
-			// A healthy marker without a tool-list observation does not prove an
+			// A successful probe without a tool-list observation does not prove an
 			// empty server. Do not refresh it from a request path; lifecycle will
 			// publish the next bounded snapshot after discovery succeeds.
 			discoveredTools, observed := registry.CachedServerTools(server.ID)
@@ -105,7 +120,7 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 				return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
 			}
 			for _, discovered := range discoveredTools {
-				entry := semanticMCPEntry(ctx, principal, contracts, server.ID, server.Name, discovered)
+				entry := semanticMCPEntry(ctx, principal, contracts, server.ID, server.Name, server.Capability, discovered)
 				entries = append(entries, entry)
 			}
 		}
@@ -114,6 +129,9 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 		// an empty running-tool list is complete only when no enabled local
 		// server exists.
 		for _, configured := range registry.ListLocalServers() {
+			if configured.Capability != nil {
+				localCapability[strings.TrimSpace(configured.ID)] = configured.Capability
+			}
 			if configured.Disabled {
 				continue
 			}
@@ -128,7 +146,7 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 	if local != nil {
 		for _, server := range local.GetAllTools() {
 			for _, discovered := range server.Tools {
-				entry := semanticMCPEntry(ctx, principal, contracts, server.ServerID, server.ServerName, discovered)
+				entry := semanticMCPEntry(ctx, principal, contracts, server.ServerID, server.ServerName, localCapability[strings.TrimSpace(server.ServerID)], discovered)
 				entries = append(entries, entry)
 			}
 		}
@@ -142,8 +160,12 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 	return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageComplete, "")
 }
 
-func semanticMCPEntry(ctx context.Context, principal agentservice.Principal, contracts agentservice.DynamicCapabilityContractResolver, serverID, serverName string, discovered MCPToolView) agentservice.MCPToolEntry {
+func semanticMCPEntry(ctx context.Context, principal agentservice.Principal, contracts agentservice.DynamicCapabilityContractResolver, serverID, serverName string, capability *corelib.MCPServerCapabilityRef, discovered MCPToolView) agentservice.MCPToolEntry {
 	entry := agentservice.MCPToolEntry{ServerID: strings.TrimSpace(serverID), ServerName: strings.TrimSpace(serverName), ToolName: strings.TrimSpace(discovered.Name), InputSchema: discovered.InputSchema}
+	if capability != nil {
+		entry.CapabilityGlobalKey = strings.TrimSpace(capability.GlobalKey)
+		entry.InstalledCapabilityID = strings.TrimSpace(capability.CapabilityID)
+	}
 	if contracts == nil || entry.ServerID == "" || entry.ToolName == "" {
 		return entry
 	}
@@ -226,8 +248,8 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 		ctx, cancel = c.semanticDynamicExecutionContext()
 		defer cancel()
 	}
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: c.semanticSurface.scope.PrincipalID}
-	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, principal)
+	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: strings.TrimSpace(c.semanticSurface.scope.PrincipalID)}
+	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticContractPrincipal(principal))
 	if err != nil {
 		return tool.SelectionExecutionResult{Result: "[system rejected] dynamic_catalog_incomplete", ReasonCode: "dynamic_catalog_incomplete"}, true
 	}
@@ -287,7 +309,7 @@ func (b guiSemanticMCPBridge) CallBoundTool(_ context.Context, principal agentse
 			if server.ID != binding.ServerID {
 				continue
 			}
-			if normalizeMCPHealthStatus(server.HealthStatus) != mcpHealthStatusHealthy {
+			if !mcpHealthObservationSucceeded(server.HealthStatus) {
 				return "", fmt.Errorf("mcp_binding_stale")
 			}
 			// Inventory revalidation already required a lifecycle-owned cached
@@ -302,7 +324,7 @@ func (b guiSemanticMCPBridge) CallBoundTool(_ context.Context, principal agentse
 				if discovered.Name == binding.ToolName {
 					// DynamicSemanticCatalog has just compared the selected binding to
 					// this fresh inventory, including schema and contract identity.
-					return registry.CallToolForOwner(principal.UserID, binding.ServerID, binding.ToolName, arguments)
+					return boundMCPToolContent(registry.CallToolForOwner(principal.UserID, binding.ServerID, binding.ToolName, arguments))
 				}
 			}
 			return "", fmt.Errorf("mcp_binding_stale")
@@ -324,13 +346,20 @@ func (b guiSemanticMCPBridge) CallBoundTool(_ context.Context, principal agentse
 					// but it can only do so from the lifecycle-approved server
 					// entry already checked above; no model-controlled provider
 					// identity or anonymous cross-session client is involved.
-					return local.CallToolForOwner(principal.UserID, binding.ServerID, binding.ToolName, arguments)
+					return boundMCPToolContent(local.CallToolForOwner(principal.UserID, binding.ServerID, binding.ToolName, arguments))
 				}
 			}
 			return "", fmt.Errorf("mcp_binding_stale")
 		}
 	}
 	return "", fmt.Errorf("mcp_binding_stale")
+}
+
+func boundMCPToolContent(raw string, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	return mcputil.ToolCallContent(raw)
 }
 
 type guiSemanticSkillBridge struct{ handler *IMMessageHandler }

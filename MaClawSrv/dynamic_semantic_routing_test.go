@@ -94,8 +94,8 @@ func TestSrvLateTreeKeepsPrincipalAndRefusesATie(t *testing.T) {
 	}
 
 	other := newSrvPrincipalIntentClassifier(nil)
-	other.rememberPrincipal(agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}, "北京天气")
-	other.rememberPrincipal(agentservice.Principal{TenantID: "tenant-b", UserID: "user-b"}, "北京天气")
+	other.rememberPrincipal(agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}, "北京天气", false)
+	other.rememberPrincipal(agentservice.Principal{TenantID: "tenant-b", UserID: "user-b"}, "北京天气", false)
 	if _, ok := other.principalForLateTree("北京天气"); ok {
 		t.Fatal("two tenants saying the same thing must not share a model")
 	}
@@ -108,6 +108,36 @@ func TestSrvFusionTreeWaitsTheFullLLMBudget(t *testing.T) {
 	}
 	if c.uic.FusionTreeDeadline() <= intent.DefaultFusionTreeDeadline {
 		t.Fatalf("fusion deadline = %s, still the 12s default that drops the tool surface", c.uic.FusionTreeDeadline())
+	}
+}
+
+func TestSrvIntentLLMConfigPinsSystemFreeForHubBot(t *testing.T) {
+	c := newSrvPrincipalIntentClassifier(nil)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	plain := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto"})
+	if plain.ServiceGroupID != "" {
+		t.Fatalf("ordinary turn group = %q", plain.ServiceGroupID)
+	}
+	ctx := agentservice.WithHubBotLLMGroup(context.Background())
+	pinned := srvIntentLLMConfig(c.hubBotLLMConfig(ctx, context.Background(), p, "hi", corelib.MaclawLLMConfig{
+		URL: "https://hub.example/api/llm/v1", Model: "auto",
+	}))
+	if pinned.ServiceGroupID != "system-free" || pinned.TaskTypeHint != string(llm.TaskIntent) || !pinned.HubManaged {
+		t.Fatalf("hub bot classify = %+v", pinned)
+	}
+	c.rememberPrincipal(p, "hi", true)
+	late := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto"})
+	if late.ServiceGroupID != "system-free" {
+		t.Fatalf("late tree lost the bot group: %+v", late)
+	}
+	otherText := c.hubBotLLMConfig(context.Background(), context.Background(), p, "other", corelib.MaclawLLMConfig{Model: "auto"})
+	if otherText.ServiceGroupID != "" {
+		t.Fatalf("another utterance inherited the bot group: %+v", otherText)
+	}
+	c.rememberPrincipal(p, "hi", false)
+	kept := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto"})
+	if kept.ServiceGroupID != "system-free" {
+		t.Fatalf("a later non-bot remember cleared the pin: %+v", kept)
 	}
 }
 
@@ -172,9 +202,9 @@ func TestSrvLateTreeTombstoneBlocksTheNextTenant(t *testing.T) {
 	now := start
 	c.clock = func() time.Time { return now }
 
-	c.rememberPrincipal(agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}, "北京天气")
+	c.rememberPrincipal(agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}, "北京天气", false)
 	now = start.Add(srvIntentLeaseTTL + time.Second)
-	c.rememberPrincipal(agentservice.Principal{TenantID: "tenant-b", UserID: "user-b"}, "北京天气")
+	c.rememberPrincipal(agentservice.Principal{TenantID: "tenant-b", UserID: "user-b"}, "北京天气", false)
 	if _, ok := c.principalForLateTree("北京天气"); ok {
 		t.Fatal("an expired tenant must keep the phrase tombstoned so the next tenant is not billed")
 	}

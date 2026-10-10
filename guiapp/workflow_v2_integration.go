@@ -3674,10 +3674,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		lastCodingResult.ToolCalls = totalToolCalls
 		lastCodingResult.Iterations = totalIters
 	}
-	// Always refresh source preview after the turn: write_file mid-run events
-	// can be missed when the agent only uses bash, or when a later step runs
-	// against already-generated code without further edits.
-	// lastCodingResult already aggregates multi-step file lists above.
+	// Refresh the preview from files this turn actually created or modified.
+	// allowScan is false: a directory listing is not a change, so a read-only
+	// turn must not pop the pane. forceOpen also drops sticky history inside
+	// emit, so an older file cannot steal the body. Mid-run write_file/edit
+	// events already opened those files; this pass covers a write the live
+	// event missed. lastCodingResult aggregates multi-step file lists above.
 	previewModified := mergedModified
 	previewCreated := mergedCreated
 	if lastCodingResult != nil {
@@ -3687,13 +3689,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, sessionMem.FilesModified...), sessionMem.FilesCreated...))
 	emittedPreview := []string(nil)
 	if sourcePreview {
-		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, true, true, previewRoutePath)
+		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, false, true, previewRoutePath)
 	}
 	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult)
-	// Bash-only turns: no tool audit and no prior sticky → end-of-turn used a
-	// project scan. Persist those paths so re-arm can restore the preview.
-	// Skip when write_file already audited files or sticky already had history
-	// (avoids a second RMW that only re-writes the same sticky fill).
+	// A shell write the tool audit did not record is not previewed and is not
+	// persisted here. This merge only keeps a path when emit returned files
+	// that the turn audit and sticky history both missed.
 	if shouldStickyMergePreviewScan(previewModified, previewCreated, stickyFiles, emittedPreview) {
 		h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 			if mem == nil {

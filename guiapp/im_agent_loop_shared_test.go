@@ -43,6 +43,16 @@ func TestOpenNextRepeatWaveExtendsRemoteShell(t *testing.T) {
 	if cb.OpenNextRepeatWave("ssh") || len(cb.semanticSurface.plan.Selections) != 3 {
 		t.Fatal("a second open appended another sibling before the first was issued")
 	}
+	issued := cb.semanticSurface.plan.Selections[2].ID
+	cb.semanticSurface.materialized[issued] = true
+	cb.semanticSurface.completed[issued] = true
+	cb.semanticSurface.retiredGrants["ssh"] = tool.InvocationGrant{SelectionID: issued, Token: "next"}
+	if cb.OpenNextRepeatWave("ssh") {
+		t.Fatal("refresh cannot issue a grant without a surface issuer")
+	}
+	if len(cb.semanticSurface.plan.Selections) != 4 {
+		t.Fatalf("a spent remote continuation did not list the next command, selections=%d", len(cb.semanticSurface.plan.Selections))
+	}
 	one := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
 		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
 			{ID: "selection:once", NeedID: "need:once", AdapterName: "send_file", FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}},
@@ -129,6 +139,90 @@ func TestEnsureNextObligationFileWriteListsTheFollowingEdit(t *testing.T) {
 	}
 }
 
+func TestRetireRejectedSemanticToolListsSettledIterativeWorkBeforeRefresh(t *testing.T) {
+	writeBase := "need:fs.write.local:abc123def456"
+	writeID := "selection:" + writeBase
+	write := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: writeID, NeedID: writeBase,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityFSWriteLocal},
+		}}},
+		completed: map[string]bool{writeID: true},
+	}}
+	if got := write.retireRejectedSemanticTool("write_file", writeID, "[system rejected] disk", "selection_execution_failed"); !strings.Contains(got, "semantic_plan_retire_failed") || len(write.semanticSurface.plan.Selections) != 2 || write.semanticSurface.plan.Selections[1].Continuation {
+		t.Fatalf("settled file write before refresh = %q selections=%d", got, len(write.semanticSurface.plan.Selections))
+	}
+	remoteBase := "need:shell.execute.remote_host:abc123def456"
+	remoteID := "selection:" + remoteBase
+	remote := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: remoteID, NeedID: remoteBase,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		}}},
+		completed: map[string]bool{remoteID: true},
+	}}
+	if got := remote.retireRejectedSemanticTool("ssh", remoteID, "trusted_ssh_timeout", "selection_execution_failed"); !strings.Contains(got, "semantic_plan_retire_failed") || len(remote.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("settled ssh before refresh = %q selections=%d", got, len(remote.semanticSurface.plan.Selections))
+	}
+	unsettled := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: remoteID, NeedID: remoteBase,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		}}},
+	}}
+	if got := unsettled.retireRejectedSemanticTool("ssh", remoteID, "[system unknown] lost", "selection_execution_unknown"); len(unsettled.semanticSurface.plan.Selections) != 1 {
+		t.Fatalf("unsettled ssh grew: %q selections=%d", got, len(unsettled.semanticSurface.plan.Selections))
+	}
+	stale := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: remoteID, NeedID: remoteBase,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		}}},
+		completed: map[string]bool{remoteID: true},
+	}}
+	if got := stale.retireRejectedSemanticTool("ssh", remoteID, "[system rejected] dynamic_binding_stale", "dynamic_binding_stale"); len(stale.semanticSurface.plan.Selections) != 1 {
+		t.Fatalf("binding recovery grew a copy: %q selections=%d", got, len(stale.semanticSurface.plan.Selections))
+	}
+	cancelled := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: remoteID, NeedID: remoteBase,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		}}},
+		completed: map[string]bool{remoteID: true},
+	}}
+	if got := cancelled.retireRejectedSemanticTool("ssh", remoteID, "[system rejected] dynamic_execution_cancelled", "dynamic_execution_cancelled"); len(cancelled.semanticSurface.plan.Selections) != 1 {
+		t.Fatalf("cancellation listed another command: %q selections=%d", got, len(cancelled.semanticSurface.plan.Selections))
+	}
+}
+
+func TestEnsureNextIterativeRemoteCommandListsTheFollowingCall(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	selectionID := "selection:" + base
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: selectionID, NeedID: base, AdapterName: "ssh",
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		}}},
+		materialized: map[string]bool{selectionID: true},
+		completed:    map[string]bool{selectionID: true},
+	}}
+	cb.ensureNextIterativeRemoteCommand(selectionID)
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("spent remote command selections=%d", len(cb.semanticSurface.plan.Selections))
+	}
+	cb.ensureNextIterativeRemoteCommand(selectionID)
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatal("a second ensure appended another command before the first was issued")
+	}
+	pendingID := cb.semanticSurface.plan.Selections[1].ID
+	cb.semanticSurface.materialized[pendingID] = true
+	cb.semanticSurface.completed[pendingID] = true
+	cb.ensureNextIterativeRemoteCommand(pendingID)
+	if len(cb.semanticSurface.plan.Selections) != 3 || cb.semanticSurface.plan.Selections[2].Continuation {
+		t.Fatal("a spent remote command must list the next call without the one-shot continuation flag")
+	}
+}
+
 func TestNoteSpentRemoteCommandAppendsOnlySettledExhaustedSSH(t *testing.T) {
 	base := "need:shell.execute.remote_host:abc123def456"
 	sibling := tool.RepeatSiblingNeedID(base, 1)
@@ -144,12 +238,25 @@ func TestNoteSpentRemoteCommandAppendsOnlySettledExhaustedSSH(t *testing.T) {
 	}
 	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
 	got := cb.noteSpentRemoteCommand(spent, "trusted_ssh_timeout")
-	if !strings.Contains(got, tool.RepeatWaveListedMarker) || !strings.Contains(got, "shell.execute.remote_host") {
-		t.Fatalf("settled exhausted ssh = %q", got)
+	if got != "trusted_ssh_timeout" {
+		t.Fatalf("settled ssh narrated a turn limit: %q", got)
+	}
+	if len(surface.plan.Selections) != 2 {
+		t.Fatalf("the note listed a command; listing belongs before refresh, selections=%d", len(surface.plan.Selections))
+	}
+	cb.ensureNextIterativeRemoteCommand(spent)
+	if len(surface.plan.Selections) != 3 || surface.plan.Selections[2].Continuation {
+		t.Fatalf("settled ssh selections=%d continuation=%v", len(surface.plan.Selections), len(surface.plan.Selections) == 3 && surface.plan.Selections[2].Continuation)
+	}
+	pendingID := surface.plan.Selections[2].ID
+	surface.materialized[pendingID] = true
+	if got := cb.noteSpentRemoteCommand(spent, "trusted_ssh_timeout"); got != "trusted_ssh_timeout" || len(surface.plan.Selections) != 3 {
+		t.Fatalf("note after refresh = %q selections=%d", got, len(surface.plan.Selections))
 	}
 	surface.completed = map[string]bool{"selection:" + base: true}
-	if got := cb.noteSpentRemoteCommand(spent, "trusted_ssh_timeout"); got != "trusted_ssh_timeout" {
-		t.Fatalf("unsettled attempt = %q", got)
+	before := len(surface.plan.Selections)
+	if got := cb.noteSpentRemoteCommand(spent, "trusted_ssh_timeout"); got != "trusted_ssh_timeout" || len(surface.plan.Selections) != before {
+		t.Fatalf("unsettled attempt = %q selections=%d", got, len(surface.plan.Selections))
 	}
 	surface.completed[spent] = true
 	other := "selection:need:information.search.web:abc"

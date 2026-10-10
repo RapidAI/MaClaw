@@ -135,6 +135,14 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	if petCompanionToolsDisabled(opts.UserID) {
 		semanticHandled = true
 		log.Printf("[pet-companion] chat turn without tools user=%q", opts.UserID)
+	} else if fileCompanionTurnWithoutTools(opts.UserID, opts.Platform) {
+		// Skipping prepareAgentLoopTools is not an empty surface: semantic
+		// routing would still attach the shared tools. Mark the turn handled
+		// before that call and leave both slices nil.
+		semanticHandled = true
+		tools = nil
+		baseTools = nil
+		log.Printf("[file-companion] turn without tools user=%q", opts.UserID)
 	} else if loopContextTurnAnswerOnly(ctx) {
 		semanticHandled = true
 		tools = nil
@@ -226,7 +234,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			log.Printf("[semantic-routing] shadow plan=%q user=%q outcome=%s", diagnostic.PlanID, opts.UserID, diagnostic.Reason)
 		}
 	}
-	if !loopContextTurnAnswerOnly(ctx) && !petCompanionToolsDisabled(opts.UserID) {
+	if !loopContextTurnAnswerOnly(ctx) && !petCompanionToolsDisabled(opts.UserID) && !fileCompanionTurnWithoutTools(opts.UserID, opts.Platform) {
 		if attached := h.attachVisionFallthroughExecutionTools(ctx, tools, hostReject, opts.UserID, userText, opts.History); len(attached) > 0 && len(tools) == 0 {
 			tools = attached
 			baseTools = attached

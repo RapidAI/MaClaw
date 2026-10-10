@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
-import { initialState as initialCodePreviewState } from '../useCodePreviewState';
+import { initialState as initialCodePreviewState, type CodeFile } from '../useCodePreviewState';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
@@ -147,6 +147,32 @@ describe('withCodePreviewVisibleIfContent', () => {
     it('leaves empty inactive state alone', () => {
         const empty = initialCodePreviewState();
         expect(withCodePreviewVisibleIfContent(empty)).toBe(empty);
+    });
+
+    it('does not pop the pane for read-only tabs', () => {
+        const read = { ...sampleFile, opType: 'read' as const };
+        const hidden = {
+            ...initialCodePreviewState(),
+            active: false,
+            userClosed: false,
+            files: new Map([['/src/main.go', read]]),
+            activeFilePath: '/src/main.go',
+        };
+        expect(withCodePreviewVisibleIfContent(hidden)).toBe(hidden);
+    });
+
+    it('restores onto the changed file when the selected tab is only a read', () => {
+        const read = { ...sampleFile, filePath: '/src/old.go', fileName: 'old.go', opType: 'read' as const, updatedAt: 2 };
+        const edited = { ...sampleFile, filePath: '/src/new.go', fileName: 'new.go', opType: 'modify' as const, updatedAt: 1 };
+        const hidden = {
+            ...initialCodePreviewState(),
+            active: false,
+            files: new Map<string, CodeFile>([[read.filePath, read], [edited.filePath, edited]]),
+            activeFilePath: read.filePath,
+        };
+        const next = withCodePreviewVisibleIfContent(hidden);
+        expect(next.active).toBe(true);
+        expect(next.activeFilePath).toBe('/src/new.go');
     });
 });
 
@@ -2045,6 +2071,28 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.querySelector('[data-testid="assistant-chat-ai-a-done"] [data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
     });
 
+    it('does not add a second live status bar when a guide is injected into the current turn', () => {
+        const roundId = 'desktop-ai-jacky';
+        const user = makeMsg({ role: 'user', content: '使用mcp搜索网络，找张学友的资料' });
+        const assistant = makeMsg({ id: 'a-live', role: 'assistant', content: '', reasoning: '• 会话预检完成\n先查资料。', requestId: roundId });
+        const steer = makeMsg({ id: 'steer', role: 'user', kind: 'guideInjection', content: '测试mcp工具', requestId: roundId });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, assistant, steer], sending: true, streaming: true, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]'));
+        expect(labels).toHaveLength(1);
+        expect(labels[0]?.textContent).toBe('正在思考');
+        const panel = container.querySelector('[data-testid="assistant-chat-ai-a-live"] [data-testid="assistant-reasoning-panel"]');
+        expect(panel?.getAttribute('data-live')).toBe('true');
+        expect(container.querySelector('[data-testid="guide-injection-badge"]')?.textContent).toBe('已注入');
+    });
+
     it('puts the current model next to the live accessing-model action as plain text', () => {
         const user = makeMsg({ role: 'user', content: 'First' });
         const assistant = makeMsg({ id: 'a-done', role: 'assistant', content: 'Done.', reasoning: 'Checked.' });
@@ -3740,8 +3788,88 @@ describe('AIAssistantPanel property tests', () => {
             streamingSessionKey: '',
         }} />);
         await waitFor(() => {
-            expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具');
+            expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具 unknown_mcp');
         });
+        expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+        expect(container.querySelector('[data-testid="assistant-reasoning-object"]')).toBeNull();
+
+        const reasoningOnly = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '',
+            reasoning: '先看现有实现。',
+            sessionKey,
+            timestamp: 4,
+        });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, reasoningOnly],
+            progressMessages: [],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+            expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具');
+        });
+        expect(queryByTestId('coding-agent-working-trail')).toBeNull();
+
+        const partialAnswer = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '已写了一部分。',
+            reasoning: '先看现有实现。',
+            reasoningLive: false,
+            sessionKey,
+            timestamp: 5,
+        });
+        const namedTool = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"todo_write"}';
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, partialAnswer],
+            progressMessages: [makeMsg({ role: 'progress', content: namedTool, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+            expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具 todo_write');
+        });
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+        expect(container.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]')?.open).toBe(false);
+        expect(queryByTestId('coding-agent-working-trail')).toBeNull();
+
+        const partialEdit = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '已写了一部分。',
+            reasoningLive: false,
+            sessionKey,
+            timestamp: 6,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Let me explore the repository.', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: editEvent, timestamp: 3 },
+            ],
+        });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, partialEdit],
+            progressMessages: [makeMsg({ role: 'progress', content: editEvent, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程');
+            expect(labels).toContain('正在编辑文件');
+        });
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
     });
 
     it('puts live tool sheen on a remote coding workbench', async () => {
@@ -7181,6 +7309,73 @@ describe('AIAssistantPanel property tests', () => {
         });
         expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
         expect(document.body.textContent || '').not.toContain('对齐现有实现');
+    });
+
+    it('live steps snapshot replaces and clears the continue paraphrase', async () => {
+        const projectPath = 'D:/tasks/continue-plan-snapshot';
+        const generic = '在已有工作（开发一个图形界面版的贪吃蛇）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 18,
+            session_plan: '开发一个图形界面版的贪吃蛇',
+            requirement_restatement: generic,
+            execution_plan: '### T1: old',
+            step_statuses: [
+                { index: 1, title: 'Add selectable food types', status: 'running' },
+                { index: 2, title: 'Draw a more snake-like body', status: 'pending' },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '贪吃蛇',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('上继续你这次提出的改动'));
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        const steps = [
+            { index: 1, title: 'Add selectable food types', status: 'pending' },
+            { index: 2, title: 'Draw a more snake-like body', status: 'pending' },
+        ];
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                requirement_restatement: '开发一个图形界面版的贪吃蛇',
+                execution_plan: '### T1: Add selectable food types\n### T2: Draw a more snake-like body',
+                step_statuses: steps,
+            });
+        });
+        const understood = getByTestId('coding-agent-plan-understanding');
+        expect(understood.textContent || '').toContain('开发一个图形界面版的贪吃蛇');
+        expect(understood.textContent || '').not.toContain('上继续你这次提出的改动');
+        expect(getByTestId('coding-agent-plan-step-2').textContent || '').toContain('Draw a more snake-like body');
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                requirement_restatement: '',
+                execution_plan: '',
+                step_statuses: steps,
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-understanding')).toBeNull();
+        expect(getByTestId('coding-agent-plan-step-1')).toBeTruthy();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
     it('does not resurrect cleared project tab history after closing and reopening', async () => {

@@ -93,6 +93,43 @@ export function previewShouldMaterialize(kind: FilePreviewKind, hasExtractedBody
     return false;
 }
 
+// Extensions the companion window can edit. Keep this aligned with
+// fileCompanionTextExtension in guiapp/file_companion_save.go. Other code and
+// unknown binaries are the companion "暂不支持预览" case.
+const COMPANION_TEXT_EXT = new Set(['.md', '.markdown', '.txt', '.text', '.log', '.html', '.htm']);
+
+/** True when the companion window can preview or edit a file with this name. */
+export function companionSupportsFileName(name: string): boolean {
+    const ext = fileExtFromName(name);
+    if (COMPANION_TEXT_EXT.has(ext)) return true;
+    const kind = filePreviewKindFromName(name);
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex'
+        || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html'
+        || kind === 'markdown' || kind === 'office' || kind === 'text';
+}
+
+export type CloudDriveCompanionInput = {
+    sourceFilename?: string;
+    title?: string;
+    hasOriginal?: boolean;
+    hasText?: boolean;
+};
+
+/** Cloud-drive preview shows 伴读 when this document can be opened there.
+ *  Originals follow their filename. A note with no original opens as markdown. */
+export function cloudDriveCompanionAvailable(input: CloudDriveCompanionInput): boolean {
+    const source = String(input.sourceFilename || '').trim();
+    const title = String(input.title || '').trim();
+    if (input.hasOriginal) {
+        const named = source || (fileExtFromName(title) ? title : '');
+        return companionSupportsFileName(named);
+    }
+    const named = source || title;
+    const ext = fileExtFromName(named);
+    if (ext) return COMPANION_TEXT_EXT.has(ext);
+    return Boolean(input.hasText);
+}
+
 const LANGUAGE_BY_EXT: Record<string, string> = {
     '.go': 'go',
     '.ts': 'typescript',

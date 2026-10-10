@@ -158,6 +158,7 @@ type App struct {
 	semanticHostCallJournal      *tool.SQLiteHostCallJournal
 	semanticArtifactStore        *tool.SQLiteArtifactStore
 	semanticDynamicContracts     agentservice.DynamicCapabilityContractRegistry
+	semanticDynamicPublisher     *agentservice.DynamicCapabilityContractPublisher
 	// codingCaps is the single owner of every desktop Coding capability:
 	// the R1a authenticated semantic-task relation authority, per-owner task
 	// sessions, ingress tokens, workspace handles, generation fences and the
@@ -175,10 +176,14 @@ type App struct {
 	skillInstallConfirm         sync.Map
 	IsInitMode                  bool
 	IsAutoStart                 bool
-	installingNode              bool      // Flag to prevent concurrent Node.js installation
-	installingGit               bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone             chan bool // Channel to signal Node.js installation completion
-	installMutex                sync.Mutex
+	// fileCompanion is the open-file process and the Darwin document latch.
+	// processHooks replaces exec, exit, and main startup at the process boundary.
+	fileCompanion   *fileCompanionRuntime
+	processHooks    desktopProcessHooks
+	installingNode  bool      // Flag to prevent concurrent Node.js installation
+	installingGit   bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone chan bool // Channel to signal Node.js installation completion
+	installMutex    sync.Mutex
 	// legacyInstallResults stores the latest structured outcome for the
 	// compatibility InstallSkill API. The Wails method historically returns
 	// only error, so the result is exposed through InstallSkillDetailed while
@@ -2587,6 +2592,9 @@ func (a *App) startup(ctx context.Context) {
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
 	a.ctx = ctx
+	if err := registerFileCompanionLinuxDesktop(); err != nil {
+		log.Printf("[file-companion] linux desktop register: %v", err)
+	}
 	a.watchFrontendPaint()
 	// Runtime watchdog for the WebView2 "renders but input dies" failure mode;
 	// boot-time paint watches cannot detect it because the render heartbeat
@@ -2701,6 +2709,7 @@ func (a *App) startup(ctx context.Context) {
 		// durable config may have committed in a previous process while the
 		// runtime probe was pending; keep execution/inventory fail-closed until
 		// this bounded, per-server checked probe succeeds.
+		a.reconcileReviewedDynamicContracts()
 		go a.reconcileManagedMCPRuntimeSyncOnStartup()
 
 		// Ensure local AI models are ready for features the user has not
@@ -2793,8 +2802,20 @@ func (a *App) startup(ctx context.Context) {
 	log.Printf("[startup] complete (no config) in %v", time.Since(startupBegin))
 }
 
-// domReady is called after the frontend Dom has been loaded
+// domReady is called after the frontend Dom has been loaded.
+// OnDomReady stays this method. The Darwin document latch returns before the
+// environment check; commitDarwinMainWindow replays finishDomReady once.
 func (a *App) domReady(ctx context.Context) {
+	if a.darwinDocumentLatchOpen() {
+		a.frontendDOMReady.Store(true)
+		a.deferDarwinDomReady()
+		bootLog("wails OnDomReady deferred by darwin file latch")
+		return
+	}
+	a.finishDomReady(ctx)
+}
+
+func (a *App) finishDomReady(ctx context.Context) {
 	a.frontendDOMReady.Store(true)
 	bootLog("wails OnDomReady htmlReady=%v (about:blank also fires this)", a.frontendHTMLReady.Load())
 	log.Printf("[domReady] err=none wails navigation completed htmlReady=%v warmup_done=%v", a.frontendHTMLReady.Load(), a.warmupDone.Load())
@@ -2823,6 +2844,10 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) markFrontendHTMLReady() {
 	if a == nil || !a.frontendHTMLReady.CompareAndSwap(false, true) {
+		return
+	}
+	if a.darwinDocumentLatchOpen() {
+		bootLog("index.html boot-ping deferred by darwin file latch")
 		return
 	}
 	bootLog("index.html boot-ping; hiding overlay and starting env check")

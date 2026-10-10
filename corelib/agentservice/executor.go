@@ -50,6 +50,7 @@ func (e SimpleLLMExecutor) Execute(ctx context.Context, req ExecuteRequest) (*Ex
 	if err != nil {
 		return nil, err
 	}
+	llmCfg = applyHubBotLLMServiceGroup(llmCfg, req.Instance.Metadata)
 	messages := buildConversation(req, llmCfg)
 	client := e.clientFor(llmCfg)
 	respText, err := simpleLLMRequest(ctx, llmCfg, messages, client)

@@ -42,6 +42,11 @@ type qqBotGatewayManager struct {
 
 	// qr holds AES bind-session keys for scan login. Never sent to the UI.
 	qr *qqbot.QRClient
+
+	// statusNotify, when set, receives status pushes instead of the Wails event.
+	// stopHook, when set, replaces Gateway.Stop. Both are for tests.
+	statusNotify func(status string)
+	stopHook     func(*qqbot.Gateway) error
 }
 
 func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
@@ -83,13 +88,16 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 	m.mu.Lock()
 
 	if !cfg.QQBotEnabled || cfg.QQBotAppID == "" || cfg.QQBotAppSecret == "" {
-		// Should be stopped
+		// Should be stopped. Publish "disconnected" before Stop returns:
+		// Stop waits for the socket read and any in-flight message handler,
+		// which is what left the workbench chip on "QQ: 已连接".
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
 			m.status = gatewayConnectionStatusDisconnected
 			m.mu.Unlock()
-			_ = gw.Stop() // Stop outside lock to avoid deadlock with onStatusChange
+			m.emitStatusEvent()
+			_ = m.stopGateway(gw) // outside the lock; onGatewayStatus takes it
 		} else {
 			m.mu.Unlock()
 		}
@@ -98,9 +106,6 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
 			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformQQBotRemote)
 			log.Printf("[qqbot-mgr] sent gateway unclaim to hub")
-		}
-		if gw != nil {
-			m.emitStatusEvent()
 		}
 		return
 	}
@@ -112,14 +117,18 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		return
 	}
 
-	// Restart with new config
+	// Restart with new config. Drop "已连接" before the old socket closes,
+	// otherwise a slow handler keeps the chip online for the whole turn.
 	oldGw := m.gateway
 	m.gateway = nil
+	if oldGw != nil {
+		m.status = gatewayConnectionStatusConnecting
+	}
 	m.mu.Unlock()
 
-	// Stop old gateway outside lock to avoid deadlock
 	if oldGw != nil {
-		_ = oldGw.Stop()
+		m.emitStatusEvent()
+		_ = m.stopGateway(oldGw)
 	}
 
 	newCfg := qqbot.Config{
@@ -127,7 +136,9 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		AppSecret: cfg.QQBotAppSecret,
 	}
 	gw := qqbot.NewGateway(newCfg, m.onIncomingMessage)
-	gw.SetStatusCallback(m.onStatusChange)
+	gw.SetStatusCallback(func(status string) {
+		m.onGatewayStatus(gw, status)
+	})
 
 	m.mu.Lock()
 	m.gateway = gw
@@ -160,10 +171,10 @@ func (m *qqBotGatewayManager) Stop() {
 	m.localHandler = nil
 	m.mu.Unlock()
 	_ = lh // shared App conversation memory remains alive
-	if gw != nil {
-		_ = gw.Stop()
-	}
 	m.emitStatusEvent()
+	if gw != nil {
+		_ = m.stopGateway(gw)
+	}
 }
 
 // Status returns the current connection status.
@@ -173,9 +184,26 @@ func (m *qqBotGatewayManager) Status() string {
 	return m.status.String()
 }
 
-// onStatusChange is called by the gateway when connection status changes.
-func (m *qqBotGatewayManager) onStatusChange(status string) {
+// stopGateway shuts a gateway down. Tests replace stopHook to observe ordering.
+func (m *qqBotGatewayManager) stopGateway(gw *qqbot.Gateway) error {
+	if gw == nil {
+		return nil
+	}
+	if m.stopHook != nil {
+		return m.stopHook(gw)
+	}
+	return gw.Stop()
+}
+
+// onGatewayStatus is called by the gateway when connection status changes.
+// Callbacks from a gateway that is no longer current are ignored, so a slow
+// shutdown cannot put "已连接" back on the chip after the user turned QQ off.
+func (m *qqBotGatewayManager) onGatewayStatus(gw *qqbot.Gateway, status string) {
 	m.mu.Lock()
+	if m.gateway != gw {
+		m.mu.Unlock()
+		return
+	}
 	normalized := normalizeGatewayConnectionStatus(status)
 	m.status = normalized
 	if normalized == gatewayConnectionStatusError {
@@ -199,7 +227,12 @@ func (m *qqBotGatewayManager) onStatusChange(status string) {
 }
 
 func (m *qqBotGatewayManager) emitStatusEvent() {
-	m.app.emitEvent("qqbot-status-changed", m.Status())
+	status := m.Status()
+	if m.statusNotify != nil {
+		m.statusNotify(status)
+		return
+	}
+	m.app.emitEvent("qqbot-status-changed", status)
 }
 
 // resetLocalHandler invalidates the cached local handler.

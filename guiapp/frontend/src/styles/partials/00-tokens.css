@@ -29,8 +29,10 @@
     --theme-page-bg: #f4f7fb;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f0f4f9;
-    --theme-text-primary: #1c2733;
-    --theme-text-secondary: #44546a;
+    /* Light shell retints these again on [data-ai-light-scheme] to the
+       assistant-title gray. This fallback matches that Fluent ink. */
+    --theme-text-primary: #526277;
+    --theme-text-secondary: #546479;
     --theme-text-muted: #657384;
     /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
     --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));

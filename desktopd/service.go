@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -36,11 +37,17 @@ var (
 // Runner executes docker arguments. Tests replace it.
 type Runner func(ctx context.Context, args ...string) (string, error)
 
+// CommandRunner runs docker with an optional stdin. A non-zero exit from the
+// program inside the container is an exit code with a nil error. Err is set
+// only when docker itself cannot run the command.
+type CommandRunner func(ctx context.Context, stdin io.Reader, args ...string) (output string, exitCode int, err error)
+
 // Service runs one Docker host. userGates keep a user's stop from overlapping
 // the next start: the stop writes the website login, and a start in the
 // middle would open a second browser.
 type Service struct {
 	Run           Runner
+	RunCommand    CommandRunner
 	AdvertiseHost string
 	// DesktopProxyURL is injected into desktop containers as HTTP(S)_PROXY so
 	// the browser and other tools egress through the forward proxy (see
@@ -393,7 +400,10 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 		return "", fmt.Errorf("%w: app command is invalid", ErrInvalid)
 	}
 	for _, arg := range args {
-		if strings.TrimSpace(arg) == "" || strings.ContainsAny(arg, "\r\n\x00") {
+		// A carriage return stays inside one argument. It is not a
+		// shell break, and xdotool type does not treat it as Enter.
+		// A newline or NUL is not an argument.
+		if strings.TrimSpace(arg) == "" || strings.ContainsAny(arg, "\n\x00") {
 			return "", fmt.Errorf("%w: app command is invalid", ErrInvalid)
 		}
 	}
@@ -407,30 +417,126 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 	return out, err
 }
 
+// Open starts one GUI program on the user's display and returns without
+// waiting for it. The argv is the program itself. It is not a shell, and
+// it is not xdotool.
+func (s *Service) Open(ctx context.Context, tenantID, userID, display, program string, args []string) (string, error) {
+	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
+	if err != nil {
+		return "", err
+	}
+	command, err := desktop.OpenExecArgs(containerName(spec.TenantID, spec.UserID), display, program, args)
+	if err != nil {
+		return "", err
+	}
+	var out string
+	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		var runErr error
+		out, runErr = s.docker(ctx, command...)
+		return runErr
+	})
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return desktop.OpenedText(program), nil
+	}
+	return out, nil
+}
+
+// Install runs apt-get update, apt-get -f install, and apt-get install in
+// the user's desktop container. Package names are argv, not a shell command.
+func (s *Service) Install(ctx context.Context, tenantID, userID string, packages []string) (string, error) {
+	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
+	if err != nil {
+		return "", err
+	}
+	names, err := desktop.PackageNames(packages)
+	if err != nil {
+		return "", err
+	}
+	// The HTTP clients and the write deadline wait one minute longer
+	// than this context, so the budget sentence can be written and read.
+	ctx, cancel := desktop.BoundInstall(ctx)
+	defer cancel()
+	container := containerName(spec.TenantID, spec.UserID)
+	var output string
+	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		// ensure() starts apt-mirror in the background and returns before
+		// that process takes the lock. The wait either blocks until the
+		// probe has written the sources, or holds the lock and writes
+		// them itself. A wait failure still falls through to apt-get.
+		_, _ = s.docker(ctx, desktop.AptMirrorWaitArgs(container)...)
+		if stop := desktop.InstallStopError(ctx); stop != nil {
+			return stop
+		}
+		text, runErr := desktop.RunPackageInstall(ctx, func(args []string) (string, error) {
+			return s.docker(ctx, args...)
+		}, container, names)
+		output = text
+		return runErr
+	})
+	if err != nil {
+		// A deadline kills apt-get mid-log. The tail of that log is
+		// download progress, which hides the fact that the time ran out.
+		// A plain cancel still drops that tail and returns the context error.
+		if stop := desktop.InstallStopError(ctx); stop != nil {
+			return "", stop
+		}
+		return tailInstall(output), err
+	}
+	return "installed: " + strings.Join(names, " ") + "\n" + tailInstall(output), nil
+}
+
+func tailInstall(text string) string {
+	const limit = 8000
+	text = strings.TrimSpace(text)
+	if len(text) <= limit {
+		return text
+	}
+	return text[len(text)-limit:]
+}
+
 // Screenshot returns a PNG of the user's X display. It does not start the
 // desktop: like App it acts on the container a session already opened.
 func (s *Service) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
+	data, _, err := s.CaptureScreenshot(ctx, tenantID, userID, display, "")
+	return data, err
+}
+
+// CaptureScreenshot returns the PNG and, when name is a plain .png file name,
+// also copies that file to /home/desktop/Desktop before the temp capture is removed.
+// The returned path is set only after the copy command exits 0.
+func (s *Service) CaptureScreenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
+	script, err := desktop.ScreenshotScriptFor(name)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+	}
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	display = strings.TrimSpace(display)
 	if display == "" {
 		display = desktop.DefaultDisplay
 	}
 	if !desktop.ValidDisplay(display) {
-		return nil, fmt.Errorf("%w: display is invalid", ErrInvalid)
+		return nil, "", fmt.Errorf("%w: display is invalid", ErrInvalid)
 	}
 	var out string
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
 		var runErr error
-		out, runErr = s.docker(ctx, "exec", "-e", "DISPLAY="+display, containerName(spec.TenantID, spec.UserID), "sh", "-c", desktop.ScreenshotScript)
+		out, runErr = s.docker(ctx, "exec", "-e", "DISPLAY="+display, containerName(spec.TenantID, spec.UserID), "sh", "-c", script)
 		return runErr
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return decodeScreenshot(out)
+	data, err := decodeScreenshot(out)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, desktop.DesktopShotPath(name), nil
 }
 
 func decodeScreenshot(out string) ([]byte, error) {

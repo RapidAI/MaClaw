@@ -39,8 +39,15 @@ func cleanStaleLock() {
 	tempDir := C.GoString(cDir)
 	C.free(unsafe.Pointer(cDir))
 
-	// Must match SingleInstanceLock.UniqueId in main.go (brand-scoped).
-	lockPath := filepath.Join(tempDir, singleInstanceUniqueID()+".lock")
+	// Main and companion locks are separate. A crashed companion must not
+	// leave its file behind or the next open-file exits before a window.
+	for _, id := range staleSingleInstanceLockIDs() {
+		removeStaleDarwinLock(tempDir, id)
+	}
+}
+
+func removeStaleDarwinLock(tempDir, id string) {
+	lockPath := filepath.Join(tempDir, id+".lock")
 
 	f, err := os.OpenFile(lockPath, os.O_WRONLY, 0o600)
 	if err != nil {

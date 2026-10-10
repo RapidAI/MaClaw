@@ -23,7 +23,7 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
 	}
 	mod := desktopRuntimeModule{}
-	for _, action := range []string{"navigate", "click", "type", "press", "task_run", "app_run"} {
+	for _, action := range []string{"navigate", "click", "type", "press", "task_run", "app_run", "app_open", "install", "deliver", "file_write", "file_edit", "bash"} {
 		_, err := mod.InvokeTool(context.Background(), plan, "desktop", map[string]any{
 			"action": action,
 			"url":    "https://example.com",
@@ -217,12 +217,12 @@ func TestAppRunTypeAttachesTheBrowserBeforeXdotool(t *testing.T) {
 	previousRunner := desktopAppRunner
 	previousFocus := desktopFocusedInputType
 	desktopFocusedInputType = desktopLiveFocusedInputType
-	typed := false
+	var calls [][]string
 	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
 		return desktopEndpoint{CDP: "http://127.0.0.1:1", Display: ":99"}, nil
 	}
-	desktopAppRunner = func(string, ...string) (string, error) {
-		typed = true
+	desktopAppRunner = func(_ string, args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
 		return "", fmt.Errorf("xdotool should not run")
 	}
 	t.Cleanup(func() {
@@ -238,8 +238,10 @@ func TestAppRunTypeAttachesTheBrowserBeforeXdotool(t *testing.T) {
 		"action": "app_run",
 		"steps":  []any{map[string]any{"action": "type", "text": secret}},
 	})
-	if typed {
-		t.Fatal("xdotool ran before the focused control was read")
+	// The focused window is recorded before the password read. The secret
+	// is not sent until that read succeeds.
+	if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || containsArg(calls[0], secret) {
+		t.Fatalf("type before read calls=%v", calls)
 	}
 	// A dead CDP address must fail while attaching. Returning not_password_field
 	// here would mean the type was refused without reading the focused control.
@@ -247,37 +249,36 @@ func TestAppRunTypeAttachesTheBrowserBeforeXdotool(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	for _, key := range []string{"p", "Shift_L+plus", "Control_L+v"} {
-		typed = false
+		calls = nil
 		_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
 			"action": "app_run",
 			"steps":  []any{map[string]any{"action": "key", "key": key}},
 		})
-		if typed {
-			t.Fatalf("%s reached xdotool before the focused control was read", key)
+		if len(calls) != 1 || calls[0][0] != "getactivewindow" || containsArg(calls[0], key) {
+			t.Fatalf("%s reached xdotool before the focused control was read: %v", key, calls)
 		}
 		if err == nil || !strings.Contains(err.Error(), "desktop browser") {
 			t.Fatalf("key %s err=%v", key, err)
 		}
 	}
-	typed = false
+	calls = nil
 	_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
 		"action": "app_run",
 		"steps":  []any{map[string]any{"action": "key", "key": "Return"}},
 	})
-	if !typed {
-		t.Fatalf("Return was held for a browser focus read: %v", err)
+	if len(calls) != 4 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || calls[3][0] != "key" || !containsArg(calls[3], "Return") || containsArg(calls[0], "Return") {
+		t.Fatalf("Return was held for a browser focus read: %v err=%v", calls, err)
 	}
-	typed = false
+	calls = nil
 	_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
 		"action": "app_run",
 		"steps":  []any{map[string]any{"action": "key", "key": "Control_L"}},
 	})
-	if !typed {
-		t.Fatalf("a modifier alone was held for a browser focus read: %v", err)
+	if len(calls) != 4 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !containsArg(calls[3], "Control_L") || containsArg(calls[0], "Control_L") {
+		t.Fatalf("a modifier alone was held for a browser focus read: %v err=%v", calls, err)
 	}
 	// A click can move into the password field. It has to be delivered, and
 	// the focus read has to fail closed, before the following text is sent.
-	var calls [][]string
 	desktopAppRunner = func(_ string, args ...string) (string, error) {
 		calls = append(calls, append([]string(nil), args...))
 		return "clicked", nil
@@ -297,8 +298,13 @@ func TestAppRunTypeAttachesTheBrowserBeforeXdotool(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "desktop browser") || strings.Contains(err.Error(), secret) {
 			t.Fatalf("insert after click err=%v", err)
 		}
-		if len(calls) != 1 || !containsArg(calls[0], "click") || containsArg(calls[0], secret) || containsArg(calls[0], "p") {
+		if len(calls) != 5 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || containsArg(calls[1], "click") || !containsArg(calls[3], "click") || containsArg(calls[3], "keyup") || strings.Join(calls[4], " ") != strings.Join(desktopActiveWindowRead, " ") {
 			t.Fatalf("insert after click calls=%v", calls)
+		}
+		for _, call := range calls {
+			if containsArg(call, secret) || containsArg(call, "p") || (len(call) > 0 && call[0] == "windowactivate") {
+				t.Fatalf("insert after click calls=%v", calls)
+			}
 		}
 	}
 	calls = nil
@@ -309,8 +315,13 @@ func TestAppRunTypeAttachesTheBrowserBeforeXdotool(t *testing.T) {
 			map[string]any{"action": "key", "key": "Return"},
 		},
 	})
-	if err != nil || len(calls) != 1 || !containsArg(calls[0], "click") || !containsArg(calls[0], "Return") {
+	if err != nil || len(calls) != 5 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !containsArg(calls[1], "Alt_L") || !containsArg(calls[1], "Alt_R") || !containsArg(calls[1], "Control_L") || !containsArg(calls[1], "Control_R") || !containsArg(calls[1], "Shift_L") || !containsArg(calls[1], "Shift_R") || !containsArg(calls[1], "Super_L") || !containsArg(calls[1], "Super_R") || !containsArg(calls[1], "--delay") || !containsArg(calls[1], "0") || containsArg(calls[1], "click") || containsArg(calls[3], "keyup") || !containsArg(calls[3], "click") || containsArg(calls[3], "Return") || calls[4][0] != "key" || containsArg(calls[4], "keyup") || !containsArg(calls[4], "Return") {
 		t.Fatalf("click+Return calls=%v err=%v", calls, err)
+	}
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "windowactivate" {
+			t.Fatalf("non-numeric window id was activated: %v", calls)
+		}
 	}
 }
 
@@ -342,7 +353,7 @@ func TestPlanCopyListsOnlyInspection(t *testing.T) {
 				t.Fatalf("plan copy missing %s: %s", allowed, text)
 			}
 		}
-		for _, banned := range []string{"task_run", "app_run"} {
+		for _, banned := range []string{"task_run", "app_run", "app_open"} {
 			if strings.Contains(text, banned) {
 				t.Fatalf("plan copy still teaches %s: %s", banned, text)
 			}
@@ -352,8 +363,76 @@ func TestPlanCopyListsOnlyInspection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "task_run") || strings.Contains(string(encoded), "app_run") {
+	if strings.Contains(string(encoded), "task_run") || strings.Contains(string(encoded), "app_run") || strings.Contains(string(encoded), "deliver") {
 		t.Fatalf("plan parameters still teach mutation: %s", encoded)
+	}
+	if !strings.Contains(prompt, "one arrangement") || !strings.Contains(prompt, "Do not ask the user") || !strings.Contains(prompt, "say it is done") || !strings.Contains(prompt, "does not start it") || strings.Contains(prompt, "action=deliver") {
+		t.Fatalf("plan copy does not keep the arrangement to one confirmation: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not paste the document") || !strings.Contains(prompt, "copy it into Word") || !strings.Contains(prompt, "task order") {
+		t.Fatalf("plan copy still lets a document become chat text: %s", prompt)
+	}
+	if !strings.Contains(tools[0].Description, "Do not paste the document") {
+		t.Fatalf("plan tool lost the document rule: %s", tools[0].Description)
+	}
+	execute := agentruntime.TurnRequest{
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "execute"}}},
+	}
+	execTools, err := desktopRuntimeModule{}.Tools(context.Background(), execute)
+	if err != nil || len(execTools) != 1 || !strings.Contains(execTools[0].Description, "action=deliver") {
+		t.Fatalf("execute copy lost deliver: %v", execTools)
+	}
+	execPrompt, err := desktopRuntimeModule{}.ContributePrompt(context.Background(), execute)
+	if err != nil || !strings.Contains(execPrompt, "action=deliver") || !strings.Contains(execPrompt, "Do not ask the user") || !strings.Contains(execPrompt, "Do not paste the document") || !strings.Contains(execPrompt, "copy it into Word") || !strings.Contains(execPrompt, "report what happened") || !strings.Contains(execPrompt, "another confirmation") || !strings.Contains(execPrompt, "app_open") || !strings.Contains(execPrompt, "exit status 1") || !strings.Contains(execPrompt, "not open") || strings.Contains(execPrompt, "sh -c") {
+		t.Fatalf("execute prompt=%s err=%v", execPrompt, err)
+	}
+	if !strings.Contains(execTools[0].Description, "app_open") || !strings.Contains(execTools[0].Description, "exit status 1") || !strings.Contains(execTools[0].Description, "not a shell") {
+		t.Fatalf("execute tool=%s", execTools[0].Description)
+	}
+	if strings.Contains(execPrompt, ".docx or .txt") || strings.Contains(execTools[0].Description, ".docx or .txt") {
+		t.Fatal("deliver copy still limits the file type")
+	}
+	if !strings.Contains(execPrompt, "including a pdf") || !strings.Contains(execPrompt, "uses path") || !strings.Contains(execTools[0].Description, "including a pdf") {
+		t.Fatal("deliver copy does not read the desktop file")
+	}
+}
+
+func TestExecuteInstallRunsAptPackages(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "tenant-install", UserID: "alice", InstanceID: "install-bot"}
+	previousSession := desktopRemoteSession
+	previousInstall := desktopRemoteInstall
+	var got []string
+	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
+		return desktopEndpoint{CDP: "http://10.0.0.8:19020", Display: ":20"}, nil
+	}
+	desktopRemoteInstall = func(_ context.Context, tenantID, userID string, packages []string) (string, error) {
+		if tenantID != scope.TenantID || userID != scope.UserID {
+			t.Fatalf("account %s/%s", tenantID, userID)
+		}
+		got = append([]string(nil), packages...)
+		return "installed: libreoffice", nil
+	}
+	t.Cleanup(func() {
+		desktopRemoteSession = previousSession
+		desktopRemoteInstall = previousInstall
+	})
+	turn := agentruntime.TurnRequest{
+		Scope: scope,
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "execute"}}},
+	}
+	text, err := (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
+		"action":   "install",
+		"packages": []any{"libreoffice", "libreoffice"},
+	})
+	if err != nil || text != "installed: libreoffice" || len(got) != 1 || got[0] != "libreoffice" {
+		t.Fatalf("text=%q err=%v packages=%v", text, err, got)
+	}
+	_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
+		"action":   "install",
+		"packages": []any{"libreoffice;rm -rf /"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "package") || len(got) != 1 {
+		t.Fatalf("bad package err=%v packages=%v", err, got)
 	}
 }
 

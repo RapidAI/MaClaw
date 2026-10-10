@@ -4155,14 +4155,20 @@ func TestHubBotUsesTheLoggedInDesktopBrowser(t *testing.T) {
 	for _, tool := range hubBot.BuildTools("继续操作刚才登录的网站") {
 		seen[tooldef.Name(tool)] = true
 	}
-	if !seen["desktop"] {
-		t.Fatal("hub bot lost the desktop browser")
+	if !seen["desktop"] || !seen["web_search"] || !seen["web_fetch"] {
+		t.Fatalf("hub bot lost the desktop or its network tools: %#v", seen)
 	}
-	if seen["web_fetch"] || seen["web_search"] || seen["download_file"] || seen["open"] {
-		t.Fatalf("hub bot can leave the logged-in browser: %#v", seen)
+	if seen["download_file"] || seen["open"] || seen["read_file"] || seen["bash"] || seen["craft_tool"] || seen["browser"] || seen["computer_use"] {
+		t.Fatalf("hub bot can use the host system: %#v", seen)
 	}
-	if allowed, _ := hubBot.IsToolCallAllowed("web_fetch", `{"url":"https://example.com"}`); allowed {
-		t.Fatal("web_fetch was allowed on a hub bot")
+	if allowed, reason := hubBot.IsToolCallAllowed("web_fetch", `{"url":"https://example.com"}`); !allowed {
+		t.Fatalf("web_fetch was rejected on a hub bot: %s", reason)
+	}
+	if allowed, _ := hubBot.IsToolCallAllowed("download_file", `{"url":"https://example.com"}`); allowed {
+		t.Fatal("download_file was allowed on a hub bot")
+	}
+	if allowed, _ := hubBot.IsToolCallAllowed("read_file", `{"path":"C:\\\\host\\\\a.txt"}`); allowed {
+		t.Fatal("read_file was allowed on a hub bot")
 	}
 	other := &coreAgentCallbacks{
 		runtimeToolInvoker: stubRuntimeInvoker{},
@@ -4174,6 +4180,26 @@ func TestHubBotUsesTheLoggedInDesktopBrowser(t *testing.T) {
 	}
 	if !seen["web_search"] || !seen["web_fetch"] {
 		t.Fatalf("non-bot turn lost web tools: %#v", seen)
+	}
+}
+
+func TestHubBotDocumentOrderLeavesTheLightBan(t *testing.T) {
+	hubBot := &coreAgentCallbacks{
+		runtimeTools:  []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		runtimePrompt: "When the user asked for a document, action=deliver with name and content. Do not paste the document into the chat, and do not tell the user to copy it into Word.",
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+	}
+	prompt := hubBot.BuildSystemPrompt("生成一份word文档，内容为你的自述，发我。", false)
+	if strings.Contains(prompt, "不要生成文档") {
+		t.Fatal("a document order stayed under the light ban")
+	}
+	if !strings.Contains(prompt, "action=deliver") || !strings.Contains(prompt, "copy it into Word") {
+		t.Fatal("a document order lost the deliver instruction")
+	}
+	if hubBot.CurrentPromptProfile().IsLight() {
+		t.Fatal("a document order stayed on the light profile")
 	}
 }
 

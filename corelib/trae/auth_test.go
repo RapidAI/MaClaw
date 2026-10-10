@@ -227,7 +227,7 @@ func TestTransportPrefersEngineStampedPair(t *testing.T) {
 		t.Fatalf("stored uid overridden: %q", got)
 	}
 	// Version family still stamps regardless of the preset pair.
-	if got := h.Get("X-Ide-Version"); got != CNProfile().IDEVersion {
+	if got := h.Get("X-Ide-Version"); got != CNProfile().ClientVersion {
 		t.Fatalf("X-Ide-Version missing: %q", got)
 	}
 }

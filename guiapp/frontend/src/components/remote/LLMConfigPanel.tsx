@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
@@ -1140,7 +1140,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     const badge: Record<string, string> = {};
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
-                                        <Fragment key={i}>
+                                        <span key={i} className="llm-config-provider-chip-slot">
                                         <button className="llm-config-provider-chip" aria-label={tag ? `${p.name} ${tag}` : p.name} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                             background: active ? colors.primaryLight : colors.surface,
@@ -1178,7 +1178,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                                 onRequestVerification={onRequestIdentityVerification}
                                             />
                                         )}
-                                        </Fragment>
+                                        </span>
                                     );
                                 })}
                                 {/* Never offer a destructive-looking empty state while the saved list is unresolved. */}

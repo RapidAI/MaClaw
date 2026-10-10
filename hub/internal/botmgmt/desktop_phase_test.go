@@ -6,12 +6,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
+	logDir := t.TempDir()
+	t.Setenv("MACLAW_BOT_LOG_DIR", logDir)
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -103,6 +107,22 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	}
 	if svc.DesktopAttention("tenant-a", "alice", "bot_alice") != "" {
 		t.Fatal("a finished reply left the attention reason up")
+	}
+	logged, err := os.ReadFile(filepath.Join(logDir, "bot_alice.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(logged)
+	for _, stage := range []string{"hub.post_begin", "hub.open_desktop", "hub.owner_token", "hub.read_instance", "hub.patch_instance", "hub.post_message", "hub.post_end"} {
+		if !strings.Contains(text, "stage="+stage) {
+			t.Fatalf("bot log missing %s\n%s", stage, text)
+		}
+	}
+	if strings.Contains(text, "secret-token") || strings.Contains(text, "bearer-alice") || strings.Contains(text, "key-alice") || strings.Contains(text, "admin-secret") {
+		t.Fatalf("bot log leaked a credential\n%s", text)
+	}
+	if !strings.Contains(bodies[0], `"bot_id":"bot_alice"`) || strings.Contains(bodies[2], "bot_phase") {
+		t.Fatalf("bot id metadata missing or plain message gained a phase: %s", bodies[2])
 	}
 }
 

@@ -1103,7 +1103,7 @@ func skillInvocationSchema(params []corelib.NLSkillParam) map[string]interface{}
 
 func isReservedSkillInvocationField(field string) bool {
 	switch strings.ToLower(strings.TrimSpace(field)) {
-	case "name", "skill", "skill_id", "provider", "provider_id", "selection_id", "action", "credential", "credentials", "artifact_id", "artifact_ref":
+	case "name", "skill", "skill_id", "skill_name", "provider", "provider_id", "selection_id", "action", "credential", "credentials", "artifact_id", "artifact_ref":
 		return true
 	default:
 		return false

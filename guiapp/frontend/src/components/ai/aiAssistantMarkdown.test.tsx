@@ -14,6 +14,11 @@ import {
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 
+function cssRgb(hex: string): string {
+    const h = hex.replace("#", "");
+    return `rgb(${Number.parseInt(h.slice(0, 2), 16)}, ${Number.parseInt(h.slice(2, 4), 16)}, ${Number.parseInt(h.slice(4, 6), 16)})`;
+}
+
 // Minimal JPEG stream with a 1x1 SOF0 frame. The renderer only needs header
 // validation before assigning a data URL to img.src; browser image loading is
 // outside jsdom's scope.
@@ -97,7 +102,7 @@ describe("renderContentWithCodeBlocks", () => {
         const borderHex = lightTheme.codeBlockBorder.replace("#", "");
         const borderRgb = `rgb(${Number.parseInt(borderHex.slice(0, 2), 16)}, ${Number.parseInt(borderHex.slice(2, 4), 16)}, ${Number.parseInt(borderHex.slice(4, 6), 16)})`;
         expect(pre.style.fontFamily).toContain("ui-monospace");
-        expect(pre.style.color).toBe("rgb(23, 38, 60)");
+        expect(pre.style.color).toBe(cssRgb(lightTheme.text));
         expect(pre.style.backgroundColor).toBe("rgb(255, 255, 255)");
         expect(pre.style.borderTopColor).toBe(borderRgb);
         expect(pre.style.whiteSpace).toBe("pre");
@@ -117,10 +122,10 @@ describe("renderContentWithCodeBlocks", () => {
         const code = pre.querySelector("code") as HTMLElement;
         const lang = well.querySelector(":scope > div") as HTMLElement;
         expect(pre.contains(lang)).toBe(false);
-        expect(well.style.color).toBe("rgb(23, 38, 60)");
+        expect(well.style.color).toBe(cssRgb(lightTheme.text));
         expect(well.style.color).not.toBe("rgb(46, 117, 203)");
         expect(well.style.background).toMatch(/color-mix/i);
-        expect(well.style.background).toMatch(/#17263c|rgb\(23,\s*38,\s*60\)/i);
+        expect(well.style.background).toContain(cssRgb(lightTheme.text).slice(4, -1));
         expect(well.style.fontFamily).toContain("ui-monospace");
         expect(well.style.fontSize).toBe("13px");
         expect(well.style.overflow).toBe("hidden");
@@ -140,7 +145,7 @@ describe("renderContentWithCodeBlocks", () => {
         expect(code.style.minWidth).toBe("max-content");
         expect(code.style.wordBreak).toBe("normal");
         expect(lang.style.position).not.toBe("sticky");
-        expect(lang.style.color).toBe("rgb(23, 38, 60)");
+        expect(lang.style.color).toBe(cssRgb(lightTheme.text));
         expect(lang.style.wordBreak).toBe("normal");
         expect(lang.style.whiteSpace).toBe("nowrap");
         expect(lang.style.borderBottomStyle).not.toBe("solid");
@@ -167,7 +172,7 @@ describe("renderContentWithCodeBlocks", () => {
         );
         const code = container.querySelector("code") as HTMLElement;
         expect(code.textContent).toBe("apt update");
-        expect(code.style.color).toBe("rgb(23, 38, 60)");
+        expect(code.style.color).toBe(cssRgb(lightTheme.text));
         expect(code.style.background).toContain("color-mix");
         expect(code.style.borderStyle).not.toBe("solid");
     });

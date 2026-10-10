@@ -803,6 +803,24 @@ func TestSplitParagraphForFilling_CommaFallback(t *testing.T) {
 	}
 }
 
+func TestSplitParagraphForFilling_ImageLineStaysWhole(t *testing.T) {
+	text := "![原文第11页](C:/Users/ma139/.maclaw/figures/p11-1.png)"
+	parts := splitParagraphForFilling(text)
+	if len(parts) != 1 || parts[0] != text {
+		t.Fatalf("image line sliced: %#v", parts)
+	}
+	block := text + "\n图中是热力图。"
+	parts = splitMarkdownBlockForFilling(block)
+	if len(parts) < 2 || parts[0] != text {
+		t.Fatalf("image line sliced inside a block: %#v", parts)
+	}
+	long := "![原文第11页](" + strings.Repeat("dir.part/", 40) + "p11-1.png)"
+	oversized := splitOversizedMarkdownBlock(long)
+	if len(oversized) != 1 || oversized[0] != long {
+		t.Fatalf("oversized split sliced the image into %d parts", len(oversized))
+	}
+}
+
 func TestSplitParagraphForFilling_ListItemKeepsMarker(t *testing.T) {
 	text := "1. 子任务一：准备输入内容。"
 	parts := splitParagraphForFilling(text)

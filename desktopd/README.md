@@ -60,6 +60,11 @@ XFCE、import、noVNC)后才打上 `maclaw-gui:2`,构建失败不会覆盖现有
 `DESKTOPD_APT_MIRROR`(`none` = deb.debian.org)、`DESKTOPD_SKIP_IMAGE_BUILD=1`
 覆盖。旧的 `image/Dockerfile` 只用于 `maclaw-gui:1`,不要把它的构建结果标成 `:2`。
 
+`hub.mypapers.top` 上已经在跑的桌面不要用这个脚本做日常二进制更新。脚本会重写
+systemd 单元、默认构建镜像，并把 supervisor 拷进每个 `maclaw-desktop-*` 容器。
+同一桌面这类只改三个 Go 二进制的发布见
+[docs/desktop-gui-v2.md 第 4.4 节](../docs/desktop-gui-v2.md)。
+
 注意:
 
 - 不要往镜像的 `/opt`、`/usr/local` 装东西,desktopd 在这两个位置挂每用户卷。

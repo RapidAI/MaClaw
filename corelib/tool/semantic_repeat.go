@@ -65,6 +65,25 @@ func RepeatFamilyID(id string) string {
 	return id[:cut]
 }
 
+// RepeatFamilyKey is the need identity shared by every spelling of one
+// repeat family. Selection ids are "selection:" plus that need, and a
+// sibling suffix is not part of the key. Grouping by the raw selection id
+// treats those spellings as different families, so one turn can hold two
+// live grants and AppendRepeatSibling can mint a third spelling.
+func RepeatFamilyKey(id string) string {
+	return strings.TrimPrefix(RepeatFamilyID(id), "selection:")
+}
+
+// SelectionRepeatFamily is the family key of one planned node. The need id
+// is the authority. A node stored only as its selection id still joins the
+// need it was minted from.
+func SelectionRepeatFamily(selection PlannedSelection) string {
+	if family := RepeatFamilyKey(selection.NeedID); family != "" {
+		return family
+	}
+	return RepeatFamilyKey(selection.ID)
+}
+
 // repeatSiblingIndex reports whether the suffix is one this package minted.
 // A capability, adapter, or qualifier value is free to contain "#", so the
 // suffix only splits a family when it is exactly the generated shape: the
@@ -86,10 +105,10 @@ func repeatSiblingIndex(suffix string) bool {
 
 // AppendRepeatSibling adds one more optional invocation of a repeat family
 // that has already published at least two siblings. One-shot tools stay
-// unchanged. A local file write continues from a single sibling: the
-// session ceiling can publish just one, and that one is not a one-shot.
-// The new node is ready on its own; the host issues it only when the model
-// asks for another call. False when the family is missing, is not
+// unchanged. A local file write or a remote command continues from a single
+// sibling: the session ceiling can publish just one, and that one is not a
+// one-shot. The new node is ready on its own; the host issues it when the
+// previous call settles. False when the family is missing, is not
 // repeatable, or the turn cap is already reached.
 func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, string, bool) {
 	prototypeSelectionID = strings.TrimSpace(prototypeSelectionID)
@@ -105,38 +124,44 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 	if !found {
 		return plan, "", false
 	}
-	family := RepeatFamilyID(prototype.NeedID)
-	if family == "" {
-		family = RepeatFamilyID(prototype.ID)
-	}
+	family := SelectionRepeatFamily(prototype)
 	if family == "" {
 		return plan, "", false
 	}
 	count, nextIndex := repeatFamilyNextIndex(plan, family)
 	// A published wave of one is a one-shot: screenshot, send, generate.
-	// Local file write is not. A session ceiling can leave a single
-	// fs.write.local node (production 2026-10-04: references.bib stopped
-	// after one append and the model was told write_file had reached this
-	// turn's usage limit). That node is still the iterative capability, so
-	// the next call appends a sibling instead of ending the edit.
-	// A continuation already in a budgeted family is that one extra call.
-	// Opening another would make the spent-budget note and this append feed
-	// each other: the note says call again, the append raises the budget,
-	// the new result says call again. A file write does not take that flag.
-	// Each successful edit lists the next write, up to the turn ceiling.
-	fileWrite := IterativeLocalFileWrite(prototype)
+	// Local file write and remote command are not. A session ceiling can
+	// leave a single node (production 2026-10-04: references.bib stopped
+	// after one append; 2026-10-09: file-cn install stopped after a wave of
+	// two ssh calls plus one continuation, and the model was told ssh had
+	// reached this turn's usage limit). That node is still the iterative
+	// capability, so the next call appends a sibling instead of ending the
+	// task.
+	// A continuation already in a budgeted non-iterative family is that one
+	// extra call. Opening another would make the spent-budget note and this
+	// append feed each other. File writes and remote commands do not take
+	// that flag: each settled call lists the next one, up to the turn ceiling.
+	// The host lists the node. It does not promise another call in prose and
+	// then refuse it.
+	iterative := IterativeRepeatCapability(prototype)
 	// A companion family is the workspace floor, not the task. Its published
 	// nodes are the whole allowance. Promising another call and then appending
 	// it is how a knowledge-save turn keeps executing bash after the save tool
 	// is already listed.
-	if count < 1 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 || (count < 2 && !fileWrite) || repeatFamilyIsCompanionOnly(plan, family) || (!fileWrite && repeatFamilyHasContinuation(plan, family)) {
+	if count < 1 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 || (count < 2 && !iterative) || repeatFamilyIsCompanionOnly(plan, family) || (!iterative && repeatFamilyHasContinuation(plan, family)) {
 		return plan, "", false
 	}
 	needID := RepeatSiblingNeedID(family, nextIndex)
 	sibling := prototype
 	sibling.ID = "selection:" + needID
 	sibling.NeedID = needID
-	if !fileWrite {
+	// Continuation marks the one extra call of a budgeted family. An
+	// iterative sibling is the next step of the same task, including when
+	// its prototype was that one extra call. Leaving the flag set would
+	// make later readers treat the family as already continued.
+	if iterative {
+		sibling.Continuation = false
+	} else {
 		sibling.Continuation = true
 	}
 	// The extra invocation is ready on its own. Keeping the prototype's
@@ -162,25 +187,18 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 // then refuses the extra download.
 func repeatFamilyNextIndex(plan ToolPlan, family string) (count, nextIndex int) {
 	maxSuffix := 0
-	seen := map[string]bool{}
 	for _, selection := range plan.Selections {
-		matched := false
+		if !SelectionInRepeatFamily(selection, family) {
+			continue
+		}
+		count++
 		for _, id := range []string{selection.NeedID, selection.ID} {
-			if id == "" || seen[id] {
+			if id == "" {
 				continue
 			}
-			if RepeatFamilyID(id) != family && RepeatFamilyID(id) != "selection:"+family {
-				continue
-			}
-			seen[id] = true
-			matched = true
-			suffix := repeatSiblingSuffixNumber(id)
-			if suffix > maxSuffix {
+			if suffix := repeatSiblingSuffixNumber(id); suffix > maxSuffix {
 				maxSuffix = suffix
 			}
-		}
-		if matched {
-			count++
 		}
 	}
 	if maxSuffix < 1 && count > 0 {
@@ -189,20 +207,42 @@ func repeatFamilyNextIndex(plan ToolPlan, family string) (count, nextIndex int) 
 	return count, maxSuffix
 }
 
+// IterativeRepeatCapability reports a selection the same user task keeps
+// calling until the work is done. Local file mutation and remote command
+// are that class. A download, search, or send is a published wave plus at
+// most one continuation: another node after that would feed the spent-budget
+// note. A recorded fit proof is the authority. The need id is only a
+// fallback when that proof was not copied onto the selection.
+func IterativeRepeatCapability(selection PlannedSelection) bool {
+	return IterativeLocalFileWrite(selection) || IterativeRemoteCommand(selection)
+}
+
 // IterativeLocalFileWrite reports a selection whose capability is local
 // file mutation. write_file and edit_file share fs.write.local. A recorded
 // fit proof is the authority: a read or send whose id happens to contain
 // the write capability text stays one-shot. The need id is only a fallback
 // when that proof was not copied onto the selection.
 func IterativeLocalFileWrite(selection PlannedSelection) bool {
-	if capability := strings.TrimSpace(string(selection.FitProof.MatchedCapability)); capability != "" {
-		return selection.FitProof.MatchedCapability == CapabilityFSWriteLocal
+	return iterativeCapability(selection, CapabilityFSWriteLocal)
+}
+
+// IterativeRemoteCommand reports a selection whose capability is a command
+// on a remote host. ssh polls and install steps share shell.execute.remote_host.
+// A local shell whose id happens to contain the remote capability text stays
+// on the local family's rule.
+func IterativeRemoteCommand(selection PlannedSelection) bool {
+	return iterativeCapability(selection, CapabilityShellExecuteRemoteHost)
+}
+
+func iterativeCapability(selection PlannedSelection, capability CapabilityID) bool {
+	if recorded := strings.TrimSpace(string(selection.FitProof.MatchedCapability)); recorded != "" {
+		return selection.FitProof.MatchedCapability == capability
 	}
 	id := strings.TrimSpace(selection.NeedID)
 	if id == "" {
 		id = strings.TrimSpace(selection.ID)
 	}
-	return strings.Contains(id, string(CapabilityFSWriteLocal))
+	return strings.Contains(id, string(capability))
 }
 
 func repeatSiblingSuffixNumber(id string) int {
@@ -465,7 +505,7 @@ func NextExposedSelections(ready []PlannedSelection, completed, granted map[stri
 func NextRepeatSelections(exposure RepeatExposure) map[string]bool {
 	liveFamilies := make(map[string]bool, len(exposure.Live))
 	for selectionID := range exposure.Live {
-		liveFamilies[RepeatFamilyID(selectionID)] = true
+		liveFamilies[RepeatFamilyKey(selectionID)] = true
 	}
 	families := make(map[string][]string, len(exposure.Ready))
 	for _, selection := range exposure.Ready {
@@ -475,7 +515,7 @@ func NextRepeatSelections(exposure RepeatExposure) map[string]bool {
 		if exposure.Completed[selection.ID] {
 			continue
 		}
-		family := RepeatFamilyID(selection.ID)
+		family := SelectionRepeatFamily(selection)
 		families[family] = append(families[family], selection.ID)
 	}
 	next := make(map[string]bool, len(families))
@@ -532,7 +572,7 @@ const RepeatWaveListedMarker = "another call will be listed"
 // arriving as a separate message. Hosts must compute it after retiring the
 // just-spent grant so a still-live sibling suppresses the notice.
 func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized map[string]bool, liveSelectionIDs []string) string {
-	family := RepeatFamilyID(selectionID)
+	family := RepeatFamilyKey(selectionID)
 	// The published wave may promise one more call. Once that continuation
 	// exists, the promise is the node itself. Another note would instruct the
 	// model to call the same tool again, and the host would treat the obedient
@@ -542,32 +582,60 @@ func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized
 	}
 	budget := 0
 	capability := CapabilityID("")
-	fileWrite := false
+	iterative := false
 	for _, selection := range plan.Selections {
-		if RepeatFamilyID(selection.ID) != family {
+		if !SelectionInRepeatFamily(selection, family) {
 			continue
 		}
 		budget++
 		capability = selection.FitProof.MatchedCapability
-		if IterativeLocalFileWrite(selection) {
-			fileWrite = true
+		if IterativeRepeatCapability(selection) {
+			iterative = true
 		}
 		if !materialized[selection.ID] {
 			return ""
 		}
 	}
-	// A file edit lists its next write from the successful call. The budget
-	// note would tell the model to call write_file again, and the obedient
-	// call would be stored as another node, up to the ceiling.
-	if budget < 2 || fileWrite {
+	// A file edit lists its next write, and a remote command lists its next
+	// call, from the settled attempt. The budget note would tell the model
+	// the turn is finished. Production 2026-10-09: after that note the model
+	// wrote "稍后自动继续" and the loop ended an unfinished nginx install.
+	if budget < 2 || iterative {
 		return ""
 	}
 	for _, liveID := range liveSelectionIDs {
-		if RepeatFamilyID(liveID) == family {
+		if SelectionInRepeatFamily(PlannedSelection{ID: liveID}, family) {
 			return ""
 		}
 	}
 	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. If this task is unfinished, call this tool again on the next request in this same turn; %s. Do not ask the user to send another message. Do not narrate tool limits.", capability, budget, RepeatWaveListedMarker)
+}
+
+// RepeatFamilyHasUnissuedSibling reports a same-family node, other than
+// exceptID, that the host has not issued or completed. done is that check.
+// A node still waiting to be issued is the next call; appending another
+// would queue a command the model cannot see yet.
+func RepeatFamilyHasUnissuedSibling(plan ToolPlan, prototype PlannedSelection, exceptID string, done func(selectionID string) bool) bool {
+	family := SelectionRepeatFamily(prototype)
+	if family == "" {
+		return false
+	}
+	if done == nil {
+		done = func(string) bool { return false }
+	}
+	for _, other := range plan.Selections {
+		if other.ID == exceptID {
+			continue
+		}
+		if !SelectionInRepeatFamily(other, family) {
+			continue
+		}
+		if done(other.ID) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // repeatFamilyHasContinuation reports that this family already holds the one
@@ -582,7 +650,7 @@ func repeatFamilyHasContinuation(plan ToolPlan, family string) bool {
 		if !selection.Continuation {
 			continue
 		}
-		if selectionInRepeatFamily(selection, family) {
+		if SelectionInRepeatFamily(selection, family) {
 			return true
 		}
 	}
@@ -611,7 +679,7 @@ func RepeatSelectionIsCompanion(selection PlannedSelection) bool {
 func repeatFamilyIsCompanionOnly(plan ToolPlan, family string) bool {
 	seen := false
 	for _, selection := range plan.Selections {
-		if !selectionInRepeatFamily(selection, family) {
+		if !SelectionInRepeatFamily(selection, family) {
 			continue
 		}
 		seen = true
@@ -622,14 +690,36 @@ func repeatFamilyIsCompanionOnly(plan ToolPlan, family string) bool {
 	return seen
 }
 
-func selectionInRepeatFamily(selection PlannedSelection, family string) bool {
-	for _, candidate := range []string{RepeatFamilyID(selection.NeedID), RepeatFamilyID(selection.ID)} {
-		if candidate == "" {
+// SelectionInRepeatFamily reports whether selection belongs to family.
+// family is a need id or a selection id. Both spellings, with or without
+// the "selection:" prefix and with or without a sibling suffix, are one
+// family. The hosts use this so an unissued node cannot be missed and
+// then appended again under a second spelling.
+func SelectionInRepeatFamily(selection PlannedSelection, family string) bool {
+	family = RepeatFamilyKey(family)
+	if family == "" {
+		return false
+	}
+	for _, candidate := range []string{selection.NeedID, selection.ID} {
+		if strings.TrimSpace(candidate) == "" {
 			continue
 		}
-		if candidate == family || "selection:"+candidate == family || strings.TrimPrefix(candidate, "selection:") == family {
+		if RepeatFamilyKey(candidate) == family {
 			return true
 		}
 	}
 	return false
+}
+
+// SettledIterativeListingAllowed reports that a finished local file write
+// or remote command may list its next sibling. Unknown and awaiting-receipt
+// outcomes may still be running. Binding recovery replaces the plan.
+// Cancellation did not finish the command. Copying any of those into
+// another sibling retries a dead binding or a command the turn already stopped.
+func SettledIterativeListingAllowed(result SelectionExecutionResult) bool {
+	if result.Unknown || result.AwaitingReceipt {
+		return false
+	}
+	code := strings.TrimSpace(result.ReasonCode)
+	return code != "dynamic_execution_cancelled" && !ReplanFailureEligible(code)
 }

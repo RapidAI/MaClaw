@@ -118,6 +118,65 @@ describe('CodePreviewPanel workspace vs file tabs', () => {
         expect(screen.queryByTestId('code-preview-workspace-export-zip')).toBeNull();
     });
 
+    it('opens a changed file on its diff instead of the working directory', async () => {
+        const file = snakeFile({
+            opType: 'modify',
+            content: 'int main() { return 1; }\n',
+            original: 'int main() { return 0; }\n',
+        });
+        renderLocalPreview(new Map([[file.filePath, file]]), file.filePath);
+
+        expect(await screen.findByTestId('code-preview-diff-view')).toBeTruthy();
+        expect(screen.queryByTestId('code-preview-workspace')).toBeNull();
+        expect(screen.getByTestId('file-tab').getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('code-preview-workspace-tab').getAttribute('aria-selected')).toBe('false');
+    });
+
+    it('keeps the directory when the tree was focused after the changed file', async () => {
+        const file = snakeFile({
+            opType: 'modify',
+            content: 'int main() { return 1; }\n',
+            original: 'int main() { return 0; }\n',
+        });
+        renderLocalPreview(new Map([[file.filePath, file]]), file.filePath, {
+            fileFocusNonce: 1,
+            treeFocusNonce: 2,
+        });
+
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('code-preview-diff-view')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-tab').getAttribute('aria-selected')).toBe('true');
+    });
+
+    it('leaves the directory for the diff when an agent edit focuses the file', async () => {
+        const read = snakeFile();
+        const view = renderLocalPreview(new Map([[read.filePath, read]]), read.filePath);
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+
+        const edited = snakeFile({
+            opType: 'modify',
+            content: 'int main() { return 1; }\n',
+            original: 'int main() { return 0; }\n',
+        });
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map([[edited.filePath, edited]])}
+                activeFilePath={edited.filePath}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                projectPath="F:/test-prog"
+                hideHeaderClose
+                fileFocusNonce={1}
+            />,
+        );
+
+        expect(await screen.findByTestId('code-preview-diff-view')).toBeTruthy();
+        expect(screen.queryByTestId('code-preview-workspace')).toBeNull();
+        expect(screen.getByTestId('file-tab').getAttribute('aria-selected')).toBe('true');
+    });
+
     it('shows the read file body when a file focus nonce follows an agent read', async () => {
         // The coding agent's read events carry force_open; the host bumps the
         // file-focus nonce so the pane must leave the directory tree and show

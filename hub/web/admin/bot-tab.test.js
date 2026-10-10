@@ -157,6 +157,26 @@ function createHarness(options) {
       if (request && request.method === 'PUT') return Promise.resolve(settings);
       return settingsGate.then(function () { return settings; });
     }
+    if (url === '/api/admin/bots/llm' && request && request.method === 'PUT') {
+      const body = JSON.parse(request.body);
+      const previous = settings.llm && Array.isArray(settings.llm.providers) ? settings.llm.providers : [];
+      settings.llm = {
+        default_service_group: 'system-free',
+        current: body.current || 'system-free',
+        providers: (body.providers || []).map(function (item) {
+          const prior = previous.filter(function (saved) { return saved.id === item.id; })[0];
+          return {
+            id: item.id,
+            name: item.name,
+            protocol: item.protocol,
+            url: item.url,
+            model: item.model,
+            key_set: !!item.key || !!(prior && prior.key_set)
+          };
+        })
+      };
+      return Promise.resolve(settings);
+    }
     if (url === '/api/admin/security/groups') {
       if (failGroups) return Promise.reject(new Error('tree down'));
       return Promise.resolve(groups);
@@ -804,6 +824,99 @@ async function testBotOwnerUsesDirectoryName() {
   assertNotIncludes(harness.elements['tab-bots']._html, 'botName', 'does not offer a create form');
 }
 
+async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
+  console.log('  Test: LLM settings default to system-free and save an OpenAI or Anthropic provider');
+  const harness = createHarness();
+  harness.settings.llm = {
+    default_service_group: 'system-free',
+    current: 'system-free',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'Claude', protocol: 'anthropic', url: 'https://api.anthropic.com', model: 'claude-sonnet-4-5', key_set: true }]
+  };
+  await harness.open();
+  await flush();
+  const list = harness.elements.botLLMList._html;
+  assertIncludes(list, 'system-free', 'shows the default service group');
+  assertIncludes(list, 'value="anthropic" selected', 'shows the saved Anthropic protocol');
+  assertIncludes(list, 'Claude', 'shows the saved provider name');
+  assertNotIncludes(list, 'sk-', 'does not render a provider key');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'system-free', 'keeps system-free selected');
+
+  const before = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMName_') === 0;
+  });
+  harness.elements.botLLMAdd.listeners.click[0]();
+  const added = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMName_') === 0 && before.indexOf(value) === -1;
+  });
+  assert(added.length === 1, 'adds a provider row');
+  const id = added[0].slice('botLLMName_'.length);
+  function edit(field, value) {
+    const input = harness.elements['botLLM' + field + '_' + id];
+    input.value = value;
+    harness.elements.botLLMList.listeners.input[0]({ target: input });
+  }
+  edit('Name', 'Claude');
+  harness.elements.botLLMSave.listeners.click[0]();
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects a duplicate provider name');
+  edit('Name', 'Zhipu GLM Coding');
+  const savedName = harness.elements.botLLMName_lp_abcdef0123456789;
+  savedName.value = '\u667a\u8c31\u7f16\u7a0b';
+  harness.elements.botLLMList.listeners.input[0]({ target: savedName });
+  const aliasToasts = harness.toasts.length;
+  harness.elements.botLLMSave.listeners.click[0]();
+  assert(harness.toasts.slice(aliasToasts).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects Zhipu names MaClaw treats as one provider');
+  savedName.value = 'Claude';
+  harness.elements.botLLMList.listeners.input[0]({ target: savedName });
+  edit('Name', 'OpenAI');
+  assertIncludes(harness.elements['botLLMUse_' + id].textContent, 'OpenAI', 'renames the choice without rebuilding the row');
+  edit('Url', 'https://api.openai.com/v1');
+  edit('Model', 'gpt-4o');
+  harness.elements.botLLMSave.listeners.click[0]();
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'asks for a key before saving a new provider');
+  assert(!harness.calls.some(function (call) { return call.path === '/api/admin/bots/llm'; }), 'does not save a new provider without a key');
+
+  edit('Key', 'sk-live-secret');
+  const protocol = harness.elements['botLLMProtocol_' + id];
+  protocol.value = 'openai';
+  harness.elements.botLLMList.listeners.change[0]({ target: protocol });
+  const current = harness.elements['botLLMCurrent_' + id];
+  current.value = id;
+  harness.elements.botLLMList.listeners.change[0]({ target: current });
+  assert(harness.elements['botLLMKey_' + id].value === 'sk-live-secret', 'keeps a typed key when the selection changes');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'OpenAI', 'shows the selected provider on the badge');
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const saved = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
+  assert(saved.length === 1, 'saves the LLM settings once');
+  const body = JSON.parse(saved[0].body);
+  assert(body.current === id, 'selects the new provider');
+  const created = body.providers.filter(function (item) { return item.id === id; })[0];
+  const kept = body.providers.filter(function (item) { return item.id === 'lp_abcdef0123456789'; })[0];
+  assert(created && created.protocol === 'openai' && created.key === 'sk-live-secret' && created.model === 'gpt-4o', 'sends the OpenAI provider and its key');
+  assert(kept && !Object.prototype.hasOwnProperty.call(kept, 'key'), 'leaves a saved key out of the request when the field is blank');
+  assertNotIncludes(harness.elements.botLLMList._html, 'sk-live-secret', 'clears the key field after a successful save');
+  const callsBeforeEdit = harness.calls.length;
+  harness.elements.botLLMSave.listeners.click[0]();
+  edit('Model', 'gpt-4o-later');
+  await flush();
+  const raced = harness.calls.slice(callsBeforeEdit).filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
+  assert(raced.length === 1 && JSON.parse(raced[0].body).providers.some(function (item) { return item.id === id && item.model === 'gpt-4o'; }), 'sends the model from when save was clicked');
+  assert(harness.elements['botLLMModel_' + id].value === 'gpt-4o-later', 'keeps a model typed while the save was in flight');
+  assert(harness.elements['tab-bots']._llmDirty === true, 'leaves the newer edit unsaved');
+  const racedToast = harness.toasts[harness.toasts.length - 1];
+  assert(racedToast && racedToast.kind === 'info' && racedToast.msg.indexOf('\u5c1a\u672a\u5199\u5165') !== -1, 'says the later edit is not saved yet');
+  let guard = 0;
+  while (attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMName_') === 0;
+  }).length < 8 && guard < 8) {
+    harness.elements.botLLMAdd.listeners.click[0]();
+    guard += 1;
+  }
+  const beforeLimit = harness.toasts.length;
+  harness.elements.botLLMAdd.listeners.click[0]();
+  assert(harness.toasts.slice(beforeLimit).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('8') !== -1; }), 'stops at eight providers');
+}
+
 async function testReloadAfterDirectoryFailure() {
   console.log('  Test: organization reload recovers from a failed load');
   const harness = createHarness({ failGroups: true });
@@ -844,6 +957,7 @@ Promise.resolve()
   .then(testDesktopCheckNamesTheService)
   .then(testDesktopCheckKeepsTheError)
   .then(testBotOwnerUsesDirectoryName)
+  .then(testLLMSettingsKeepTheDefaultAndSaveAProvider)
   .then(testReloadAfterDirectoryFailure)
   .then(function () {
     console.log('bot-tab tests: ' + passed + ' passed, ' + failed + ' failed');

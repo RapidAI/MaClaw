@@ -399,6 +399,19 @@ func TestSelectRelevantMCPToolsForTask_FullEnvironmentIncludesHealthyRemoteTools
 	}
 }
 
+func TestCodingMCPReachabilityKeepsOneFailedProbeCallable(t *testing.T) {
+	for _, status := range []mcpHealthStatus{mcpHealthStatusHealthy, mcpHealthStatusSlow, mcpHealthStatusDegraded} {
+		if !isCodingSubAgentMCPServerReachable(status) {
+			t.Fatalf("%s must stay callable", status)
+		}
+	}
+	for _, status := range []mcpHealthStatus{mcpHealthStatusUnknown, mcpHealthStatusUnavailable} {
+		if isCodingSubAgentMCPServerReachable(status) {
+			t.Fatalf("%s must stay hidden", status)
+		}
+	}
+}
+
 func TestSelectRelevantMCPToolsForTask_SkipsReachableRemoteServerWithoutCachedTools(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{

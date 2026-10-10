@@ -3,9 +3,13 @@ package desktopd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // Handler is the Docker service API Hub calls, plus the /admin operator
@@ -99,7 +103,149 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		text, err := svc.App(r.Context(), in.TenantID, in.UserID, in.Display, in.Args)
 		if err != nil {
-			writeServiceErr(w, err)
+			if errors.Is(err, ErrInvalid) {
+				writeServiceErr(w, err)
+				return
+			}
+			message := desktop.AppFailureText(text, err)
+			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": message, "message": message})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": text})
+	})
+	mux.HandleFunc("POST /v1/desktops/open", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string   `json:"tenant_id"`
+			UserID   string   `json:"user_id"`
+			Display  string   `json:"display"`
+			Program  string   `json:"program"`
+			Args     []string `json:"args"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		text, err := svc.Open(r.Context(), in.TenantID, in.UserID, in.Display, in.Program, in.Args)
+		if err != nil {
+			if errors.Is(err, ErrInvalid) {
+				writeServiceErr(w, err)
+				return
+			}
+			message := desktop.OpenFailureText(in.Program, text, err)
+			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": message, "message": message})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": text})
+	})
+	mux.HandleFunc("POST /v1/desktops/file", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID  string `json:"tenant_id"`
+			UserID    string `json:"user_id"`
+			Action    string `json:"action"`
+			Path      string `json:"path"`
+			Content   string `json:"content"`
+			OldString string `json:"old_string"`
+			NewString string `json:"new_string"`
+		}
+		if !decodeLimited(w, r, 1<<20, &in) {
+			return
+		}
+		var text string
+		var err error
+		switch strings.ToLower(strings.TrimSpace(in.Action)) {
+		case "read":
+			text, err = svc.ReadFile(r.Context(), in.TenantID, in.UserID, in.Path)
+		case "bytes":
+			text, err = svc.ReadBytes(r.Context(), in.TenantID, in.UserID, in.Path)
+		case "write":
+			text, err = svc.WriteFile(r.Context(), in.TenantID, in.UserID, in.Path, in.Content)
+		case "edit":
+			text, err = svc.EditFile(r.Context(), in.TenantID, in.UserID, in.Path, in.OldString, in.NewString)
+		case "list":
+			text, err = svc.ListFile(r.Context(), in.TenantID, in.UserID, in.Path)
+		default:
+			err = fmt.Errorf("%w: file action is invalid", ErrInvalid)
+		}
+		writeOp(w, text, err)
+	})
+	mux.HandleFunc("POST /v1/desktops/bash", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		deadline := time.Now().Add(desktop.BashBudget + time.Minute)
+		controller := http.NewResponseController(w)
+		_ = controller.SetWriteDeadline(deadline)
+		_ = controller.SetReadDeadline(deadline)
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			Command  string `json:"command"`
+		}
+		if !decodeLimited(w, r, 64<<10, &in) {
+			return
+		}
+		text, err := svc.Bash(r.Context(), in.TenantID, in.UserID, in.Command)
+		writeOp(w, text, err)
+	})
+	mux.HandleFunc("POST /v1/desktops/http", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			URL      string `json:"url"`
+		}
+		if !decodeLimited(w, r, 64<<10, &in) {
+			return
+		}
+		body, status, kind, err := svc.HTTPGet(r.Context(), in.TenantID, in.UserID, in.URL)
+		if err != nil {
+			writeOp(w, "", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"body":         body,
+			"status":       status,
+			"content_type": kind,
+		})
+	})
+	mux.HandleFunc("POST /v1/desktops/install", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		// apt-get stops at InstallBudget. This deadline is one minute longer
+		// so the budget sentence can be written after apt stops.
+		deadline := time.Now().Add(desktop.InstallClientTimeout)
+		controller := http.NewResponseController(w)
+		_ = controller.SetWriteDeadline(deadline)
+		_ = controller.SetReadDeadline(deadline)
+		var in struct {
+			TenantID string   `json:"tenant_id"`
+			UserID   string   `json:"user_id"`
+			Packages []string `json:"packages"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		text, err := svc.Install(r.Context(), in.TenantID, in.UserID, in.Packages)
+		if err != nil {
+			if errors.Is(err, ErrInvalid) {
+				writeServiceErr(w, err)
+				return
+			}
+			message := desktop.AptFailureText(text, err)
+			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": message, "message": message})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"output": text})
@@ -115,6 +261,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			TenantID string `json:"tenant_id"`
 			UserID   string `json:"user_id"`
 			Display  string `json:"display"`
+			Name     string `json:"name"`
 		}
 		if r.Method == http.MethodGet {
 			query := r.URL.Query()
@@ -122,7 +269,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		} else if !decodeBody(w, r, &in) {
 			return
 		}
-		png, err := svc.Screenshot(r.Context(), in.TenantID, in.UserID, in.Display)
+		png, saved, err := svc.CaptureScreenshot(r.Context(), in.TenantID, in.UserID, in.Display, in.Name)
 		if err != nil {
 			writeServiceErr(w, err)
 			return
@@ -130,6 +277,9 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Content-Length", strconv.Itoa(len(png)))
 		w.Header().Set("Cache-Control", "no-store")
+		if saved != "" {
+			w.Header().Set("X-Desktop-Saved-Path", saved)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(png)
 	}
@@ -161,6 +311,29 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 // JSON specs, so an oversized body is a client bug or an attack.
 func decodeBody(w http.ResponseWriter, r *http.Request, dest any) bool {
 	return decodeMessage(w, r, "invalid desktop request", dest)
+}
+
+// decodeLimited is decodeBody with a caller-chosen cap. File writes carry
+// the file itself, so they need more room than a package list.
+func decodeLimited(w http.ResponseWriter, r *http.Request, limit int64, dest any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid desktop request")
+		return false
+	}
+	return true
+}
+
+func writeOp(w http.ResponseWriter, output string, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"output": output})
+		return
+	}
+	status := http.StatusBadGateway
+	if errors.Is(err, ErrInvalid) {
+		status = http.StatusBadRequest
+	}
+	writeJSON(w, status, map[string]any{"ok": false, "error": err.Error(), "message": err.Error()})
 }
 
 // decodeMessage is decodeBody with a caller-specific error message.

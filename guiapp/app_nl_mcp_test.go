@@ -50,6 +50,64 @@ func TestValidateMCPToolsListResult(t *testing.T) {
 	}
 }
 
+// ProbeEndpoint is the settings connection test. It must share the tools/list
+// observation gate and must not write health, cache, or contracts.
+func TestProbeEndpointRequiresObservedToolList(t *testing.T) {
+	var phase atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "initialize" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{}})
+			return
+		}
+		switch phase.Load() {
+		case 0:
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "error": map[string]any{"code": -32000, "message": "denied"}})
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"tools": []any{}}})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": 2,
+				"result": map[string]any{"tools": []any{map[string]any{
+					"name": "work_log_query", "description": "query",
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+				}}},
+			})
+		}
+	}))
+	defer server.Close()
+
+	registry := NewMCPRegistry(&App{testHomeDir: t.TempDir()})
+	target := &corelib.MCPServerEntry{ID: "probe", Name: "probe", EndpointURL: server.URL}
+
+	denied := registry.ProbeEndpoint(target)
+	if denied.Success || strings.Contains(denied.Message, "Connected successfully") || !strings.Contains(denied.Message, "did not return a tool list") {
+		t.Fatalf("error body = %+v", denied)
+	}
+	if len(registry.health) != 0 || len(registry.toolsCache) != 0 {
+		t.Fatalf("probe wrote registry state health=%d cache=%d", len(registry.health), len(registry.toolsCache))
+	}
+
+	phase.Store(1)
+	empty := registry.ProbeEndpoint(target)
+	if !empty.Success || len(empty.Tools) != 0 || !strings.Contains(empty.Message, "0 tool") {
+		t.Fatalf("empty list = %+v", empty)
+	}
+
+	phase.Store(2)
+	listed := registry.ProbeEndpoint(target)
+	if !listed.Success || len(listed.Tools) != 1 || listed.Tools[0].Name != "work_log_query" {
+		t.Fatalf("tool list = %+v", listed)
+	}
+	if len(registry.health) != 0 || len(registry.toolsCache) != 0 {
+		t.Fatal("successful probe wrote registry state")
+	}
+}
+
 func TestHealthCheckStrictRejectsJSONRPCError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -73,6 +131,88 @@ func TestHealthCheckStrictRejectsJSONRPCError(t *testing.T) {
 	}
 	if err := registry.HealthCheckStrictContext(context.Background(), "strict-error"); err == nil || !strings.Contains(err.Error(), "JSON-RPC error") {
 		t.Fatalf("strict health check error = %v, want JSON-RPC protocol failure", err)
+	}
+}
+
+func TestNonStrictHealthCheckKeepsLastToolListWhenBodyIsNotAList(t *testing.T) {
+	var phase atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "initialize" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+			return
+		}
+		if phase.Load() == 0 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{"tools": []any{map[string]any{
+					"name": "work_log_query", "description": "query",
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+				}}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32000, "message": "denied"}})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	registry := NewMCPRegistry(app)
+	app.mcpRegistry = registry
+	if _, err := registry.register(corelib.MCPServerEntry{ID: "observed-list", Name: "Observed", EndpointURL: server.URL}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.HealthCheck("observed-list"); err != nil {
+		t.Fatal(err)
+	}
+	if registry.health["observed-list"].Status != mcpHealthStatusHealthy {
+		t.Fatalf("first list status=%s", registry.health["observed-list"].Status)
+	}
+	cached, observed := registry.CachedServerTools("observed-list")
+	if !observed || len(cached) != 1 || cached[0].Name != "work_log_query" {
+		t.Fatalf("first cache=%#v observed=%v", cached, observed)
+	}
+	contracts, err := app.semanticDynamicCapabilityContractsForApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := semanticDesktopContractPrincipal()
+	if _, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "observed-list", "work_log_query"); !ok {
+		t.Fatal("reviewed query was not published from the tool list")
+	}
+
+	phase.Store(1)
+	if err := registry.HealthCheck("observed-list"); err == nil {
+		t.Fatal("error body was treated as a completed tool list")
+	}
+	if registry.health["observed-list"].Status != mcpHealthStatusDegraded {
+		t.Fatalf("status after error body=%s", registry.health["observed-list"].Status)
+	}
+	cached, observed = registry.CachedServerTools("observed-list")
+	if !observed || len(cached) != 1 || cached[0].Name != "work_log_query" {
+		t.Fatalf("error body replaced the cache: %#v observed=%v", cached, observed)
+	}
+	if _, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "observed-list", "work_log_query"); !ok {
+		t.Fatal("error body revoked the reviewed query")
+	}
+
+	registry.mu.Lock()
+	delete(registry.toolsCache, "observed-list")
+	registry.mu.Unlock()
+	if got := registry.GetServerTools("observed-list"); got != nil {
+		t.Fatalf("inspection published an error body: %#v", got)
+	}
+	if _, observed := registry.CachedServerTools("observed-list"); observed {
+		t.Fatal("error body became an empty observation")
+	}
+	if _, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "observed-list", "work_log_query"); !ok {
+		t.Fatal("inspection revoked the reviewed query")
 	}
 }
 
@@ -139,6 +279,7 @@ func TestRetryMCPRuntimeSyncManagedRemoteRearmsAndProbes(t *testing.T) {
 	}))
 	defer server.Close()
 	app := &App{testHomeDir: base}
+	defer app.closeSemanticInvocationStore()
 	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{
 		ID: "managed-retry", Name: "Managed retry", EndpointURL: server.URL,
 		Source: corelib.MCPSourceMarket, Capability: &corelib.MCPServerCapabilityRef{CapabilityID: "cap"},

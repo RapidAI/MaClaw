@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { SettingsPage } from '../SettingsPage';
@@ -122,5 +124,33 @@ describe('SettingsPage', () => {
         expect(screen.getByTestId('settings-rail').getAttribute('data-count')).toBe('2');
         // Stable CSS grid content slot — prevents blank layout when Suspense wraps panels.
         expect(container.querySelector('.settings-shell__body')).toBeTruthy();
+        expect(container.querySelector('.settings-shell--solo')).toBeNull();
+    });
+
+    it('hides the settings category rail for the home knowledge entry', () => {
+        const { container } = render(
+            <SettingsPage
+                {...baseContentProps}
+                tabs={tabs}
+                activeTab="knowledge"
+                onChangeTab={vi.fn()}
+                hideNav
+            />,
+        );
+        expect(screen.queryByTestId('settings-rail')).toBeNull();
+        expect(screen.getByTestId('settings-body').getAttribute('data-tab')).toBe('knowledge');
+        expect(container.querySelector('.settings-shell--solo')).toBeTruthy();
+    });
+
+    it('keeps the solo knowledge page from collapsing below 860px', () => {
+        const css = readFileSync(resolve(process.cwd(), 'src/App.css'), 'utf8');
+        const marker = "#App[data-nav-tab='settings'] .settings-shell.settings-shell--solo";
+        const desktop = css.indexOf(marker);
+        const narrow = css.indexOf(marker, desktop + marker.length);
+        expect(desktop).toBeGreaterThan(0);
+        expect(narrow).toBeGreaterThan(desktop);
+        expect(css.slice(desktop, desktop + 220)).toContain('grid-template-rows: minmax(0, 1fr)');
+        expect(css.slice(narrow, narrow + 260)).toContain('grid-template-rows: auto');
+        expect(css.lastIndexOf('@media (max-width: 860px)', narrow)).toBeGreaterThan(desktop);
     });
 });

@@ -121,6 +121,52 @@ func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID 
 	return &enriched, nil
 }
 
+// failPanickedRun records an admitted run that crashed. CancelRun only
+// accepts a run whose cancel func is already registered, and it stores
+// "run cancelled", which hides the crash from the poller. A run that
+// already reached a terminal status is left alone.
+func (s *Service) failPanickedRun(p Principal, instanceID, runID, reason string) (*Run, error) {
+	if err := s.beginRequest(); err != nil {
+		return nil, err
+	}
+	defer s.activeRequests.Done()
+	if cancel, ok := s.takeRunCancel(runID); ok && cancel != nil {
+		cancel()
+	}
+	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != RunStatusRunning {
+		enriched, enrichErr := s.enrichRun(run)
+		if enrichErr != nil {
+			return nil, enrichErr
+		}
+		return &enriched, nil
+	}
+	completed := s.now()
+	run.Status = RunStatusFailed
+	run.Error = reason
+	run.CompletedAt = &completed
+	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
+	failedEvent := runTerminalEventFor(run, "run.failed", map[string]any{"error": run.Error})
+	committed, terminalErr := s.saveRunTerminalWithEvents(run, []RunEvent{failedEvent})
+	if terminalErr != nil {
+		if saveErr := s.store.SaveRun(run); saveErr != nil {
+			return nil, saveErr
+		}
+		committed = false
+	}
+	if !committed {
+		s.emitRunEvent(run, failedEvent.Type, failedEvent.Payload)
+	}
+	enriched, err := s.enrichRun(run)
+	if err != nil {
+		return nil, err
+	}
+	return &enriched, nil
+}
+
 func (s *Service) ListRuns(ctx context.Context, p Principal, instanceID string, in ListRunsInput) ([]Run, error) {
 	if err := s.beginRequest(); err != nil {
 		return nil, err

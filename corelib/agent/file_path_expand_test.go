@@ -241,8 +241,14 @@ func TestExpandUserSelectedFilePaths_AllOfficeFormatsUseOfficeReadDefaultRoute(t
 func TestExpandUserSelectedFilePaths_TruncatesLargeFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.txt")
-	overflow := defaultAutoInjectMaxRunesTotal + autoExtractRemainderSlack + 5_000
-	if err := os.WriteFile(path, []byte(strings.Repeat("字", overflow)), 0o644); err != nil {
+	// 200k CJK runes are about 133k tokens, past the default 120k token budget.
+	// The same count of runes used to be the budget itself.
+	const suffix = "\n结论见此\n"
+	body := strings.Repeat("字", 200_000) + suffix
+	if EstimateTextTokens(body) <= defaultAutoInjectMaxTokensTotal {
+		t.Fatalf("fixture tokens=%d, want above %d", EstimateTextTokens(body), defaultAutoInjectMaxTokensTotal)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	in := FilePathPromptPrefix + "\n" + path + "\n"
@@ -250,9 +256,9 @@ func TestExpandUserSelectedFilePaths_TruncatesLargeFile(t *testing.T) {
 	if !strings.Contains(out, "truncated=true next_offset=") {
 		t.Fatalf("expected truncated=true:\n%s", beginMarkerPreview(out))
 	}
-	got := extractIntAttr(out, "injected_chars")
-	if got != defaultAutoInjectMaxRunesTotal {
-		t.Fatalf("injected_chars=%d, want remaining total %d (slack is near-fit only)", got, defaultAutoInjectMaxRunesTotal)
+	requireInjectedTokensNear(t, out, defaultAutoInjectMaxTokensTotal)
+	if !strings.Contains(out, "结论见此") {
+		t.Fatal("truncated last document lost its tail")
 	}
 }
 
@@ -260,11 +266,14 @@ func TestExpandUserSelectedFilePaths_SharedTotalBudget(t *testing.T) {
 	dir := t.TempDir()
 	p1 := filepath.Join(dir, "a.txt")
 	p2 := filepath.Join(dir, "b.txt")
-	body := strings.Repeat("A", defaultAutoInjectMaxRunesPerFile)
-	if err := os.WriteFile(p1, []byte(body), 0o644); err != nil {
+	// 200k CJK runes are about 133k tokens, above both the 80k per-file cap
+	// and the 120k total. ASCII of the same length would fit.
+	const firstTail = "FIRST_FILE_TAIL_MARKER"
+	const secondTail = "SECOND_FILE_TAIL_MARKER"
+	if err := os.WriteFile(p1, []byte(strings.Repeat("甲", 200_000)+firstTail), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p2, []byte(strings.Repeat("B", defaultAutoInjectMaxRunesPerFile)), 0o644); err != nil {
+	if err := os.WriteFile(p2, []byte(strings.Repeat("乙", 200_000)+secondTail), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	in := FilePathPromptPrefix + "\n" + p1 + "\n" + p2 + "\n"
@@ -274,29 +283,38 @@ func TestExpandUserSelectedFilePaths_SharedTotalBudget(t *testing.T) {
 	}
 	sum := 0
 	first, second := 0, 0
+	var firstBlock, secondBlock string
 	for _, line := range strings.Split(out, "\n") {
-		if !isAutoExtractBeginLine(strings.TrimSpace(line)) {
+		trimmed := strings.TrimSpace(line)
+		if !isAutoExtractBeginLine(trimmed) {
 			continue
 		}
-		n := extractIntAttr(line, "injected_chars")
+		n := extractIntAttr(trimmed, "injected_tokens")
 		sum += n
-		path := extractQuotedAttr(line, "path")
+		path := extractQuotedAttr(trimmed, "path")
 		switch {
 		case strings.EqualFold(filepath.Clean(path), filepath.Clean(p1)):
 			first = n
+			firstBlock = out
 		case strings.EqualFold(filepath.Clean(path), filepath.Clean(p2)):
 			second = n
+			secondBlock = out
 		}
 	}
-	if first != defaultAutoInjectMaxRunesPerFile {
-		t.Fatalf("first injected_chars=%d, want per-file %d", first, defaultAutoInjectMaxRunesPerFile)
+	if first > defaultAutoInjectMaxTokensPerFile || defaultAutoInjectMaxTokensPerFile-first > 8 {
+		t.Fatalf("first injected_tokens=%d, want within 8 of per-file %d", first, defaultAutoInjectMaxTokensPerFile)
 	}
-	wantSecond := defaultAutoInjectMaxRunesTotal - defaultAutoInjectMaxRunesPerFile
-	if second != wantSecond {
-		t.Fatalf("second injected_chars=%d, want leftover total %d", second, wantSecond)
+	if second <= 0 {
+		t.Fatal("second file was not injected")
 	}
-	if sum != defaultAutoInjectMaxRunesTotal {
-		t.Fatalf("total injected_chars %d, want %d", sum, defaultAutoInjectMaxRunesTotal)
+	if sum > defaultAutoInjectMaxTokensTotal || defaultAutoInjectMaxTokensTotal-sum > 16 {
+		t.Fatalf("total injected_tokens %d, want within 16 of %d", sum, defaultAutoInjectMaxTokensTotal)
+	}
+	if strings.Contains(firstBlock, firstTail) {
+		t.Fatal("first file is not last; its tail must stay outside the prefix")
+	}
+	if !strings.Contains(secondBlock, secondTail) || !strings.Contains(secondBlock, "# tail:") {
+		t.Fatal("last file must keep a marked tail inside the leftover budget")
 	}
 }
 
@@ -320,13 +338,13 @@ func TestFormatAutoExtractedDocuments_SharedBudget(t *testing.T) {
 	for _, b := range blocks {
 		sum += extractIntAttr(b, "injected_chars")
 	}
-	if sum > defaultAutoInjectMaxRunesTotal {
-		t.Fatalf("sum injected %d > total budget %d\n%v", sum, defaultAutoInjectMaxRunesTotal, blocks)
+	if sum > defaultAutoInjectMaxTokensTotal {
+		t.Fatalf("sum injected %d > total budget %d\n%v", sum, defaultAutoInjectMaxTokensTotal, blocks)
 	}
 	// All three 15k files fit in the enlarged 120k shared budget. If this
 	// fixture is changed to exceed that budget, the third block must be capped.
 	if !strings.Contains(blocks[2], "truncated=true") && !strings.Contains(blocks[2], "budget exhausted") {
-		if extractIntAttr(blocks[2], "injected_chars") > defaultAutoInjectMaxRunesPerFile {
+		if extractIntAttr(blocks[2], "injected_chars") > defaultAutoInjectMaxTokensPerFile {
 			t.Fatalf("third file exceeds per-file budget:\n%s", blocks[2])
 		}
 	}
@@ -367,10 +385,17 @@ func TestDocumentAutoExtractBudgetScalesWithContextWindow(t *testing.T) {
 func TestExpandUserSelectedFilePathsWithContext_SingleFileUsesFullTotalBudget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "paper.txt")
-	// Reproduce KNOSYS-D-26-18030: 125396 runes, 400k context → effective 320k
-	// → per-file 106666, total 160000. The remainder must be injected.
-	const bodyRunes = 125_396
-	if err := os.WriteFile(path, []byte(strings.Repeat("A", bodyRunes)), 0o644); err != nil {
+	// 200k CJK runes are about 133k tokens. At a 320k context the per-file
+	// cap is 106666 tokens and the total is 160000. The only file must use
+	// the total, so this body is kept whole.
+	const bodyRunes = 200_000
+	body := strings.Repeat("文", bodyRunes)
+	perFile, total := DocumentAutoExtractBudget(320_000)
+	tokens := EstimateTextTokens(body)
+	if tokens <= perFile || tokens > total {
+		t.Fatalf("fixture tokens=%d, want (%d, %d]", tokens, perFile, total)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	in := FilePathPromptPrefix + "\n" + path + "\n"
@@ -389,46 +414,53 @@ func TestExpandUserSelectedFilePathsWithContext_SingleFileUsesFullTotalBudget(t 
 func TestFormatAutoExtractedDocuments_SingleFileUsesTotalNotPerFileFraction(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "paper.txt")
-	body := strings.Repeat("B", 125_396)
+	body := strings.Repeat("测", 200_000)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	perFile, total := DocumentAutoExtractBudget(320_000)
-	if perFile >= 125_396 {
-		t.Fatalf("fixture expects per-file fraction %d < 125396", perFile)
+	tokens := EstimateTextTokens(body)
+	if tokens <= perFile {
+		t.Fatalf("fixture tokens %d should exceed per-file %d", tokens, perFile)
 	}
-	if total < 125_396 {
-		t.Fatalf("fixture expects total budget %d >= 125396", total)
+	if tokens > total {
+		t.Fatalf("fixture tokens %d should fit total %d", tokens, total)
 	}
-	blocks := formatAutoExtractedDocumentsWithSettings([]string{path}, perFile, total, nil, currentOfficeReadSettings())
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{path}, perFile, total, nil, currentOfficeReadSettings(), "")
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
 	if strings.Contains(blocks[0], "truncated=true next_offset=") {
 		t.Fatalf("single file must use leftover total budget, got truncated:\n%s", beginMarkerPreview(blocks[0]))
 	}
-	if got := extractIntAttr(blocks[0], "injected_chars"); got != 125_396 {
-		t.Fatalf("injected_chars=%d, want 125396", got)
+	if got := extractIntAttr(blocks[0], "injected_chars"); got != 200_000 {
+		t.Fatalf("injected_chars=%d, want 200000", got)
 	}
 }
 
-func TestFormatAutoExtractedDocuments_SingleFileKeepsNearFitTail(t *testing.T) {
+func TestFormatAutoExtractedDocuments_SingleFileTruncatesTokenOvershoot(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "paper.txt")
-	const bodyRunes = 180_000
-	if err := os.WriteFile(path, []byte(strings.Repeat("E", bodyRunes)), 0o644); err != nil {
+	// 250k CJK runes are about 167k tokens. The total budget at a 320k
+	// context is 160k. The overshoot is under the old 24k slack, and must
+	// still truncate: slack only reserves a tail inside the budget.
+	const suffix = "S7 Conclusion"
+	body := strings.Repeat("文", 250_000) + suffix
+	perFile, total := DocumentAutoExtractBudget(320_000)
+	overshoot := EstimateTextTokens(body) - total
+	if overshoot <= 0 || overshoot > autoExtractRemainderSlack {
+		t.Fatalf("fixture overshoot=%d, want 1..%d", overshoot, autoExtractRemainderSlack)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	perFile, total := DocumentAutoExtractBudget(320_000)
-	if bodyRunes-total > autoExtractRemainderSlack {
-		t.Fatalf("fixture expects tail %d <= slack %d", bodyRunes-total, autoExtractRemainderSlack)
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{path}, perFile, total, nil, currentOfficeReadSettings(), "")
+	if !strings.Contains(blocks[0], "truncated=true next_offset=") {
+		t.Fatalf("token overshoot must truncate:\n%s", beginMarkerPreview(blocks[0]))
 	}
-	blocks := formatAutoExtractedDocumentsWithSettings([]string{path}, perFile, total, nil, currentOfficeReadSettings())
-	if strings.Contains(blocks[0], "truncated=true next_offset=") {
-		t.Fatalf("near-fit tail must be kept:\n%s", beginMarkerPreview(blocks[0]))
-	}
-	if got := extractIntAttr(blocks[0], "injected_chars"); got != bodyRunes {
-		t.Fatalf("injected_chars=%d, want %d", got, bodyRunes)
+	requireInjectedTokensNear(t, blocks[0], total)
+	if !strings.Contains(blocks[0], suffix) {
+		t.Fatal("tail reservation dropped the conclusion")
 	}
 }
 
@@ -436,32 +468,30 @@ func TestFormatAutoExtractedDocuments_TwoFilesKeepPerFileCapOnFirst(t *testing.T
 	dir := t.TempDir()
 	p1 := filepath.Join(dir, "a.txt")
 	p2 := filepath.Join(dir, "b.txt")
-	const bodyRunes = 125_396
 	const firstTail = "FIRST_FILE_TAIL_MARKER"
 	const secondTail = "SECOND_FILE_TAIL_MARKER"
-	if err := os.WriteFile(p1, []byte(strings.Repeat("A", bodyRunes-len(firstTail))+firstTail), 0o644); err != nil {
+	// 200k CJK runes are about 133k tokens, above the 106666 per-file cap.
+	if err := os.WriteFile(p1, []byte(strings.Repeat("甲", 200_000)+firstTail), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p2, []byte(strings.Repeat("B", bodyRunes-len(secondTail))+secondTail), 0o644); err != nil {
+	if err := os.WriteFile(p2, []byte(strings.Repeat("乙", 200_000)+secondTail), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	perFile, total := DocumentAutoExtractBudget(320_000)
-	blocks := formatAutoExtractedDocumentsWithSettings([]string{p1, p2}, perFile, total, nil, currentOfficeReadSettings())
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{p1, p2}, perFile, total, nil, currentOfficeReadSettings(), "")
 	if len(blocks) != 2 {
 		t.Fatalf("expected 2 blocks, got %d", len(blocks))
 	}
-	if got := extractIntAttr(blocks[0], "injected_chars"); got != perFile {
-		t.Fatalf("first file injected_chars=%d, want per-file cap %d", got, perFile)
-	}
+	requireInjectedTokensNear(t, blocks[0], perFile)
 	if strings.Contains(blocks[0], firstTail) || strings.Contains(blocks[0], "# tail:") {
 		t.Fatal("first file is not last; must not keep a document tail window")
 	}
-	wantSecond := total - perFile
-	if got := extractIntAttr(blocks[1], "injected_chars"); got != wantSecond {
-		t.Fatalf("second file injected_chars=%d, want leftover total %d", got, wantSecond)
-	}
 	if !strings.Contains(blocks[1], secondTail) || !strings.Contains(blocks[1], "# tail:") {
-		t.Fatal("last file far overshoot must keep a marked document tail")
+		t.Fatal("last file overshoot must keep a marked document tail")
+	}
+	sum := extractIntAttr(blocks[0], "injected_tokens") + extractIntAttr(blocks[1], "injected_tokens")
+	if sum > total || total-sum > 16 {
+		t.Fatalf("injected_tokens sum=%d, want within 16 of total %d", sum, total)
 	}
 }
 
@@ -469,32 +499,32 @@ func TestFormatAutoExtractedDocuments_LastFileTruncatesFarOvershoot(t *testing.T
 	dir := t.TempDir()
 	path := filepath.Join(dir, "paper.txt")
 	const suffix = "\nS6 Limitations\nS7 Conclusion\nReferences\n"
-	const totalRunes = 200_000
-	if err := os.WriteFile(path, []byte(strings.Repeat("D", totalRunes-len(suffix))+suffix), 0o644); err != nil {
+	// 300k CJK runes are about 200k tokens, past a 160k total by more than slack.
+	body := strings.Repeat("文", 300_000) + suffix
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	perFile, total := DocumentAutoExtractBudget(320_000)
-	blocks := formatAutoExtractedDocumentsWithSettings([]string{path}, perFile, total, nil, currentOfficeReadSettings())
-	if got := extractIntAttr(blocks[0], "injected_chars"); got != total {
-		t.Fatalf("far overshoot injected_chars=%d, want remaining total %d", got, total)
+	if EstimateTextTokens(strings.TrimSpace(body))-total <= autoExtractRemainderSlack {
+		t.Fatal("fixture must overshoot by more than the tail reservation")
 	}
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{path}, perFile, total, nil, currentOfficeReadSettings(), "")
 	if !strings.Contains(blocks[0], "truncated=true next_offset=") {
 		t.Fatalf("far overshoot must truncate:\n%s", beginMarkerPreview(blocks[0]))
 	}
+	requireInjectedTokensNear(t, blocks[0], total)
 	gotTotal := extractIntAttr(blocks[0], "total_chars")
-	head, tail := autoExtractHeadTail(gotTotal, total, autoExtractRemainderSlack)
-	if tail <= 0 {
-		t.Fatal("expected a preserved tail window")
+	next := extractIntAttr(blocks[0], "next_offset")
+	tailAt := tailOffsetFromBlock(blocks[0])
+	if next <= 0 || tailAt <= next || tailAt > gotTotal {
+		t.Fatalf("next_offset=%d tail=%d total=%d", next, tailAt, gotTotal)
 	}
-	if got := extractIntAttr(blocks[0], "next_offset"); got != head {
-		t.Fatalf("next_offset=%d, want head %d (gap start, not prefix+tail)", got, head)
+	gap := tailAt - next
+	if !strings.Contains(blocks[0], fmt.Sprintf("# tail: offset=%d", tailAt)) {
+		t.Fatalf("preserved suffix must be marked as document tail:\n%s", beginMarkerPreview(blocks[0]))
 	}
-	if !strings.Contains(blocks[0], fmt.Sprintf("# tail: offset=%d", gotTotal-tail)) {
-		t.Fatalf("preserved suffix must be marked as document tail, not the next page:\n%s", beginMarkerPreview(blocks[0]))
-	}
-	gap := gotTotal - head - tail
-	if !strings.Contains(blocks[0], fmt.Sprintf("offset=%d, max_chars=%d", head, gap)) {
-		t.Fatalf("continue hint should read the missing middle (gap=%d) from head %d", gap, head)
+	if !strings.Contains(blocks[0], fmt.Sprintf("offset=%d, max_chars=%d", next, gap)) {
+		t.Fatalf("continue hint should read the missing middle (gap=%d) from head %d", gap, next)
 	}
 	for _, want := range []string{"S6 Limitations", "S7 Conclusion", "References"} {
 		if !strings.Contains(blocks[0], want) {
@@ -510,11 +540,12 @@ func TestFormatAutoExtractedDocuments_LastFileKeepsShortTail(t *testing.T) {
 	if err := os.WriteFile(p1, []byte(strings.Repeat("A", 80_000)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Leftover total is 40k; tail of 10k is within slack, so keep the whole file.
+	// 80k and 50k ASCII letters are 20k and 12.5k tokens. Both fit the default
+	// token budget, so the last file is kept whole.
 	if err := os.WriteFile(p2, []byte(strings.Repeat("B", 50_000)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	blocks := formatAutoExtractedDocumentsWithSettings([]string{p1, p2}, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, currentOfficeReadSettings())
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{p1, p2}, defaultAutoInjectMaxTokensPerFile, defaultAutoInjectMaxTokensTotal, nil, currentOfficeReadSettings(), "")
 	if got := extractIntAttr(blocks[0], "injected_chars"); got != 80_000 {
 		t.Fatalf("first injected_chars=%d", got)
 	}
@@ -528,13 +559,20 @@ func TestFormatAutoExtractedDocuments_LastFileKeepsShortTail(t *testing.T) {
 
 func TestFormatAutoExtractedDocument_SingleAttachmentKeepsNearFitOvershoot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "paper.txt")
+	// 125396 CJK runes are about 84k tokens: over the 80k per-file cap, inside
+	// the 120k default total. The only attachment uses the total.
 	const bodyRunes = 125_396
-	if err := os.WriteFile(path, []byte(strings.Repeat("C", bodyRunes)), 0o644); err != nil {
+	body := strings.Repeat("文", bodyRunes)
+	tokens := EstimateTextTokens(body)
+	if tokens <= defaultAutoInjectMaxTokensPerFile || tokens > defaultAutoInjectMaxTokensTotal {
+		t.Fatalf("fixture tokens=%d, want (%d, %d]", tokens, defaultAutoInjectMaxTokensPerFile, defaultAutoInjectMaxTokensTotal)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	block := FormatAutoExtractedDocument(path)
 	if strings.Contains(block, "truncated=true next_offset=") {
-		t.Fatalf("IM single attachment of %d runes must fit total+slack:\n%s", bodyRunes, beginMarkerPreview(block))
+		t.Fatalf("IM single attachment that fits the total token budget was truncated:\n%s", beginMarkerPreview(block))
 	}
 	if got := extractIntAttr(block, "injected_chars"); got != bodyRunes {
 		t.Fatalf("injected_chars=%d, want %d", got, bodyRunes)
@@ -562,21 +600,18 @@ func TestAutoExtractNeedsContinuation(t *testing.T) {
 	}
 }
 
-func TestAutoExtractKeepShortTail(t *testing.T) {
-	if !autoExtractKeepShortTail(125_396, 160_000, autoExtractRemainderSlack) {
+func TestAutoExtractFitsBudgetDoesNotSpendSlack(t *testing.T) {
+	if !autoExtractFitsBudget(125_396, 160_000) {
 		t.Fatal("body under budget must keep")
 	}
-	if !autoExtractKeepShortTail(180_000, 160_000, autoExtractRemainderSlack) {
-		t.Fatal("20k tail within slack must keep")
+	if autoExtractFitsBudget(180_000, 160_000) {
+		t.Fatal("overshoot must truncate; slack is a tail inside the budget, not extra tokens")
 	}
-	if autoExtractKeepShortTail(200_000, 160_000, autoExtractRemainderSlack) {
-		t.Fatal("40k overshoot must truncate, not spend slack as extra page")
+	if autoExtractFitsBudget(100_000, 1) {
+		t.Fatal("over budget must truncate")
 	}
-	if autoExtractKeepShortTail(100_000, 1, autoExtractRemainderSlack) {
-		t.Fatal("near-empty leftover must not inject 24k of a huge remainder")
-	}
-	if autoExtractKeepShortTail(90_000, 80_000, 0) {
-		t.Fatal("earlier files have no slack")
+	if !autoExtractFitsBudget(80_000, 80_000) {
+		t.Fatal("exact fit must keep")
 	}
 }
 
@@ -603,14 +638,17 @@ func TestAutoExtractHeadTail(t *testing.T) {
 }
 
 func TestAutoExtractContinueCharsReadsGapOnly(t *testing.T) {
-	head, tail := autoExtractHeadTail(200_000, 160_000, autoExtractRemainderSlack)
-	got := autoExtractContinueChars(200_000, head, tail, 160_000)
-	want := 200_000 - head - tail
-	if got != want {
-		t.Fatalf("continue chars=%d, want gap %d", got, want)
+	gap := strings.Repeat("A", 40_000)
+	if got := autoExtractContinueChars(gap, 160_000); got != 40_000 {
+		t.Fatalf("continue chars=%d, want the whole gap", got)
 	}
-	if autoExtractContinueChars(200_000, 160_000, 0, 160_000) != 40_000 {
-		t.Fatalf("prefix-only continue should be remaining body, got %d", autoExtractContinueChars(200_000, 160_000, 0, 160_000))
+	big := strings.Repeat("A", 800_000)
+	got := autoExtractContinueChars(big, 160_000)
+	if got >= len([]rune(big)) {
+		t.Fatal("a gap past the token budget was requested whole")
+	}
+	if EstimateTextTokens(string([]rune(big)[:got])) > 160_000 {
+		t.Fatalf("continue chars exceed the token budget, runes=%d", got)
 	}
 }
 
@@ -740,15 +778,21 @@ func TestFilterLegacyKeepsImageHint(t *testing.T) {
 }
 
 func TestRemainingAutoInjectBudget(t *testing.T) {
-	text := AutoExtractBeginMarker + `path="/a.txt" format="txt" total_chars=100 injected_chars=15000 truncated=false ---` + "\nbody\n" +
+	text := AutoExtractBeginMarker + `path="/a.txt" format="txt" total_chars=100 injected_chars=15000 injected_tokens=3750 truncated=false ---` + "\nbody\n" +
 		AutoExtractEndMarker + `path="/a.txt" ---`
-	used := CountInjectedAutoExtractRunes(text)
-	if used != 15000 {
-		t.Fatalf("used=%d want 15000", used)
+	if used := CountInjectedAutoExtractRunes(text); used != 15000 {
+		t.Fatalf("runes=%d want 15000", used)
+	}
+	if used := CountInjectedAutoExtractTokens(text); used != 3750 {
+		t.Fatalf("tokens=%d want 3750", used)
 	}
 	left := RemainingAutoInjectBudget(text)
-	if left != defaultAutoInjectMaxRunesTotal-15000 {
+	if left != defaultAutoInjectMaxTokensTotal-3750 {
 		t.Fatalf("left=%d", left)
+	}
+	legacy := AutoExtractBeginMarker + `path="/b.txt" format="txt" total_chars=100 injected_chars=15000 truncated=false ---`
+	if used := CountInjectedAutoExtractTokens(legacy); used != 15000 {
+		t.Fatalf("legacy marker tokens=%d, want the rune count so the next file cannot overflow", used)
 	}
 	skip := AlreadyAutoExtractedPaths(text)
 	if _, ok := skip["/a.txt"]; !ok {
@@ -763,7 +807,7 @@ func TestFormatAutoExtractedDocuments_SkipAlreadyInjected(t *testing.T) {
 	_ = os.WriteFile(p1, []byte("one"), 0o644)
 	_ = os.WriteFile(p2, []byte("two"), 0o644)
 	skip := map[string]struct{}{p1: {}}
-	blocks := FormatAutoExtractedDocumentsWithBudget([]string{p1, p2}, defaultAutoInjectMaxRunesTotal, skip)
+	blocks := FormatAutoExtractedDocumentsWithBudget([]string{p1, p2}, defaultAutoInjectMaxTokensTotal, skip)
 	if len(blocks) != 2 {
 		t.Fatalf("len=%d", len(blocks))
 	}
@@ -833,7 +877,7 @@ func TestFormatAutoExtractedDocuments_BudgetExhaustedOneNote(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		p := filepath.Join(dir, fmt.Sprintf("%d.txt", i))
 		// Each file larger than total budget so first takes all remaining room.
-		if err := os.WriteFile(p, []byte(strings.Repeat("Z", defaultAutoInjectMaxRunesTotal+100)), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte(strings.Repeat("Z", defaultAutoInjectMaxTokensTotal+100)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		paths[i] = p
@@ -908,6 +952,175 @@ func TestAppendDocumentExtracts_SharesBudgetWithUserText(t *testing.T) {
 	if !strings.Contains(joined, "B") && !strings.Contains(joined, "budget exhausted") {
 		t.Fatalf("expected p2 extract or budget note:\n%s", joined)
 	}
+}
+
+func TestPackPDFPagesKeepsEndsAndMatchingPage(t *testing.T) {
+	pages := make([]string, 6)
+	for i := 1; i <= 6; i++ {
+		switch i {
+		case 4:
+			pages[i-1] = fmt.Sprintf("## Page %d\nretriever finds similar chunks %s", i, strings.Repeat("y", 160))
+		case 6:
+			pages[i-1] = fmt.Sprintf("## Page %d\n%s", i, strings.Repeat("z", 40))
+		default:
+			pages[i-1] = fmt.Sprintf("## Page %d\n%s", i, strings.Repeat("x", 800))
+		}
+	}
+	var b strings.Builder
+	for i, page := range pages {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(page)
+	}
+	note := "\n\n# omitted-pages: middle pages were left out of this excerpt\n\n"
+	kept := pages[0] + "\n\n" + pages[3] + "\n\n" + pages[5]
+	maxTokens := EstimateTextTokens(kept) + EstimateTextTokens(note)
+	packed, original, omitted := packPDFPages(b.String(), "retriever", maxTokens, 10_000)
+	if !omitted {
+		t.Fatal("expected omitted pages")
+	}
+	if EstimateTextTokens(packed) > maxTokens {
+		t.Fatalf("packed tokens=%d exceed budget %d", EstimateTextTokens(packed), maxTokens)
+	}
+	for _, want := range []string{"## Page 1\n", "## Page 4\n", "## Page 6\n", "retriever finds similar chunks", "omitted-pages"} {
+		if !strings.Contains(packed, want) {
+			t.Fatalf("packed text missing %q:\n%s", want, packed)
+		}
+	}
+	for _, absent := range []string{"## Page 2\n", "## Page 3\n", "## Page 5\n"} {
+		if strings.Contains(packed, absent) {
+			t.Fatalf("packed text kept %q:\n%s", absent, packed)
+		}
+	}
+	if original <= len([]rune(packed)) {
+		t.Fatalf("original=%d packed=%d", original, len([]rune(packed)))
+	}
+}
+
+func TestPackPDFPagesSkipsOversizedLastPage(t *testing.T) {
+	page1 := "## Page 1\nstart"
+	page2 := "## Page 2\n" + strings.Repeat("m", 800)
+	page3 := "## Page 3\nending-keep"
+	page4 := "## Page 4\n" + strings.Repeat("z", 4000)
+	text := page1 + "\n\n" + page2 + "\n\n" + page3 + "\n\n" + page4
+	note := "\n\n# omitted-pages: middle pages were left out of this excerpt\n\n"
+	maxTokens := EstimateTextTokens(page1+"\n\n"+page3) + EstimateTextTokens(note)
+	packed, _, omitted := packPDFPages(text, "", maxTokens, 10_000)
+	if !omitted {
+		t.Fatal("expected omitted pages")
+	}
+	for _, want := range []string{"## Page 1\n", "## Page 3\n", "ending-keep"} {
+		if !strings.Contains(packed, want) {
+			t.Fatalf("packed text missing %q:\n%s", want, packed)
+		}
+	}
+	for _, absent := range []string{"## Page 2\n", "## Page 4\n"} {
+		if strings.Contains(packed, absent) {
+			t.Fatalf("packed text kept %q:\n%s", absent, packed)
+		}
+	}
+}
+
+func TestPackPDFPagesKeepsEnglishPagesThatFitTheTokenBudget(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 100; i++ {
+		if i > 1 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "## Page %d\n%s\n", i, strings.Repeat("w", 500))
+	}
+	text := b.String()
+	runes := len([]rune(text))
+	tokens := EstimateTextTokens(text)
+	if runes <= 44_000 {
+		t.Fatalf("fixture runes=%d, want above the old half-context rune cap", runes)
+	}
+	if tokens > 44_000 {
+		t.Fatalf("fixture tokens=%d, want inside half of 88000", tokens)
+	}
+	packed, _, omitted := packPDFPages(text, "你好", 44_000, autoExtractRemainderSlack)
+	if omitted || packed != text {
+		t.Fatalf("english pages that fit the token budget were packed, omitted=%v", omitted)
+	}
+}
+
+func TestFormatAutoExtractedDocument_OversizedOutputKeepsHeadAndTail(t *testing.T) {
+	clearOfficeReadEnvironment(t)
+	t.Setenv("MACLAW_OFFICE_READ_ENGINE", "officeread")
+	t.Setenv("MACLAW_OFFICE_READ_FORMATS", "docx")
+	t.Setenv("MACLAW_OFFICE_READ_FALLBACK", "false")
+	path := filepath.Join(t.TempDir(), "large.docx")
+	writeMinimalDOCX(t, path, "cache source")
+	body := strings.Repeat("头", 20) + strings.Repeat("中", maxOfficeReadTextRunes) + strings.Repeat("尾", 20)
+	restore := stubOfficeReadExtract(t, func(string) (string, string, error) {
+		return body, "docx", nil
+	})
+	defer restore()
+	officeExtractCacheMu.Lock()
+	officeExtractCache = make(map[string]officeExtractCacheEntry)
+	officeExtractCacheMu.Unlock()
+
+	block, n := formatAutoExtractedDocumentWithSettings(path, 8_000, 2_000, currentOfficeReadSettings(), "")
+	if n == 0 || strings.Contains(block, "自动注入已跳过") || strings.Contains(block, "output_too_large") {
+		t.Fatalf("oversized document was dropped: n=%d block=%s", n, beginMarkerPreview(block))
+	}
+	if !strings.HasPrefix(extractBodyForTest(block), "头") || !strings.Contains(block, "尾尾尾") {
+		t.Fatalf("head or tail missing, n=%d preview=%s", n, beginMarkerPreview(block))
+	}
+	if !strings.Contains(block, "truncated=true") {
+		t.Fatalf("retained document was marked complete:\n%s", beginMarkerPreview(block))
+	}
+}
+
+func extractBodyForTest(block string) string {
+	start := strings.Index(block, "---\n")
+	if start < 0 {
+		return block
+	}
+	return block[start+4:]
+}
+
+func TestExpandUserSelectedFilePathsWithContext_ASCIIFileFitsTokenBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.txt")
+	// 100k ASCII letters are 25k tokens. Half of an 88k window is 44k tokens.
+	// Counting those letters as tokens used to mark the file truncated.
+	body := strings.Repeat("A", 100_000)
+	if EstimateTextTokens(body) > 44_000 {
+		t.Fatalf("fixture tokens=%d", EstimateTextTokens(body))
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := "文件是什么？\n\n" + FilePathPromptPrefix + "\n" + path + "\n"
+	out := ExpandUserSelectedFilePathsWithContext(in, 88_000)
+	if !strings.Contains(out, "truncated=false ---") {
+		t.Fatalf("token budget cut a file that fits: %s", beginMarkerPreview(out))
+	}
+	if !strings.Contains(out, body) {
+		t.Fatal("full body was not injected")
+	}
+	if again := ExpandUserSelectedFilePathsWithContext(out, 88_000); again != out {
+		t.Fatal("expand was not idempotent")
+	}
+}
+
+func requireInjectedTokensNear(t *testing.T, block string, budget int) {
+	t.Helper()
+	got := extractIntAttr(block, "injected_tokens")
+	if got > budget || budget-got > 8 {
+		t.Fatalf("injected_tokens=%d, want <= %d and within 8 (%s)", got, budget, beginMarkerPreview(block))
+	}
+}
+
+func tailOffsetFromBlock(block string) int {
+	const key = "# tail: offset="
+	i := strings.Index(block, key)
+	if i < 0 {
+		return 0
+	}
+	return extractIntAttr(block[i:], "offset")
 }
 
 func beginMarkerPreview(text string) string {

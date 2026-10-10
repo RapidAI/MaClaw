@@ -14708,6 +14708,9 @@ export namespace main {
 	    source_size?: number;
 	    source_download_url?: string;
 	    images?: MobileDocumentDraftImage[];
+	    duplicate?: boolean;
+	    duplicate_of_title?: string;
+	    duplicate_of_filename?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new MobileDocumentDraftSummary(source);
@@ -14728,6 +14731,9 @@ export namespace main {
 	        this.source_size = source["source_size"];
 	        this.source_download_url = source["source_download_url"];
 	        this.images = this.convertValues(source["images"], MobileDocumentDraftImage);
+	        this.duplicate = source["duplicate"];
+	        this.duplicate_of_title = source["duplicate_of_title"];
+	        this.duplicate_of_filename = source["duplicate_of_filename"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

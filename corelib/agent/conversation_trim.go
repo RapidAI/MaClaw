@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
@@ -1074,6 +1075,8 @@ func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
 		return ComputerObserveMaxToolResult
 	case "bash", "get_session_output", "run_terminal_command":
 		return TerminalMaxToolResult
+	case "desktop":
+		return desktop.ToolResultMax
 	case "read_tool_result":
 		return ToolResultReadMaxToolResult
 	default:

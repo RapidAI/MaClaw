@@ -4165,7 +4165,7 @@ func pingTrae(profile trae.Profile, cfg corelib.MaclawLLMConfig, authenticationF
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	models, _, err := trae.ListModels(ctx, profile, cfg.Key, cfg.TraeMachineID, cfg.TraeDeviceID)
+	models, err := trae.ProbeModels(ctx, profile, cfg.Key, cfg.TraeMachineID, cfg.TraeDeviceID)
 	if err == nil && len(models) > 0 {
 		return MaclawLLMStatus{Online: true, Configured: true}
 	}

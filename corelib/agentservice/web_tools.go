@@ -14,6 +14,20 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 	if query == "" {
 		return "Error: missing query parameter"
 	}
+	if c.botUsesContainer() {
+		tenantID, userID, bound := c.desktopPersonAccount()
+		if !bound {
+			return "Error: this bot's desktop is the person's cloud desktop, and that account is not bound"
+		}
+		if DesktopWeb == nil {
+			return "Error: this bot uses the desktop network, and that path is not connected"
+		}
+		text, err := DesktopWeb(c.parentContext(), tenantID, userID, "search", query, "", 0)
+		if err != nil {
+			return fmt.Sprintf("Error: search failed: %v", err)
+		}
+		return text
+	}
 	maxResults := intArg(args, "max_results", 8)
 	if maxResults > 20 {
 		maxResults = 20
@@ -57,6 +71,20 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 	maxChars := intArg(args, "max_chars", 16384)
 	if maxChars <= 0 {
 		maxChars = 16384
+	}
+	if c.botUsesContainer() {
+		tenantID, userID, bound := c.desktopPersonAccount()
+		if !bound {
+			return "Error: this bot's desktop is the person's cloud desktop, and that account is not bound"
+		}
+		if DesktopWeb == nil {
+			return "Error: this bot uses the desktop network, and that path is not connected"
+		}
+		text, err := DesktopWeb(c.parentContext(), tenantID, userID, "fetch", "", rawURL, maxChars)
+		if err != nil {
+			return fmt.Sprintf("Error: fetch failed: %v", err)
+		}
+		return text
 	}
 
 	opts := &websearch.FetchOptions{

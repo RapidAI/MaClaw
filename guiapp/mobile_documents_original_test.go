@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -218,5 +219,252 @@ func TestFetchMobileDocumentOriginalRejectsMissingOriginal(t *testing.T) {
 	_, _, err := app.fetchMobileDocumentOriginal("d3")
 	if err == nil {
 		t.Fatal("expected error for no original")
+	}
+}
+
+func TestCompanionSupportsFilename(t *testing.T) {
+	if !companionSupportsFilename("paper.PDF") || !companionSupportsFilename("notes.md") || !companionSupportsFilename("sheet.xlsx") {
+		t.Fatal("expected companion formats")
+	}
+	if companionSupportsFilename("app.go") || companionSupportsFilename("lib.zip") || companionSupportsFilename("note") {
+		t.Fatal("expected unsupported formats")
+	}
+}
+
+func TestOpenMobileDocumentInFileCompanionOriginal(t *testing.T) {
+	raw := []byte("%PDF-1.4 paper")
+	draftHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/pdf1", func(w http.ResponseWriter, r *http.Request) {
+		draftHits++
+		_, _ = w.Write([]byte(`{"draft":{"id":"pdf1","title":"paper","has_original":true,"source_filename":"paper.pdf","source_size":14,"source_download_url":"/api/mobile/documents/drafts/pdf1/source"}}`))
+	})
+	mux.HandleFunc("/api/mobile/documents/drafts/pdf1/source", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(raw)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	var launched string
+	app.processHooks.startProcess = func(argv []string) error {
+		if len(argv) >= 3 {
+			launched = argv[len(argv)-1]
+		}
+		return nil
+	}
+	path, err := app.OpenMobileDocumentInFileCompanion("pdf1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == "" || !strings.HasSuffix(path, "paper.pdf") {
+		t.Fatalf("path=%q", path)
+	}
+	if strings.Contains(path, filepath.Join("companion", "paper.pdf")) {
+		t.Fatalf("read-only original stored as an editable companion copy: %s", path)
+	}
+	if launched != path {
+		t.Fatalf("launched=%q path=%q", launched, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(raw) {
+		t.Fatalf("file=%q", data)
+	}
+	if draftHits != 1 {
+		t.Fatalf("draft fetches = %d, want 1", draftHits)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(path)) })
+}
+
+func TestOpenMobileDocumentInFileCompanionNote(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/note1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"draft":{"id":"note1","title":"会议纪要","markdown":"# hello"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	var launched string
+	app.processHooks.startProcess = func(argv []string) error {
+		if len(argv) >= 3 {
+			launched = argv[len(argv)-1]
+		}
+		return nil
+	}
+	path, err := app.OpenMobileDocumentInFileCompanion("note1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, "会议纪要.md") {
+		t.Fatalf("path=%q", path)
+	}
+	if launched != path {
+		t.Fatalf("launched=%q", launched)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# hello" {
+		t.Fatalf("file=%q", data)
+	}
+	if err := os.WriteFile(path, []byte("# edited"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := app.OpenMobileDocumentInFileCompanion("note1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != path {
+		t.Fatalf("reopen path=%q", again)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# edited" {
+		t.Fatalf("reopen clobbered companion edits: %q", data)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(path)) })
+}
+
+func TestOpenMobileDocumentInFileCompanionKeepsEditableOriginal(t *testing.T) {
+	body := []byte("# hub")
+	sourceHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/md1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"draft":{"id":"md1","title":"notes","has_original":true,"source_filename":"notes.md","source_size":%d,"source_download_url":"/api/mobile/documents/drafts/md1/source"}}`, len(body))
+	})
+	mux.HandleFunc("/api/mobile/documents/drafts/md1/source", func(w http.ResponseWriter, r *http.Request) {
+		sourceHits++
+		_, _ = w.Write(body)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	app.processHooks.startProcess = func([]string) error { return nil }
+	path, err := app.OpenMobileDocumentInFileCompanion("md1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(path, filepath.Join("companion", "notes.md")) {
+		t.Fatalf("path=%q", path)
+	}
+	if sourceHits != 1 {
+		t.Fatalf("source downloads = %d, want 1", sourceHits)
+	}
+	if err := os.WriteFile(path, []byte("# edited by companion"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body = []byte("# hub updated")
+	hubPath, err := app.MaterializeMobileDocumentOriginal("md1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hubPath == path {
+		t.Fatal("preview cache and companion file are the same path")
+	}
+	again, err := app.OpenMobileDocumentInFileCompanion("md1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != path {
+		t.Fatalf("reopen path=%q", again)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# edited by companion" {
+		t.Fatalf("reopen clobbered companion edits: %q", data)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(filepath.Dir(path))) })
+}
+
+func TestOpenMobileDocumentInFileCompanionRefreshesUneditedOriginal(t *testing.T) {
+	body := []byte("# hub")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/md1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"draft":{"id":"md1","title":"notes","has_original":true,"source_filename":"notes.md","source_size":%d,"source_download_url":"/api/mobile/documents/drafts/md1/source"}}`, len(body))
+	})
+	mux.HandleFunc("/api/mobile/documents/drafts/md1/source", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	app.processHooks.startProcess = func([]string) error { return nil }
+	path, err := app.OpenMobileDocumentInFileCompanion("md1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = []byte("# hub v2")
+	again, err := app.OpenMobileDocumentInFileCompanion("md1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != path {
+		t.Fatalf("reopen path=%q", again)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# hub v2" {
+		t.Fatalf("unedited original was not refreshed: %q", data)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(filepath.Dir(path))) })
+}
+
+func TestOpenMobileDocumentInFileCompanionRejectsCode(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/go1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"draft":{"id":"go1","title":"app.go","has_original":true,"source_filename":"app.go","source_download_url":"/api/mobile/documents/drafts/go1/source"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	started := false
+	app.processHooks.startProcess = func([]string) error {
+		started = true
+		return nil
+	}
+	if _, err := app.OpenMobileDocumentInFileCompanion("go1"); err == nil {
+		t.Fatal("expected unsupported file")
+	}
+	if started {
+		t.Fatal("launched companion for an unsupported file")
 	}
 }

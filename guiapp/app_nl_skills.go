@@ -1023,6 +1023,7 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 		return err
 	}
 	e.invalidateSkillCache()
+	e.publishReviewedSkillContracts()
 	return nil
 }
 
@@ -1052,6 +1053,7 @@ func (e *SkillExecutor) restoreSkillsSnapshot(skills []corelib.NLSkillEntry) err
 		e.app.cachedSkillScanner.UpsertSkills(filtered)
 	}
 	e.invalidateSkillCache()
+	e.publishReviewedSkillContracts()
 	return nil
 }
 

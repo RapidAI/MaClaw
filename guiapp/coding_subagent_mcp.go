@@ -199,11 +199,13 @@ func deduplicateCodingSubAgentMCPCandidates(candidates []codingSubAgentMCPCandid
 	return unique
 }
 
-// A slow remote MCP server has completed a health check successfully and is
-// still callable. Only unknown and unavailable servers are hidden.
+// healthy and slow mean the last tools/list succeeded. degraded means that
+// probe later failed fewer than three times; the coding subagent still uses
+// the cached tool list. unknown and unavailable stay hidden. Semantic
+// planning uses mcpHealthObservationSucceeded and does not accept degraded.
 func isCodingSubAgentMCPServerReachable(status mcpHealthStatus) bool {
 	switch normalizeMCPHealthStatus(status) {
-	case mcpHealthStatusHealthy, mcpHealthStatusSlow:
+	case mcpHealthStatusHealthy, mcpHealthStatusSlow, mcpHealthStatusDegraded:
 		return true
 	default:
 		return false

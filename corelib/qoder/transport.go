@@ -3,6 +3,12 @@
 // RoundTripper translates them into the /algo signed contract — wasm COSY
 // bearer, encoded body — and unwraps the upstream SSE envelope back into
 // standard OpenAI chunks, so the generic OpenAI stream parser stays untouched.
+//
+// The translation is two steps with the tool-surface gate between them.
+// adaptTransport rewrites the OpenAI JSON into the agent_chat JSON while the
+// body is still JSON. The gate verifies that JSON. Transport, nested under
+// the gate, signs those verified bytes. Encoding above the gate makes the
+// gate parse COSY ciphertext and report invalid outbound request JSON.
 package qoder
 
 import (
@@ -58,12 +64,40 @@ func WrapClient(client *http.Client) *http.Client {
 
 // WrapClientWithEdition pins the signing uid + credential edition; zero values
 // mean the transport resolves both per request from the credential store.
+//
+// When the client already carries a tool-surface gate, the JSON rewrite stays
+// above the gate and the COSY encoder is nested underneath it. The gate then
+// verifies the agent_chat JSON, and the encoder signs exactly the bytes the
+// gate releases. Callers without a gate (probes, vision checks) keep a single
+// transport that rewrites and encodes, because nothing is inspecting the JSON.
 func WrapClientWithEdition(client *http.Client, uid, edition string) *http.Client {
 	if client == nil {
 		client = &http.Client{Transport: http.DefaultTransport}
 	}
 	if _, ok := client.Transport.(*Transport); ok {
 		return client
+	}
+	if _, ok := client.Transport.(*adaptTransport); ok {
+		return client
+	}
+	if gate, ok := client.Transport.(corelib.ToolSurfaceWireGate); ok {
+		if encoder, nested := gate.ToolSurfaceNext().(*Transport); nested {
+			// A later wrap can learn the edition the first one missed. Replace
+			// the encoder in place so an empty first identity cannot stick, and
+			// do not stack a second encoder under the gate.
+			if !encoder.pinnedIdentityMatches(uid, edition) {
+				gate.SetToolSurfaceNext(encoder.withPinnedIdentity(uid, edition))
+			}
+		} else {
+			prev := gate.ToolSurfaceNext()
+			if prev == nil {
+				prev = http.DefaultTransport
+			}
+			gate.SetToolSurfaceNext(&Transport{Base: prev, uid: uid, edition: edition})
+		}
+		clone := *client
+		clone.Transport = &adaptTransport{Base: client.Transport}
+		return &clone
 	}
 	clone := *client
 	base := clone.Transport
@@ -78,6 +112,56 @@ func WrapClientWithEdition(client *http.Client, uid, edition string) *http.Clien
 	return &clone
 }
 
+// adaptTransport rewrites an OpenAI chat body into the agent_chat JSON the
+// tool-surface gate verifies. It does not sign or encode.
+type adaptTransport struct {
+	Base http.RoundTripper
+}
+
+type qoderWireMeta struct {
+	adapted        bool
+	originalStream bool
+}
+
+type qoderWireMetaKey struct{}
+
+func (t *adaptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req == nil || !adaptTarget(req) {
+		return base.RoundTrip(req)
+	}
+	if req.Body == nil {
+		return nil, fmt.Errorf("qoder adapt: missing request body")
+	}
+	payload, err := io.ReadAll(req.Body)
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	bodyJSON, originalStream := prepareAgentChatBody(payload)
+	adapted := []byte(bodyJSON)
+	outgoing := req.Clone(context.WithValue(req.Context(), qoderWireMetaKey{}, qoderWireMeta{
+		adapted:        true,
+		originalStream: originalStream,
+	}))
+	outgoing.Body = io.NopCloser(bytes.NewReader(adapted))
+	outgoing.ContentLength = int64(len(adapted))
+	// The tool-surface gate must be the last rewind point. A GetBody here would
+	// let a replay resend this JSON without a new receipt.
+	outgoing.GetBody = nil
+	if outgoing.Header == nil {
+		outgoing.Header = make(http.Header)
+	}
+	outgoing.Header.Set("Content-Length", fmt.Sprintf("%d", len(adapted)))
+	outgoing.Header.Set("Content-Type", "application/json")
+	return base.RoundTrip(outgoing)
+}
+
 // Transport is one OpenAI→Qoder translation transport. credentialFor resolves
 // the uid for a bearer device token (test hook); production callers pin the
 // uid + edition at wrap time. alwaysAdapt forces the translation for every
@@ -88,6 +172,32 @@ type Transport struct {
 	edition       string
 	credentialFor func(bearer string) (string, string, bool)
 	alwaysAdapt   bool
+}
+
+// pinnedIdentityMatches reports whether pinning uid and edition would leave
+// this encoder's identity unchanged. Empty new values keep the identity
+// already pinned.
+func (t *Transport) pinnedIdentityMatches(uid, edition string) bool {
+	if t == nil {
+		return false
+	}
+	return t.uid == preferNonEmpty(uid, t.uid) && t.edition == preferNonEmpty(edition, t.edition)
+}
+
+// withPinnedIdentity returns a copy that keeps the network hop and test hooks,
+// and adopts whichever identity values the new wrap actually knows.
+func (t *Transport) withPinnedIdentity(uid, edition string) *Transport {
+	copy := *t
+	copy.uid = preferNonEmpty(uid, t.uid)
+	copy.edition = preferNonEmpty(edition, t.edition)
+	return &copy
+}
+
+func preferNonEmpty(next, prev string) string {
+	if strings.TrimSpace(next) != "" {
+		return next
+	}
+	return prev
 }
 
 // uidFor resolves the signing uid + owning edition: the pinned pair wins,
@@ -105,7 +215,7 @@ func (t *Transport) uidFor(bearer string) (uid, storeID string, ok bool) {
 // storedUIDForToken looks up the user id + owning edition that belongs to a
 // device token via the file credential store's known Qoder rows. The edition
 // decides the chat gateway: the CN CLI talks to gateway.qoder.com.cn while
-// the global one talks to api2-v2.qoder.sh.
+// the global one talks to api3.qoder.sh.
 func storedUIDForToken(bearer string) (string, string, bool) {
 	store := oauth.NewFileCredentialStore(oauth.DefaultCredentialStorePath())
 	var fallbackUID, fallbackStore string
@@ -146,9 +256,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return base.RoundTrip(req)
 	}
 	// The signed chat gateway follows the token's EDITION first (the CN CLI
-	// talks to gateway.qoder.com.cn, the global one to api2-v2.qoder.sh even
-	// though both providers share one OpenAI front); custom deployments and
-	// test servers override with the request's own origin.
+	// talks to gateway.qoder.com.cn, the global one to api3.qoder.sh even
+	// though both providers share one OpenAI front on api2-v2); custom
+	// deployments and test servers override with the request's own origin.
 	bearer := strings.TrimPrefix(strings.TrimSpace(req.Header.Get("Authorization")), "Bearer ")
 	uid, storeID, _ := t.uidFor(bearer)
 	var endpoint, endpointName string
@@ -178,7 +288,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("Qoder 签名材料注入失败: %w", err)
 	}
 
-	bodyJSON, originalStream := prepareAgentChatBody(payload)
+	bodyJSON, originalStream := t.canonicalChatBody(req, payload)
 	prepared, err := signing.PrepareInferRequest(endpoint, bodyJSON, agentChatModel(bodyJSON), "system")
 	if err != nil {
 		return nil, fmt.Errorf("Qoder 签名请求构建失败: %w", err)
@@ -243,6 +353,19 @@ func canonicalQoderModelKey(model string) string {
 	}
 }
 
+// canonicalChatBody returns the JSON PrepareInferRequest must sign. After the
+// tool-surface gate has verified an adapted body, those bytes are signed as
+// released. A second prepareAgentChatBody would be a tool-surface rewrite the
+// gate can no longer see.
+func (t *Transport) canonicalChatBody(req *http.Request, payload []byte) (string, bool) {
+	if req != nil {
+		if meta, ok := req.Context().Value(qoderWireMetaKey{}).(qoderWireMeta); ok && meta.adapted {
+			return string(payload), meta.originalStream
+		}
+	}
+	return prepareAgentChatBody(payload)
+}
+
 // prepareAgentChatBody merges the OpenAI chat payload into the /algo wire
 // body and reports whether the caller asked for streaming.
 func prepareAgentChatBody(payload []byte) (string, bool) {
@@ -270,11 +393,29 @@ func prepareAgentChatBody(payload []byte) (string, bool) {
 	obj["business"] = map[string]any{"type": "agent", "scene": "cli"}
 	obj["model_config"] = map[string]any{"key": obj["model"], "source": "system"}
 	obj["data_policy_agreed"] = true
-	out, err := json.Marshal(obj)
+	out, err := marshalAgentChatJSON(obj)
 	if err != nil {
 		return string(payload), originalStream
 	}
 	return string(out), originalStream
+}
+
+// marshalAgentChatJSON emits the agent_chat object the way JSON.stringify does.
+// encoding/json's default HTML escaping rewrites '&', '<' and '>' inside tool
+// descriptions and prompts, which changes the signed bytes without changing
+// the parsed document.
+func marshalAgentChatJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	out := buf.Bytes()
+	if len(out) > 0 && out[len(out)-1] == '\n' {
+		out = out[:len(out)-1]
+	}
+	return out, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

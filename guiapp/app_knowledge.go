@@ -3090,6 +3090,9 @@ func (a *App) knowledgeScanProgressEmitter() knowledge.ScanProgressFunc {
 }
 
 func (a *App) KnowledgeImportFiles(req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error) {
+	if err := a.fileCompanionRejectUngrantedPaths(filePaths); err != nil {
+		return knowledge.DirectoryImportResult{}, err
+	}
 	log.Printf("[knowledge] ImportFiles: %d files, include_exts=%v", len(filePaths), req.IncludeExts)
 	req = a.normalizeKnowledgeImportRequest(req)
 	req.RootPath = ""

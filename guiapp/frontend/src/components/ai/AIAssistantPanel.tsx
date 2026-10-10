@@ -4,10 +4,10 @@ import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, 
 import { useVoiceInput } from "./useVoiceInput";
 import { useVoiceTextSubmit } from "./useVoiceTextSubmit";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
-import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, willDismissPreviewAfterClosingAll, willDismissPreviewAfterClosingFile, type CodePreviewUIState } from "./useCodePreviewState";
+import { changedPreviewFilePath, cloneCodePreviewState, initialState as initialCodePreviewState, previewFocusAfterTabChange, useCodePreviewState, willDismissPreviewAfterClosingAll, willDismissPreviewAfterClosingFile, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
-import { CodingAgentThinkingTimelineItem, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
+import { assistantMessageHasVisibleBody, CodingAgentThinkingTimelineItem, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
 import {
     formatRecordingCompletionDisplay,
     formatRecordingCompletionMessage,
@@ -64,7 +64,7 @@ import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
-import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
@@ -1157,20 +1157,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses)) {
                 if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
                 applySteps(payload?.step_statuses ?? payload?.stepStatuses);
-                const plan = String(payload?.execution_plan || payload?.executionPlan || "").trim();
-                if (plan) setCodingExecutionPlan(plan);
-                const understood = String(payload?.requirement_restatement || payload?.requirementRestatement || "").trim();
-                if (understood) setCodingRequirementRestatement(understood);
+                // The event is a snapshot. An empty plan or restatement is a
+                // clear: resume drops the generic continue paraphrase, and a
+                // new single-task turn drops the previous execution plan.
+                const planKey = Object.prototype.hasOwnProperty.call(payload, "execution_plan")
+                    ? "execution_plan"
+                    : (Object.prototype.hasOwnProperty.call(payload, "executionPlan") ? "executionPlan" : "");
+                if (planKey) setCodingExecutionPlan(String(payload[planKey] ?? "").trim());
+                const understoodKey = Object.prototype.hasOwnProperty.call(payload, "requirement_restatement")
+                    ? "requirement_restatement"
+                    : (Object.prototype.hasOwnProperty.call(payload, "requirementRestatement") ? "requirementRestatement" : "");
+                if (understoodKey) setCodingRequirementRestatement(String(payload[understoodKey] ?? "").trim());
                 return;
             }
             // Fallback: re-poll status if payload shape unexpected.
             void GetCodingWorkbenchStatus(projectPath).then((st) => {
                 if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
                 applySteps(st.step_statuses);
-                const execPlan = String(st.execution_plan || "").trim();
-                if (execPlan) setCodingExecutionPlan(execPlan);
-                const understood = String(st.requirement_restatement || "").trim();
-                if (understood) setCodingRequirementRestatement(understood);
+                setCodingExecutionPlan(String(st.execution_plan || "").trim());
+                setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             });
         });
         return () => { if (typeof off === "function") off(); };
@@ -2587,6 +2592,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             : initialCodePreviewState(),
     );
     const autoOpenedCodePreviewTabRef = useRef<string | null>(null);
+    // Assigned once file-focus state exists. A tab change re-aims an open
+    // preview at a created or modified file, and leaves a closed preview tied.
+    const alignPreviewBodyFocusRef = useRef<(state: CodePreviewUIState) => void>(() => {});
     useEffect(() => {
         const prevTabId = prevActiveTabIdRef.current;
         const currentTabId = activeTab.id;
@@ -2700,6 +2708,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         // Compose mode is session-UI state, not per-tab draft — clear on switch.
         setComposeAction(null);
+        alignPreviewBodyFocusRef.current(codePreviewStateRef.current);
         prevActiveTabIdRef.current = currentTabId;
     }, [activeTab.id]); // eslint-disable-line react-hooks/exhaustive-deps
     // Track which tab owns the agentView — when agentView is set, record the
@@ -3952,9 +3961,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         adoptPreviewFile,
         setTaskResultPreviewOpen,
     });
-    // Local/remote coding stays closed until the user opens preview. Cloud
-    // workspaces auto-open once per tab. Later visits recover leftover files
-    // without clearing userClosed.
+    // Local/remote coding stays closed until a file is created or modified, or
+    // the user opens preview. Cloud workspaces auto-open once per tab. A later
+    // visit recovers a real edit without clearing userClosed. Reads do not.
     useEffect(() => {
         if ((!isPureCodingEnvironment && !isCloudWorkspaceEnvironment) || !codingPreviewAllowed || !sourcePreviewAllowed) {
             if (autoOpenedCodePreviewTabRef.current === activeTab.id) {
@@ -3966,9 +3975,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Prefer ref: same-tick tab restore updates the ref before setState flushes.
             const cp = codePreviewStateRef.current;
             if (cp.active || cp.userClosed) return;
-            if (cp.files.size > 0) {
+            // A read landing in the background tab list is not a file change.
+            // Opening here used to pop the working directory over the chat.
+            const changedPath = changedPreviewFilePath(cp);
+            if (changedPath) {
+                if (cp.activeFilePath !== changedPath) selectCodeFile(changedPath);
                 activateCodePreviewPassive();
-            } else if (isCloudWorkspaceEnvironment) {
+            } else if (cp.files.size === 0 && isCloudWorkspaceEnvironment) {
                 // Cache path can resolve after the first coding-tab visit.
                 reopenCodePreview();
             }
@@ -3988,7 +4001,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (isCloudWorkspaceEnvironment && !codePreviewStateRef.current.userClosed) {
             reopenCodePreview();
         }
-    }, [isPureCodingEnvironment, isCloudWorkspaceEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, codePreviewState.active, codePreviewState.files.size, codePreviewState.userClosed, activateCodePreviewPassive, reopenCodePreview, resetCodePreviewState]);
+    }, [isPureCodingEnvironment, isCloudWorkspaceEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, codePreviewState.active, codePreviewState.files.size, codePreviewState.userClosed, activateCodePreviewPassive, reopenCodePreview, resetCodePreviewState, selectCodeFile]);
     const showCodePreview = codingPreviewAllowed && (sourcePreviewAllowed || taskResultPreviewOpen || latexPaperTab || hasTaskResult) && codePreviewState.active;
     // Isolation conflicts open a dedicated right-hand side panel (not the float popover).
     const showCodingConflictPanel = isPureCodingEnvironment && codingConflictOpen && codingConflictCount > 0;
@@ -4150,11 +4163,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     if (taskResultPreviewTabIdRef.current !== activeTab.id) {
         taskResultPreviewTabIdRef.current = activeTab.id;
         taskResultPreviewGenRef.current += 1;
-        const nextTree = Math.max(treeFocusNonce, fileFocusNonce) + 1;
-        treeFocusNonceRef.current = nextTree;
-        setTreeFocusNonce(nextTree);
         setTaskResultPreviewOpen(false);
     }
+    alignPreviewBodyFocusRef.current = (state) => {
+        const decision = previewFocusAfterTabChange(state, fileFocusNonceRef.current, treeFocusNonceRef.current);
+        if (decision.selectPath && state.activeFilePath !== decision.selectPath) {
+            selectCodeFile(decision.selectPath);
+        }
+        if (decision.fileFocusNonce !== fileFocusNonceRef.current) {
+            fileFocusNonceRef.current = decision.fileFocusNonce;
+            setFileFocusNonce(decision.fileFocusNonce);
+        }
+        if (decision.treeFocusNonce !== treeFocusNonceRef.current) {
+            treeFocusNonceRef.current = decision.treeFocusNonce;
+            setTreeFocusNonce(decision.treeFocusNonce);
+        }
+    };
     const taskResultPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
     useEffect(() => {
         const onTree = () => {
@@ -4168,7 +4192,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Task-result previews and LaTeX documents both open in the code-preview
     // pane; see useAssistantPreviewOpenEvents for the request contract.
     useAssistantPreviewOpenEvents({
-        allowed: taskResultPreviewAllowed,
+        // This panel stays mounted on the bots page. A preview click there
+        // belongs to the bot pane, not this hidden one.
+        allowed: taskResultPreviewAllowed && panelActive,
         sessionKey: activeTab.id,
         lang,
         openWorkspaceFile,
@@ -4469,30 +4495,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         codingProgress: liveCodingProgress,
         latestToolCall: liveEmbeddedToolCall,
     }), [activeSessionIsStreaming, displayProgressMessages, isBusy, lastAssistantReasoningText, liveCodingProgress, liveEmbeddedToolCall]);
-    const liveReasoningLabel = liveReasoningKind ? assistantLiveActivityLabel(liveReasoningKind, lang) : undefined;
-    const liveReasoningObject = useMemo(() => {
+    const liveHeader = useMemo(() => {
         if (!liveReasoningKind) return undefined;
         const providers = (availableProviders || []) as SidebarLLMProviderSummary[];
-        const liveModel = resolveLiveModelTarget({
-            contactProviderName,
-            contactModelId,
-            contactIsHubService,
-            currentModel,
-            providers,
-        });
-        const object = assistantLiveActivityObject(liveReasoningKind, lang, {
-            providerName: liveModel.providerName,
-            modelId: liveModel.modelId,
-            isHubService: liveModel.isHubService,
-            toolName: extractInFlightToolName({
-                codingProgress: liveCodingProgress,
-                progressMessages: displayProgressMessages,
-                reasoningText: lastAssistantReasoningText,
-                latestToolCall: liveEmbeddedToolCall,
-            }),
-        });
-        return object || undefined;
+        const liveModel = resolveLiveModelTarget({ contactProviderName, contactModelId, contactIsHubService, currentModel, providers });
+        const toolName = extractInFlightToolName({ codingProgress: liveCodingProgress, progressMessages: displayProgressMessages, reasoningText: lastAssistantReasoningText, latestToolCall: liveEmbeddedToolCall });
+        const object = assistantLiveActivityObject(liveReasoningKind, lang, { providerName: liveModel.providerName, modelId: liveModel.modelId, isHubService: liveModel.isHubService, toolName });
+        return { label: assistantLiveActivityLabel(liveReasoningKind, lang, toolName), object: object || undefined };
     }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveEmbeddedToolCall, liveReasoningKind]);
+    const liveReasoningLabel = liveHeader?.label;
+    const liveReasoningObject = liveHeader?.object;
     const projectSearch = useProjectSearch(lang);
     useEffect(() => {
         if (!panelActive) projectSearch.close();
@@ -5661,15 +5673,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [deactivateRecordingSession, dispatchTaskIntent, lang]);
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
-    const lastAssistantOwnsLiveActivity = assistantMessageOwnsLiveActivity(
-        otherMessages[lastAssistantIdx],
-        activeSessionIsStreaming,
-        lastAssistantIdx === otherMessages.length - 1,
-    );
-    const lastAssistantTimeline = isPureCodingEnvironment && otherMessages[lastAssistantIdx]?.role === "assistant"
-        ? otherMessages[lastAssistantIdx]?.codingTimeline
-        : undefined;
-    const codingTimelineOwnsLiveThought = codingTimelineLiveThoughtIndex(lastAssistantTimeline, lastAssistantOwnsLiveActivity) >= 0;
+    const lastAssistantMessage = otherMessages[lastAssistantIdx];
+    const lastAssistantOwnsLiveActivity = assistantMessageOwnsLiveActivityAt(otherMessages, lastAssistantIdx, activeSessionIsStreaming, isPureCodingEnvironment && isBusy);
+    const lastAssistantTimeline = isPureCodingEnvironment && lastAssistantMessage?.role === "assistant" ? lastAssistantMessage.codingTimeline : undefined;
+    const codingTimelineOwnsLiveThought = codingTimelineLiveThoughtIndex(lastAssistantTimeline, !!codingShownLiveLabel(lastAssistantOwnsLiveActivity, liveReasoningLabel, liveReasoningKind, lastAssistantMessage), liveReasoningKind) >= 0;
+    const bubbleHostsLiveTitle = isPureCodingEnvironment && !(lastAssistantTimeline?.length) && !!lastAssistantMessage && codingBubbleHostsLiveTitle(lastAssistantMessage, assistantMessageHasVisibleBody(lastAssistantMessage), lastAssistantOwnsLiveActivity, liveReasoningKind);
     const standaloneLiveActivityLabel = resolveStandaloneLiveActivityLabel({
         liveLabel: liveReasoningLabel,
         liveKind: liveReasoningKind,
@@ -5677,14 +5685,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         lastAssistantOwnsLive: lastAssistantOwnsLiveActivity,
         lastMessageRole: otherMessages[otherMessages.length - 1]?.role,
         timelineOwnsLiveThought: codingTimelineOwnsLiveThought,
+        bubbleHostsLiveTitle,
     });
-    const hideWorkingTrail = !!(standaloneLiveActivityLabel || codingTimelineOwnsLiveThought);
+    const hideWorkingTrail = !!(standaloneLiveActivityLabel || codingTimelineOwnsLiveThought || bubbleHostsLiveTitle);
 
     // Per-message render cache: avoids re-rendering unchanged messages during
     // streaming. During streaming, only the LAST assistant message changes
     // (every 33ms). Without this cache, all N messages get full Markdown
     // re-parsing on every token batch flush.
-    const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage> }>>(new Map());
+    const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage>; message?: ChatMessage }>>(new Map());
     // Incremental Markdown render state for the streaming (last) assistant message.
     // This avoids re-parsing the entire message content on every 33ms token flush.
     // Only the "active tail" (last incomplete paragraph) is re-parsed each frame;
@@ -5698,13 +5707,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const reasoningIncrementalStateRef = useRef<{ messageId: string; state: IncrementalRenderState }>({
         messageId: '', state: createIncrementalRenderState(),
     });
-    // Track render-config: when theme/lang/callback change, invalidate entire cache
-    // to avoid returning stale renders with old styles or stale closures.
+    // Theme, lang, callback, coding mode, or expert change invalidates the cache.
+    // A settled node keeps the layout it was built with.
     // NOTE: isBusy is NOT included here — last-assistant busy only affects
     // the Working... placeholder, handled via the per-message contentKey below.
-    const prevRenderConfigRef = useRef<{ t: Theme; lang: string; savedFileLabel: string; execAction: typeof panelExecuteAction } | null>(null);
-    if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.execAction !== panelExecuteAction) {
-        prevRenderConfigRef.current = { t, lang, savedFileLabel, execAction: panelExecuteAction };
+    const prevRenderConfigRef = useRef<{ t: Theme; lang: string; savedFileLabel: string; execAction: typeof panelExecuteAction; coding: boolean; expertId: string } | null>(null);
+    if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.execAction !== panelExecuteAction || prevRenderConfigRef.current.coding !== isPureCodingEnvironment || prevRenderConfigRef.current.expertId !== (activeTab.expertId || "")) {
+        prevRenderConfigRef.current = { t, lang, savedFileLabel, execAction: panelExecuteAction, coding: isPureCodingEnvironment, expertId: activeTab.expertId || "" };
         msgRenderCacheRef.current.clear();
         // Also invalidate incremental state on config change (theme colors affect rendered nodes)
         incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
@@ -5721,15 +5730,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return otherMessages.map((msg: ChatMessage, idx: number) => {
             const isLast = idx === lastAssistantIdx;
+            // Settled rows keep their object across token flushes. The live assistant follows the round.
+            const settled = cache.get(msg.id);
+            if (!isLast && settled?.message === msg) return settled.node;
+            const messageOwnsLive = isLast && lastAssistantOwnsLiveActivity;
+            const shownLiveLabel = isPureCodingEnvironment ? codingShownLiveLabel(messageOwnsLive, liveReasoningLabel, liveReasoningKind, msg) : (messageOwnsLive ? liveReasoningLabel : undefined);
             const codingTimeline = isPureCodingEnvironment && msg.role === "assistant" ? msg.codingTimeline : undefined;
             if (codingTimeline?.length) {
-                const lastThinkingIndex = codingTimelineLiveThoughtIndex(
-                    codingTimeline,
-                    !!liveReasoningLabel && assistantMessageOwnsLiveActivity(msg, activeSessionIsStreaming, idx === otherMessages.length - 1),
-                );
+                const lastThinkingIndex = codingTimelineLiveThoughtIndex(codingTimeline, !!shownLiveLabel, liveReasoningKind);
                 // The newest thought of the current turn stays open so the latest
                 // reasoning is readable after a tool row. Earlier thoughts stay folded.
-                const openThoughtIndex = idx === otherMessages.length - 1
+                const openThoughtIndex = idx === lastAssistantIdx && (messageOwnsLive || idx === otherMessages.length - 1)
                     ? codingTimelineLastThoughtIndex(codingTimeline)
                     : -1;
                 const reply = renderMessage(
@@ -5750,7 +5761,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     isLatexExpertId(activeTab.expertId),
                 );
                 let thoughtStep = 0;
-                return (
+                const timelineNode = (
                     <Fragment key={msg.id}>
                         <div data-testid="coding-agent-interleaved-timeline">
                             {codingTimeline.map((item, index) => {
@@ -5765,7 +5776,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 theme={t}
                                                 lang={lang}
                                                 step={step}
-                                                liveLabel={thoughtOwnsLive ? liveReasoningLabel : undefined}
+                                                liveLabel={thoughtOwnsLive ? shownLiveLabel : undefined}
                                                 liveObject={thoughtOwnsLive ? liveReasoningObject : undefined}
                                                 expanded={index === openThoughtIndex}
                                             />
@@ -5786,14 +5797,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         {reply}
                     </Fragment>
                 );
+                if (!isLast) cache.set(msg.id, { contentKey: "", node: timelineNode, message: msg });
+                return timelineNode;
             }
             // Content key captures message-specific fields that affect render.
             // isBusy is included only for the last assistant (Working... placeholder).
             // Include the actual text, not just its length. Tool retries and stream
             // corrections can replace content in place without changing the length.
-            const liveLabelForMessage = assistantMessageOwnsLiveActivity(msg, activeSessionIsStreaming, idx === otherMessages.length - 1) ? liveReasoningLabel : undefined;
-            const liveObjectForMessage = liveLabelForMessage ? liveReasoningObject : undefined;
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${msg.resultText ?? ''}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            const liveObjectForMessage = shownLiveLabel ? liveReasoningObject : undefined;
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${msg.resultText ?? ''}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && activeSessionIsStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -5809,7 +5821,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // freeze-the-stable-part treatment to keep flushes cheap.
             const longStreamingContent = !!(msg.content && msg.content.length > 2000);
             const longStreamingReasoning = !!(msg.reasoning && msg.reasoning.length > 2000);
-            if (isLast && activeSessionIsStreaming && msg.role === 'assistant' && (longStreamingContent || longStreamingReasoning)) {
+            if (messageOwnsLive && activeSessionIsStreaming && msg.role === 'assistant' && (longStreamingContent || longStreamingReasoning)) {
                 node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, true, (formattedContent: string) => {
                     // Incremental render callback: called by renderMessage for the
                     // content section of the last streaming assistant message.
@@ -5826,7 +5838,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.state = createIncrementalRenderState();
                     }
                     return renderContentIncremental(formattedReasoning, t, incRef.state, reasoningTrailMarkdownOptions);
-                }, liveLabelForMessage, liveObjectForMessage, true, isLatexExpertId(activeTab.expertId));
+                }, shownLiveLabel, liveObjectForMessage, true, isLatexExpertId(activeTab.expertId));
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
@@ -5838,9 +5850,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                     }
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, messageOwnsLive && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, shownLiveLabel, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
             }
-            cache.set(msg.id, { contentKey, node });
+            cache.set(msg.id, { contentKey, node, message: isLast ? undefined : msg });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
             if (branchPoint) {
                 const branchIdx = Number(branchPoint.index ?? idx);
@@ -5873,12 +5885,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ><IconBranch size={12} color="currentColor" /></button>
                     </div>
                 );
-                cache.set(msg.id, { contentKey, node: wrappedNode });
+                cache.set(msg.id, { contentKey, node: wrappedNode, message: isLast ? undefined : msg });
                 return wrappedNode;
             }
             return node;
         });
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment]);
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId]);
     // A coding turn with an ordered timeline owns its coding progress rows.
     // Retain the legacy progress feed for non-coding and older in-flight turns.
     const renderedProgressMessages = useMemo(() => {

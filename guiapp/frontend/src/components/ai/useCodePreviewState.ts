@@ -247,6 +247,74 @@ export function isTaskResultWrite(opType?: string | null): boolean {
 }
 
 /**
+ * The preview body shows the open file instead of the directory tree.
+ * A newer file focus wins, including an explicit read. A tied focus shows a
+ * create/modify (that change is why the pane is open) and leaves a read on
+ * the tree. A newer tree focus wins until the next file focus.
+ */
+export function previewBodyShowsFile(
+    file: { opType?: string | null } | undefined,
+    fileFocusNonce: number,
+    treeFocusNonce: number,
+): boolean {
+    if (!file) return false;
+    if (fileFocusNonce > treeFocusNonce) return true;
+    return fileFocusNonce === treeFocusNonce && isTaskResultWrite(file.opType);
+}
+
+/**
+ * A created or modified file to put on screen. Prefers the current selection
+ * when that file itself changed; otherwise the latest change. Empty when every
+ * open tab is a read.
+ */
+export function changedPreviewFilePath(state: {
+    activeFilePath?: string;
+    files: { get(path: string): { opType?: string | null; updatedAt?: number } | undefined; entries(): Iterable<[string, { opType?: string | null; updatedAt?: number }]> };
+}): string {
+    const currentPath = state.activeFilePath || "";
+    const current = currentPath ? state.files.get(currentPath) : undefined;
+    if (current && isTaskResultWrite(current.opType)) return currentPath;
+    let best = "";
+    let bestAt = -1;
+    for (const [path, file] of state.files.entries()) {
+        if (!isTaskResultWrite(file?.opType)) continue;
+        const at = file.updatedAt || 0;
+        if (!best || at >= bestAt) {
+            best = path;
+            bestAt = at;
+        }
+    }
+    return best;
+}
+
+/**
+ * Tab switch must not keep the previous tab's file-or-tree choice.
+ * An open preview with a create/modify lands on that file. An open preview
+ * with only reads lands on the directory. A closed preview is left tied, so
+ * the next open follows the same rule without popping the pane.
+ */
+export function previewFocusAfterTabChange(
+    state: {
+        active: boolean;
+        userClosed: boolean;
+        activeFilePath?: string;
+        files: { get(path: string): { opType?: string | null; updatedAt?: number } | undefined; entries(): Iterable<[string, { opType?: string | null; updatedAt?: number }]> };
+    },
+    fileFocusNonce: number,
+    treeFocusNonce: number,
+): { fileFocusNonce: number; treeFocusNonce: number; selectPath: string } {
+    const base = Math.max(fileFocusNonce, treeFocusNonce) + 1;
+    const changed = state.userClosed ? "" : changedPreviewFilePath(state);
+    if (state.active && changed) {
+        return { fileFocusNonce: base, treeFocusNonce, selectPath: changed };
+    }
+    if (state.active) {
+        return { fileFocusNonce, treeFocusNonce: base, selectPath: "" };
+    }
+    return { fileFocusNonce: base, treeFocusNonce: base, selectPath: changed };
+}
+
+/**
  * Whether a file event should surface in the preview pane (select the file,
  * notify the host panel). Always true for create/modify; a read only when the
  * backend explicitly asked the pane to show it (force_open / auto_open_preview)
@@ -256,6 +324,11 @@ export function fileEventSurfacesPreview(
     file: Pick<CodeFile, 'opType' | 'forceOpen' | 'autoOpenPreview'>,
 ): boolean {
     return file.opType !== 'read' || file.forceOpen === true || file.autoOpenPreview === true;
+}
+
+/** Arm/restore refill. Not a change, and not a request to show the pane. */
+function isBackgroundRead(file: Pick<CodeFile, 'opType' | 'forceOpen' | 'autoOpenPreview'>): boolean {
+    return file.opType === 'read' && !fileEventSurfacesPreview(file);
 }
 
 /** Mark a create or rewrite so it survives leaving a programming workflow. */
@@ -543,6 +616,36 @@ function keepOpenLatexWorkbench(existing: CodeFile | undefined, file: CodeFile):
     return kept;
 }
 
+/**
+ * Fold one arm/restore read into the open tabs. Keeps the current selection
+ * and pane visibility. An existing create/modify stays, including its diff.
+ */
+function mergeBackgroundRead(state: CodePreviewUIState, file: CodeFile): CodePreviewUIState {
+    const existing = state.files.get(file.filePath);
+    if (existing && isTaskResultWrite(existing.opType)) {
+        if (state.sessionID === file.sessionID) return state;
+        return { ...state, sessionID: file.sessionID || state.sessionID };
+    }
+    if (
+        existing
+        && existing.content === file.content
+        && existing.opType === 'read'
+        && existing.language === file.language
+        && existing.fileName === file.fileName
+        && existing.absPath === file.absPath
+        && state.sessionID === (file.sessionID || state.sessionID)
+    ) {
+        return state;
+    }
+    const nextFiles = new Map(state.files);
+    nextFiles.set(file.filePath, file);
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, state.activeFilePath),
+        sessionID: file.sessionID || state.sessionID,
+    };
+}
+
 export function applyFileUpdate(
     state: CodePreviewUIState,
     file: CodeFile,
@@ -561,8 +664,11 @@ export function applyFileUpdate(
         //
         // Note: multi-file batches with forceOpen process one file per event —
         // the first event wipes; later events share the new sessionID and merge.
-        // Callers that must not wipe (arm restore, turn-start sticky seed) should
-        // emit forceOpen=false so an active session blocks them instead.
+        // A background read is an arm/restore refill. The ended session must
+        // accept it without wiping the edit that is already on screen.
+        if (file.sessionID && isBackgroundRead(file) && !state.sessionActive) {
+            return mergeBackgroundRead(state, file);
+        }
         if (file.sessionID && (!state.sessionActive || file.forceOpen)) {
             const previous = state.files.get(file.filePath);
             // Local file tools always force a new session. The takeover used to
@@ -608,6 +714,11 @@ export function applyFileUpdate(
         && (existing.opType === 'modify' || existing.opType === 'create')
         && existing.updatedAt > (file.updatedAt || 0)
     ) {
+        return state;
+    }
+    // Arm/restore re-reads files it already showed. Replacing a create/modify
+    // with that read would drop the diff and make the pane look unchanged.
+    if (existing && isTaskResultWrite(existing.opType) && isBackgroundRead(file)) {
         return state;
     }
     // A content event carries no presentation state. When an already-open LaTeX
@@ -664,27 +775,29 @@ export function applyWorkflowDocUpdate(state: CodePreviewUIState): CodePreviewUI
 
 /**
  * Apply a code:session_start event to the state.
- * Sets sessionActive=true and resets userClosed.
+ * Sets sessionActive=true.
  *
  * autoOpenPreview=false (default / historical): clear files and close the panel
- * until the first forceOpen file update.
+ * until the first forceOpen file update. Also resets userClosed.
  *
  * autoOpenPreview=true (CodingSubAgent / pure-coding): keep existing open tabs
- * and panel visibility across multi-turn boundaries so bash-only turns do not
- * blank the right-hand preview.
+ * and the current pane visibility across multi-turn boundaries, so a bash-only
+ * or read-only turn does not blank a preview the user already has open.
+ * It must not pop the pane. A turn with no create/modify leaves a closed
+ * preview closed; the later file event opens it on that file.
  */
 export function applySessionStart(state: CodePreviewUIState, sessionID = "", autoOpenPreview = false): CodePreviewUIState {
     if (state.sessionID && !sessionID && state.sessionActive) {
         return state;
     }
     if (autoOpenPreview) {
+        if (state.sessionID === sessionID && state.sessionActive) return state;
         return {
             ...state,
-            active: true,
             sessionID,
             sessionActive: true,
-            userClosed: false,
-            // Keep files / activeFilePath / pinnedPaths / mruOrder for continuity.
+            // Keep active / userClosed / files / activeFilePath. A new turn is
+            // not a file change, so it must not surface the working directory.
         };
     }
     return {

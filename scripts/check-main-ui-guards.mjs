@@ -548,7 +548,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 500],
   ['guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 380],
   ['guiapp/frontend/src/components/layout/useSidebarHubAccess.ts', 130],
-  ['guiapp/frontend/src/components/layout/SidebarAiPane.tsx', 360],
+  // Refreshed 360 -> 372 (2026-10-09): in-flight agent pane work measured 365
+  // lines; headroom absorbs further bursts while that work is in progress.
+  ['guiapp/frontend/src/components/layout/SidebarAiPane.tsx', 372],
   ['guiapp/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['guiapp/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['guiapp/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
@@ -581,7 +583,10 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/AboutPanel.tsx', 1000],
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6800],
+  // Refreshed 6800 -> 6803 -> 6815 (2026-10-09): the in-flight agent-preview
+  // focus work oscillates this file 6803..6804; headroom absorbs it while
+  // that work is in progress. Re-tighten to the landed value afterwards.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6815],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

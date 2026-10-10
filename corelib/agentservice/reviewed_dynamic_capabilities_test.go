@@ -1195,8 +1195,8 @@ func TestReviewedDynamicIntentRulesDoNotImportGUIMCatalog(t *testing.T) {
 			}
 		}
 	}
-	if len(rules) != 37 {
-		t.Fatalf("reviewed dynamic rules=%d, want search, live_data, current_time, knowledge_read, audit_read, web_fetch, file_download, file_read, git_inspect, git_mutate, document_read, audio_transcribe, file_write, office_write, shell, delegate, ssh, browser, computer_use, knowledge_write, memory_manage, task_track, goal_manage, template_manage, schedule_manage, schedule_dispatch, knowledge_admin, config_manage, session_manage, document_delivery, attachment_delivery, document_generate, audio_deliver, audio_synthesize, screenshot, document_open, and app_launch", len(rules))
+	if len(rules) != 39 {
+		t.Fatalf("reviewed dynamic rules=%d, want search, live_data, current_time, knowledge_read, audit_read, web_fetch, file_download, file_read, git_inspect, git_mutate, document_read, audio_transcribe, file_write, office_write, shell, delegate, ssh, browser, computer_use, knowledge_write, memory_manage, task_track, goal_manage, template_manage, schedule_manage, schedule_dispatch, knowledge_admin, config_manage, session_manage, document_delivery, attachment_delivery, document_generate, audio_deliver, audio_synthesize, screenshot, document_open, app_launch, worklog_read, and worklog_update", len(rules))
 	}
 }
 

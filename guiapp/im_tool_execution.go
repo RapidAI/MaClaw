@@ -92,6 +92,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: "这一轮是闲聊，不能使用工具。", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
+	if fileCompanionTurnWithoutTools(opts.UserID, fileCompanionLoopPlatform(opts.Context)) {
+		name := strings.TrimSpace(tc.Function.Name)
+		log.Printf("[file-companion] rejected tool %q", name)
+		return toolExecutionResult{Text: "这一轮是文件伴读，不能使用工具。", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	if petCompanionOutboundBlocked(opts.UserID, tc.Function.Name, tc.Function.Arguments, opts.UserText) {
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: "文稿先留在本机。先问用户发给聊天，还是放进移动文稿库。", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}

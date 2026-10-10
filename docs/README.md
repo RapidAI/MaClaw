@@ -4,8 +4,9 @@ This directory contains architecture notes, design records, and operational guid
 
 ## Docker 桌面(desktopd)
 
-- [maclaw-gui:2 使用与运维手册](desktop-gui-v2.md)：XFCE + Chromium + fcitx5 拼音桌面镜像；架构（gate 鉴权、D-Bus、close_range 垫片）、构建、Windows/Linux 部署、Hub 配置、从 maclaw-gui:1 懒迁移、截图 API、冒烟、回滚、已知问题与安全建议。
+- [maclaw-gui:2 使用与运维手册](desktop-gui-v2.md)：XFCE + Chromium + fcitx5 拼音桌面镜像；架构（gate 鉴权、D-Bus、close_range 垫片）、构建、Windows/Linux 部署、Hub 配置、从 maclaw-gui:1 懒迁移、截图 API、冒烟、回滚、已知问题与安全建议。`hub.mypapers.top` 上已在跑的桌面按第 4.4 节只替换 maclawsrv、hub、desktopd 三个二进制，不重建镜像、不重写单元。
 - [desktopd 服务说明](../desktopd/README.md)：环境变量、管理面板、与 Hub / MaClawSrv 的关系、排障。
+- [桌面 Bot 消息超时](bot-message-timeout-ops-zh.md)：同步 `/messages` 的 30 分钟预算，以及登记后后台执行。Hub 客户端、`hub.mypapers.top` 与 `maclawsrv.mypapers.top` 的 nginx `location /`、maclawsrv 写超时要一起改。说明听 443 的是哪一个 nginx，以及 `/api/llm/` 为什么仍是 600 秒。
 
 ## LLM 服务商调度
 

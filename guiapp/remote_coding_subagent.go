@@ -4265,15 +4265,16 @@ func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string 
 		return msg
 	}
 	offset := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line", "start", "startLine")
-	limit := remoteArgInt(args, 0, 0, 2000, "limit", "lines", "num_lines", "line_count")
+	limit := remoteArgInt(args, 0, 0, remoteReadFileMaxLines, "limit", "lines", "num_lines", "line_count")
 	result := c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
 	if remoteCodingToolOutcome(result) == "success" && remoteReadFileResultHasUsefulEvidence(result) {
 		c.trackRemoteFileRead(path)
 		c.rememberRemotePathExistence(path, true)
-		// A range beginning after line one is useful to the agent but is not a
-		// faithful source preview of the file; keep the user's current preview.
-		if remoteReadCanUpdatePreview(offset) && !remotePreviewOutputIsTransportTruncated(result) {
-			c.emitRemoteCodePreview(path, extractRemoteReadPreviewContent(result), "", "read", remotePreviewOutputIsTruncated(result), false)
+		// The tool result is a numbered page for the model. Its bytes are not
+		// the file: the PTY capture trims whitespace, and rejoining numbered
+		// lines drops the file's trailing newline. The preview reads the file.
+		if remoteReadCanUpdatePreview(offset) {
+			c.publishPreviewAfterMutation(path, "", "read", false, false)
 		}
 	} else if remoteCodingPathLookupLooksUnsuccessful(result) {
 		c.rememberRemotePathExistence(path, false)
@@ -4292,6 +4293,39 @@ func (c *remoteCodingCallbacks) rememberRemotePathExistence(path string, exists 
 }
 
 func remoteReadCanUpdatePreview(offset int) bool { return offset <= 1 }
+
+func remoteSourcePreviewActive(c *remoteCodingCallbacks) bool {
+	return c != nil && c.agent != nil && c.agent.sourcePreviewEnabled && c.agent.handler != nil && c.agent.handler.app != nil && c.agent.handler.app.codeEventEmitter != nil
+}
+
+func (c *remoteCodingCallbacks) readPreviewIfActive(path string) (string, bool, bool) {
+	if !remoteSourcePreviewActive(c) {
+		return "", false, false
+	}
+	return c.readRemotePreviewContent(path)
+}
+
+func (c *remoteCodingCallbacks) publishPreviewAfterMutation(path, original, opType string, originalTruncated, originalMissing bool) {
+	updated, ok, truncated := c.readPreviewIfActive(path)
+	if !ok {
+		return
+	}
+	original, originalMissing, truncated = remotePreviewDelivery(original, originalTruncated, truncated, originalMissing)
+	c.emitRemoteCodePreview(path, updated, original, opType, truncated, originalMissing)
+}
+
+// remotePreviewDelivery decides what a source-preview event claims.
+// The banner describes the bytes on screen, so only the current capture can
+// set it. A cut before-image is not the prior file: diffing it would invent
+// edits in the unseen tail, and the UI skips that diff whenever the current
+// capture is itself a leading chunk. Either case drops the before-image
+// instead of shipping bytes the pane will not compare.
+func remotePreviewDelivery(original string, originalTruncated, currentTruncated, originalMissing bool) (string, bool, bool) {
+	if currentTruncated || originalTruncated {
+		return "", true, currentTruncated
+	}
+	return original, originalMissing, false
+}
 
 func remoteReadFileResultHasUsefulEvidence(result string) bool {
 	if strings.TrimSpace(result) == "" || strings.Contains(result, "[remote read_file binary/non-UTF8:") {
@@ -4322,6 +4356,33 @@ func remotePythonCommand(script string) string {
 	return "python3 -c \"$(printf '%s' " + remoteShellQuote(encoded) + " | base64 -d)\""
 }
 
+// remoteReadFileMaxLines is the most lines one agent ssh_read_file page
+// returns. It bounds model context. It is not the source-preview budget.
+const remoteReadFileMaxLines = 2000
+
+// remotePreviewEndPrefix is the last line of a preview capture. The digit
+// says whether the file continued past the byte budget, and bytes= is the
+// exact file length that line frames. Bytes outside that length are channel
+// noise, not source. It is not the agent page marker.
+const remotePreviewEndPrefix = "[remote preview end truncated="
+
+// remotePreviewBinaryMarker means the remote file is not UTF-8 text.
+const remotePreviewBinaryMarker = "[remote preview binary]"
+
+// remotePreviewMaxCaptureBytes is the most file bytes a source preview
+// captures. It stays under the exec channel's 1MB silent cap so the
+// completeness trailer cannot be cut off. A file that fits is the whole
+// file; a file that does not is a real leading chunk.
+func remotePreviewMaxCaptureBytes() int {
+	const execChannelCap = 1 << 20
+	const trailerRoom = 256
+	budget := maxCodeFileSize
+	if budget > execChannelCap-trailerRoom {
+		budget = execChannelCap - trailerRoom
+	}
+	return budget
+}
+
 func remoteReadFileRangePythonCommand(path string, offset, limit int) string {
 	pathB64 := base64EncodeString(path)
 	if offset <= 0 {
@@ -4330,8 +4391,8 @@ func remoteReadFileRangePythonCommand(path string, offset, limit int) string {
 	if limit <= 0 {
 		limit = 200
 	}
-	if limit > 2000 {
-		limit = 2000
+	if limit > remoteReadFileMaxLines {
+		limit = remoteReadFileMaxLines
 	}
 	script := fmt.Sprintf(strings.Join([]string{
 		"import pathlib, base64, sys",
@@ -4375,7 +4436,7 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 	}
 
 	// Capture the existing remote content before mutation so the preview can show a diff.
-	original, originalAvailable, originalTruncated := c.readRemotePreviewContent(path)
+	original, originalAvailable, originalTruncated := c.readPreviewIfActive(path)
 
 	// For large content (>32KB), write in chunks to avoid PTY buffer overflow.
 	if len(content) > 32*1024 {
@@ -4383,13 +4444,11 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 		if remoteCodingToolOutcome(result) == "success" {
 			created := remoteWriteFileResultCreated(result)
 			c.trackRemoteFileChanged(path, created)
-			if updated, ok, truncated := c.readRemotePreviewContent(path); ok {
-				opType := "modify"
-				if created {
-					opType = "create"
-				}
-				c.emitRemoteCodePreview(path, updated, original, opType, originalTruncated || truncated, !created && !originalAvailable)
+			opType := "modify"
+			if created {
+				opType = "create"
 			}
+			c.publishPreviewAfterMutation(path, original, opType, originalTruncated, !created && !originalAvailable)
 		}
 		return result
 	}
@@ -4403,13 +4462,11 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 	if remoteCodingToolOutcome(formatted) == "success" {
 		created := remoteWriteFileResultCreated(result)
 		c.trackRemoteFileChanged(path, created)
-		if updated, ok, truncated := c.readRemotePreviewContent(path); ok {
-			opType := "modify"
-			if created {
-				opType = "create"
-			}
-			c.emitRemoteCodePreview(path, updated, original, opType, originalTruncated || truncated, !created && !originalAvailable)
+		opType := "modify"
+		if created {
+			opType = "create"
 		}
+		c.publishPreviewAfterMutation(path, original, opType, originalTruncated, !created && !originalAvailable)
 	}
 	return formatted
 }
@@ -4526,7 +4583,7 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 	}
 
 	// Capture the existing remote content before mutation so the preview can show a diff.
-	original, originalAvailable, originalTruncated := c.readRemotePreviewContent(path)
+	original, originalAvailable, originalTruncated := c.readPreviewIfActive(path)
 
 	// Use base64 to safely transfer old/new strings without heredoc terminator conflicts.
 	pyScript := remoteEditFilePythonCommand(path, oldStr, newStr)
@@ -4535,33 +4592,218 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 	formatted := remoteEditFileResult(path, result)
 	if remoteCodingToolOutcome(formatted) == "success" {
 		c.trackRemoteFileChanged(path, false)
-		if updated, ok, truncated := c.readRemotePreviewContent(path); ok {
-			c.emitRemoteCodePreview(path, updated, original, "modify", originalTruncated || truncated, !originalAvailable)
-		}
+		c.publishPreviewAfterMutation(path, original, "modify", originalTruncated, !originalAvailable)
 	}
 	return formatted
 }
 
-// readRemotePreviewContent retrieves a whole remote text file for the local preview.
-// It deliberately uses the existing SSH read command rather than the desktop filesystem.
+// readRemotePreviewContent loads a remote text file for the source preview.
+// The agent page protocol is not used: its truncation line means the model
+// should request the next page. The preview cut is the byte budget, and the
+// read runs on an exec channel so the PTY ring cannot drop the head.
+// A capture that lost its completeness trailer is omitted.
 func (c *remoteCodingCallbacks) readRemotePreviewContent(path string) (string, bool, bool) {
-	// Keep preview reads under the SSH transport's output cap. A preview that
-	// cannot be transferred intact is omitted rather than showing a misleading
-	// middle-truncated source file.
-	content := c.execSSH(remoteReadFileRangePythonCommand(path, 0, 100), 10)
-	if remoteCodingToolOutcome(content) != "success" || !remoteReadFileResultHasUsefulEvidence(content) {
+	raw, err := c.execPreviewChannel(remotePreviewFileCommand(path), 20)
+	if err != nil {
 		return "", false, false
 	}
-	if remotePreviewOutputIsTransportTruncated(content) {
+	content, truncated, ok := parseRemotePreviewCapture(raw)
+	if !ok || len(content) > maxCodeFileSize || !isCodePreviewTextContent([]byte(content)) {
 		return "", false, false
 	}
-	if len(content) > maxCodeFileSize || !isCodePreviewTextContent([]byte(content)) {
+	return content, true, truncated
+}
+
+// execPreviewChannel runs one preview read on the session's exec channel.
+// It does not fall back to the interactive PTY: that scrollback drops lines
+// past its ring without saying the capture is incomplete.
+func (c *remoteCodingCallbacks) execPreviewChannel(command string, waitSec int) (string, error) {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return "", fmt.Errorf("remote preview handler unavailable")
+	}
+	sessionID := strings.TrimSpace(c.agent.sessionID)
+	workDir := strings.TrimSpace(c.agent.projectDir)
+	if sessionID == "" || workDir == "" {
+		return "", fmt.Errorf("remote preview channel binding is incomplete")
+	}
+	expected := guiRemoteCodingTargetIdentity(c.agent.handler, sessionID, workDir)
+	if expected == "" {
+		return "", fmt.Errorf("remote preview channel target is unavailable")
+	}
+	ctx, cancel := c.executionContext()
+	defer cancel()
+	result, err := c.agent.handler.sshExecChannelResult(ctx, sessionID, command, waitSec, expected, workDir)
+	if err != nil {
+		return "", err
+	}
+	if result.ExitCode != 0 {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = strings.TrimSpace(result.Stdout)
+		}
+		if detail == "" {
+			detail = fmt.Sprintf("exit %d", result.ExitCode)
+		}
+		return "", fmt.Errorf("%s", detail)
+	}
+	// Stdout is the file plus its completeness trailer. Compacting it or
+	// appending stderr rewrites source bytes and can drop the trailer.
+	return result.Stdout, nil
+}
+
+// remotePreviewFileCommand reads path until EOF or the preview byte budget
+// and appends a completeness trailer. It does not number lines or stop at
+// an agent page.
+func remotePreviewFileCommand(path string) string {
+	script := strings.Join([]string{
+		"import pathlib, base64, sys",
+		"p = pathlib.Path(base64.b64decode('" + base64EncodeString(path) + "').decode('utf-8'))",
+		"try:",
+		"    preview_file = p.open('rb')",
+		"except OSError as exc:",
+		"    sys.stderr.write(str(exc) + '\\n')",
+		"    sys.exit(1)",
+		"with preview_file:",
+		indentNonEmptyLines(remotePreviewCapturePythonBody(), "    "),
+	}, "\n")
+	return remotePythonCommand(script)
+}
+
+// remotePreviewCapturePythonBody reads the already-open binary preview_file.
+// Callers indent it into their own with-block. The trailer is always written
+// when the bytes are text, so a missing trailer means the capture was cut.
+func remotePreviewCapturePythonBody() string {
+	return strings.NewReplacer(
+		"@@BUDGET@@", strconv.Itoa(remotePreviewMaxCaptureBytes()),
+		"@@BINARY@@", remotePreviewBinaryMarker,
+		"@@END@@", remotePreviewEndPrefix,
+	).Replace(strings.TrimSpace(`
+try:
+    budget = @@BUDGET@@
+    buf = bytearray()
+    preview_truncated = False
+    while len(buf) <= budget:
+        chunk = preview_file.read(65536)
+        if not chunk:
+            break
+        room = budget + 1 - len(buf)
+        if len(chunk) > room:
+            buf += chunk[:room]
+            preview_truncated = True
+            break
+        buf += chunk
+except OSError as exc:
+    sys.stderr.write(str(exc) + '\n')
+    sys.exit(1)
+data = bytes(buf)
+if len(data) > budget:
+    data = data[:budget]
+    preview_truncated = True
+if preview_truncated and data:
+    i = len(data) - 1
+    cont = 0
+    while i >= 0 and cont < 3 and (data[i] & 0xC0) == 0x80:
+        cont += 1
+        i -= 1
+    if i < 0:
+        data = b''
+    else:
+        lead = data[i]
+        need = 0
+        if (lead & 0x80) == 0:
+            data = data[:i + 1]
+        elif (lead & 0xE0) == 0xC0:
+            need = 2
+        elif (lead & 0xF0) == 0xE0:
+            need = 3
+        elif (lead & 0xF8) == 0xF0:
+            need = 4
+        if need and cont + 1 < need:
+            data = data[:i]
+        elif (lead & 0x80) and need == 0:
+            data = data[:i]
+try:
+    data.decode('utf-8')
+except UnicodeDecodeError:
+    sys.stdout.buffer.write(b'@@BINARY@@\n')
+    sys.exit(0)
+if b'\x00' in data:
+    sys.stdout.buffer.write(b'@@BINARY@@\n')
+    sys.exit(0)
+sys.stdout.buffer.write(data)
+sys.stdout.buffer.write(('\n@@END@@%d bytes=%d]\n' % (1 if preview_truncated else 0, len(data))).encode('ascii'))
+`))
+}
+
+func indentNonEmptyLines(body, prefix string) string {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// parseRemotePreviewCapture splits a preview capture into file bytes and the
+// completeness trailer. The trailer carries the file's byte length, so a
+// prefix the channel added is not source. ok is false when the trailer is
+// missing, the length does not fit, or the framed bytes are not text.
+func parseRemotePreviewCapture(raw string) (content string, truncated bool, ok bool) {
+	if remotePreviewCaptureIsBinary(raw) || strings.TrimSpace(raw) == "" {
 		return "", false, false
 	}
-	return extractRemoteReadPreviewContent(content), true, remotePreviewOutputIsTruncated(content)
+	trimmed := strings.TrimSuffix(raw, "\n")
+	idx := strings.LastIndex(trimmed, "\n")
+	body, last := "", trimmed
+	if idx >= 0 {
+		body, last = trimmed[:idx], trimmed[idx+1:]
+	}
+	truncated, n, trailerOK := parseRemotePreviewTrailer(last)
+	if !trailerOK || n > len(body) {
+		return "", false, false
+	}
+	body = body[len(body)-n:]
+	if strings.Contains(body, "\x00") || !isCodePreviewTextContent([]byte(body)) {
+		return "", false, false
+	}
+	return body, truncated, true
+}
+
+func parseRemotePreviewTrailer(last string) (truncated bool, n int, ok bool) {
+	if !strings.HasPrefix(last, remotePreviewEndPrefix) || !strings.HasSuffix(last, "]") {
+		return false, 0, false
+	}
+	flag := strings.TrimSuffix(strings.TrimPrefix(last, remotePreviewEndPrefix), "]")
+	bit, count, found := strings.Cut(flag, " bytes=")
+	if !found || (bit != "0" && bit != "1") || count == "" {
+		return false, 0, false
+	}
+	parsed, err := strconv.Atoi(count)
+	if err != nil || parsed < 0 {
+		return false, 0, false
+	}
+	return bit == "1", parsed, true
+}
+
+// remotePreviewCaptureIsBinary reports the script's binary signal. The script
+// writes that marker as its only stdout line and exits. A channel prefix can
+// precede it, so the signal is the last line, not the whole capture. A source
+// file that merely mentions the marker still ends with the text trailer.
+func remotePreviewCaptureIsBinary(raw string) bool {
+	line := strings.TrimSpace(raw)
+	if line == "" {
+		return false
+	}
+	if i := strings.LastIndex(line, "\n"); i >= 0 {
+		line = strings.TrimSpace(line[i+1:])
+	}
+	return line == remotePreviewBinaryMarker
 }
 
 func remotePreviewOutputIsTruncated(result string) bool {
+	// Agent page marker or a spliced PTY capture. This does not decide the
+	// preview banner; the preview banner follows the byte-budget trailer.
 	return remotePreviewOutputIsTransportTruncated(result) || strings.Contains(result, "[remote read_file truncated:")
 }
 
@@ -4590,7 +4832,7 @@ func extractRemoteReadPreviewContent(result string) string {
 // emitRemoteCodePreview bridges SSH tool output to the existing source preview.
 // Unscoped events (no local tab path) are skipped so they cannot land on other tasks.
 func (c *remoteCodingCallbacks) emitRemoteCodePreview(path, content, original, opType string, previewTruncated, originalMissing bool) {
-	if c == nil || c.agent == nil || !c.agent.sourcePreviewEnabled || c.agent.handler == nil || c.agent.handler.app == nil || c.agent.handler.app.codeEventEmitter == nil {
+	if !remoteSourcePreviewActive(c) {
 		return
 	}
 	routePath := c.previewRouteProjectPath()

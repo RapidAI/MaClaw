@@ -1203,7 +1203,48 @@ func (s *coreDynamicSemanticSurface) withSpentBudgetNote(result coretool.Selecti
 	if s == nil {
 		return result
 	}
+	// List the next iterative call before the note. The new node is not
+	// issued yet, so the note stays empty instead of promising a call the
+	// next request does not show. Downloads and search keep the note: they
+	// are not iterative, and this function does not append them.
+	s.listNextSettledIterativeSibling(selectionID, result)
 	return coretool.ApplySpentBudgetNote(result, s.plan, selectionID, s.issued, s.grants)
+}
+
+// listNextSettledIterativeSibling appends one local file write or remote
+// command after a settled attempt, when the published wave has no sibling
+// still waiting to be issued. The following Definitions call issues it.
+// Unknown and awaiting-receipt outcomes stay put: the command may still
+// be running. A companion-only family stays at the wave it was given.
+func (s *coreDynamicSemanticSurface) listNextSettledIterativeSibling(selectionID string, result coretool.SelectionExecutionResult) {
+	if s == nil || !coretool.SettledIterativeListingAllowed(result) {
+		return
+	}
+	selection, ok := dynamicSemanticSelectionByID(s.plan, selectionID)
+	if !ok || !coretool.IterativeRepeatCapability(selection) {
+		return
+	}
+	if coretool.RepeatFamilyHasUnissuedSibling(s.plan, selection, selectionID, func(id string) bool {
+		return s.completed[id] || s.issued[id]
+	}) {
+		return
+	}
+	var updated coretool.ToolPlan
+	var err error
+	if s.routing.Coordinator != nil {
+		updated, err = s.routing.Coordinator.AppendRepeatSibling(s.scope, selectionID, time.Now().UTC())
+	} else {
+		var opened bool
+		updated, _, opened = coretool.AppendRepeatSibling(s.plan, selectionID)
+		if !opened {
+			return
+		}
+	}
+	if err != nil {
+		log.Printf("[semantic-routing] next iterative call was not listed: %v", err)
+		return
+	}
+	s.plan = updated
 }
 
 // dynamicSemanticReplayedResult reconstructs the outcome of a host call that
@@ -1382,7 +1423,12 @@ func (c *coreAgentCallbacks) ensureDynamicSemanticInitialized() bool {
 		WorkflowPolicy: string(c.toolPolicy), MutationScope: string(c.mutationScope),
 		DestinationID: strings.TrimSpace(c.trustedDestinationID),
 	}
-	resolution, err := routing.Resolver.ResolveDynamicCapabilityNeeds(c.ctx, request)
+	// The intent tree loads this user's model config on its own and would
+	// otherwise bill whichever group the viewer is entitled to. A hub bot
+	// has to stay on system-free for that call too, including a late retry
+	// that no longer has this context.
+	resolveCtx := contextWithHubBotLLMGroup(c.ctx, c.instance.Metadata)
+	resolution, err := routing.Resolver.ResolveDynamicCapabilityNeeds(resolveCtx, request)
 	if err != nil {
 		// A configured semantic control plane failing is not permission to
 		// restore the legacy bulk inventory surface.

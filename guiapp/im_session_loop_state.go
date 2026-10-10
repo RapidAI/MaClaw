@@ -181,13 +181,20 @@ func (h *IMMessageHandler) setSessionLoopCtx(userID string, ctx *LoopContext) {
 type inFlightTurn struct {
 	ctx      *LoopContext
 	userText string
+	// clearGen is the file-companion clear generation at turn start.
+	// A /clear that bumps the generation makes this turn's later save stale.
+	clearGen uint64
 }
 
 func (h *IMMessageHandler) beginInFlightTurn(userID, userText string, ctx *LoopContext) {
 	if h == nil || strings.TrimSpace(userID) == "" || ctx == nil {
 		return
 	}
-	h.inFlightTurns.Store(userID, &inFlightTurn{ctx: ctx, userText: userText})
+	clearGen := uint64(0)
+	if h.app != nil && fileCompanionToolsDisabled(userID) {
+		clearGen = h.app.fileCompanionCaptureChatGen(userID)
+	}
+	h.inFlightTurns.Store(userID, &inFlightTurn{ctx: ctx, userText: userText, clearGen: clearGen})
 }
 
 func (h *IMMessageHandler) endInFlightTurn(userID string, ctx *LoopContext) {

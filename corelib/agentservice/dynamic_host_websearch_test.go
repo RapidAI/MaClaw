@@ -148,6 +148,130 @@ func TestProjectReviewedHostWebSearchRejectsEngineAndURLFields(t *testing.T) {
 	}
 }
 
+func TestReviewedWebSearchMCPOutranksHostAndMapsQuery(t *testing.T) {
+	registry, err := NewReviewedDynamicCapabilityRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"search_query":          map[string]interface{}{"type": "string"},
+			"content_size":          map[string]interface{}{"type": "string"},
+			"location":              map[string]interface{}{"type": "string"},
+			"search_domain_filter":  map[string]interface{}{"type": "string"},
+			"search_recency_filter": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"search_query"},
+	}
+	entry := MCPToolEntry{
+		ServerID: "web-search-prime", ToolName: ReviewedMCPWebSearchPrimeTool,
+		CapabilityGlobalKey: ReviewedMCPWebSearchPrimeGlobalKey, InstalledCapabilityID: "cap_instance",
+		InputSchema: schema, Contract: reviewedWebSearchPrimeContract(),
+	}
+	provider := &boundMCPProviderStub{entries: []MCPToolEntry{entry}}
+	searcher := &fakeHostWebSearcher{result: "host"}
+	observed := dynamicCatalogLifecycleForKind("mcp", CompleteDynamicCatalogLifecycle())
+	catalog, lifecycle, err := prepareReviewedDynamicSemanticCatalog(registry, provider.entries, nil, observed, reviewedHostOwnedServices{WebSearch: searcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The desktop assistant publishes semantic_search_trusted_web at quality 2
+	// with kind builtin. That StableID sorts before mcp, so an equal MCP rank
+	// never replaces it.
+	desktopAuth, err := coretool.NewParameterAuthorization(reviewedHostWebSearchInvocationSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog.Providers = append(catalog.Providers, coretool.ProviderSpec{
+		AdapterName: "semantic_search_trusted_web",
+		Binding: coretool.ProviderBinding{
+			Kind: "builtin", ProviderID: "im", ImplementationID: "trusted-web-search-v1",
+			SchemaDigest: "desktop-managed-search",
+		},
+		ParameterAuthorization: desktopAuth,
+		Provides: []coretool.CapabilityProvision{
+			{Capability: CapabilityInformationSearchWeb, Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessReference}, Quality: 2},
+			{Capability: CapabilityInformationSearchWeb, Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessCurrent}, Quality: 2},
+		},
+		Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+		Ready:   true,
+	})
+	lifecycle.Coverage.Families = append(lifecycle.Coverage.Families, coretool.CatalogCoverageFamily{
+		Kind: "builtin", State: coretool.CatalogCoverageComplete,
+	})
+	snapshot, err := coretool.NewToolCatalog(registry).PublishWithCoverage(catalog.Providers, lifecycle.Coverage, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := coretool.NewToolPlanner(registry).Plan(coretool.RouteRequest{
+		RootTaskID: "task", TurnID: "turn", Snapshot: snapshot,
+		Needs: []coretool.CapabilityNeed{{
+			ID: "search", Capability: CapabilityInformationSearchWeb, Required: true,
+			Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessReference},
+		}},
+	})
+	if err != nil || len(plan.Selections) != 1 || len(plan.Unmet) != 0 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	selection := plan.Selections[0]
+	if selection.Provider.Kind != "mcp" || selection.Provider.ImplementationID != ReviewedMCPWebSearchPrimeTool {
+		t.Fatalf("host search was selected: %#v", selection.Provider)
+	}
+	if coretool.RenderedSemanticFunctionName(selection.AdapterName, "invoke_token") != "web_search" {
+		t.Fatalf("adapter %q did not render as web_search", selection.AdapterName)
+	}
+	definition := catalog.Definitions[selection.AdapterName]
+	params := definition["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	props := params["properties"].(map[string]interface{})
+	if _, ok := props["query"]; !ok || len(props) != 1 {
+		t.Fatalf("model schema=%#v", props)
+	}
+	if _, ok := props["search_query"]; ok {
+		t.Fatal("vendor argument was rendered")
+	}
+	result := catalog.ExecuteSelection(context.Background(), Principal{TenantID: "desktop", UserID: "desktop-user"}, provider, nil, selection, `{"query":"张学友"}`)
+	if !result.Succeeded || provider.boundCalls != 1 || provider.arguments["search_query"] != "张学友" || provider.arguments["query"] != nil {
+		t.Fatalf("result=%#v args=%#v calls=%d", result, provider.arguments, provider.boundCalls)
+	}
+	if searcher.query != "" {
+		t.Fatalf("host search ran: %q", searcher.query)
+	}
+	rejected := catalog.ExecuteSelection(context.Background(), Principal{TenantID: "desktop", UserID: "desktop-user"}, provider, nil, selection, `{"search_query":"张学友"}`)
+	if rejected.Succeeded || provider.boundCalls != 1 {
+		t.Fatalf("vendor argument was accepted: %#v calls=%d", rejected, provider.boundCalls)
+	}
+
+	unkeyed := entry
+	unkeyed.CapabilityGlobalKey = ""
+	unkeyed.InstalledCapabilityID = "cap_43f40e502b689144"
+	unkeyed.InputSchema = map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"search_query": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"search_query"},
+	}
+	unkeyedCatalog, err := BuildDynamicSemanticCatalog([]MCPToolEntry{unkeyed}, nil)
+	if err != nil || len(unkeyedCatalog.Providers) != 1 {
+		t.Fatalf("unkeyed catalog providers=%d err=%v", len(unkeyedCatalog.Providers), err)
+	}
+	if coretool.SemanticModelFunctionName(unkeyedCatalog.Providers[0].AdapterName) != "" {
+		t.Fatalf("instance id adopted the prompt name: %s", unkeyedCatalog.Providers[0].AdapterName)
+	}
+	unkeyedParams := unkeyedCatalog.Definitions[unkeyedCatalog.Providers[0].AdapterName]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if _, ok := unkeyedParams["properties"].(map[string]interface{})["search_query"]; !ok {
+		t.Fatalf("unkeyed schema=%#v", unkeyedParams)
+	}
+
+	broken := entry
+	broken.InputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}}}
+	quarantined, err := BuildDynamicSemanticCatalog([]MCPToolEntry{broken}, nil)
+	if err != nil || len(quarantined.Providers) != 0 {
+		t.Fatalf("schema drift stayed routable: providers=%d err=%v", len(quarantined.Providers), err)
+	}
+}
+
 func TestReviewedHostOwnedServicesPopulateWebSearch(t *testing.T) {
 	cb := &coreAgentCallbacks{principal: Principal{TenantID: "t", UserID: "u"}}
 	services := cb.reviewedHostOwnedServices()

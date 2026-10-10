@@ -2,11 +2,13 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -334,7 +336,7 @@ func (c *DynamicSemanticCatalog) ExecuteSelectionWithEffects(ctx context.Context
 			return binding.host.execute(ctx, principal, canonical.Values)
 		}
 		if binding.mcp != nil {
-			return callBoundMCPTool(ctx, mcpProvider, principal, *binding.mcp, canonical.Values)
+			return callBoundMCPTool(ctx, mcpProvider, principal, *binding.mcp, reviewedMCPInvocationArguments(canonical.Values, binding.mcp.ArgumentFields))
 		}
 		if binding.skill != nil {
 			bound, ok := skillProvider.(boundSkillToolCaller)
@@ -355,6 +357,21 @@ func (c *DynamicSemanticCatalog) ExecuteSelectionWithEffects(ctx context.Context
 		return dynamicSemanticDispatchError(binding, err)
 	}
 	return coretool.SelectionExecutionResult{Result: result, Succeeded: true}
+}
+
+func reviewedMCPInvocationArguments(args map[string]interface{}, fields map[string]string) map[string]interface{} {
+	if len(fields) == 0 || len(args) == 0 {
+		return args
+	}
+	out := make(map[string]interface{}, len(args))
+	for key, value := range args {
+		if target := strings.TrimSpace(fields[key]); target != "" {
+			out[target] = value
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func dynamicSemanticExecutionCancelledResult() coretool.SelectionExecutionResult {
@@ -510,6 +527,12 @@ func dynamicSemanticDispatchError(binding dynamicSemanticRuntimeBinding, err err
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + code, ReasonCode: code}
 	}
 	if binding.mcp != nil {
+		// A parsed tools/call error reached the tool and came back. That is a
+		// completed failure, not an unobserved transport.
+		var toolErr *mcphttp.ToolCallError
+		if errors.As(err, &toolErr) {
+			return coretool.SelectionExecutionResult{Result: "Error: " + toolErr.Error(), ReasonCode: "mcp_tool_error"}
+		}
 		return dynamicSemanticExecutionError("mcp", err)
 	}
 	if binding.skill != nil {

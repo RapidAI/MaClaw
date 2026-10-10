@@ -30,6 +30,15 @@ func TestSemanticModelFunctionNameIsStableAndIgnoresGrantTokens(t *testing.T) {
 	if got := RenderedSemanticFunctionName("mcp.acme.ping", "invoke_token"); got != "invoke_token" {
 		t.Fatalf("dynamic render=%q", got)
 	}
+	if got := RenderedSemanticFunctionName("reviewed-prompt:web_search:dynamic_mcp_abc", "invoke_token"); got != "web_search" {
+		t.Fatalf("reviewed search render=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("reviewed-prompt:bash:dynamic_mcp_abc", "invoke_token"); got != "invoke_token" {
+		t.Fatalf("unreviewed prompt render=%q", got)
+	}
+	if got := SemanticModelFunctionName("reviewed-prompt:web_search:bash"); got != "" {
+		t.Fatalf("prompt prefix without a dynamic adapter=%q", got)
+	}
 	if got := RenderedSemanticFunctionName("host_information_search_web", "invoke_token"); got != "web_search" {
 		t.Fatalf("srv search render=%q", got)
 	}

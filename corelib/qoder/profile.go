@@ -62,9 +62,10 @@ type Profile struct {
 	WebOrigin   string // browser login page origin
 	OpenAPIBase string // account/token API (device poll & refresh)
 	InferBase   string // model catalog host (falls back to plain Bearer)
-	// ChatOrigin is the signed chat host used by /algo
-	// agent_chat_generation: Gateway (CN) or the model server (global). It
-	// is NOT derivable from ChatURL, which is the OpenAI-style front.
+	// ChatOrigin is the signed /algo agent_chat_generation host. CN uses the
+	// inference gateway. Global uses api3.qoder.sh. It is not the shared
+	// OpenAI front (ChatURL): that host does not serve /algo and answers
+	// a chat posted there with HTTP 404.
 	ClientID   string
 	ChatOrigin string
 	ChatURL    string // OpenAI-compatible chat base (protocol-openai URL)
@@ -94,7 +95,7 @@ func GlobalProfile() Profile {
 		WebOrigin:   "https://qoder.com",
 		OpenAPIBase: "https://openapi.qoder.sh",
 		InferBase:   "https://api2.qoder.sh",
-		ChatOrigin:  "https://api2-v2.qoder.sh",
+		ChatOrigin:  "https://api3.qoder.sh",
 		ClientID:    DeviceClientID,
 		ChatURL:     ChatBase,
 	}

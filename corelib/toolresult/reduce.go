@@ -30,6 +30,13 @@ func StructuredPreview(toolName, content string, limit int) string {
 		return previewWebFetch(content, limit)
 	case tool == "computer_observe":
 		return previewComputerObserve(content, limit)
+	case tool == "desktop":
+		// One tool carries file bytes and command transcripts. A command's
+		// exit line is the last line; a file's beginning is what an edit matches.
+		if desktopProgramTail(content) {
+			return previewTerminal(content, limit)
+		}
+		return previewHeadTail(content, limit, 0.8, 0.2)
 	case strings.HasPrefix(tool, "browser"):
 		return previewHeadTail(content, limit, 0.45, 0.55)
 	case looksLikeDiff(content):
@@ -40,6 +47,20 @@ func StructuredPreview(toolName, content string, limit int) string {
 		}
 	}
 	return DefaultPreview(content, limit)
+}
+
+// desktopProgramTail reports a container command result. ProgramOutput puts
+// the exit or the timeout on the last line, after the transcript.
+func desktopProgramTail(content string) bool {
+	line := content
+	if i := strings.LastIndex(content, "\n"); i >= 0 {
+		line = content[i+1:]
+	}
+	line = strings.TrimSpace(line)
+	if line == "(command timed out)" {
+		return true
+	}
+	return strings.HasPrefix(line, "(exit ") && strings.HasSuffix(line, ")")
 }
 
 // CommandOutputMarker separates a session preamble (login banner, MOTD) from

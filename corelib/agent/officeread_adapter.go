@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -1645,6 +1646,55 @@ func validateOfficeReadText(text string) error {
 	return nil
 }
 
+// officeReadRetainWindow keeps a head and a tail inside the retained-content
+// cap. Callers already paid to parse the document; discarding that text makes
+// every later window, including file-companion injection, see an empty file.
+// The marker is the only record of the omitted middle. It is not a second parse.
+func officeReadRetainWindow(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxOfficeReadTextRunes {
+		return text
+	}
+	marker := "\n\n# omitted-middle original_chars=" + strconv.Itoa(len(runes)) + " retained head and tail only; the next lines are the document ending, not the next page\n\n"
+	markerRunes := []rune(marker)
+	budget := maxOfficeReadTextRunes - len(markerRunes)
+	if budget < 8 {
+		log.Printf("[office-read] retained head and tail after output_too_large original_chars=%d", len(runes))
+		return string(runes[:maxOfficeReadTextRunes])
+	}
+	tail := budget / 4
+	if tail < 1 {
+		tail = 1
+	}
+	head := budget - tail
+	if head < 1 {
+		head = 1
+		tail = budget - head
+	}
+	var b strings.Builder
+	b.Grow(len(marker) + head + tail)
+	b.WriteString(string(runes[:head]))
+	b.WriteString(marker)
+	b.WriteString(string(runes[len(runes)-tail:]))
+	out := b.String()
+	if extra := len([]rune(out)) - maxOfficeReadTextRunes; extra > 0 {
+		out = string([]rune(out)[:maxOfficeReadTextRunes])
+	}
+	log.Printf("[office-read] retained head and tail after output_too_large original_chars=%d", len(runes))
+	return out
+}
+
+// officeReadTextWithinRetention reports a window that is safe to inject.
+// An oversized body that escaped the window stays an error so chat cannot
+// treat the unbounded extract as a successful document.
+func officeReadTextWithinRetention(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	return len([]rune(text)) <= maxOfficeReadTextRunes
+}
+
 // observeOfficeReadPreflightRejection closes the diagnostic gap at the
 // extension/signature routing boundary. ExtractOfficeText must reject an
 // unsafe configured source format before it can rewrite the format based on a
@@ -1910,7 +1960,11 @@ func extractOfficeTextWithEngineAfterPreflightWithSettings(filePath, format stri
 		}
 		emitOfficeReadObservation(observation)
 		emitResource()
-		return "", officeFormat, officeErr
+		retained := ""
+		if errors.Is(officeErr, errOfficeReadOutputTooLarge) {
+			retained = officeReadRetainWindow(officeText)
+		}
+		return retained, officeFormat, officeErr
 	}
 
 	legacyText, legacyFormat, legacyErr := extractLegacyOfficeTextWithFormat(legacyPath, format)

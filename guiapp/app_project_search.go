@@ -3157,14 +3157,12 @@ func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchSta
 		if n := handler.pruneDeadStickyCodingConflicts(userID, false); n > 0 {
 			log.Printf("[coding-env] ensure armed: pruned %d dead isolation conflicts project=%s", n, projectPath)
 		}
-		// Re-open an existing pure-coding task: push known/on-disk sources into
-		// the right-hand preview so the panel is not blank after generation.
-		// Only bootstrap after at least one turn (or sticky files exist) to avoid
-		// scanning empty new projects on every tab focus.
+		// Re-open an existing pure-coding task: refill tabs from files a previous
+		// turn created or modified. Do not walk the tree, and do not open the pane.
 		mem = handler.getStickyCodingWorkbenchMemory(userID)
 		stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, mem.FilesModified...), mem.FilesCreated...))
-		// Sticky-only on arm (no directory scan): tab focus must stay cheap.
-		// End-of-turn emit allows scan when sticky is empty.
+		// Sticky-only on arm, emitted as reads. End-of-turn force-open also
+		// refuses a directory scan. A history refill must not pop the pane.
 		if len(stickyFiles) > 0 {
 			// Route with tab projectPath (managed task dir), read files from execDir.
 			emitCodingWorkbenchSourcePreview(

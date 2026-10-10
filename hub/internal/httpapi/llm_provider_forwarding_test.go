@@ -2036,6 +2036,9 @@ func TestLLMV1ChatCompletionsHandlerStreamsOpenAICompatResponse(t *testing.T) {
 	if strings.Contains(rr.Body.String(), ": keepalive") {
 		t.Fatalf("stream body leaked upstream heartbeat comment: %s", rr.Body.String())
 	}
+	if !strings.Contains(rr.Body.String(), ": ping\n") {
+		t.Fatalf("stream body missing hub keepalive: %s", rr.Body.String())
+	}
 
 	globalLLMUsageAccumulator.flush(ctx)
 	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
@@ -2049,7 +2052,7 @@ func TestLLMV1ChatCompletionsHandlerStreamsOpenAICompatResponse(t *testing.T) {
 }
 
 func TestWriteOpenAIStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
-	body := ": ping\n\n" +
+	body := ": keepalive\n\n" +
 		"event: ping\n\n" +
 		"data:\n\n" +
 		"data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
@@ -2060,7 +2063,7 @@ func TestWriteOpenAIStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 	rec := httptest.NewRecorder()
-	_, wroteStream, err := writeOpenAIStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil)
+	_, wroteStream, err := writeOpenAIStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("writeOpenAIStreamResponse() error = %v", err)
 	}
@@ -2068,8 +2071,11 @@ func TestWriteOpenAIStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
 		t.Fatal("wroteStream = false")
 	}
 	out := rec.Body.String()
-	if strings.Contains(out, ": ping") {
-		t.Fatalf("stream output leaked heartbeat comment: %q", out)
+	if strings.Contains(out, ": keepalive") {
+		t.Fatalf("stream output leaked upstream heartbeat comment: %q", out)
+	}
+	if !strings.Contains(out, ": ping\n") {
+		t.Fatalf("stream output missing hub keepalive: %q", out)
 	}
 	if strings.Contains(out, "event: ping") {
 		t.Fatalf("stream output leaked heartbeat event: %q", out)
@@ -2082,8 +2088,122 @@ func TestWriteOpenAIStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
 	}
 }
 
+func TestWriteOpenAIStreamResponseKeepsClientAliveWhileUpstreamIsSilent(t *testing.T) {
+	previous := openAIStreamKeepaliveInterval
+	openAIStreamKeepaliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { openAIStreamKeepaliveInterval = previous })
+
+	upstreamR, upstreamW := io.Pipe()
+	defer upstreamR.Close()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       upstreamR,
+	}
+	rec := httptest.NewRecorder()
+	sawPing := make(chan struct{}, 4)
+	spy := &sseWriteSpy{ResponseWriter: rec, sawPing: sawPing}
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := writeOpenAIStreamResponse(spy, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil, nil)
+		errCh <- err
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-sawPing:
+		case <-time.After(time.Second):
+			t.Fatalf("keepalive %d missing while upstream sent no bytes", i+1)
+		}
+	}
+	if _, err := io.WriteString(upstreamW, "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"); err != nil {
+		t.Fatalf("write upstream: %v", err)
+	}
+	if err := upstreamW.Close(); err != nil {
+		t.Fatalf("close upstream: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("writeOpenAIStreamResponse() error = %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, ": ping\n") || !strings.Contains(out, `"content":"ok"`) || !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want keepalive plus the upstream chunk", out)
+	}
+}
+
+type sseWriteSpy struct {
+	http.ResponseWriter
+	sawPing chan struct{}
+}
+
+func (s *sseWriteSpy) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(": ping")) {
+		select {
+		case s.sawPing <- struct{}{}:
+		default:
+		}
+	}
+	return s.ResponseWriter.Write(p)
+}
+
+func (s *sseWriteSpy) Flush() {
+	if flusher, ok := s.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func TestWriteOpenAIStreamResponseKeepsClientAliveUntilHandlerReleasesHold(t *testing.T) {
+	previous := openAIStreamKeepaliveInterval
+	openAIStreamKeepaliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { openAIStreamKeepaliveInterval = previous })
+
+	body := "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	rec := httptest.NewRecorder()
+	sawPing := make(chan struct{}, 8)
+	spy := &sseWriteSpy{ResponseWriter: rec, sawPing: sawPing}
+	slot := newStreamKeepaliveSlot()
+	defer slot.halt()
+	_, wroteStream, err := writeOpenAIStreamResponse(spy, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil, slot)
+	if err != nil {
+		t.Fatalf("writeOpenAIStreamResponse() error = %v", err)
+	}
+	if !wroteStream {
+		t.Fatal("wroteStream = false")
+	}
+	drainPings := func() {
+		for {
+			select {
+			case <-sawPing:
+			default:
+				return
+			}
+		}
+	}
+	// Drop pings emitted while the copy was still reading upstream. The next
+	// one has to arrive after writeOpenAIStreamResponse has returned.
+	drainPings()
+	select {
+	case <-sawPing:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive stopped when the copy returned, before the handler released the hold")
+	}
+	slot.halt()
+	drainPings()
+	select {
+	case <-sawPing:
+		t.Fatal("keepalive wrote after the handler joined it")
+	case <-time.After(80 * time.Millisecond):
+	}
+}
+
 func TestWriteRawResponsesStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
-	body := ": ping\n\n" +
+	body := ": keepalive\n\n" +
 		"event: ping\n\n" +
 		"data:\n\n" +
 		"event: response.output_text.delta\n" +
@@ -2097,7 +2217,7 @@ func TestWriteRawResponsesStreamResponseFiltersCommentOnlyHeartbeats(t *testing.
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 	rec := httptest.NewRecorder()
-	usage, wroteStream, err := writeRawResponsesStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, nil)
+	usage, wroteStream, err := writeRawResponsesStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, nil, nil)
 	if err != nil {
 		t.Fatalf("writeRawResponsesStreamResponse() error = %v", err)
 	}
@@ -2105,8 +2225,11 @@ func TestWriteRawResponsesStreamResponseFiltersCommentOnlyHeartbeats(t *testing.
 		t.Fatal("wroteStream = false")
 	}
 	out := rec.Body.String()
-	if strings.Contains(out, ": ping") || strings.Contains(out, ": keepalive") {
-		t.Fatalf("responses stream output leaked heartbeat comment: %q", out)
+	if strings.Contains(out, ": keepalive") {
+		t.Fatalf("responses stream output leaked upstream heartbeat comment: %q", out)
+	}
+	if !strings.Contains(out, ": ping\n") {
+		t.Fatalf("responses stream output missing hub keepalive: %q", out)
 	}
 	if strings.Contains(out, "event: ping") {
 		t.Fatalf("responses stream output leaked heartbeat event: %q", out)

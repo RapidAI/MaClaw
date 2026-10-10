@@ -395,6 +395,100 @@ Section
     WriteRegStr HKLM "Software\Classes\maclaw" "URL Protocol" ""
     WriteRegStr HKLM "Software\Classes\maclaw\DefaultIcon" "" "$INSTDIR\${PRODUCT_EXECUTABLE},0"
     WriteRegStr HKLM "Software\Classes\maclaw\shell\open\command" "" "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\" $\"%1$\""
+
+    # Extra per-brand verb. It does not replace shell\open, so a double-click
+    # still uses the user's default handler. MultiSelectModel=Document starts
+    # one process per selected file; the companion lock gathers the tabs.
+    #
+    # Windows 11's compact menu hides static verbs registered only on
+    # Classes\*\shell (they stay under "Show more options"). The same verb
+    # name is also written on SystemFileAssociations for the types the
+    # companion opens, which is the registration the compact menu shows.
+    # Explorer merges identical verb names, so a file does not get two items.
+    # NeverDefault keeps this from becoming the double-click command.
+    !macro FileCompanionAddVerb ROOT
+        WriteRegStr HKLM "${ROOT}" "" "用 ${INFO_PRODUCTNAME} 伴读打开"
+        WriteRegStr HKLM "${ROOT}" "MUIVerb" "用 ${INFO_PRODUCTNAME} 伴读打开"
+        WriteRegStr HKLM "${ROOT}" "MultiSelectModel" "Document"
+        WriteRegStr HKLM "${ROOT}" "NeverDefault" ""
+        WriteRegStr HKLM "${ROOT}" "Icon" "$INSTDIR\${PRODUCT_EXECUTABLE},0"
+        WriteRegStr HKLM "${ROOT}\command" "" "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\" open-file $\"%1$\""
+    !macroend
+    !macro FileCompanionRemoveVerb ROOT
+        DeleteRegKey HKLM "${ROOT}"
+    !macroend
+    # Install and uninstall both expand this list. A type added on only one
+    # side would survive uninstall or never appear after install.
+    !macro FileCompanionVerbTargets OP
+        !insertmacro ${OP} "Software\Classes\*\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\text\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\image\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\document\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\video\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\audio\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.pdf\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.docx\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.doc\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.docm\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.dot\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.dotx\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.wps\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.wpt\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.rtf\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.odt\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.xls\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.xlsx\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.xlsm\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.xlsb\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.et\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ett\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ods\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ppt\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.pptx\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.pptm\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.pps\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ppsx\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.dps\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.dpt\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.odp\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.md\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.markdown\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.txt\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.text\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.log\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.html\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.htm\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.tex\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.latex\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ltx\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.png\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.jpg\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.jpeg\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.gif\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.webp\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.bmp\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.svg\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ico\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.tif\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.tiff\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.heic\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.mp4\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.webm\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.mov\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.avi\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.mkv\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.m4v\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.mp3\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.wav\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.ogg\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.m4a\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.aac\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.flac\shell\${INFO_PROJECTNAME}.FileCompanion"
+        !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.oga\shell\${INFO_PROJECTNAME}.FileCompanion"
+    !macroend
+    !insertmacro FileCompanionVerbTargets FileCompanionAddVerb
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+
     
     # Taskbar pinning is restricted by Windows. 
     # We can't programmatically pin to taskbar reliably on Win10/11 without using non-standard methods.
@@ -440,6 +534,14 @@ Section "uninstall"
     # This scheme is owned by MaClaw's installer and must leave with it so an
     # uninstalled client cannot be selected by the browser for invitation URLs.
     DeleteRegKey HKLM "Software\Classes\maclaw"
+    !insertmacro FileCompanionVerbTargets FileCompanionRemoveVerb
+    # A 32-bit view delete only clears a mistaken write. Registration itself
+    # stays in the 64-bit view above.
+    SetRegView 32
+    !insertmacro FileCompanionVerbTargets FileCompanionRemoveVerb
+    SetRegView 64
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+    RMDir /r "$APPDATA\${INFO_PROJECTNAME}.file-companion"
 
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}"
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"

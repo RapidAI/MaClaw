@@ -4,7 +4,7 @@ import { useDialog } from '../CustomDialog';
 import { darkCodePreviewTheme, lightCodePreviewTheme } from '../ai/CodePreviewPanel';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
 import { FilePreviewHost } from '../preview/FilePreviewHost';
-import { filePreviewKindFromName, languageFromFileName, previewShouldMaterialize, rewriteMarkdownImageUrls } from '../preview/filePreviewKind';
+import { cloudDriveCompanionAvailable, filePreviewKindFromName, languageFromFileName, previewShouldMaterialize, rewriteMarkdownImageUrls } from '../preview/filePreviewKind';
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFileLibraryOpen, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
 import { classifyCloudDriveItem, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
 
@@ -92,6 +92,16 @@ function GlyphPhone({ size = 15 }: ToolbarGlyphProps) {
   </>);
 }
 
+function GlyphCompanion({ size = 15 }: ToolbarGlyphProps) {
+  return toolbarGlyph(size, <>
+    <path d="M6 3.5h8.2L19 8.2V20.5H6z" />
+    <path d="M14 3.6V8.2H19" />
+    <path d="M8.5 12.5h5" />
+    <path d="M8.5 16h3.2" />
+    <path d="M16.1 11.2l.4 1 .95.4-.95.4-.4 1-.4-1-.95-.4.95-.4z" />
+  </>);
+}
+
 export type MobileDocumentDraftImage = {
   id: string;
   filename?: string;
@@ -114,6 +124,9 @@ export type MobileDocumentDraftSummary = {
   source_size?: number;
   source_download_url?: string;
   images?: MobileDocumentDraftImage[];
+  duplicate?: boolean;
+  duplicate_of_title?: string;
+  duplicate_of_filename?: string;
 };
 type MobileLibraryAudio = { content_type?: string; size_bytes?: number; duration_sec?: number; available?: boolean };
 type MobileLibraryProcessing = { status?: string; progress?: number; message?: string; failure_code?: string };
@@ -131,9 +144,24 @@ type MobileDocumentsPanelProps = {
 
 type UploadJob = {
   name: string;
-  status: 'reading' | 'uploading' | 'done' | 'error';
+  status: 'reading' | 'uploading' | 'done' | 'error' | 'skipped';
   message?: string;
 };
+
+function cloudDriveDuplicateNotice(skips: { name: string; existing: string }[], nothingNew: boolean, zh: boolean): string {
+  if (skips.length === 0) return '';
+  const end = nothingNew ? '，避免重复占用空间。' : '。';
+  if (skips.length === 1) {
+    const incoming = skips[0].name || (zh ? '新文件' : 'New file');
+    const held = skips[0].existing || (zh ? '已有文件' : 'an existing file');
+    if (zh) return `「${incoming}」与云盘中的「${held}」内容相同，已跳过上传${end}`;
+    const again = nothingNew ? ' again' : '';
+    return `“${incoming}” matches “${held}” already in the cloud drive, so it was not uploaded${again}.`;
+  }
+  if (zh) return `有 ${skips.length} 个文件与云盘中已有内容相同，已跳过上传${end}`;
+  const again = nothingNew ? ' again' : '';
+  return `${skips.length} files match content already in the cloud drive, so they were not uploaded${again}.`;
+}
 type MobileDocumentQuota = { document_quota_bytes?: number; document_quota_used_bytes?: number; document_quota_remaining?: number };
 
 function callGetDocumentQuota(): Promise<MobileDocumentQuota> {
@@ -285,6 +313,18 @@ function callMaterializeOriginal(id: string): Promise<string> {
     );
   }
   return app.MaterializeMobileDocumentOriginal(id);
+}
+
+function callOpenInCompanion(id: string): Promise<string> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.OpenMobileDocumentInFileCompanion) {
+    return Promise.reject(
+      new Error(
+        'Desktop binding missing OpenMobileDocumentInFileCompanion — rebuild GUI after pull.',
+      ),
+    );
+  }
+  return app.OpenMobileDocumentInFileCompanion(id);
 }
 
 function callPreviewLocalFile(path: string): Promise<{ content?: string }> {
@@ -827,6 +867,8 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
   const [filter, setFilter] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [companionBusy, setCompanionBusy] = useState(false);
+  const companionBusyRef = useRef(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [quota, setQuota] = useState<MobileDocumentQuota | null>(null);
   const [folderOpen, setFolderOpen] = useState<Record<string, boolean>>({});
@@ -1190,7 +1232,10 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     setJobs(entries.map((e) => ({ name: e.name, status: 'reading' })));
 
     let ok = 0;
+    let skipped = 0;
     let last: MobileDocumentDraftSummary | null = null;
+    let lastExisting: MobileDocumentDraftSummary | null = null;
+    const skippedNames: { name: string; existing: string }[] = [];
     let firstError = '';
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
@@ -1213,6 +1258,19 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
         if (!draft?.id) {
           throw new Error(t('Hub did not return a file', 'Hub 未返回文件'));
         }
+        if (draft.duplicate) {
+          skipped += 1;
+          const existing = String(draft.duplicate_of_title || draft.title || draft.duplicate_of_filename || '').trim();
+          skippedNames.push({ name: entry.name, existing });
+          lastExisting = draft;
+          patch({
+            status: 'skipped',
+            message: existing
+              ? t(`Same content as “${existing}”`, `与「${existing}」内容相同`)
+              : t('Already in the cloud drive', '内容已在云盘中'),
+          });
+          continue;
+        }
         ok += 1;
         last = draft;
         patch({ status: 'done', message: draft?.id || 'ok' });
@@ -1228,29 +1286,34 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
 
     if (!isCurrent()) return; // a newer drop owns jobs/banner now
     setUploading(false);
-    if (ok === 0) {
+    if (ok === 0 && skipped === 0) {
       // Every import failed: re-arm the drop de-dup so an immediate retry
       // of the same file is not silently swallowed by the dedup window.
       mdpResetDropDedup();
     }
-    if (ok > 0) {
-      setBanner(
-        t(
+    if (ok > 0 || skipped > 0) {
+      const added = ok > 0
+        ? t(
           `${ok} file(s) added to the cloud drive. Phone app → Documents can open them.`,
           `已添加 ${ok} 个文件到云盘。手机端「文档」可直接打开。`,
-        ),
-      );
+        )
+        : '';
+      const skipText = cloudDriveDuplicateNotice(skippedNames, ok === 0, isZh);
+      setBanner(added && skipText ? `${added}${skipText}` : (added || skipText));
       await refresh();
       if (!isCurrent()) return;
-      if (last?.id) {
-        const lastId = last.id;
-        const listed = draftsRef.current.find((item) => item.id === lastId);
-        await selectDraft(listed || last);
+      const focus = ok > 0 ? last : lastExisting;
+      if (focus?.id) {
+        const listed = draftsRef.current.find((item) => item.id === focus.id);
+        await selectDraft(listed || focus);
       }
-    } else if (entries.length > 0) {
+    }
+    if (ok === 0 && entries.length > 0 && skipped === 0) {
       setError(
         firstError || t('No files were imported', '没有成功导入任何文件'),
       );
+    } else if (ok === 0 && firstError) {
+      setError(firstError);
     }
   };
 
@@ -1575,6 +1638,44 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     );
   };
 
+  const openSelectedInCompanion = async () => {
+    const item = selected;
+    if (!item?.id || isAudioItem(item) || companionBusyRef.current) return;
+    if (!cloudDriveCompanionAvailable({
+      sourceFilename: item.source_filename,
+      title: item.title,
+      hasOriginal: item.has_original,
+      hasText: Boolean((item.markdown || item.preview || '').trim()),
+    })) return;
+    const requestId = item.id;
+    const opening = t('Opening in companion…', '正在用伴读打开…');
+    companionBusyRef.current = true;
+    setCompanionBusy(true);
+    setError('');
+    setBanner(opening);
+    const leaveOpeningBanner = () => {
+      setBanner((current) => (current === opening ? '' : current));
+    };
+    try {
+      await callOpenInCompanion(requestId);
+      if (selectionIdRef.current !== requestId) {
+        leaveOpeningBanner();
+        return;
+      }
+      setBanner(t('Opened in the companion', '已用伴读打开'));
+    } catch (e: any) {
+      if (selectionIdRef.current !== requestId) {
+        leaveOpeningBanner();
+        return;
+      }
+      setBanner('');
+      setError(String(e?.message || e || 'open companion failed'));
+    } finally {
+      companionBusyRef.current = false;
+      setCompanionBusy(false);
+    }
+  };
+
   const openSelectedOriginal = async () => {
     if (!selected?.id || !selected.has_original) return;
     setError('');
@@ -1803,92 +1904,120 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           ) : null}
         </div>
         {selected ? (
-          isAudioItem(selected) ? (
-            <>
-              <div className="mdoc-toolbar-group">
-                <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--primary" onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
-                  {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
-                </button>
-                {selected.audio?.available ? <><button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
-              </div>
-              <div className="mdoc-toolbar-divider" aria-hidden="true" />
-              <div className="mdoc-toolbar-group">
+          <div className="mdoc-preview-actions">
+            {isAudioItem(selected) ? (
+              <>
+                <div className="mdoc-toolbar-group">
+                  <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--accent" onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
+                    {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
+                  </button>
+                  {selected.audio?.available ? <><button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
+                </div>
+                <div className="mdoc-toolbar-divider" aria-hidden="true" />
+                <div className="mdoc-toolbar-group">
+                  <button
+                    className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--danger"
+                    type="button"
+                    onClick={() => void deleteDraft(selected)}
+                    disabled={uploading}
+                    title={libraryDeleteButtonCopy(selected, t).title}
+                    aria-label={libraryDeleteButtonCopy(selected, t).aria}
+                  >
+                    <GlyphTrash />
+                  </button>
+                  <div className="mdoc-toolbar-divider" aria-hidden="true" />
+                  {fullscreenToggle}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mdoc-toolbar-group">
+                  <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview} title={t('Copy the text content', '复制正文内容')} aria-label={t('Copy', '复制')}>
+                    <GlyphCopy />
+                    <span>{t('Copy', '复制')}</span>
+                  </button>
+                  {selected.has_original ? (
+                    <>
+                      <div className="mdoc-toolbar-divider" aria-hidden="true" />
+                      <button
+                        className="mobile-documents-btn mdoc-toolbar-btn"
+                        type="button"
+                        onClick={() => void openSelectedOriginal()}
+                        disabled={uploading}
+                        title={t('Open the original uploaded file', '用系统默认程序打开原件')}
+                      >
+                        <GlyphExternalOpen />
+                        <span>{t('Open original', '打开原件')}</span>
+                      </button>
+                      <button
+                        className="mobile-documents-btn mdoc-toolbar-btn"
+                        type="button"
+                        onClick={() => void saveSelectedOriginal()}
+                        disabled={uploading}
+                        title={t('Save the original file to disk', '将原件另存到本地')}
+                      >
+                        <GlyphDownload />
+                        <span>{t('Save original', '保存原件')}</span>
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+                <div className="mdoc-toolbar-divider" aria-hidden="true" />
                 <button
-                  className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--danger"
+                  className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--accent"
                   type="button"
-                  onClick={() => void deleteDraft(selected)}
+                  onClick={() => void shareSelectedAgain()}
                   disabled={uploading}
-                  title={libraryDeleteButtonCopy(selected, t).title}
-                  aria-label={libraryDeleteButtonCopy(selected, t).aria}
+                  title={t(
+                    'Already in the cloud drive — confirms share without creating a duplicate',
+                    '文件已在云盘中；仅确认共享，不会重复创建',
+                  )}
                 >
-                  <GlyphTrash />
+                  <GlyphPhone />
+                  <span>{t('Already on Mobile', '已共享到手机')}</span>
                 </button>
                 <div className="mdoc-toolbar-divider" aria-hidden="true" />
-                {fullscreenToggle}
-              </div>
-            </>
-          ) : <>
-            <div className="mdoc-toolbar-group">
-              <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview} title={t('Copy the text content', '复制正文内容')} aria-label={t('Copy', '复制')}>
-                <GlyphCopy />
-                <span>{t('Copy', '复制')}</span>
-              </button>
-              {selected.has_original ? (
-                <>
+                <div className="mdoc-toolbar-group">
+                  <button
+                    className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--danger"
+                    type="button"
+                    onClick={() => void deleteDraft(selected)}
+                    disabled={uploading}
+                    title={libraryDeleteButtonCopy(selected, t).title}
+                    aria-label={libraryDeleteButtonCopy(selected, t).aria}
+                  >
+                    <GlyphTrash />
+                  </button>
                   <div className="mdoc-toolbar-divider" aria-hidden="true" />
-                  <button
-                    className="mobile-documents-btn mdoc-toolbar-btn"
-                    type="button"
-                    onClick={() => void openSelectedOriginal()}
-                    disabled={uploading}
-                    title={t('Open the original uploaded file', '用系统默认程序打开原件')}
-                  >
-                    <GlyphExternalOpen />
-                    <span>{t('Open original', '打开原件')}</span>
-                  </button>
-                  <button
-                    className="mobile-documents-btn mdoc-toolbar-btn"
-                    type="button"
-                    onClick={() => void saveSelectedOriginal()}
-                    disabled={uploading}
-                    title={t('Save the original file to disk', '将原件另存到本地')}
-                  >
-                    <GlyphDownload />
-                    <span>{t('Save original', '保存原件')}</span>
-                  </button>
-                </>
-              ) : null}
-            </div>
-            <div className="mdoc-toolbar-divider" aria-hidden="true" />
-            <button
-              className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--primary"
-              type="button"
-              onClick={() => void shareSelectedAgain()}
-              disabled={uploading}
-              title={t(
-                'Already in the cloud drive — confirms share without creating a duplicate',
-                '文件已在云盘中；仅确认共享，不会重复创建',
-              )}
-            >
-              <GlyphPhone />
-              <span>{t('Already on Mobile', '已共享到手机')}</span>
-            </button>
-            <div className="mdoc-toolbar-divider" aria-hidden="true" />
-            <div className="mdoc-toolbar-group">
-              <button
-                className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--danger"
-                type="button"
-                onClick={() => void deleteDraft(selected)}
-                disabled={uploading}
-                title={libraryDeleteButtonCopy(selected, t).title}
-                aria-label={libraryDeleteButtonCopy(selected, t).aria}
-              >
-                <GlyphTrash />
-              </button>
-              <div className="mdoc-toolbar-divider" aria-hidden="true" />
-              {fullscreenToggle}
-            </div>
-          </>
+                  {fullscreenToggle}
+                </div>
+                {cloudDriveCompanionAvailable({
+                  sourceFilename: selected.source_filename,
+                  title: selected.title,
+                  hasOriginal: selected.has_original,
+                  hasText: Boolean((selected.markdown || selected.preview || '').trim()),
+                }) ? (
+                  <>
+                    <div className="mdoc-toolbar-divider" aria-hidden="true" />
+                    <div className="mdoc-toolbar-group">
+                      <button
+                        className="mobile-documents-btn mdoc-toolbar-btn"
+                        type="button"
+                        data-testid="cloud-drive-companion"
+                        onClick={() => void openSelectedInCompanion()}
+                        disabled={uploading || companionBusy}
+                        title={t('Open this file in the companion', '用伴读打开这个文档')}
+                        aria-label={t('Companion', '伴读')}
+                      >
+                        <GlyphCompanion />
+                        <span>{t('Companion', '伴读')}</span>
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </>
+            )}
+          </div>
         ) : null}
       </div>
       <div
@@ -1909,7 +2038,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             <div aria-live="polite" className="mdoc-audio-grid">
               <MeetingRecordingPlayer item={selected} t={t} />
               <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div className="mdoc-audio-message">{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div className="mdoc-audio-track"><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2f6fbc)', borderRadius: 3 }} /></div> : null}</div>
-              {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--primary" onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
+              {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--accent" onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
               {selected.retention_until ? <div className="mdoc-retention">{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
             </div>
           ) : <MobileDraftFilePreview key={selected.id} item={selected} lang={lang} />
@@ -2177,13 +2306,13 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                   borderRadius: 999,
                   border: '1px solid var(--theme-border, #d9e1ec)',
                   opacity: j.status === 'error' ? 1 : 0.9,
-                  color: j.status === 'error' ? 'var(--theme-danger, #c43d34)' : j.status === 'done' ? 'var(--theme-success, #18a86b)' : 'var(--theme-text-secondary, #44546a)',
+                  color: j.status === 'error' ? 'var(--theme-danger, #c43d34)' : j.status === 'done' ? 'var(--theme-success, #18a86b)' : j.status === 'skipped' ? 'var(--theme-warning, #d97706)' : 'var(--theme-text-secondary, #44546a)',
                 }}
                 title={j.message}
               >
                 <span className="mdoc-job-chip">
                   <StatusGlyph
-                    kind={j.status === 'done' ? 'ok' : j.status === 'error' ? 'error' : 'pending'}
+                    kind={j.status === 'done' ? 'ok' : j.status === 'error' ? 'error' : j.status === 'skipped' ? 'warn' : 'pending'}
                     size={12}
                   />
                   {j.name}

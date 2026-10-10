@@ -1571,6 +1571,14 @@ describe('Token Bank deposit badge', () => {
                     protocol: 'openai',
                     connection_test_passed: false,
                 },
+                {
+                    name: 'Qoder 国内版',
+                    url: 'https://qoder.example/v1',
+                    key: 'device-token',
+                    model: 'qoder',
+                    protocol: 'openai',
+                    connection_test_passed: true,
+                },
             ],
             current: 'Kimi Code',
         });
@@ -1583,6 +1591,13 @@ describe('Token Bank deposit badge', () => {
         expect(title.parentElement).toBe(badge.parentElement);
         expect(badge.querySelector('[data-icon="token-bank-deposit"]')).toBeTruthy();
         expect(badge.textContent).toContain('Token 银行');
+
+        const corner = screen.getByRole('button', { name: '分享此服务商到 Token 银行' });
+        expect(corner.classList.contains('llm-config-tokenbank-btn')).toBe(true);
+        expect(corner.parentElement?.classList.contains('llm-config-provider-chip-slot')).toBe(true);
+        expect(corner.parentElement?.querySelector('.llm-config-provider-chip')?.textContent).toContain('Kimi Code');
+        expect(screen.getByRole('button', { name: 'OpenAI' }).parentElement?.querySelector('.llm-config-tokenbank-btn')).toBeNull();
+        expect(screen.getByRole('button', { name: 'Qoder 国内版' }).parentElement?.querySelector('.llm-config-tokenbank-btn')).toBeNull();
 
         fireEvent.click(screen.getByRole('button', { name: 'OpenAI' }));
         expect(screen.queryByRole('button', { name: '将此服务商存入 Token 银行' })).toBeNull();

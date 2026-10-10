@@ -205,6 +205,97 @@ func TestVisibleDesktopPageUsesTheFocusedLoginWindow(t *testing.T) {
 	}
 }
 
+func TestVisibleDesktopPageLeavesAFocusedNetworkError(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	answer := func(value string, delay time.Duration) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			for {
+				_, data, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var msg struct {
+					ID int64 `json:"id"`
+				}
+				if json.Unmarshal(data, &msg) != nil || msg.ID == 0 {
+					continue
+				}
+				_ = conn.WriteJSON(map[string]any{
+					"id":     msg.ID,
+					"result": map[string]any{"result": map[string]any{"type": "string", "value": value}},
+				})
+			}
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/devtools/page/error", answer(`{"v":"visible","f":true,"e":true}`, 0))
+	mux.HandleFunc("/devtools/page/login", answer(`{"v":"visible","f":false,"e":false}`, 250*time.Millisecond))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	targets := []TargetInfo{
+		{ID: "error", Type: "page", URL: "https://www.facebook.com/", WebSocketDebugURL: base + "/devtools/page/error"},
+		{ID: "login", Type: "page", URL: "https://www.youtube.com/watch?v=cNw8C41UPbU", WebSocketDebugURL: base + "/devtools/page/login"},
+	}
+	if got := visibleDesktopPage("error", targets); got != "login" {
+		t.Fatalf("page=%q, want the loaded window behind the network error", got)
+	}
+}
+
+func TestVisibleDesktopPageKeepsTheOnlyNetworkError(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID int64 `json:"id"`
+			}
+			if json.Unmarshal(data, &msg) != nil || msg.ID == 0 {
+				continue
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"id":     msg.ID,
+				"result": map[string]any{"result": map[string]any{"type": "string", "value": `{"v":"visible","f":true,"e":true}`}},
+			})
+		}
+	}))
+	defer srv.Close()
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	targets := []TargetInfo{
+		{ID: "error", Type: "page", URL: "https://www.facebook.com/", WebSocketDebugURL: base + "/devtools/page/error"},
+	}
+	if got := visibleDesktopPage("", targets); got != "error" {
+		t.Fatalf("page=%q, want the only window even when it failed to load", got)
+	}
+}
+
+func TestAttentionFromValueReadsANetworkError(t *testing.T) {
+	got := attentionFromValue(`{"v":"visible","f":true,"e":true}`)
+	if !got.visible || !got.focused || !got.failed {
+		t.Fatalf("attention=%+v", got)
+	}
+	plain := attentionFromValue(`{"v":"visible","f":false}`)
+	if !plain.visible || plain.focused || plain.failed {
+		t.Fatalf("attention=%+v", plain)
+	}
+}
+
 func TestDesktopConnectionRequiresALiveBrowser(t *testing.T) {
 	sess := &BrowserAgentSession{session: &Session{}}
 	if !sess.IsTargetAlive() {

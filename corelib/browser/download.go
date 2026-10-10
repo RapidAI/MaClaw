@@ -105,7 +105,7 @@ func downloadViaBrowserAt(ctx context.Context, cdpAddr, rawURL, destPath string,
 		return nil, fmt.Errorf("create dest dir: %w", err)
 	}
 
-	downloadLogf("[browser-download] start url=%q dest=%q cdp=%s timeout=%ds", sanitizeDLURL(rawURL), destPath, cdpAddr, timeoutSec)
+	downloadLogf("[browser-download] start url=%q dest=%q cdp=%s timeout=%ds", sanitizeDLURL(rawURL), destPath, redactUserInfo(cdpAddr), timeoutSec)
 	start := time.Now()
 
 	bwsURL, err := browserWebSocketURL(cdpAddr)
@@ -230,11 +230,13 @@ func browserWebSocketURLCtx(ctx context.Context, cdpHTTP string) (string, error)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := cdpHTTPClient(5 * time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(cdpHTTP, "/")+"/json/version", nil)
 	if err != nil {
 		return "", fmt.Errorf("query /json/version: %w", err)
 	}
+	setCDPGateAuth(req)
+	useCDPChromeHost(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("query /json/version: %w", err)

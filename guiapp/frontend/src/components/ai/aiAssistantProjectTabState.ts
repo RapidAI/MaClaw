@@ -94,8 +94,19 @@ export function loadProjectTabMsgIds(): Set<string> {
 export function mergeChatMessages(...groups: Array<unknown[] | undefined>): ChatMessage[] {
     const merged: ChatMessage[] = [];
     const indexById = new Map<string, number>();
+    const insertAt = (message: ChatMessage, index: number, id: string) => {
+        merged.splice(index, 0, message);
+        for (const [knownId, knownIndex] of indexById) {
+            if (knownIndex >= index) indexById.set(knownId, knownIndex + 1);
+        }
+        if (id) indexById.set(id, index);
+    };
     for (const group of groups) {
         if (!Array.isArray(group)) continue;
+        // A new id belongs after the previous row of this same list. Appending
+        // it past rows the list still has later would pull a steer out of its
+        // round and onto the tail of the next turn.
+        let anchor = -1;
         for (const message of group) {
             if (!message || typeof message !== "object") continue;
             const chatMessage = message as ChatMessage;
@@ -104,11 +115,19 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
                 const existingIndex = indexById.get(id);
                 if (existingIndex !== undefined) {
                     merged[existingIndex] = chatMessage;
+                    anchor = existingIndex;
                     continue;
                 }
-                indexById.set(id, merged.length);
             }
-            merged.push(chatMessage);
+            const index = anchor >= 0 ? anchor + 1 : merged.length;
+            if (index >= merged.length) {
+                if (id) indexById.set(id, merged.length);
+                merged.push(chatMessage);
+                anchor = merged.length - 1;
+                continue;
+            }
+            insertAt(chatMessage, index, id);
+            anchor = index;
         }
     }
     return merged;

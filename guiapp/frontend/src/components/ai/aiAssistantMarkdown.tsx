@@ -1589,7 +1589,11 @@ export function renderMessage(
                 return null;
             }
             const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!String(msg.content || "").trim()));
-            const liveForReasoning = isLastAssistant && (isStreaming || !!liveReasoningLabel) && !codingAnswerStarted;
+            // Streaming marks the round host only. The panel does not pass
+            // it for any other assistant message, so this cannot draw a
+            // second live title beside the standalone bar.
+            const liveForReasoning = isLastAssistant && (!!liveReasoningLabel || (isStreaming && !codingAnswerStarted));
+
             const cleanedReasoning = cleanReasoningTrailForBody(msg.reasoning || "");
             // After the stream ends, peel CoT out of a mixed body. Ordinary chat
             // may still lift a hidden non-monologue deliverable; coding workbench

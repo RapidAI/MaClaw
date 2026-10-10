@@ -128,12 +128,13 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 		tool.CapabilityAudioSynthesizeSpeech,
 		tool.CapabilityMessageSendIM,
 		tool.CapabilityRepoMutateVCS,
+		tool.CapabilityRecordUpdateWorklog,
 	}
 	all := append(append([]tool.CapabilityID(nil), sensitive...), external...)
 	return agentservice.StaticCapabilityPolicyAdapter{Rules: []agentservice.CapabilityPolicyRule{
-		// business.data.read is intentionally not denied: database_query and
-		// mis_query are EffectReadOnly projections that survive mutation-deny
-		// states, matching the MIS family split.
+		// business.data.read and record.read.worklog are intentionally not
+		// denied: those EffectReadOnly projections survive mutation-deny
+		// states. record.update.worklog does not.
 		deny(string(v2.ToolPolicyDocOnly), tool.CapabilityBusinessDataMIS, tool.CapabilityKnowledgeIngestLocal,
 			tool.CapabilityFSWriteLocal, tool.CapabilityFSDeleteLocal, tool.CapabilityAudioCaptureMicrophone,
 			tool.CapabilityArtifactAcquireRemote, tool.CapabilityConfigManageSelf,
@@ -142,7 +143,8 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 			tool.CapabilityAgentDelegateSubtask, tool.CapabilityKnowledgeAdminMaintenance,
 			tool.CapabilityScheduleAdministerLocal, tool.CapabilityAudioSynthesizeLocal, tool.CapabilityAudioRenderSpeech,
 			tool.CapabilityShellExecuteRemoteHost, tool.CapabilityBrowserControlWeb, tool.CapabilityComputerControlDesktop,
-			tool.CapabilityScheduleManageLocal, tool.CapabilityScheduleDispatchChannel, tool.CapabilityAudioSynthesizeSpeech, tool.CapabilityRepoMutateVCS),
+			tool.CapabilityScheduleManageLocal, tool.CapabilityScheduleDispatchChannel, tool.CapabilityAudioSynthesizeSpeech, tool.CapabilityRepoMutateVCS,
+			tool.CapabilityRecordUpdateWorklog),
 		deny(string(v2.ToolPolicyPlanning), all...),
 		deny(string(v2.ToolPolicyOpsControlled), all...),
 		deny(imSemanticPolicyStateBlocked, all...),

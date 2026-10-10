@@ -42,6 +42,11 @@ type ScheduledTask struct {
 	// the task fires. They are not chosen by the model.
 	OwnerTenantID   string `json:"owner_tenant_id,omitempty"`
 	OwnerUserID     string `json:"owner_user_id,omitempty"`
+	// DesktopBotID is the Bot workspace that owns this task. Empty is a
+	// legacy scheduled task. A desktop bot task runs on that bot and the
+	// result is reported in its chat. DesktopBotOwner is the account key.
+	DesktopBotID    string `json:"desktop_bot_id,omitempty"`
+	DesktopBotOwner string `json:"desktop_bot_owner,omitempty"`
 	Name            string `json:"name"`
 	Action          string `json:"action"`                     // what the agent should do (natural language)
 	Hour            int    `json:"hour"`                       // 0-23
@@ -471,6 +476,25 @@ func (m *Manager) Delete(id string) error {
 			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
 			return m.save()
 		}
+	}
+	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// ForceDelete removes a task even while it is running. The running call is
+// cancelled. The task is not started again. Delete leaves a running task in
+// place; this is the path that still takes it off the list.
+func (m *Manager) ForceDelete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, t := range m.tasks {
+		if t.ID != id {
+			continue
+		}
+		if cancel, running := m.runningTasks[id]; running {
+			cancel()
+		}
+		m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
+		return m.save()
 	}
 	return fmt.Errorf("scheduler: task %q not found", id)
 }

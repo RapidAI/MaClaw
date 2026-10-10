@@ -1,11 +1,16 @@
-/* Bot 管理工作区：左侧数字化员工列表，右侧会话 + 桌面舞台。
+/* Bot 管理工作区：左侧数字化员工列表，中间会话，右侧资料/电脑面板按需出现。
    颜色全部走 --theme-* / --mc-accent 主题变量，与 AI 助手面板同一套语言。 */
 
 .desktop-bot-workspace {
+    --desktop-bot-gutter: 8%;
+    /* 300px is five sixths of the old 360px list track. Drag updates the variable. */
+    --desktop-bot-list-width: 300px;
     display: grid;
-    grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+    grid-template-columns: var(--desktop-bot-list-width) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     height: 100%;
     min-height: 0;
+    position: relative;
     /* 项目 300px、会话无限宽时也保持页面底色统一 */
     background: var(--theme-page-bg, #fff);
 }
@@ -21,8 +26,62 @@
 .desktop-bot-workspace__list-pane {
     gap: 14px;
     padding: 18px 14px 14px;
-    border-right: 1px solid var(--theme-border, #e4e7ec);
     background: var(--theme-surface, #fff);
+}
+
+/* The divider owns the line so the list border and the handle do not stack. */
+.desktop-bot-workspace__resize {
+    position: absolute;
+    /* Above the centered identity chip, which otherwise takes the divider's clicks. */
+    z-index: 6;
+    grid-column: 1 / -1;
+    grid-row: 1;
+    top: 0;
+    bottom: 0;
+    left: var(--desktop-bot-list-width, 300px);
+    right: auto;
+    width: 12px;
+    margin-left: -6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+    -webkit-app-region: no-drag;
+}
+
+.desktop-bot-workspace__resize::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+    background: var(--theme-border, #e4e7ec);
+    transition: background 120ms ease;
+}
+
+.desktop-bot-workspace__resize:hover::before,
+.desktop-bot-workspace__resize:focus-visible::before,
+.desktop-bot-workspace__resize.is-dragging::before {
+    background: var(--theme-primary, #2f6fbc);
+}
+
+.desktop-bot-workspace__resize:focus-visible {
+    outline: none;
+}
+
+.desktop-bot-workspace.is-list-resizing {
+    cursor: col-resize;
+    user-select: none;
+}
+
+/* The desktop picture is its own document. While the divider is held it must
+   not take the pointer, or the drag stops at the iframe. */
+.desktop-bot-workspace.is-list-resizing iframe {
+    pointer-events: none;
 }
 
 .desktop-bot-workspace h1,
@@ -41,9 +100,19 @@
 }
 
 .desktop-bot-workspace__bar h1 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 16px;
     font-weight: 700;
     letter-spacing: 0.01em;
+    line-height: 1.2;
+}
+
+.desktop-bot-workspace__title-icon {
+    flex: 0 0 auto;
+    display: block;
+    color: var(--mc-accent, var(--theme-primary, #2f6fbc));
 }
 
 .desktop-bot-workspace__bar p,
@@ -82,6 +151,9 @@
 
 /* 左列：数字员工卡片（头像 + 名称 + 描述 + 状态灯） */
 .desktop-bot-workspace__row {
+    /* 6px inset + two 28px icons + 4px gap + 6px before the name. */
+    --desktop-bot-row-actions: 72px;
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -100,7 +172,7 @@
     color: inherit;
     text-align: left;
     cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease;
+    transition: background 120ms ease, border-color 120ms ease, padding-right 120ms ease;
 }
 
 .desktop-bot-workspace__open:hover {
@@ -108,15 +180,14 @@
 }
 
 .desktop-bot-workspace__row.is-selected .desktop-bot-workspace__open {
-    background: var(--theme-surface-muted, #f2f4f7);
-    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 32%, transparent);
+    background: var(--theme-surface-muted, #ececee);
 }
 
 .desktop-bot-workspace__avatar {
     flex: 0 0 auto;
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -135,7 +206,10 @@
 
 .desktop-bot-workspace__who strong {
     font-size: 13px;
-    font-weight: 650;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .desktop-bot-workspace__who span {
@@ -175,28 +249,59 @@
     50% { opacity: 0.35; }
 }
 
-/* 行内悬浮操作（改名 / 删除） */
+/* 图标贴在行尾，不参加排版。藏着的时候不占名称的宽度，也不吃点击。 */
 .desktop-bot-workspace__actions {
+    position: absolute;
+    z-index: 1;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
     display: flex;
     gap: 4px;
-    flex: 0 0 auto;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 120ms ease;
 }
 
 .desktop-bot-workspace__row:hover .desktop-bot-workspace__actions,
-.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__actions {
+.desktop-bot-workspace__row:focus-within .desktop-bot-workspace__actions,
+.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__actions,
+.desktop-bot-workspace__row.is-editing .desktop-bot-workspace__actions {
     opacity: 1;
+    pointer-events: auto;
+}
+
+.desktop-bot-workspace__row:hover .desktop-bot-workspace__open,
+.desktop-bot-workspace__row:focus-within .desktop-bot-workspace__open,
+.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__open,
+.desktop-bot-workspace__row.is-editing .desktop-bot-workspace__edit {
+    padding-right: var(--desktop-bot-row-actions);
 }
 
 .desktop-bot-workspace__actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 28px;
+    height: 28px;
+    padding: 0;
     border: 1px solid var(--theme-border, #d0d5dd);
     background: var(--theme-surface, #fff);
     color: var(--theme-text-primary, #101828);
     border-radius: 8px;
-    padding: 5px 9px;
-    font-size: 12px;
     cursor: pointer;
+}
+
+.desktop-bot-workspace__actions button:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 2px;
+}
+
+.desktop-bot-workspace__action-icon {
+    display: block;
+    width: 14px;
+    height: 14px;
 }
 
 .desktop-bot-workspace__actions button:hover {
@@ -228,9 +333,11 @@
     background: transparent;
 }
 
-/* 主区：会话面板 */
+/* 主区：会话面板。消息区滚动，输入条钉在这一列底部。 */
 .desktop-bot-chat {
+    position: relative;
     background: var(--theme-page-bg, #fff);
+    overflow: hidden;
 }
 
 .desktop-bot-chat__pick {
@@ -238,14 +345,72 @@
 }
 
 .desktop-bot-chat__header {
+    position: absolute;
+    z-index: 4;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
+    justify-content: center;
+    max-width: calc(100% - 16px);
+    pointer-events: none;
+    touch-action: none;
+    user-select: none;
+}
+
+.desktop-bot-chat__header.is-placed {
+    max-width: calc(100% - 16px);
+    transform: none;
+}
+
+.desktop-bot-chat__identity-btn {
+    display: inline-flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+    gap: 8px;
+    max-width: 100%;
+    min-width: 0;
+    border: 0;
     background: var(--theme-surface, #fff);
+    color: inherit;
+    border-radius: 999px;
+    padding: 4px 12px 4px 4px;
+    text-align: left;
+    pointer-events: auto;
+    cursor: grab;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 6px 20px rgba(16, 24, 40, 0.1);
+}
+
+.desktop-bot-workspace.is-identity-dragging {
+    cursor: grabbing;
+    user-select: none;
+}
+
+.desktop-bot-workspace.is-identity-dragging iframe {
+    pointer-events: none;
+}
+
+.desktop-bot-workspace.is-identity-dragging .desktop-bot-chat__identity-btn {
+    cursor: grabbing;
+}
+
+.desktop-bot-chat__identity-btn.is-open {
+    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 55%, var(--theme-border, #e4e7ec));
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 10%, var(--theme-surface, #fff));
+}
+
+/* The chip is centered on its own width. The chevron stays in that width and
+   only fades in, otherwise hover recenters the whole bar. */
+.desktop-bot-chat__chevron {
+    width: 14px;
+    height: 14px;
     flex: 0 0 auto;
+    opacity: 0;
+    color: var(--theme-text-muted, #667085);
+}
+
+.desktop-bot-chat__identity-btn:hover .desktop-bot-chat__chevron,
+.desktop-bot-chat__identity-btn:focus-visible .desktop-bot-chat__chevron {
+    opacity: 1;
 }
 
 .desktop-bot-chat__title {
@@ -258,7 +423,7 @@
 .desktop-bot-chat__avatar {
     width: 38px;
     height: 38px;
-    border-radius: 11px;
+    border-radius: 50%;
     font-size: 15px;
 }
 
@@ -272,6 +437,9 @@
 .desktop-bot-chat__identity strong {
     font-size: 14px;
     font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .desktop-bot-chat__status {
@@ -282,8 +450,21 @@
     font-size: 12px;
 }
 
-.desktop-bot-chat__status.is-working span {
+.desktop-bot-chat__status i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--theme-success, #12b76a);
+    flex: 0 0 auto;
+}
+
+.desktop-bot-chat__status.is-working {
     color: var(--theme-warning, #b45309);
+}
+
+.desktop-bot-chat__status.is-working i {
+    background: var(--theme-warning, #b45309);
+    animation: desktop-bot-pulse 1.4s ease-in-out infinite;
 }
 
 .desktop-bot-chat__ops {
@@ -331,42 +512,475 @@
     color: #fff;
 }
 
-/* 消息流 */
+/* 用户靠右、看得出的主题蓝；Bot 靠左、白卡片。和助手会话同一套表面。 */
 .desktop-bot-chat__log {
     flex: 1;
     min-height: 0;
     overflow: auto;
+    padding: 64px var(--desktop-bot-gutter, 8%) 16px;
+}
+
+/* Anchoring stays on while the reader is up in history, so a late picture
+   above the viewport does not shove the line they are reading. It is off
+   only while we are pinning the tail, or the browser pulls that pin back. */
+.desktop-bot-chat__log.is-following {
+    overflow-anchor: none;
+}
+
+.desktop-bot-chat__log-body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 20px 8% 12px;
+    align-items: flex-start;
+    gap: 14px;
+    width: 100%;
+    min-width: 0;
+}
+
+.desktop-bot-chat__entry {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    max-width: min(720px, 92%);
+    min-width: 0;
+}
+
+.desktop-bot-chat__entry--user {
+    align-self: flex-end;
+    max-width: min(520px, 78%);
+}
+
+.desktop-bot-chat__entry--assistant {
+    align-self: flex-start;
+}
+
+/* The picture's width is a percentage of the bubble. The column otherwise
+   shrinks to the reply text and the screenshot collapses with it. */
+.desktop-bot-chat__entry--assistant:has(.desktop-bot-chat__shot) {
+    width: 100%;
+}
+
+.desktop-bot-chat__entry--assistant:has(.mc-task-artifacts) {
+    width: 100%;
+}
+
+.desktop-bot-chat__entry:has(.desktop-bot-chat__choices) {
+    width: min(520px, 92%);
+    background: var(--theme-surface, #fff);
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 28%, var(--theme-border, #d9e1ec));
+    border-radius: 16px;
+    padding: 6px;
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.04);
 }
 
 .desktop-bot-chat__bubble {
-    max-width: min(640px, 80%);
+    box-sizing: border-box;
+    max-width: 100%;
     margin: 0;
     padding: 10px 14px;
-    border-radius: 14px;
-    white-space: pre-wrap;
-    word-break: break-word;
+    border-radius: 6px 16px 16px 16px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 28%, var(--theme-border, #d9e1ec));
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #1c2733);
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.04);
+    white-space: normal;
+    overflow-wrap: break-word;
     line-height: 1.6;
     font-size: 14px;
     position: relative;
 }
 
+.desktop-bot-chat__bubble.is-plain {
+    white-space: pre-wrap;
+}
+
 .desktop-bot-chat__bubble--user {
-    align-self: flex-end;
-    background: var(--theme-primary-soft, #eaf1fb);
-    color: var(--theme-text-primary, #1c1c1e);
-    border: 1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #e4e7ec));
-    border-bottom-right-radius: 4px;
+    border-radius: 16px 6px 16px 16px;
+    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 22%, var(--theme-surface, #fff));
+    border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 46%, var(--theme-border, #d9e1ec));
+    box-shadow: none;
 }
 
 .desktop-bot-chat__bubble--assistant {
-    align-self: flex-start;
+    background: var(--theme-surface, #fff);
+}
+
+.desktop-bot-chat__file {
+    display: inline-flex;
+    margin-top: 10px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    background: var(--theme-page-bg, #f4f7fb);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.desktop-bot-chat__shot-open {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    margin: 10px 0 0;
+    padding: 0;
+    border: 0;
+    appearance: none;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: zoom-in;
+    border-radius: 8px;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.desktop-bot-chat__shot-open:hover .desktop-bot-chat__shot,
+.desktop-bot-chat__shot-open:focus-visible .desktop-bot-chat__shot {
+    border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 55%, var(--theme-border, #d9e1ec));
+}
+
+.desktop-bot-chat__shot-open:focus-visible {
+    outline: 2px solid var(--theme-primary, #2f6fbc);
+    outline-offset: 2px;
+}
+
+.desktop-bot-chat__shot {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    margin: 0;
+    border-radius: 8px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    background: var(--theme-page-bg, #f4f7fb);
+}
+
+.desktop-bot-shot-preview {
+    position: fixed;
+    inset: 0;
+    z-index: 110000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 56px 24px 24px;
+    background: rgba(16, 24, 40, 0.72);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.desktop-bot-shot-preview__close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: #fff;
+    color: #1c2733;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.desktop-bot-shot-preview__close:hover {
+    background: #f4f7fb;
+}
+
+.desktop-bot-shot-preview__close:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+.desktop-bot-shot-preview__image {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.desktop-bot-chat__entry:has(.desktop-bot-chat__choices) .desktop-bot-chat__bubble--assistant {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    font-weight: 600;
+    padding-bottom: 8px;
+}
+
+.desktop-bot-chat__body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.desktop-bot-chat__body > * {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.desktop-bot-chat__body p {
+    white-space: pre-wrap;
+}
+
+.desktop-bot-chat__heading {
+    font-weight: 700;
+}
+
+.desktop-bot-chat__body h1,
+.desktop-bot-chat__body h2,
+.desktop-bot-chat__body h3,
+.desktop-bot-chat__body h4,
+.desktop-bot-chat__body h5,
+.desktop-bot-chat__body h6 {
+    margin: 0;
+    padding: 0;
+    font-size: 15px;
+    line-height: 1.35;
+    letter-spacing: 0;
+}
+
+.desktop-bot-chat__rule {
+    width: 100%;
+    height: 0;
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--theme-border, #d9e1ec);
+}
+
+.desktop-bot-chat__quote {
+    margin: 0;
+    padding: 0 0 0 10px;
+    border-left: 3px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 45%, var(--theme-border, #d9e1ec));
+}
+
+.desktop-bot-chat__table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.desktop-bot-chat__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.desktop-bot-chat__table th,
+.desktop-bot-chat__table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--theme-border, #d9e1ec);
+    text-align: left;
+    vertical-align: top;
+}
+
+.desktop-bot-chat__table th {
+    font-weight: 600;
+    background: var(--theme-surface-muted, #f0f4f9);
+}
+
+/* Beat .desktop-bot-chat p / .desktop-bot-workspace ul { margin: 0; padding: 0 }. */
+.desktop-bot-chat .desktop-bot-chat__body ul,
+.desktop-bot-chat .desktop-bot-chat__body ol {
+    margin: 0;
+    padding: 0 0 0 1.25em;
+}
+
+.desktop-bot-chat .desktop-bot-chat__body li + li {
+    margin-top: 6px;
+}
+
+.desktop-bot-chat .desktop-bot-chat__body li > p,
+.desktop-bot-chat .desktop-bot-chat__body li > ul,
+.desktop-bot-chat .desktop-bot-chat__body li > ol,
+.desktop-bot-chat .desktop-bot-chat__body li > pre {
+    margin-top: 4px;
+}
+
+.desktop-bot-chat__pre {
+    margin: 0;
+    padding: 8px 10px;
+    overflow: auto;
+    border-radius: 8px;
+    background: var(--theme-surface-muted, #f0f4f9);
+    white-space: pre-wrap;
+}
+
+.desktop-bot-chat__body code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.92em;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--theme-surface-muted, #f0f4f9);
+}
+
+.desktop-bot-chat .desktop-bot-chat__pre code {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.desktop-bot-chat__choices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.desktop-bot-chat__choices button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: 0;
+    border-radius: 14px;
+    background: var(--theme-surface, #fff);
+    color: inherit;
+    padding: 10px 12px;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+}
+
+.desktop-bot-chat__choices button:hover {
+    background: color-mix(in srgb, var(--theme-surface, #fff) 88%, var(--theme-text-primary, #101828));
+}
+
+.desktop-bot-chat__choice-key {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: var(--theme-surface-muted, #f2f4f7);
-    color: var(--theme-text-primary, #1c1c1e);
-    border-bottom-left-radius: 4px;
+    color: var(--theme-text-muted, #667085);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.desktop-bot-chat__choices button span:nth-child(2) {
+    flex: 1;
+    min-width: 0;
+}
+
+.desktop-bot-chat__choice-mark {
+    flex: 0 0 auto;
+    color: var(--theme-text-muted, #98a2b3);
+    font-size: 14px;
+}
+
+/* 会话里的确认、继续、密码按钮。去掉 Windows 原生按钮脸，并和气泡隔开。 */
+.desktop-bot-chat__action {
+    appearance: none;
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    margin: 0;
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: var(--mc-accent, #2f6fbc);
+    color: #fff;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.08);
+}
+
+.desktop-bot-chat__bubble + .desktop-bot-chat__action,
+.desktop-bot-chat__bubble + .desktop-bot-chat__secret {
+    margin-top: 14px;
+}
+
+.desktop-bot-chat__action:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 86%, #000);
+}
+
+.desktop-bot-chat__action:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 2px;
+}
+
+.desktop-bot-chat__action:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.desktop-bot-chat__action--quiet {
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #1c2733);
+    border-color: var(--theme-border, #d9e1ec);
+    box-shadow: none;
+}
+
+.desktop-bot-chat__action--quiet:hover:not(:disabled) {
+    background: var(--theme-surface-muted, #f0f4f9);
+}
+
+.desktop-bot-chat__secret {
+    align-self: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-sizing: border-box;
+    width: min(360px, 100%);
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: 14px;
+    background: var(--theme-surface, #fff);
+}
+
+.desktop-bot-chat__secret p {
+    margin: 0;
+    color: var(--theme-text-secondary, #546479);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.desktop-bot-chat__secret label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--theme-text-muted, #657384);
+}
+
+.desktop-bot-chat__secret input {
+    box-sizing: border-box;
+    width: 100%;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    font-weight: 400;
+    color: var(--theme-text-primary, #1c2733);
+    background: var(--theme-surface, #fff);
+}
+
+.desktop-bot-chat__secret-actions {
+    display: flex;
+    gap: 8px;
 }
 
 .desktop-bot-chat__bubble.is-failed {
@@ -410,30 +1024,57 @@
     flex: 1.5;
     min-height: 320px;
     max-height: 560px;
-    margin: 0 8% 10px;
+    margin: 0 var(--desktop-bot-gutter, 8%) 10px;
     border: 1px solid var(--theme-border, #e6e6e8);
     border-radius: 12px;
     overflow: hidden;
     background: #111;
+    /* 相对状态条内容盒，给右上角按钮留空。放大是 32px 按钮；全屏恢复更宽。 */
+    --desktop-bot-fit-reserve: 40px;
 }
 
+.desktop-bot-stage.is-fullscreen {
+    --desktop-bot-fit-reserve: 132px;
+}
+
+/* 只有接管把退出按钮放进状态条。交接键盘时放大/恢复仍在角上，不能把预留清掉。 */
+.desktop-bot-stage.is-fullscreen.is-user:has(.desktop-bot-stage__bar-actions) {
+    --desktop-bot-fit-reserve: 0px;
+}
+
+/* 透明定位层。文字自己收成小条，避免在画面顶上再铺一条黑边。 */
 .desktop-bot-stage__bar {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    right: 6px;
+    z-index: 3;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 8px 12px;
-    background: #1f2429;
+    gap: 8px;
+    padding: 0;
+    background: none;
     color: #fff;
+    pointer-events: none;
 }
 
 .desktop-bot-stage__bar p {
+    flex: 0 1 auto;
+    width: max-content;
+    max-width: calc(100% - var(--desktop-bot-fit-reserve));
+    margin: 0;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: rgba(16, 24, 40, 0.62);
     color: #fff;
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 1.3;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    pointer-events: auto;
 }
 
 .desktop-bot-stage__bar-actions {
@@ -443,41 +1084,179 @@
     flex: 0 0 auto;
 }
 
+/* 浮在任意桌面画面上。原生按钮底和半透明白底在浅色顶栏上都看不见白字。 */
 .desktop-bot-stage__bar button {
-    border: 1px solid rgba(255, 255, 255, 0.24);
+    appearance: none;
+    box-sizing: border-box;
+    min-height: 32px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 8px;
-    padding: 6px 12px;
-    background: rgba(255, 255, 255, 0.08);
+    padding: 0 12px;
+    background-color: #101828;
     color: #fff;
+    font: inherit;
     font-size: 12px;
-    cursor: pointer;
     font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.desktop-bot-stage__bar button,
+.desktop-bot-stage__bar-actions {
+    pointer-events: auto;
 }
 
 .desktop-bot-stage__bar button:hover {
-    background: rgba(255, 255, 255, 0.16);
+    background-color: #1d2939;
 }
 
-.desktop-bot-stage__bar .desktop-bot-stage__close {
+.desktop-bot-stage__bar button:active {
+    background-color: #0b1220;
+}
+
+/* 白环贴着深色按钮。留出空隙时，浅色浏览器顶栏会把焦点环吞掉。 */
+.desktop-bot-stage__bar button:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 0;
+    box-shadow: 0 0 0 4px #101828, 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.desktop-bot-stage__frame {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}
+
+.desktop-bot-stage__frame > .desktop-bot-chat__handoff {
+    width: 100%;
+    height: 100%;
+}
+
+/* 观看时挡住 iframe，避免在跨源页上切换 pointer-events。放大按钮在它上面。 */
+.desktop-bot-stage__shield {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
     background: transparent;
-    border-color: rgba(255, 255, 255, 0.16);
-    opacity: 0.85;
 }
 
-/* 接管 = 全屏。铺满整个窗口，顶部工具条保持可点。 */
-.desktop-bot-stage.is-fullscreen {
+/* 贴在预览右上角。提示条是浮层，画面本身从卡片顶边开始。 */
+.desktop-bot-stage__fit {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    border-radius: 8px;
+    background: rgba(16, 24, 40, 0.45);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.desktop-bot-stage__fit:hover {
+    background: rgba(16, 24, 40, 0.7);
+}
+
+.desktop-bot-stage__fit:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+.desktop-bot-stage__fit.is-restore {
+    width: auto;
+    height: 40px;
+    gap: 6px;
+    padding: 0 16px 0 12px;
+    border-color: #fff;
+    background: rgba(255, 255, 255, 0.94);
+    color: #101828;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.desktop-bot-stage__fit.is-restore:hover,
+.desktop-bot-stage__fit.is-restore:focus-visible {
+    background: #fff;
+    color: #101828;
+    outline-color: #101828;
+}
+
+/* 侧栏预览按云桌面 1440×900 收敛。用块级比例盒，避免 flex 子项只有绝对定位内容时高度变成 0。 */
+.desktop-bot-panel .desktop-bot-stage {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0;
+    box-sizing: border-box;
+}
+
+.desktop-bot-panel .desktop-bot-stage:not(.is-fullscreen) {
+    display: block;
+    /* 不收缩。矮窗口由电脑区滚动，压扁比例盒会把黑边带回来。 */
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: none;
+}
+
+.desktop-bot-panel .desktop-bot-stage:not(.is-fullscreen) .desktop-bot-stage__frame {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1440 / 900;
+}
+
+.desktop-bot-panel .desktop-bot-stage .desktop-bot-stage__frame > .desktop-bot-chat__handoff {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+
+.desktop-bot-panel .desktop-bot-chat__handoff {
+    min-height: 0;
+}
+
+.desktop-bot-stage.is-fullscreen,
+.desktop-bot-panel .desktop-bot-stage.is-fullscreen {
     position: fixed;
     inset: 0;
     z-index: 80000;
+    display: flex;
+    flex-direction: column;
     margin: 0;
     max-height: none;
+    width: auto;
     border-radius: 0;
     border: 0;
 }
 
-/* bot 操作时输入被拦下；人类掌握键盘时进出自由 */
-.desktop-bot-stage.is-bot .desktop-bot-chat__handoff {
-    pointer-events: none;
+.desktop-bot-panel .desktop-bot-stage.is-fullscreen .desktop-bot-stage__frame {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    height: auto;
+    min-height: 0;
+}
+
+/* 输入开关在 noVNC 文档和观看挡板上。iframe 本身保持可点，接管换页后鼠标才能进去。 */
+.desktop-bot-stage.is-user .desktop-bot-chat__handoff {
+    pointer-events: auto;
 }
 
 .desktop-bot-stage__loading {
@@ -509,15 +1288,19 @@
 
 /* 输入区：随时可以留言，工作是后台的，回应是即时的 */
 .desktop-bot-chat__form {
+    position: relative;
+    /* Above the log, under the identity chip (4), the list divider (6), and a narrow profile panel (30). */
+    z-index: 3;
     display: flex;
     align-items: flex-end;
     gap: 8px;
-    margin: 10px 8% 0;
+    flex: 0 0 auto;
+    margin: 8px var(--desktop-bot-gutter, 8%) 0;
     padding: 8px 8px 8px 14px;
     border: 1px solid var(--theme-border, #e6e6e8);
-    border-radius: 18px;
+    border-radius: 28px;
     background: var(--theme-surface, #fff);
-    box-shadow: 0 1px 6px rgba(16, 24, 40, 0.04);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.06);
 }
 
 .desktop-bot-chat__form textarea {
@@ -539,7 +1322,7 @@
     outline: none;
 }
 
-.desktop-bot-chat__form button {
+.desktop-bot-chat__send {
     flex: 0 0 auto;
     border: 1px solid transparent;
     border-radius: 12px;
@@ -550,23 +1333,414 @@
     cursor: pointer;
 }
 
-.desktop-bot-chat__form button:disabled {
+.desktop-bot-chat__send:disabled {
     cursor: default;
     opacity: 0.55;
 }
 
 .desktop-bot-chat .desktop-bot-chat__hint {
-    margin: 6px 8% 14px;
+    margin: 6px var(--desktop-bot-gutter, 8%) 14px;
     color: var(--theme-text-muted, #98a2b3);
     font-size: 11px;
 }
 
-/* 窄窗口：列表收窄 */
+/* 窄窗口：边距收一点。列表宽度仍由拖动结果决定，避免媒体查询把分隔线拖动盖掉。 */
 @media (max-width: 960px) {
     .desktop-bot-workspace {
-        grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+        --desktop-bot-gutter: 4%;
     }
     .desktop-bot-chat__log {
-        padding: 16px 4% 10px;
+        padding-bottom: 10px;
     }
+}
+
+.desktop-bot-panel {
+    --desktop-bot-avatar: 56px;
+    --desktop-bot-close: 32px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    min-width: 0;
+    box-sizing: border-box;
+    /* 固定像素。窄面板是绝对定位，百分比会按整个工作区宽度计算，把 400px 栏挤扁。 */
+    padding: 12px 16px 12px;
+    background: var(--theme-surface, #fff);
+    border-left: 1px solid var(--theme-border, #e4e7ec);
+    overflow: hidden;
+}
+
+.desktop-bot-panel__toolbar {
+    position: absolute;
+    z-index: 2;
+    /* 与头像垂直居中，右边和内容区对齐，不单独占一行。 */
+    top: calc(12px + (var(--desktop-bot-avatar) - var(--desktop-bot-close)) / 2);
+    right: 16px;
+}
+
+.desktop-bot-panel__close {
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    width: var(--desktop-bot-close);
+    height: var(--desktop-bot-close);
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--theme-surface-muted, #f2f4f7);
+    color: var(--theme-text-primary, #101828);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.desktop-bot-panel__close:hover {
+    background: color-mix(in srgb, var(--theme-text-primary, #101828) 8%, var(--theme-surface-muted, #f2f4f7));
+}
+
+.desktop-bot-panel__close:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 2px;
+}
+
+.desktop-bot-panel__who {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    text-align: center;
+}
+
+.desktop-bot-panel__avatar {
+    width: var(--desktop-bot-avatar);
+    height: var(--desktop-bot-avatar);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    font-size: 22px;
+    font-weight: 700;
+    box-shadow: 0 0 0 4px var(--theme-surface-muted, #f0f4f9);
+}
+
+.desktop-bot-panel__who h2 {
+    margin: 2px 0 0;
+    max-width: 100%;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.desktop-bot-panel__description {
+    display: -webkit-box;
+    margin: 0;
+    max-width: 26em;
+    overflow: hidden;
+    color: var(--theme-text-secondary, #546479);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.desktop-bot-panel__tabs {
+    display: grid;
+    grid-template-columns: 1fr 1.35fr 1fr;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 10px;
+    background: var(--theme-surface-muted, #f0f4f9);
+}
+
+.desktop-bot-panel__tabs button {
+    border: 0;
+    background: transparent;
+    color: var(--theme-text-muted, #667085);
+    border-radius: 8px;
+    padding: 6px 4px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.desktop-bot-panel__tabs button[aria-selected='true'] {
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.08);
+}
+
+.desktop-bot-panel__tabs button:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 1px;
+}
+
+.desktop-bot-panel__details,
+.desktop-bot-panel__schedules,
+.desktop-bot-panel__computer {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+}
+
+.desktop-bot-panel .desktop-bot-screen {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 220px;
+    box-sizing: border-box;
+}
+
+.desktop-bot-panel__details,
+.desktop-bot-panel__schedules {
+    gap: 12px;
+    padding-top: 4px;
+}
+
+.desktop-bot-panel__empty {
+    margin: 8px 2px;
+    color: var(--theme-text-muted, #657384);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.desktop-bot-schedule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.desktop-bot-schedule {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: 12px;
+    background: var(--theme-surface, #fff);
+}
+
+.desktop-bot-schedule__name {
+    color: var(--theme-text-primary, #101828);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.desktop-bot-schedule__when {
+    margin-top: 2px;
+    color: var(--theme-text-muted, #657384);
+    font-size: 12px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
+.desktop-bot-schedule__action {
+    display: -webkit-box;
+    margin: 4px 0 0;
+    overflow: hidden;
+    color: var(--theme-text-secondary, #546479);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+}
+
+.desktop-bot-schedule__delete {
+    border: 0;
+    background: transparent;
+    color: var(--theme-danger, #b42318);
+    padding: 2px 0;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.desktop-bot-schedule__delete:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.desktop-bot-panel__sheet {
+    margin: 0;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: 12px;
+    background: var(--theme-surface, #fff);
+    overflow: hidden;
+}
+
+.desktop-bot-panel__field {
+    display: grid;
+    grid-template-columns: 4.75rem minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+    margin: 0;
+    padding: 10px 12px;
+    min-width: 0;
+}
+
+.desktop-bot-panel__field + .desktop-bot-panel__field {
+    border-top: 1px solid var(--theme-border, #e8eef5);
+}
+
+.desktop-bot-panel__field--stack {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    align-items: start;
+}
+
+.desktop-bot-panel__field dt {
+    margin: 0;
+    color: var(--theme-text-muted, #657384);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.desktop-bot-panel__field dd {
+    margin: 0;
+    min-width: 0;
+    color: var(--theme-text-primary, #526277);
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+}
+
+.desktop-bot-panel__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 2px 8px 2px 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--theme-success, #12b76a) 14%, var(--theme-surface, #fff));
+    color: var(--theme-success, #067647);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.desktop-bot-panel__badge i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 auto;
+}
+
+.desktop-bot-panel__badge.is-working {
+    background: color-mix(in srgb, var(--theme-warning, #b45309) 14%, var(--theme-surface, #fff));
+    color: var(--theme-warning, #b45309);
+}
+
+.desktop-bot-panel__badge.is-working i {
+    animation: desktop-bot-pulse 1.4s ease-in-out infinite;
+}
+
+.desktop-bot-panel__note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-secondary, #546479);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.desktop-bot-panel__note svg {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    color: var(--theme-text-muted, #657384);
+}
+
+.desktop-bot-screen__caption {
+    margin: 0;
+    text-align: center;
+    color: var(--theme-text-muted, #667085);
+    font-size: 12px;
+}
+
+.desktop-bot-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 220px;
+    padding: 16px;
+    border-radius: 16px;
+    background: var(--theme-surface-muted, #f2f4f7);
+    color: var(--theme-text-muted, #667085);
+    text-align: center;
+}
+
+.desktop-bot-panel .desktop-bot-chat__ops {
+    justify-content: center;
+}
+
+/* wide-panel: beside the chat */
+@media (min-width: 1181px) {
+    .desktop-bot-workspace:has(.desktop-bot-panel) {
+        grid-template-columns: var(--desktop-bot-list-width) minmax(0, 1fr) 400px;
+    }
+    .desktop-bot-panel {
+        position: relative;
+        grid-column: 3;
+        grid-row: 1;
+        width: 400px;
+    }
+}
+
+/* narrow-panel: overlay the chat, list stays */
+@media (max-width: 1180px) {
+    .desktop-bot-workspace {
+        position: relative;
+    }
+    .desktop-bot-panel {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(400px, calc(100% - var(--desktop-bot-list-width, 300px)));
+        z-index: 30;
+        box-shadow: -8px 0 24px rgba(30, 58, 95, 0.12);
+    }
+    .desktop-bot-panel__who {
+        padding-inline: calc(var(--desktop-bot-close) + 8px);
+    }
+}
+
+.bot-file-preview__title {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--mc-preview-surface-border, #e4e4e4);
+    color: var(--theme-text, #1f2937);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }

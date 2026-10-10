@@ -106,6 +106,7 @@ export function AssistantReasoningPanel({
             <span
                 className={live ? "assistant-reasoning-live-label arp-label" : "arp-label"}
                 data-testid="assistant-reasoning-label"
+                title={label}
             >
                 {label}
             </span>

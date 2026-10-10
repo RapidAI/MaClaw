@@ -190,7 +190,7 @@ func (s *semanticCallSurface) beginEpoch() string {
 	s.activeEpoch = "surface:" + tool.SchemaDigest([]byte(strings.Join(parts, "\x00")))
 	families := make(map[string]string, len(s.grants))
 	for name, grant := range s.grants {
-		families[name] = tool.RepeatFamilyID(grant.SelectionID)
+		families[name] = tool.RepeatFamilyKey(grant.SelectionID)
 	}
 	s.epochSnapshot = semanticEpochSnapshot{epoch: s.activeEpoch, planID: s.plan.ID, families: families}
 	return s.activeEpoch
@@ -255,7 +255,7 @@ func (s *semanticCallSurface) staleEpochSameFamilyContinuation(epoch, name strin
 		return false
 	}
 	issued, known := snapshot.families[name]
-	return known && issued == tool.RepeatFamilyID(grant.SelectionID)
+	return known && issued == tool.RepeatFamilyKey(grant.SelectionID)
 }
 
 func (s *semanticCallSurface) liveGrantNames() map[string]bool {
@@ -1590,7 +1590,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		cancel()
 		return nil, nil, true, fmt.Errorf("semantic_turn_replaced")
 	}
-	planningText := markdownFileWritePlanningText(userText, loopHistory(ctx))
+	planningText := semanticManagedPlanningText(userText, loopHistory(ctx))
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, planningText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
 	if handled && err == nil && surface != nil && ctx != nil {
 		h.noteSemanticSessionResidueCandidate(ctx, userID, channel, userText, surface.plan)
@@ -2134,6 +2134,8 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		classification = semanticLocalFileDeletePlanningClassification(classification)
 	} else if tool.QueryWantsMarkdownFile(planningQuery) {
 		classification = semanticMarkdownFileWritePlanningClassification(classification, planningQuery)
+	} else if kind := classifyWorklogRecord(planningQuery); kind != worklogRecordNone {
+		classification = semanticWorklogPlanningClassification(classification, kind)
 	}
 	// The opening utterance cannot mean both "send the attachment I was given"
 	// and "generate a new document". A petition is not that utterance: the
@@ -3165,6 +3167,35 @@ func semanticHostRejectResponseForPlanError(err error) *IMAgentResponse {
 		return &IMAgentResponse{
 			Text:           "这次投递没有绑定到本任务已经生成的那份文档。这一轮不会另选文件，也不会生成新文档。",
 			Error:          "semantic_artifact_dependency_missing",
+			ResponseSource: "semantic_host_reject",
+		}
+	}
+	// An incomplete, stale, or not-ready observation is not proof that the
+	// capability is absent. no_feasible_provider stays on the generic catalog
+	// refusal, including when it is mixed with an availability reason: retry
+	// would not create the missing capability.
+	var unmet semanticUnmetNeedsError
+	if errors.As(err, &unmet) && semanticUnmetOnlyReasons(unmet.Unmet,
+		tool.CatalogCoverageReasonNotReady,
+		tool.CatalogCoverageReasonIncomplete,
+		tool.CatalogCoverageReasonStale) {
+		if semanticUnmetHasReason(err, tool.CatalogCoverageReasonNotReady) {
+			return &IMAgentResponse{
+				Text:           "外部服务尚未就绪，这一轮没有执行。请稍后重试。",
+				Error:          "semantic_provider_not_ready",
+				ResponseSource: "semantic_host_reject",
+			}
+		}
+		if semanticUnmetHasReason(err, tool.CatalogCoverageReasonIncomplete) {
+			return &IMAgentResponse{
+				Text:           "能力目录尚未准备完成，这一轮没有执行。请稍后重试。",
+				Error:          "semantic_catalog_incomplete",
+				ResponseSource: "semantic_host_reject",
+			}
+		}
+		return &IMAgentResponse{
+			Text:           "能力目录尚未完成刷新，这一轮没有执行。请稍后重试。",
+			Error:          "semantic_catalog_stale",
 			ResponseSource: "semantic_host_reject",
 		}
 	}
@@ -4316,6 +4347,7 @@ var semanticReadOnlyGovernedLabels = map[intent.IntentLabel]bool{
 	intent.LabelCurrentTime:     true,
 	intent.LabelDocumentRead:    true,
 	intent.LabelAudioTranscribe: true,
+	intent.LabelWorklogRead:     true,
 }
 
 // semanticPetitionLookupLabels is the GUI alias of the shared petition

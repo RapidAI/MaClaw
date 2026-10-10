@@ -37,6 +37,9 @@ import {
     prunePathList,
     applySessionStart,
     applySessionEnd,
+    previewBodyShowsFile,
+    changedPreviewFilePath,
+    previewFocusAfterTabChange,
     applyResetSession,
     cloneCodePreviewState,
     type CodeFile,
@@ -638,6 +641,136 @@ describe('useCodePreviewState — Property Tests', () => {
         expect(state.files.size).toBe(1);
         expect(state.files.has('/src/a.ts')).toBe(true);
         expect(state.activeFilePath).toBe('/src/a.ts');
+    });
+
+    it('shows a changed file when focus is tied, and a read only after file focus wins', () => {
+        const read = { opType: 'read' as const };
+        const edited = { opType: 'modify' as const };
+        expect(previewBodyShowsFile(undefined, 0, 0)).toBe(false);
+        expect(previewBodyShowsFile(read, 0, 0)).toBe(false);
+        expect(previewBodyShowsFile(edited, 0, 0)).toBe(true);
+        expect(previewBodyShowsFile(edited, 2, 2)).toBe(true);
+        expect(previewBodyShowsFile(edited, 1, 2)).toBe(false);
+        expect(previewBodyShowsFile(read, 3, 1)).toBe(true);
+        expect(previewBodyShowsFile(read, 1, 3)).toBe(false);
+    });
+
+    it('re-aims an open preview at the changed file after a tab switch', () => {
+        const read = { filePath: '/src/a.cpp', fileName: 'a.cpp', content: 'a', opType: 'read' as const, language: 'cpp', updatedAt: 5 };
+        const edited = { filePath: '/src/b.cpp', fileName: 'b.cpp', content: 'b', opType: 'modify' as const, language: 'cpp', updatedAt: 2, original: 'a' };
+        const files = new Map<string, CodeFile>([[read.filePath, read], [edited.filePath, edited]]);
+        const open = { active: true, userClosed: false, activeFilePath: read.filePath, files };
+        const aimed = previewFocusAfterTabChange(open, 1, 4);
+        expect(aimed.selectPath).toBe(edited.filePath);
+        expect(aimed.fileFocusNonce).toBeGreaterThan(aimed.treeFocusNonce);
+        expect(previewBodyShowsFile(edited, aimed.fileFocusNonce, aimed.treeFocusNonce)).toBe(true);
+
+        const readsOnly = previewFocusAfterTabChange(
+            { active: true, userClosed: false, activeFilePath: read.filePath, files: new Map([[read.filePath, read]]) },
+            3,
+            1,
+        );
+        expect(readsOnly.selectPath).toBe('');
+        expect(readsOnly.treeFocusNonce).toBeGreaterThan(readsOnly.fileFocusNonce);
+        expect(previewBodyShowsFile(read, readsOnly.fileFocusNonce, readsOnly.treeFocusNonce)).toBe(false);
+    });
+
+    it('ties focus when the preview is closed so a later open still finds the edit', () => {
+        const edited = { filePath: '/src/b.cpp', fileName: 'b.cpp', content: 'b', opType: 'create' as const, language: 'cpp', updatedAt: 2 };
+        const closed = previewFocusAfterTabChange(
+            { active: false, userClosed: false, activeFilePath: '', files: new Map([[edited.filePath, edited]]) },
+            2,
+            5,
+        );
+        expect(closed.fileFocusNonce).toBe(closed.treeFocusNonce);
+        expect(closed.selectPath).toBe(edited.filePath);
+        expect(previewBodyShowsFile(edited, closed.fileFocusNonce, closed.treeFocusNonce)).toBe(true);
+
+        const dismissed = previewFocusAfterTabChange(
+            { active: false, userClosed: true, activeFilePath: edited.filePath, files: new Map([[edited.filePath, edited]]) },
+            2,
+            5,
+        );
+        expect(dismissed.selectPath).toBe('');
+        expect(dismissed.fileFocusNonce).toBe(dismissed.treeFocusNonce);
+    });
+
+    it('picks a changed file and ignores read-only tabs', () => {
+        const files = new Map<string, CodeFile>([
+            ['/src/a.cpp', { filePath: '/src/a.cpp', fileName: 'a.cpp', content: 'a', opType: 'read', language: 'cpp', updatedAt: 5 }],
+            ['/src/b.cpp', { filePath: '/src/b.cpp', fileName: 'b.cpp', content: 'b', opType: 'modify', language: 'cpp', updatedAt: 1 }],
+            ['/src/c.cpp', { filePath: '/src/c.cpp', fileName: 'c.cpp', content: 'c', opType: 'create', language: 'cpp', updatedAt: 4 }],
+        ]);
+        expect(changedPreviewFilePath({ activeFilePath: '/src/a.cpp', files })).toBe('/src/c.cpp');
+        expect(changedPreviewFilePath({ activeFilePath: '/src/b.cpp', files })).toBe('/src/b.cpp');
+        expect(changedPreviewFilePath({
+            activeFilePath: '/src/a.cpp',
+            files: new Map([['/src/a.cpp', files.get('/src/a.cpp')!]]),
+        })).toBe('');
+    });
+
+    it('keeps an edit when arm refills the same path as a read', () => {
+        let state = applySessionStart(initialState(), 'turn-1', true);
+        state = applyFileUpdate(state, {
+            sessionID: 'turn-1', filePath: '/src/snake.cpp', fileName: 'snake.cpp', content: 'new',
+            original: 'old', opType: 'modify', language: 'cpp', updatedAt: 1, forceOpen: true,
+        });
+        const duringTurn = applyFileUpdate(state, {
+            sessionID: 'coding-workbench-restore:u', filePath: '/src/snake.cpp', fileName: 'snake.cpp',
+            content: 'from-disk', opType: 'read', language: 'cpp', updatedAt: 2,
+        });
+        expect(duringTurn).toBe(state);
+
+        state = applySessionEnd(state, 'turn-1');
+        const refilled = applyFileUpdate(state, {
+            sessionID: 'coding-workbench-restore:u', filePath: '/src/snake.cpp', fileName: 'snake.cpp',
+            content: 'from-disk', opType: 'read', language: 'cpp', updatedAt: 2,
+        });
+        expect(refilled.active).toBe(true);
+        expect(refilled.activeFilePath).toBe('/src/snake.cpp');
+        expect(refilled.files.get('/src/snake.cpp')?.opType).toBe('modify');
+        expect(refilled.files.get('/src/snake.cpp')?.original).toBe('old');
+        expect(refilled.files.get('/src/snake.cpp')?.content).toBe('new');
+
+        const extra = applyFileUpdate(refilled, {
+            sessionID: 'coding-workbench-restore:u', filePath: '/src/old.cpp', fileName: 'old.cpp',
+            content: 'old', opType: 'read', language: 'cpp', updatedAt: 3,
+        });
+        expect(extra.active).toBe(true);
+        expect(extra.files.get('/src/old.cpp')?.opType).toBe('read');
+        expect(extra.files.get('/src/snake.cpp')?.opType).toBe('modify');
+        expect(extra.activeFilePath).toBe('/src/snake.cpp');
+    });
+
+    it('a background read fills a tab and leaves a closed pane closed', () => {
+        const next = applyFileUpdate(initialState(), {
+            sessionID: 'coding-workbench-restore:u', filePath: '/src/old.cpp', fileName: 'old.cpp',
+            content: 'old', opType: 'read', language: 'cpp', updatedAt: 1,
+        });
+        expect(next.active).toBe(false);
+        expect(next.activeFilePath).toBe('');
+        expect(next.files.get('/src/old.cpp')?.opType).toBe('read');
+        expect(changedPreviewFilePath(next)).toBe('');
+    });
+
+    it('session_start with autoOpenPreview does not pop a closed pane', () => {
+        const started = applySessionStart(initialState(), 'turn-1', true);
+        expect(started.active).toBe(false);
+        expect(started.userClosed).toBe(false);
+        expect(started.sessionActive).toBe(true);
+        expect(started.sessionID).toBe('turn-1');
+        expect(started.files.size).toBe(0);
+
+        let closed = applyFileUpdate(initialState(), {
+            sessionID: 'turn-1', filePath: '/src/a.ts', fileName: 'a.ts', content: 'hello',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        closed = applyClosePanel(closed);
+        const nextTurn = applySessionStart(closed, 'turn-2', true);
+        expect(nextTurn.active).toBe(false);
+        expect(nextTurn.userClosed).toBe(true);
+        expect(nextTurn.files.has('/src/a.ts')).toBe(true);
+        expect(nextTurn.activeFilePath).toBe('/src/a.ts');
     });
 
     it('session scoped events ignore stale file updates and stale session_end', () => {

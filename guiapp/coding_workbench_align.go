@@ -469,6 +469,16 @@ func (h *IMMessageHandler) setStickyCodingStepStatuses(userID string, steps []co
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = steps
+		// A freshly seeded list is an approval or a new plan. Keep the
+		// started bit only when this list itself already has a started step.
+		started := false
+		for _, st := range steps {
+			if codingPlanStepWasStarted(st.Status) {
+				started = true
+				break
+			}
+		}
+		mem.PlanRunStarted = started
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
@@ -503,6 +513,9 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 				Summary:     truncateRunesForSubAgent(strings.TrimSpace(summary), 400),
 				UpdatedUnix: now,
 			})
+		}
+		if codingPlanStepWasStarted(status) {
+			mem.PlanRunStarted = true
 		}
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)
@@ -549,6 +562,9 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 				UpdatedUnix: now,
 			})
 		}
+		if codingPlanStepWasStarted(status) {
+			mem.PlanRunStarted = true
+		}
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
@@ -563,6 +579,7 @@ func (h *IMMessageHandler) clearStickyCodingStepStatuses(userID string) {
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = nil
+		mem.PlanRunStarted = false
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }

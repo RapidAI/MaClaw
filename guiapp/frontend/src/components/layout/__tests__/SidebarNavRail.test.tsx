@@ -19,7 +19,9 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { SidebarNavRail } from '../SidebarNavRail';
+import { acknowledgeRailMiddleFocus, peekPendingRailMiddleFocus, railMiddleFocus, resetRailMiddleFocusForTests } from '../railMiddleFocus';
 import { publishBotAccess } from '../../bots/botOpenGate';
+import { saveBotMessages } from '../../bots/desktopBots';
 import { DesktopBotAccess, GetHubUserInvitationStatus, GetHubUserInvitationsPage, GetHubUserRanking, RotateHubUserInvitation } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
@@ -38,6 +40,7 @@ const rankingResult = (overrides: { token_rank?: number; duration_rank?: number;
 });
 
 beforeEach(() => {
+    resetRailMiddleFocusForTests();
     vi.mocked(BrowserOpenURL).mockClear();
     vi.mocked(DesktopBotAccess).mockReset();
     vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
@@ -230,6 +233,54 @@ describe('SidebarNavRail system popup', () => {
 
         expect(screen.queryByTestId('sidebar-task-monitor-nav-badge')).toBeNull();
         expect(screen.getByTestId('sidebar-task-monitor-nav').getAttribute('aria-label')).toBe('Tasks');
+    });
+
+    it('adds in-progress bot tasks to the tasks rail and leaves other accounts out', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: true });
+        localStorage.clear();
+        const started = Date.now();
+        saveBotMessages('alice', 'bot_1', [
+            { id: `m-${started.toString(36)}-user`, role: 'user', content: '写文档' },
+            { id: `m-${started.toString(36)}-done`, role: 'assistant', content: '写完了', pending: false },
+            { id: `m-${(started + 1).toString(36)}-user`, role: 'user', content: '再写一页' },
+            { id: `m-${(started + 1).toString(36)}-run`, role: 'assistant', content: '', pending: true },
+            { id: `m-${(started + 2).toString(36)}-wait`, role: 'user', content: '等我登录', queued: true },
+        ]);
+        saveBotMessages('bob', 'bot_2', [
+            { id: `m-${started.toString(36)}-run`, role: 'assistant', content: '', pending: true },
+        ]);
+        renderRail({
+            lang: 'zh-Hans',
+            runningTaskCount: 2,
+            remoteActivationStatus: { activated: true },
+            config: { remote_user_id: 'alice' },
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId('sidebar-task-monitor-nav-badge').textContent).toBe('4');
+        });
+        expect(screen.getByTestId('sidebar-task-monitor-nav').getAttribute('aria-label')).toBe('任务：4 个执行中');
+    });
+
+    it('keeps bot tasks off the tasks rail until Hub grants Bot access', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
+        localStorage.clear();
+        const started = Date.now();
+        saveBotMessages('alice', 'bot_1', [
+            { id: `m-${started.toString(36)}-run`, role: 'assistant', content: '', pending: true },
+        ]);
+        renderRail({
+            lang: 'zh-Hans',
+            runningTaskCount: 2,
+            remoteActivationStatus: { activated: true },
+            config: { remote_user_id: 'alice' },
+        });
+
+        await waitFor(() => {
+            expect(vi.mocked(DesktopBotAccess)).toHaveBeenCalled();
+        });
+        expect(screen.getByTestId('sidebar-task-monitor-nav-badge').textContent).toBe('2');
+        expect(screen.getByTestId('sidebar-task-monitor-nav').getAttribute('aria-label')).toBe('任务：2 个执行中');
     });
 
     it('prefers the background-task monitor when the tasks rail is opened', () => {
@@ -559,6 +610,25 @@ describe('SidebarNavRail favorite employees', () => {
         expect(aiEntry.getAttribute('style')).toBeNull();
     });
 
+    it('sends the workbench click back to the task list while digital employees are showing', () => {
+        acknowledgeRailMiddleFocus('employees');
+        const props = renderRail({ navTab: 'ai' });
+
+        const workbench = screen.getByTitle('AI Asst');
+        const employees = screen.getByTestId('sidebar-digital-employees-nav');
+        expect(employees.classList.contains('active')).toBe(true);
+        expect(employees.getAttribute('aria-current')).toBe('page');
+        expect(workbench.classList.contains('active')).toBe(false);
+
+        fireEvent.click(workbench);
+
+        expect(props.switchTool).toHaveBeenCalledWith('ai');
+        expect(railMiddleFocus()).toBe('tasks');
+        expect(peekPendingRailMiddleFocus()).toBe('tasks');
+        expect(workbench.classList.contains('active')).toBe(true);
+        expect(employees.classList.contains('active')).toBe(false);
+    });
+
     it('hides the bot entry and its denial notice when Bot is off', async () => {
         vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false, message: '服务器没有开通bot功能' });
         renderRail({ lang: 'zh-Hans', remoteActivationStatus: { activated: true } });
@@ -601,6 +671,7 @@ describe('SidebarNavRail favorite employees', () => {
 
         fireEvent.click(employees);
         expect(props.switchTool).toHaveBeenCalledWith('ai');
+        expect(peekPendingRailMiddleFocus()).toBe('employees');
 
         fireEvent.click(bot);
 
@@ -985,6 +1056,73 @@ describe('SidebarNavRail library menu', () => {
         fireEvent.click(screen.getByTestId('system-menu-trigger'));
         expect(screen.queryByTestId('library-popup-menu')).toBeNull();
         expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+    });
+});
+
+describe('SidebarNavRail flyout highlight', () => {
+    it('marks the open destination in the system, extensions and library menus', () => {
+        const about = renderRail({ lang: 'zh-Hans', navTab: 'about' });
+        fireEvent.click(screen.getByTitle('系统菜单'));
+        expect(screen.getByTestId('system-menu-about').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('system-menu-about').classList.contains('spm-item')).toBe(true);
+        about.unmount();
+
+        const skills = renderRail({ lang: 'zh-Hans', navTab: 'skills' });
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.getByTestId('extensions-menu-skills').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('extensions-menu-mcp').getAttribute('aria-current')).toBeNull();
+        skills.unmount();
+
+        const files = renderRail({ lang: 'zh-Hans', navTab: 'files' });
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        expect(screen.getByTestId('library-menu-documents').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('library-menu-knowledge').getAttribute('aria-current')).toBeNull();
+        expect(screen.getByTestId('library-menu-latex-templates').getAttribute('aria-current')).toBeNull();
+        files.unmount();
+
+        const knowledge = renderRail({ lang: 'zh-Hans', navTab: 'settings', settingsTab: 'knowledge' });
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        expect(screen.getByTestId('library-menu-knowledge').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('library-menu-documents').getAttribute('aria-current')).toBeNull();
+        knowledge.unmount();
+
+        renderRail({ lang: 'zh-Hans', navTab: 'latex-templates' });
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        expect(screen.getByTestId('library-menu-latex-templates').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('library-popup-menu').classList.contains('spm-menu')).toBe(true);
+    });
+
+    it('paints flyout items with the rail primary wash instead of the office violet highlight', () => {
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        const start = css.indexOf('Rail flyout menus');
+        const end = css.indexOf('.mc-sidebar-shell { width: 308px', start);
+        expect(start).toBeGreaterThan(-1);
+        const block = css.slice(start, end);
+        expect(block).toContain('.spm-menu > .spm-item:hover');
+        expect(block).toContain('appearance: none');
+        expect(block).toContain('color-mix(in srgb, var(--theme-primary) 8%, transparent)');
+        expect(block).toContain('color-mix(in srgb, var(--theme-primary) 10%, transparent)');
+        expect(block).toContain('inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent)');
+        expect(block).toContain(".sidebar[data-ai-theme='light'] .spm-menu");
+        expect(block).toContain('background: var(--theme-surface-muted)');
+        expect(block).toContain('filter: grayscale(1) saturate(0) brightness(0.68)');
+        expect(block).not.toContain('office-accent');
+        expect(block).not.toContain('--theme-hover');
+    });
+
+    it('anchors a fixed flyout to the rail right edge when the rail is narrower than 112px', () => {
+        renderRail({ lang: 'zh-Hans', navTab: 'files' });
+        const rail = document.querySelector('.mc-nav-rail') as HTMLElement;
+        vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue({
+            x: 0, y: 0, top: 0, left: 0, right: 84, bottom: 640, width: 84, height: 640, toJSON() { return {}; },
+        } as DOMRect);
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        const menu = screen.getByTestId('library-popup-menu') as HTMLElement;
+        expect(menu.style.position).toBe('fixed');
+        expect(menu.style.left).toBe('84px');
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        expect(css).not.toContain('left: calc(100% + 8px)');
+        expect(css).not.toContain('left: calc(100% + 6px)');
     });
 });
 

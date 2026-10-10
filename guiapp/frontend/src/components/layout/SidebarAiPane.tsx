@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import { EVENT_OPEN_CREATE_CODING_TASK } from '../../constants/events';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
@@ -8,13 +8,14 @@ import { SidebarTasksPane, middleContentSlotStyle } from './SidebarTasksPane';
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import type { ExpertDefinition } from '../ai/expertTypes';
 import type { LatexExpertTaskOptions } from '../../utils/latexTemplates';
-import { SidebarSystemStatus } from './SidebarSystemStatus';
+import { isLansengerChannelEnabled, SidebarSystemStatus } from './SidebarSystemStatus';
 import { VirtualEmployeeTab, type VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { getAssistantDarkScheme, type AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, getAssistantLightScheme, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import { SidebarMiddleTabs } from './SidebarMiddleTabs';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from './SidebarHistorySessions';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from '../ai/digitalEmployeeFeature';
+import { acknowledgeRailMiddleFocus, overrideRailMiddleFocus, peekPendingRailMiddleFocus, requestRailMiddleFocus, usePendingRailMiddleFocus } from './railMiddleFocus';
 import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
 import type { WorkbenchTaskCounts } from './backgroundTaskCount';
 
@@ -255,37 +256,51 @@ export const SidebarAiPane = ({
     activeProfile,
     codingInheritsAssistant,
 }: SidebarAiPaneProps) => {
-    const [middleTab, setMiddleTab] = useState<MiddleTab>('tasks');
+    const showDigitalEmployeeTabs = showDigitalEmployeeNavigation ?? shouldShowDigitalEmployeeMiddleTabs(digitalEmployeeFeatureStatus);
+    // A rail click that arrived while this pane was unmounted is already pending.
+    // Seed the first paint from it so the task list does not flash first.
+    const [middleTab, setMiddleTab] = useState<MiddleTab>(() => (
+        showDigitalEmployeeTabs && peekPendingRailMiddleFocus() === 'employees' ? 'employees' : 'tasks'
+    ));
     const veTheme = useMemo(() => (
         aiThemeMode === 'dark'
             ? getAssistantDarkScheme(aiDarkSchemeId).assistantTheme
             : getAssistantLightScheme(aiLightSchemeId).assistantTheme
     ), [aiThemeMode, aiDarkSchemeId, aiLightSchemeId]);
-    const showDigitalEmployeeTabs = showDigitalEmployeeNavigation ?? shouldShowDigitalEmployeeMiddleTabs(digitalEmployeeFeatureStatus);
     const visibleTabs = useMemo<MiddleTab[]>(() => showDigitalEmployeeTabs ? ['tasks', 'employees', 'history'] : ['tasks'], [showDigitalEmployeeTabs]);
-    useEffect(() => {
-        if (!showDigitalEmployeeTabs && middleTab !== 'tasks') setMiddleTab('tasks');
+    const pendingFocus = usePendingRailMiddleFocus();
+    useLayoutEffect(() => {
+        if (!showDigitalEmployeeTabs && middleTab !== 'tasks') {
+            setMiddleTab('tasks');
+            overrideRailMiddleFocus('tasks');
+        }
     }, [middleTab, showDigitalEmployeeTabs]);
 
-    // The redesigned rail owns navigation for experts, employees and notifications;
-    // keep the old middle-tab state reachable through those semantic rail intents
-    // even though the tab strip is visually collapsed in the reference layout.
-    useEffect(() => {
-        const focusTasks = () => setMiddleTab('tasks');
-        const focusEmployees = () => { if (showDigitalEmployeeTabs) setMiddleTab('employees'); };
-        window.addEventListener('maclaw:focus-task-list', focusTasks);
-        window.addEventListener('maclaw:focus-digital-employees', focusEmployees);
-        return () => {
-            window.removeEventListener('maclaw:focus-task-list', focusTasks);
-            window.removeEventListener('maclaw:focus-digital-employees', focusEmployees);
-        };
-    }, [showDigitalEmployeeTabs]);
+    // A rail click that arrived before this pane mounted is already pending.
+    // Drop a highlight left behind by an earlier digital-employee visit when
+    // this mount is the task list (search, task activate, and the other paths
+    // back to the assistant).
+    useLayoutEffect(() => {
+        if (peekPendingRailMiddleFocus()) return;
+        if (middleTab !== 'employees') acknowledgeRailMiddleFocus('tasks');
+        // Initial middle tab only. Later clicks arrive as a new pending value.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useLayoutEffect(() => {
+        // Gate closed: leave the employees click queued. The highlight was
+        // never moved, so there is nothing to revert.
+        if (pendingFocus === 'employees' && !showDigitalEmployeeTabs) return;
+        if (!pendingFocus) return;
+        setMiddleTab(pendingFocus);
+        acknowledgeRailMiddleFocus(pendingFocus);
+    }, [pendingFocus, showDigitalEmployeeTabs]);
 
     // Welcome software-dev cards open the create-task dialog in TaskManagement. Keep the
     // tasks pane mounted (hidden) so the listener stays alive on employees/history tabs,
     // and jump back to "tasks" so the dialog context is clear.
     useEffect(() => {
-        const handler = () => setMiddleTab('tasks');
+        const handler = () => { requestRailMiddleFocus('tasks'); };
         window.addEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
         return () => window.removeEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
     }, []);
@@ -306,7 +321,7 @@ export const SidebarAiPane = ({
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
-                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} workbenchTaskCounts={workbenchTaskCounts} onOpenBackgroundTasks={onOpenBackgroundTasks} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openIMSettingsPage={openIMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} isDark={aiThemeMode === 'dark'} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} moaSticky={moaSticky} onToggleMoASticky={onToggleMoASticky} profileSummaries={profileSummaries} activeProfile={activeProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} />
+                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} qqBotEnabled={config?.qqbot_enabled === true} telegramStatus={telegramStatus} telegramEnabled={config?.telegram_bot_enabled === true} weixinStatus={weixinStatus} weixinEnabled={config?.weixin_enabled === true} lansengerStatus={lansengerStatus} lansengerEnabled={isLansengerChannelEnabled(config)} backgroundTaskCount={backgroundTaskCount} workbenchTaskCounts={workbenchTaskCounts} onOpenBackgroundTasks={onOpenBackgroundTasks} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openIMSettingsPage={openIMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} isDark={aiThemeMode === 'dark'} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} moaSticky={moaSticky} onToggleMoASticky={onToggleMoASticky} profileSummaries={profileSummaries} activeProfile={activeProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} />
             </div>
             <div
                 className="mc-task-pane-resize-handle"

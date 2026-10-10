@@ -4,11 +4,14 @@ import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
 import { PassthroughCommandsPanel } from "./PassthroughCommandsPanel";
+import { BotTasksPanel } from "./BotTasksPanel";
 import { countActiveBackgroundLoops, isAILaunchedSession } from "../layout/backgroundTaskCount";
-import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
+import { DesktopBotAccess, ListBackgroundLoops, ListDesktopBots, StopBackgroundLoop, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { SESSION_TABS, resolveSessionTab, type SessionTab } from "./sessionTabs";
+import { resolveSessionTab, visibleSessionTabs, type SessionTab } from "./sessionTabs";
 import { startVisibleInterval } from "../../utils/visibleInterval";
+import { currentInProgressBotTasks, type InProgressBotTask } from "../bots/desktopBots";
+import { subscribeBotAccess } from "../bots/botOpenGate";
 
 // Strip ANSI escape sequences and non-printable control characters from terminal output
 const ansiRe = /\x1b(?:\[[0-9;?]*[a-zA-Z~^$]|\].*?(?:\x07|\x1b\\)|[()#][A-Z0-9]?|[a-zA-Z])/g;
@@ -41,6 +44,8 @@ type Props = {
     initialSessionTab?: SessionTab | "remote";
     /** Keeps the left rail's active entry aligned when the user changes tabs here. */
     onSessionTabChange?: (tab: SessionTab) => void;
+    /** Same account key the Bot page uses for its local transcript. */
+    botUserId?: string;
 };
 
 const terminalStatuses = TERMINAL_SESSION_STATUSES;
@@ -71,6 +76,26 @@ const getSlotKindTag = (kind: string, localizeText: (en: string, zhHans: string,
 const isLiveSession = (s: RemoteSessionView) =>
     !terminalStatuses.has(String(s.status || s.summary?.status || "").toLowerCase());
 
+function sameBotTasks(current: InProgressBotTask[], next: InProgressBotTask[]): boolean {
+    if (current.length !== next.length) return false;
+    for (let index = 0; index < current.length; index++) {
+        const left = current[index];
+        const right = next[index];
+        if (left.id !== right.id || left.botId !== right.botId || left.status !== right.status || left.phase !== right.phase || left.text !== right.text || left.startedAt !== right.startedAt) return false;
+    }
+    return true;
+}
+
+function sameBotNames(current: Record<string, string>, next: Record<string, string>): boolean {
+    const currentKeys = Object.keys(current);
+    const nextKeys = Object.keys(next);
+    if (currentKeys.length !== nextKeys.length) return false;
+    for (const key of nextKeys) {
+        if (current[key] !== next[key]) return false;
+    }
+    return true;
+}
+
 const tabButtonStyle = (active: boolean): React.CSSProperties => ({
     border: "none",
     background: active ? colors.surface : "transparent",
@@ -95,9 +120,17 @@ export function RemoteSessionList(props: Props) {
         lang,
         initialSessionTab = "background",
         onSessionTabChange,
+        botUserId = "",
     } = props;
 
     const [sessionTab, setSessionTab] = useState<SessionTab>(() => resolveSessionTab(initialSessionTab));
+    const [botAllowed, setBotAllowed] = useState(false);
+    const [botAccessKnown, setBotAccessKnown] = useState(false);
+    const [botTasks, setBotTasks] = useState<InProgressBotTask[]>([]);
+    const [botNames, setBotNames] = useState<Record<string, string>>({});
+    const botAccessSeq = useRef(0);
+    const botGrantedRef = useRef(false);
+    const botAccessFailures = useRef(0);
     const sessionTabRefs = useRef<Partial<Record<SessionTab, HTMLButtonElement | null>>>({});
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
@@ -114,6 +147,98 @@ export function RemoteSessionList(props: Props) {
         const next = resolveSessionTab(initialSessionTab);
         setSessionTab((current) => current === next ? current : next);
     }, [initialSessionTab]);
+
+    // The Bot tab follows the same grant as the left-rail Bot entry. A published
+    // answer retires an in-flight read so a denial cannot be overwritten by a
+    // poll that started earlier. One failed read keeps a grant already shown.
+    useEffect(() => {
+        let cancelled = false;
+        const apply = (enabled: boolean) => {
+            botAccessFailures.current = 0;
+            botGrantedRef.current = enabled;
+            setBotAllowed(enabled);
+            setBotAccessKnown(true);
+        };
+        const readAccess = () => {
+            const seq = ++botAccessSeq.current;
+            DesktopBotAccess().then((result: { enabled?: boolean } | null) => {
+                if (cancelled || seq !== botAccessSeq.current) return;
+                apply(!!result?.enabled);
+            }).catch(() => {
+                if (cancelled || seq !== botAccessSeq.current) return;
+                botAccessFailures.current += 1;
+                if (botGrantedRef.current && botAccessFailures.current < 2) return;
+                botGrantedRef.current = false;
+                setBotAllowed(false);
+                setBotAccessKnown(true);
+            });
+        };
+        const unsubscribe = subscribeBotAccess((enabled) => {
+            botAccessSeq.current += 1;
+            apply(enabled);
+        });
+        readAccess();
+        const stop = startVisibleInterval(readAccess, 30_000);
+        return () => {
+            cancelled = true;
+            stop();
+            unsubscribe();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!botAccessKnown || botAllowed || sessionTab !== "bot") return;
+        setSessionTab("background");
+        onSessionTabChange?.("background");
+    }, [botAccessKnown, botAllowed, sessionTab, onSessionTabChange]);
+
+    useEffect(() => {
+        if (!botAllowed) {
+            setBotTasks(current => current.length === 0 ? current : []);
+            return;
+        }
+        let cancelled = false;
+        const loadTasks = () => {
+            if (cancelled) return;
+            const next = currentInProgressBotTasks(botUserId, Date.now());
+            setBotTasks(current => current === next || sameBotTasks(current, next) ? current : next);
+        };
+        loadTasks();
+        const stopTasks = startVisibleInterval(loadTasks, 2000);
+        return () => {
+            cancelled = true;
+            stopTasks();
+        };
+    }, [botAllowed, botUserId]);
+
+    // Titles are only rendered on the Bot panel. Another monitor tab must not
+    // keep asking Hub for the bot list. A new account drops the previous titles.
+    useEffect(() => {
+        setBotNames({});
+    }, [botUserId]);
+
+    useEffect(() => {
+        if (!botAllowed || sessionTab !== "bot") return;
+        let cancelled = false;
+        const loadNames = () => {
+            ListDesktopBots().then((items) => {
+                if (cancelled) return;
+                const names: Record<string, string> = {};
+                for (const item of items || []) {
+                    const id = String(item?.id || "").trim();
+                    const title = String(item?.title || "").trim();
+                    if (id && title) names[id] = title;
+                }
+                setBotNames(current => sameBotNames(current, names) ? current : names);
+            }).catch(() => { /* titles fall back to the bot id */ });
+        };
+        loadNames();
+        const stopNames = startVisibleInterval(loadNames, 30_000);
+        return () => {
+            cancelled = true;
+            stopNames();
+        };
+    }, [botAllowed, sessionTab, botUserId]);
 
     // Status-card "后台任务" can fire while this page is already mounted.
     useEffect(() => {
@@ -547,9 +672,12 @@ export function RemoteSessionList(props: Props) {
         );
     };
 
-    const isBackgroundTab = sessionTab === "background";
-    const isScheduledTab = sessionTab === "scheduled";
-    const isPassthroughTab = sessionTab === "passthrough";
+    const tabs = useMemo(() => visibleSessionTabs(botAllowed), [botAllowed]);
+    const shownTab: SessionTab = sessionTab === "bot" && !botAllowed ? "background" : sessionTab;
+    const isBackgroundTab = shownTab === "background";
+    const isScheduledTab = shownTab === "scheduled";
+    const isPassthroughTab = shownTab === "passthrough";
+    const isBotTab = shownTab === "bot";
     const bgTotalCount = countActiveBackgroundLoops(bgLoops) + aiSessions.filter(isLiveSession).length;
 
     const selectSessionTab = useCallback((tab: SessionTab, refreshScheduled = false) => {
@@ -559,21 +687,22 @@ export function RemoteSessionList(props: Props) {
     }, [onSessionTabChange]);
 
     const handleSessionTabKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, tab: SessionTab) => {
-        const currentIndex = SESSION_TABS.indexOf(tab);
+        const currentIndex = tabs.indexOf(tab);
+        if (currentIndex < 0) return;
         let nextIndex = currentIndex;
-        if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (currentIndex + 1) % SESSION_TABS.length;
-        else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (currentIndex - 1 + SESSION_TABS.length) % SESSION_TABS.length;
+        if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (currentIndex + 1) % tabs.length;
+        else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
         else if (event.key === "Home") nextIndex = 0;
-        else if (event.key === "End") nextIndex = SESSION_TABS.length - 1;
+        else if (event.key === "End") nextIndex = tabs.length - 1;
         else return;
         event.preventDefault();
-        const nextTab = SESSION_TABS[nextIndex];
+        const nextTab = tabs[nextIndex];
         selectSessionTab(nextTab, nextTab === "scheduled");
         window.requestAnimationFrame(() => sessionTabRefs.current[nextTab]?.focus());
-    }, [selectSessionTab]);
+    }, [selectSessionTab, tabs]);
 
     return (
-        <div className="remote-session-list" data-session-tab={sessionTab} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden", textAlign: "left" }}>
+        <div className="remote-session-list" data-session-tab={shownTab} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden", textAlign: "left" }}>
             {/* Header with tabs */}
             <div className="remote-session-list__tabs-shell">
                 <div className="remote-session-tabbar">
@@ -584,12 +713,12 @@ export function RemoteSessionList(props: Props) {
                         className="remote-session-tab"
                         ref={(element) => { sessionTabRefs.current.background = element; }}
                         role="tab"
-                        aria-selected={sessionTab === "background"}
+                        aria-selected={shownTab === "background"}
                         aria-controls="remote-session-panel-background"
-                        tabIndex={sessionTab === "background" ? 0 : -1}
+                        tabIndex={shownTab === "background" ? 0 : -1}
                         onClick={() => selectSessionTab("background")}
                         onKeyDown={(event) => handleSessionTabKeyDown(event, "background")}
-                        style={tabButtonStyle(sessionTab === "background")}
+                        style={tabButtonStyle(shownTab === "background")}
                     >
                         {localizeText("Background", "后台", "後台")}
                         {bgTotalCount > 0 && (
@@ -603,12 +732,12 @@ export function RemoteSessionList(props: Props) {
                         className="remote-session-tab"
                         ref={(element) => { sessionTabRefs.current.scheduled = element; }}
                         role="tab"
-                        aria-selected={sessionTab === "scheduled"}
+                        aria-selected={shownTab === "scheduled"}
                         aria-controls="remote-session-panel-scheduled"
-                        tabIndex={sessionTab === "scheduled" ? 0 : -1}
+                        tabIndex={shownTab === "scheduled" ? 0 : -1}
                         onClick={() => selectSessionTab("scheduled", true)}
                         onKeyDown={(event) => handleSessionTabKeyDown(event, "scheduled")}
-                        style={tabButtonStyle(sessionTab === "scheduled")}
+                        style={tabButtonStyle(shownTab === "scheduled")}
                     >
                         {localizeText("Scheduled", "计划任务", "計劃任務")}
                     </button>
@@ -617,15 +746,36 @@ export function RemoteSessionList(props: Props) {
                         className="remote-session-tab"
                         ref={(element) => { sessionTabRefs.current.passthrough = element; }}
                         role="tab"
-                        aria-selected={sessionTab === "passthrough"}
+                        aria-selected={shownTab === "passthrough"}
                         aria-controls="remote-session-panel-passthrough"
-                        tabIndex={sessionTab === "passthrough" ? 0 : -1}
+                        tabIndex={shownTab === "passthrough" ? 0 : -1}
                         onClick={() => selectSessionTab("passthrough")}
                         onKeyDown={(event) => handleSessionTabKeyDown(event, "passthrough")}
-                        style={tabButtonStyle(sessionTab === "passthrough")}
+                        style={tabButtonStyle(shownTab === "passthrough")}
                     >
                         {localizeText("Passthrough Tasks", "直通任务", "直通任務")}
                     </button>
+                    {botAllowed && (
+                    <button
+                        id="remote-session-tab-bot"
+                        className="remote-session-tab"
+                        ref={(element) => { sessionTabRefs.current.bot = element; }}
+                        role="tab"
+                        aria-selected={shownTab === "bot"}
+                        aria-controls="remote-session-panel-bot"
+                        tabIndex={shownTab === "bot" ? 0 : -1}
+                        onClick={() => selectSessionTab("bot")}
+                        onKeyDown={(event) => handleSessionTabKeyDown(event, "bot")}
+                        style={tabButtonStyle(shownTab === "bot")}
+                    >
+                        {localizeText("Bot tasks", "Bot任务", "Bot任務")}
+                        {botTasks.length > 0 && (
+                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: colors.surfaceMuted, color: colors.primaryDark, padding: "1px 6px", borderRadius: "999px" }}>
+                                {botTasks.length}
+                            </span>
+                        )}
+                    </button>
+                    )}
                     </div>
                 </div>
                 <div className="remote-session-tab-actions" role="group" aria-label={localizeText("Tab actions", "标签操作", "標籤操作")}>
@@ -680,6 +830,12 @@ export function RemoteSessionList(props: Props) {
             {isPassthroughTab && (
                 <div id="remote-session-panel-passthrough" className="remote-session-panel remote-session-panel--passthrough" role="tabpanel" aria-labelledby="remote-session-tab-passthrough" tabIndex={0}>
                     <PassthroughCommandsPanel lang={lang} />
+                </div>
+            )}
+
+            {isBotTab && (
+                <div id="remote-session-panel-bot" className="remote-session-panel remote-session-panel--bot" role="tabpanel" aria-labelledby="remote-session-tab-bot" tabIndex={0}>
+                    <BotTasksPanel tasks={botTasks} names={botNames} localizeText={localizeText} />
                 </div>
             )}
 

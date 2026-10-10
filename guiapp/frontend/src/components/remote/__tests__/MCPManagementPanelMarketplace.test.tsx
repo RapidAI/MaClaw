@@ -130,6 +130,7 @@ const labels: Record<string, string> = {
     mcpConfigureSecret: "Configure",
     mcpServersRegistered: "registered",
     mcpSlow: "Slow",
+    mcpDegraded: "Degraded",
     mcpSubmitting: "Submitting",
     mcpTabLocal: "Local",
     mcpTabMarketplace: "Marketplace",

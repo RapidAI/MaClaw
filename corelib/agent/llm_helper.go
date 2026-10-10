@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/trae"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
@@ -245,11 +246,17 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
 		client = lobsterai.WrapClient(client)
 	}
+	if qoder.Matches(cfg) {
+		client = qoder.WrapClientForConfig(client, cfg)
+	}
 	// A structured control-plane call (intent tree) matches the desktop path:
 	// one JSON body, not a token stream. Several OpenAI-compatible relays
 	// drop json_schema when stream is set, then the model writes prose until
 	// the classification budget expires.
-	stream := options.ResponseFormat == nil
+	// This helper always parses one completion. Qoder's upstream is SSE-only;
+	// asking for stream here would hand the parser the event stream. Leave
+	// stream false so the signed transport aggregates that SSE into JSON.
+	stream := options.ResponseFormat == nil && !qoder.Matches(cfg)
 	req, data, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream:                 stream,
 		ResponseFormat:         options.ResponseFormat,

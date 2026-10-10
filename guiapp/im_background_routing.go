@@ -97,6 +97,11 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	}
 	if h.memoryStore != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
+	} else if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
+		// Same base prompt as buildSystemPrompt, but with this loop so the
+		// coding-document contract is omitted. Companion is not a background
+		// task today; this keeps a later background turn on the same rule.
+		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, false, loopCtx)
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
@@ -106,11 +111,11 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	} else {
 		systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, promptMessage)
 	}
-	platformKind := normalizeIMMessagePlatformKind(msg.Platform)
-	if platformKind.IsDesktop() {
-		systemPrompt += desktopWorkflowDocOverride()
-	} else if platformKind.IsKnown() || msg.Platform != "" {
-		systemPrompt += imWorkflowDocDeliveryRule()
+	systemPrompt += workflowDocDeliverySection(msg.UserID, msg.Platform)
+	if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
+		if bindingPrompt := buildAssistantBindingPrompt(msg.AssistantBinding); bindingPrompt != "" {
+			systemPrompt += "\n\n" + bindingPrompt
+		}
 	}
 
 	result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)

@@ -25,7 +25,7 @@ interface MCPServerView {
     headers?: Record<string, string>;
     capability?: MCPServerCapabilityRef;
     tools: MCPToolView[];
-    health_status: "healthy" | "slow" | "unavailable" | "unknown" | "checking";
+    health_status: "healthy" | "slow" | "degraded" | "unavailable" | "unknown" | "checking";
     fail_count: number;
     last_check_at: string;
     created_at: string;

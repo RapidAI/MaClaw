@@ -216,6 +216,21 @@ func TestArtifactContractMatchesAndProducerPublished(t *testing.T) {
 	if ProducerArtifactPublished(refs, "", typed) {
 		t.Fatal("empty producer must fail closed")
 	}
+	base := "need:document.write.office:abc123def456"
+	revision := []RouteArtifactRef{{
+		ProducerSelection: "selection:" + RepeatSiblingNeedID(base, 1),
+		Kind:              "document", MIMEType: "application/pdf",
+	}}
+	if !ProducerArtifactPublished(revision, "selection:"+base, typed) {
+		t.Fatal("a sibling revision must count as the bound base having published")
+	}
+	bare := []RouteArtifactRef{{ProducerSelection: RepeatSiblingNeedID(base, 1), Kind: "document", MIMEType: "application/pdf"}}
+	if !ProducerArtifactPublished(bare, "selection:"+base, typed) {
+		t.Fatal("a revision stored as the bare need must count as published")
+	}
+	if ProducerArtifactPublished(revision, "selection:need:document.write.office:otherneedid1", typed) {
+		t.Fatal("another family must stay unpublished")
+	}
 }
 
 func TestUniqueMatchingAndBoundArtifactDependency(t *testing.T) {

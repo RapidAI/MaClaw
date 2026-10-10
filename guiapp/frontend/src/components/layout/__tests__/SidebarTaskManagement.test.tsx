@@ -8,7 +8,8 @@ import { cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, isActiveTas
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
-import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CREATE_CODING_TASK } from '../../../constants/events';
+import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK } from '../../../constants/events';
+import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
 import { __resetCloudWorkspaceTaskRestoreForTests } from '../../../utils/cloudWorkspaceTaskRestore';
@@ -45,6 +46,8 @@ const {
     removeCloudWorkspaceShareRecipientMock,
     copyTaskFilesToCloudWorkspaceMock,
     copyCloudWorkspaceTaskFilesToLocalMock,
+    chooseFileCompanionFilesMock,
+    showFileCompanionMock,
 } = vi.hoisted(() => {
     return {
         getProjectSceneMock: vi.fn(),
@@ -83,6 +86,8 @@ const {
         removeCloudWorkspaceShareRecipientMock: vi.fn().mockResolvedValue(undefined),
         copyTaskFilesToCloudWorkspaceMock: vi.fn().mockResolvedValue({ files: 0, bytes: 0 }),
         copyCloudWorkspaceTaskFilesToLocalMock: vi.fn().mockResolvedValue({ files: 0, bytes: 0 }),
+        chooseFileCompanionFilesMock: vi.fn().mockResolvedValue([]),
+        showFileCompanionMock: vi.fn().mockResolvedValue(undefined),
     };
 });
 
@@ -127,6 +132,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RemoveCloudWorkspaceShareRecipient: removeCloudWorkspaceShareRecipientMock,
     CopyTaskFilesToCloudWorkspace: copyTaskFilesToCloudWorkspaceMock,
     CopyCloudWorkspaceTaskFilesToLocal: copyCloudWorkspaceTaskFilesToLocalMock,
+    ChooseFileCompanionFiles: (...args: unknown[]) => chooseFileCompanionFilesMock(...args),
+    ShowFileCompanion: (...args: unknown[]) => showFileCompanionMock(...args),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -460,6 +467,86 @@ describe('SidebarTaskManagement', () => {
         expect(cloudWorkspaceEntitlementMock).not.toHaveBeenCalled();
         expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
         expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+        expect(screen.getByTestId('task-cloud-drive').getAttribute('aria-label')).toBe('Cloud drive');
+    });
+
+    it('opens the cloud drive from the toolbar with a disk icon, not the workspace cloud', async () => {
+        renderTaskManagement({ lang: 'zh' });
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const driveButton = screen.getByTestId('task-cloud-drive');
+        const workspaceButton = screen.getByTestId('task-cloud-overview');
+        expect(driveButton.getAttribute('aria-label')).toBe('云盘');
+        expect(driveButton.getAttribute('title')).toBe('云盘，与手机端共享');
+        expect(driveButton.closest('.mc-task-pane__tool-group')).toBe(workspaceButton.closest('.mc-task-pane__tool-group'));
+        expect(screen.getByTestId('task-pane-new-task-wizard').contains(driveButton)).toBe(false);
+        expect(driveButton.querySelector('ellipse')).toBeTruthy();
+        expect(workspaceButton.querySelector('ellipse')).toBeNull();
+        const drivePaths = Array.from(driveButton.querySelectorAll('path')).map(node => node.getAttribute('d')).join('|');
+        const workspacePaths = Array.from(workspaceButton.querySelectorAll('path')).map(node => node.getAttribute('d')).join('|');
+        expect(drivePaths).not.toBe(workspacePaths);
+
+        const listener = vi.fn();
+        window.addEventListener(EVENT_OPEN_CLOUD_DRIVE, listener);
+        try {
+            fireEvent.click(driveButton);
+            expect(listener).toHaveBeenCalledTimes(1);
+        } finally {
+            window.removeEventListener(EVENT_OPEN_CLOUD_DRIVE, listener);
+        }
+        expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
+    });
+
+    it('opens the knowledge base from the toolbar gap beside New Task', async () => {
+        renderTaskManagement({ lang: 'zh' });
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const knowledgeButton = screen.getByTestId('task-knowledge');
+        const createButton = screen.getByTestId('task-pane-new-task-wizard');
+        const driveButton = screen.getByTestId('task-cloud-drive');
+        expect(knowledgeButton.getAttribute('aria-label')).toBe('知识库');
+        expect(knowledgeButton.getAttribute('title')).toBe('打开知识库');
+        expect(knowledgeButton.classList.contains('mc-task-pane__knowledge')).toBe(true);
+        expect(createButton.contains(knowledgeButton)).toBe(false);
+        const knowledgeGroup = knowledgeButton.closest('.mc-task-pane__tool-group');
+        const driveGroup = driveButton.closest('.mc-task-pane__tool-group');
+        expect(knowledgeGroup).toBeTruthy();
+        expect(driveGroup).toBeTruthy();
+        expect(knowledgeGroup).not.toBe(driveGroup);
+        const toolbarEnd = knowledgeButton.closest('.mc-task-pane__toolbar-end');
+        expect(toolbarEnd?.contains(driveButton)).toBe(true);
+        const divider = toolbarEnd?.querySelector('.mc-task-pane__toolbar-divider');
+        expect(divider).toBeTruthy();
+        expect(Boolean(knowledgeGroup!.compareDocumentPosition(divider!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+        expect(Boolean(divider!.compareDocumentPosition(driveGroup!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+        expect(knowledgeButton.querySelectorAll('path').length).toBe(2);
+        const companionButton = screen.getByTestId('task-pane-file-companion');
+        expect(companionButton.getAttribute('aria-label')).toBe('伴读');
+        expect(companionButton.getAttribute('title')).toBe('打开伴读');
+        expect(companionButton.textContent).toBe('');
+        expect(companionButton.closest('.mc-task-pane__tool-group')).toBe(knowledgeGroup);
+        expect(Boolean(companionButton.compareDocumentPosition(knowledgeButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+        showFileCompanionMock.mockClear();
+        chooseFileCompanionFilesMock.mockClear();
+        fireEvent.click(companionButton);
+        expect(showFileCompanionMock).toHaveBeenCalledTimes(1);
+        expect(chooseFileCompanionFilesMock).not.toHaveBeenCalled();
+
+        const openSettingsEvents: Array<{ tab?: string }> = [];
+        const listener = (event: Event) => {
+            openSettingsEvents.push((event as CustomEvent<{ tab?: string }>).detail);
+        };
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
+        try {
+            fireEvent.click(knowledgeButton);
+            expect(openSettingsEvents).toEqual([{ tab: 'knowledge', hideSettingsNav: true }]);
+        } finally {
+            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
+        }
     });
 
     it('keeps cloud task rows and their marker when project management is hidden', () => {
@@ -4641,13 +4728,15 @@ describe('SidebarTaskManagement', () => {
         expect((screen.getByTestId('task-cloud-overview-blank') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    it('keeps the home header cloud button after the theme toggle when the grant is off', async () => {
+    it('keeps the theme toggle after the cloud workspace button when the grant is off', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false, reason: 'not_granted' });
         renderTaskManagement({ lang: 'zh' });
 
+        const driveButton = screen.getByTestId('task-cloud-drive');
         const cloudButton = await screen.findByTestId('task-cloud-overview');
         const themeButton = screen.getByTestId('sidebar-theme-toggle');
-        expect(themeButton.compareDocumentPosition(cloudButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(driveButton.compareDocumentPosition(cloudButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(cloudButton.compareDocumentPosition(themeButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         fireEvent.click(cloudButton);
         expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
         expect((await screen.findByTestId('task-cloud-overview-denied')).textContent).toContain('尚未向你开放云端工作区');

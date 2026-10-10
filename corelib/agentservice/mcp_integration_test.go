@@ -14,6 +14,7 @@ type boundMCPProviderStub struct {
 	boundCalls  int
 	legacyCalls int
 	called      MCPToolBinding
+	arguments   map[string]interface{}
 	err         error
 }
 
@@ -64,13 +65,25 @@ func (s *boundMCPProviderStub) CallTool(context.Context, Principal, string, stri
 	return "legacy", nil
 }
 
-func (s *boundMCPProviderStub) CallBoundTool(_ context.Context, _ Principal, binding MCPToolBinding, _ map[string]interface{}) (string, error) {
+func (s *boundMCPProviderStub) CallBoundTool(_ context.Context, _ Principal, binding MCPToolBinding, arguments map[string]interface{}) (string, error) {
 	s.boundCalls++
 	s.called = binding
+	s.arguments = arguments
 	if s.err != nil {
 		return "", s.err
 	}
 	return "bound", nil
+}
+
+func TestParseMCPToolCallResultProjectsEnvelopeText(t *testing.T) {
+	got, err := parseMCPToolCallResult([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"张学友资料"}]}}`))
+	if err != nil || got != "张学友资料" {
+		t.Fatalf("content=%q err=%v", got, err)
+	}
+	failed, err := parseMCPToolCallResult([]byte(`{"content":[{"type":"text","text":"quota exceeded"}],"isError":true}`))
+	if err != nil || failed != "Error: quota exceeded" {
+		t.Fatalf("tool error=%q err=%v", failed, err)
+	}
 }
 
 func TestMCPToolDefsExposeOpaqueBoundAdapters(t *testing.T) {

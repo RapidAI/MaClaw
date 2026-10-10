@@ -36,7 +36,9 @@ func (s *Service) FillBotSecret(ctx context.Context, tenantID, userID, botID, na
 		return "", tokenErr
 	}
 	path := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID) + "/secret-fill"
-	callErr := s.doAuth(ctx, fresh, token, http.MethodPost, path, map[string]string{
+	// This call does not hold s.mu, so a rejected bearer can be exchanged
+	// again and the fill retried. MaClaw checks the bearer before the handler.
+	callErr := s.authAsOwner(ctx, tenantID, userID, &fresh, &token, http.MethodPost, path, map[string]string{
 		"name":  name,
 		"value": value,
 	}, nil)

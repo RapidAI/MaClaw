@@ -73,15 +73,17 @@ type record struct {
 	Bots           []Bot                 `json:"bots"`
 	Grants         []Grant               `json:"grants,omitempty"`
 	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
+	LLM            llmSettings           `json:"llm,omitempty"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.
 type SettingsView struct {
-	BaseURL        string  `json:"base_url"`
-	TokenSet       bool    `json:"token_set"`
-	AdminSecretSet bool    `json:"admin_secret_set"`
-	Bots           []Bot   `json:"bots"`
-	Grants         []Grant `json:"grants"`
+	BaseURL        string          `json:"base_url"`
+	TokenSet       bool            `json:"token_set"`
+	AdminSecretSet bool            `json:"admin_secret_set"`
+	Bots           []Bot           `json:"bots"`
+	Grants         []Grant         `json:"grants"`
+	LLM            LLMSettingsView `json:"llm"`
 }
 
 // Service stores the tenant MaClawSrv connection and the bots created there.
@@ -95,10 +97,24 @@ type Service struct {
 	// A timed-out command must not stop the desktop: the instance may already
 	// have handed that browser to the person.
 	messageTimeout time.Duration
+	// OwnerLLM mints the Hub viewer token used as this bot user's model key.
+	// Nil keeps older tests on the MaClawSrv connection alone.
+	OwnerLLM OwnerLLMIssuer
 
-	mu          sync.Mutex
-	handoff     map[string]handoffView
-	desktopView map[string]desktopWatch
+	mu       sync.Mutex
+	bearerMu sync.Mutex
+	// ownerBearers keeps a MaClaw access token for an owner API key. Issuing
+	// one verifies the API secret with scrypt and is rate-limited, so a bot
+	// command reuses the token until shortly before it expires.
+	ownerBearers map[string]cachedBearer
+	// llmRepairTried records a viewer token whose rewrite still left the
+	// instance unable to validate. The same token is not pushed again.
+	llmRepairTried map[string]string
+	// llmRepairEpoch advances when a command succeeds. A rewrite that
+	// started before that success does not record a block afterwards.
+	llmRepairEpoch map[string]uint64
+	handoff        map[string]handoffView
+	desktopView    map[string]desktopWatch
 	// desktopHeld maps a user to the bot that handed the desktop over.
 	// A later failed message, or another bot finishing, must not stop it.
 	desktopHeld map[string]string
@@ -123,6 +139,13 @@ type Service struct {
 	// from the Bot page. The hold keeps that live picture up after a run
 	// finishes; without it the VNC frame goes black mid-watch.
 	desktopUserView map[string]time.Time
+	// desktopWatchGen is the newest watch generation a poll has noted.
+	// desktopWatchClosed is the newest generation whose panel has released.
+	// A release only drops a view that is still that generation, so a page
+	// that opened again is not stopped by the release of the page before it.
+	// Both stay in memory; a restart just starts the next generation fresh.
+	desktopWatchGen    map[string]int64
+	desktopWatchClosed map[string]int64
 	// desktopOpening counts bot commands that have this user's desktop open.
 	// One command failing must not stop the desktop another command is using.
 	desktopOpening map[string]int
@@ -139,6 +162,24 @@ type Service struct {
 	// beforeDesktopStop is a test hook. It runs after a command drops its
 	// count and before that stop takes the user's gate.
 	beforeDesktopStop func()
+	// admitPollInterval and admitReadyGrace shorten the background run
+	// follow-up in tests. Production waits one second between reads and
+	// gives the result a few seconds to land after the run becomes terminal.
+	admitPollInterval time.Duration
+	admitReadyGrace   time.Duration
+	// desktopAdmits is the reply of a run that was accepted and is still
+	// executing, or has finished, after the admitting call returned.
+	desktopAdmits map[string]*desktopAdmitState
+}
+
+// asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.
+type asyncPreferKey struct{}
+
+func preferAsync(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, asyncPreferKey{}, true)
 }
 
 // desktopWatch is the noVNC page for a user's running desktop.
@@ -251,7 +292,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 		}
 		return 0, err
 	}
-	bearer, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
+	bearer, _, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
 	if err != nil {
 		return 0, err
 	}
@@ -408,11 +449,52 @@ func (s *Service) do(ctx context.Context, rec record, method, path string, body 
 }
 
 func (s *Service) doAuth(ctx context.Context, rec record, bearer, method, path string, body any, dest any) error {
-	return s.call(ctx, rec, bearer, "", method, path, body, dest)
+	err := s.call(ctx, rec, bearer, "", method, path, body, dest)
+	// The cached owner bearer is no longer accepted. The next command
+	// exchanges a new one instead of repeating this rejection.
+	if upstreamUnauthorized(err) {
+		s.dropOwnerBearer(bearer)
+	}
+	return err
+}
+
+// authAsOwner sends one request as the bot owner. MaClaw checks the bearer
+// before the handler runs, so a 401 did not start the command. Drop the
+// cached bearer and try one freshly exchanged token before surfacing it.
+func (s *Service) authAsOwner(ctx context.Context, tenantID, owner string, rec *record, token *string, method, path string, body, dest any) error {
+	if s == nil || rec == nil || token == nil {
+		return fmt.Errorf("%w: owner auth is unavailable", ErrSrv)
+	}
+	err := s.doAuth(ctx, *rec, *token, method, path, body, dest)
+	if !upstreamUnauthorized(err) {
+		return err
+	}
+	fresh, next, tokenErr := s.ownerToken(ctx, tenantID, owner)
+	if tokenErr != nil {
+		return err
+	}
+	*rec = fresh
+	*token = next
+	return s.doAuth(ctx, *rec, *token, method, path, body, dest)
 }
 
 func (s *Service) doAdmin(ctx context.Context, rec record, method, path string, body any, dest any) error {
 	return s.call(ctx, rec, "", rec.AdminSecret, method, path, body, dest)
+}
+
+// responseBodyLimit is how much of a MaClawSrv response this client reads.
+// A message reply carries one desktop screenshot. MaClawSrv caps that
+// screenshot at 1_200_000 base64 characters, and the extra mebibyte is the
+// session, the run, and the text. A shorter read cuts the JSON in half, so
+// the chat loses both the words and the picture. Other responses stay at
+// one mebibyte.
+func responseBodyLimit(path string) int64 {
+	// A finished desktop run is read back from /runs and carries the same
+	// screenshot the synchronous /messages body used to carry.
+	if strings.Contains(path, "/messages") || strings.Contains(path, "/runs/") {
+		return 1<<20 + 1_200_000
+	}
+	return 1 << 20
 }
 
 func (s *Service) call(ctx context.Context, rec record, bearer, adminSecret, method, path string, body any, dest any) error {
@@ -437,12 +519,17 @@ func (s *Service) call(ctx context.Context, rec record, bearer, adminSecret, met
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if ctx != nil {
+		if prefer, _ := ctx.Value(asyncPreferKey{}).(bool); prefer {
+			req.Header.Set("Prefer", "respond-async")
+		}
+	}
 	resp, err := s.httpClient(path).Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrSrv, err.Error())
 	}
 	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, responseBodyLimit(path)))
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrSrvNotFound
 	}
@@ -470,7 +557,10 @@ func (s *Service) httpClient(path string) *http.Client {
 	if !strings.Contains(path, "/messages") {
 		return base
 	}
-	timeout := 8 * time.Minute
+	// One desktop-bot command can drive the browser for a long time.
+	// maclawsrv's message write deadline and the maclawsrv proxy use the
+	// same 30 minutes, so this client is not a shorter cliff.
+	timeout := 30 * time.Minute
 	if s != nil && s.messageTimeout > 0 {
 		timeout = s.messageTimeout
 	}
@@ -514,6 +604,7 @@ func viewOf(rec record) SettingsView {
 		AdminSecretSet: strings.TrimSpace(rec.AdminSecret) != "",
 		Bots:           bots,
 		Grants:         grants,
+		LLM:            llmView(rec.LLM),
 	}
 }
 

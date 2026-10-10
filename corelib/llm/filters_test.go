@@ -359,6 +359,32 @@ func TestContentToolCallDeltaFilterSuppressesSplitAngleArrayToolCall(t *testing.
 	}
 }
 
+func TestStripXMLToolCalls_RemovesLongcat(t *testing.T) {
+	input := "让我继续读取文件。\n<longcat_tool_call>ssh_read_file\n<longcat_arg_key>path</longcat_arg_key>\n<longcat_arg_value>/home/znsoft/prj8/src/tui.cpp</longcat_arg_value>\n</longcat_tool_call>\n"
+	got := StripXMLToolCalls(input)
+	if got != "让我继续读取文件。" {
+		t.Fatalf("StripXMLToolCalls() = %q", got)
+	}
+	if unclosed := StripXMLToolCalls("可见\n<longcat_tool_call>ssh_read_file"); unclosed != "可见" {
+		t.Fatalf("unclosed = %q", unclosed)
+	}
+}
+
+func TestContentToolCallDeltaFilterSuppressesLongcat(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("让我继续读取文件。")
+	filter.Write("<long")
+	filter.Write("cat_tool_call>ssh_read_file\n")
+	filter.Write("<longcat_arg_key>path</longcat_arg_key>\n")
+	filter.Write("<longcat_arg_value>/home/znsoft/prj8/src/tui.cpp</longcat_arg_value>\n")
+	filter.Write("</longcat_tool_call>")
+	filter.Flush()
+	if got := out.String(); got != "让我继续读取文件。" {
+		t.Fatalf("filtered output = %q", got)
+	}
+}
+
 func TestContentToolCallDeltaFilterFlushesPlainTextThroughDetailsFilter(t *testing.T) {
 	var out strings.Builder
 	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })

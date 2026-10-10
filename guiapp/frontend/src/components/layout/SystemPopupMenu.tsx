@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 
 export interface SystemMenuItem {
@@ -28,6 +28,26 @@ interface SystemPopupMenuProps {
 export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLabel = 'System menu', anchorTop, excludeTriggerSelector, menuId = 'system-popup-menu', testIdPrefix = 'system-menu', activeId }: SystemPopupMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    // Compact breakpoints shrink the rail below SIDEBAR_NAV_RAIL_WIDTH with
+    // !important. A fixed 112px left then floats clear of the rail, and a
+    // percentage left is the viewport because the menu is position:fixed.
+    // Track the rail's laid-out right edge instead, the same viewport space
+    // the vertical anchor already uses.
+    const [railRight, setRailRight] = useState<number | null>(null);
+    useLayoutEffect(() => {
+        const rail = menuRef.current?.closest('.mc-nav-rail');
+        if (!(rail instanceof HTMLElement)) return;
+        const measure = () => {
+            const right = rail.getBoundingClientRect().right;
+            if (right <= 0) return;
+            setRailRight(prev => (prev != null && Math.abs(prev - right) < 0.5 ? prev : right));
+        };
+        measure();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(rail);
+        return () => observer.disconnect();
+    }, []);
 
     const restoreFocus = () => {
         const target = returnFocus?.();
@@ -74,6 +94,7 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
         <div
             ref={menuRef}
             id={menuId}
+            className="spm-menu"
             data-testid={menuId}
             role="menu"
             aria-label={ariaLabel}
@@ -84,20 +105,9 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                 // absolutely positioned menu that starts at the rail's right
                 // edge, and a scrolled rail would drag the menu with it.
                 position: 'fixed',
-                left: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
+                left: `${railRight ?? SIDEBAR_NAV_RAIL_WIDTH}px`,
                 ...(anchorTop != null ? { top: `${anchorTop}px`, transform: 'translateY(-50%)' } : { bottom: '8px' }),
-                display: 'flex',
-                flexDirection: 'row',
-                gap: '2px',
-                padding: '6px 8px',
-                borderRadius: 'var(--radius-md, 10px)',
-                border: '1px solid var(--theme-border)',
-                background: 'var(--theme-surface)',
-                boxShadow: 'var(--shadow-md, 0 1px 2px rgba(30,58,95,0.05), 0 4px 12px -2px rgba(30,58,95,0.10))',
                 zIndex: 9999,
-                whiteSpace: 'nowrap',
-                maxWidth: 'calc(100vw - 80px)',
-                overflowX: 'auto',
             }}
         >
             {visibleItems.map((item, index) => {
@@ -106,6 +116,7 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                 <button
                     key={item.id}
                     ref={node => { itemRefs.current[index] = node; }}
+                    className="spm-item"
                     autoFocus={index === initialFocusIndex}
                     data-testid={`${testIdPrefix}-${item.id}`}
                     role="menuitem"
@@ -130,23 +141,6 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                         onSelect(item.id);
                         onClose();
                     }}
-                    style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: '3px',
-                        padding: '6px 10px',
-                        borderRadius: 'var(--radius-sm, 6px)',
-                        cursor: 'pointer',
-                        position: 'relative',
-                        transition: 'background 0.15s',
-                        border: 'none',
-                        background: current ? 'var(--theme-primary-soft)' : 'transparent',
-                        color: current ? 'var(--theme-primary-strong, var(--theme-primary))' : 'inherit',
-                        font: 'inherit',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = current ? 'var(--theme-primary-soft)' : ''; }}
                 >
                     <span className="spm-icon-wrap">
                         <span className="spm-icon">
