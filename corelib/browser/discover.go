@@ -679,6 +679,16 @@ func detectBrowser() *browserInfo {
 	return nil
 }
 
+// DetectBrowserAvailable reports whether a launchable Chrome/Edge runtime is
+// installed on this host. This is the "host could serve browser control by
+// launching its managed runtime" fact: distinct from DiscoverCDPAddr, which
+// only finds a runtime that is already running with a debug port. Capability
+// publishers use it so a restart with no live session still counts as
+// servable, while a machine without any browser keeps failing closed.
+func DetectBrowserAvailable() bool {
+	return detectBrowser() != nil
+}
+
 func findChromeExe() string {
 	switch runtime.GOOS {
 	case "windows":

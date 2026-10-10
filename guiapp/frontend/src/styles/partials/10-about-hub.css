@@ -697,6 +697,13 @@
     max-width: 55ch;
 }
 
+.problem-report-dialog__collection-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
 .problem-report-dialog__version {
     display: flex;
     align-items: center;
@@ -918,6 +925,7 @@
     }
 
     .problem-report-dialog__collection {
+        flex-wrap: wrap;
         align-items: flex-start;
     }
 

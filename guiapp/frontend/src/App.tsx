@@ -1674,6 +1674,8 @@ function App() {
     );
     const [toastMessage, setToastMessage] = useState<string>("");
     const [showToast, setShowToast] = useState(false);
+    // toastKey remounts stacked toasts to replay the fade; duration overrides .toast's baked-in 3s.
+    const [toastDuration, setToastDuration] = useState(3000); const [toastKey, setToastKey] = useState(0);
     const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [sensitivePermissionRequest, setSensitivePermissionRequest] = useState<SensitivePermissionRequest | null>(null);
     const sensitivePermissionRequestRef = useRef<SensitivePermissionRequest | null>(null);
@@ -1722,8 +1724,7 @@ function App() {
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
 
     const showToastMessage = useCallback((message: string, duration: number = 3000) => {
-        setToastMessage(message);
-        setShowToast(true);
+        setToastMessage(message); setToastDuration(duration); setToastKey(key => key + 1); setShowToast(true);
         if (toastTimerRef.current) {
             clearTimeout(toastTimerRef.current);
         }
@@ -2831,6 +2832,16 @@ function App() {
     };
 
     const t = translate;
+    const applyBugReportEnabled = (requested: boolean) => SetBugReportEnabled(requested).then(saved => setConfig(new corelib.AppConfig(saved)));
+    // Reset re-runs the diagnostic session: disable restores settings saved at session
+    // start, enable clears logs/trajectories; reuses problemBusy so all busy guards apply.
+    const resetProblemReportSession = async () => {
+        setProblemBusy(true); setProblemMessage('');
+        try {
+            await applyBugReportEnabled(false); await applyBugReportEnabled(true);
+            showToastMessage(t('problemReportResetToast'), 5000);
+        } catch (err: any) { setProblemMessage(String(err?.message || err)); } finally { setProblemBusy(false); }
+    };
     const allProjects = config?.projects || [];
     const normalizedProjectKeyword = projectSearchKeyword.trim().toLowerCase();
     const filteredAndSortedProjects = useMemo(() => {
@@ -6061,13 +6072,15 @@ ${instruction}`;
                         <p className="about-contact-dialog__desc problem-report-dialog__intro" id="problem-report-description">{t('problemReportDesc')}</p>
                         <div className="setting-row problem-report-dialog__collection">
                             <div className="problem-report-dialog__collection-copy"><strong>{t('problemReportEnable')}</strong><div className="setting-desc">{t('problemReportEnableDesc')}</div></div>
-                            <label className="switch"><input type="checkbox" checked={Boolean(config?.bug_report_enabled)} disabled={problemBusy} onChange={async (event) => {
-                                const requested = event.target.checked;
+                            <div className="problem-report-dialog__collection-controls">
+                                <button type="button" className="btn-link about-action-button problem-report-dialog__reset" disabled={problemBusy} onClick={resetProblemReportSession}>
+                                    {problemBusy ? t('loading') : t('problemReportReset')}
+                                </button>
+                                <label className="switch"><input type="checkbox" checked={Boolean(config?.bug_report_enabled)} disabled={problemBusy} onChange={async (event) => {
                                 setProblemBusy(true);
                                 setProblemMessage('');
                                 try {
-                                    const saved = await SetBugReportEnabled(requested);
-                                    setConfig(new corelib.AppConfig(saved));
+                                    await applyBugReportEnabled(event.target.checked);
                                 } catch (err: any) {
                                     // This controlled input remains bound to the last persisted
                                     // config snapshot, so a failed native write naturally rolls
@@ -6077,6 +6090,7 @@ ${instruction}`;
                                     setProblemBusy(false);
                                 }
                             }} /><span className="slider"></span></label>
+                            </div>
                         </div>
                         <div className="problem-report-dialog__version" aria-label="MaClaw GUI version"><span>MaClaw GUI</span><code>{APP_VERSION}</code></div>
                         <label className="problem-report-dialog__field"><span className="form-label">{t('problemReportOS')} <em>*</em></span><input className="form-input" value={problemOS} onChange={event => setProblemOS(event.target.value)} /></label>
@@ -6793,9 +6807,7 @@ ${instruction}`;
             )}
 
             {showToast && (
-                <div className="toast">
-                    {toastMessage}
-                </div>
+                <div key={toastKey} className="toast" style={{ animationDuration: `${toastDuration}ms` }}>{toastMessage}</div>
             )}
                 </div>
             </div>

@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -172,6 +173,15 @@ type IMMessageHandler struct {
 	semanticTrustedBrowser     func(userID, action, url string) (string, error)
 	semanticTrustedComputerUse func(userID, action string) (string, error)
 	semanticTrustedRepoMutate  func(userID, action, message string) (string, error)
+	// trustedBrowserLauncher is the test seam for the managed-browser
+	// bootstrap: production resolves it to browser.StartAgentSessionForOwner
+	// in persistent mode; tests assign a stub so publication and bootstrap
+	// gates never launch a real Chrome. Nil means the production path.
+	trustedBrowserLauncher func(principalID string) (*browser.BrowserAgentSession, error)
+	// trustedBrowserServableOverride is the test seam for the servability
+	// verdict itself. Nil means the live-session / CDP / installed-runtime
+	// ladder below.
+	trustedBrowserServableOverride func() bool
 	// semanticTrustedBuildVerify is a host-owned test/runtime hook for managed
 	// build/test/lint verification. It receives a reviewed task name and an
 	// optional workspace subdirectory, never a command line.

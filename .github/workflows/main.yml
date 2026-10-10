@@ -2850,14 +2850,26 @@ jobs:
               echo "R2 release asset not found: $name" >&2
               exit 1
             fi
+            # r2_put retries transient Cloudflare API 5xx (520s observed in
+            # production runs) so one blip does not fail a finished release.
+            r2_put() {
+              for attempt in 1 2 3 4; do
+                if wrangler r2 object put "$1" --file "$2" --remote ${3:+--cache-control "$3"}; then
+                  return 0
+                fi
+                echo "wrangler put failed (attempt $attempt/4): $1" >&2
+                [ "$attempt" = 4 ] && return 1
+                sleep $((attempt * 5))
+              done
+            }
             echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
-            wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            r2_put "$R2_BUCKET/$ASSET_PREFIX/$name" "$path" "public, max-age=31536000, immutable"
             if [ "${RELEASE_CHANNEL}" = "stable" ]; then
               # Object keys are raw; only the public history URL is escaped.
-              wrangler r2 object put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+              r2_put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" "$path" "public, max-age=31536000, immutable"
             fi
           done
-          wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
+          r2_put "$R2_BUCKET/${MANIFEST_NAME}" "release-assets/${MANIFEST_NAME}" "public, max-age=60"
 
       # Tencent COS mirror upload RETIRED (2026-10-08): the GHA -> COS egress
       # link stalled for hours and repeatedly failed the whole release job, and

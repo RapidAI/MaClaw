@@ -23,13 +23,38 @@ func semanticUnpublishedLegacyBrowserProvider(registered RegisteredTool) bool {
 }
 
 func semanticTrustedBrowserPublished(h *IMMessageHandler) bool {
-	return h != nil && (h.semanticTrustedBrowser != nil || trustedBrowserRuntimeAvailable(h))
+	return h != nil && (h.semanticTrustedBrowser != nil || trustedBrowserServable(h))
 }
 
-func trustedBrowserRuntimeAvailable(h *IMMessageHandler) bool {
+// trustedBrowserServable reports whether this host can serve a browser-control
+// turn at all. The ladder is live session → discoverable CDP runtime →
+// installed Chrome/Edge that the managed launcher could start. The first two
+// answer "is a runtime already alive"; the third answers "could the host make
+// one alive on demand". Treating "not yet alive" as infeasible was the
+// 2026-10-10 production incident: after an app restart, before any browser
+// session had ever been opened, a confident browser turn planned
+// browser.control.web, found no provider, and HostRejected the whole turn as
+// no_feasible_provider even though the host owns the launcher that would have
+// created the runtime. Only a host with no browser installed — where a launch
+// attempt could never succeed — stays unservable, because that is the one
+// state where publication would still end in the same refusal.
+func trustedBrowserServable(h *IMMessageHandler) bool {
 	if h == nil || h.app == nil {
 		return false
 	}
+	if h.trustedBrowserServableOverride != nil {
+		return h.trustedBrowserServableOverride()
+	}
+	if trustedBrowserRuntimeAlive() {
+		return true
+	}
+	return browser.DetectBrowserAvailable()
+}
+
+// trustedBrowserRuntimeAlive reports a browser runtime the host could attach
+// to right now: an agent session with a live target, or any discoverable CDP
+// endpoint. It is the "already alive" prefix of trustedBrowserServable.
+func trustedBrowserRuntimeAlive() bool {
 	for _, sess := range browser.ListAgentSessions() {
 		if sess != nil && sess.IsTargetAlive() {
 			return true
@@ -168,6 +193,38 @@ func trustedBrowserActionRefused(result *browser.BrowserActionResult) bool {
 	return !browser.BrowserActionExecuted(result)
 }
 
+// ensureTrustedBrowserSession bootstraps a browser session for a turn that
+// has none. The ladder is the same one the publication gate trusts: attach to
+// the user's already-running debug-enabled Chrome first (nothing new is
+// started), then fall back to the managed persistent runtime — the same
+// default the browser panel's session_start uses, whose durable profile keeps
+// the login state flows like account registration need. Only a host where
+// both fail returns unavailable; navigate and snapshot both route through
+// here because a snapshot without a session observes nothing.
+func (h *IMMessageHandler) ensureTrustedBrowserSession(principalID string) (*browser.BrowserAgentSession, error) {
+	if h == nil || h.app == nil {
+		return nil, fmt.Errorf("trusted_browser_session_unavailable")
+	}
+	if h.trustedBrowserLauncher != nil {
+		started, err := h.trustedBrowserLauncher(principalID)
+		if err != nil || started == nil {
+			return nil, fmt.Errorf("trusted_browser_session_unavailable")
+		}
+		return started, nil
+	}
+	if _, err := browser.ConnectUserChrome(); err == nil {
+		started, err := browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModeConnectUser)
+		if err == nil && started != nil {
+			return started, nil
+		}
+	}
+	started, err := browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModePersistent)
+	if err != nil || started == nil {
+		return nil, fmt.Errorf("trusted_browser_session_unavailable")
+	}
+	return started, nil
+}
+
 func (h *IMMessageHandler) controlTrustedBrowser(principalID, action, url string) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("trusted_browser_session_unavailable")
@@ -184,15 +241,9 @@ func (h *IMMessageHandler) controlTrustedBrowser(principalID, action, url string
 	}
 	sess := trustedBrowserBoundSession(principalID)
 	if sess == nil {
-		if action != "navigate" {
-			return "", fmt.Errorf("trusted_browser_session_unavailable")
-		}
-		if _, err := browser.DiscoverCDPAddr(); err != nil {
-			return "", fmt.Errorf("trusted_browser_session_unavailable")
-		}
-		started, err := browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModeConnectUser)
-		if err != nil || started == nil {
-			return "", fmt.Errorf("trusted_browser_session_unavailable")
+		started, err := h.ensureTrustedBrowserSession(principalID)
+		if err != nil {
+			return "", err
 		}
 		sess = started
 	}
