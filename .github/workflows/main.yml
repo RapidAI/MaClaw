@@ -2721,6 +2721,15 @@ jobs:
                 echo "uploaded $name ($(stat -c%s "$path") bytes)"
                 break
               fi
+              # A re-run hits 422 already_exists for assets the previous run
+              # uploaded: delete the stale copy and retry, which replaces it.
+              if grep -q "already_exists" asset-err.log; then
+                echo "asset $name exists; deleting stale copy"
+                asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq ".[] | select(.name == \"$name\") | .id")
+                [ -n "$asset_id" ] && gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
+                sleep 2
+                continue
+              fi
               echo "asset $name attempt $attempt failed:" >&2; cat asset-err.log >&2
               [ "$attempt" = 5 ] && exit 1
               # Secondary rate limits ask for minutes; grow 30s/60s/90s/120s.
