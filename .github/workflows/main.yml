@@ -2724,8 +2724,12 @@ jobs:
                 echo "asset $name exists (id=$asset_id); replacing"
                 gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
               fi
-              if gh api --method POST "${upload_url}$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe='-._~'))" "$name")" \
-                   -F "data=@${path}" > /dev/null 2>asset-err.log; then
+              encoded_name=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe='-._~'))" "$name")
+              if curl --fail --silent --show-error \
+                   --header "Authorization: Bearer ${GH_TOKEN}" \
+                   --header "Content-Type: application/octet-stream" \
+                   --data-binary "@${path}" \
+                   "${upload_url}${encoded_name}" > /dev/null 2>asset-err.log; then
                 echo "uploaded $name ($(stat -c%s "$path") bytes)"
                 break
               fi
