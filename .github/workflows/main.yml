@@ -2874,10 +2874,14 @@ jobs:
           RELEASE_ASSETS_DIR: release-assets
           RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
         run: |
-          # Rollback history is seeded from the current release when no remote
-          # catalogue exists yet (first stable release or prior job failure).
-          if ! curl --fail --silent --show-error --retry 2 --output stable-history.json "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/stable-history.json"; then
-            echo "R2 stable-history.json unavailable; seeding from current release"
+          # Rollback history is seeded from the current release when the remote
+          # catalogue is missing OR stale (first entry must be this tag; with
+          # COS paused the mirror-side updater never ran, so a fetched copy
+          # pointing at an older build must not be republished as-is).
+          tag="${{ github.ref_name }}"
+          if ! curl --fail --silent --show-error --retry 2 --output stable-history.json "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/stable-history.json" \
+             || ! python3 .github/scripts/history_first_build_is.py "$tag"; then
+            echo "R2 stable-history.json unavailable or stale (first build != $tag); seeding from current release"
             python3 .github/scripts/seed_stable_history.py
           fi
           wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
