@@ -2680,13 +2680,50 @@ jobs:
           echo "${MANIFEST_NAME} preview:"
           cat "release-assets/${MANIFEST_NAME}"
 
+      # 149 assets in one action run trip GitHub's secondary rate limit (the
+      # upload is a plain REST call per asset). This step replaces the action
+      # with a shell loop that (1) creates the release via the REST API,
+      # (2) uploads each asset with per-call retry + inter-asset sleep, and
+      # (3) resumes cleanly when re-run (existing assets are overwritten by
+      # the API's duplicate-name replace semantics).
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: release-assets/*
-          body_path: release_notes.md
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_NOTES: release_notes.md
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+        run: |
+          set -e
+          prerelease="false"
+          case "${RELEASE_TAG}" in *-*) prerelease="true";; esac
+          args=(-F draft=false -F prerelease="${prerelease}")
+          [ -s "${RELEASE_NOTES}" ] && args+=(-F body="@${RELEASE_NOTES}")
+          # Create (or reuse) the release; an existing one just gets patched.
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            -F tag_name="${RELEASE_TAG}" "${args[@]}" > release.json 2>/dev/null \
+            || gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+                 -F tag_name="${RELEASE_TAG}" "${args[@]}" > release.json
+          release_id=$(python3 -c "import json;print(json.load(open('release.json'))['id'])")
+          echo "release id=${release_id}"
+          upload_url="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name="
+          printf '%s\n' "$RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            path="${RELEASE_ASSETS_DIR}/$name"
+            [ -f "$path" ] || { echo "asset missing: $name" >&2; exit 1; }
+            for attempt in 1 2 3 4 5; do
+              if gh api --method POST "${upload_url}$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe='-._~'))" "$name")" \
+                   -F "data=@${path}" > /dev/null 2>asset-err.log; then
+                echo "uploaded $name ($(stat -c%s "$path") bytes)"
+                break
+              fi
+              echo "asset $name attempt $attempt failed:" >&2; cat asset-err.log >&2
+              [ "$attempt" = 5 ] && exit 1
+              # Secondary rate limits ask for minutes; grow 30s/60s/90s/120s.
+              sleep $((attempt * 30))
+            done
+            sleep 2
+          done
 
       - name: Verify GitHub update manifest is published
         # MaClaw GUI reads this exact stable endpoint before falling back to
