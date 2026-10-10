@@ -2716,18 +2716,18 @@ jobs:
             path="${RELEASE_ASSETS_DIR}/$name"
             [ -f "$path" ] || { echo "asset missing: $name" >&2; exit 1; }
             for attempt in 1 2 3 4 5; do
+              # Re-runs: a stale asset from an earlier attempt makes the
+              # POST return 422. Delete-then-upload; --jq tolerates a
+              # missing asset by yielding empty.
+              asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq ".[] | select(.name == \"$name\") | .id" 2>/dev/null)
+              if [ -n "$asset_id" ]; then
+                echo "asset $name exists (id=$asset_id); replacing"
+                gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
+              fi
               if gh api --method POST "${upload_url}$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe='-._~'))" "$name")" \
                    -F "data=@${path}" > /dev/null 2>asset-err.log; then
                 echo "uploaded $name ($(stat -c%s "$path") bytes)"
                 break
-              fi
-              # Re-runs hit 422 already_exists (gh prints only the summary
-              # line, so the error body is not greppable). Make the upload
-              # idempotent instead: drop any existing asset up front.
-              asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq ".[] | select(.name == \"$name\") | .id")
-              if [ -n "$asset_id" ]; then
-                echo "asset $name exists (id=$asset_id); replacing"
-                gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
               fi
               echo "asset $name attempt $attempt failed:" >&2; cat asset-err.log >&2
               [ "$attempt" = 5 ] && exit 1
