@@ -192,16 +192,8 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 	} else if raw.StopReason == "max_tokens" {
 		finishReason = "length"
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := joinStrings(textParts)
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, joinStrings(textParts)); changed {
+		finishReason = finish
 	}
 
 	return &Response{

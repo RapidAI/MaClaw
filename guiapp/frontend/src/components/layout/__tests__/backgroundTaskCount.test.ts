@@ -58,4 +58,17 @@ describe('workbench monitor task counts', () => {
             ' · ',
         )).toBe('后台 1 · 计划 0 · 直通 4');
     });
+
+    it('appends the bot task count only when a grant supplies it', () => {
+        expect(formatWorkbenchTaskCountLine(
+            { background: 1, scheduled: 0, passthrough: 0, bot: 1 },
+            { background: '后台', scheduled: '计划', passthrough: '直通', bot: 'Bot' },
+            ' · ',
+        )).toBe('后台 1 · 计划 0 · 直通 0 · Bot 1');
+        expect(formatWorkbenchTaskCountLine(
+            { background: 1, scheduled: 0, passthrough: 0, bot: 0 },
+            { background: '后台', scheduled: '计划', passthrough: '直通' },
+            ' · ',
+        )).toBe('后台 1 · 计划 0 · 直通 0 · Bot 0');
+    });
 });

@@ -12,6 +12,7 @@ import '../settings/app_preferences_model.dart';
 import '../api/api_client.dart';
 import '../security/mobile_redaction.dart';
 import '../../features/assistant/search_history.dart';
+import '../../features/bots/bot_message.dart';
 import '../../features/digital_employees/digital_employee_prompt.dart';
 import '../../features/documents/document_draft.dart';
 import '../../features/memory/local_memory_note.dart';
@@ -35,6 +36,21 @@ Map<String, String> _stringMapFromJson(String raw) {
   } catch (_) {
     return const {};
   }
+}
+
+/// Decode a stored JSON object, tolerating a row written by an older build.
+///
+/// A malformed payload returns null so one bad row is skipped instead of
+/// failing the whole transcript read.
+Map<String, dynamic>? _decodeJsonMap(String raw) {
+  if (raw.trim().isEmpty) return null;
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+  } on FormatException {
+    return null;
+  }
+  return null;
 }
 
 String _stringMapToJson(Map<String, String> value) {
@@ -473,6 +489,129 @@ class MobileLocalStore {
     });
   }
 
+  /// One bot's stored transcript, oldest first.
+  ///
+  /// Bot replies inline base64 images and documents, so the payload can be
+  /// large. Only [limit] messages are read back, which bounds both the query
+  /// and what a reload has to parse.
+  Future<List<BotMessage>> loadBotMessages(
+    String botId, {
+    int limit = 200,
+  }) async {
+    final id = botId.trim();
+    if (id.isEmpty) return const [];
+    final db = await _db();
+    final rows = await db.customSelect(
+      'SELECT payload FROM bot_messages WHERE bot_id = ? '
+      'ORDER BY created_at DESC LIMIT ?',
+      variables: [
+        Variable<String>(id),
+        Variable<int>(limit.clamp(1, 500)),
+      ],
+    ).get();
+    final messages = <BotMessage>[];
+    for (final row in rows) {
+      final decoded = _decodeJsonMap(row.read<String>('payload'));
+      if (decoded == null) continue;
+      final message = BotMessage.fromJson(decoded);
+      if (message.id.isEmpty) continue;
+      messages.add(message);
+    }
+    // Queried newest-first for the LIMIT to keep the newest; the transcript
+    // reads oldest-first.
+    return messages.reversed.toList(growable: false);
+  }
+
+  /// Newest message per bot id, for the rail preview.
+  ///
+  /// Reads one row per bot rather than every transcript: a rail that loaded
+  /// full histories would parse every inline base64 attachment on screen just to
+  /// draw a one-line preview.
+  Future<Map<String, BotMessage>> loadLatestBotMessageByBotId() async {
+    final db = await _db();
+    final rows = await db
+        .customSelect(
+          'SELECT bot_id, payload, created_at FROM bot_messages '
+          'ORDER BY bot_id, created_at ASC',
+        )
+        .get();
+    final latest = <String, BotMessage>{};
+    for (final row in rows) {
+      final botId = row.read<String>('bot_id');
+      if (botId.trim().isEmpty) continue;
+      final decoded = _decodeJsonMap(row.read<String>('payload'));
+      if (decoded == null) continue;
+      final message = BotMessage.fromJson(decoded);
+      if (message.id.isEmpty) continue;
+      final previous = latest[botId];
+      if (previous == null || !previous.isNewerThan(message)) {
+        latest[botId] = message;
+      }
+    }
+    return latest;
+  }
+
+  /// Every stored bot transcript, for the rail's last-message and unread
+  /// derivation without loading each conversation separately.
+  Future<List<BotConversation>> loadBotConversations({
+    int messageLimit = 200,
+  }) async {
+    final db = await _db();
+    final rows = await db
+        .customSelect(
+          'SELECT bot_id FROM bot_messages GROUP BY bot_id',
+        )
+        .get();
+    final conversations = <BotConversation>[];
+    for (final row in rows) {
+      final botId = row.read<String>('bot_id');
+      if (botId.trim().isEmpty) continue;
+      final messages = await loadBotMessages(botId, limit: messageLimit);
+      if (messages.isEmpty) continue;
+      conversations.add(BotConversation(botId: botId, messages: messages));
+    }
+    return conversations;
+  }
+
+  Future<void> saveBotMessages(
+    String botId,
+    List<BotMessage> messages, {
+    int limit = 200,
+  }) async {
+    final id = botId.trim();
+    if (id.isEmpty) return;
+    final db = await _db();
+    final kept = retainRecentBotMessages(messages, limit: limit);
+    await db.transaction(() async {
+      await db.customStatement('DELETE FROM bot_messages WHERE bot_id = ?', [
+        id,
+      ]);
+      for (final message in kept) {
+        if (message.id.isEmpty) continue;
+        await db.customStatement(
+          'INSERT INTO bot_messages (id, bot_id, role, payload, created_at) '
+          'VALUES (?, ?, ?, ?, ?)',
+          [
+            message.id,
+            id,
+            message.isUser ? 'user' : 'assistant',
+            jsonEncode(message.toJson()),
+            _dateWireValue(message.createdAt),
+          ],
+        );
+      }
+    });
+  }
+
+  /// Drop one bot's transcript, called when the bot is deleted so its history
+  /// does not linger after the bot is gone.
+  Future<void> deleteBotMessages(String botId) async {
+    final id = botId.trim();
+    if (id.isEmpty) return;
+    final db = await _db();
+    await db.customStatement('DELETE FROM bot_messages WHERE bot_id = ?', [id]);
+  }
+
   Future<AppPreferences> loadAppPreferences() async {
     final db = await _db();
     final rows = await db
@@ -685,6 +824,15 @@ class MobileLocalStore {
       table: 'digital_employee_tasks',
       column: 'context_json',
       definition: 'TEXT NOT NULL DEFAULT "{}"',
+    );
+    await db.customStatement(
+      'CREATE TABLE IF NOT EXISTS bot_messages ('
+      'id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, role TEXT NOT NULL, '
+      'payload TEXT NOT NULL, created_at TEXT NOT NULL)',
+    );
+    await db.customStatement(
+      'CREATE INDEX IF NOT EXISTS bot_messages_bot_created '
+      'ON bot_messages(bot_id, created_at)',
     );
     await db.customStatement(
       'CREATE TABLE IF NOT EXISTS app_preferences ('

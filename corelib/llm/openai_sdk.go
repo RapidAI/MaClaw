@@ -350,16 +350,8 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			finishReason = "tool_calls"
 		}
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := contentBuf.String()
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, contentBuf.String()); changed {
+		finishReason = finish
 	}
 	if msg.Content == "" && msg.ReasoningContent == "" && len(msg.ToolCalls) == 0 && finishReason == "" && usage == nil {
 		return nil, capture.statusCode(), capture.body(), fmt.Errorf("parse openai stream response: empty stream response (body_len=%d)", len(capture.body()))

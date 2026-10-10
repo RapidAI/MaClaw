@@ -111,7 +111,7 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, history []agent.ConversationEntry, choice llm.Choice, opts agentLoopBonusRoundOptions) ([]interface{}, []agent.ConversationEntry, time.Duration) {
 	content := choice.Message.Content
 	reasoning := choice.Message.ReasoningContent
-	if content == "" && reasoning != "" {
+	if content == "" && reasoning != "" && len(choice.Message.ToolCalls) == 0 {
 		content = reasoning
 	}
 	assistantMsg := map[string]interface{}{"role": "assistant", "content": content}

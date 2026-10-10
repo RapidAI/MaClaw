@@ -8,6 +8,13 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// relaunchGrace is how long the process stays alive after a relaunch is
+// scheduled. The login call that triggered it is still unwinding — it has to
+// finish persisting settings and return its result to the frontend — so quitting
+// sooner tears the window down mid-request and the user sees the app vanish at
+// the last step instead of the confirmed result.
+const relaunchGrace = 1500 * time.Millisecond
+
 func (a *App) scheduleRelaunch() error {
 	if os.Getenv("AICODER_SKIP_CODEXPROXY_RELAUNCH") == "1" {
 		return nil
@@ -20,7 +27,7 @@ func (a *App) scheduleRelaunch() error {
 		return fmt.Errorf("schedule relaunch: %w", err)
 	}
 	go func() {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(relaunchGrace)
 		if a.ctx != nil {
 			runtime.Quit(a.ctx)
 		} else {

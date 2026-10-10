@@ -16,7 +16,7 @@ import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { isBrowserEchoFieldLabel, stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
-import { cleanReasoningTrailForBody, resolveVisibleAssistantReply, separateReasoningFromBody } from "./assistantReasoningBody";
+import { cleanReasoningTrailForBody, visibleAssistantReplyForMessage } from "./assistantReasoningBody";
 import { completedAssistantSummary, assistantTaskSettledIncomplete, isProgressOnlyToolAction, parseAssistantToolStatus, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assistantToolCallRow";
 import { TaskResultArtifacts } from "./assistantTaskArtifacts";
@@ -1598,9 +1598,11 @@ export function renderMessage(
             // After the stream ends, peel CoT out of a mixed body. Ordinary chat
             // may still lift a hidden non-monologue deliverable; coding workbench
             // only separates, so thoughts stay on the timeline.
-            const visibleReply = (msg.codingTimeline?.length || collapseReasoningByDefault)
-                ? separateReasoningFromBody(msg.content || "", cleanedReasoning)
-                : resolveVisibleAssistantReply(msg.content || "", cleanedReasoning, { live: liveForReasoning });
+            const visibleReply = visibleAssistantReplyForMessage(msg.content || "", cleanedReasoning, {
+                live: liveForReasoning,
+                coding: !!(msg.codingTimeline?.length || collapseReasoningByDefault),
+                toolCalls: !!msg.toolCalls?.length,
+            });
             const taskSettled = !taskRunning && !!msg.toolCalls?.length;
             const summaryText = taskSettled ? completedAssistantSummary(visibleReply.content, msg.resultText) : visibleReply.content;
             return (

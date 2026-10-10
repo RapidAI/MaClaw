@@ -313,6 +313,72 @@ func TestToolPlannerUsesFamilyCoverageWithoutHidingReadySibling(t *testing.T) {
 	}
 }
 
+func TestToolPlannerClosedNegativeProviderDoesNotHideReadySibling(t *testing.T) {
+	registry := semanticRegistry(t)
+	ready := semanticProvider("ready_capture", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	ready.Binding.Kind = "mcp"
+	blockedSame := semanticProvider("blocked_capture", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	blockedSame.Binding.Kind = "mcp"
+	blockedSame.Ready = false
+	blockedOther := semanticProvider("blocked_deliver", "artifact.deliver.current_channel", map[string]string{"format": "image"}, EffectExternalEffect)
+	blockedOther.Binding.Kind = "mcp"
+	blockedOther.Ready = false
+	catalog := NewToolCatalog(registry)
+	snapshot, err := catalog.PublishWithCoverage([]ProviderSpec{ready, blockedSame, blockedOther}, CatalogCoverage{
+		State: CatalogCoverageComplete,
+		Families: []CatalogCoverageFamily{
+			{Kind: "mcp", State: CatalogCoverageComplete},
+		},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "root", TurnID: "turn", Snapshot: snapshot,
+		Needs: []CapabilityNeed{
+			{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true},
+			{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "image"}, Required: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Selections) != 1 || plan.Selections[0].AdapterName != "ready_capture" {
+		t.Fatalf("ready sibling was hidden: selections=%#v", plan.Selections)
+	}
+	if len(plan.Unmet) != 1 || plan.Unmet[0].NeedID != "deliver" || plan.Unmet[0].ReasonCode != CatalogCoverageReasonNotReady {
+		t.Fatalf("down provider was reported as absent: %#v", plan.Unmet)
+	}
+
+	onlyDown := semanticProvider("down_capture", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	onlyDown.Binding.Kind = "mcp"
+	onlyDown.Ready = false
+	snapshot, err = catalog.PublishWithCoverage([]ProviderSpec{onlyDown}, CatalogCoverage{
+		State:    CatalogCoverageComplete,
+		Families: []CatalogCoverageFamily{{Kind: "mcp", State: CatalogCoverageComplete}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "root", TurnID: "turn-absent", Snapshot: snapshot,
+		Needs: []CapabilityNeed{
+			{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true},
+			{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "image"}, Required: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]string{}
+	for _, unmet := range plan.Unmet {
+		reasons[unmet.NeedID] = unmet.ReasonCode
+	}
+	if len(plan.Selections) != 0 || reasons["capture"] != CatalogCoverageReasonNotReady || reasons["deliver"] != "no_feasible_provider" {
+		t.Fatalf("closed catalog mixed absence with unreadiness: selections=%#v unmet=%#v", plan.Selections, plan.Unmet)
+	}
+}
+
 func TestToolPlannerAllowsOnlyReadOnlyCandidateInBoundedStaleWindow(t *testing.T) {
 	registry := semanticRegistry(t)
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)

@@ -340,15 +340,8 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 				finishReason = "tool_calls"
 			}
 		}
-		if len(msg.ToolCalls) == 0 {
-			if contentCalls, malformed := ParseContentToolCallsDetailed(visibleContent); len(contentCalls) > 0 {
-				msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-				msg.Content = ""
-				finishReason = "tool_calls"
-			} else if malformed {
-				msg.Content = MalformedContentToolCallErrorMsg
-				finishReason = "stop"
-			}
+		if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+			finishReason = finish
 		}
 		finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 		result.Choices = append(result.Choices, Choice{

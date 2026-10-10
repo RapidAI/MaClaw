@@ -51,6 +51,12 @@ type MCPToolEntry struct {
 	// provision, and an instance id alone does not admit a product.
 	CapabilityGlobalKey   string
 	InstalledCapabilityID string
+	// RuntimeBlocked keeps a known tool in the catalog after its server's
+	// latest observation finished negative. The planner must not select it,
+	// and a need that only this server can serve stays provider_not_ready
+	// instead of being reported as absent. A healthy sibling in the same
+	// family stays selectable. Zero means the observation succeeded.
+	RuntimeBlocked bool
 }
 
 // MCPDynamicContractResolver is the only extension point that translates a

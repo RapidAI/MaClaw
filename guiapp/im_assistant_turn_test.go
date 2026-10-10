@@ -28,6 +28,47 @@ func TestBuildAgentLoopAssistantTurn_KeepsReasoningWithMidTextRolePrefix(t *test
 	}
 }
 
+func TestBuildAgentLoopAssistantTurn_ToolCallKeepsReasoningOutOfContent(t *testing.T) {
+	h := &IMMessageHandler{}
+	turn := h.buildAgentLoopAssistantTurn(&LoopContext{}, llm.Choice{
+		Message: llm.Message{
+			Role:             "assistant",
+			Content:          "",
+			ReasoningContent: "直接搜索。",
+			ToolCalls: []llm.ToolCall{{
+				ID:       "call-1",
+				Type:     "function",
+				Function: llm.ToolCallFunction{Name: "web_search", Arguments: `{"query":"北京天气"}`},
+			}},
+		},
+		FinishReason: "tool_calls",
+	})
+	if turn.Content != "" {
+		t.Fatalf("content = %q, want empty", turn.Content)
+	}
+	if turn.Reasoning != "直接搜索。" {
+		t.Fatalf("reasoning = %q", turn.Reasoning)
+	}
+	if turn.HistoryEntry.Content != "" {
+		t.Fatalf("history content = %q, want empty", turn.HistoryEntry.Content)
+	}
+}
+
+func TestBuildAgentLoopAssistantTurn_EmptyContentUsesReasoningWhenNoToolCall(t *testing.T) {
+	h := &IMMessageHandler{}
+	turn := h.buildAgentLoopAssistantTurn(&LoopContext{}, llm.Choice{
+		Message: llm.Message{
+			Role:             "assistant",
+			Content:          "",
+			ReasoningContent: "答案在思考里。",
+		},
+		FinishReason: "stop",
+	})
+	if turn.Content != "答案在思考里。" {
+		t.Fatalf("content = %q", turn.Content)
+	}
+}
+
 func TestBuildAgentLoopAssistantTurn_StripsLeadingReasoningRolePrefix(t *testing.T) {
 	h := &IMMessageHandler{}
 	turn := h.buildAgentLoopAssistantTurn(&LoopContext{}, llm.Choice{

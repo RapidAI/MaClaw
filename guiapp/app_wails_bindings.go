@@ -2297,6 +2297,11 @@ func (n *aiAssistantStreamDeltaNormalizer) Normalize(delta string) string {
 	if delta == "" {
 		return ""
 	}
+	if delta == rejectedRoundContentToken {
+		n.content = ""
+		n.contentSnapshotMode = false
+		return delta
+	}
 	if strings.HasPrefix(delta, "\x01") {
 		next, snapshotMode := normalizeAIAssistantStreamDelta(n.reasoning, strings.TrimPrefix(delta, "\x01"), n.reasoningSnapshotMode)
 		if next == "" {

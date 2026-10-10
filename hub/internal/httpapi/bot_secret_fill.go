@@ -10,7 +10,7 @@ import (
 
 // PostBotSecretFillHandler POST /api/v1/bots/{id}/secret-fill
 // The value is forwarded to MaClawSrv and is not written to the log.
-func PostBotSecretFillHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func PostBotSecretFillHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {

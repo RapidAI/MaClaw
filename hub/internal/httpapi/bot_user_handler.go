@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,8 +12,17 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 )
 
-func botMachine(w http.ResponseWriter, r *http.Request, identity veMachineAuthenticator) (*auth.MachinePrincipal, bool) {
-	principal, ok := authenticateVEMachine(w, r, identity)
+// botAuthenticator is the machine identity a bot request needs. A viewer
+// token resolves to the same tenant and user, so the bot user surface accepts
+// either credential. Only the machine path has ever proven a device, which is
+// why the check below still rejects an empty owner for both.
+type botAuthenticator interface {
+	AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*auth.MachinePrincipal, error)
+	AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error)
+}
+
+func botMachine(w http.ResponseWriter, r *http.Request, identity botAuthenticator) (*auth.MachinePrincipal, bool) {
+	principal, ok := botViewerPrincipal(w, r, identity)
 	if !ok {
 		return nil, false
 	}
@@ -23,8 +33,43 @@ func botMachine(w http.ResponseWriter, r *http.Request, identity veMachineAuthen
 	return principal, true
 }
 
+// botViewerPrincipal accepts a machine credential first and falls back to a
+// viewer token. The mobile and web clients only ever hold a viewer token, so
+// without this fallback they cannot reach their own bots. A viewer token names
+// one user, so it stands in for a machine of that same user.
+func botViewerPrincipal(w http.ResponseWriter, r *http.Request, identity botAuthenticator) (*auth.MachinePrincipal, bool) {
+	if identity == nil {
+		writeError(w, http.StatusUnauthorized, "MACHINE_UNAUTHORIZED", "machine authorization required")
+		return nil, false
+	}
+	machineID := strings.TrimSpace(r.Header.Get("X-Machine-ID"))
+	token := extractBearerToken(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "MACHINE_UNAUTHORIZED", "machine authorization required")
+		return nil, false
+	}
+	if machineID != "" {
+		principal, err := identity.AuthenticateMachine(r.Context(), machineID, token)
+		if err == nil && principal != nil {
+			return principal, true
+		}
+		// A stale machine ID on a valid viewer token must not lock the owner
+		// out of their own bots, so fall through to the viewer check.
+	}
+	viewer, err := identity.AuthenticateViewer(r.Context(), token)
+	if err != nil || viewer == nil {
+		writeError(w, http.StatusUnauthorized, "MACHINE_UNAUTHORIZED", "machine authorization required")
+		return nil, false
+	}
+	return &auth.MachinePrincipal{
+		TenantID:  viewer.TenantID,
+		UserID:    viewer.UserID,
+		MachineID: strings.TrimSpace(r.Header.Get("X-Machine-ID")),
+	}, true
+}
+
 // GetBotAccessHandler GET /api/v1/bots/access
-func GetBotAccessHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func GetBotAccessHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok {
@@ -46,7 +91,7 @@ func GetBotAccessHandler(svc *botmgmt.Service, identity veMachineAuthenticator) 
 }
 
 // ListBotsHandler GET /api/v1/bots
-func ListBotsHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func ListBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -65,7 +110,7 @@ func ListBotsHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http
 }
 
 // PostBotUserHandler POST /api/v1/bots
-func PostBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -92,7 +137,7 @@ func PostBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) h
 }
 
 // PatchBotUserHandler PATCH /api/v1/bots/{id}
-func PatchBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func PatchBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -119,7 +164,7 @@ func PatchBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) 
 }
 
 // DeleteBotUserHandler DELETE /api/v1/bots/{id}
-func DeleteBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func DeleteBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -137,7 +182,7 @@ func DeleteBotUserHandler(svc *botmgmt.Service, identity veMachineAuthenticator)
 }
 
 // PostBotMessageHandler POST /api/v1/bots/{id}/messages
-func PostBotMessageHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -206,7 +251,7 @@ func wantsAsyncBotReply(r *http.Request) bool {
 // GetBotRunHandler GET /api/v1/bots/{id}/runs/{runID}
 // A running command answers 202. The finished reply is the same object as a
 // synchronous message. One poll does not cancel the run.
-func GetBotRunHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -234,7 +279,7 @@ func GetBotRunHandler(svc *botmgmt.Service, identity veMachineAuthenticator) htt
 
 // GetBotDesktopHandler GET /api/v1/bots/{id}/desktop
 // Returns the Hub noVNC path while this user's desktop is running.
-func GetBotDesktopHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -261,7 +306,7 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity veMachineAuthenticator)
 // Opens or holds this user's desktop while the owner watches it or takes
 // over from the Bot page. The hold expires shortly after the last poll, so
 // a closed page does not pin the desktop forever.
-func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity veMachineAuthenticator) http.HandlerFunc {
+func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {

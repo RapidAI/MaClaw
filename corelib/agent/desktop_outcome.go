@@ -33,9 +33,13 @@ type DesktopOutcomeReviewer interface {
 
 const desktopOutcomeUnconfirmed = "这一步的结果还没有对照桌面确认。"
 
+// DesktopOutcomeEvidenceOmission marks a middle the check itself removed.
+// The command did not skip that part. The judge must not report it as truncated output.
+const DesktopOutcomeEvidenceOmission = "…[核对时略去中间]"
+
 const desktopOutcomeJudgeSystem = "你只判断这一步的结果是否已经满足用户要求。只回复一个 JSON 对象 {\"ok\":true或false,\"gap\":\"...\"}。\n" +
 	"ok 为 true 只在给出的工具结果或附上的桌面截图本身显示要求已经达成。\n" +
-	"工具报错或画面与要求不符时 ok 为 false。桌面截图与桌面工具文字不一致时，以截图为准。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。要求出现在这台桌面的画面上时，没有当前截图则 ok 为 false。\n" +
+	"工具报错或画面与要求不符时 ok 为 false。只有要求出现在这台桌面的画面上时，才以截图为准：桌面截图与桌面工具文字不一致时采用截图，没有当前截图则 ok 为 false。命令打印出来的正文就是该命令的输出，桌面截图不能把这段正文说成缺失或被截断。工具结果里的「" + DesktopOutcomeEvidenceOmission + "」是核对篇幅删掉的，不是命令漏打了这一段，不要据此说输出不完整。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。\n" +
 	"gap 用一句中文说明还缺什么。不要写步骤，不要声称已经完成。"
 
 // gateDesktopReply is the last rewrite before a reply leaves the loop.
@@ -103,6 +107,12 @@ func desktopOutcomeUserContent(cfg corelib.MaclawLLMConfig, userText, evidence s
 	} else {
 		text += evidence
 	}
+	if desktopOutcomeEvidenceHasRecord(evidence, "desktop: ") {
+		text += "\n\n桌面工具文字里的命令输出就是该命令打印的正文，桌面截图不能把这段正文说成缺失或被截断。只有要求出现在这台桌面的画面上时，才以截图为准。"
+	}
+	if strings.Contains(evidence, DesktopOutcomeEvidenceOmission) {
+		text += "\n\n「" + DesktopOutcomeEvidenceOmission + "」是这次核对删掉的篇幅，不是命令漏打了这一段。"
+	}
 	if desktopOutcomeEvidenceHasSSH(evidence) {
 		text += "\n\nssh 的输出判断远程命令。桌面截图不是那台机器的画面，不能用来否定 ssh 的输出。"
 	}
@@ -128,8 +138,14 @@ func desktopOutcomeUserContent(cfg corelib.MaclawLLMConfig, userText, evidence s
 // desktopOutcomeEvidenceHasSSH reports a tool record. A continuation line is
 // indented, so a command that prints "ssh:" is not a second record.
 func desktopOutcomeEvidenceHasSSH(evidence string) bool {
+	return desktopOutcomeEvidenceHasRecord(evidence, "ssh: ")
+}
+
+// desktopOutcomeEvidenceHasRecord reports a tool line. Continuation lines are
+// indented, so a command that prints the same prefix is not another record.
+func desktopOutcomeEvidenceHasRecord(evidence, prefix string) bool {
 	for _, line := range strings.Split(evidence, "\n") {
-		if strings.HasPrefix(line, "ssh: ") {
+		if strings.HasPrefix(line, prefix) {
 			return true
 		}
 	}

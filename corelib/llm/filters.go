@@ -43,6 +43,9 @@ func StripFunctionCalls(s string) string {
 
 func StripXMLToolCalls(s string) string {
 	s = normalizeDSMLMarkup(s)
+	// Hy3's </tool_call:SUFFIX> is not </tool_call>. The open-to-end pattern
+	// below would otherwise delete every character after <tool_call:SUFFIX>.
+	s = stripHy3ToolMarkup(s)
 	s = reLongcatToolCallBlock.ReplaceAllString(s, "")
 	s = reLongcatToolCallOpenEnd.ReplaceAllString(s, "")
 	s = reToolCallBlock.ReplaceAllString(s, "")

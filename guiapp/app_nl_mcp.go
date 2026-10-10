@@ -108,6 +108,8 @@ type MCPRegistry struct {
 	sessions         map[string]*mcpSession
 	sessionInitMu    sync.Mutex
 	sessionInitLocks map[string]*sync.Mutex
+	// healthLoopOnce starts the process lifecycle at most once.
+	healthLoopOnce sync.Once
 }
 
 // mcpSession tracks an active MCP Streamable HTTP session for a server.
@@ -493,6 +495,15 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			v.RuntimeSyncLastError = "runtime synchronization pending"
 			v.HealthStatus = mcpHealthStatusUnavailable
 			runtimeBlocked = true
+		}
+		if v.RuntimeSyncStatus == "" && mcpRuntimeSyncPersistenceBlocked(s.ID) {
+			// A failed durable write leaves the previous ready marker on disk.
+			// ListServers hides ready, so unknown health would otherwise stay an
+			// open observation and make every sibling MCP server unusable.
+			runtimeBlocked = true
+			v.RuntimeSyncStatus = "pending"
+			v.RuntimeSyncLastError = "runtime synchronization state unavailable"
+			v.HealthStatus = mcpHealthStatusUnavailable
 		}
 		if !runtimeBlocked {
 			if tools, ok := r.toolsCache[s.ID]; ok {
@@ -1123,52 +1134,36 @@ func (r *MCPRegistry) ProbeAllUnknownAsync() {
 	}
 }
 
-// StartHealthLoop starts a background goroutine that performs a health check
-// on every registered MCP Server every 60 seconds. It also calls
-// RemoveUnhealthy after each round to prune auto-discovered servers that have
-// failed 3 consecutive checks. The loop stops when ctx is cancelled.
+// StartHealthLoop runs the remote MCP observation lifecycle until ctx is
+// cancelled. The first observation is reconcileMCPRuntimeOnStartup; this loop
+// keeps that observation current. It does not delete servers. A marketplace
+// failure stays on the durable retry/needs_review record, and a manual
+// failure stays a closed negative health state.
 func (r *MCPRegistry) StartHealthLoop(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
+	if r == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.healthLoopOnce.Do(func() {
+		go r.runHealthLoop(ctx)
+	})
+}
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				r.mu.RLock()
-				servers := r.loadServers()
-				r.mu.RUnlock()
-
-				for _, s := range servers {
-					managed := s.Source == corelib.MCPSourceMarket && s.Capability != nil
-					// Bound every background probe independently. Reusing the loop
-					// context without a per-request deadline lets a slow remote MCP
-					// hold the health round open for the full HTTP client timeout and
-					// can delay later readiness repairs indefinitely.
-					probeCtx, cancel := context.WithTimeout(ctx, mcpBackgroundProbeTimeout)
-					var err error
-					if managed {
-						err = r.HealthCheckStrictContext(probeCtx, s.ID)
-					} else {
-						err = r.HealthCheckContext(probeCtx, s.ID)
-					}
-					cancel()
-					if err != nil {
-						log.Printf("[MCPRegistry] health check failed for %s: %v", s.ID, err)
-						if managed && r.app != nil {
-							if stateErr := r.app.recordMCPRuntimeSyncFailure(s.ID, "http", "", err); stateErr != nil {
-								log.Printf("[MCPRegistry] persist health failure for %s: %v", s.ID, stateErr)
-							}
-						}
-					}
-				}
-
-				r.RemoveUnhealthy()
+func (r *MCPRegistry) runHealthLoop(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if r.app != nil {
+				r.app.reconcileRemoteMCPObservations(ctx, true)
 			}
 		}
-	}()
+	}
 }
 
 // RemoveUnhealthy removes auto-discovered servers that have failed 3 or more
@@ -1265,6 +1260,29 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 	r.publishReviewedMCPContracts(serverID, views)
 
 	return views
+}
+
+// remoteHealthObservation is the process-local tools/list outcome. It does not
+// apply the durable sync-status overlay ListServers uses for the management
+// UI. Semantic inventory needs the raw outcome so a pending retry is not
+// mistaken for a probe that never ran, and a finished failure is not mistaken
+// for an open observation.
+func (r *MCPRegistry) remoteHealthObservation(serverID string) (mcpHealthStatus, []MCPToolView, bool) {
+	if r == nil {
+		return mcpHealthStatusUnknown, nil, false
+	}
+	serverID = strings.TrimSpace(serverID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	status := mcpHealthStatusUnknown
+	if h := r.health[serverID]; h != nil {
+		status = normalizeMCPHealthStatus(h.Status)
+	}
+	tools, ok := r.toolsCache[serverID]
+	if !ok {
+		return status, nil, false
+	}
+	return status, append([]MCPToolView(nil), tools...), true
 }
 
 // CachedServerTools returns the last successful tools/list observation without
@@ -1925,6 +1943,10 @@ func (a *App) ListLocalMCPServers() []LocalMCPServerView {
 		} else if managed && a.mcpRuntimeSyncRequired(e.ID) {
 			view.RuntimeSyncStatus = "pending"
 			view.RuntimeSyncLastError = "runtime synchronization pending"
+		}
+		if view.RuntimeSyncStatus == "" && mcpRuntimeSyncPersistenceBlocked(e.ID) {
+			view.RuntimeSyncStatus = "pending"
+			view.RuntimeSyncLastError = "runtime synchronization state unavailable"
 		}
 		views = append(views, view)
 	}

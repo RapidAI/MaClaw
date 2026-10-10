@@ -35,8 +35,10 @@
     --theme-page-bg: #f4f7fb;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f0f4f9;
-    --theme-text-primary: #1c2733;
-    --theme-text-secondary: #44546a;
+    /* Light shell retints these again on [data-ai-light-scheme] to the
+       assistant-title gray. This fallback matches that Fluent ink. */
+    --theme-text-primary: #526277;
+    --theme-text-secondary: #546479;
     --theme-text-muted: #657384;
     /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
     --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
@@ -3112,18 +3114,36 @@ body {
 .assistant-reasoning-body > div > :not(pre):not(.assistant-reasoning-segment) { opacity: 0.88; }
 .assistant-reasoning-body .assistant-reasoning-segment > :not(pre) { opacity: 0.88; }
 .assistant-reasoning-summary::-webkit-details-marker { display: none; }
+/* Centered stroke. A › glyph sits on the em baseline and rides below the label. */
+.assistant-reasoning-summary {
+    --reasoning-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.6 2.2 8.2 6 3.6 9.8' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
 .assistant-reasoning-summary::before {
-    content: "›";
-    display: inline-block;
-    width: 10px;
-    margin-right: 2px;
-    font-size: 16px;
-    line-height: 1;
+    content: "";
+    display: block;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    align-self: center;
+    background: currentColor;
+    -webkit-mask-image: var(--reasoning-chevron);
+    mask-image: var(--reasoning-chevron);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: 8px 8px;
+    mask-size: 8px 8px;
     transform: rotate(0deg);
     transition: transform 120ms ease;
 }
 details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
-.assistant-reasoning-summary--plain::before { content: none; width: 0; margin: 0; }
+.assistant-reasoning-summary--plain::before {
+    content: none;
+    background: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+}
 /* Live activity title: a highlight walks through the glyphs only.
    Same idea as Codex — do not restyle the row background. */
 .assistant-reasoning-live-label {
@@ -4307,10 +4327,11 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     flex-shrink: 0;
 }
 
-/* Migrated from inline styles in SidebarToolSelector. */
+/* Migrated from inline styles in SidebarToolSelector.  The bottom inset is
+   dropped so the task pane content sits right against the decorative line. */
 .sts-divider-wrap {
     flex-shrink: 0;
-    padding: 12px 16px;
+    padding: 12px 16px 0;
 }
 
 .sts-divider {
@@ -4430,35 +4451,6 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     font-size: 0.72rem;
     line-height: 1;
     font-weight: 700;
-}
-
-.snr-invite-divider {
-    width: 60%;
-    height: 1px;
-    margin: 3px 0;
-    background: var(--theme-border);
-    opacity: 0.7;
-}
-
-.snr-invite-icon {
-    margin: 0;
-    display: inline-flex;
-}
-
-.snr-invite-label {
-    font-size: 0.66rem;
-    line-height: 1;
-    font-weight: 800;
-}
-
-.snr-invite-dot {
-    position: absolute;
-    top: 5px;
-    right: 25%;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--theme-danger);
 }
 
 /* Migrated from inline styles in SidebarTaskEvidencePanel. */
@@ -13863,43 +13855,64 @@ button.tbk-pill {
  * Colours come from the shared theme tokens in 00-tokens.css. No hardcoded
  * surfaces, so the dialog follows the app's dark/light switch. */
 
-.llm-config-tokenbank-btn {
+/* Corner mark on a tested provider chip. Two classes beat the settings panel's 36px button floor. */
+.llm-config-provider-chip-slot {
+    position: relative;
+    display: inline-flex;
+    align-self: center;
+    max-width: 100%;
+}
+
+.llm-config-provider-grid {
+    align-items: center;
+    padding-top: 8px;
+}
+
+.llm-config-provider-grid .llm-config-tokenbank-btn {
+    position: absolute;
+    top: -4px;
+    right: -2px;
+    z-index: 2;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    align-self: center;
-    flex: 0 0 auto;
-    width: 26px;
-    height: 26px;
-    min-height: 26px;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    min-height: 22px;
     padding: 0;
-    margin-left: 2px;
+    margin: 0;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
     border-radius: 999px;
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
+    box-shadow: 0 0 0 2px var(--theme-surface);
     cursor: pointer;
+    line-height: 0;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.llm-config-tokenbank-btn:hover:not(:disabled) {
+/* The drawn mark stays 22px. The extra box only enlarges the click target, and it stays inside the row gap. */
+.llm-config-provider-grid .llm-config-tokenbank-btn::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+}
+
+.llm-config-provider-grid .llm-config-tokenbank-btn:hover:not(:disabled) {
     border-color: var(--theme-primary);
     color: var(--theme-primary-strong);
     background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
 }
 
-.llm-config-tokenbank-btn:focus-visible {
+.llm-config-provider-grid .llm-config-tokenbank-btn:focus-visible {
     outline: 2px solid var(--theme-primary);
     outline-offset: 2px;
 }
 
-/* The settings panel forces a 36px ink button. Keep this mark a small outline circle. */
+/* Later settings rules repaint every non-submit button with office ink. Restore the mark color. */
 .settings-content.settings-panel .llm-config-provider-grid .llm-config-tokenbank-btn {
-    width: 26px;
-    height: 26px;
-    min-height: 26px;
     border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-    background: var(--theme-surface);
     color: var(--theme-primary-strong);
 }
 
@@ -13979,6 +13992,7 @@ button.tbk-pill {
         border-color: ButtonText;
         background: ButtonFace;
         color: ButtonText;
+        box-shadow: none;
         forced-color-adjust: none;
     }
 }
@@ -19453,6 +19467,13 @@ button.tbk-pill {
     background: transparent;
 }
 
+/* Home knowledge entry: the category rail is not part of this page. */
+#App[data-nav-tab='settings'] .settings-shell.settings-shell--solo {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "content";
+}
+
 #App[data-nav-tab='settings'] .settings-top-tabs {
     /* Sticky sizes this item to its content, so it never becomes the scrollport. */
     position: static;
@@ -19610,6 +19631,14 @@ button.tbk-pill {
         height: auto;
         min-height: auto;
         overflow: visible;
+    }
+
+    /* The desktop solo rule uses a 1fr row. That row collapses to 0 when this
+       breakpoint makes the shell height indefinite, so size the page to its content. */
+    #App[data-nav-tab='settings'] .settings-shell.settings-shell--solo {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto;
+        grid-template-areas: "content";
     }
 
     #App[data-nav-tab='settings'] .settings-top-tabs {
@@ -21868,7 +21897,7 @@ button.tbk-pill {
 .atbn-urgent-open { background: none; border: none; padding: 0; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
 
 /* AssistantReasoningPanel.tsx */
-.arp-label { flex: 0 0 auto; white-space: nowrap; }
+.arp-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .arp-object { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: 0.78; }
 .arp-step { font-size: 10px; font-weight: 600; opacity: .72; flex: 0 0 auto; white-space: nowrap; }
 .arp-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: .72; }
@@ -22241,9 +22270,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #eef5ff;
-    --theme-text-primary: #17263c;
-    --theme-text-secondary: #46586f;
+    --theme-text-primary: #526277;
+    --theme-text-secondary: #546479;
     --theme-text-muted: #56677c;
+    --mc-text-anchor: #46586f;
     --theme-border: #c9ddf6;
     --theme-border-subtle: #dde9fa;
     --theme-success: #11813a;
@@ -22265,9 +22295,10 @@ button.tbk-pill {
     --theme-page-bg: #f6f8fa;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f6f8fa;
-    --theme-text-primary: #1f2328;
-    --theme-text-secondary: #424a53;
+    --theme-text-primary: #4f5a66;
+    --theme-text-secondary: #59636d;
     --theme-text-muted: #656d76;
+    --mc-text-anchor: #424a53;
     --theme-border: #d0d7de;
     --theme-border-subtle: #e1e7ed;
     --theme-success: #1a7f37;
@@ -22289,9 +22320,10 @@ button.tbk-pill {
     --theme-page-bg: #f4f7fb;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f0f4f9;
-    --theme-text-primary: #1c2733;
-    --theme-text-secondary: #44546a;
+    --theme-text-primary: #516074;
+    --theme-text-secondary: #5a697b;
     --theme-text-muted: #657384;
+    --mc-text-anchor: #44546a;
     --theme-border: #d9e1ec;
     --theme-border-subtle: #e8eef5;
     --theme-success: #4b796a;
@@ -22313,9 +22345,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #fbfbfa;
-    --theme-text-primary: #37352f;
-    --theme-text-secondary: #55534e;
+    --theme-text-primary: #5b5f63;
+    --theme-text-secondary: #666768;
     --theme-text-muted: #73716e;
+    --mc-text-anchor: #55534e;
     --theme-border: #e9e9e7;
     --theme-border-subtle: #f1f1ef;
     --theme-success: #0f7b6c;
@@ -22337,9 +22370,10 @@ button.tbk-pill {
     --theme-page-bg: #fbfbfd;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f5f5f8;
-    --theme-text-primary: #1b1c20;
-    --theme-text-secondary: #3c3e44;
+    --theme-text-primary: #4c525c;
+    --theme-text-secondary: #5a6069;
     --theme-text-muted: #6b7078;
+    --mc-text-anchor: #3c3e44;
     --theme-border: #e4e5ea;
     --theme-border-subtle: #eeeff2;
     --theme-success: #1b805d;
@@ -22361,9 +22395,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f8f9fa;
-    --theme-text-primary: #1a1f36;
-    --theme-text-secondary: #3c4257;
+    --theme-text-primary: #4c5568;
+    --theme-text-secondary: #596376;
     --theme-text-muted: #697386;
+    --mc-text-anchor: #3c4257;
     --theme-border: #e3e8ee;
     --theme-border-subtle: #f0f2f5;
     --theme-success: #0b8159;
@@ -22385,9 +22420,10 @@ button.tbk-pill {
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
     --theme-surface-muted: #fafafa;
-    --theme-text-primary: #171717;
-    --theme-text-secondary: #404040;
+    --theme-text-primary: #4e535a;
+    --theme-text-secondary: #5f6165;
     --theme-text-muted: #737373;
+    --mc-text-anchor: #404040;
     --theme-border: #e5e5e5;
     --theme-border-subtle: #f0f0f0;
     --theme-success: #11824d;
@@ -22712,23 +22748,26 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: 1
 .sidebar ::-webkit-scrollbar, .modal-content ::-webkit-scrollbar { width: 7px; height: 7px; }
 .sidebar ::-webkit-scrollbar-thumb, .modal-content ::-webkit-scrollbar-thumb { border-radius: 99px; background: color-mix(in srgb, var(--office-muted) 32%, transparent); }
 .sidebar ::-webkit-scrollbar-thumb:hover, .modal-content ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--office-accent) 58%, transparent); }
+/* These chip paints must not land on the row's SVG status mark: the mark is a
+   bare glyph (110-mc-app-shell.css) and the forced tile background turned
+   every completed/pending/failed mark into a colored chip. */
 .sidebar-task-row [data-tone='success'],
-.sidebar-task-row [data-status='completed'],
+.sidebar-task-row [data-status='completed']:not(.mc-task-status),
 .sidebar-task-row [data-state='completed'] { color: var(--mc-done, #64748b) !important; background: var(--mc-done-bg, color-mix(in srgb, #64748b 10%, transparent)) !important; }
 .sidebar-task-row [data-tone='warning'],
-.sidebar-task-row [data-status='pending'],
+.sidebar-task-row [data-status='pending']:not(.mc-task-status),
 .sidebar-task-row [data-state='review'] { color: var(--theme-warning) !important; background: var(--theme-warning-bg) !important; }
 .sidebar-task-row [data-tone='danger'],
-.sidebar-task-row [data-status='failed'],
+.sidebar-task-row [data-status='failed']:not(.mc-task-status),
 .sidebar-task-row [data-state='error'] { color: var(--theme-danger) !important; background: var(--theme-danger-bg) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='success'],
-[data-ai-theme='dark'] .sidebar-task-row [data-status='completed'],
+[data-ai-theme='dark'] .sidebar-task-row [data-status='completed']:not(.mc-task-status),
 [data-ai-theme='dark'] .sidebar-task-row [data-state='completed'] { color: var(--mc-done, #a9bbd2) !important; background: color-mix(in srgb, var(--mc-done, #a9bbd2) 14%, var(--theme-surface)) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='warning'],
-[data-ai-theme='dark'] .sidebar-task-row [data-status='pending'],
+[data-ai-theme='dark'] .sidebar-task-row [data-status='pending']:not(.mc-task-status),
 [data-ai-theme='dark'] .sidebar-task-row [data-state='review'] { color: #ffd18a !important; background: rgba(200,130,20,.18) !important; }
 [data-ai-theme='dark'] .sidebar-task-row [data-tone='danger'],
-[data-ai-theme='dark'] .sidebar-task-row [data-status='failed'],
+[data-ai-theme='dark'] .sidebar-task-row [data-status='failed']:not(.mc-task-status),
 [data-ai-theme='dark'] .sidebar-task-row [data-state='error'] { color: #ffaaa4 !important; background: rgba(200,50,40,.18) !important; }
 @media (max-width: 720px) {
   .modal-content, .provider-config-modal { width: calc(100vw - 24px) !important; max-height: calc(100vh - 24px) !important; border-radius: 16px !important; }
@@ -23087,7 +23126,10 @@ button[aria-busy='true']::after, [data-loading='true']::after {
   font-variant-numeric: tabular-nums;
   font-weight: 650;
 }
-:where(.muted, .secondary-text, [class*='muted']) { color: var(--office-muted) !important; }
+/* Scheme text roles. !important plus --office-muted pinned every muted class
+   to the inherited rail gray and beat the component's own secondary or muted color. */
+:where(.muted, [class*='muted']) { color: var(--theme-text-muted, var(--office-muted)); }
+:where(.secondary-text) { color: var(--theme-text-secondary, var(--office-muted)); }
 
 /* Group rhythm for dense lists */
 :where(.list-group, .task-group, .notification-group, .file-group) + :where(.list-group, .task-group, .notification-group, .file-group) {
@@ -23116,6 +23158,7 @@ button[aria-busy='true']::after, [data-loading='true']::after {
 /* Enhanced contrast support */
 @media (prefers-contrast: more) {
   [data-ai-theme='dark'] { --office-line: #68718a; --office-muted: #d0d5e2; }
+  [data-ai-theme='dark'] :where(.muted, [class*='muted'], .secondary-text) { color: var(--office-muted); }
   .sidebar .left-nav-item.active,
   .sidebar-task-row.is-active,
   [aria-selected='true'] { outline: 2px solid var(--office-accent); outline-offset: -2px; }
@@ -23316,7 +23359,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-nav-rail .sidebar-header--maclaw { display: none !important; }
 
 /* Reference primary navigation rhythm */
-.sidebar .left-nav-item:not(.left-nav-item--bot) { width: calc(100% - 20px) !important; min-height: 62px !important; margin: 4px 10px !important; gap: 6px !important; border-radius: 12px !important; }
+.sidebar .left-nav-item:not(.left-nav-item--bot):not(.left-nav-item--invite) { width: calc(100% - 20px) !important; min-height: 52px !important; margin: 2px 10px !important; gap: 6px !important; border-radius: 12px !important; }
 .sidebar .left-nav-item .sidebar-icon { width: 24px; height: 24px; justify-content: center; }
 /* The workbench entry wraps a 32px badge chip in .sidebar-icon; clamping the
    wrapper to 24px makes the badge overflow and paint over the label. */
@@ -23327,8 +23370,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     justify-content: center;
     align-items: center;
     width: auto;
-    min-height: 62px;
-    margin: 4px 6px;
+    min-height: 52px;
+    margin: 2px 6px;
     gap: 6px;
     border-radius: 12px;
     overflow: visible;
@@ -23354,6 +23397,141 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     color: var(--theme-on-primary, #fff);
     background: var(--theme-primary);
     box-shadow: none;
+}
+/* Daily check-in rail entry: same vertical pill geometry as the Bot entry
+   (icon chip above the label) so it stops reading as a stray row, but with an
+   amber CTA treatment — tinted pill, filled gradient badge, pulse dot — until
+   today's reward is claimed, then it settles into the muted gray state.
+   The doubled --checkin class outranks the !important rail resets
+   (.left-nav-item:not(--bot) geometry and .mc-nav-rail .sidebar-item wash). */
+.sidebar .left-nav-item.left-nav-item--checkin.left-nav-item--checkin {
+    --mc-checkin-accent: #f59e0b;
+    --mc-checkin-ink: color-mix(in srgb, #f59e0b 76%, var(--theme-text-primary));
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: auto !important;
+    min-height: 52px !important;
+    margin: 2px 6px !important;
+    gap: 6px;
+    border-radius: 12px;
+    overflow: visible;
+    padding: 6px 0;
+    border: none;
+    text-align: center;
+    background: color-mix(in srgb, var(--mc-checkin-accent) 13%, var(--theme-surface)) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mc-checkin-accent) 42%, transparent) !important;
+}
+.sidebar .left-nav-item.left-nav-item--checkin.left-nav-item--checkin:not(:disabled):hover {
+    background: color-mix(in srgb, var(--mc-checkin-accent) 21%, var(--theme-surface)) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mc-checkin-accent) 58%, transparent), 0 6px 16px -6px color-mix(in srgb, var(--mc-checkin-accent) 55%, transparent) !important;
+    transform: translateY(-1px);
+}
+.sidebar .left-nav-item.left-nav-item--checkin.left-nav-item--checkin:not(:disabled):active { transform: translateY(0); }
+.sidebar .left-nav-item.left-nav-item--checkin .sidebar-icon { width: auto; height: auto; margin: 0; }
+.sidebar .left-nav-item.left-nav-item--checkin .sidebar-icon .checkin-nav-icon-badge {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    filter: none;
+    opacity: 1;
+    color: #fff;
+    background: linear-gradient(140deg, #fbbf24, #f59e0b 52%, #d97706);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 3px 9px -3px color-mix(in srgb, var(--mc-checkin-accent, #f59e0b) 60%, transparent);
+    transition: box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+.sidebar .left-nav-item.left-nav-item--checkin:not(:disabled):hover .sidebar-icon .checkin-nav-icon-badge {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 5px 13px -3px color-mix(in srgb, var(--mc-checkin-accent, #f59e0b) 68%, transparent);
+}
+/* Unclaimed-only attention dot; hidden once today's reward is claimed. */
+.sidebar .left-nav-item.left-nav-item--checkin:not(.checked-in):not(:disabled) .sidebar-icon .checkin-nav-icon-badge::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #ef4444;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .sidebar .left-nav-item.left-nav-item--checkin:not(.checked-in):not(:disabled) .sidebar-icon .checkin-nav-icon-badge::before {
+        animation: mc-checkin-dot-pulse 2.2s ease-out infinite;
+    }
+    @keyframes mc-checkin-dot-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, .5); }
+        70%, 100% { box-shadow: 0 0 0 7px rgba(239, 68, 68, 0); }
+    }
+}
+.sidebar .left-nav-item.left-nav-item--checkin > .bot-nav-label {
+    color: var(--mc-checkin-ink, #b45309);
+    font-size: 12px;
+    line-height: 1.2;
+    font-weight: 700;
+}
+/* Claimed: muted gray pill, no dot, no glow. */
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in {
+    background: color-mix(in srgb, var(--theme-text-muted) 9%, var(--theme-surface)) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 24%, transparent) !important;
+}
+/* Pending request (in flight, not yet claimed): keep the amber look, dim only. */
+.sidebar .left-nav-item.left-nav-item--checkin:disabled:not(.checked-in) { opacity: .72; }
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in .sidebar-icon .checkin-nav-icon-badge {
+    color: var(--theme-text-muted);
+    background: color-mix(in srgb, var(--theme-text-muted) 14%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 28%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--checkin.checked-in > .bot-nav-label {
+    color: var(--theme-text-muted);
+}
+/* Referral (推荐) rail entry: vertical pill geometry matching the Bot entry —
+   primary-tinted badge chip above the label, plus a static attention dot.
+   Excluded from the generic reset above so none of these declarations have
+   to outrank it; the badge's filter:none wins over the 20-app-shell grayscale
+   via source order (this partial assembles after 20-app-shell). */
+.sidebar .left-nav-item.left-nav-item--invite {
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: auto;
+    min-height: 52px;
+    margin: 2px 6px;
+    gap: 6px;
+    border-radius: 12px;
+    overflow: visible;
+    padding: 6px 0;
+    border: none;
+    text-align: center;
+}
+.sidebar .left-nav-item.left-nav-item--invite .sidebar-icon { width: auto; height: auto; margin: 0; }
+.sidebar .left-nav-item.left-nav-item--invite .sidebar-icon .invite-nav-icon-badge {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    filter: none;
+    opacity: 1;
+    color: var(--theme-primary-strong, var(--theme-primary));
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 34%, transparent);
+}
+.sidebar .left-nav-item.left-nav-item--invite > .bot-nav-label { color: var(--theme-primary); }
+.sidebar .left-nav-item.left-nav-item--invite .sidebar-icon .invite-nav-icon-badge::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #ef4444;
 }
 .sidebar .left-nav-item:not(.left-nav-item--bot) > span:last-child { font-size: 12px !important; line-height: 1.2 !important; font-weight: 600 !important; }
 .sidebar .left-nav-item.left-nav-item--bot > .bot-nav-label {
@@ -23774,14 +23952,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .vecv-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
 .vecv-file-meta { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .vecv-file-title { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.vet-avatar-img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
-.vet-avatar-fallback { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface)); color: var(--theme-primary); font-size: 11px; font-weight: 700; }
+.vet-avatar-img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.vet-avatar-fallback { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface)); color: var(--theme-primary); font-size: 12px; font-weight: 700; }
 .vet-list-shell { position: relative; overflow: auto; height: 100%; min-width: 0; width: 100%; }
-.vet-avatar-wrap { position: relative; width: 28px; height: 28px; flex-shrink: 0; }
+.vet-avatar-wrap { position: relative; width: 30px; height: 30px; flex-shrink: 0; }
 .vet-row-text { flex: 1; min-width: 0; text-align: left; }
-.vet-row-name-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.vet-policy-icon { font-size: 12px; flex-shrink: 0; }
-.vet-menu-key { width: 28px; text-align: center; font-size: 9px; font-weight: 700; flex-shrink: 0; }
+.vet-row-name-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.vet-policy-icon { flex-shrink: 0; display: inline-flex; }
+.vet-list-shell [role="button"]:focus-visible { outline: 2px solid var(--theme-primary, #2f5f98); outline-offset: -2px; }
+.vet-menu-icon { flex-shrink: 0; }
+@keyframes vet-icon-spin { to { transform: rotate(1turn); } }
+.vet-spinning { animation: vet-icon-spin 0.9s linear infinite; }
 .vet-dialog-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
 .vet-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .vet-info-avatar-block { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 20px; }
@@ -24031,11 +24212,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 
 /* Real Wails sidebar shell alignment.
    The drag strip is pinned to the window top, while #App already reserves
-   --dwm-top-offset. The pane only keeps whatever part of the strip still
-   hangs below that inset, so the search is not pushed down a second time. */
+   --dwm-top-offset. The pane keeps no extra top inset: the decorative
+   tool divider owns that rhythm and the search field hugs it. The pane's
+   first rows still sit below the 10px drag strip, so clicks stay usable. */
 #App { --mc-sidebar-drag-strip: max(10px, var(--dwm-top-offset, 0px)); }
 .mc-sidebar-shell { width: 308px !important; height: 100%; min-height: 0; overflow: hidden; background: var(--theme-surface) !important; border-right: 0 !important; }
-.mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: max(0px, calc(var(--mc-sidebar-drag-strip, 10px) - var(--dwm-top-offset, 0px))) 14px 10px !important; min-height: 0; }
+.mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: 0 14px 10px !important; min-height: 0; }
 .mc-sidebar-shell [data-testid="sidebar-middle-pane-tasks"] { background: var(--theme-surface); min-height: 0; overflow: hidden; }
 .mc-sidebar-shell .mc-sidebar-middle-tabs { display: none !important; }
 @media (max-width: 1100px) { .mc-sidebar-shell { width: 280px !important; } }
@@ -24097,7 +24279,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:var(--theme-surface); border-bottom:1px solid var(--theme-border); user-select:none; cursor:default; }
 .mc-task-execution-header[data-window-drag] { --wails-draggable: drag; }
-.mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--theme-text-primary); }
+.mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--mc-chrome-ink, var(--theme-text-primary)); }
 .mc-task-execution-header span { color:var(--mc-accent, #2f6fbc); font-size:13px; }
 .mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
 .mc-task-execution-actions button { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
@@ -24174,8 +24356,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
 /* Title keeps the first line. Status and created-at share the second, so a
    long name cannot push the meta onto a third line under the 72px header.
-   Clip each line itself; clipping the whole heading cuts the status dot halo. */
-.mc-task-execution-heading > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.35; }
+   Clip the title element itself. The digital-employee bar uses the same
+   strong with no inner text span, so ellipsis cannot move onto a child.
+   The kind icon is a sibling, out of flow, in the header's left padding. */
+.mc-task-execution-title-row { position: relative; min-width: 0; max-width: 100%; }
+.mc-task-execution-heading > .mc-task-execution-title,
+.mc-task-execution-title-row > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.35; }
+.mc-task-execution-header .mc-task-execution-kind { position: absolute; top: 50%; right: calc(100% + 3px); display: flex; align-items: center; justify-content: center; color: var(--mc-chrome-ink, var(--theme-text-primary)); line-height: 0; transform: translateY(-50%); }
+.mc-task-execution-header .mc-task-execution-kind svg { display: block; width: 15px; height: 15px; }
 .mc-task-execution-subline { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .mc-task-execution-subline .mc-task-execution-status { flex: 0 0 auto; }
 .mc-task-execution-subline .mc-task-execution-meta { flex: 1 1 auto; min-width: 0; }
@@ -24190,17 +24378,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
    online/offline is a live indicator, not a task outcome. */
 .mc-task-execution-status--online { border-color: color-mix(in srgb, var(--theme-success) 32%, var(--theme-border)); background: var(--theme-success-bg); color: var(--theme-success) !important; }
 .mc-task-execution-status--online i { background: var(--theme-success); box-shadow: 0 0 0 3px rgba(27,182,106,.12); }
-.mc-task-execution-status--pending { border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border)); background: var(--theme-warning-bg); color: var(--theme-warning) !important; }
-.mc-task-execution-status--pending i { background: var(--theme-warning); box-shadow: 0 0 0 3px rgba(243,154,36,.14); }
+.mc-task-execution-status--pending { border-color: var(--mc-wait-border, color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border))); background: var(--mc-wait-bg, color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface))); color: var(--mc-wait, var(--theme-text-secondary)) !important; }
+.mc-task-execution-status--pending i { background: var(--mc-wait, var(--theme-text-secondary)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc-wait, var(--theme-text-secondary)) 18%, transparent); }
 .mc-task-execution-status--failed,
 .mc-task-execution-status--cancelled { border-color: color-mix(in srgb, var(--theme-danger) 32%, var(--theme-border)); background: var(--theme-danger-bg); color: var(--theme-danger) !important; }
 .mc-task-execution-status--failed i,
 .mc-task-execution-status--cancelled i { background: var(--theme-danger); box-shadow: 0 0 0 3px rgba(224,90,90,.12); }
 .mc-task-execution-meta { color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title{font-size:16px}}
+@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title,.mc-task-execution-title-row > .mc-task-execution-title{font-size:16px}}
 
-/* Workbench task pane: New Task is its own action. Theme and cloud sit in
-   a later cluster with a real gap, so they do not read as part of creating. */
+/* Workbench task pane: New Task is its own action. Knowledge sits in the open
+   stretch before the divider; theme and cloud stay in the later cluster. */
 .mc-task-pane__title {
     margin: 0 8px 8px;
     min-height: 0;
@@ -24344,7 +24532,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane__toolbar-divider {
     width: 1px;
     height: 16px;
-    margin: 0 4px 0 2px;
+    margin: 0 4px;
     background: var(--theme-border-subtle, #e6edf5);
 }
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__toolbar > button.mc-task-pane__create-group {
@@ -24401,7 +24589,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     color: #fff;
     box-shadow: 0 3px 8px rgba(23, 105, 232, .28);
 }
-/* Theme and cloud sit at the trailing end of the toolbar, past the divider. */
 .mc-task-pane__tool-group {
     display: inline-flex;
     align-items: center;
@@ -24431,6 +24618,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     background: var(--theme-primary-soft) !important;
     border-color: transparent !important;
     color: var(--theme-primary) !important;
+}
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__knowledge:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 1px;
 }
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button:disabled {
     cursor: default;
@@ -24505,8 +24696,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     .mc-task-pane__create-group > span { font-size: 13px !important; }
     .mc-task-pane__save-group { display: none !important; }
 }
-/* Guard-required dark sidebar variables for the live Wails shell */
-.sidebar {
+/* Guard-required dark sidebar variables for the live Wails shell. Light theme
+   must opt out: the rail's active entries (AI workbench, Bot) paint with
+   --theme-primary, and the unscoped gray here rendered their active states as
+   gray "disabled" chips in light mode. :where() keeps specificity at (0,1,0)
+   so the [data-ai-theme='dark'][data-ai-dark-scheme=...] scheme blocks win. */
+.sidebar:where(:not([data-ai-theme='light'])) {
     --theme-primary: #a8a8a8;
     --theme-primary-strong: #c6c6c6;
     --theme-primary-soft: rgba(255, 255, 255, 0.10);
@@ -24524,7 +24719,37 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     --theme-page-bg: #0b1220;
 }
 /* Final reference proportion pass: keep the live Wails shell aligned with the supplied desktop mockup. */
-.mc-nav-rail { padding: 20px 12px !important; }
+.mc-nav-rail { padding: 10px 12px !important; }
+/* Height-pressure safety. The rail stacks 13 items; when the window (or DPI
+   scaling) leaves less CSS height than the rail needs, flex squeezes every
+   item below its label and the half-hidden text reads as clipped buttons.
+   The scrollable middle wrapper keeps each item at its natural height and
+   scrolls its own overflow instead. The brand, the system trigger and the
+   popup menus stay outside this wrapper: an ancestor with overflow hidden
+   would clip the fixed-position popup menus. */
+.mc-nav-rail__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The rail stays scrollable when the window is short, but the scrollbar
+     reads as chrome in a 112px rail: hide the bar in every engine
+     (Chromium/WebView2, Firefox, legacy Edge) while keeping wheel/keyboard
+     scrolling. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.mc-nav-rail__scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.mc-nav-rail__scroll > * { flex-shrink: 0; }
+/* Pull the first nav item up to the brand header: the generic left-nav-item
+   top margin is inter-item rhythm, not brand spacing. The doubled class plus
+   the rail ancestors reach specificity (0,5,0), which must out-rank the
+   generic forced margin shorthand in 100-pet-store-mc. */
+.mc-nav-rail .mc-nav-rail__scroll > .left-nav-item.left-nav-item:first-child { margin-top: 0 !important; }
 .mc-nav-rail .sidebar-item { min-height: 66px; }
 .mc-nav-rail .sidebar-logo, .mc-nav-rail .sidebar-header { margin-bottom: 14px; }
 .mc-legacy-rail-footer { display: none !important; }
@@ -24533,12 +24758,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 58px;
-  margin: 8px 0 4px;
+  width: 44px;
+  height: 46px;
+  margin: 4px 0 2px;
   padding: 0;
   border: 0;
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent;
   color: var(--theme-text-primary);
   cursor: pointer;
@@ -24558,24 +24783,24 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-profile-rail__avatar--image { object-fit: cover; }
 .mc-profile-rail .mc-profile-rail__avatar--system {
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   border: 1px solid rgba(255, 255, 255, .24);
-  border-radius: 13px;
+  border-radius: 10px;
   background: linear-gradient(145deg, #2b7cf4 0%, var(--mc-accent, #2f6fbc) 58%, #1059c9 100%);
   color: #fff;
   box-shadow: 0 7px 16px rgba(23, 105, 232, .24), inset 0 1px 0 rgba(255, 255, 255, .18);
 }
-.mc-profile-rail__avatar--system svg { width: 25px; height: 25px; display: block; }
+.mc-profile-rail__avatar--system svg { width: 20px; height: 20px; display: block; }
 .mc-profile-rail:hover .mc-profile-rail__avatar,
 .mc-profile-rail:focus-visible .mc-profile-rail__avatar { border-color: var(--mc-accent, #2f6fbc); }
 /* Keep the system-menu trigger visually transparent: the generic office-theme
    .sidebar button rules (hover/active background, 10px radius, inset bar)
-   would otherwise paint a full-size light panel behind the 42px icon square. */
+   would otherwise paint a full-size light panel behind the 34px icon square. */
 .sidebar .mc-profile-rail,
 .sidebar .mc-profile-rail:hover,
 .sidebar .mc-profile-rail[aria-current='page'] {
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent !important;
   box-shadow: none;
 }
@@ -24583,9 +24808,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   --theme-page-bg: #f0f6ff;
   --theme-surface: #f0f6ff;
   --theme-surface-muted: #ffffff;
-  --theme-text-primary: #26364a;
-  --theme-text-secondary: #52657d;
-  --theme-text-muted: #8a9bb0;
+  /* Text ink comes from the light-scheme chrome rule. Local text
+     tokens here overrode that rule with a near-black primary and a
+     muted gray that failed contrast on this blue surface. */
   --theme-border: #dbe6f2;
   --theme-border-subtle: #e6edf5;
 }
@@ -24608,6 +24833,88 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: color-mix(in srgb, var(--theme-primary) 10%, transparent) !important;
   border-color: transparent !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent) !important;
+}
+/* Rail flyout menus (system, extensions, library, professional features) share
+   SystemPopupMenu. Inside .sidebar the office-theme button rules paint a
+   violet hover and a left inset bar, and native button appearance paints a
+   white bordered face. Hover is a lighter primary wash. The open page uses
+   the same wash and hairline as .mc-nav-rail .sidebar-item.active. */
+.spm-menu {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-lg, 14px);
+  border: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+  box-shadow: var(--shadow-md, 0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10));
+  white-space: nowrap;
+  max-width: calc(100vw - 80px);
+  overflow-x: auto;
+}
+/* Light rail rebinds --theme-surface to the rail fill. The card white is
+   --theme-surface-muted, same swap the status panel uses. */
+.sidebar[data-ai-theme='light'] .spm-menu {
+  background: var(--theme-surface-muted);
+}
+.spm-menu > .spm-item {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-primary);
+  font: inherit;
+  line-height: 1.15;
+  cursor: pointer;
+  position: relative;
+  transform: none;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+.spm-menu > .spm-item:hover,
+.spm-menu > .spm-item:focus-visible,
+.spm-menu > .spm-item:active {
+  background: color-mix(in srgb, var(--theme-primary) 8%, transparent);
+  border-color: transparent;
+  color: var(--theme-text-primary);
+  transform: none;
+}
+/* Beat .sidebar button[aria-current='page'] (violet fill + left bar). */
+.spm-menu > .spm-item[aria-current='page'],
+.spm-menu > .spm-item[aria-current='page']:hover,
+.spm-menu > .spm-item[aria-current='page']:focus-visible,
+.spm-menu > .spm-item[aria-current='page']:active {
+  background: color-mix(in srgb, var(--theme-primary) 10%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent) !important;
+  color: var(--theme-text-primary) !important;
+}
+.spm-menu > .spm-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary) 48%, transparent) !important;
+  outline-offset: -2px;
+}
+/* Same glyph treatment as the rail: grayscale the stroke, do not tint it. */
+.spm-menu .spm-icon {
+  color: var(--theme-text-primary);
+  opacity: 1;
+}
+.spm-menu .spm-icon svg {
+  filter: grayscale(1) saturate(0) brightness(0.68);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spm-menu > .spm-item { transition: none; }
+}
+@media (prefers-contrast: more) {
+  .spm-menu > .spm-item[aria-current='page'] {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: -2px;
+  }
 }
 .mc-sidebar-shell { width: 308px !important; min-width: 308px !important; }
 .mc-sidebar-drag-strip { width: 428px !important; }
@@ -24803,7 +25110,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-welcome__title,
 #App[data-ai-theme='dark'] .mc-task-execution h1,
 #App[data-ai-theme='dark'] .mc-task-execution h2,
-#App[data-ai-theme='dark'] .mc-task-execution-header strong { color: var(--theme-text-primary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-header strong,
+#App[data-ai-theme='dark'] .mc-task-execution-header .mc-task-execution-kind { color: var(--theme-text-primary) !important; }
 #App[data-ai-theme='dark'] .mc-header-search,
 #App[data-ai-theme='dark'] .mc-header-search-wrap,
 #App[data-ai-theme='dark'] .mc-header-notification,
@@ -24822,7 +25130,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-task-execution-status { background: var(--theme-primary-soft) !important; border-color: var(--theme-border) !important; color: var(--theme-primary-strong) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--completed { background: color-mix(in srgb, var(--mc-done) 14%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--mc-done) 42%, var(--theme-border)) !important; color: var(--mc-done) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--online { background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-success) 48%, var(--theme-border)) !important; color: var(--theme-success) !important; }
-#App[data-ai-theme='dark'] .mc-task-execution-status--pending { background: color-mix(in srgb, var(--theme-warning) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-warning) 48%, var(--theme-border)) !important; color: var(--theme-warning) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--failed,
 #App[data-ai-theme='dark'] .mc-task-execution-status--cancelled { background: color-mix(in srgb, var(--theme-danger) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-danger) 48%, var(--theme-border)) !important; color: var(--theme-danger) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-meta { color: var(--theme-text-muted) !important; }
@@ -24978,7 +25285,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   width: 100%;
   box-sizing: border-box;
 }
-.mc-workbench-status-card__heading { margin-bottom: 5px; font-size: 13px; }
+.mc-workbench-status-card__heading { margin-bottom: 5px; font-size: 13px; color: var(--mc-chrome-ink, inherit); }
 .mc-workbench-status-card__heading-signals {
   display: flex;
   align-items: center;
@@ -25041,14 +25348,26 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-workbench-status-card__limits > span { display: block; white-space: nowrap; }
 .mc-workbench-status-card__jobs-row { min-height: 28px; }
 .mc-workbench-status-card__row.mc-workbench-status-card__jobs-row strong.mc-workbench-status-card__jobs {
+  display: flex;
   flex: 1;
+  align-items: baseline;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.mc-workbench-status-card__jobs-main {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.3;
+}
+.mc-workbench-status-card__jobs-bot {
+  flex: none;
+  /* pre keeps the leading " · " separator space flex would collapse. */
+  white-space: pre;
 }
 .mc-workbench-status-card__model { min-width: 0; max-width: 100%; }
 .mc-workbench-status-card__model strong { color: var(--theme-text-primary); font-weight: 600; }
@@ -25363,7 +25682,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   justify-content: center;
   height: 64px !important;
   min-height: 64px !important;
-  margin: 0 0 10px !important;
+  margin: 0 0 2px !important;
   padding: 0 !important;
   border-bottom: 0 !important;
   background: transparent !important;
@@ -25447,6 +25766,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution-header {
     padding-inline: 14px;
   }
+  .mc-task-execution-header .mc-task-execution-kind { right: calc(100% + 1px); }
+  .mc-task-execution-header .mc-task-execution-kind svg { width: 12px; height: 12px; }
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
     padding-top: 16px !important;
     /* The continuation composer is in normal flow on every viewport.  The
@@ -25610,13 +25931,15 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   line-height: 1.35 !important;
 }
 /* overflow:hidden ellipsis clips bold CJK when the line box is 1.2.
-   Beats `.sidebar-task-row [class*='title']` (weight 650). Idle titles match
-   the left rail labels; only the selected row uses primary ink. */
+   Beats `.sidebar-task-row [class*='title']` (weight 650). The workspace
+   path is inline secondary, so the name stays on primary. Secondary and
+   rail gray left the name no darker than that path. The selected row is
+   marked by its background. */
 .mc-task-pane .sidebar-task-row .stsm-row-title {
   line-height: 1.35;
   font-weight: 600;
   letter-spacing: 0;
-  color: var(--office-muted, var(--theme-text-muted));
+  color: var(--theme-text-primary);
   /* The task-type glyph trails the title. The generic `.stsm-row-title`
      `flex: 1` would absorb all free space and push the glyph against the
      timestamp, so the title shrinks to its content instead; it still ellipsizes
@@ -25714,10 +26037,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   content: none;
 }
 .mc-task-pane .sidebar-task-row > .mc-task-status {
-  flex: 0 0 14px;
-  width: 14px;
-  min-width: 14px;
-  height: 14px;
+  /* 16px matches the mark's 16-unit viewBox 1:1 so strokes keep their authored
+     CSS width; 14px rescaled every stroke to ~1.5 device px at 100% DPI. */
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -25729,8 +26054,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-status svg {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 .mc-task-status[data-status='running'] { color: var(--mc-accent, #2f6fbc); }
 .mc-task-status[data-status='completed'] { color: var(--mc-done, #64748b); }
@@ -25748,10 +26073,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-status__spin {
   box-sizing: border-box;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  border: 1.75px solid color-mix(in srgb, currentColor 32%, transparent);
+  border: 2px solid color-mix(in srgb, currentColor 32%, transparent);
   border-top-color: currentColor;
   border-right-color: currentColor;
   animation: mc-task-status-spin 0.9s linear infinite;
@@ -26120,7 +26445,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: color-mix(in srgb, var(--mc-done) 14%, var(--theme-surface)) !important;
   color: var(--mc-done) !important;
 }
-#App[data-ai-theme='dark'] .mc-task-execution-status[data-status='pending'],
 #App[data-ai-theme='dark'] .mc-execution-step[data-status='pending'],
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid^='coding-step-'][data-status='pending'] {
   background: color-mix(in srgb, var(--theme-warning) 16%, var(--theme-surface)) !important;
@@ -26243,6 +26567,14 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 [data-testid='ai-panel-root'][data-ai-view='welcome'] [data-testid='ai-titlebar-primary-actions'],
 [data-testid='ai-panel-root'][data-ai-view='welcome'] [data-testid='ai-titlebar-tools-group'] > .ai-titlebar-tool {
   display: none !important;
+}
+/* File companion is a home action. Keep this one control when the rest of
+   the tool row is hidden, including the max-width 1200px tool collapse. */
+[data-testid='ai-panel-root'][data-ai-view='welcome'] [data-testid='ai-titlebar-tools-group'] > .ai-titlebar-tool[data-testid='open-file-companion'] {
+  display: inline-flex !important;
+  width: auto;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 /* The home composer owns the single visible rounded surface.  This overrides
@@ -26456,7 +26788,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-size: 13px;
   line-height: 1.35;
   letter-spacing: 0;
-  color: var(--office-muted, var(--theme-text-muted));
+  color: var(--theme-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -27072,6 +27404,7 @@ input.mdoc-search:focus-visible {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 /* Embedded slot + persistent portal host for the cloud drive preview pane.
    The host div is moved between the slot (embedded) and document.body
@@ -27098,19 +27431,118 @@ input.mdoc-search:focus-visible {
 }
 .mdoc-preview-header {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
-  padding: 18px 24px;
+  flex-shrink: 0;
+  padding: 12px 16px 10px;
   border-bottom: 1px solid var(--theme-border-subtle, #e8eef5);
+  background: var(--theme-surface, #ffffff);
+  position: relative;
+  z-index: 1;
+}
+.mdoc-preview-heading {
+  min-width: 0;
 }
 .mdoc-preview-title {
-  flex: 1;
   min-width: 0;
-  font-weight: 750;
-  font-size: 1.25rem;
+  font-weight: 700;
+  font-size: 1.05rem;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.mdoc-preview-subtitle {
+  min-width: 0;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-secondary, #546479);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+/* A group wraps only when the preview is narrower than its labels. */
+.mdoc-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mdoc-toolbar-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+}
+.mdoc-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  min-height: 16px;
+  margin: 6px 2px;
+  background: var(--theme-border, #d9e1ec);
+  flex: 0 0 1px;
+}
+.mdoc-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mdoc-toolbar-btn:not(:has(span)):has(svg) {
+  width: 32px;
+  padding: 0;
+}
+.mdoc-toolbar-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.mdoc-toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mdoc-toolbar-btn--danger {
+  color: var(--theme-danger, #c43d34);
+}
+.mdoc-toolbar-btn--danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 35%, var(--theme-border, #d9e1ec));
+  background: color-mix(in srgb, var(--theme-danger, #c43d34) 8%, var(--theme-surface, #ffffff));
+  color: var(--theme-danger, #c43d34);
+}
+/* Named accent, not "primary": button[class*='primary'] would force the
+   office-accent fill and a hover lift that covers the viewer toolbar. */
+.mdoc-toolbar-btn--accent {
+  border-color: transparent;
+  background: var(--theme-primary, #2f6fbc);
+  color: var(--theme-on-primary, #ffffff);
+}
+.mdoc-toolbar-btn--accent:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--theme-primary-strong, #235a9e);
+  color: var(--theme-on-primary, #ffffff);
+  transform: none;
+  filter: none;
 }
 .mdoc-audio-grid {
   display: grid;
@@ -27298,6 +27730,536 @@ input.cwshare-url {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Keep the companion product title clear of the file tabs.
+   The window must not grow with the tab list. The filename row scrolls
+   inside itself and does not show a horizontal scrollbar. When the names
+   do not fit, << and >> sit outside that row, at its two ends, and move
+   the names. The row shrinks and does not grow, so free space stays after
+   打开文件 instead of between the last filename and that button. 打开文件
+   is the next title-bar item and keeps its own width. The gap after it
+   holds the document actions and 关闭 on the right. */
+.file-companion-window {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.file-companion-titlebar {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.file-companion-titlebar .mc-header-brand {
+  margin-right: 12px;
+}
+.file-companion-titlebar-files {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 4px;
+  overflow: hidden;
+}
+.file-companion-titlebar-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  /* hidden still accepts scrollLeft. auto paints a horizontal bar on Windows. */
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex-wrap: nowrap;
+}
+.file-companion-titlebar-tabs::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.file-companion-titlebar-gap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.file-companion-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* File companion chrome uses the same surface, border, and hover as title-bar tools. */
+.file-companion-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  gap: 6px;
+  white-space: nowrap;
+}
+.file-companion-tool-icon {
+  display: block;
+  flex: 0 0 auto;
+}
+/* The mark plus the 6px gap widens each action. Two pixels less padding
+   on each side keeps 关闭 from being the first control the title bar clips. */
+.file-companion-tool:has(.file-companion-tool-icon) {
+  padding: 0 10px;
+}
+/* The shared busy spinner brings its own left margin for inline buttons.
+   These tools are flex, so that margin stacks on top of the icon gap. */
+.file-companion-tool[aria-busy="true"]::after {
+  margin-left: 0;
+}
+.file-companion-tool:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-tool--close {
+  margin-left: 8px;
+}
+.file-companion-tool--close:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #b42318 28%, var(--theme-border, #d9e1ec));
+  background: rgba(180, 35, 24, 0.08);
+  color: #9a3412;
+}
+.file-companion-tab {
+  flex: 0 1 220px;
+  max-width: 240px;
+  min-width: 72px;
+  gap: 6px;
+  padding: 0 6px 0 10px;
+}
+.file-companion-titlebar-tabs > .file-companion-tab {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 240px;
+  overflow: hidden;
+}
+.file-companion-tab-nudge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font: 700 13px/1 "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  letter-spacing: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-companion-tab-nudge:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-tab-nudge:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.file-companion-titlebar > .file-companion-tab--open {
+  flex: 0 0 auto;
+  max-width: none;
+  min-width: max-content;
+  padding: 0 12px;
+}
+.file-companion-tab-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+.file-companion-tab-close:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.file-companion-tab[aria-selected="true"] {
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-tab-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.file-companion-send {
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: var(--theme-primary, #2f6fbc);
+  color: #ffffff;
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.file-companion-send:hover:not(:disabled) {
+  background: var(--theme-primary-strong, #235a9e);
+}
+.file-companion-send:disabled {
+  background: #cbd5e1;
+  cursor: default;
+}
+.file-companion-send[aria-busy="true"] {
+  background: var(--theme-primary, #2f6fbc);
+  color: #ffffff;
+}
+.file-companion-split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.file-companion-split-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-companion-split-handle {
+  flex: 0 0 12px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: transparent;
+}
+.file-companion-split-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: #e2e8f0;
+}
+.file-companion-split-handle:hover::before,
+.file-companion-split-handle:focus-visible::before,
+.file-companion-split-handle:active::before {
+  left: 4px;
+  width: 3px;
+  background: var(--theme-primary, #2f6fbc);
+}
+.file-companion-split-handle:focus-visible {
+  outline: none;
+}
+.file-companion-chat {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #f8fafc;
+}
+
+/* ── Code preview: change-focused diff view ────────────────────────────────
+   Table layout (not CSS grid) on purpose: auto table sizing keeps the old/new
+   columns aligned across every row and grows past the pane so the body scrolls
+   sideways, which per-row grids cannot do without overlapping the text.
+   Colors arrive as CSS custom properties from codeDiffCssVars(theme), so one
+   rule set serves every light/dark scheme.
+   ------------------------------------------------------------------------ */
+
+.cp-diff {
+    --cp-diff-empty-bg: color-mix(in srgb, var(--cp-diff-ink-muted) 8%, transparent);
+    --cp-diff-mark-add: color-mix(in srgb, var(--cp-diff-add-ink) 38%, transparent);
+    --cp-diff-mark-del: color-mix(in srgb, var(--cp-diff-del-ink) 32%, transparent);
+    border-collapse: collapse;
+    width: 100%;
+    color: var(--cp-diff-text);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    text-align: left;
+    table-layout: auto;
+}
+
+/* ── Cells ── */
+
+.cp-diff-row > td {
+    vertical-align: top;
+    font-weight: inherit;
+}
+
+.cp-diff-gutter {
+    min-width: 42px;
+    padding: 0 6px;
+    text-align: right;
+    color: var(--cp-diff-ink-muted);
+    background: var(--cp-diff-gutter-bg);
+    user-select: none;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.cp-diff-sign {
+    min-width: 13px;
+    padding: 0 2px;
+    text-align: center;
+    color: var(--cp-diff-ink-muted);
+    user-select: none;
+    font-weight: 700;
+}
+
+.cp-diff-sign-add {
+    color: var(--cp-diff-add-ink);
+}
+
+.cp-diff-sign-del {
+    color: var(--cp-diff-del-ink);
+}
+
+.cp-diff-cell {
+    padding: 0 6px;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+}
+
+.cp-diff-wrap .cp-diff-cell {
+    white-space: pre-wrap;
+    /* `anywhere` (unlike `break-word`) also shrinks the min-content width, so
+       the table fits the pane and wraps instead of scrolling sideways. */
+    overflow-wrap: anywhere;
+}
+
+/* Divider between the old and new halves of a split row. */
+.cp-diff-cell-old {
+    border-right: 1px solid var(--cp-diff-border);
+}
+
+/* Additions / deletions: tinted cell plus a solid edge marker so the eye
+   catches the change even when scrolling fast. */
+.cp-diff-cell-add {
+    background: var(--cp-diff-add-bg);
+    box-shadow: inset 3px 0 0 var(--cp-diff-add-ink);
+    padding-left: 9px;
+}
+
+.cp-diff-cell-del {
+    background: var(--cp-diff-del-bg);
+    box-shadow: inset 3px 0 0 var(--cp-diff-del-ink);
+    padding-left: 9px;
+}
+
+.cp-diff-cell-empty {
+    background: var(--cp-diff-empty-bg);
+}
+
+/* Word-level marks inside a rewritten line. */
+.cp-diff-mark-add {
+    background: var(--cp-diff-mark-add);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cp-diff-add-ink) 45%, transparent);
+}
+
+.cp-diff-mark-del {
+    background: var(--cp-diff-mark-del);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cp-diff-del-ink) 40%, transparent);
+}
+
+/* Inline rewrite: the '-' and '+' halves are one change, so their gutters
+   carry the same tint as the cells. */
+.cp-diff-row-modold .cp-diff-gutter {
+    background: var(--cp-diff-del-bg);
+    color: var(--cp-diff-del-ink);
+}
+
+.cp-diff-row-modnew .cp-diff-gutter {
+    background: var(--cp-diff-add-bg);
+    color: var(--cp-diff-add-ink);
+}
+
+/* Find-in-file highlight. Cells and gutters paint their own background, so a
+   row tint alone would be invisible on changed lines: overlay it instead and
+   the add/delete colour stays underneath. */
+.cp-diff-row-match {
+    --cp-diff-match: rgba(234, 179, 8, 0.14);
+}
+
+.cp-diff-row-match-active {
+    --cp-diff-match: rgba(234, 179, 8, 0.32);
+}
+
+.cp-diff-row-match > td,
+.cp-diff-row-match-active > td {
+    background-image: linear-gradient(var(--cp-diff-match, transparent), var(--cp-diff-match, transparent));
+}
+
+/* ── Hunk headers + collapsed gaps ── */
+
+.cp-diff-sep-cell {
+    padding: 0;
+}
+
+.cp-diff-hunk,
+.cp-diff-gap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 2px 8px;
+    border: none;
+    border-top: 1px solid var(--cp-diff-border);
+    border-bottom: 1px solid var(--cp-diff-border);
+    background: var(--cp-diff-bar-bg);
+    color: var(--cp-diff-ink-muted);
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 20px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.cp-diff-hunk:hover,
+.cp-diff-gap:hover {
+    background: var(--cp-diff-hover-bg);
+}
+
+.cp-diff-gap {
+    border-top-style: dashed;
+    border-bottom-style: dashed;
+}
+
+.cp-diff-gap-dots {
+    letter-spacing: 2px;
+}
+
+.cp-diff-hunk-mark {
+    width: 10px;
+    flex-shrink: 0;
+}
+
+.cp-diff-hunk-range {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.cp-diff-hunk-stats {
+    font-weight: 700;
+}
+
+.cp-diff-hunk-action {
+    margin-left: auto;
+    opacity: 0.75;
+}
+
+/* ── Summary / control bar ── */
+
+.cp-diff-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--cp-diff-border);
+    background: var(--cp-diff-bar-bg);
+    color: var(--cp-diff-text);
+    font-size: 11px;
+    line-height: 20px;
+}
+
+.cp-diff-bar-spacer {
+    flex: 1 1 auto;
+    min-width: 4px;
+}
+
+.cp-diff-bar-note,
+.cp-diff-cursor-unit {
+    color: var(--cp-diff-ink-muted);
+}
+
+.cp-diff-stat-add {
+    color: var(--cp-diff-add-ink);
+    font-weight: 700;
+}
+
+.cp-diff-stat-del {
+    color: var(--cp-diff-del-ink);
+    font-weight: 700;
+}
+
+.cp-diff-stat-mod {
+    color: var(--cp-diff-text);
+    font-weight: 700;
+    opacity: 0.8;
+}
+
+.cp-diff-btn {
+    border: 1px solid var(--cp-diff-border);
+    background: transparent;
+    color: var(--cp-diff-ink-muted);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.cp-diff-btn:hover:not(:disabled) {
+    background: var(--cp-diff-hover-bg);
+}
+
+.cp-diff-btn[data-active='true'] {
+    background: var(--cp-diff-active-bg);
+    color: var(--cp-diff-active-fg);
+    font-weight: 600;
+}
+
+.cp-diff-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.cp-diff-btn-icon {
+    min-width: 20px;
+    padding: 1px 4px;
+}
+
+.cp-diff-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.cp-diff-cursor {
+    min-width: 62px;
+    text-align: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Backend task monitor: give the page a deliberate breathing space below the
@@ -27759,14 +28721,15 @@ input.cwshare-url {
   }
 }
 
-/* Compact rail popups: anchor to the actual rail width after it shrinks to
-   84px / 64px. A fixed 112px left offset floats the menu 28–48px away. */
+/* Compact rail popups: SystemPopupMenu sets left from the rail's laid-out
+   right edge. Do not set left here. On position:fixed, a percentage left is
+   the viewport width, which pushes the menu off-screen once the rail shrinks
+   to 84px / 64px. These rules only keep the item row inside the viewport. */
 @media (max-width: 1200px) {
   .mc-nav-rail [data-testid='system-popup-menu'],
   .mc-nav-rail [data-testid='extensions-popup-menu'],
   .mc-nav-rail [data-testid='library-popup-menu'],
   .mc-nav-rail [data-testid='pro-features-popup-menu'] {
-    left: calc(100% + 8px) !important;
     max-width: calc(100vw - 96px) !important;
   }
 }
@@ -27775,7 +28738,6 @@ input.cwshare-url {
   .mc-nav-rail [data-testid='extensions-popup-menu'],
   .mc-nav-rail [data-testid='library-popup-menu'],
   .mc-nav-rail [data-testid='pro-features-popup-menu'] {
-    left: calc(100% + 6px) !important;
     max-width: calc(100vw - 76px) !important;
   }
 }
@@ -28744,8 +29706,9 @@ input.cwshare-url {
     .mobile-documents-body { flex-direction: column; overflow: hidden; }
     .mobile-documents-list-pane { width: 100% !important; min-width: 0 !important; height: 42%; flex: 0 0 42%; border-right: 0 !important; border-bottom: 1px solid var(--theme-border, #d9e1ec); }
     .mobile-documents-preview-pane { min-height: 0; }
-    .mobile-documents-preview-header { padding: 14px 16px !important; flex-wrap: wrap; }
-    .mobile-documents-preview-header > .mobile-documents-btn { min-height: 38px; padding: 0 11px; }
+    .mobile-documents-preview-header { padding: 14px 16px !important; }
+    .mdoc-preview-actions .mdoc-toolbar-btn { height: 38px; min-height: 38px; padding: 0 11px; }
+    .mdoc-preview-actions .mdoc-toolbar-btn:not(:has(span)):has(svg) { width: 38px; padding: 0; }
     .mobile-documents-preview-body { padding: 18px !important; }
 }
 
@@ -28794,7 +29757,7 @@ input.cwshare-url {
   justify-content: center;
   height: 64px !important;
   min-height: 64px !important;
-  margin: 0 0 10px !important;
+  margin: 0 0 2px !important;
   padding: 0 !important;
   border-bottom: 0 !important;
   background: transparent !important;
@@ -28868,6 +29831,12 @@ input.cwshare-url {
   --mc-done: color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary));
   --mc-done-bg: color-mix(in srgb, var(--theme-primary) 7%, var(--mc-muted-surface));
   --mc-done-border: color-mix(in srgb, var(--theme-primary) 26%, var(--mc-line));
+  /* Header "needs action" pill. Warning amber fought the cool shell, and a
+     primary-heavy mix read as a second running chip. Use the title ink, with
+     only a light primary wash so it stays a chip. */
+  --mc-wait: var(--mc-chrome-ink, var(--theme-text-secondary));
+  --mc-wait-bg: color-mix(in srgb, var(--theme-primary) 6%, var(--mc-surface));
+  --mc-wait-border: color-mix(in srgb, var(--theme-primary) 22%, var(--mc-line));
 }
 
 #App .sidebar,
@@ -28907,18 +29876,14 @@ input.cwshare-url {
 #App .top-header__title,
 #App .mc-header-brand,
 #App .mc-task-pane__title,
-#App .mc-task-execution-header strong,
 #App .mc-task-execution h1,
 #App .mc-task-execution h2,
 #App .mc-welcome__title {
   color: var(--mc-ink) !important;
 }
 #App .mc-header-ready,
-#App .mc-task-execution-meta,
 #App .mc-task-execution [class*='timestamp'],
-#App .mc-task-execution [class*='meta'],
-#App .mc-workbench-status-card__row,
-#App .mc-workbench-status-card__online {
+#App .mc-task-execution [class*='meta'] {
   color: var(--mc-copy) !important;
 }
 
@@ -29184,10 +30149,6 @@ input.cwshare-url {
 }
 #App .mc-task-execution [data-testid='coding-agent-file-change-row'] { border-color: transparent !important; }
 
-#App .mc-workbench-status-card__row strong,
-#App .mc-workbench-status-card__model strong {
-  color: var(--mc-ink) !important;
-}
 #App .mc-task-pane [aria-label*='count'],
 #App .mc-task-pane .count,
 #App .mc-task-pane [class*='count'] {
@@ -29224,7 +30185,11 @@ input.cwshare-url {
   border-color: color-mix(in srgb, var(--mc-done) 30%, var(--mc-line)) !important;
   color: var(--mc-done) !important;
 }
-#App .mc-task-execution-status[data-status='pending'],
+#App .mc-task-execution-status[data-status='pending'] {
+  background: var(--mc-wait-bg) !important;
+  border-color: var(--mc-wait-border) !important;
+  color: var(--mc-wait) !important;
+}
 #App .mc-execution-step[data-status='pending'] {
   background: color-mix(in srgb, var(--theme-warning) 11%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--mc-line)) !important;
@@ -29347,7 +30312,7 @@ input.cwshare-url {
 
 /* Keep the workbench status card aligned with the shared theme tokens. */
 #App .mc-workbench-status-card__online {
-  color: var(--mc-copy) !important;
+  color: var(--mc-chrome-ink, var(--mc-copy)) !important;
 }
 #App .mc-workbench-status-card__online i,
 #App .mc-workbench-status-card__online.is-online i {
@@ -29367,10 +30332,10 @@ input.cwshare-url {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-danger, #c43d34) 14%, var(--mc-surface)) !important;
 }
 #App .mc-workbench-status-card__row {
-  color: var(--mc-copy) !important;
+  color: var(--mc-chrome-ink, var(--mc-copy)) !important;
 }
 #App button.mc-workbench-status-card__row:hover:not(:disabled) {
-  color: var(--mc-ink) !important;
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App button.mc-workbench-status-card__row:active:not(:disabled) {
   color: var(--mc-accent-strong) !important;
@@ -29381,7 +30346,7 @@ input.cwshare-url {
   border-radius: 8px;
 }
 #App button.mc-workbench-status-card__im:hover {
-  color: var(--mc-ink) !important;
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App button.mc-workbench-status-card__im:active {
   color: var(--mc-accent-strong) !important;
@@ -29391,8 +30356,9 @@ input.cwshare-url {
   outline-offset: 2px;
   border-radius: 8px;
 }
-#App .mc-workbench-status-card__row strong {
-  color: var(--mc-ink) !important;
+#App .mc-workbench-status-card__row strong,
+#App .mc-workbench-status-card__model strong {
+  color: var(--mc-chrome-ink, var(--mc-ink)) !important;
 }
 #App .mc-workbench-status-card__model-mark {
   color: var(--mc-accent) !important;
@@ -29402,6 +30368,18 @@ input.cwshare-url {
 }
 #App .mc-workbench-status-card__meter > span {
   background: var(--mc-accent) !important;
+}
+
+/* Light-only. Titles and interface text use the AI assistant title ink:
+   darker than the left rail, not near-black. --mc-text-anchor is the scheme's
+   original secondary, so the mix does not follow --theme-text-secondary.
+   Secondary sits between that ink and the scheme muted color. Muted is left
+   on the scheme: the rail gray is under 4.5:1 on the light-blue sidebar. */
+[data-ai-light-scheme]:not([data-ai-theme='dark']) {
+  --mc-chrome-ink: color-mix(in srgb, var(--office-muted, #6b7285) 38%, var(--mc-text-anchor, #46586f));
+  --theme-text-primary: var(--mc-chrome-ink);
+  --office-ink: var(--mc-chrome-ink);
+  --theme-text-secondary: color-mix(in srgb, var(--mc-chrome-ink) 55%, var(--theme-text-muted));
 }
 
 /* ===== 新任务配置条弹层（src/components/ai/task-config）===== */

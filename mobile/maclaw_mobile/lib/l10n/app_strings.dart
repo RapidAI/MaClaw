@@ -26,6 +26,7 @@ class AppStrings {
   String get tabDocuments => isZh ? '文档' : 'Docs';
   String get tabTasks => isZh ? '后台' : 'Tasks';
   String get tabEmployees => isZh ? '数字员工' : 'Employees';
+  String get tabBots => isZh ? 'Bot' : 'Bots';
   String get tabAccount => isZh ? '我的' : 'Me';
 
   // —— Common ——

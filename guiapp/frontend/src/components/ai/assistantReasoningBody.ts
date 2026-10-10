@@ -114,6 +114,17 @@ export function separateReasoningFromBody(
     return { content: body, reasoning: think };
 }
 
+/** A tool-call turn's empty content means the draft was rejected, not that the answer lives in reasoning. */
+export function visibleAssistantReplyForMessage(
+    content: string,
+    reasoning: string,
+    opts?: { live?: boolean; coding?: boolean; toolCalls?: boolean },
+): { content: string; reasoning: string } {
+    if (opts?.coding) return separateReasoningFromBody(content, reasoning);
+    if (opts?.toolCalls) return { content: content || "", reasoning: (reasoning || "").trim() };
+    return resolveVisibleAssistantReply(content, reasoning, { live: opts?.live });
+}
+
 export function resolveVisibleAssistantReply(
     content: string,
     reasoning: string,

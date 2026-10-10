@@ -153,6 +153,68 @@ func TestOpenAIStreamReasoningDoesNotEmitRolePrefixContent(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamHy3ReasoningDropsStreamedForecast(t *testing.T) {
+	forecast := "根据搜索到的公开预报信息：北京今天 26°C，适合出行。"
+	reasoning := "直接搜索。\n" +
+		"<tool_call:6124c78e>web_search<tool_sep:6124c78e>\n" +
+		"<arg_key:6124c78e>query</arg_key:6124c78e>\n" +
+		"<arg_value:6124c78e>北京 天气 今天 实时</arg_value:6124c78e>\n" +
+		"</tool_call:6124c78e>"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeDelta := func(delta map[string]string) {
+			payload, err := json.Marshal(map[string]any{
+				"choices": []any{map[string]any{"delta": delta}},
+			})
+			if err != nil {
+				t.Errorf("marshal delta: %v", err)
+				return
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+		}
+		writeDelta(map[string]string{"reasoning_content": reasoning})
+		writeDelta(map[string]string{"content": forecast})
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	h := &IMMessageHandler{}
+	var streamed strings.Builder
+	resp, err := h.doOpenAILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: server.URL, Model: "hy3", Protocol: "openai"},
+		[]interface{}{map[string]string{"role": "user", "content": "北京天气"}},
+		nil,
+		server.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		&llmStreamMetrics{},
+	)
+	if err != nil {
+		t.Fatalf("doOpenAILLMRequestStream: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatal("expected one choice")
+	}
+	msg := resp.Choices[0].Message
+	if msg.Content != "" {
+		t.Fatalf("content = %q, want the forecast dropped", msg.Content)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "web_search" {
+		t.Fatalf("tool calls = %#v", msg.ToolCalls)
+	}
+	if strings.Contains(msg.ReasoningContent, "tool_call") {
+		t.Fatalf("reasoning kept hy3 tags: %q", msg.ReasoningContent)
+	}
+	got := streamed.String()
+	if !strings.Contains(got, forecast) || !strings.HasSuffix(got, rejectedRoundContentToken) {
+		t.Fatalf("stream = %q, want the forecast and a trailing reject marker", got)
+	}
+	if strings.Contains(got, "tool_call") {
+		t.Fatalf("thinking stream leaked hy3 tags: %q", got)
+	}
+}
+
 func TestOpenAIStreamNonSSEParseErrorDoesNotLogBody(t *testing.T) {
 	const sensitive = "SECRET_NON_SSE_BODY_PAYLOAD"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

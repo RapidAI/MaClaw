@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearAssistantRoundProse } from "./assistantRoundProse";
+import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent } from "./assistantRoundProse";
 
 describe("clearAssistantRoundProse", () => {
     it("clears the answer draft while keeping prior thinking", () => {
@@ -56,6 +56,32 @@ describe("clearAssistantRoundProse", () => {
         });
         expect(next.content).toBe(content);
         expect(next.reasoning).toBe("Need the host.\n");
+    });
+
+    it("drops a streamed draft the parser rejected", () => {
+        const forecast = "根据搜索到的公开预报信息：北京今天 26°C，适合出行。";
+        expect(isRejectedRoundContentToken("\x02")).toBe(true);
+        expect(isRejectedRoundContentToken("北京")).toBe(false);
+        expect(rejectStreamedAssistantContent({ content: forecast, reasoning: "直接搜索。\n" })).toEqual({
+            content: "",
+            reasoning: "直接搜索。\n",
+        });
+        expect(rejectStreamedAssistantContent({ content: forecast, reasoning: "直接搜索。\n" }, "")).toEqual({
+            content: "",
+            reasoning: "直接搜索。\n",
+        });
+    });
+
+    it("restores only this round's baseline when a later draft is rejected", () => {
+        const kept = "这是上一轮已经保留的实质汇报，长度超过四十个字符，下一轮的预报草稿不能把它清掉。";
+        const baseline = `${kept}\n\n`;
+        const forecast = `${baseline}根据搜索到的公开预报信息：北京今天 26°C，适合出行。`;
+        expect(rejectStreamedAssistantContent({ content: forecast, reasoning: "直接搜索。\n" }, baseline)).toEqual({
+            content: baseline,
+            reasoning: "直接搜索。\n",
+        });
+        const already = { content: baseline, reasoning: "直接搜索。\n" };
+        expect(rejectStreamedAssistantContent(already, baseline)).toBe(already);
     });
 
     it("does not add a third newline when preserved prose already ends with a blank line", () => {

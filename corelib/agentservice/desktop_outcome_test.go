@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 func TestDesktopOutcomePlanAndHandoffSkipTheCheck(t *testing.T) {
@@ -258,9 +259,49 @@ func TestDesktopOutcomeMixedMissKeepsTheRemoteFollow(t *testing.T) {
 	}
 }
 
+func TestDesktopOutcomeEvidenceKeepsACommandMiddle(t *testing.T) {
+	middle := "MIDDLE-GPU-TABLE"
+	body := strings.Repeat("a", 800) + "\n" + middle + "\n" + strings.Repeat("b", 800) + "\n(exit 0)"
+	_, _, _, sawSSH, text := desktopOutcomeEvidence([]agent.ConversationEntry{{
+		Role: "tool", ToolName: "desktop", Content: body,
+	}})
+	if sawSSH || strings.Contains(text, agent.DesktopOutcomeEvidenceOmission) || !strings.Contains(text, middle) || !strings.Contains(text, "(exit 0)") {
+		t.Fatalf("command middle was cut: %s", text)
+	}
+}
+
+func TestDesktopOutcomeEvidenceKeepsACappedCommandWhole(t *testing.T) {
+	raw := strings.Repeat("a", desktop.BashOutputMax/2) + "MIDDLE-STAYS" + strings.Repeat("b", desktop.BashOutputMax/2) + "TAIL-STAYS"
+	body := desktop.ProgramOutput(raw, 0, true)
+	_, _, _, sawSSH, text := desktopOutcomeEvidence([]agent.ConversationEntry{{
+		Role: "tool", ToolName: "desktop", Content: body,
+	}})
+	if sawSSH || strings.Contains(text, agent.DesktopOutcomeEvidenceOmission) || !strings.Contains(text, "MIDDLE-STAYS") || !strings.Contains(text, "TAIL-STAYS") || !strings.Contains(text, "[truncated]") || !strings.Contains(text, "(command timed out)") {
+		t.Fatalf("omission=%v middle=%v tail=%v trunc=%v timeout=%v", strings.Contains(text, agent.DesktopOutcomeEvidenceOmission), strings.Contains(text, "MIDDLE-STAYS"), strings.Contains(text, "TAIL-STAYS"), strings.Contains(text, "[truncated]"), strings.Contains(text, "(command timed out)"))
+	}
+}
+
+func TestDesktopOutcomeEvidenceMarksAClippedMiddle(t *testing.T) {
+	middle := "MIDDLE-GONE"
+	tail := "TAIL-EXIT"
+	// The kept tail is about two thirds of the cap. The marker sits after the
+	// head and before that tail, so this middle is the part the check removes.
+	body := strings.Repeat("头", 12000) + middle + strings.Repeat("尾", 40000) + tail
+	_, _, _, sawSSH, text := desktopOutcomeEvidence([]agent.ConversationEntry{{
+		Role: "tool", ToolName: "desktop", Content: body,
+	}})
+	if sawSSH || strings.Contains(text, "\nssh: ") || !strings.HasPrefix(text, "desktop: ") {
+		t.Fatalf("clip became another tool: sawSSH=%v", sawSSH)
+	}
+	if !strings.Contains(text, agent.DesktopOutcomeEvidenceOmission) || !strings.Contains(text, tail) || strings.Contains(text, middle) {
+		t.Fatalf("omission=%v tail=%v middle=%v", strings.Contains(text, agent.DesktopOutcomeEvidenceOmission), strings.Contains(text, tail), strings.Contains(text, middle))
+	}
+}
+
 func TestDesktopOutcomeDoesNotTreatACommandLineAsSSH(t *testing.T) {
 	marker := "ssh: Connection refused"
-	// The clip keeps a 266-rune tail. The marker sits at the start of that tail.
+	// A transcript this size is kept whole. The ssh: line stays indented, so
+	// it is not a second tool record.
 	body := strings.Repeat("头", 200) + marker + strings.Repeat("尾", 243)
 	history := []agent.ConversationEntry{{
 		Role: "tool", ToolName: "desktop", Content: "echo\n" + body,

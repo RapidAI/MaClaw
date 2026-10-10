@@ -60,6 +60,28 @@ func TestProjectMCPDynamicProviderUsesVerifiedBindingAndClosedSchema(t *testing.
 	if strings.Contains(fmt.Sprint(params), "Ignore") || strings.Contains(fmt.Sprint(params), "default") {
 		t.Fatalf("untrusted schema annotations entered renderer source: %#v", params)
 	}
+	if !provider.Ready {
+		t.Fatal("zero RuntimeBlocked was projected as not ready")
+	}
+	entry.RuntimeBlocked = true
+	blocked, _, _, err := ProjectMCPDynamicProvider(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Ready {
+		t.Fatal("finished negative observation stayed selectable")
+	}
+	skill, _, _, err := ProjectSkillDynamicProvider(SkillToolEntry{
+		StableID: "acme.report", Name: "report", Version: "1", ContentDigest: "content-v1",
+		Params:   []corelib.NLSkillParam{{Name: "query", Type: "string", Required: true}},
+		Contract: testDynamicCapabilityContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skill.Ready {
+		t.Fatal("skill projection borrowed the MCP readiness bit")
+	}
 }
 
 func TestProjectSkillDynamicProviderBindsContentAndContractDrift(t *testing.T) {

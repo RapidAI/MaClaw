@@ -4,6 +4,8 @@ export type WorkbenchTaskCounts = {
     background: number;
     scheduled: number;
     passthrough: number;
+    /** In-progress bot tasks. Omit when this client has no Bot grant. */
+    bot?: number;
 };
 
 export function isActiveManageableBackgroundStatus(status: unknown): boolean {
@@ -47,12 +49,16 @@ export function countPassthroughCommands(commands: unknown): number {
 
 export function formatWorkbenchTaskCountLine(
     counts: WorkbenchTaskCounts,
-    labels: { background: string; scheduled: string; passthrough: string },
+    labels: { background: string; scheduled: string; passthrough: string; bot?: string },
     separator = ' · ',
 ): string {
-    return [
+    const parts = [
         `${labels.background} ${Number(counts.background) || 0}`,
         `${labels.scheduled} ${Number(counts.scheduled) || 0}`,
         `${labels.passthrough} ${Number(counts.passthrough) || 0}`,
-    ].join(separator);
+    ];
+    if (typeof counts.bot === 'number') {
+        parts.push(`${labels.bot || 'Bot'} ${Number(counts.bot) || 0}`);
+    }
+    return parts.join(separator);
 }

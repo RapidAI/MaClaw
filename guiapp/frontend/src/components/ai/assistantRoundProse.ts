@@ -17,6 +17,27 @@ import { contentHasAssistantToolCall } from "./assistantToolCall";
  */
 const ROUND_PROSE_PRESERVE_MIN_CHARS = 40;
 
+/** Content-lane reset. \x01 is reasoning. The parser rejected this round's draft. */
+export const rejectedRoundContentToken = "\x02";
+
+export function isRejectedRoundContentToken(delta: string): boolean {
+    return delta.startsWith(rejectedRoundContentToken);
+}
+
+/**
+ * Drop this round's streamed draft. `baseline` is the bubble text captured
+ * after the round's prose clear and before its content tokens. A missing
+ * baseline clears the bubble. The first round's baseline is "".
+ */
+export function rejectStreamedAssistantContent<T extends { content?: string }>(
+    message: T,
+    baseline?: string | null,
+): T {
+    const next = baseline == null ? "" : baseline;
+    if ((message.content ?? "") === next) return message;
+    return { ...message, content: next };
+}
+
 export function clearAssistantRoundProse<T extends { content?: string; reasoning?: string }>(message: T): T {
     const reasoning = message.reasoning;
     const separated = reasoning && !reasoning.endsWith("\n") ? `${reasoning}\n` : reasoning;

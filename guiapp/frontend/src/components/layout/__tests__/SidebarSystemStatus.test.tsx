@@ -24,6 +24,7 @@ function renderStatus(credits: SidebarHubCredits, options: {
     isHubService?: boolean;
     onOpenBackgroundTasks?: () => void;
     workbenchTaskCounts?: { background: number; scheduled: number; passthrough: number };
+    botTaskCount?: number;
     qqBotStatus?: string;
     telegramStatus?: string;
     weixinStatus?: string;
@@ -56,6 +57,7 @@ function renderStatus(credits: SidebarHubCredits, options: {
             lansengerEnabled={options.lansengerEnabled}
             backgroundTaskCount={3}
             workbenchTaskCounts={options.workbenchTaskCounts ?? { background: 3, scheduled: 1, passthrough: 4 }}
+            botTaskCount={options.botTaskCount}
             onOpenBackgroundTasks={options.onOpenBackgroundTasks}
             sidebarCurrentProviderTokenUsage={{ provider: options.isHubService === false ? '\u79c1\u6709\u670d\u52a1\u5546' : 'MaClaw\u5b98\u65b9', isHubService: options.isHubService ?? true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
             sidebarHubCredits={credits}
@@ -297,7 +299,22 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(row.textContent).toContain('计划 1');
         expect(row.textContent).toContain('直通 4');
         expect(row.querySelector('.mc-workbench-status-card__jobs')?.textContent).toBe('后台 3 · 计划 1 · 直通 4');
+        expect(row.textContent).not.toContain('Bot');
         expect(screen.getByTestId('workbench-status-card').contains(row)).toBe(true);
+    });
+
+    it('adds the in-progress bot task count when this client has a Bot grant', () => {
+        renderStatus(baseCredits, { workbenchTaskCounts: { background: 1, scheduled: 0, passthrough: 0 }, botTaskCount: 1 });
+
+        const jobs = screen.getByTestId('workbench-task-counts').querySelector('.mc-workbench-status-card__jobs');
+        expect(jobs?.textContent).toBe('后台 1 · 计划 0 · 直通 0 · Bot 1');
+        expect(jobs?.querySelector('.mc-workbench-status-card__jobs-bot')?.textContent).toBe(' · Bot 1');
+    });
+
+    it('keeps a zero bot task count visible while the grant is on', () => {
+        renderStatus(baseCredits, { workbenchTaskCounts: { background: 1, scheduled: 0, passthrough: 0 }, botTaskCount: 0 });
+
+        expect(screen.getByTestId('workbench-task-counts').querySelector('.mc-workbench-status-card__jobs')?.textContent).toBe('后台 1 · 计划 0 · 直通 0 · Bot 0');
     });
 
     it('opens the task monitor from the workbench background-task row', () => {

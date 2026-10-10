@@ -62,6 +62,9 @@ _STYLES = [
     {"id": "minimal", "aliases": ["minimal", "极简"], "cover_dark": False,
      "keywords": ["极简", "作品集", "简历", "个人介绍", "portfolio", "resume", "personal introduction"],
      "colors": {"paper": "F7F6F3", "ink": "1C1C1C", "navy": "1C1C1C", "navy2": "3A3A3A", "accent": "1C1C1C", "gold": "B08948", "white": "FFFFFF", "mute": "6E6A64", "slate": "3F3F3C", "card": "FFFFFF", "on_dark": "1C1C1C", "on_dark_mute": "5C5852"}},
+    {"id": "modern", "aliases": ["modern", "现代", "现代品牌", "品牌", "品牌蓝", "brand", "modern brand"], "cover_dark": False,
+     "keywords": ["产品介绍", "品牌故事", "白皮书", "用户增长", "品牌手册", "品牌宣传", "brand deck", "saas"],
+     "colors": {"paper": "FFFFFF", "ink": "16202B", "navy": "0B2E4F", "navy2": "123D66", "accent": "1E88E5", "gold": "FF7A45", "white": "FFFFFF", "mute": "5F5E5A", "slate": "4B5563", "card": "F4F7FB", "on_dark": "FFFFFF", "on_dark_mute": "A1C7EE"}},
 ]
 
 

@@ -1,5 +1,5 @@
 name: pptx-gen
-description: "PPT 生成 — 根据 JSON 大纲生成专业版式的 PowerPoint（.pptx）。theme 为 business/academic/warm/launch/tech/education/ceremony/minimal，或 auto 并提供 purpose，按用途自动选风格。每页 layout 支持 auto/bullets/cards/section/agenda/kpi/quote/closing，以及 kicker、images、charts。生成后用 office(action=preview_pptx) 渲染每页预览图，检查排版并迭代修复。"
+description: "PPT 生成 — 根据 JSON 大纲生成专业版式的 PowerPoint（.pptx）。theme 为 business/academic/warm/launch/tech/education/ceremony/minimal/modern，或 auto 并提供 purpose，按用途自动选风格。每页 layout 支持 auto/bullets/cards/section/agenda/kpi/quote/closing，以及 kicker、images、charts。生成后用 office(action=preview_pptx) 渲染每页预览图，检查排版并迭代修复。"
 triggers:
     - 生成PPT
     - 制作PPT

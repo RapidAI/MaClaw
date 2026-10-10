@@ -36,6 +36,27 @@ func TestApplyDesktopOutcomeKeepsAnUncheckedDraftOffTheReply(t *testing.T) {
 	}
 }
 
+func TestDesktopOutcomeJudgeKeepsCommandTextApartFromTheScreen(t *testing.T) {
+	if !strings.Contains(desktopOutcomeJudgeSystem, DesktopOutcomeEvidenceOmission) || !strings.Contains(desktopOutcomeJudgeSystem, "不能把这段正文说成缺失或被截断") {
+		t.Fatal("judge can still call a command transcript truncated")
+	}
+	if !strings.Contains(desktopOutcomeJudgeSystem, "只有要求出现在这台桌面的画面上时，才以截图为准") || !strings.Contains(desktopOutcomeJudgeSystem, "桌面截图也不能把它判成未达成") {
+		t.Fatal("screen and ssh rules dropped")
+	}
+}
+
+func TestDesktopOutcomeUserContentKeepsADesktopCommandApartFromTheShot(t *testing.T) {
+	evidence := "desktop: nvidia-smi\n  GPU-NAME\n  " + DesktopOutcomeEvidenceOmission + "\n  uptime"
+	got, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "查看服务器状态", evidence, &ToolModelImage{MIME: "image/png", Base64: "aaaa"}).(string)
+	if !ok || !strings.Contains(got, "GPU-NAME") || !strings.Contains(got, "不能把这段正文说成缺失或被截断") || !strings.Contains(got, "才以截图为准") || !strings.Contains(got, "核对删掉的篇幅") || strings.Contains(got, "不能用来否定") {
+		t.Fatalf("desktop command=%v", got)
+	}
+	quoted, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{}, "查看服务器状态", "ssh: echo\n  desktop: not a record", nil).(string)
+	if !ok || strings.Contains(quoted, "不能把这段正文说成缺失或被截断") || !strings.Contains(quoted, "不能用来否定 ssh 的输出") {
+		t.Fatalf("indented desktop line became a command record: %v", quoted)
+	}
+}
+
 func TestDesktopOutcomeUserContentNamesAMissingAndAnUnseenShot(t *testing.T) {
 	missing, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{}, "运行贪吃蛇", "bash: 未找到命令", nil).(string)
 	if !ok || !strings.Contains(missing, "没有当前桌面截图") || !strings.Contains(missing, "更早的截图不能当作现在的画面") {

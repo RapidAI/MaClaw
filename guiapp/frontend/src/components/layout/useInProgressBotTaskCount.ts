@@ -1,6 +1,21 @@
 import { useEffect, useState } from 'react';
+import { currentBotAccessEnabled, subscribeBotGrant } from '../bots/botOpenGate';
 import { currentInProgressBotTasks } from '../bots/desktopBots';
 import { startVisibleInterval } from '../../utils/visibleInterval';
+
+// Mirrors the rail's Bot grant. Starts from the last noted value so the
+// status card does not wait for another DesktopBotAccess round trip.
+export function useBotAccessEnabled(): boolean {
+    const [enabled, setEnabled] = useState(currentBotAccessEnabled);
+    useEffect(() => {
+        setEnabled(current => {
+            const next = currentBotAccessEnabled();
+            return current === next ? current : next;
+        });
+        return subscribeBotGrant(setEnabled);
+    }, []);
+    return enabled;
+}
 
 const BOT_TASK_COUNT_POLL_MS = 2000;
 

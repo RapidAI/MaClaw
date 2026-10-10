@@ -47,6 +47,19 @@ func mcpRuntimeSyncPersistenceKey(serverID string) string {
 	return mcpRuntimeSyncStatePath() + "|" + strings.TrimSpace(serverID)
 }
 
+// mcpRuntimeSyncPersistenceBlocked reports that the last durable write for this
+// server failed in this process. The file can still say ready. Callers must
+// not treat that hidden marker as a finished observation.
+func mcpRuntimeSyncPersistenceBlocked(serverID string) bool {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return false
+	}
+	mcpRuntimeSyncStateMu.Lock()
+	defer mcpRuntimeSyncStateMu.Unlock()
+	return mcpRuntimeSyncPersistenceFailures[mcpRuntimeSyncPersistenceKey(serverID)]
+}
+
 func mcpRuntimeSyncStatePath() string {
 	return filepath.Join(corelib.MaclawBaseDir(), "skill_evolution", "mcp_runtime_sync.json")
 }
@@ -453,15 +466,135 @@ func clearMCPRuntimeSyncState(serverID string) error {
 	return nil
 }
 
+// reconcileMCPRuntimeOnStartup is the process owner of MCP observation.
+// Semantic routing only reads the resulting snapshot; it does not probe.
+// Marketplace entries that still owe a checked retry keep the existing
+// per-server startup path. Every other configured remote server is observed
+// here, including a manual server and a marketplace server whose durable
+// marker is already ready: that marker is not a tool list, and the tool
+// list does not survive a restart. The health loop then keeps the
+// observation current.
+func (a *App) reconcileMCPRuntimeOnStartup(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	a.ensureInteractionInfra()
+	if a.mcpRegistry == nil {
+		a.mcpRegistry = NewMCPRegistry(a)
+	}
+	a.reconcileManagedMCPRuntimeSyncOnStartup(ctx)
+	a.reconcileRemoteMCPObservations(ctx, false)
+	a.mcpRegistry.StartHealthLoop(ctx)
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[MCPRegistry] runtime lifecycle started")
+		return
+	}
+	log.Printf("[MCPRegistry] runtime lifecycle started remote=%d local=%d", len(cfg.MCPServers), len(cfg.LocalMCPServers))
+}
+
+// reconcileRemoteMCPObservations probes remote servers whose process-local
+// tools/list outcome is missing or stale. includeManagedDue also retries a
+// marketplace server whose durable state is pending and due. needs_review is
+// never probed: only an operator action re-arms that record. Each probe is
+// its own goroutine with its own timeout so one dead server cannot stall the
+// others.
+func (a *App) reconcileRemoteMCPObservations(ctx context.Context, includeManagedDue bool) {
+	if a == nil {
+		return
+	}
+	a.ensureInteractionInfra()
+	if a.mcpRegistry == nil {
+		a.mcpRegistry = NewMCPRegistry(a)
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[MCPRegistry] remote observation skipped: %v", err)
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for _, entry := range cfg.MCPServers {
+		if !a.remoteMCPDueForObservation(entry, includeManagedDue) {
+			continue
+		}
+		entry := entry
+		go a.probeRemoteMCP(ctx, entry)
+	}
+}
+
+func (a *App) remoteMCPDueForObservation(entry corelib.MCPServerEntry, includeManagedDue bool) bool {
+	if strings.TrimSpace(entry.ID) == "" || strings.TrimSpace(entry.EndpointURL) == "" {
+		return false
+	}
+	managed := entry.Source == corelib.MCPSourceMarket && entry.Capability != nil
+	if !managed {
+		return true
+	}
+	state, ok := loadMCPRuntimeSyncState(entry.ID)
+	if !ok {
+		return includeManagedDue && a.mcpRuntimeSyncShouldRetry(entry.ID)
+	}
+	switch state.Status {
+	case "needs_review":
+		return false
+	case "ready":
+		return true
+	case "pending":
+		return includeManagedDue && a.mcpRuntimeSyncShouldRetry(entry.ID)
+	default:
+		return false
+	}
+}
+
+func (a *App) probeRemoteMCP(parent context.Context, entry corelib.MCPServerEntry) {
+	if a == nil || a.mcpRegistry == nil {
+		return
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, mcpBackgroundProbeTimeout)
+	defer cancel()
+	managed := entry.Source == corelib.MCPSourceMarket && entry.Capability != nil
+	var err error
+	if managed {
+		err = a.mcpRegistry.HealthCheckStrictContext(ctx, entry.ID)
+	} else {
+		err = a.mcpRegistry.HealthCheckContext(ctx, entry.ID)
+	}
+	if err != nil {
+		// App shutdown cancels the startup context. That is an interrupted
+		// observation, not a finished probe, and must not consume the durable
+		// retry budget or turn a ready marker into pending.
+		if errors.Is(parent.Err(), context.Canceled) {
+			log.Printf("[MCPRegistry] health check canceled for %s", entry.ID)
+			return
+		}
+		log.Printf("[MCPRegistry] health check failed for %s: %v", entry.ID, err)
+		if managed {
+			if stateErr := a.recordMCPRuntimeSyncFailure(entry.ID, "http", "", err); stateErr != nil {
+				log.Printf("[MCPRegistry] persist health failure for %s: %v", entry.ID, stateErr)
+			}
+		}
+		return
+	}
+	log.Printf("[MCPRegistry] remote observation ok server=%s", entry.ID)
+}
+
 // reconcileManagedMCPRuntimeSyncOnStartup retries due managed runtimes after
 // a process restart. Configuration and runtime readiness are intentionally
 // separate state axes: a committed marketplace MCP must remain blocked until
 // initialize/tools-list (or local process startup/discovery) succeeds again.
 // Each probe is isolated so one unavailable server cannot delay or suppress
 // reconciliation of its siblings.
-func (a *App) reconcileManagedMCPRuntimeSyncOnStartup() {
+func (a *App) reconcileManagedMCPRuntimeSyncOnStartup(parent context.Context) {
 	if a == nil {
 		return
+	}
+	if parent == nil {
+		parent = context.Background()
 	}
 	a.ensureInteractionInfra()
 	cfg, err := a.LoadConfig()
@@ -493,7 +626,7 @@ func (a *App) reconcileManagedMCPRuntimeSyncOnStartup() {
 	}
 	for _, item := range targets {
 		go func(item target) {
-			ctx, cancel := context.WithTimeout(context.Background(), mcpBackgroundProbeTimeout)
+			ctx, cancel := context.WithTimeout(parent, mcpBackgroundProbeTimeout)
 			defer cancel()
 			// LocalMCPManager records per-entry outcomes internally. Keep a
 			// pre-probe snapshot so that, if the manager exits before touching
@@ -529,13 +662,21 @@ func (a *App) reconcileManagedMCPRuntimeSyncOnStartup() {
 				ids = localIDs
 			}
 			if probeErr != nil {
+				// Shutdown cancels the startup context. A local batch also shares
+				// one deadline, so that deadline is an interrupted pass rather
+				// than a finished verdict for every server the loop had not
+				// reached. Neither one may consume the durable retry budget.
+				if parent.Err() != nil || (item.local && (ctx.Err() != nil || errors.Is(probeErr, context.Canceled) || errors.Is(probeErr, context.DeadlineExceeded))) {
+					log.Printf("[MCPRuntime] startup reconciliation interrupted: %v", probeErr)
+					return
+				}
 				// LocalMCPManager.syncFromConfig records readiness/failure per
 				// entry while it starts and discovers each process. Do not
 				// blindly record the same error for the whole batch here: doing
 				// so would double-increment a failed entry and incorrectly consume
 				// the retry budget of healthy siblings. Only fill in a state for
-				// entries that were not reached (for example cancellation before
-				// the manager began) or when the manager itself was unavailable.
+				// entries that were not reached when the manager itself failed
+				// for a reason other than cancellation.
 				for _, id := range ids {
 					if item.local {
 						if after, exists := loadMCPRuntimeSyncState(id); exists {

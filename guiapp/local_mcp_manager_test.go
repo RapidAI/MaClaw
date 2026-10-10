@@ -20,6 +20,7 @@ func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *te
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -95,6 +96,9 @@ func TestLocalMCPManagerSyncFromConfigCheckedReportsStartupFailure(t *testing.T)
 	}
 	if manager.IsRunning("broken-local") {
 		t.Fatal("failed local MCP server must not be reported as running")
+	}
+	if manager.configSyncInProgress() || !manager.configSyncFinished() {
+		t.Fatal("a finished startup failure must close the sync attempt")
 	}
 }
 
@@ -184,6 +188,9 @@ func TestLocalMCPManagerSyncFromConfigCheckedContextHonorsCancellation(t *testin
 	if manager.IsRunning("cancelled-local") {
 		t.Fatal("cancelled local MCP sync must not start a process")
 	}
+	if manager.configSyncInProgress() || manager.configSyncFinished() {
+		t.Fatal("a canceled sync was recorded as a finished attempt")
+	}
 }
 
 func TestLocalMCPManagerResolveServerIDByName(t *testing.T) {
@@ -193,6 +200,7 @@ func TestLocalMCPManagerResolveServerIDByName(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -224,6 +232,7 @@ func TestLocalMCPManagerResolveServerIDAmbiguousName(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -310,6 +319,7 @@ func TestLocalMCPManagerCallToolForOwnerUsesDedicatedClients(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -374,6 +384,7 @@ func TestLocalMCPManagerSyncStopsOwnerClientsWhenServerDisabled(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -413,6 +424,7 @@ func TestLocalMCPManagerStopOwnerOnlyStopsThatOwnersClients(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -449,6 +461,7 @@ func TestAutoStartLocalMCPServersStartsServersMarkedAutoStart(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

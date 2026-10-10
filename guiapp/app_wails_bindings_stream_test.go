@@ -92,6 +92,21 @@ func TestAIAssistantStreamDeltaNormalizerSeparatesReasoningAndContent(t *testing
 	}
 }
 
+func TestAIAssistantStreamDeltaNormalizerPassesRejectedContentMarker(t *testing.T) {
+	var normalizer aiAssistantStreamDeltaNormalizer
+	forecast := "根据搜索到的公开预报信息：北京今天 26°C。"
+	if got := normalizer.Normalize(forecast); got != forecast {
+		t.Fatalf("forecast delta = %q", got)
+	}
+	if got := normalizer.Normalize(rejectedRoundContentToken); got != rejectedRoundContentToken {
+		t.Fatalf("reject marker = %q", got)
+	}
+	next := "真正的回答"
+	if got := normalizer.Normalize(next); got != next {
+		t.Fatalf("text after reject = %q, want a fresh delta", got)
+	}
+}
+
 func TestAIAssistantStreamDeltaNormalizerResetStartsNewRound(t *testing.T) {
 	var normalizer aiAssistantStreamDeltaNormalizer
 	first := "Shared prefix from the first assistant round."

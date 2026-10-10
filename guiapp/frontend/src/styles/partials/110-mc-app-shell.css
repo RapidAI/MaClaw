@@ -1181,14 +1181,26 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-workbench-status-card__limits > span { display: block; white-space: nowrap; }
 .mc-workbench-status-card__jobs-row { min-height: 28px; }
 .mc-workbench-status-card__row.mc-workbench-status-card__jobs-row strong.mc-workbench-status-card__jobs {
+  display: flex;
   flex: 1;
+  align-items: baseline;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.mc-workbench-status-card__jobs-main {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.3;
+}
+.mc-workbench-status-card__jobs-bot {
+  flex: none;
+  /* pre keeps the leading " · " separator space flex would collapse. */
+  white-space: pre;
 }
 .mc-workbench-status-card__model { min-width: 0; max-width: 100%; }
 .mc-workbench-status-card__model strong { color: var(--theme-text-primary); font-weight: 600; }

@@ -13,18 +13,18 @@ import (
 	"unsafe"
 )
 
-// Windows taskbar badge: render the working-task count into a small red disc
-// and set it as the ITaskbarList3 overlay icon of the main window's taskbar
+// Windows taskbar badge: render the given count into a small red disc and
+// set it as the ITaskbarList3 overlay icon of the main window's taskbar
 // button — the same mechanism behind the QQ unread-count badge. The frontend
-// pushes the running-task count through App.SetTaskbarBadgeCount whenever it
-// changes; this file owns rendering and the win32 plumbing.
+// pushes unread bot replies through App.SetTaskbarBadgeCount whenever that
+// count changes; this file owns rendering and the win32 plumbing.
 //
 // All COM calls run on one dedicated locked OS thread (the worker goroutine)
 // because ITaskbarList3 requires an initialized COM apartment.
 //
 // Known limitation: an explorer.exe restart drops per-window overlays. The
-// badge self-heals on the next count change, since the frontend re-pushes on
-// every task boundary.
+// badge self-heals on the next count change, since the frontend re-pushes
+// when the unread count changes.
 
 const (
 	taskbarBadgeCoInitApartmentThreaded = 0x2

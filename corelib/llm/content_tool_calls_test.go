@@ -1097,6 +1097,140 @@ func TestParseContentToolCallsDetailed_BareJSONDoesNotMisclassifyData(t *testing
 	}
 }
 
+func TestParseContentToolCallsDetailed_Hy3SuffixedWebSearch(t *testing.T) {
+	content := "直接搜索。\n" +
+		"<tool_call:6124c78e>web_search<tool_sep:6124c78e>\n" +
+		"<arg_key:6124c78e>query</arg_key:6124c78e>\n" +
+		"<arg_value:6124c78e>北京 天气 今天 实时</arg_value:6124c78e>\n" +
+		"</tool_call:6124c78e>\n" +
+		"</tool_calls:6124c78e>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("hy3 web_search = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "web_search" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	if calls[0].Function.Arguments != `{"query":"北京 天气 今天 实时"}` {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_Hy3OpensourceKeepsNumbers(t *testing.T) {
+	content := "<tool_calls:opensource>\n" +
+		"<tool_call:opensource>ssh_read_file<tool_sep:opensource>\n" +
+		"<arg_key:opensource>path</arg_key:opensource>\n" +
+		"<arg_value:opensource>/tmp/a</arg_value:opensource>\n" +
+		"<arg_key:opensource>offset</arg_key:opensource>\n" +
+		"<arg_value:opensource>401</arg_value:opensource>\n" +
+		"<arg_key:opensource>limit</arg_key:opensource>\n" +
+		"<arg_value:opensource>400</arg_value:opensource>\n" +
+		"</tool_call:opensource>\n" +
+		"</tool_calls:opensource>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("hy3 opensource = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "ssh_read_file" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"/tmp/a"`) {
+		t.Fatalf("path = %q", calls[0].Function.Arguments)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"offset":401`) || !strings.Contains(calls[0].Function.Arguments, `"limit":400`) {
+		t.Fatalf("numeric args = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_Hy3UnclosedCompleteStillRuns(t *testing.T) {
+	content := "<tool_call:ab12>web_search<tool_sep:ab12>\n" +
+		"<arg_key:ab12>query</arg_key:ab12>\n" +
+		"<arg_value:ab12>北京天气</arg_value:ab12>\n"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("unclosed hy3 = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "北京天气") {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_Hy3UppercaseSuffix(t *testing.T) {
+	content := "<tool_call:OpenSource>web_search<tool_sep:OpenSource>\n" +
+		"<arg_key:OpenSource>query</arg_key:OpenSource>\n" +
+		"<arg_value:OpenSource>北京天气</arg_value:OpenSource>\n" +
+		"</tool_call:OpenSource>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("uppercase suffix = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "北京天气") {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_Hy3AdjacentEmptyOpenStillRuns(t *testing.T) {
+	content := "<tool_call:abc><tool_call:abc>web_search<tool_sep:abc>\n" +
+		"<arg_key:abc>query</arg_key:abc>\n" +
+		"<arg_value:abc>北京天气</arg_value:abc>\n" +
+		"</tool_call:abc>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("adjacent open = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "北京天气") {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_Hy3MentionIsNotACall(t *testing.T) {
+	content := "模板写成 <tool_call:opensource> 这样，后面才是参数。"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("mention = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestAdoptLeakedToolCalls_Hy3InReasoningDropsPrematureAnswer(t *testing.T) {
+	msg := &Message{
+		Content: "根据搜索到的公开预报信息：北京 26°C",
+		ReasoningContent: "直接搜索。\n" +
+			"<tool_call:6124c78e>web_search<tool_sep:6124c78e>\n" +
+			"<arg_key:6124c78e>query</arg_key:6124c78e>\n" +
+			"<arg_value:6124c78e>北京 天气 今天 实时</arg_value:6124c78e>\n" +
+			"</tool_call:6124c78e>\n" +
+			"</tool_calls:6124c78e>",
+	}
+	finish, changed := adoptLeakedToolCalls(msg, msg.Content)
+	if !changed || finish != "tool_calls" {
+		t.Fatalf("finish=%q changed=%v", finish, changed)
+	}
+	if msg.Content != "" {
+		t.Fatalf("premature answer kept: %q", msg.Content)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "web_search" {
+		t.Fatalf("tool calls = %#v", msg.ToolCalls)
+	}
+	if msg.ReasoningContent != "直接搜索。" {
+		t.Fatalf("reasoning = %q", msg.ReasoningContent)
+	}
+}
+
+func TestHoldHy3ToolMarkupKeepsProse(t *testing.T) {
+	visible, hold, suppress := HoldHy3ToolMarkup("直接搜索。\n<tool_cal", false)
+	if suppress || hold != "<tool_cal" || visible != "直接搜索。\n" {
+		t.Fatalf("partial = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldHy3ToolMarkup("直接搜索。\n<tool_call:6124c78e>web_search", false)
+	if !suppress || hold != "" || visible != "直接搜索。\n" {
+		t.Fatalf("open = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldHy3ToolMarkup("直接搜索。\n<tool_cal", true)
+	if suppress || hold != "" || visible != "直接搜索。\n" {
+		t.Fatalf("flush partial = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+}
+
 func TestParseNonStreamOpenAIResponseBody_ConvertsLineOrientedGlob(t *testing.T) {
 	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"正在定位第16页源文件并修复。\n terc3 glob_file_search_tool\npath\nC:\\tmp\\book\nglob_pattern\n**/*.md<|eos|>"},"finish_reason":"stop"}]}`)
 	resp, err := ParseNonStreamOpenAIResponseBody(body)

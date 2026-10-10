@@ -53,6 +53,11 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     backgroundTaskCount?: number;
     /** Live counts for the task-monitor tabs shown on the workbench status card. */
     workbenchTaskCounts?: WorkbenchTaskCounts;
+    /**
+     * In-progress bot tasks for this account. Pass a number only when the
+     * current client has a Bot grant; omit it to leave Bot off the status row.
+     */
+    botTaskCount?: number;
     /** Opens System > Monitor with the background-task view selected. */
     onOpenBackgroundTasks?: () => void;
     localLLMCacheEnabled?: boolean;
@@ -245,6 +250,7 @@ export const SidebarSystemStatus = ({
     lansengerEnabled,
     backgroundTaskCount = 0,
     workbenchTaskCounts,
+    botTaskCount,
     onOpenBackgroundTasks,
     localLLMCacheEnabled = false,
     sidebarCurrentProviderTokenUsage,
@@ -614,13 +620,27 @@ export const SidebarSystemStatus = ({
         background: workbenchTaskCounts?.background ?? backgroundTaskCount,
         scheduled: workbenchTaskCounts?.scheduled ?? 0,
         passthrough: workbenchTaskCounts?.passthrough ?? 0,
+        ...(typeof botTaskCount === 'number' ? { bot: botTaskCount } : {}),
     };
     const workbenchTaskCountLabels = {
         background: textForLang(lang, 'Background', '后台', '後台'),
         scheduled: textForLang(lang, 'Scheduled', '计划', '計劃'),
         passthrough: textForLang(lang, 'Passthrough', '直通', '直通'),
+        bot: 'Bot',
     };
-    const workbenchTaskCountText = formatWorkbenchTaskCountLine(resolvedWorkbenchTaskCounts, workbenchTaskCountLabels, CREDIT_SEPARATOR);
+    const jobsMainText = formatWorkbenchTaskCountLine(
+        {
+            background: resolvedWorkbenchTaskCounts.background,
+            scheduled: resolvedWorkbenchTaskCounts.scheduled,
+            passthrough: resolvedWorkbenchTaskCounts.passthrough,
+        },
+        workbenchTaskCountLabels,
+        CREDIT_SEPARATOR,
+    );
+    const botCountSegment = typeof resolvedWorkbenchTaskCounts.bot === 'number'
+        ? `${CREDIT_SEPARATOR}${workbenchTaskCountLabels.bot} ${Number(resolvedWorkbenchTaskCounts.bot) || 0}`
+        : '';
+    const workbenchTaskCountText = `${jobsMainText}${botCountSegment}`;
     const workbenchTaskRowAria = onOpenBackgroundTasks
         ? textForLang(lang, `${backgroundTaskLabel}: ${workbenchTaskCountText}. Open task monitor`, `${backgroundTaskLabel}：${workbenchTaskCountText}，打开任务监控`, `${backgroundTaskLabel}：${workbenchTaskCountText}，開啟任務監控`)
         : `${backgroundTaskLabel}${isChineseLang ? '\uff1a' : ': '}${workbenchTaskCountText}`;
@@ -869,7 +889,10 @@ export const SidebarSystemStatus = ({
                     disabled={!onOpenBackgroundTasks}
                 >
                     <span>{backgroundTaskLabel}</span>
-                    <strong className="mc-workbench-status-card__jobs">{workbenchTaskCountText}</strong>
+                    <strong className="mc-workbench-status-card__jobs">
+                        <span className="mc-workbench-status-card__jobs-main">{jobsMainText}</span>
+                        {botCountSegment ? <span className="mc-workbench-status-card__jobs-bot">{botCountSegment}</span> : null}
+                    </strong>
                 </button>
             </section>
             <div className="sidebar-system-status__panel">

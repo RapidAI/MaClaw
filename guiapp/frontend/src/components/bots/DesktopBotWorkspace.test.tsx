@@ -69,6 +69,8 @@ vi.mock('../../../wailsjs/runtime', () => ({
 
 import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport, handleDesktopBotResult, handleDesktopBotView } from './DesktopBotWorkspace';
 import type { BotPhase } from './desktopBots';
+import { appendDesktopBotReport } from './desktopBots';
+import { adoptExistingBotReplies, setBotWindowForeground, unreadBotReplyCount } from './botUnread';
 
 const RETURN_TASK = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
 const CONFIRM_TASK = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
@@ -140,6 +142,7 @@ beforeEach(() => {
     previewFile.mockResolvedValue({ preview_url: '' });
     responseListeners.list = [];
     responseListeners.byEvent = {};
+    setBotWindowForeground(false);
 });
 
 describe('DesktopBotWorkspace', () => {
@@ -3288,6 +3291,43 @@ describe('DesktopBotWorkspace', () => {
             if (ownedScrollTop) Object.defineProperty(HTMLElement.prototype, 'scrollTop', ownedScrollTop);
             else delete (HTMLElement.prototype as { scrollTop?: number }).scrollTop;
             vi.unstubAllGlobals();
+        }
+    });
+
+    it('marks the open bot seen when this window is in front, including while the desktop frame has the keyboard', async () => {
+        const hasFocus = document.hasFocus.bind(document);
+        const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        document.hasFocus = () => false;
+        try {
+            adoptExistingBotReplies();
+            appendDesktopBotReport('alice', 'bot_1', { content: '你好！很高兴见到你。', failed: false, requestId: 'desktop-bot-sched-seen' });
+            expect(unreadBotReplyCount('alice')).toBe(1);
+            listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            fireEvent.click(await screen.findByText('值班'));
+            expect(unreadBotReplyCount('alice')).toBe(1);
+
+            await act(async () => { window.dispatchEvent(new Event('focus')); });
+            expect(unreadBotReplyCount('alice')).toBe(0);
+            appendDesktopBotReport('alice', 'bot_1', { content: '第二句问候。', failed: false, requestId: 'desktop-bot-sched-seen-2' });
+            expect(unreadBotReplyCount('alice')).toBe(0);
+
+            await act(async () => { window.dispatchEvent(new Event('blur')); });
+            appendDesktopBotReport('alice', 'bot_1', { content: '窗口到了后面。', failed: false, requestId: 'desktop-bot-sched-seen-3' });
+            expect(unreadBotReplyCount('alice')).toBe(1);
+
+            Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+            await act(async () => { window.dispatchEvent(new Event('focus')); });
+            expect(unreadBotReplyCount('alice')).toBe(1);
+
+            Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+            await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+            expect(unreadBotReplyCount('alice')).toBe(0);
+        } finally {
+            document.hasFocus = hasFocus;
+            setBotWindowForeground(false);
+            if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+            else Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
         }
     });
 });

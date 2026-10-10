@@ -47,6 +47,7 @@ import {
     type DesktopBotFile,
     type DesktopBotMessage,
 } from './desktopBots';
+import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { DesktopBotComposer } from './DesktopBotComposer';
@@ -1311,6 +1312,38 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const frameMode = stageInteractive ? 'live' : 'watch';
     const statusPhase = selected ? busyPhase(selected.id, messages) : '';
     const statusText = statusPhase === 'execute' ? text.workingTag : statusPhase === 'plan' ? text.arrangingTag : text.idleTag;
+
+    // Looking means this conversation is on screen and the window is in front.
+    // The right-hand tabs keep the chat mounted, so the selected bot is enough.
+    // Focus and blur own the foreground flag. document.hasFocus() is false
+    // while the desktop frame has the keyboard, and that frame is still this
+    // window. hasFocus() may raise the flag when this page opens in a window
+    // that is already in front; it does not lower the flag. Leaving the page,
+    // the window, or this bot stops the watch.
+    useEffect(() => {
+        const sync = () => {
+            watchBotReplies(userId, botWindowIsForeground() && selectedId !== '' ? selectedId : null);
+        };
+        if (document.hasFocus()) setBotWindowForeground(true);
+        sync();
+        const onFocus = () => {
+            setBotWindowForeground(true);
+            sync();
+        };
+        const onBlur = () => {
+            setBotWindowForeground(false);
+            sync();
+        };
+        window.addEventListener('focus', onFocus);
+        window.addEventListener('blur', onBlur);
+        document.addEventListener('visibilitychange', sync);
+        return () => {
+            window.removeEventListener('focus', onFocus);
+            window.removeEventListener('blur', onBlur);
+            document.removeEventListener('visibilitychange', sync);
+            watchBotReplies(userId, null);
+        };
+    }, [userId, selectedId]);
 
     useLayoutEffect(() => {
         const el = workspaceRef.current;

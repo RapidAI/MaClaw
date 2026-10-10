@@ -9,6 +9,7 @@ import {
     mergeReasoningIntoBody,
     parkReplacedStreamInReasoning,
     resolveVisibleAssistantReply,
+    visibleAssistantReplyForMessage,
     separateReasoningFromBody,
     shouldPromoteReasoningToBody,
 } from "./assistantReasoningBody";
@@ -125,6 +126,21 @@ describe("liftReasoningIntoBody", () => {
     it("lifts a long trail next to a thin follow-up", () => {
         expect(liftReasoningIntoBody(shortFollowUp, longReview)).toContain("missing scratch-prompt baseline");
         expect(liftReasoningIntoBody(shortFollowUp, longReview)).toContain("英文版 Reviewer Report");
+    });
+});
+
+describe("visibleAssistantReplyForMessage", () => {
+    it("keeps a tool-call turn's reasoning out of the bubble", () => {
+        const thought = "直接搜索北京今天的天气，再根据结果回答。".repeat(20);
+        const visible = visibleAssistantReplyForMessage("", thought, { toolCalls: true });
+        expect(visible.content).toBe("");
+        expect(visible.reasoning).toBe(thought);
+    });
+
+    it("keeps a preface that arrived with the tool call", () => {
+        const visible = visibleAssistantReplyForMessage("我先查一下。", "直接搜索。", { toolCalls: true });
+        expect(visible.content).toBe("我先查一下。");
+        expect(visible.reasoning).toBe("直接搜索。");
     });
 });
 

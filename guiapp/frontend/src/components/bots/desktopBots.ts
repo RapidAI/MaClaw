@@ -97,15 +97,35 @@ function botTurnIsLive(userId: string, botId: string, messageId: string): boolea
 
 // Successful transcript writes. The monitor compares this instead of copying
 // the stored JSON on every poll. A failed setItem leaves storage unchanged
-// and does not advance the counter.
+// and does not advance the counter. The event lets the taskbar unread count
+// see the same write, including one that lands while this page is closed.
+export const BOT_TRANSCRIPT_EVENT = 'maclaw-bot-transcript';
+
 let transcriptGeneration = 0;
 
 export function botTranscriptGeneration(): number {
     return transcriptGeneration;
 }
 
-function noteTranscriptWrite() {
+function noteTranscriptWrite(userId: string, botId: string) {
     transcriptGeneration += 1;
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent(BOT_TRANSCRIPT_EVENT, { detail: { userId, botId } }));
+}
+
+// eachDesktopBotTranscript visits every stored conversation from one read.
+// userKey is the same key desktopUserKey writes, so a caller can match one
+// account. The messages are the stored transcript, already limited to rows
+// with an id and a user or assistant role.
+export function eachDesktopBotTranscript(visit: (userKey: string, botId: string, messages: DesktopBotMessage[]) => void) {
+    const all = readMessages();
+    for (const userKey of Object.keys(all)) {
+        const bots = all[userKey];
+        if (!bots || typeof bots !== 'object') continue;
+        for (const botId of Object.keys(bots)) {
+            visit(userKey, botId, transcriptMessages(bots[botId]));
+        }
+    }
 }
 
 function transcriptMessages(list: unknown): DesktopBotMessage[] {
@@ -634,12 +654,12 @@ export function saveBotMessages(userId: string, botId: string, messages: Desktop
     }
     try {
         store.setItem(MESSAGE_KEY, payload);
-        noteTranscriptWrite();
+        noteTranscriptWrite(userId, botId);
     } catch {
         dropEveryShot(all[key]);
         try {
             store.setItem(MESSAGE_KEY, JSON.stringify(all));
-            noteTranscriptWrite();
+            noteTranscriptWrite(userId, botId);
         } catch {
             // The previous transcript stays. A screenshot that does not fit
             // is better lost than the whole conversation.
@@ -750,5 +770,5 @@ function clearBotMessages(userId: string, botId: string) {
     if (!all[key]) return;
     delete all[key][botId];
     store.setItem(MESSAGE_KEY, JSON.stringify(all));
-    noteTranscriptWrite();
+    noteTranscriptWrite(userId, botId);
 }

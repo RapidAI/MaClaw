@@ -8,7 +8,10 @@ import { acknowledgeRailMiddleFocus, peekPendingRailMiddleFocus, railMiddleFocus
 
 vi.mock('../SidebarToolSelector', () => ({ SidebarToolSelector: () => <div data-testid="tool-selector" /> }));
 vi.mock('../SidebarTaskManagement', () => ({ SidebarTaskManagement: () => <div data-testid="task-management" /> }));
-vi.mock('../SidebarSystemStatus', () => ({ SidebarSystemStatus: () => <div data-testid="system-status" /> }));
+vi.mock('../SidebarSystemStatus', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../SidebarSystemStatus')>();
+    return { ...actual, SidebarSystemStatus: () => <div data-testid="system-status" /> };
+});
 vi.mock('../../ai/VirtualEmployeeTab', () => ({ VirtualEmployeeTab: () => <div data-testid="digital-employees" /> }));
 vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: ({ enabled = true }: { enabled?: boolean }) => enabled ? <div data-testid="history-sessions" /> : null }));
 

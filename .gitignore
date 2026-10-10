@@ -369,3 +369,17 @@ r17/
 
 # Ins-maclaw 本地构建产物
 /Ins-maclaw/Ins-maclaw.exe
+
+# Retired mobile line: ignore local Flutter build leftovers so deletion commits do not hit MAX_PATH
+mobile/maclaw_mobile/build/
+mobile/maclaw_mobile/.dart_tool/
+
+# scratch from CI log analysis
+/j.json
+/j2.json
+/rl.zip
+/build_number.bak
+mobile/maclaw_mobile/.tmp_*.log
+mobile/maclaw_mobile/android/*.iml
+mobile/maclaw_mobile/*.iml
+mobile/maclaw_mobile/.idea/

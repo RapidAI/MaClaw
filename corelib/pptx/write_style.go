@@ -173,6 +173,20 @@ var styleCatalog = []styleSpec{
 		accent: "1C1C1C", gold: "B08948", white: "FFFFFF", mute: "6E6A64",
 		slate: "3F3F3C", card: "FFFFFF", onDark: "1C1C1C", onDarkMute: "5C5852",
 	},
+	{
+		id: "modern", label: "现代品牌", summary: "浅底细网格。藏青主色、暖橙点睛、圆环徽记，适合产品介绍与品牌叙事。",
+		labelEn: "Modern Brand", labelHant: "現代品牌",
+		summaryEn: "Light hairline grid. Deep navy, warm orange, ring mark.", summaryHant: "淺底細網格。藏青主色、暖橙點睛、圓環徽記。",
+		aliases: []string{"modern", "现代", "现代品牌", "品牌", "品牌蓝", "brand", "modern brand"}, coverDark: false,
+		// Brand-only vocabulary. Deliberately avoids 解决方案 / 客户案例 /
+		// 数据看板 / 产品手册: those are common in business decks, and a
+		// 4-char brand keyword would outrank the 2-char 季度 or 商务 that
+		// actually decides those decks.
+		keywords: []string{"产品介绍", "品牌故事", "白皮书", "用户增长", "品牌手册", "品牌宣传", "brand deck", "saas"},
+		paper:    "FFFFFF", ink: "16202B", navy: "0B2E4F", navy2: "123D66",
+		accent: "1E88E5", gold: "FF7A45", white: "FFFFFF", mute: "5F5E5A",
+		slate: "4B5563", card: "F4F7FB", onDark: "FFFFFF", onDarkMute: "A1C7EE",
+	},
 }
 
 var (
@@ -749,6 +763,39 @@ func deckFooterLabel(title string) string {
 	return clipRunes(sanitizeXMLText(title), 36)
 }
 
+// badgeWidth sizes a pill badge around its label. The label is clipped so a
+// long kicker cannot grow the pill past maxW and run it off the slide or under
+// a cover panel. width is derived from the point size rather than a bare
+// constant so the padding stays correct if the type size changes.
+func badgeWidth(label string, sizePt, maxW float64) (text string, w float64) {
+	const padX = 0.5
+	em := sizePt / 72.0
+	for len([]rune(label)) > 1 && titleWidthUnits(label)*em+padX > maxW {
+		label = clipRunes(label, len([]rune(label))-1)
+	}
+	if label == "" {
+		return "", 0
+	}
+	return label, titleWidthUnits(label)*em + padX
+}
+
+// paintKickerBadge draws the pill-and-label header mark and returns the y where
+// the slide title should start beneath it. A nil slide still returns the
+// layout position, so callers can compute geometry without drawing.
+func paintKickerBadge(slide *ppt.Slide, theme deckTheme, kicker string, left, y, sizePt, maxW float64) (string, float64) {
+	label, w := badgeWidth(kicker, sizePt, maxW)
+	if label == "" {
+		return "", 0
+	}
+	h := sizePt / 72.0 * 1.9
+	if slide != nil {
+		roundRectPill(slide, emuIn(left), emuIn(y), emuIn(w), emuIn(h), theme.card)
+		deckText(slide, emuIn(left), emuIn(y+(h-sizePt/72.0*1.3)/2), emuIn(w), emuIn(sizePt/72.0*1.3),
+			label, int(sizePt), true, theme.navy, ppt.HorizontalCenter)
+	}
+	return label, y + h + 0.18
+}
+
 func rect(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) {
 	if slide == nil || w <= 0 || h <= 0 {
 		return
@@ -896,6 +943,8 @@ func paintLightChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer s
 		return paintRuledContent(slide, theme, kicker, title, footer, page, total, true)
 	case "minimal":
 		return paintMinimalContent(slide, theme, kicker, title, footer, page, total)
+	case "modern":
+		return paintModernContent(slide, theme, kicker, title, footer, page, total)
 	default:
 		return paintBusinessContent(slide, theme, kicker, title, footer, page, total)
 	}
@@ -943,6 +992,66 @@ func paintFramedContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer
 func paintMinimalContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
 	paintSolidBackground(slide, theme.paper)
 	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.7, theme.navy, false)
+}
+
+// paintModernContent is the hairline-grid chrome: a white field under one
+// faint full-bleed rule, with the kicker set in a pill badge. Hierarchy comes
+// from type scale and whitespace, as in the other light styles.
+func paintModernContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
+	paintSolidBackground(slide, theme.paper)
+	rule := blend(theme.paper, theme.mute, 0.35)
+	const left = 0.7
+	// One hairline above the header. It stops short of the page mark so the
+	// rule never crosses the number.
+	rect(slide, 0, emuIn(0.34), deckSlideWidth, emuIn(0.01), rule)
+	kicker = sanitizeXMLText(strings.TrimSpace(kicker))
+	titleY, titleSize := 0.62, 30
+	titleBoxH := 0.55
+	if label, below := paintKickerBadge(slide, theme, kicker, left, 0.52, 11, 10.2); label != "" {
+		kicker = label
+		titleY, titleSize = below, 28
+	}
+	title = sanitizeXMLText(strings.TrimSpace(title))
+	if title != "" {
+		deckText(slide, emuIn(left), emuIn(titleY), emuIn(11.9), emuIn(titleBoxH), title, titleSize, true, theme.navy, ppt.HorizontalLeft)
+		// No accent bar under the title: a short emphasis bar is the classic
+		// generated-deck tell, and the pill badge already carries the accent.
+	}
+	if footer != "" {
+		deckText(slide, emuIn(left), emuIn(7.08), emuIn(9.0), emuIn(0.28), footer, 11, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalLeft)
+	}
+	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
+	// The pill badge makes this header taller than the shared chrome assumes,
+	// so the body starts below the title rather than colliding with it. The
+	// offset is derived from the same titleY the badge returned, so the two
+	// cannot drift apart if the badge geometry changes.
+	box := lightContentBox(kicker != "")
+	if kicker != "" {
+		box.y = emuIn(titleY + titleBoxH + 0.12)
+		box.h = deckSlideHeight - box.y - emuIn(0.6)
+	}
+	return box
+}
+
+// paintRingMark draws the concentric ring-and-core mark: an outer ring with a
+// smaller core disc, echoing the badge geometry of the reference board.
+func paintRingMark(slide *ppt.Slide, theme deckTheme, x, y, d float64) {
+	oval(slide, emuIn(x), emuIn(y), emuIn(d), emuIn(d), blend(theme.navy, theme.paper, 0.86))
+	oval(slide, emuIn(x+d*0.2), emuIn(y+d*0.2), emuIn(d*0.6), emuIn(d*0.6), theme.gold)
+}
+
+func oval(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) {
+	if slide == nil || w <= 0 || h <= 0 {
+		return
+	}
+	sh := slide.CreateAutoShape()
+	sh.SetAutoShapeType(ppt.AutoShapeEllipse)
+	sh.SetSolidFill(fill)
+	sh.SetBorder(ppt.NewBorder())
+	sh.SetOffsetX(x)
+	sh.SetOffsetY(y)
+	sh.SetWidth(w)
+	sh.SetHeight(h)
 }
 
 func paintContentTitle(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int, left float64, rule ppt.Color, rail bool) contentBox {
@@ -1090,6 +1199,8 @@ func paintStyleCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker 
 		paintCeremonyCover(slide, theme, title, subtitle, kicker, page, total)
 	case "minimal":
 		paintMinimalCover(slide, theme, title, subtitle, kicker, page, total)
+	case "modern":
+		paintModernCover(slide, theme, title, subtitle, kicker, page, total)
 	default:
 		paintBusinessCover(slide, theme, title, subtitle, kicker, page, total)
 	}
@@ -1249,6 +1360,30 @@ func paintMinimalCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicke
 	rect(slide, 0, emuIn(3.45), deckSlideWidth, emuIn(0.055), theme.navy)
 	deckText(slide, emuIn(0.75), emuIn(3.7), emuIn(11), emuIn(1.15), subtitle, 18, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
 	deckText(slide, emuIn(10.6), emuIn(6.9), emuIn(2.1), emuIn(0.28), pageMark(page, total), 12, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalRight)
+}
+
+// paintModernCover is the brand cover: white field, a navy panel on the right
+// holding the concentric ring mark, and a warm full-bleed bar that ties the
+// two fields. Left-aligned type on paper carries the title.
+func paintModernCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
+	paintSolidBackground(slide, theme.paper)
+	panelX := 8.05
+	rect(slide, emuIn(panelX), 0, deckSlideWidth-emuIn(panelX), deckSlideHeight, theme.navy)
+	// Full-bleed warm bar across the page: the one saturated mark on the cover.
+	rect(slide, 0, emuIn(5.62), deckSlideWidth, emuIn(0.05), theme.gold)
+	paintRingMark(slide, theme, panelX+1.05, 2.05, 3.2)
+	const left = 0.7
+	kicker = sanitizeXMLText(strings.TrimSpace(kicker))
+	titleY, titleH := 1.95, 2.10
+	if label, below := paintKickerBadge(slide, theme, kicker, left, 1.42, 11, panelX-left-0.4); label != "" {
+		kicker = label
+		titleY, titleH = below, 1.95
+	}
+	titleSize := coverTitlePointSize(title, 42, 6.9, titleH)
+	deckText(slide, emuIn(left), emuIn(titleY), emuIn(6.9), emuIn(titleH), title, titleSize, true, theme.navy, ppt.HorizontalLeft)
+	subY := titleY + float64(coverTitleLines(title, titleSize, 6.9))*float64(titleSize)/72*1.35 + 0.12
+	deckText(slide, emuIn(left), emuIn(subY), emuIn(6.6), emuIn(0.9), subtitle, 16, false, theme.slate, ppt.HorizontalLeft)
+	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
 }
 
 func strokeFrame(slide *ppt.Slide, x, y, w, h, t int64, color ppt.Color) {

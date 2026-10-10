@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { beginBotAccessRead, botOpenDecision, isCurrentBotAccessRead, navigationEpoch, publishBotAccess, subscribeBotAccess } from './botOpenGate';
+import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, isCurrentBotAccessRead, navigationEpoch, noteBotAccess, publishBotAccess, subscribeBotAccess, subscribeBotGrant } from './botOpenGate';
 
 describe('botOpenDecision', () => {
     it('opens Bot when this request is still the latest and Hub granted access', () => {
@@ -48,10 +48,33 @@ describe('bot access reads', () => {
 describe('publishBotAccess', () => {
     it('tells current listeners and drops them after unsubscribe', () => {
         const seen: boolean[] = [];
+        const grants: boolean[] = [];
         const stop = subscribeBotAccess(enabled => { seen.push(enabled); });
+        const stopGrant = subscribeBotGrant(enabled => { grants.push(enabled); });
         publishBotAccess(false);
         stop();
+        stopGrant();
         publishBotAccess(true);
         expect(seen).toEqual([false]);
+        expect(grants).toEqual([false]);
+        expect(currentBotAccessEnabled()).toBe(true);
+        publishBotAccess(false);
+    });
+
+    it('notes a grant without retiring the in-flight read or the monitor poll', () => {
+        const published: boolean[] = [];
+        const noted: boolean[] = [];
+        const stopPublished = subscribeBotAccess(enabled => { published.push(enabled); });
+        const stopNoted = subscribeBotGrant(enabled => { noted.push(enabled); });
+        const read = beginBotAccessRead();
+        noteBotAccess(true);
+        noteBotAccess(true);
+        expect(isCurrentBotAccessRead(read)).toBe(true);
+        expect(currentBotAccessEnabled()).toBe(true);
+        expect(published).toEqual([]);
+        expect(noted).toEqual([true]);
+        stopPublished();
+        stopNoted();
+        noteBotAccess(false);
     });
 });

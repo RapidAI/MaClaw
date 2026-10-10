@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -24,6 +25,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -44,12 +46,9 @@ const (
 
 	zhipuCodingDefaultURL   = "https://open.bigmodel.cn/api/coding/paas/v4"
 	zhipuCodingDefaultModel = "glm-5.3"
-	kimiCodingDefaultURL    = "https://api.kimi.com/coding/v1"
-	kimiCodingDefaultModel  = "kimi-for-coding"
 	openaiOfficialURL       = "https://api.openai.com/v1"
 	xaiOfficialURL          = "https://api.x.ai/v1"
 	anthropicOfficialURL    = "https://api.anthropic.com/v1"
-	kimiWebLoginURL         = "https://www.kimi.com/membership/pricing?from=upgrade_plan"
 )
 
 type App struct {
@@ -78,6 +77,7 @@ type App struct {
 	openaiCtx         context.Context
 	openaiCancel      context.CancelFunc
 	openaiDone        bool
+	kimiLogin         *kimiDeviceLogin
 	relaunchAfterAuth bool
 
 	// Cumulative token counters (atomic, updated via usage callback).
@@ -251,9 +251,7 @@ func modelsEqual(a, b []ModelOption) bool {
 
 func (a *App) shutdown(ctx context.Context) {
 	_ = ctx
-	a.cancelSSOLogin()
-	a.cancelXAILogin()
-	a.cancelOpenAILogin()
+	a.logout()
 	a.stopProxy()
 	if a.usageStore != nil {
 		a.usageStore.Stop()
@@ -357,6 +355,11 @@ func (a *App) applySettingsWithRestart(s Settings) error {
 	previous, err := loadSettings()
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
+	}
+	// Refresh a Kimi token that is about to expire before the proxy is pointed
+	// at it, and persist the rotated credential together with the new settings.
+	if refreshed, changed := a.refreshKimiTokenIfLoggedIn(s); changed {
+		s = refreshed
 	}
 	wasRunning := a.isRunning()
 	if err := a.restartProxy(s); err != nil {
@@ -478,8 +481,15 @@ func (a *App) cancelSSOLogin() {
 	}
 }
 
+func (a *App) logout() {
+	a.cancelSSOLogin()
+	a.cancelXAILogin()
+	a.cancelOpenAILogin()
+	a.cancelKimiLogin()
+}
+
 func (a *App) Logout() (Status, error) {
-	a.cancelPendingLogins()
+	a.logout()
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	s, err := loadSettings()
@@ -1095,6 +1105,17 @@ func (a *App) startProxyFromDisk() {
 	if err != nil {
 		return
 	}
+	// The proxy is not up yet, so refreshKimiTokenIfLoggedIn would skip the
+	// refresh. A token saved near its expiry is refreshed before first use so
+	// the startup traffic is not rejected.
+	if s.ActiveAuthMode == AuthModeKimiWeb {
+		if refreshed := a.refreshKimiToken(s); refreshed.AccessToken != s.AccessToken {
+			s = refreshed
+			if err := writeSettings(s); err != nil {
+				log.Printf("[codexproxy] kimi startup refresh not persisted: %v", err)
+			}
+		}
+	}
 	_ = a.restartProxy(s)
 }
 
@@ -1187,6 +1208,16 @@ func (a *App) restartProxy(s Settings) error {
 				"x-api-key":         s.AccessToken,
 				"anthropic-version": "2023-06-01",
 			})
+		case AuthModeKimiWeb:
+			// Kimi Code identifies the host behind the OAuth device flow with
+			// the X-Msh-* headers, the same ones the login requests carried.
+			kimiHeaders := http.Header{}
+			kimicode.ApplyHTTPHeaders(kimiHeaders)
+			headers := make(map[string]string, len(kimiHeaders))
+			for key := range kimiHeaders {
+				headers[key] = kimiHeaders.Get(key)
+			}
+			server.SetUpstreamExtraHeaders(headers)
 		default:
 			server.SetUpstreamExtraHeaders(nil)
 		}
@@ -1449,6 +1480,11 @@ func normalizeSettings(s Settings) Settings {
 			s.BaseURL = canon
 		} else if s.BaseURL == "" {
 			s.BaseURL = strings.TrimRight(defaultAuthBaseURL(s.ActiveAuthMode), "/")
+		}
+		if s.ActiveAuthMode == AuthModeKimiWeb {
+			// Fold anything that is not a Kimi Code coding endpoint back to the
+			// hosted one, keeping the international endpoint the login chose.
+			s.BaseURL = kimicode.CanonicalBaseURL(s.BaseURL)
 		}
 		snapshotActiveProfile(&s)
 	} else if strings.TrimSpace(s.BaseURL) == "" {

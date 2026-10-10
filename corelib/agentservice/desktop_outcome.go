@@ -7,7 +7,16 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
+
+// desktopOutcomeEvidenceRunes is one tool result in the check. It stays above
+// the longest container bash transcript: the 32KiB tail, the runtime
+// "[truncated]" mark, and the exit line. A finished command is judged as the
+// model saw it. A longer file read still keeps its start and its exit. The
+// omitted middle is marked, so the check does not treat that cut as the
+// command's own output.
+const desktopOutcomeEvidenceRunes = desktop.BashOutputMax + 64
 
 // An execute-phase desktop bot may finish only when a separate check says the
 // tool results and the latest screenshot meet the request. Two failed checks
@@ -111,7 +120,7 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 func formatDesktopOutcomeEvidence(name, body string) string {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
-	body = clipDesktopOutcomeEvidence(body, 400)
+	body = clipDesktopOutcomeEvidence(body, desktopOutcomeEvidenceRunes)
 	if body == "" {
 		return name + ": "
 	}
@@ -123,20 +132,27 @@ func formatDesktopOutcomeEvidence(name, body string) string {
 	return strings.Join(lines, "\n")
 }
 
-// clipDesktopOutcomeEvidence keeps the start and the end. A command puts the
-// exit and the error on the last lines, and a head-only clip would hide them.
+// clipDesktopOutcomeEvidence keeps a command whole up to limit. Past that it
+// keeps the start and the end, because a command puts the exit and the error
+// on the last lines. The joined middle is named, so it cannot be read as the
+// command's own omission.
 func clipDesktopOutcomeEvidence(text string, limit int) string {
 	runes := []rune(text)
 	if limit <= 0 || len(runes) <= limit {
 		return text
 	}
-	head := limit / 3
+	mark := []rune("\n" + agent.DesktopOutcomeEvidenceOmission + "\n")
+	budget := limit - len(mark)
+	if budget < 2 {
+		return string(runes[:limit])
+	}
+	head := budget / 3
 	if head < 1 {
 		head = 1
 	}
-	tail := limit - head - 1
+	tail := budget - head
 	if tail < 1 {
 		return string(runes[:limit])
 	}
-	return string(runes[:head]) + "\n" + string(runes[len(runes)-tail:])
+	return string(runes[:head]) + string(mark) + string(runes[len(runes)-tail:])
 }

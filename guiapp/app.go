@@ -2705,12 +2705,10 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
-		// Reconcile due marketplace-managed runtime blockers after restart. The
-		// durable config may have committed in a previous process while the
-		// runtime probe was pending; keep execution/inventory fail-closed until
-		// this bounded, per-server checked probe succeeds.
+		// Reconcile reviewed contracts, then observe every configured remote
+		// MCP server. Planning only reads that snapshot.
 		a.reconcileReviewedDynamicContracts()
-		go a.reconcileManagedMCPRuntimeSyncOnStartup()
+		go a.reconcileMCPRuntimeOnStartup(ctx)
 
 		// Ensure local AI models are ready for features the user has not
 		// explicitly disabled. Missing assets are downloaded and then enabled.

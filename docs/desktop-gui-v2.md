@@ -340,6 +340,8 @@ SHA256：
 
 回滚是把这三份备份拷回原名，`chmod 755`，再按上面三条命令重启。桌面 GUI 不在这次发布里，要等单独构建。
 
+结果核对只编在 maclawsrv 里。2026-10-10 这一次只替换了 `/data/soft/maclaw_srv/bin/maclawsrv`，没有重启 hub、desktopd、HubCenter，也没有启动或停止已有桌面容器。版本是 `20261010.outcome`，commit `87078b30-dirty`，built_at `2026-10-10T07:22:27Z`，MainPID 12187，SHA256 `60b144c87430473aca2197fb6c79aed2db756d72c8c95cf72f33cd4932f73552`。上一份 `20261010.botssh` 留在 `maclawsrv.bak-outcome-20261010`（SHA256 `aaf36016a46e6f03e731727d99904521b190435f63b8dbb52b133525c1cc478e`）。hub 仍是 pid 7067，desktopd 仍是 pid 1440，HubCenter 仍是 pid 2181。回滚只把这份备份拷回原名并 `systemctl restart maclawsrv.service`。
+
 #### 连接配置（2026-10-10 07:41 CST）
 
 `20261010.samedesktop` 上线后，Bot 1 执行「打开百度、截屏、把图片放到桌面」时，`app_list`、`screenshot` 等桌面工具都返回 `this bot's desktop is the person's cloud desktop, and the connection is not configured`。当时 maclawsrv 进程没有这两个变量，hub 进程没有 `MACLAW_DESKTOP_API_TOKEN`。人在页面里打开 noVNC 走登录态的桌面接口，不读这组变量，所以画面还能开。

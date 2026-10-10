@@ -370,6 +370,32 @@ func TestStripXMLToolCalls_RemovesLongcat(t *testing.T) {
 	}
 }
 
+func TestStripXMLToolCalls_RemovesHy3AndKeepsFollowingProse(t *testing.T) {
+	input := "直接搜索。\n" +
+		"<tool_calls:6124c78e>\n" +
+		"<tool_call:6124c78e>web_search<tool_sep:6124c78e>\n" +
+		"<arg_key:6124c78e>query</arg_key:6124c78e>\n" +
+		"<arg_value:6124c78e>北京 天气 今天 实时</arg_value:6124c78e>\n" +
+		"</tool_call:6124c78e>\n" +
+		"</tool_calls:6124c78e>\n" +
+		"查完再回答。"
+	got := StripXMLToolCalls(input)
+	if got != "直接搜索。\n\n查完再回答。" {
+		t.Fatalf("StripXMLToolCalls() = %q", got)
+	}
+	if unclosed := StripXMLToolCalls("可见\n<tool_call:6124c78e>web_search<tool_sep:6124c78e>"); unclosed != "可见" {
+		t.Fatalf("unclosed = %q", unclosed)
+	}
+	missingWrapper := "直接搜索。\n" +
+		"<tool_calls:6124c78e>\n" +
+		"<tool_call:6124c78e>web_search<tool_sep:6124c78e>\n" +
+		"</tool_call:6124c78e>\n" +
+		"查完再回答。"
+	if got := StripXMLToolCalls(missingWrapper); got != "直接搜索。\n\n查完再回答。" {
+		t.Fatalf("missing wrapper close = %q", got)
+	}
+}
+
 func TestContentToolCallDeltaFilterSuppressesLongcat(t *testing.T) {
 	var out strings.Builder
 	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })

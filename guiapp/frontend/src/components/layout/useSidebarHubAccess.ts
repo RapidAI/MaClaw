@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { DesktopBotAccess, GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
-import { beginBotAccessRead, isCurrentBotAccessRead, subscribeBotAccess } from '../bots/botOpenGate';
+import { beginBotAccessRead, isCurrentBotAccessRead, noteBotAccess, subscribeBotAccess } from '../bots/botOpenGate';
 
 const HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS = 30_000;
 
@@ -41,6 +41,7 @@ export function useSidebarHubAccess(opts: {
             setInvitationEnabled(false);
             setInvitationDialogOpen(false);
             setBotAllowed(false);
+            noteBotAccess(false);
             if (navTabRef.current === 'bots') switchToolRef.current('ai');
             return;
         }
@@ -66,6 +67,7 @@ export function useSidebarHubAccess(opts: {
                 botAccessFailuresRef.current = 0;
                 botAccessGrantedRef.current = enabled;
                 setBotAllowed(enabled);
+                noteBotAccess(enabled);
                 if (!enabled && navTabRef.current === 'bots') switchToolRef.current('ai');
             }).catch(() => {
                 if (cancelled || botSeq !== botAccessRequestSeqRef.current || !isCurrentBotAccessRead(accessRead)) return;
@@ -73,6 +75,7 @@ export function useSidebarHubAccess(opts: {
                 if (botAccessGrantedRef.current && botAccessFailuresRef.current < 2) return;
                 botAccessGrantedRef.current = false;
                 setBotAllowed(false);
+                noteBotAccess(false);
                 if (navTabRef.current === 'bots') switchToolRef.current('ai');
             });
         };

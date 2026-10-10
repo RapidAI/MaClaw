@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -20,6 +21,8 @@ import (
 type LocalMCPManager struct {
 	registry     *MCPRegistry
 	syncMu       sync.Mutex
+	syncInFlight atomic.Int32
+	syncFinished atomic.Bool
 	mu           sync.RWMutex
 	clients      map[string]*LocalMCPClient            // shared clients keyed by server ID
 	ownerClients map[string]map[string]*LocalMCPClient // server ID -> owner ID -> dedicated client
@@ -39,6 +42,21 @@ func NewLocalMCPManager(registry *MCPRegistry) *LocalMCPManager {
 		ctx:          ctx,
 		cancel:       cancel,
 	}
+}
+
+// configSyncInProgress reports whether a config sync has entered and not yet
+// returned. Overlapping syncs stay visible until the last one returns.
+// Semantic inventory treats that window as an open observation. It does not
+// start a sync.
+func (m *LocalMCPManager) configSyncInProgress() bool {
+	return m != nil && m.syncInFlight.Load() > 0
+}
+
+// configSyncFinished reports that at least one config sync has returned.
+// Creating the manager does not finish a sync: hub wiring constructs the
+// manager before startup asks it to start anything.
+func (m *LocalMCPManager) configSyncFinished() bool {
+	return m != nil && m.syncFinished.Load()
 }
 
 // SyncFromConfig reads the local MCP server config and starts/stops
@@ -80,6 +98,24 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 	if parent == nil {
 		parent = context.Background()
 	}
+	// Count this attempt before taking syncMu. A sync that is still waiting
+	// for the lock is an open observation, and a sibling sync must not clear
+	// that fact by finishing first. Cancellation is not a finished attempt:
+	// only the path that walked the desired set may mark the sync complete.
+	m.syncInFlight.Add(1)
+	finished := false
+	defer func() {
+		if finished {
+			m.syncFinished.Store(true)
+		}
+		m.syncInFlight.Add(-1)
+	}()
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	if err := m.ctx.Err(); err != nil {
+		return err
+	}
 	runCtx, cancel := context.WithCancel(m.ctx)
 	defer cancel()
 	stopParentWatch := make(chan struct{})
@@ -97,10 +133,8 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 	var syncErrors []error
 
 	// Don't start new processes if the manager is shutting down.
-	select {
-	case <-runCtx.Done():
-		return runCtx.Err()
-	default:
+	if err := localMCPSyncInterrupted(parent, m.ctx); err != nil {
+		return err
 	}
 
 	entries := m.registry.ListLocalServers()
@@ -202,16 +236,16 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 	}
 
 	for _, entry := range toStart {
-		select {
-		case <-runCtx.Done():
-			syncErrors = append(syncErrors, runCtx.Err())
-			return errors.Join(syncErrors...)
-		default:
+		if err := localMCPSyncInterrupted(parent, m.ctx); err != nil {
+			return err
 		}
 		client := NewLocalMCPClient(entry)
 		if err := client.Start(runCtx); err != nil {
 			log.Printf("[LocalMCP] failed to start %s (%s): %v", entry.Name, entry.Command, err)
 			startErr := fmt.Errorf("start local MCP %s: %w", entry.ID, err)
+			if interrupt := localMCPSyncInterrupted(parent, m.ctx); interrupt != nil {
+				return startErr
+			}
 			syncErrors = append(syncErrors, startErr)
 			if stateErr := m.recordRuntimeSyncFailure(entry.ID, "stdio", startErr); stateErr != nil {
 				syncErrors = append(syncErrors, fmt.Errorf("persist runtime sync failure for %s: %w", entry.ID, stateErr))
@@ -240,6 +274,9 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 			log.Printf("[LocalMCP] giving up tool discovery for %s: %v", entry.Name, discoverErr)
 			client.Stop()
 			discoverFailure := fmt.Errorf("discover tools for local MCP %s: %w", entry.ID, discoverErr)
+			if interrupt := localMCPSyncInterrupted(parent, m.ctx); interrupt != nil {
+				return discoverFailure
+			}
 			syncErrors = append(syncErrors, discoverFailure)
 			if stateErr := m.recordRuntimeSyncFailure(entry.ID, "stdio", discoverFailure); stateErr != nil {
 				syncErrors = append(syncErrors, fmt.Errorf("persist runtime sync failure for %s: %w", entry.ID, stateErr))
@@ -247,12 +284,9 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 			continue
 		}
 		log.Printf("[LocalMCP] started %s with %d tools", entry.Name, len(tools))
-		select {
-		case <-runCtx.Done():
+		if err := localMCPSyncInterrupted(parent, m.ctx); err != nil {
 			client.Stop()
-			syncErrors = append(syncErrors, runCtx.Err())
-			return errors.Join(syncErrors...)
-		default:
+			return err
 		}
 		m.mu.Lock()
 		if existing, exists := m.clients[entry.ID]; exists && existing.IsRunning() {
@@ -267,7 +301,21 @@ func (m *LocalMCPManager) syncFromConfig(parent context.Context) error {
 		}
 		m.publishReviewedServerTools(entry.ID, tools)
 	}
+	finished = true
 	return errors.Join(syncErrors...)
+}
+
+// localMCPSyncInterrupted reports that this sync's parent or the manager was
+// canceled or timed out. That is an interrupted observation: it must not mark
+// the launch set complete, and it must not consume a marketplace retry.
+func localMCPSyncInterrupted(parent, manager context.Context) error {
+	if parent != nil && parent.Err() != nil {
+		return parent.Err()
+	}
+	if manager != nil && manager.Err() != nil {
+		return manager.Err()
+	}
+	return nil
 }
 
 // Runtime readiness is durable because local MCP processes are ephemeral. A

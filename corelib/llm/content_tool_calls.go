@@ -25,6 +25,7 @@ var (
 	contentFunctionEqOpenRe       = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
 	contentGLMArgPairRe           = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
 	contentLongcatArgPairRe       = regexp.MustCompile(`(?is)<longcat_arg_key>\s*(.*?)\s*</longcat_arg_key>\s*<longcat_arg_value>(.*?)</longcat_arg_value>`)
+	hy3LooseTagRe                 = regexp.MustCompile(`(?i)</?tool_calls?:[A-Za-z0-9_-]+>\r?\n?`)
 	longcatJSONNumberRe           = regexp.MustCompile(`^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$`)
 	contentQwenParamEqRe          = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
 	contentLeadingToolNameRe      = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
@@ -72,6 +73,18 @@ const MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具�
 func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	if looksLikeDSMLContent(content) {
 		if calls, malformed := parseDSMLContentToolCalls(content); len(calls) > 0 || malformed {
+			return calls, malformed
+		}
+	}
+	// Hy3 (WorkBuddy) emits <tool_call:SUFFIX>name<tool_sep:SUFFIX> with the
+	// same suffix on every tag. The unsuffixed </tool_call> matcher stops at
+	// the colon and then cannot read <arg_key:SUFFIX>, so the call is lost.
+	if looksLikeHy3ToolMarkup(content) {
+		calls, malformed := parseHy3ContentToolCalls(content)
+		if len(calls) > 0 || malformed {
+			if malformed && len(calls) == 0 {
+				logMalformedContentToolCall(content)
+			}
 			return calls, malformed
 		}
 	}
@@ -163,6 +176,312 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	return calls, malformed
 }
 
+// adoptLeakedToolCalls promotes tool grammar that arrived as text. Hy3 writes
+// <tool_call:suffix> into reasoning_content when the gateway does not run the
+// hy_v3 parser, then continues with an answer that never searched. A recovered
+// call replaces that answer so the loop executes the tool. The raw tags are
+// removed from the thinking text either way.
+func adoptLeakedToolCalls(msg *Message, visibleContent string) (finishReason string, changed bool) {
+	if msg == nil {
+		return "", false
+	}
+	reasoning := msg.ReasoningContent
+	if len(msg.ToolCalls) == 0 {
+		if calls, malformed := ParseContentToolCallsDetailed(visibleContent); len(calls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, calls...)
+			msg.Content = ""
+			finishReason, changed = "tool_calls", true
+		} else if malformed {
+			msg.Content = MalformedContentToolCallErrorMsg
+			finishReason, changed = "stop", true
+		} else if looksLikeHy3ToolMarkup(reasoning) {
+			if calls, malformed := parseHy3ContentToolCalls(reasoning); len(calls) > 0 {
+				msg.ToolCalls = append(msg.ToolCalls, calls...)
+				msg.Content = ""
+				finishReason, changed = "tool_calls", true
+			} else if malformed && strings.TrimSpace(visibleContent) == "" && strings.TrimSpace(msg.Content) == "" {
+				msg.Content = MalformedContentToolCallErrorMsg
+				finishReason, changed = "stop", true
+			}
+		}
+	}
+	msg.ReasoningContent = stripHy3ToolMarkup(reasoning)
+	return finishReason, changed
+}
+
+// looksLikeHy3ToolMarkup reports Hy3's suffixed tool grammar. A mention of
+// <tool_call:opensource> without a separator or an argument is prose.
+func looksLikeHy3ToolMarkup(s string) bool {
+	if indexASCIIFold(s, "<tool_call:") < 0 && indexASCIIFold(s, "<tool_calls:") < 0 {
+		return false
+	}
+	return indexASCIIFold(s, "<tool_sep:") >= 0 || indexASCIIFold(s, "<arg_key:") >= 0
+}
+
+// parseHy3ContentToolCalls reads <tool_call:SUFFIX>name<tool_sep:SUFFIX> blocks.
+// SUFFIX is :opensource on the public template and a short token, such as
+// :6124c78e, on WorkBuddy. Every tag in one call uses that same suffix.
+func parseHy3ContentToolCalls(content string) ([]ToolCall, bool) {
+	var calls []ToolCall
+	malformed := false
+	saw := false
+	rest := content
+	for {
+		rel := indexASCIIFold(rest, "<tool_call:")
+		if rel < 0 {
+			break
+		}
+		saw = true
+		rest = rest[rel:]
+		suffix, after, ok := hy3OpenSuffix(rest, "<tool_call:")
+		if !ok {
+			malformed = true
+			break
+		}
+		rest = after
+		// The suffix is an opaque token copied from the open tag. indexASCIIFold
+		// folds only the haystack, so an uppercase suffix inside the needle never matches.
+		closeTag := "</tool_call:" + suffix + ">"
+		closeRel := strings.Index(rest, closeTag)
+		nextRel := indexASCIIFold(rest, "<tool_call:")
+		end := closeRel
+		closed := closeRel >= 0
+		if nextRel >= 0 && (!closed || nextRel < closeRel) {
+			end = nextRel
+			closed = false
+		}
+		if end == 0 {
+			malformed = true
+			if closed {
+				rest = rest[len(closeTag):]
+				continue
+			}
+			// This open was empty. rest already starts at the next call.
+			// Eating rest[0] would drop its '<'. Step one byte only when that
+			// next open is not a real tag, so the scan cannot spin.
+			if _, _, ok := hy3OpenSuffix(rest, "<tool_call:"); !ok {
+				if len(rest) == 0 {
+					break
+				}
+				rest = rest[1:]
+			}
+			continue
+		}
+		body := rest
+		if end >= 0 {
+			body = rest[:end]
+			if closed {
+				rest = rest[end+len(closeTag):]
+			} else {
+				rest = rest[end:]
+			}
+		} else {
+			rest = ""
+		}
+		call, parsed := parseHy3ToolCallBody(suffix, body, closed)
+		if parsed {
+			calls = append(calls, call)
+		} else {
+			malformed = true
+		}
+		if end < 0 {
+			break
+		}
+	}
+	if !saw {
+		return nil, false
+	}
+	return calls, malformed
+}
+
+func parseHy3ToolCallBody(suffix, body string, closed bool) (ToolCall, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ToolCall{}, false
+	}
+	sep := "<tool_sep:" + suffix + ">"
+	var name, argsBody string
+	if rel := strings.Index(body, sep); rel >= 0 {
+		name = strings.TrimSpace(html.UnescapeString(body[:rel]))
+		argsBody = body[rel+len(sep):]
+	} else if next, args, ok := splitLeadingToolName(body); ok {
+		name = next
+		argsBody = args
+	}
+	if name == "" || contentLeadingToolNameRe.FindString(name) != name {
+		return ToolCall{}, false
+	}
+	if strings.TrimSpace(argsBody) == "" {
+		if !closed {
+			return ToolCall{}, false
+		}
+		return normalizePlainContentToolCall(name, json.RawMessage(`{}`))
+	}
+	args, ok := parseHy3ArgPairs(suffix, argsBody)
+	if !ok {
+		return ToolCall{}, false
+	}
+	return normalizePlainContentToolCall(name, args)
+}
+
+func parseHy3ArgPairs(suffix, body string) (json.RawMessage, bool) {
+	keyOpen := "<arg_key:" + suffix + ">"
+	keyClose := "</arg_key:" + suffix + ">"
+	valOpen := "<arg_value:" + suffix + ">"
+	valClose := "</arg_value:" + suffix + ">"
+	args := make(map[string]interface{})
+	rest := body
+	for {
+		rel := strings.Index(rest, keyOpen)
+		if rel < 0 {
+			break
+		}
+		if strings.TrimSpace(rest[:rel]) != "" {
+			return nil, false
+		}
+		rest = rest[rel+len(keyOpen):]
+		end := strings.Index(rest, keyClose)
+		if end < 0 {
+			return nil, false
+		}
+		key := strings.TrimSpace(html.UnescapeString(rest[:end]))
+		if key == "" {
+			return nil, false
+		}
+		if _, exists := args[key]; exists {
+			return nil, false
+		}
+		rest = rest[end+len(keyClose):]
+		rel = strings.Index(rest, valOpen)
+		if rel < 0 || strings.TrimSpace(rest[:rel]) != "" {
+			return nil, false
+		}
+		rest = rest[rel+len(valOpen):]
+		end = strings.Index(rest, valClose)
+		if end < 0 {
+			return nil, false
+		}
+		args[key] = coerceLongcatArgValue(key, rest[:end])
+		rest = rest[end+len(valClose):]
+	}
+	if len(args) == 0 || strings.TrimSpace(rest) != "" {
+		return nil, false
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// hy3OpenSuffix reads the token after "<tool_call:" or "<tool_calls:".
+// The caller passes an open tag that already includes the colon.
+func hy3OpenSuffix(s, open string) (suffix, after string, ok bool) {
+	if !asciiHasPrefix(s, open) {
+		return "", s, false
+	}
+	rest := s[len(open):]
+	end := strings.IndexByte(rest, '>')
+	if end <= 0 || end > 64 {
+		return "", s, false
+	}
+	suffix = rest[:end]
+	for i := 0; i < len(suffix); i++ {
+		c := suffix[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return "", s, false
+		}
+	}
+	return suffix, rest[end+1:], true
+}
+
+// stripHy3ToolMarkup removes Hy3 tool blocks and leftover suffix tags.
+// A singular <tool_call:SUFFIX> owns its tail: a missing </tool_call:SUFFIX>
+// drops the rest. The <tool_calls:SUFFIX> wrapper is only a loose tag, so a
+// missing wrapper close keeps the answer that follows a closed inner call.
+// Searching "<tool_call:" does not match "<tool_calls:".
+func stripHy3ToolMarkup(s string) string {
+	if indexASCIIFold(s, "tool_call:") < 0 && indexASCIIFold(s, "tool_calls:") < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	rest := s
+	for {
+		idx := indexASCIIFold(rest, "<tool_call:")
+		if idx < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:idx])
+		rest = rest[idx:]
+		suffix, after, ok := hy3OpenSuffix(rest, "<tool_call:")
+		if !ok {
+			b.WriteByte(rest[0])
+			rest = rest[1:]
+			continue
+		}
+		closeTag := "</tool_call:" + suffix + ">"
+		closeRel := strings.Index(after, closeTag)
+		if closeRel < 0 {
+			break
+		}
+		rest = after[closeRel+len(closeTag):]
+	}
+	cleaned := hy3LooseTagRe.ReplaceAllString(b.String(), "")
+	return strings.TrimSpace(cleaned)
+}
+
+// HoldHy3ToolMarkup keeps a trailing Hy3 tag prefix out of the thinking panel
+// and drops the stream once <tool_call:SUFFIX> or <tool_calls:SUFFIX> begins.
+func HoldHy3ToolMarkup(s string, force bool) (visible, hold string, suppress bool) {
+	if idx := hy3MarkupIndex(s); idx >= 0 {
+		if idx > 0 {
+			visible = s[:idx]
+		}
+		return visible, "", true
+	}
+	partial := hy3MarkupSuffixLen(s)
+	if partial <= 0 {
+		return s, "", false
+	}
+	visible = s[:len(s)-partial]
+	if force {
+		// End of stream. A cut-off "<tool_cal" is not prose.
+		return visible, "", false
+	}
+	return visible, s[len(s)-partial:], false
+}
+
+func hy3MarkupIndex(s string) int {
+	best := -1
+	for _, marker := range []string{"<tool_calls:", "<tool_call:"} {
+		if idx := indexASCIIFold(s, marker); idx >= 0 && (best < 0 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+func hy3MarkupSuffixLen(s string) int {
+	best := 0
+	for _, marker := range []string{"<tool_calls:", "<tool_call:"} {
+		max := len(marker) - 1
+		if len(s) < max {
+			max = len(s)
+		}
+		for i := max; i > best; i-- {
+			if asciiFoldEqual(s[len(s)-i:], marker[:i]) {
+				best = i
+				break
+			}
+		}
+	}
+	return best
+}
+
 func parseUnclosedAngleContentToolCalls(content string) ([]ToolCall, bool) {
 	matches := contentAngleToolCallOpenRe.FindAllStringIndex(content, -1)
 	if len(matches) == 0 {
@@ -176,6 +495,11 @@ func parseUnclosedAngleContentToolCalls(content string) ([]ToolCall, bool) {
 			continue
 		}
 		open := content[match[0]:match[1]]
+		// <tool_call:SUFFIX> is Hy3. A real call was already returned. A mention
+		// of that tag is not an unclosed OpenAI tool_call.
+		if strings.Contains(open, ":") {
+			continue
+		}
 		parsed, fragMalformed := parseContentToolCallFragments(open, strings.TrimSpace(rest))
 		if len(parsed) > 0 {
 			calls = append(calls, parsed...)
@@ -554,6 +878,8 @@ func logMalformedContentToolCall(content string) {
 	kind := "unknown"
 	lower := strings.ToLower(content)
 	switch {
+	case strings.Contains(lower, "<tool_call:") || strings.Contains(lower, "<tool_sep:"):
+		kind = "hy3"
 	case strings.Contains(lower, "<longcat_tool_call"):
 		kind = "longcat"
 	case strings.Contains(lower, "<function="):

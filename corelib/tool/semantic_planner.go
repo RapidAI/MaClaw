@@ -632,6 +632,14 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 				record(reason)
 				continue
 			}
+			// A finished negative observation stays in the snapshot with
+			// Ready=false. The family can still be complete, so a healthy
+			// sibling remains selectable, while a need that only the down
+			// provider can serve is not reported as absent.
+			if matchingUnreadyProvider(req, descriptor, need) {
+				record(CatalogCoverageReasonNotReady)
+				continue
+			}
 			record("no_feasible_provider")
 			continue
 		}
@@ -1582,6 +1590,30 @@ func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 
 func effectsAreReadOnly(effects []EffectClass) bool {
 	return len(effects) == 1 && effects[0] == EffectReadOnly
+}
+
+// matchingUnreadyProvider reports a catalogued provider that matches the need
+// but is not executable because its own observation finished negative.
+// Incomplete family coverage is handled by UnavailabilityReason; this only
+// applies once that coverage is closed.
+func matchingUnreadyProvider(req RouteRequest, descriptor CapabilityDescriptor, need CapabilityNeed) bool {
+	for _, candidate := range req.Snapshot.Providers {
+		if candidate.Ready || !candidate.Classification.plannable() {
+			continue
+		}
+		if len(candidate.ChannelScopes) > 0 && !containsFold(candidate.ChannelScopes, req.ChannelScope) {
+			continue
+		}
+		if !effectsWithinCapability(candidate.Effects, descriptor.Effects) {
+			continue
+		}
+		for _, provision := range candidate.Provides {
+			if provision.Capability == need.Capability && qualifiersMatch(need.Qualifiers, provision.Qualifiers) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func qualifiersMatch(need, provision map[string]string) bool {

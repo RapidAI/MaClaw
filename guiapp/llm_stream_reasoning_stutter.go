@@ -248,10 +248,11 @@ func reasoningStutterPunctuation(unit string) bool {
 }
 
 // reasoningDisplayStream is the reasoning half of a token stream: role-prefix
-// lines are stripped, then a stutter halt drops a degenerate short-line run
-// before it reaches the thinking panel.
+// lines are stripped, Hy3 tool grammar is held out of the panel, then a
+// stutter halt drops a degenerate short-line run.
 type reasoningDisplayStream struct {
 	role    *rolePrefixStreamFilter
+	hy3     *hy3MarkupHold
 	stutter *reasoningStutterFilter
 }
 
@@ -262,9 +263,55 @@ func newReasoningDisplayStream(onToken llm.TokenCallback, stop func()) *reasonin
 		}
 	})
 	stutter.stop = stop
+	hy3 := &hy3MarkupHold{downstream: stutter.Write}
 	return &reasoningDisplayStream{
 		stutter: stutter,
-		role:    newRolePrefixStreamFilter(stutter.Write),
+		hy3:     hy3,
+		role:    newRolePrefixStreamFilter(hy3.Write),
+	}
+}
+
+// hy3MarkupHold drops <tool_call:SUFFIX> grammar from the thinking panel.
+// The raw reasoning buffer is parsed separately and becomes a real tool call.
+type hy3MarkupHold struct {
+	downstream llm.TokenCallback
+	pending    strings.Builder
+	suppressed bool
+}
+
+func (f *hy3MarkupHold) Write(delta string) {
+	if f == nil || f.downstream == nil || delta == "" || f.suppressed {
+		return
+	}
+	f.pending.WriteString(delta)
+	visible, hold, suppress := llm.HoldHy3ToolMarkup(f.pending.String(), false)
+	f.pending.Reset()
+	if visible != "" {
+		f.downstream(visible)
+	}
+	if suppress {
+		f.suppressed = true
+		return
+	}
+	if hold != "" {
+		f.pending.WriteString(hold)
+	}
+}
+
+func (f *hy3MarkupHold) Flush() {
+	if f == nil || f.suppressed {
+		if f != nil {
+			f.pending.Reset()
+		}
+		return
+	}
+	if f.pending.Len() == 0 {
+		return
+	}
+	visible, _, _ := llm.HoldHy3ToolMarkup(f.pending.String(), true)
+	f.pending.Reset()
+	if visible != "" && f.downstream != nil {
+		f.downstream(visible)
 	}
 }
 
@@ -282,6 +329,9 @@ func (s *reasoningDisplayStream) Flush() {
 	if s.role != nil {
 		s.role.Flush()
 	}
+	if s.hy3 != nil {
+		s.hy3.Flush()
+	}
 	if s.stutter != nil {
 		s.stutter.Flush()
 	}
@@ -292,10 +342,10 @@ func (s *reasoningDisplayStream) Halted() bool {
 }
 
 // ThinkCallback receives <think> bodies. They skip the role-prefix line
-// buffer and still pass through the stutter halt.
+// buffer, drop Hy3 tool grammar, and still pass through the stutter halt.
 func (s *reasoningDisplayStream) ThinkCallback() llm.TokenCallback {
-	if s == nil || s.stutter == nil {
+	if s == nil || s.hy3 == nil {
 		return func(string) {}
 	}
-	return s.stutter.Write
+	return s.hy3.Write
 }

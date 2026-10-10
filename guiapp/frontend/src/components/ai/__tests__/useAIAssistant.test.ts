@@ -1445,6 +1445,42 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('drops a hy3 forecast the parser rejected and keeps an earlier round', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+        await act(async () => { void result.current.sendMessage('北京天气'); });
+
+        const forecast = '根据搜索到的公开预报信息：北京今天 26°C，适合出行。';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01直接搜索。'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(forecast));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('后半段不会刷回去'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x02'));
+        });
+        expect(assistantMessages(result.current.messages)[0].content).toBe('');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('直接搜索。');
+
+        const report = '这是上一轮已经保留的实质汇报，长度超过四十个字符，下一轮的预报草稿不能把它清掉。';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(report));
+        });
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(forecast));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x02'));
+        });
+        expect(assistantMessages(result.current.messages)[0].content).toBe(`${report}\n\n`);
+        expect(assistantMessages(result.current.messages)[0].reasoning).toContain('直接搜索。');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
     it('keeps the previous round visible while the next round is waiting for its first token', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -2264,6 +2300,9 @@ describe('useAIAssistant property tests', () => {
         expect(sanitizeAIAssistantStreamText('\x01think\uEB90ing')).toBe('\x01thinking');
         expect(sanitizeAIAssistantStreamText('reason\u25A1ing\uFFFC\uFFFD')).toBe('reasoning');
         expect(sanitizeAIAssistantStreamText('\x01The\u0001 user')).toBe('\x01The user');
+        expect(sanitizeAIAssistantStreamText('\x02')).toBe('\x02');
+        expect(sanitizeAIAssistantStreamText('\x02visible\u0000')).toBe('\x02visible');
+        expect(sanitizeAIAssistantStreamText('visible\x02')).toBe('visible');
     });
 
     it('parses Wails JSON-string heartbeats before applying timeout activity', async () => {

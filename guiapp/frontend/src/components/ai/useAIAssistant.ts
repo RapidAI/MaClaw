@@ -11,7 +11,7 @@ import { findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDi
 import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
-import { clearAssistantRoundProse } from "./assistantRoundProse";
+import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 
@@ -235,11 +235,13 @@ interface AIAssistantStreamEvent {
 }
 
 export function sanitizeAIAssistantStreamText(value: string): string {
-    // \x01 is the desktop app's reasoning-lane marker, so preserve it only
-    // when it is the leading byte. Other controls and Private Use Area
-    // tokens have no glyph in the panel fonts and render as tofu squares.
+    // \x01 is the reasoning lane. \x02 is the content-lane reset that drops a
+    // draft the parser rejected. Preserve either only when it leads the delta.
+    // Other controls and Private Use Area tokens have no glyph in the panel
+    // fonts and render as tofu squares.
     const reasoning = value.startsWith('\x01');
-    const visible = (reasoning ? value.slice(1) : value)
+    const rejected = !reasoning && value.startsWith('\x02');
+    const visible = (reasoning || rejected ? value.slice(1) : value)
         // Transport markers/control bytes and Unicode replacement/object
         // characters have no meaningful text representation in the panel.
         // Some ACP providers put the reasoning marker before every token, so
@@ -250,11 +252,13 @@ export function sanitizeAIAssistantStreamText(value: string): string {
         // cannot be decoded; letting it through makes the entire reasoning
         // trail appear to be filled with squares in the GUI.
         .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\uE000-\uF8FF\uFFF0-\uFFFF]/g, '');
-    return reasoning ? `\x01${visible}` : visible;
+    if (reasoning) return `\x01${visible}`;
+    if (rejected) return `\x02${visible}`;
+    return visible;
 }
 
 function sanitizeAIAssistantFinalText(value: string): string {
-    return sanitizeAIAssistantStreamText(value).replace(/^\x01/, '');
+    return sanitizeAIAssistantStreamText(value).replace(/^[\x01\x02]/, '');
 }
 
 const AGENT_VIEW_EVENT = "agent-view";
@@ -1240,6 +1244,11 @@ interface StreamAppendState {
     reasoning: string;
     contentSnapshotMode: boolean;
     reasoningSnapshotMode: boolean;
+    /**
+     * Bubble text after this round's prose clear and before its content
+     * tokens. Undefined until that first content token. "" is a real baseline.
+     */
+    contentBaseline?: string;
 }
 
 interface ResponseTimeoutController {
@@ -1593,6 +1602,9 @@ function replaceLateCodingToolStart(
 }
 
 function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence?: number): ChatMessage {
+    if (isRejectedRoundContentToken(delta)) {
+        return rejectStreamedAssistantContent(message);
+    }
     // Reasoning tokens are prefixed with \x01 by the backend to distinguish
     // them from content tokens. They represent the model's thinking phase.
     if (delta.startsWith('\x01')) {
@@ -4399,17 +4411,66 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return !!requestId && replaceRoundProseOnFirstTokenRef.current.delete(requestId);
     }, []);
 
+    // Snapshot inside the message updater, after prose clear and before the
+    // content delta. state.content already includes the delta, and messagesRef
+    // is still the previous render, so neither is this round's baseline.
+    const rememberRoundContentBaseline = useCallback((assistantMessageId: string, messages: ChatMessage[], delta: string) => {
+        if (!assistantMessageId || !delta || delta.startsWith('\x01') || isRejectedRoundContentToken(delta)) return;
+        const state = streamAppendStatesByMessageRef.current.get(assistantMessageId);
+        if (!state || state.contentBaseline !== undefined) return;
+        const index = findLastIndex(messages, message => message.id === assistantMessageId);
+        if (index < 0) return;
+        state.contentBaseline = messages[index].content ?? "";
+    }, []);
+
     const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string, eventSequence?: number, replaceRoundProse = false) => {
         if (!assistantMessageId || !text) return;
+        const rejected = isRejectedRoundContentToken(text);
+        // The updater can run twice on the same prev. Read the baseline once
+        // so the second run does not see the reset and clear an earlier round.
+        let rejectedBaseline: string | null | undefined;
         setMessages(prev => {
             const base = replaceRoundProse ? updateMessageById(prev, assistantMessageId, clearAssistantRoundProse) : prev;
-            return updateTailMessage(base, assistantMessageId, message => appendTokenToMessage(message, text, eventSequence))
-                ?? updateMessageById(base, assistantMessageId, message => appendTokenToMessage(message, text, eventSequence));
+            if (!rejected) {
+                rememberRoundContentBaseline(assistantMessageId, base, text);
+            } else if (rejectedBaseline === undefined) {
+                const state = streamAppendStatesByMessageRef.current.get(assistantMessageId);
+                rejectedBaseline = state?.contentBaseline === undefined ? null : state.contentBaseline;
+                if (state) {
+                    state.content = "";
+                    state.contentSnapshotMode = false;
+                    state.contentBaseline = undefined;
+                }
+            }
+            const apply = (message: ChatMessage) => rejected
+                ? rejectStreamedAssistantContent(message, rejectedBaseline ?? null)
+                : appendTokenToMessage(message, text, eventSequence);
+            return updateTailMessage(base, assistantMessageId, apply)
+                ?? updateMessageById(base, assistantMessageId, apply);
         });
+    }, [rememberRoundContentBaseline]);
+
+    const clearStreamTokenFlushTimer = useCallback((buffer: StreamTokenBuffer | null | undefined) => {
+        if (!buffer?.flushTimer) return;
+        clearTimeout(buffer.flushTimer);
+        buffer.flushTimer = null;
     }, []);
+
+    const dropRejectedRoundContent = useCallback((requestId: string, assistantMessageId: string) => {
+        const buffer = streamTokenBuffersByRequestRef.current.get(requestId);
+        if (buffer) {
+            clearStreamTokenFlushTimer(buffer);
+            buffer.text = "";
+        }
+        appendTokenToAssistantMessage(assistantMessageId, rejectedRoundContentToken);
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
 
     const appendTokenToDetachedRound = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
         if (!round.requestId || !round.assistantMessageId || !text) return;
+        if (isRejectedRoundContentToken(text)) {
+            dropRejectedRoundContent(round.requestId, round.assistantMessageId);
+            return;
+        }
         const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
         if (!normalizedText) return;
         updateInFlightRound(round.requestId, current => ({ ...current, phase: 'streaming' }));
@@ -4417,6 +4478,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         setMessages(prev => {
             const withPlaceholder = appendAssistantPlaceholder(prev, round.assistantMessageId || '', round.requestId, round.sessionKey);
             const base = replacePreviousRound ? updateMessageById(withPlaceholder, round.assistantMessageId, clearAssistantRoundProse) : withPlaceholder;
+            if (round.assistantMessageId) rememberRoundContentBaseline(round.assistantMessageId, base, normalizedText);
             return appendTokenToRound(
                 base,
                 round.assistantMessageId,
@@ -4424,13 +4486,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 eventSequence,
             );
         });
-    }, [consumeRoundProseReplacement, streamAppendStateForMessage, updateInFlightRound]);
-
-    const clearStreamTokenFlushTimer = useCallback((buffer: StreamTokenBuffer | null | undefined) => {
-        if (!buffer?.flushTimer) return;
-        clearTimeout(buffer.flushTimer);
-        buffer.flushTimer = null;
-    }, []);
+    }, [consumeRoundProseReplacement, dropRejectedRoundContent, rememberRoundContentBaseline, streamAppendStateForMessage, updateInFlightRound]);
 
     const flushStreamTokenBuffer = useCallback((requestId?: string) => {
         const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
@@ -4526,6 +4582,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
         if (!round.assistantMessageId || !text) return;
+        if (isRejectedRoundContentToken(text)) {
+            dropRejectedRoundContent(round.requestId, round.assistantMessageId);
+            return;
+        }
         noteAIScrollStreamToken(text.length);
         const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
         if (!normalizedText) return;
@@ -4563,7 +4623,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (!buffer.flushTimer) {
             buffer.flushTimer = setTimeout(() => flushStreamTokenBuffer(round.requestId), STREAM_TOKEN_FLUSH_MS);
         }
-    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, consumeRoundProseReplacement, flushStreamTokenBuffer, streamAppendStateForMessage]);
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, consumeRoundProseReplacement, dropRejectedRoundContent, flushStreamTokenBuffer, streamAppendStateForMessage]);
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);

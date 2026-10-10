@@ -35,6 +35,36 @@ func TestReasoningStutterHaltsDotRun(t *testing.T) {
 	}
 }
 
+func TestReasoningDisplayDropsHy3ToolMarkup(t *testing.T) {
+	var got strings.Builder
+	stream := newReasoningDisplayStream(func(delta string) { got.WriteString(delta) }, nil)
+	stream.Write("直接搜索。\n")
+	stream.Write("<tool_call:6124c78e>web_search<tool_sep:6124c78e>\n")
+	stream.Write("<arg_key:6124c78e>query</arg_key:6124c78e>\n")
+	stream.Write("<arg_value:6124c78e>北京 天气 今天 实时</arg_value:6124c78e>\n")
+	stream.Write("</tool_call:6124c78e>\n")
+	stream.Flush()
+	if strings.Contains(got.String(), "tool_call") || strings.Contains(got.String(), "web_search") || strings.Contains(got.String(), "北京") {
+		t.Fatalf("thinking panel leaked hy3 tool call: %q", got.String())
+	}
+	if !strings.Contains(got.String(), "直接搜索。") {
+		t.Fatalf("prose dropped: %q", got.String())
+	}
+}
+
+func TestReasoningDisplayDropsPartialHy3Marker(t *testing.T) {
+	var got strings.Builder
+	stream := newReasoningDisplayStream(func(delta string) { got.WriteString(delta) }, nil)
+	stream.Write("直接搜索。\n<tool_cal")
+	stream.Flush()
+	if strings.Contains(got.String(), "tool_cal") || strings.Contains(got.String(), "<") {
+		t.Fatalf("partial tag shown: %q", got.String())
+	}
+	if !strings.Contains(got.String(), "直接搜索。") {
+		t.Fatalf("prose dropped: %q", got.String())
+	}
+}
+
 func TestReasoningStutterKeepsRealThought(t *testing.T) {
 	var got strings.Builder
 	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })

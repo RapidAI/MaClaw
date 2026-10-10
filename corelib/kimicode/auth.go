@@ -499,15 +499,22 @@ func deviceHeaders() http.Header {
 		platform = override
 	}
 	platform = asciiHeader(platform)
-	key := platform + "\n" + deviceIDPath()
+	name := productName
+	if override := strings.TrimSpace(os.Getenv("KIMI_CODE_PRODUCT_NAME")); override != "" {
+		name = asciiHeader(override)
+	}
+	version := productVersion
+	if override := strings.TrimSpace(os.Getenv("KIMI_CODE_PRODUCT_VERSION")); override != "" {
+		version = asciiHeader(override)
+	}
+	key := strings.Join([]string{platform, name, version, deviceIDPath()}, "\n")
 	headerMu.Lock()
 	defer headerMu.Unlock()
 	if headerCache != nil && headerKey == key {
 		return headerCache.Clone()
 	}
-	version := asciiHeader(productVersion)
 	headers := make(http.Header)
-	headers.Set("User-Agent", productName+"/"+version)
+	headers.Set("User-Agent", name+"/"+version)
 	headers.Set("X-Msh-Platform", platform)
 	headers.Set("X-Msh-Version", version)
 	headers.Set("X-Msh-Device-Name", asciiHeader(hostName()))

@@ -583,16 +583,8 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 			finishReason = "tool_calls"
 		}
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := visibleContent
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+		finishReason = finish
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
@@ -768,16 +760,8 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	if finishReason == "" {
 		finishReason = "stop"
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := contentBuf.String()
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, contentBuf.String()); changed {
+		finishReason = finish
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 

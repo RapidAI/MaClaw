@@ -34,6 +34,9 @@ func tenantAdminContext(ctx context.Context, tenantID string) context.Context {
 type fakeVEMachineAuth struct {
 	principals map[string]*auth.MachinePrincipal
 	token      string
+	// viewer is the single user a viewer token resolves to. It stays nil unless
+	// a test opts in, so machine-auth tests keep failing a viewer-only request.
+	viewer *auth.ViewerPrincipal
 }
 
 type fakeVEOwnerLookup struct {
@@ -100,6 +103,16 @@ func (f fakeVEMachineAuth) AuthenticateMachine(ctx context.Context, machineID, r
 		return nil, errors.New("bad machine")
 	}
 	return principal, nil
+}
+
+// AuthenticateViewer mirrors IdentityService: the same bearer token that is a
+// machine token can also be the owner's viewer token, and a request without a
+// machine ID must still authenticate.
+func (f fakeVEMachineAuth) AuthenticateViewer(_ context.Context, rawToken string) (*auth.ViewerPrincipal, error) {
+	if rawToken != f.token || f.viewer == nil {
+		return nil, errors.New("bad viewer token")
+	}
+	return f.viewer, nil
 }
 
 func (f fakeVEMachinePresence) GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error) {

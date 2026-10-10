@@ -160,7 +160,9 @@ func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice 
 			msgReasoning = tagReasoning
 		}
 	}
-	if msgContent == "" && msgReasoning != "" {
+	// A tool call owns this turn. The thought stays in 思考过程. Copying it
+	// into content puts it in the chat bubble and in the next model request.
+	if msgContent == "" && msgReasoning != "" && len(choice.Message.ToolCalls) == 0 {
 		msgContent = msgReasoning
 	}
 

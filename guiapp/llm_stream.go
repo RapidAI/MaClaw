@@ -17,9 +17,18 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
+// rejectedRoundContentToken drops the answer draft already streamed in this
+// round. \x01 is the reasoning lane. This byte is the content-lane reset.
+const rejectedRoundContentToken = "\x02"
+
 type tokenStreamFilter struct {
-	writeFn func(string)
-	flushFn func()
+	writeFn    func(string)
+	flushFn    func()
+	suppressed func() bool
+}
+
+func (f tokenStreamFilter) Suppressed() bool {
+	return f.suppressed != nil && f.suppressed()
 }
 
 var guiFuncCallBlock = regexp.MustCompile(`(?s)<\|FunctionCallBegin\|>.*?<\|FunctionCallEnd\|>\s*`)
@@ -634,6 +643,7 @@ func newToolCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
 			xmlFilter.Flush()
 			plainFilter.Flush()
 		},
+		suppressed: func() bool { return plainFilter.suppressed },
 	}
 }
 
@@ -1048,7 +1058,9 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	rawContent := msg.Content
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(rawContent)))
 	filteredStr := filteredBuf.String()
-	if filteredStr != "" {
+	// A Hy3 call recovered from reasoning clears the premature forecast.
+	// A call that the content stream itself suppressed keeps its preface.
+	if filteredStr != "" && (strings.TrimSpace(rawContent) != "" || len(msg.ToolCalls) == 0 || tcf.Suppressed()) {
 		content = stripXMLToolCalls(filteredStr)
 	}
 	BrowserDiagCP5_StreamFilter(
@@ -1058,8 +1070,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 		browserDiagHasBrowserRolePrefix(filteredStr),
 		filteredStr,
 	)
-	reasoning := stripRolePrefixReasoningForDisplay(msg.ReasoningContent)
-	if content == "" && reasoning != "" {
+	reasoning := stripXMLToolCalls(stripRolePrefixReasoningForDisplay(msg.ReasoningContent))
+	if content == "" && reasoning != "" && len(msg.ToolCalls) == 0 {
 		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
 	}
 	msg.Content = content
@@ -1082,6 +1094,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	var truncatedToolArgs map[string]string
 	if len(truncatedTools) == 0 {
 		finishReason, truncatedTools, truncatedToolArgs = filterTruncatedToolCalls(&msg, finishReason)
+	}
+	// Hy3 can stream a finished answer in content while the tool call arrives
+	// in reasoning. The parser drops that answer. The tokens already sent
+	// have to leave the bubble, or the next round keeps them as prose.
+	if onToken != nil && strings.TrimSpace(filteredStr) != "" && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) > 0 && !tcf.Suppressed() {
+		onToken(rejectedRoundContentToken)
 	}
 	// Enhanced diagnostic when truncation is detected via GUI path
 	if len(truncatedTools) > 0 && resp != nil && resp.Usage != nil {

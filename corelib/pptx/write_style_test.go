@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -349,4 +351,268 @@ func samplePNG(t *testing.T, path string, x, y int) [3]int {
 	c := img.At(x, y)
 	r, g, b, _ := c.RGBA()
 	return [3]int{int(r >> 8), int(g >> 8), int(b >> 8)}
+}
+
+func TestModernStyleSelectionAndPalette(t *testing.T) {
+	// The brand style must be reachable by id, by Chinese alias, and by purpose.
+	for _, tc := range []struct {
+		theme, hint, want string
+	}{
+		{"modern", "", "modern"},
+		{"现代品牌", "", "modern"},
+		{"auto", "产品介绍白皮书", "modern"},
+		{"", "brand deck for a saas launch", "modern"},
+	} {
+		if id, _ := ChooseDeckStyle(tc.theme, tc.hint); id != tc.want {
+			t.Errorf("ChooseDeckStyle(%q, %q) = %q, want %q", tc.theme, tc.hint, id, tc.want)
+		}
+	}
+	if !strings.Contains(FormatDeckStyleCatalog(), "`modern`") {
+		t.Fatal("catalog missing modern")
+	}
+	// Purpose keywords for the older styles must still win over the brand ones.
+	for _, tc := range []struct{ hint, want string }{
+		{"季度经营分析汇报", "business"},
+		{"技术架构分享", "tech"},
+		{"新员工培训课件", "education"},
+	} {
+		if id, _ := ChooseDeckStyle("auto", tc.hint); id != tc.want {
+			t.Errorf("auto(%q) = %q, want %q", tc.hint, id, tc.want)
+		}
+	}
+}
+
+// The brand style keeps a white field with a navy panel on the cover and the
+// warm accent bar; the dark-panel text must stay legible against the navy.
+func TestModernCoverUsesSplitPanelAndWarmBar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "modern.pptx")
+	outline := Outline{
+		Title: "MaClaw 智能工作台", Subtitle: "本地优先的日常生产力", Theme: "modern",
+		Slides: []OutlineSlide{{Title: "产品定位", Kicker: "OVERVIEW", Layout: "cards",
+			Bullets: []string{"本地优先：数据不出端", "开箱即用：一键部署"}}},
+	}
+	if err := WriteFile(path, outline); err != nil {
+		t.Fatal(err)
+	}
+	cover := zipSlideXML(t, path)["ppt/slides/slide1.xml"]
+	for _, want := range []string{"0B2E4F", "FF7A45"} {
+		if !strings.Contains(cover, want) {
+			t.Fatalf("cover is missing the brand color %s", want)
+		}
+	}
+	slides := zipNamedContents(t, path)
+	body := ""
+	for name, content := range slides {
+		if strings.HasPrefix(name, "ppt/slides/slide") && strings.Contains(content, "产品定位") {
+			body = content
+		}
+	}
+	if body == "" {
+		t.Fatal("missing modern content slide")
+	}
+	if color := runColorAfterText(t, body, "产品定位"); !strings.EqualFold(color, "0B2E4F") {
+		t.Fatalf("content title color = %s, want the deck navy 0B2E4F", color)
+	}
+	// Body copy sits on white; the light accent must not be used for it.
+	if strings.Contains(body, "1E88E5") {
+		t.Fatal("light accent 1E88E5 is below body-text contrast on white")
+	}
+}
+
+// The pill badge makes the brand header taller than the shared light chrome.
+// If the body box keeps the default top, cards collide with the title.
+func TestModernHeaderClearsBodyContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "modern.pptx")
+	if err := WriteFile(path, Outline{
+		Title: "品牌", Theme: "modern",
+		Slides: []OutlineSlide{{Title: "产品定位", Kicker: "OVERVIEW", Layout: "cards",
+			Bullets: []string{"甲：说明", "乙：说明"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := ""
+	for name, content := range zipNamedContents(t, path) {
+		if strings.HasPrefix(name, "ppt/slides/slide") && strings.Contains(content, "产品定位") {
+			body = content
+		}
+	}
+	if body == "" {
+		t.Fatal("missing modern content slide")
+	}
+	titleY := shapeOffsetYBeforeText(t, body, "产品定位")
+	// The first card's index is the topmost body element; it must clear the
+	// bottom of the title box (0.55in tall) by a visible margin.
+	cardY := shapeOffsetYBeforeText(t, body, "01")
+	if cardY == 0 {
+		t.Fatal("card index not found on the modern content slide")
+	}
+	// The title box is 0.55in tall. Cards are centred in the body box, so the
+	// real gap is larger than the raw title bottom; require a visible margin
+	// so a title that has grown into the body region cannot pass.
+	titleBottom := titleY + emuIn(0.55)
+	if gap := cardY - titleBottom; gap < emuIn(0.3) {
+		t.Fatalf("card top is only %d EMU (%.2fin) below the title box; want >= 0.30in", gap, float64(gap)/float64(emuIn(1)))
+	}
+}
+
+// The warm accent belongs to the cover. On a content page it must not appear:
+// a saturated bar under the title is the classic generated-deck tell, and a
+// full-bleed one at the foot would cross the shared page mark at y 7.08-7.36.
+func TestModernContentPageCarriesNoWarmAccent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "modern.pptx")
+	if err := WriteFile(path, Outline{
+		Title: "品牌", Theme: "modern",
+		Slides: []OutlineSlide{{Title: "内容页标题", Bullets: []string{"要点一"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cover := zipSlideXML(t, path)["ppt/slides/slide1.xml"]
+	if !strings.Contains(cover, "FF7A45") {
+		t.Fatal("cover should keep the warm accent bar")
+	}
+	for name, body := range zipNamedContents(t, path) {
+		if !strings.HasPrefix(name, "ppt/slides/slide") || !strings.Contains(body, "内容页标题") {
+			continue
+		}
+		if strings.Contains(body, "FF7A45") {
+			t.Fatal("warm accent leaked onto a content page")
+		}
+		return
+	}
+	t.Fatal("missing modern content slide")
+}
+
+// A long kicker must not grow the pill past the slide or run it under the
+// cover's navy panel. The label is clipped with an ellipsis instead.
+func TestModernKickerBadgeStaysBounded(t *testing.T) {
+	huge := strings.Repeat("长标签", 60)
+	for _, tc := range []struct {
+		kicker string
+		maxW   float64
+	}{
+		{"OVERVIEW", 10.2},
+		{"章节", 10.2},
+		{huge, 10.2},
+		{huge, 6.95},
+	} {
+		label, w := badgeWidth(tc.kicker, 11, tc.maxW)
+		if label == "" {
+			t.Fatalf("badge for %q collapsed to empty", clipRunes(tc.kicker, 12))
+		}
+		if w > tc.maxW+0.001 {
+			t.Errorf("badge width %.2fin exceeds the %.2fin bound", w, tc.maxW)
+		}
+		// The text must also fit inside the pill once insets are removed.
+		if textW := titleWidthUnits(label) * 11.0 / 72.0; textW > w-0.2 {
+			t.Errorf("label %q needs %.2fin but the pill offers %.2fin", label, textW, w-0.2)
+		}
+	}
+}
+
+// The rendered pill must stay on the slide for a pathological kicker.
+func TestModernRenderedBadgeStaysOnSlide(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "modern.pptx")
+	if err := WriteFile(path, Outline{
+		Title: "标题", Theme: "modern",
+		Slides: []OutlineSlide{{Title: "内容页", Kicker: strings.Repeat("长标签", 60),
+			Bullets: []string{"要点"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range zipNamedContents(t, path) {
+		if !strings.Contains(body, "内容页") {
+			continue
+		}
+		idx := strings.Index(body, `prst="roundRect"`)
+		if idx < 0 {
+			t.Fatal("no pill badge on the modern content page")
+		}
+		head := body[:idx]
+		last := strings.LastIndex(head, "<a:ext cx=")
+		if last < 0 {
+			t.Fatal("pill has no extent")
+		}
+		m := regexp.MustCompile(`<a:ext cx="(\d+)"`).FindStringSubmatch(head[last:])
+		if m == nil {
+			t.Fatal("pill extent unparsable")
+		}
+		cx, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := float64(cx) / float64(deckInchEMU); got > 10.5 {
+			t.Fatalf("pill is %.2fin wide; it runs off the slide", got)
+		}
+		return
+	}
+	t.Fatal("missing modern content slide")
+}
+
+// The brand style must not hijack decks that belong to the business style.
+// matchStyle ranks the longest matching keyword, so a 4-char brand keyword
+// would outrank the 2-char 季度 or 商务 that decide those decks.
+func TestModernKeywordsDoNotStealBusinessDecks(t *testing.T) {
+	for _, tc := range []struct{ hint, want string }{
+		{"季度数据看板", "business"},
+		{"客户案例分析", "business"},
+		{"解决方案汇报", "business"},
+		{"产品手册", "business"},
+		{"数据看板周报", "business"},
+		{"季度经营分析", "business"},
+		{"客户提案", "business"},
+	} {
+		if id, _ := ChooseDeckStyle("auto", tc.hint); id != tc.want {
+			t.Errorf("auto(%q) = %q, want %q", tc.hint, id, tc.want)
+		}
+	}
+	// The brand vocabulary must still reach the brand style.
+	for _, hint := range []string{"产品介绍", "品牌故事", "白皮书", "用户增长", "品牌手册", "品牌宣传", "brand deck", "saas"} {
+		if id, _ := ChooseDeckStyle("auto", hint); id != "modern" {
+			t.Errorf("auto(%q) = %q, want modern", hint, id)
+		}
+	}
+}
+
+// The content box must sit below the title, and that relationship has to be
+// derived rather than hardcoded: if the badge geometry moves, the body has to
+// follow it. This pins the derived offset to the badge the painter draws.
+func TestModernBodyBoxTracksBadgeGeometry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "modern.pptx")
+	if err := WriteFile(path, Outline{
+		Title: "品牌", Theme: "modern",
+		Slides: []OutlineSlide{{Title: "内容页", Kicker: "OVERVIEW", Bullets: []string{"要点"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := ""
+	for name, content := range zipNamedContents(t, path) {
+		if strings.HasPrefix(name, "ppt/slides/slide") && strings.Contains(content, "内容页") {
+			body = content
+		}
+	}
+	if body == "" {
+		t.Fatal("missing modern content slide")
+	}
+	// Read the real rendered positions: the title the painter placed, and the
+	// topmost body shape. The body must start below the title box the painter
+	// derived from its own badge, not at some hardcoded constant.
+	titleY := shapeOffsetYBeforeText(t, body, "内容页")
+	if titleY == 0 {
+		t.Fatal("content title not found")
+	}
+	cardY := shapeOffsetYBeforeText(t, body, "01")
+	if cardY == 0 {
+		// A single bullet renders as plain text, not a card; use the text.
+		cardY = shapeOffsetYBeforeText(t, body, "要点")
+	}
+	if cardY == 0 {
+		t.Fatal("no body content on the slide")
+	}
+	// Measured healthy gaps: 0.54in with no badge, 0.67in with one, 2.17in
+	// for a centred card grid. A body that has drifted back up into the title
+	// shows up well under 0.4in.
+	if gap := cardY - titleY; gap < emuIn(0.4) {
+		t.Fatalf("body sits %d EMU (%.2fin) below the title; the header and body have drifted together",
+			gap, float64(gap)/float64(deckInchEMU))
+	}
 }

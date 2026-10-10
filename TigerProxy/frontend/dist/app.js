@@ -10,6 +10,8 @@ let switchingAuthMode = false;
 let lastStatus = null;
 let xaiWaiting = false;
 let openaiWaiting = false;
+let kimiWaiting = false;
+let kimiHint = "";
 let refreshGen = 0;
 
 function formatCacheDecision(status) {
@@ -100,6 +102,23 @@ function handleRelaunch(status, fallback) {
   if (fallback) notify(fallback);
   return false;
 }
+// A relaunch tears the window down after a short grace period. Say so plainly,
+// otherwise the app just disappears at the moment a login appears to succeed.
+function showRelaunchNotice() {
+  const btn = $("loginActionBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "登录成功，正在重启…";
+  }
+  if ($("logoutBtn")) $("logoutBtn").style.display = "none";
+  document.querySelectorAll("#modeFields button, #modeFields input, #modeFields select")
+    .forEach((el) => { el.disabled = true; });
+  const toast = $("toast");
+  if (toast) {
+    toast.textContent = "登录成功，正在重启 CodexProxy…";
+    toast.className = "toast show ok";
+  }
+}
 function collectModels() {
   const select = $("modelID");
   if (!select) return [];
@@ -108,7 +127,7 @@ function collectModels() {
     .filter((model) => model.id);
 }
 
-const MODE_INPUT_IDS = ["baseURL", "upstreamKey", "anthropicCode", "xaiCode", "openaiCode", "modelID"];
+const MODE_INPUT_IDS = ["baseURL", "upstreamKey", "anthropicCode", "xaiCode", "openaiCode", "kimiCode", "modelID"];
 
 function snapshotModeInputs() {
   const snap = {};
@@ -173,7 +192,7 @@ function guideStepsFor(mode) {
     case "anthropic_oauth":
       return ["Max/Pro 点 <strong>登录</strong> 走 Claude.ai", "没有订阅则填写 <strong>API Key</strong>", "选择 <strong>默认模型</strong> 并保存", "再点击 <strong>配置 Codex</strong>"];
     case "kimi_web":
-      return ["点击 <strong>打开 Kimi 登录</strong>", "登录后粘贴 <strong>API Key</strong> 并列出模型", "保存并 <strong>配置 Codex</strong>", "启动 <strong>Codex Desktop</strong>"];
+      return ["点击 <strong>登录</strong>，自动打开 Kimi 授权页", "在网页里输入 <strong>验证码</strong> 并确认授权", "授权完成后自动保存登录并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     default:
       return ["确认 <strong>Codex Desktop</strong> 已安装", "使用当前登录方式完成认证", "选择 <strong>默认模型</strong> 并保存", "点击 <strong>配置 Codex</strong> 后启动 Desktop"];
   }
@@ -258,11 +277,15 @@ function modeFieldsHTML(mode, s, loggedIn) {
       ${modelSelectWithList("列出")}`;
   }
   if (mode === "kimi_web") {
+    const waiting = !loggedIn && kimiWaiting;
+    const hint = kimiHint || "";
     return `
-      <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" /></div>
-      <div class="field"><label>上游 API Key</label><input id="upstreamKey" placeholder="${escapeAttr(keyPlaceholder)}" spellcheck="false" /></div>
-      ${modelSelectWithList("列出")}
-      <button id="openKimiBtn" class="ghost" type="button">打开 Kimi 登录</button>`;
+      <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" disabled /></div>
+      ${loggedIn ? `<div class="oauth-status">Kimi Code 已登录</div>` : waiting ? `
+        <p class="sub">已打开 Kimi 授权页，请输入验证码并确认授权，完成后会自动保存。</p>
+        <div class="field"><label>验证码</label><input id="kimiCode" value="${escapeAttr(hint)}" readonly /></div>
+        <button id="cancelKimiBtn" class="ghost" type="button">取消登录</button>` : `<p class="sub">点击右上角登录，浏览器会打开 Kimi 授权页，无需 API Key。</p>`}
+      ${loggedIn ? modelSelectWithList("刷新") : modelSelect}`;
   }
   return `
     <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" spellcheck="false" /></div>
@@ -277,8 +300,8 @@ function escapeAttr(value) {
 function bindModeFieldActions() {
   const listBtn = $("listModelsBtn");
   if (listBtn) listBtn.addEventListener("click", () => listModels().catch((err) => notify(errorMessage(err), "error")));
-  const kimiBtn = $("openKimiBtn");
-  if (kimiBtn) kimiBtn.addEventListener("click", () => api.OpenKimiLogin().catch((err) => notify(errorMessage(err), "error")));
+  const kimiCancelBtn = $("cancelKimiBtn");
+  if (kimiCancelBtn) kimiCancelBtn.addEventListener("click", () => cancelKimiLogin().catch((err) => notify(errorMessage(err), "error")));
   const anthBtn = $("completeAnthropicBtn");
   if (anthBtn) anthBtn.addEventListener("click", () => completeAnthropic().catch((err) => notify(errorMessage(err), "error")));
   const xaiBtn = $("completeXaiBtn");
@@ -354,6 +377,14 @@ async function completeXaiCode() {
   } finally {
     setBusy(btn, false);
   }
+}
+
+async function cancelKimiLogin() {
+  await api.CancelKimiWebLogin();
+  kimiWaiting = false;
+  kimiHint = "";
+  await refresh();
+  notify("已取消 Kimi 登录");
 }
 
 async function completeAnthropic() {
@@ -624,8 +655,35 @@ async function runLogin() {
       return;
     }
     if (mode === "kimi_web") {
-      await api.OpenKimiLogin();
-      notify("已打开 Kimi 网页，登录后把 API Key 填到配置区并保存。");
+      const device = await api.StartKimiWebLogin();
+      kimiWaiting = true;
+      const userCode = pick(device, "user_code", "UserCode") || "";
+      const approvalURL = pick(device, "verification_uri_complete", "VerificationURIComplete")
+        || pick(device, "verification_uri", "VerificationURI") || "";
+      const opened = pick(device, "browser_opened", "BrowserOpened");
+      kimiHint = userCode;
+      await refresh();
+      const prefix = opened
+        ? "已打开 Kimi 授权页。"
+        : `浏览器未能自动打开，请手动访问：${approvalURL}`;
+      notify(`${prefix} 验证码：${userCode}`);
+      try {
+        const status = await api.WaitKimiWebLogin();
+        kimiWaiting = false;
+        kimiHint = "";
+        // Show the restart notice before any re-render, because the process
+        // is about to replace this window.
+        showRelaunchNotice();
+        if (handleRelaunch(status)) return;
+        await refresh();
+        notify("Kimi Code 登录成功");
+      } catch (err) {
+        kimiWaiting = false;
+        kimiHint = "";
+        await refresh();
+        if (($("authMode")?.value || currentAuthMode) !== "kimi_web") return;
+        throw err;
+      }
       return;
     }
     notify("请填写上游 URL 和 API Key，然后保存或列出模型。");

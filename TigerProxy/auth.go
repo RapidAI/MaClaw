@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/pkg/browser"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -31,7 +32,7 @@ func authModeCatalog() []AuthModeInfo {
 		{ID: AuthModeXAIOAuth, Name: "xAI Grok 登录", Hint: "浏览器 OAuth，使用 xAI 账号", Kind: "oauth", Icon: "GK"},
 		{ID: AuthModeAnthropicOAuth, Name: "Claude Code 登录", Hint: "Max/Pro 走账号登录，否则填写 API Key", Kind: "oauth_code", Icon: "CC"},
 		{ID: AuthModeZhipuCoding, Name: "智谱编程", Hint: "预置 OpenAI 兼容端点，填写 API Key", Kind: "apikey", Icon: "智"},
-		{ID: AuthModeKimiWeb, Name: "Kimi Web 登录", Hint: "打开网页登录后粘贴 API Key", Kind: "web", Icon: "K"},
+		{ID: AuthModeKimiWeb, Name: "Kimi Code 登录", Hint: "浏览器授权登录 Kimi Code，无需 API Key", Kind: "kimi_device", Icon: "K"},
 	}
 }
 
@@ -73,7 +74,7 @@ func defaultAuthBaseURL(mode string) string {
 	case AuthModeZhipuCoding:
 		return zhipuCodingDefaultURL
 	case AuthModeKimiWeb:
-		return kimiCodingDefaultURL
+		return kimiCodingDefaultURL()
 	default:
 		return ""
 	}
@@ -104,12 +105,24 @@ func defaultAuthModelID(mode string) string {
 	case AuthModeZhipuCoding:
 		return zhipuCodingDefaultModel
 	case AuthModeKimiWeb:
-		return kimiCodingDefaultModel
+		return kimiCodingDefaultModel()
 	case AuthModeAnthropicOAuth:
 		return "claude-sonnet-4-5"
 	default:
 		return ""
 	}
+}
+
+// kimiCodingDefaultURL is the Kimi Code API that pairs with the device-flow
+// auth host currently configured.
+func kimiCodingDefaultURL() string {
+	return kimicode.BaseURLForOAuthHost(kimicode.OAuthHost())
+}
+
+// kimiCodingDefaultModel is the managed Kimi Code alias used before a catalog
+// fetch succeeds.
+func kimiCodingDefaultModel() string {
+	return kimicode.DefaultModel
 }
 
 func snapshotActiveProfile(s *Settings) {
@@ -175,9 +188,10 @@ func authProfileReady(s Settings) bool {
 		return false
 	}
 	switch s.ActiveAuthMode {
-	case AuthModeCustomOpenAI, AuthModeZhipuCoding, AuthModeKimiWeb:
+	case AuthModeCustomOpenAI, AuthModeZhipuCoding:
 		return strings.TrimSpace(s.BaseURL) != ""
 	default:
+		// Kimi Code pins its coding endpoint, so the token alone is enough.
 		return true
 	}
 }
@@ -238,9 +252,7 @@ func (a *App) SelectAuthMode(mode string) (Status, error) {
 }
 
 func (a *App) cancelPendingLogins() {
-	a.cancelSSOLogin()
-	a.cancelXAILogin()
-	a.cancelOpenAILogin()
+	a.logout()
 	a.mu.Lock()
 	a.anthropicOAuth = nil
 	a.mu.Unlock()
@@ -285,13 +297,33 @@ func (a *App) SwitchAuthMode(mode string) (Status, error) {
 		status.RelaunchScheduled = true
 		return status, nil
 	}
-	a.relaunchAfterAuth = true
+	a.setRelaunchAfterAuth(true)
 	return a.Status()
 }
 
+// setRelaunchAfterAuth arms or disarms the pending relaunch. The flag is
+// written by the login paths and read by statusMaybeRelaunch, which can run on
+// a different goroutine once applyOAuthResult returns.
+func (a *App) setRelaunchAfterAuth(v bool) {
+	a.mu.Lock()
+	a.relaunchAfterAuth = v
+	a.mu.Unlock()
+}
+
+// takeRelaunchAfterAuth reports whether a relaunch is pending, clearing it so
+// two concurrent callers cannot each schedule a restart.
+func (a *App) takeRelaunchAfterAuth() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.relaunchAfterAuth {
+		return false
+	}
+	a.relaunchAfterAuth = false
+	return true
+}
+
 func (a *App) statusMaybeRelaunch() (Status, error) {
-	if a.relaunchAfterAuth && authProfileReadyMustLoad() {
-		a.relaunchAfterAuth = false
+	if a.takeRelaunchAfterAuth() && authProfileReadyMustLoad() {
 		if err := a.scheduleRelaunch(); err != nil {
 			return Status{}, err
 		}
@@ -678,10 +710,6 @@ func (a *App) applyOAuthResult(mode, baseURL string, result *oauth.TokenResult) 
 	}
 	go a.refreshModelsForActiveMode()
 	return a.statusMaybeRelaunch()
-}
-
-func (a *App) OpenKimiLogin() error {
-	return openExternalURL(a.ctx, kimiWebLoginURL)
 }
 
 func (a *App) SaveUpstreamCredential(baseURL, apiKey, modelID string) (Status, error) {

@@ -158,7 +158,7 @@ import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
-import { countRunningTaskRows, isProjectTabOpen } from './components/layout/SidebarTaskManagement';
+import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
@@ -196,6 +196,7 @@ import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHu
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
 import { DesktopBotWorkspace } from './components/bots/DesktopBotWorkspace';
 import { desktopBotAccountId } from './components/bots/desktopBots';
+import { subscribeBotUnread, unreadBotReplyCount } from './components/bots/botUnread';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
 import {
@@ -543,23 +544,29 @@ function App() {
     // can outlast the grace window, and pruning against a not-yet-loaded
     // empty list would discard legitimate tabs.
     const [taskListLoaded, setTaskListLoaded] = useState(false);
-    // Windows taskbar badge: mirror the sidebar's running count onto the
-    // taskbar button. countRunningTaskRows shares the live-running matcher
-    // with SidebarTaskManagement, so the badge always agrees with the 进行中
-    // chip. A zero count clears the overlay; pushes are cosmetic and never
-    // block on failure — a missing bridge just defers them (see below).
-    const runningTaskBadgeCount = useMemo(
-        () => countRunningTaskRows(taskItems, { busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask }),
-        [taskItems, busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask],
-    );
+    // Windows taskbar overlay: unread bot replies for this account. The
+    // account id comes from config, which is null until LoadConfigForUI
+    // returns, so the first push waits. An earlier push would count the
+    // signed-out "local" transcript and clear a real badge. Zero clears the
+    // overlay. The left-rail 任务 badge keeps the running count. Pushes are
+    // cosmetic and never block on failure — a missing bridge just defers them.
+    const botUnreadUserId = config === null ? '' : desktopBotAccountId(config);
+    const [unreadBotReplies, setUnreadBotReplies] = useState<number | null>(null);
     useEffect(() => {
+        if (!botUnreadUserId) return;
+        const pull = () => setUnreadBotReplies(unreadBotReplyCount(botUnreadUserId));
+        pull();
+        return subscribeBotUnread(pull);
+    }, [botUnreadUserId]);
+    useEffect(() => {
+        if (unreadBotReplies === null) return;
         // The Wails bridge can land after first paint (index.html polls up to
         // 4s for window.go), so a missing binding defers the push instead of
         // dropping it: a count that never changes again would otherwise never
         // reach the backend.
         const push = () => {
             try {
-                const pushed = SetTaskbarBadgeCount(runningTaskBadgeCount);
+                const pushed = SetTaskbarBadgeCount(unreadBotReplies);
                 if (pushed && typeof pushed.catch === 'function') pushed.catch(() => {});
             } catch {
                 // Binding absent in embedded or test shells.
@@ -582,7 +589,7 @@ function App() {
         };
         timer = window.setTimeout(pushWhenReady, 500);
         return () => window.clearTimeout(timer);
-    }, [runningTaskBadgeCount]);
+    }, [unreadBotReplies]);
     // Persist the authoritative list for instant startup render. The snapshot
     // initializer reads it before the first ListTasks; only save once a real
     // list has arrived so an empty cold start never clobbers it.

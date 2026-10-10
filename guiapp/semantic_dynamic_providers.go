@@ -107,46 +107,84 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 
 	entries := make([]agentservice.MCPToolEntry, 0)
 	localCapability := map[string]*corelib.MCPServerCapabilityRef{}
+	notReady := semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
 	if registry != nil {
 		for _, server := range registry.ListServers() {
-			if !mcpHealthObservationSucceeded(server.HealthStatus) {
-				return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
+			status, discoveredTools, observed := registry.remoteHealthObservation(server.ID)
+			retryDue := h.app != nil && h.app.mcpRuntimeSyncShouldRetry(server.ID)
+			if remoteMCPMemberOpen(status, observed, server.RuntimeSyncStatus, retryDue) {
+				// This process has not finished looking at a server the
+				// lifecycle still owes an observation. Publish nothing from
+				// this pass, and do not probe from the turn.
+				return nil, notReady
 			}
-			// A successful probe without a tool-list observation does not prove an
-			// empty server. Do not refresh it from a request path; lifecycle will
-			// publish the next bounded snapshot after discovery succeeds.
-			discoveredTools, observed := registry.CachedServerTools(server.ID)
+			// Finished negative observation, or a stale in-memory success that
+			// a durable pending/needs_review record has already superseded.
+			// Keep the known tools so a need that only this server serves stays
+			// provider_not_ready, without hiding a sibling whose observation
+			// is still admissible.
+			blocked := !mcpHealthObservationSucceeded(status) || mcpRuntimeSyncStatusClosed(server.RuntimeSyncStatus)
 			if !observed {
-				return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
+				continue
 			}
 			for _, discovered := range discoveredTools {
 				entry := semanticMCPEntry(ctx, principal, contracts, server.ID, server.Name, server.Capability, discovered)
+				entry.RuntimeBlocked = blocked
 				entries = append(entries, entry)
 			}
 		}
-		// Local configured servers are part of the MCP lifecycle even when the
-		// manager has not been initialized yet. Treat that state as not-ready;
-		// an empty running-tool list is complete only when no enabled local
-		// server exists.
+		// The automatic local runtime is the launch set (enabled and
+		// AutoStart) plus any server that is already running. An enabled
+		// server with AutoStart false is intentionally offline until the
+		// operator starts it. A launch-set server is open only while startup
+		// is still allowed to start it and has not finished that attempt.
+		// needs_review, or a pending retry that is not due, will not start a
+		// process; leaving it open would keep every other MCP server unusable.
+		// A running process whose durable record is still a blocker keeps its
+		// tools, but they are not selectable. A disabled or removed server is
+		// not admitted, even if its process has not exited yet.
+		blockedLocal := map[string]bool{}
+		admittedLocal := map[string]bool{}
 		for _, configured := range registry.ListLocalServers() {
+			id := strings.TrimSpace(configured.ID)
 			if configured.Capability != nil {
-				localCapability[strings.TrimSpace(configured.ID)] = configured.Capability
+				localCapability[id] = configured.Capability
 			}
 			if configured.Disabled {
 				continue
 			}
-			if h.app != nil && h.app.mcpRuntimeSyncPending(configured.ID) {
-				return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
+			running := local != nil && local.IsRunning(configured.ID)
+			if !configured.AutoStart && !running {
+				continue
 			}
-			if local == nil || !local.IsRunning(configured.ID) {
-				return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
+			if !running {
+				if localMCPStartStillOwed(h.app, configured, local) {
+					return nil, notReady
+				}
+				continue
+			}
+			admittedLocal[id] = true
+			if h.app != nil && h.app.mcpRuntimeSyncPending(configured.ID) {
+				blockedLocal[id] = true
 			}
 		}
-	}
-	if local != nil {
+		if local != nil {
+			for _, server := range local.GetAllTools() {
+				id := strings.TrimSpace(server.ServerID)
+				if !admittedLocal[id] {
+					continue
+				}
+				for _, discovered := range server.Tools {
+					entry := semanticMCPEntry(ctx, principal, contracts, server.ServerID, server.ServerName, localCapability[id], discovered)
+					entry.RuntimeBlocked = blockedLocal[id]
+					entries = append(entries, entry)
+				}
+			}
+		}
+	} else if local != nil {
 		for _, server := range local.GetAllTools() {
 			for _, discovered := range server.Tools {
-				entry := semanticMCPEntry(ctx, principal, contracts, server.ServerID, server.ServerName, localCapability[strings.TrimSpace(server.ServerID)], discovered)
+				entry := semanticMCPEntry(ctx, principal, contracts, server.ServerID, server.ServerName, nil, discovered)
 				entries = append(entries, entry)
 			}
 		}
@@ -158,6 +196,56 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 		return entries[i].ToolName < entries[j].ToolName
 	})
 	return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageComplete, "")
+}
+
+// remoteMCPMemberOpen reports that the automatic remote runtime still owes
+// this process a finished tools/list outcome. A durable needs_review record,
+// or a pending retry that is not yet due, is a closed admission decision:
+// it must not keep every other MCP server unusable. Unknown health with a
+// probe still due is open, including a ready marker left by a previous
+// process, because the tool cache does not survive restart.
+func remoteMCPMemberOpen(status mcpHealthStatus, toolsObserved bool, syncStatus string, retryDue bool) bool {
+	switch normalizeMCPHealthStatus(status) {
+	case mcpHealthStatusHealthy, mcpHealthStatusSlow:
+		return !toolsObserved
+	case mcpHealthStatusDegraded, mcpHealthStatusUnavailable:
+		return false
+	default:
+		switch strings.TrimSpace(syncStatus) {
+		case "needs_review":
+			return false
+		case "pending":
+			return retryDue
+		default:
+			return true
+		}
+	}
+}
+
+// mcpRuntimeSyncStatusClosed reports a durable admission decision that
+// supersedes a stale in-memory success. Ready is stored as an empty status
+// by ListServers, so a genuine healthy observation stays selectable.
+func mcpRuntimeSyncStatusClosed(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "pending", "needs_review":
+		return true
+	default:
+		return false
+	}
+}
+
+// localMCPStartStillOwed is true while startup is still allowed to start this
+// server and no config sync has finished that attempt. needs_review, or a
+// pending retry that is not due, will not start a process. A manager object
+// by itself is not an attempt: hub wiring constructs it before startup sync.
+func localMCPStartStillOwed(app *App, entry corelib.LocalMCPServerEntry, local *LocalMCPManager) bool {
+	if app != nil && !app.mcpRuntimeSyncAllowsAutomaticStart(entry) {
+		return false
+	}
+	if local == nil || local.configSyncInProgress() || !local.configSyncFinished() {
+		return true
+	}
+	return false
 }
 
 func semanticMCPEntry(ctx context.Context, principal agentservice.Principal, contracts agentservice.DynamicCapabilityContractResolver, serverID, serverName string, capability *corelib.MCPServerCapabilityRef, discovered MCPToolView) agentservice.MCPToolEntry {

@@ -841,7 +841,7 @@ export function isActiveTaskRow(
 }
 
 /** Signals the live-running matcher needs, in the shape App already holds.
- * Shared between the sidebar classification pass and the taskbar badge so
+ * Shared between the sidebar classification pass and countRunningTaskRows so
  * both count exactly the same rows as in progress. */
 export type LiveRunningRowSignals = {
     busyTaskRuns?: { projectPaths: string[]; expertIds: string[] } | null;
@@ -897,8 +897,8 @@ export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningR
 
 /** Number of task rows that count as in progress: live-running rows plus
  * rows whose durable workflow snapshot still buckets as running. Counted
- * over the same visible rows the task list renders, so the Windows taskbar
- * badge always agrees with the sidebar's running chip. */
+ * over the same visible rows the task list renders. The Windows taskbar
+ * overlay is unread bot replies and does not use this count. */
 export function countRunningTaskRows(tasks: TaskManagementItem[], signals?: LiveRunningRowSignals | null): number {
     const ctx = liveRunningRowContext(signals);
     return visibleTaskRows(tasks).filter(task => isLiveRunningTaskRow(task, ctx) || taskStatusBucketFor(task) === 'running').length;
