@@ -59,9 +59,37 @@ func (a *App) publishReviewedMCPServerTools(serverID string, tools []MCPToolView
 		observed = append(observed, agentservice.ObservedMCPTool{
 			Name:        tool.Name,
 			InputSchema: tool.InputSchema,
+			Annotations: tool.Annotations,
+			DeclaredCapabilities: tool.DeclaredCapabilities,
 		})
 	}
-	return publisher.PublishReviewedMCPObservationForCapability(semanticDesktopContractPrincipal(), serverID, a.mcpCapabilityIdentity(serverID), observed)
+	return publisher.PublishReviewedMCPObservationForCapabilityWithOpenLookup(
+		semanticDesktopContractPrincipal(), serverID, a.mcpCapabilityIdentity(serverID), observed, a.mcpOpenLookupReady,
+	)
+}
+
+// mcpOpenLookupReady reports whether this server finished a successful
+// tools/list observation. It gates the open read-only family only: a
+// reviewed name keeps its specific contract regardless of health, because
+// that contract carries its own effect and the catalog publishes the entry
+// with RuntimeBlocked set when the server is not healthy.
+//
+// A local stdio server has no remote health cache: for it, the running
+// client that produced the tool list IS the finished observation, so the
+// local manager's live client count is the equivalent readiness evidence.
+func (a *App) mcpOpenLookupReady(serverID string) bool {
+	if a == nil {
+		return false
+	}
+	serverID = strings.TrimSpace(serverID)
+	if a.localMCPManager != nil && a.localMCPManager.IsRunning(serverID) {
+		return true
+	}
+	if a.mcpRegistry == nil {
+		return false
+	}
+	status, _, observed := a.mcpRegistry.remoteHealthObservation(serverID)
+	return observed && mcpHealthObservationSucceeded(status)
 }
 
 // mcpCapabilityIdentity reads the capability ref stored on the installed

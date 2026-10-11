@@ -7,6 +7,23 @@ import "fmt"
 // registry version, never a silent mutation of an in-use ID.
 const BuiltinCapabilityOntologyVersion = "builtin-capability-ontology-v1"
 
+// ExternalCapabilityPrefix marks a capability registered at runtime by a
+// vendor-installed dynamic provider (MCP/Skill) instead of shipped in the
+// reviewed builtin ontology. A vendor capability must carry this prefix; the
+// host never lets it widen the governed vocabulary past its namespace effect
+// ceiling (see CapabilityRegistry.RegisterExternalCapability). A builtin or
+// reviewed capability must never use this prefix.
+const ExternalCapabilityPrefix CapabilityID = "x:"
+
+// DefaultExternalCapabilityEffectCeiling is the effect set any vendor external
+// capability may declare unless its namespace opts into a wider ceiling via
+// CapabilityRegistry.SetExternalCapabilityCeiling. It deliberately excludes
+// sensitive and local_mutation: an arbitrary installed provider may read and
+// may act on an external system, but it may not declare host-side sensitive
+// authority (for example shell execution) or local state mutation without an
+// explicit, host-reviewed namespace override.
+var DefaultExternalCapabilityEffectCeiling = []EffectClass{EffectReadOnly, EffectExternalEffect}
+
 // Builtin capability IDs use a stable "verb outcome + domain object" naming.
 // Tool names, brand names, protocol names and UI copy must never enter an ID:
 // one capability describes an outcome and may be provided by several builtin,

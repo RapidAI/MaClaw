@@ -49,6 +49,41 @@ func testDynamicCapabilityContract() DynamicCapabilityContract {
 	}
 }
 
+// TestProjectMCPDynamicProviderProjectsTrustTier proves the explicit trust
+// tier set on the resolved control-plane contract survives the projection into
+// the catalog ProviderSpec, so bestProvider can order approved over unreviewed.
+func TestProjectMCPDynamicProviderProjectsTrustTier(t *testing.T) {
+	closedSchema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}
+	cases := []struct {
+		name     string
+		trustTier coretool.ProviderTrustTier
+	}{
+		{"open-unreviewed", coretool.TrustTierUnreviewed},
+		{"reviewed-approved", coretool.TrustTierApproved},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := MCPToolEntry{
+				ServerID:    "srv",
+				ToolName:    "tool",
+				InputSchema: closedSchema,
+				Contract: DynamicCapabilityContract{
+					Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute", Quality: 1}},
+					Effects:    []coretool.EffectClass{coretool.EffectReadOnly},
+					TrustTier:  tc.trustTier,
+				},
+			}
+			provider, _, _, err := ProjectMCPDynamicProvider(entry)
+			if err != nil {
+				t.Fatalf("project: %v", err)
+			}
+			if provider.TrustTier != tc.trustTier {
+				t.Fatalf("provider.TrustTier=%q, want %q", provider.TrustTier, tc.trustTier)
+			}
+		})
+	}
+}
+
 func (s *boundMCPProviderStub) ListAvailableTools(context.Context, Principal) []MCPToolEntry {
 	return append([]MCPToolEntry(nil), s.entries...)
 }
@@ -238,7 +273,10 @@ func TestMCPAdapterRejectsProviderNameAndReplacedSurface(t *testing.T) {
 	}
 }
 
-func TestBindMCPToolAndBoundCallRejectSchemaDrift(t *testing.T) {
+func TestBindMCPToolKeepsGrantAcrossSchemaDrift(t *testing.T) {
+	// Phase 5: a vendor parameter-label/type tweak (schema drift) must NOT
+	// rotate the grant-stable identity, so in-flight grants survive; only the
+	// observed schema digest rotates.
 	entries := []MCPToolEntry{{ServerID: "server", ToolName: "lookup", InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}}}, Contract: testDynamicCapabilityContract()}}
 	binding, err := BindMCPTool(entries, "server", "lookup")
 	if err != nil {
@@ -250,8 +288,11 @@ func TestBindMCPToolAndBoundCallRejectSchemaDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebind changed schema: %v", err)
 	}
-	if fresh.StableID() == binding.StableID() {
-		t.Fatalf("schema drift retained binding: %#v", binding)
+	if fresh.StableID() != binding.StableID() {
+		t.Fatalf("schema drift must not rotate grant identity: old=%#v new=%#v", binding, fresh)
+	}
+	if fresh.SchemaDigest == binding.SchemaDigest {
+		t.Fatalf("schema drift must still rotate the observed schema digest")
 	}
 }
 

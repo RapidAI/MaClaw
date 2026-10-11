@@ -318,14 +318,14 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 	if err := registry.Register(coretool.CapabilityDescriptor{
 		ID:      CapabilityInformationLookup,
 		Version: "v1",
-		Summary: "Retrieve information without changing local or external state.",
+		Summary: "Retrieve information or call an installed MCP tool; writes settle through the external-effect receipt boundary.",
 		Qualifiers: map[string]coretool.QualifierConstraint{
 			QualifierInformationScope: {
 				Values:   []string{InformationScopeReference, InformationScopeCurrent},
 				Required: true,
 			},
 		},
-		Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+		Effects: []coretool.EffectClass{coretool.EffectReadOnly, coretool.EffectExternalEffect},
 		Owner:   "semantic-routing-review",
 	}); err != nil {
 		return nil, err

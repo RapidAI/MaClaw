@@ -83,7 +83,12 @@ type MCPToolBinding struct {
 }
 
 func (b MCPToolBinding) StableID() string {
-	return strings.Join([]string{strings.TrimSpace(b.ServerID), strings.TrimSpace(b.ToolName), strings.TrimSpace(b.SchemaDigest), strings.TrimSpace(b.ContractDigest)}, ":")
+	// Phase 5: the grant-stable identity excludes the observed schema digest.
+	// A vendor description or parameter-label tweak (schema drift) keeps the
+	// same StableID, so in-flight grants survive it. A capability/effect change
+	// still rotates ContractDigest (which is rooted in StableBindingKey) and
+	// retires grants as intended.
+	return strings.Join([]string{strings.TrimSpace(b.ServerID), strings.TrimSpace(b.ToolName), strings.TrimSpace(b.ContractDigest)}, ":")
 }
 
 // boundMCPCallSurface is the per-callback materialization of one immutable MCP
@@ -322,8 +327,33 @@ func DynamicMCPObservedBindingDigest(serverID, toolName string, schema map[strin
 }
 
 func dynamicMCPContractMatchesEntry(contract DynamicCapabilityContract, entry MCPToolEntry) bool {
-	want := strings.TrimSpace(contract.ObservedBindingDigest)
-	return want != "" && want == dynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema)
+	// Phase 5: match on the grant-stable identity (capability + global_key +
+	// tool_name), not the observed schema digest. A schema drift (description or
+	// parameter-label tweak) keeps the same stable key and therefore keeps the
+	// binding usable; only a capability/effect/tool-name change mismatches and
+	// quarantines the entry.
+	want := strings.TrimSpace(contract.StableBindingKey)
+	if want == "" {
+		// Legacy declarations without a stable key fall back to the observed
+		// digest, preserving strict quarantine until they are republished.
+		want = strings.TrimSpace(contract.ObservedBindingDigest)
+		return want != "" && want == dynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema)
+	}
+	capability := ""
+	if len(contract.Provisions) > 0 {
+		capability = string(contract.Provisions[0].Capability)
+	}
+	got := mcpStableBindingKey(entry.CapabilityGlobalKey, coretool.CapabilityID(capability), entry.ToolName)
+	if got != want {
+		return false
+	}
+	// Stable key matches: the binding is usable. Flag schema drift (observed
+	// digest changed while the stable identity held) only as a re-review hint,
+	// never as a quarantine.
+	if strings.TrimSpace(contract.ObservedBindingDigest) != "" && strings.TrimSpace(contract.ObservedBindingDigest) != dynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema) {
+		log.Printf("[semantic-routing] MCP binding %s/%s schema drifted from its reviewed declaration (stable identity held); re-review suggested", entry.ServerID, entry.ToolName)
+	}
+	return true
 }
 
 func (b *MCPToolBridge) contractSnapshot(p Principal) (MCPDynamicContractResolver, error) {

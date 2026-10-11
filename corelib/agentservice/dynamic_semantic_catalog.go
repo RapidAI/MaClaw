@@ -43,6 +43,7 @@ func ProjectMCPDynamicProvider(entry MCPToolEntry) (coretool.ProviderSpec, map[s
 		// channel; copying a provider-supplied channel name here would let
 		// discovery metadata control routing.
 		ChannelScopes:    nil,
+		TrustTier:        entry.Contract.TrustTier,
 		InvocationSchema: invocationSchema,
 		ModelFunction:    modelFunction,
 	}).Project()
@@ -79,6 +80,7 @@ func ProjectSkillDynamicProvider(entry SkillToolEntry) (coretool.ProviderSpec, m
 		Effects:              entry.Contract.Effects,
 		Ready:                true,
 		ChannelScopes:        nil,
+		TrustTier:            entry.Contract.TrustTier,
 		InvocationSchema:     parameterSchema,
 	}).Project()
 	if err != nil {

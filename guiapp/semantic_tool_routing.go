@@ -400,6 +400,25 @@ func newIMSemanticCapabilityRegistry() *tool.CapabilityRegistry {
 			Effects:  []tool.EffectClass{tool.EffectLocalMutation},
 			Produces: []tool.ArtifactContract{{Kind: "document", MIMEType: "application/pdf", Required: true}},
 		},
+		// information.lookup is the open dynamic family: an arbitrary installed
+		// MCP or Skill may serve it without a per-name review, and the open
+		// envelope now also permits an unreviewed tool to perform a write that
+		// settles through the external-effect receipt boundary. It is declared
+		// here with the same descriptor the reviewed dynamic registry uses,
+		// because the IM publisher validates every contract against this
+		// registry and would otherwise reject the open contract as an unknown
+		// capability. The required scope qualifier keeps it distinct from a
+		// freshness-bearing web search: an arbitrary tool answers from whatever
+		// it is pointed at, so it is reference retrieval; a write by an
+		// unannotated tool is fail-safe gated by the receipt coordinator.
+		{
+			ID: "information.lookup", Version: "v1", Owner: "im",
+			Summary: "Retrieve information or call an installed MCP tool; writes settle through the external-effect receipt boundary.",
+			Qualifiers: map[string]tool.QualifierConstraint{
+				"scope": {Values: []string{"reference", "current"}, Required: true},
+			},
+			Effects: []tool.EffectClass{tool.EffectReadOnly, tool.EffectExternalEffect},
+		},
 	} {
 		if err := registry.Register(descriptor); err != nil {
 			panic("invalid IM semantic capability declaration: " + err.Error())
@@ -772,6 +791,10 @@ func loopContextHasChatProjection(ctx *LoopContext) bool {
 // would search instead of reading the photo. A confident screenshot request
 // still plans capture: the attached image is context, not a substitute for a
 // new shot. Bare/degraded document_generate stays fail-closed.
+//
+// A DocumentRead verdict is in scope too, but only when the turn's ingress
+// cannot satisfy it at all (semanticUnsatisfiableDocumentReadOnStagedImage):
+// a document turn that merely also carries an image keeps its governed plan.
 func semanticHostStagedImageUnderstand(userText string, attachments []MessageAttachment, result intent.ClassificationResult) bool {
 	if strings.TrimSpace(result.WorkflowType) != "" || !semanticTurnHasHostStagedImage(userText, attachments) {
 		return false
@@ -780,6 +803,13 @@ func semanticHostStagedImageUnderstand(userText string, attachments []MessageAtt
 		return false
 	}
 	if semanticImageUnderstandCapabilityLabels(result) {
+		return true
+	}
+	// Checked after the image-understanding labels and before the lookup
+	// steal: a DocumentRead verdict this turn cannot satisfy is not a request
+	// for a document, and it is not a lookup either. One predicate drives
+	// both call sites, so planning and the runtime demotion agree.
+	if semanticUnsatisfiableDocumentReadOnStagedImage(userText, attachments, result) {
 		return true
 	}
 	return semanticHostStagedImageLookupSteal(result)
@@ -898,10 +928,15 @@ func semanticHostStagedImageLookupSteal(result intent.ClassificationResult) bool
 
 // semanticImageUnderstandCapabilityLabels reports whether this turn should be
 // treated as a staged-image understanding request rather than a file/document
-// operation. DocumentRead is intentionally excluded: an image attachment with
-// a DocumentRead label must fail as trusted_document_input_missing (so the
-// active desktop document is not silently reused for a new image), not be
-// demoted to chat via vision fallthrough.
+// operation.
+//
+// DocumentRead is absent from the switch on purpose, but that only means it is
+// not an *image-understanding* label here: whether a DocumentRead verdict on a
+// staged image is a misroute is decided by
+// semanticUnsatisfiableDocumentReadOnStagedImage, which is stricter (it
+// requires that the turn hold no document input at all). Keeping the two
+// apart is what lets a real document turn that also carries an image keep its
+// governed plan.
 func semanticImageUnderstandCapabilityLabels(result intent.ClassificationResult) bool {
 	sawManaged := false
 	for _, label := range result.Labels() {
@@ -916,6 +951,108 @@ func semanticImageUnderstandCapabilityLabels(result intent.ClassificationResult)
 		}
 	}
 	return sawManaged
+}
+
+// semanticTurnHasDocumentAttachment reports whether the turn carries a
+// document-format ingress artifact at all. Image bytes are vision input, not a
+// document: agent.DocumentAttachmentFormat rejects them, so a turn whose only
+// attachment is an image can never satisfy a document.read.local need.
+//
+// Deliberately says nothing about the bytes. A document attachment with no
+// content is a broken ingress, not an absent one, and the two must not be
+// merged: semanticDocumentInputsForTurn fails it loudly with
+// trusted_document_attachment_content_missing, and treating it as "no
+// document" here would demote the turn to a vision answer — silently
+// swallowing a real attachment failure and answering a question the user did
+// not ask (2026-10-11 review). A broken document still blocks the demotion.
+// TestSemanticTurnHasDocumentAttachmentMatchesDocumentInputsForTurn pins the
+// two views together.
+func semanticTurnHasDocumentAttachment(attachments []MessageAttachment) bool {
+	for _, attachment := range attachments {
+		if _, _, ok := agent.DocumentAttachmentFormat(attachment.FileName, attachment.MimeType); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// semanticUnsatisfiableDocumentReadOnStagedImage reports a DocumentRead
+// verdict this turn's ingress cannot possibly satisfy: the host staged image
+// bytes, and nothing in the turn is a document — no document attachment, and
+// this turn's picker selected no document path.
+//
+// Such a verdict is unsatisfiable by construction, so planning it has exactly
+// one ending: trusted_document_input_missing and a red HostReject. It is also
+// a known misroute rather than a real request, because the classifier only
+// ever sees the user text with the picker block stripped, so a bare
+// 「图上有什么」 is an embedding coin-flip between screenshot/file_read and
+// document_read. Production 2026-10-11: L2 said screenshot 0.72 (under the
+// 0.78 early-exit), the L3 tree overrode it with document_read 0.75, and a
+// turn whose image the host had already staged ended in a refusal.
+//
+// Falling through here is a demotion, not a grant: the turn leaves governed
+// planning entirely (handled=false) with VisionFallthrough set, so the legacy
+// name router stays closed and no document tool is minted. That is strictly
+// stronger than the HostReject it replaces. The reason DocumentRead was kept
+// out of semanticImageUnderstandCapabilityLabels was to stop an *older*
+// desktop document from being reused for a new image — and that protection is
+// owned by the separate gate in planning that only reuses the active document
+// when the turn carries no attachment at all, which a demotion never reaches.
+func semanticUnsatisfiableDocumentReadOnStagedImage(userText string, attachments []MessageAttachment, result intent.ClassificationResult) bool {
+	if !classificationHasLabel(result, intent.LabelDocumentRead) {
+		return false
+	}
+	if !semanticTurnHasImageAttachment(attachments) {
+		return false
+	}
+	if semanticTurnHasDocumentAttachment(attachments) {
+		return false
+	}
+	// A current picker selection of a real document is host-authorized
+	// document input even when a staged image rides along; the verdict is
+	// satisfiable and must keep its governed plan. The binding gate that
+	// follows is widened to match: see the activeLocalDocumentReuse branch in
+	// semanticPlanForTurnWithContextAndClassificationAndAttachments.
+	if hasCurrentLocalDocumentPickerInput(userText) {
+		return false
+	}
+	// Only a verdict whose every label is answered by looking at what the
+	// user already supplied may be demoted; see
+	// semanticStagedImageDemotableVerdict.
+	return semanticStagedImageDemotableVerdict(result)
+}
+
+// semanticStagedImageDemotableVerdict reports a verdict that no tool is needed
+// to answer — and therefore safe to demote to a vision fallthrough instead of
+// planning it. The only such verdict is the document_read misroute itself
+// (plus a screenshot secondary, which the host already staged the bytes for).
+//
+// This must NOT be widened to "any read-only governed label". The predicate is
+// consulted only from the document_read misroute path
+// (semanticUnsatisfiableDocumentReadOnStagedImage), and a misrouted
+// document_read verdict can legitimately carry a *real* second capability as a
+// low-confidence secondary — knowledge_read, file_read, git_inspect,
+// audio_transcribe, current_time, audit_read, worklog_read. Those are
+// satisfiable on an image-only turn (they need no document), so demoting the
+// whole turn would silently drop a tool the user asked for and is strictly
+// worse than letting the governed planner keep it (where it either succeeds or
+// fails closed on its own terms). Lookup labels are already excluded here, but
+// the rule below is the blunt instrument: anything other than
+// document_read/screenshot fails the demotion. (2026-10-11 R7)
+func semanticStagedImageDemotableVerdict(result intent.ClassificationResult) bool {
+	saw := false
+	for _, label := range result.Labels() {
+		if label.IsNonCapabilityLabel() {
+			continue
+		}
+		switch label {
+		case intent.LabelDocumentRead, intent.LabelScreenshot:
+			saw = true
+		default:
+			return false
+		}
+	}
+	return saw
 }
 
 func semanticWeakImageUnderstandClassification(result intent.ClassificationResult) bool {
@@ -1355,6 +1492,26 @@ func withSlimDocumentRead(registry *tool.CapabilityRegistry, needs []tool.Capabi
 		Confidence:  1,
 		EvidenceIDs: []string{"residue:document-read"},
 	})
+}
+
+// semanticNeedsWithDynamicLookupForProviders attaches the open read-only
+// family's optional need when a dynamic provider actually serves it. One
+// provider is enough — the planner picks the best quality — so two installed
+// MCP servers do not multiply needs.
+func semanticNeedsWithDynamicLookupForProviders(needs []tool.CapabilityNeed, providers []tool.ProviderSpec) []tool.CapabilityNeed {
+	for _, need := range needs {
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			return needs
+		}
+	}
+	for _, provider := range providers {
+		for _, provision := range provider.Provides {
+			if provision.Capability == agentservice.CapabilityInformationLookup {
+				return append(needs, agentservice.AmbientDynamicLookupNeed())
+			}
+		}
+	}
+	return needs
 }
 
 func withoutAmbientRetrievalNeeds(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
@@ -2248,7 +2405,17 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// A current channel attachment is the only candidate for this turn. Do not
 	// fill a malformed/image attachment request from an older desktop document.
 	// Likewise, a bare path in prose is not an authorized picker selection.
-	if len(documentInputs) == 0 && len(attachments) == 0 && activeDocumentUse == activeLocalDocumentReuse && semanticDocumentReadNeedPresent(needs) {
+	//
+	// A *current* picker selection is the exception: it is this turn's own
+	// authorization, and activeLocalDocumentUseForTurn only reported reuse for
+	// it because the captured context matches the paths this very message
+	// named (activeLocalDocumentContextsMatchPicker). Binding that is not
+	// reaching back to an older document, so a staged image riding along must
+	// not strip it — otherwise a document_read verdict the satisfiability
+	// predicate called satisfiable still ends in trusted_document_input_missing
+	// (2026-10-11). Without a picker selection the attachment-count half still
+	// blocks the reuse it was written for.
+	if len(documentInputs) == 0 && (len(attachments) == 0 || hasCurrentLocalDocumentPickerInput(userText)) && activeDocumentUse == activeLocalDocumentReuse && semanticDocumentReadNeedPresent(needs) {
 		activeInputs, active, activeErr := h.semanticActiveLocalDocumentInputsForTurn(rootTaskID, turnID, sessionID, userID, channel, semanticDestination(requestCtx))
 		if activeErr != nil {
 			return nil, true, activeErr
@@ -2264,6 +2431,14 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// already materialized. Message attachments and the picker stay first.
 	// A turn that itself generates or writes office consumes that producer
 	// and must not also bind the previous file.
+	//
+	// This gate deliberately keeps the bare len(attachments) == 0 test even
+	// though the read gate above now also accepts a current picker selection.
+	// The two look alike but are not the same decision: this one binds what
+	// *this task produced*, and it never consults activeDocumentUse, so a
+	// picker document is not evidence about the producer. Widening it would
+	// let a picker turn bind an unrelated earlier output — the exact hazard
+	// this branch exists to prevent.
 	if len(documentInputs) == 0 && len(attachments) == 0 && semanticDeliveryConsumesExistingDocument(needs) {
 		producedInputs, produced, producedErr := h.semanticProducedDocumentInputsForTurn(rootTaskID, turnID, sessionID, userID, channel)
 		if producedErr != nil {
@@ -2402,6 +2577,16 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		}
 		provider.ParameterAuthorization = authorization
 		providers = append(providers, provider)
+	}
+	// The open read-only family is demanded only when a published provider can
+	// answer it. The need is optional, so without a provider this is a no-op
+	// rather than a new unmet row on every managed turn. It stays off a
+	// petition expansion (the strict-superset validator admits only the
+	// petitioned label's own templates and parent families), off a slim office
+	// turn (a short 继续 must not grow a vendor grant), and off the closed
+	// lookup labels the reviewed ambient list already excludes.
+	if !semanticPetitionExpansion(requestCtx) && !slimOffice && intent.WantsAmbientRetrieval(planning.Primary) {
+		needs = semanticNeedsWithDynamicLookupForProviders(needs, dynamicCatalog.Providers)
 	}
 	defsByName["semantic_read_trusted_document"] = semanticTrustedDocumentReadDefinition()
 	semanticSchemas["semantic_read_trusted_document"] = map[string]interface{}{
@@ -2930,8 +3115,16 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if semanticPetitionExpansion(requestCtx) {
 		maxSelections, maxSchemaTokens = 0, 0
 	}
+	// The user can name an installed MCP product in the turn text. A managed
+	// surface never shows a vendor name to the model, so without this the only
+	// way to reach that implementation would be quality ranking picking it by
+	// accident — unrequested, unobservable, and silently replaced the moment
+	// the observation goes bad. The pin narrows selection to what the user
+	// named and nothing else.
+	providerPins := semanticProviderPins(userText, providers, dynamicInventory.mcpEntries)
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
 		RootTaskID: rootTaskID, SessionID: sessionID, TurnID: turnID, ChannelScope: semanticChannelScope(channel), Snapshot: snapshot, Needs: needs, Facts: facts, Constraints: policyConstraints,
+		Pins:   providerPins,
 		Budget: semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
 	})
 	if err != nil {
@@ -2952,6 +3145,14 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// show "当前能力目录未覆盖这项请求" when render and deliver merely exceeded
 	// the selection cap.
 	if len(plan.Unmet) > 0 && !(len(plan.Selections) > 0 && semanticUnmetOnlyBudget(plan.Unmet)) {
+		if pinned := semanticUnmetPinnedProvider(plan.Unmet); pinned {
+			// The turn named the implementation. Saying the capability is
+			// uncovered would blame the catalog for a decision the pin made on
+			// purpose, and would leave the user believing their installed
+			// product is unusable.
+			labels := semanticPinnedProviderLabels(providerPins, providers, dynamicInventory.mcpEntries)
+			return preparation, true, semanticPinnedProviderUnavailableError{Providers: labels, Unmet: plan.Unmet}
+		}
 		return preparation, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
 	}
 	if err := semanticScopeSurfaceError(scopePlan, scopeResult); err != nil {
@@ -3160,6 +3361,21 @@ func semanticHostRejectResponseForPlanError(err error) *IMAgentResponse {
 		return &IMAgentResponse{
 			Text:           "本任务已生成的文档已变更或不可用。这一轮不会另找文件，也不会重新投递。",
 			Error:          "semantic_produced_document_stale",
+			ResponseSource: "semantic_host_reject",
+		}
+	}
+	// The turn named an implementation. Falling back to another backend without
+	// saying so is the one outcome the user explicitly ruled out, so name the
+	// product and stop rather than blaming catalog coverage.
+	var pinnedUnavailable semanticPinnedProviderUnavailableError
+	if errors.As(err, &pinnedUnavailable) {
+		subject := "你指定的实现"
+		if len(pinnedUnavailable.Providers) > 0 {
+			subject = strings.Join(pinnedUnavailable.Providers, "、")
+		}
+		return &IMAgentResponse{
+			Text:           subject + " 当前不可用（可能尚未完成连接，或该实现暂不支持这项能力），这一轮没有执行。已拒绝改用其他实现，避免结果来路不符你的要求。",
+			Error:          "semantic_pinned_provider_unavailable",
 			ResponseSource: "semantic_host_reject",
 		}
 	}

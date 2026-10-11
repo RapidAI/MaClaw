@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -22,9 +23,25 @@ import (
 // Wails bindings. MCP wire format uses camelCase ("inputSchema"); use
 // mcpWireToolView for deserializing tools/list responses.
 type MCPToolView struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"input_schema"`
+	Name        string                        `json:"name"`
+	Description string                        `json:"description"`
+	InputSchema map[string]interface{}        `json:"input_schema"`
+	Annotations  *agentservice.MCPToolAnnotations `json:"annotations,omitempty"`
+	// DeclaredCapabilities carries vendor self-declared external (x:) capability
+	// IDs parsed from the MCP tools/list "x_capabilities" extension field.
+	DeclaredCapabilities []coretool.CapabilityID `json:"declared_capabilities,omitempty"`
+}
+
+// mcpWireToolAnnotations mirrors the MCP protocol's tools/list annotations
+// object. The hints are the vendor's own claim about whether a tool reads or
+// writes; the open lookup family uses them to keep read-only tools silent and
+// route writes through the external-effect receipt boundary.
+type mcpWireToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
 }
 
 // mcpWireToolView mirrors MCPToolView but uses the MCP protocol's camelCase
@@ -33,15 +50,31 @@ type mcpWireToolView struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"inputSchema"`
+	Annotations  *mcpWireToolAnnotations `json:"annotations,omitempty"`
+	XCapabilities []string `json:"x_capabilities,omitempty"`
 }
 
 // toView converts a wire-format tool to the internal MCPToolView.
 func (w mcpWireToolView) toView() MCPToolView {
-	return MCPToolView{
+	view := MCPToolView{
 		Name:        w.Name,
 		Description: w.Description,
 		InputSchema: w.InputSchema,
 	}
+	if w.Annotations != nil {
+		view.Annotations = &agentservice.MCPToolAnnotations{
+			ReadOnlyHint:    w.Annotations.ReadOnlyHint,
+			DestructiveHint: w.Annotations.DestructiveHint,
+		}
+	}
+	for _, c := range w.XCapabilities {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		view.DeclaredCapabilities = append(view.DeclaredCapabilities, coretool.CapabilityID(c))
+	}
+	return view
 }
 
 // mcpWireToolsToViews converts a slice of wire-format tools to MCPToolViews.
@@ -913,12 +946,13 @@ func (r *MCPRegistry) healthCheckContextMode(ctx context.Context, serverID strin
 			return nil
 		}
 	}
+	// Record the observation's health before publishing contracts. The open
+	// read-only family is admitted only through a successful health
+	// observation, so a first tools/list must carry its own verdict into the
+	// publication gate; publishing first would read the pre-probe unknown
+	// state and silently drop every unreviewed tool on first discovery.
 	r.mu.Lock()
 	r.toolsCache[serverID] = views
-	r.mu.Unlock()
-	r.publishReviewedMCPContracts(serverID, views)
-
-	r.mu.Lock()
 	h := r.getOrCreateHealth(serverID)
 	h.FailCount = 0
 	h.LastCheck = time.Now()
@@ -928,6 +962,8 @@ func (r *MCPRegistry) healthCheckContextMode(ctx context.Context, serverID strin
 		h.Status = mcpHealthStatusHealthy
 	}
 	r.mu.Unlock()
+	r.publishReviewedMCPContracts(serverID, views)
+
 	if strict && r.app != nil {
 		// A successful checked probe is the authoritative recovery event for a
 		// previously persisted marketplace runtime failure. Clearing this state

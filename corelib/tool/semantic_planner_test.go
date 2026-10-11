@@ -105,6 +105,77 @@ func TestToolPlannerSelectsCapabilityProvidersWithoutToolNameRules(t *testing.T)
 	}
 }
 
+func TestToolPlannerTrustTierPrecedenceKeepsApprovedOverUnreviewed(t *testing.T) {
+	registry := semanticRegistry(t)
+	// Approved (builtin) provider of visual.capture.desktop at low Quality.
+	approved := semanticProvider("approved_builtin", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	approved.TrustTier = TrustTierApproved
+	// Unreviewed (arbitrary installed MCP, open family) provider of the SAME
+	// capability at a much higher Quality. Without the explicit trust tier this
+	// would outrank the builtin; Phase 2 must keep the approved provider chosen.
+	unreviewed := semanticProviderWithSchema("unreviewed_mcp", "visual.capture.desktop", map[string]string{"display": "primary"}, semanticClosedEmptyParameterSchema(), EffectReadOnly)
+	unreviewed.Binding.Kind = "mcp"
+	unreviewed.Binding.ProviderID = "arbitrary-server"
+	unreviewed.TrustTier = TrustTierUnreviewed
+	unreviewed.Provides[0].Quality = 9
+
+	snapshot := semanticSnapshot(t, registry, []ProviderSpec{unreviewed, approved})
+	planner := NewToolPlanner(registry)
+	plan, err := planner.Plan(RouteRequest{
+		RootTaskID:   "task-1",
+		TurnID:       "turn-1",
+		ChannelScope: "lansenger",
+		Snapshot:     snapshot,
+		Needs: []CapabilityNeed{
+			{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Polarity: NeedRequire, Required: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.Unmet) != 0 {
+		t.Fatalf("want capture met, unmet=%+v", plan.Unmet)
+	}
+	if len(plan.Selections) != 1 {
+		t.Fatalf("want exactly one selection, got %+v", plan.Selections)
+	}
+	if plan.Selections[0].AdapterName != "approved_builtin" {
+		t.Fatalf("unreviewed provider silently outranked the approved one: selected=%q (want approved_builtin)", plan.Selections[0].AdapterName)
+	}
+}
+
+func TestToolPlannerUnreviewedProviderStillSelectableWhenAlone(t *testing.T) {
+	registry := semanticRegistry(t)
+	// A single unreviewed provider with no approved competitor must still be
+	// selected: the tier gate prefers approved over unreviewed, it does not
+	// hide unreviewed providers entirely (that would defeat "install and call").
+	unreviewed := semanticProviderWithSchema("unreviewed_mcp", "visual.capture.desktop", map[string]string{"display": "primary"}, semanticClosedEmptyParameterSchema(), EffectReadOnly)
+	unreviewed.Binding.Kind = "mcp"
+	unreviewed.Binding.ProviderID = "arbitrary-server"
+	unreviewed.TrustTier = TrustTierUnreviewed
+
+	snapshot := semanticSnapshot(t, registry, []ProviderSpec{unreviewed})
+	planner := NewToolPlanner(registry)
+	plan, err := planner.Plan(RouteRequest{
+		RootTaskID:   "task-1",
+		TurnID:       "turn-1",
+		ChannelScope: "lansenger",
+		Snapshot:     snapshot,
+		Needs: []CapabilityNeed{
+			{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Polarity: NeedRequire, Required: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.Unmet) != 0 || len(plan.Selections) != 1 {
+		t.Fatalf("unreviewed provider should be selectable alone: unmet=%+v selections=%+v", plan.Unmet, plan.Selections)
+	}
+	if plan.Selections[0].AdapterName != "unreviewed_mcp" {
+		t.Fatalf("selected=%q, want unreviewed_mcp", plan.Selections[0].AdapterName)
+	}
+}
+
 func TestIsLightPromptSafeSelectionUsesEffectsAndConfirmationNotAdapterName(t *testing.T) {
 	readOnly := PlannedSelection{AdapterName: "dangerous_sounding_name", Effects: []EffectClass{EffectReadOnly}}
 	if !IsLightPromptSafeSelection(readOnly) {
@@ -308,8 +379,90 @@ func TestToolPlannerUsesFamilyCoverageWithoutHidingReadySibling(t *testing.T) {
 	}
 	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "root", TurnID: "turn", Snapshot: snapshot,
 		Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
-	if err != nil || len(plan.Selections) != 1 || plan.Selections[0].Provider.Kind != "skill" || len(plan.Unmet) != 0 {
+	if err != nil || len(plan.Selections) != 1 || len(plan.Unmet) != 0 {
 		t.Fatalf("family coverage did not retain complete sibling candidate: plan=%+v err=%v", plan, err)
+	}
+	// Phase 4: the incomplete mcp family no longer fails the whole kind, so the
+	// selected candidate may be either the complete sibling (skill) or the
+	// read-only sibling that observed positive (mcp) — both stay selectable and
+	// the turn must not be reported Unmet.
+	if kind := plan.Selections[0].Provider.Kind; kind != "skill" && kind != "mcp" {
+		t.Fatalf("selected candidate kind %q is neither the complete sibling nor the read-only incomplete sibling", kind)
+	}
+}
+
+// TestToolPlannerPhase4NegativeObservationKeepsSiblingSelectable is the Phase 4
+// acceptance gate: a single MCP server whose observation finished negative must
+// not collapse the whole kind. A sibling that observed positive (here the
+// builtin implementation) stays selectable and the turn is not reported Unmet.
+func TestToolPlannerPhase4NegativeObservationKeepsSiblingSelectable(t *testing.T) {
+	registry := semanticRegistry(t)
+	builtin := semanticProvider("builtin_capture", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	builtin.Binding.Kind = "builtin"
+	mcpDown := semanticProvider("mcp_server_a", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	mcpDown.Binding.Kind = "mcp"
+	mcpDown.Ready = false // negative observation: this server failed to probe
+	mcpGood := semanticProvider("mcp_server_b", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	mcpGood.Binding.Kind = "mcp"
+	catalog := NewToolCatalog(registry)
+	snapshot, err := catalog.PublishWithCoverage([]ProviderSpec{builtin, mcpDown, mcpGood}, CatalogCoverage{
+		State:      CatalogCoverageIncomplete,
+		ReasonCode: CatalogCoverageReasonNotReady,
+		Families: []CatalogCoverageFamily{
+			{Kind: "builtin", State: CatalogCoverageComplete},
+			{Kind: "mcp", State: CatalogCoverageIncomplete, ReasonCode: CatalogCoverageReasonNotReady},
+		},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "root", TurnID: "turn", Snapshot: snapshot,
+		Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Selections) != 1 {
+		t.Fatalf("expected exactly one selection despite a negative sibling observation: plan=%+v", plan)
+	}
+	if len(plan.Unmet) != 0 {
+		t.Fatalf("turn was reported Unmet because of one negative sibling observation: unmet=%+v", plan.Unmet)
+	}
+	if sel := plan.Selections[0]; sel.Provider.Kind != "builtin" && sel.Provider.Kind != "mcp" {
+		t.Fatalf("selected provider kind %q is outside the surviving sibling set", sel.Provider.Kind)
+	}
+	if plan.Selections[0].AdapterName == "mcp_server_a" {
+		t.Fatalf("the negative-observation server was still selected: %+v", plan.Selections[0])
+	}
+}
+
+// TestToolPlannerPhase4MutatingProviderStaysFailClosedOnIncomplete locks the
+// other half of the Phase 4 contract: a mutating (non-read-only) provider still
+// requires complete, fresh coverage, so on an incomplete family it is NOT
+// silently selected — the turn correctly reports the need Unmet.
+func TestToolPlannerPhase4MutatingProviderStaysFailClosedOnIncomplete(t *testing.T) {
+	registry := semanticRegistry(t)
+	mut := semanticProvider("mcp_mut_deliver", "artifact.deliver.current_channel", map[string]string{"format": "image"}, EffectExternalEffect)
+	mut.Binding.Kind = "mcp"
+	mut.Ready = true // observed positive, but mutating work
+	catalog := NewToolCatalog(registry)
+	snapshot, err := catalog.PublishWithCoverage([]ProviderSpec{mut}, CatalogCoverage{
+		State:      CatalogCoverageIncomplete,
+		ReasonCode: CatalogCoverageReasonNotReady,
+		Families:   []CatalogCoverageFamily{{Kind: "mcp", State: CatalogCoverageIncomplete, ReasonCode: CatalogCoverageReasonNotReady}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "root", TurnID: "turn", Snapshot: snapshot,
+		Needs: []CapabilityNeed{{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "image"}, Required: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Selections) != 0 {
+		t.Fatalf("mutating provider was selected on incomplete coverage: selections=%+v", plan.Selections)
+	}
+	if len(plan.Unmet) != 1 || plan.Unmet[0].NeedID != "deliver" || plan.Unmet[0].ReasonCode != CatalogCoverageReasonNotReady {
+		t.Fatalf("mutating need was not correctly reported Unmet: unmet=%+v", plan.Unmet)
 	}
 }
 

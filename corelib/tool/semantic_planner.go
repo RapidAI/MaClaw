@@ -266,8 +266,14 @@ type RouteRequest struct {
 	Needs        []CapabilityNeed
 	Facts        []RoutingFact
 	Constraints  []RoutingConstraint
-	Budget       PlanningBudget
-	Now          time.Time
+	// Pins narrow one capability to one installed dynamic provider the user
+	// named. They are produced by the host from the turn text and never by the
+	// model, and they relax no gate: a pinned provider that is not Ready is
+	// not selectable, which is what makes the outcome explicit instead of a
+	// silent substitution under a shared prompt name. See ProviderPin.
+	Pins   []ProviderPin
+	Budget PlanningBudget
+	Now    time.Time
 }
 
 type FitProof struct {
@@ -623,6 +629,15 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 		}
 		candidate, proof, requiresConfirm, ok := p.bestProvider(req, descriptor, need)
 		if !ok {
+			// The turn named an implementation for this capability. Report that
+			// before any catalog-wide reason: the capability may be perfectly
+			// well covered by a sibling, and falling through to
+			// "no_feasible_provider" would tell the host to keep the turn
+			// alive on the very substitution the user ruled out.
+			if _, pinned := PinForCapability(req.Pins, need.Capability); pinned {
+				record(UnmetReasonPinnedProviderUnavailable)
+				continue
+			}
 			// No candidate from an incomplete/stale lifecycle snapshot does not
 			// prove that this capability is infeasible. Preserve the distinction
 			// so a caller can wait for its bounded refresh or ask for
@@ -1516,10 +1531,18 @@ func validateNeed(descriptor CapabilityDescriptor, need CapabilityNeed) error {
 func (p *ToolPlanner) bestProvider(req RouteRequest, descriptor CapabilityDescriptor, need CapabilityNeed) (ProviderSpec, FitProof, bool, bool) {
 	candidates := append([]ProviderSpec(nil), req.Snapshot.Providers...)
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Binding.StableID() < candidates[j].Binding.StableID() })
+	pin, pinned := PinForCapability(req.Pins, need.Capability)
 	var selected ProviderSpec
 	selectedQuality := -1.0
 	found := false
 	for _, candidate := range candidates {
+		// A pin removes every other implementation from this capability's
+		// candidate set before any gate is applied. Quality is never consulted:
+		// the point of naming an implementation is that a higher- or
+		// lower-ranked sibling must not be substituted for it.
+		if pinned && !pin.Matches(candidate.Binding) {
+			continue
+		}
 		if !candidate.Classification.plannable() {
 			// Fixed control-plane and quarantined entries are catalog coverage
 			// records only; they must never become planner candidates even if a
@@ -1539,10 +1562,16 @@ func (p *ToolPlanner) bestProvider(req RouteRequest, descriptor CapabilityDescri
 			if provision.Capability != need.Capability || !qualifiersMatch(need.Qualifiers, provision.Qualifiers) {
 				continue
 			}
-			// Candidates are pre-sorted by immutable binding identity. Therefore a
-			// quality tie keeps that ordering deterministic while a better declared
-			// implementation is selected regardless of discovery order.
-			if !found || provision.Quality > selectedQuality {
+			// Selection precedence is: (1) explicit trust tier, (2) declared
+			// Quality within the same tier, (3) the pre-sorted immutable binding
+			// identity as a deterministic tie-break. A trusted (approved) provider
+			// therefore always wins over an unreviewed one even if the unreviewed
+			// tool declares a higher Quality, so a future Quality bump on an
+			// arbitrary install can never silently outrank a reviewed/host
+			// implementation of the same capability.
+			candidateRank := candidate.TrustTier.Rank()
+			selectedRank := selected.TrustTier.Rank()
+			if !found || candidateRank > selectedRank || (candidateRank == selectedRank && provision.Quality > selectedQuality) {
 				selected, selectedQuality, found = candidate, provision.Quality, true
 			}
 		}
@@ -1561,11 +1590,15 @@ func (p *ToolPlanner) bestProvider(req RouteRequest, descriptor CapabilityDescri
 	return selected, proof, constraintRequiresConfirm(req.Constraints, need.Capability, req.Now), true
 }
 
-// providerLifecycleEligible applies the same coverage policy to every provider
-// kind. A partial inventory is never a basis for executing a candidate from
-// that family. A stale catalog may retain a read-only candidate only inside its
-// explicitly published stale-while-revalidate window; external and sensitive
-// candidates always require complete, fresh coverage.
+// providerLifecycleEligible decides whether one concrete provider may execute
+// a candidate. Eligibility is per-provider, not per-kind: a partial or stale
+// family inventory fails only the mutating providers that require complete,
+// fresh coverage, never reads the whole kind down. Phase 4 removed the prior
+// kind-level fail-closed that let a single negative observation collapse every
+// sibling of the same kind. A read-only provider that observed positive
+// (Ready) may still serve on an incomplete or stale-while-revalidate inventory;
+// external and sensitive (mutating) candidates always require complete, fresh
+// coverage, so the fail-closed guarantee for state-changing work is preserved.
 func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 	if !candidate.Ready {
 		return false
@@ -1583,6 +1616,17 @@ func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 		// may already have elapsed; the bounded StaleUntil is the only allowed
 		// extension and is never available to mutating providers.
 		return true
+	case CatalogCoverageIncomplete:
+		// Phase 4: a partial inventory is no longer a basis for failing the
+		// whole kind. A provider that observed positive (Ready) and is
+		// read-only can still serve; a mutating provider still requires
+		// complete, fresh coverage, so it stays fail-closed. The read-only
+		// candidate is additionally bounded by its own ReadyUntil so it cannot
+		// serve on a permanently stale claim.
+		if !effectsAreReadOnly(candidate.Effects) {
+			return false
+		}
+		return candidate.ReadyUntil.IsZero() || !req.Now.After(candidate.ReadyUntil)
 	default:
 		return false
 	}
@@ -1705,10 +1749,12 @@ func semanticRouteSnapshotDigest(req RouteRequest) string {
 	// validate the optional stored claim first; this helper also remains safe
 	// for diagnostic callers that construct a RouteRequest directly.
 	catalogDigest := CatalogSnapshotDigest(req.Snapshot)
-	// v2 uses the same length-delimited canonical encoding as the catalog
-	// digest. The version marker is part of the payload so a v1 digest can
-	// never be mistaken for the order-independent representation.
-	parts := []string{"semantic-route-snapshot-v2", req.RootTaskID, req.SessionID, req.ChannelScope, req.Snapshot.RegistryVersion, fmt.Sprintf("%d", req.Snapshot.Generation), catalogDigest, req.TurnID,
+	// v3 adds the pin set. A pin changes which implementation a capability is
+	// allowed to resolve to, so a pinned plan and an otherwise identical
+	// unpinned plan are different routes and must not share an identity — the
+	// route state store keys on PlanID and treats an equal digest as the same
+	// route, which would let one of them resurrect the other's selections.
+	parts := []string{"semantic-route-snapshot-v3", req.RootTaskID, req.SessionID, req.ChannelScope, req.Snapshot.RegistryVersion, fmt.Sprintf("%d", req.Snapshot.Generation), catalogDigest, req.TurnID,
 		"coverage", string(req.Snapshot.Coverage.State), req.Snapshot.Coverage.ReasonCode, canonicalDigestTime(req.Snapshot.Coverage.StaleUntil),
 	}
 	families := append([]CatalogCoverageFamily(nil), req.Snapshot.Coverage.Families...)
@@ -1755,7 +1801,43 @@ func semanticRouteSnapshotDigest(req RouteRequest) string {
 	for _, fact := range facts {
 		parts = append(parts, "fact", canonicalFactDigest(fact))
 	}
+	// Pins are host-authored narrowing constraints, so they belong to the
+	// route's identity for the same reason constraints do. Invalid pins are
+	// skipped rather than encoded: they are inert everywhere else, and
+	// encoding one would make a typo change a plan's identity for no
+	// behavioral reason. Sorted so the digest is order-independent, and
+	// deduplicated because a repeated pin resolves exactly like a single one
+	// (PinForCapability takes the first) and must not fork identity.
+	pins := CloneProviderPins(req.Pins)
+	sort.Slice(pins, func(i, j int) bool {
+		if pins[i].Capability != pins[j].Capability {
+			return pins[i].Capability < pins[j].Capability
+		}
+		if pins[i].Kind != pins[j].Kind {
+			return pins[i].Kind < pins[j].Kind
+		}
+		return pins[i].ProviderID < pins[j].ProviderID
+	})
+	previous := ProviderPin{}
+	for i, pin := range pins {
+		if !pin.valid() {
+			continue
+		}
+		if i > 0 && pin == previous {
+			continue
+		}
+		parts = append(parts, "pin", canonicalPinDigest(pin))
+		previous = pin
+	}
 	return SchemaDigest([]byte(canonicalDigestEncode(parts...)))
+}
+
+func canonicalPinDigest(pin ProviderPin) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(string(pin.Capability)),
+		strings.TrimSpace(pin.Kind),
+		strings.TrimSpace(pin.ProviderID),
+	)
 }
 
 func canonicalNeedDigest(need CapabilityNeed) string {

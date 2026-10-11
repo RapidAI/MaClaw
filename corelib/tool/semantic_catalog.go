@@ -61,10 +61,18 @@ type CapabilityRegistry struct {
 	version     string
 	descriptors map[CapabilityID]CapabilityDescriptor
 	sealed      bool
+	// externalEffectCeilings overrides the default effect ceiling for a
+	// specific external namespace (the token between ExternalCapabilityPrefix
+	// and the next colon). Keys are namespace segments, not full capability IDs.
+	externalEffectCeilings map[string][]EffectClass
 }
 
 func NewCapabilityRegistry(version string) *CapabilityRegistry {
-	return &CapabilityRegistry{version: strings.TrimSpace(version), descriptors: make(map[CapabilityID]CapabilityDescriptor)}
+	return &CapabilityRegistry{
+		version:                strings.TrimSpace(version),
+		descriptors:            make(map[CapabilityID]CapabilityDescriptor),
+		externalEffectCeilings: make(map[string][]EffectClass),
+	}
 }
 
 func (r *CapabilityRegistry) Version() string {
@@ -83,6 +91,9 @@ func (r *CapabilityRegistry) Register(d CapabilityDescriptor) error {
 		return fmt.Errorf("nil capability registry")
 	}
 	d.ID = CapabilityID(strings.TrimSpace(string(d.ID)))
+	if strings.HasPrefix(string(d.ID), string(ExternalCapabilityPrefix)) {
+		return fmt.Errorf("capability %q uses the external %q prefix; register vendor capabilities via RegisterExternalCapability", d.ID, ExternalCapabilityPrefix)
+	}
 	if d.ID == "" {
 		return fmt.Errorf("capability id is required")
 	}
@@ -180,6 +191,202 @@ func cloneCapabilityDescriptor(in CapabilityDescriptor) CapabilityDescriptor {
 		out.Qualifiers[name] = rule
 	}
 	return out
+}
+
+// effectWithinCeiling reports whether e is a member of ceiling.
+func effectWithinCeiling(e EffectClass, ceiling []EffectClass) bool {
+	for _, c := range ceiling {
+		if c == e {
+			return true
+		}
+	}
+	return false
+}
+
+// externalEffectCeiling returns the effect ceiling for a namespace, falling
+// back to the package default when the namespace has no explicit override.
+func (r *CapabilityRegistry) externalEffectCeiling(ns string) []EffectClass {
+	if r == nil {
+		return DefaultExternalCapabilityEffectCeiling
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if ceil, ok := r.externalEffectCeilings[ns]; ok {
+		return ceil
+	}
+	return DefaultExternalCapabilityEffectCeiling
+}
+
+// ExternalCeilingIsDefault reports whether ns still uses the host default
+// effect ceiling (no reviewed override). tools_search and petition surfaces
+// use this to distinguish an installed-but-host-unreviewed vendor capability
+// (default ceiling) from one the host has explicitly widened.
+func (r *CapabilityRegistry) ExternalCeilingIsDefault(ns string) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ceil, ok := r.externalEffectCeilings[strings.TrimSpace(ns)]
+	if !ok {
+		return true
+	}
+	def := DefaultExternalCapabilityEffectCeiling
+	if len(ceil) != len(def) {
+		return false
+	}
+	seen := make(map[EffectClass]bool, len(def))
+	for _, e := range def {
+		seen[e] = true
+	}
+	for _, e := range ceil {
+		if !seen[e] {
+			return false
+		}
+	}
+	return true
+}
+
+// SetExternalCapabilityCeiling widens (or narrows) the effect ceiling for one
+// external namespace. It is a host-reviewed operation: a namespace in the
+// default ceiling may only declare read_only and external_effect, while a
+// reviewed override can additionally grant sensitive or local_mutation. Every
+// capability registered under that namespace is then bounded by this ceiling.
+func (r *CapabilityRegistry) SetExternalCapabilityCeiling(ns string, effects []EffectClass) error {
+	if r == nil {
+		return fmt.Errorf("nil capability registry")
+	}
+	ns = strings.TrimSpace(ns)
+	if ns == "" {
+		return fmt.Errorf("external capability namespace is required")
+	}
+	if err := validateEffectClasses(effects); err != nil {
+		return fmt.Errorf("namespace %q effect ceiling: %w", ns, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.externalEffectCeilings[ns] = append([]EffectClass(nil), effects...)
+	return nil
+}
+
+// RegisterExternalCapability registers a vendor-declared capability under the
+// external namespace at runtime. Unlike Register it is permitted on a sealed
+// registry: the sealed builtin vocabulary must not change, but a freshly
+// installed MCP/Skill legitimately introduces a new x: capability that the
+// planner must be able to name. Registration still enforces every external
+// invariant (prefix, vendor owner, effect ceiling) so an installed provider
+// cannot expand the governed vocabulary past what its namespace is allowed to
+// declare.
+//
+// ns is the namespace segment: the token after ExternalCapabilityPrefix and
+// before the next colon. def.ID must already carry the x:<ns>: prefix.
+// Re-registration of an identical descriptor is idempotent; a conflicting
+// descriptor for the same ID is rejected so a reconnecting vendor cannot
+// silently change a capability's governed contract.
+func (r *CapabilityRegistry) RegisterExternalCapability(ns string, def CapabilityDescriptor) error {
+	if r == nil {
+		return fmt.Errorf("nil capability registry")
+	}
+	ns = strings.TrimSpace(ns)
+	if ns == "" {
+		return fmt.Errorf("external capability namespace is required")
+	}
+	def.ID = CapabilityID(strings.TrimSpace(string(def.ID)))
+	if def.ID == "" {
+		return fmt.Errorf("external capability id is required")
+	}
+	if !strings.HasPrefix(string(def.ID), string(ExternalCapabilityPrefix)) {
+		return fmt.Errorf("external capability %q must carry the %q prefix", def.ID, ExternalCapabilityPrefix)
+	}
+	if !strings.HasPrefix(string(def.ID), string(ExternalCapabilityPrefix)+ns+":") {
+		return fmt.Errorf("external capability %q must belong to namespace %q", def.ID, ns)
+	}
+	if strings.TrimSpace(def.Owner) != "vendor" {
+		return fmt.Errorf("external capability %q must declare owner %q, got %q", def.ID, "vendor", def.Owner)
+	}
+	if strings.TrimSpace(def.Version) == "" {
+		return fmt.Errorf("external capability %q version is required", def.ID)
+	}
+	if len(def.Effects) == 0 {
+		return fmt.Errorf("external capability %q effects are required", def.ID)
+	}
+	if err := validateEffectClasses(def.Effects); err != nil {
+		return fmt.Errorf("external capability %q effects: %w", def.ID, err)
+	}
+	ceiling := r.externalEffectCeiling(ns)
+	for _, e := range def.Effects {
+		if !effectWithinCeiling(e, ceiling) {
+			return fmt.Errorf("external capability %q effect %q exceeds namespace %q ceiling %v", def.ID, e, ns, ceiling)
+		}
+	}
+	if err := validateCapabilityDescriptorArtifacts(def.Consumes); err != nil {
+		return fmt.Errorf("external capability %q consumes: %w", def.ID, err)
+	}
+	if err := validateCapabilityDescriptorArtifacts(def.Produces); err != nil {
+		return fmt.Errorf("external capability %q produces: %w", def.ID, err)
+	}
+	if def.Qualifiers == nil {
+		def.Qualifiers = map[string]QualifierConstraint{}
+	}
+	for name, rule := range def.Qualifiers {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("external capability %q has an empty qualifier", def.ID)
+		}
+		for _, value := range rule.Values {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("external capability %q qualifier %q has an empty value", def.ID, name)
+			}
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.descriptors[def.ID]; ok {
+		if !externalDescriptorEqual(existing, def) {
+			return fmt.Errorf("external capability %q conflicts with an already registered descriptor", def.ID)
+		}
+		return nil
+	}
+	r.descriptors[def.ID] = cloneCapabilityDescriptor(def)
+	return nil
+}
+
+// externalDescriptorEqual compares the governed contract fields of two external
+// capability descriptors. ArtifactContract and QualifierConstraint are value
+// comparable, so the slice/map elements compare field by field.
+func externalDescriptorEqual(a, b CapabilityDescriptor) bool {
+	if a.Version != b.Version || a.Owner != b.Owner || a.Summary != b.Summary {
+		return false
+	}
+	if len(a.Effects) != len(b.Effects) || len(a.Consumes) != len(b.Consumes) || len(a.Produces) != len(b.Produces) || len(a.Qualifiers) != len(b.Qualifiers) {
+		return false
+	}
+	for i := range a.Effects {
+		if a.Effects[i] != b.Effects[i] {
+			return false
+		}
+	}
+	for i := range a.Consumes {
+		if a.Consumes[i] != b.Consumes[i] {
+			return false
+		}
+	}
+	for i := range a.Produces {
+		if a.Produces[i] != b.Produces[i] {
+			return false
+		}
+	}
+	for k, v := range a.Qualifiers {
+		bv, ok := b.Qualifiers[k]
+		if !ok || bv.Required != v.Required || len(bv.Values) != len(v.Values) {
+			return false
+		}
+		for i := range bv.Values {
+			if bv.Values[i] != v.Values[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validateCapabilityDescriptorArtifacts(contracts []ArtifactContract) error {
@@ -283,9 +490,47 @@ func (c ProviderClassification) plannable() bool {
 
 // ProviderSpec is catalog metadata only. AdapterName is the trusted runtime
 // adapter identity, not evidence that a request needs this provider.
+// ProviderTrustTier is the explicit trust classification of a provider, set by
+// the trusted control-plane publisher from the contract family it resolved
+// (reviewed/open), not from discovery metadata. It lets bestProvider prefer a
+// reviewed or host-owned implementation over an arbitrary unreviewed
+// installation even when the unreviewed tool declares a higher Quality, so a
+// future change that bumps an unreviewed tool's Quality can never silently
+// outrank a trusted provider of the same capability.
+//
+// The zero value is treated as approved (see TrustTierRank): every
+// builtin/host/code-reviewed provider is constructed without an explicit tier,
+// and only the open unreviewed family opts into the lower tier. Defaulting the
+// unknown case to the trusted tier keeps the 50+ legacy ProviderSpec literals
+// safe and means a missing field can never demote a trusted provider.
+type ProviderTrustTier string
+
+const (
+	// TrustTierApproved is a builtin, host-owned, or code-reviewed provider.
+	TrustTierApproved ProviderTrustTier = "approved"
+	// TrustTierUnreviewed is an arbitrary installed MCP reachable only through
+	// the open information.lookup family; it may act on external systems but is
+	// never pre-approved over a trusted provider of the same capability.
+	TrustTierUnreviewed ProviderTrustTier = "unreviewed"
+)
+
+// TrustTierRank returns the selection precedence of a tier: approved (and any
+// unspecified/legacy provider) outranks unreviewed.
+func (t ProviderTrustTier) Rank() int {
+	if t == TrustTierUnreviewed {
+		return 0
+	}
+	return 1
+}
+
 type ProviderSpec struct {
 	AdapterName string
 	Binding     ProviderBinding
+	// TrustTier is the explicit trust classification projected from the
+	// control-plane contract family. It is advisory for bestProvider ordering
+	// only and is intentionally excluded from any grant or catalog digest: a
+	// tier change must not rotate in-flight grants.
+	TrustTier ProviderTrustTier
 	// Classification is the explicit coverage class of this entry. The zero
 	// value means provision for backwards compatibility; Publish normalises
 	// it to an explicit value in the stored snapshot.
@@ -560,6 +805,19 @@ func (c *ToolCatalog) PublishWithCoverage(providers []ProviderSpec, coverage Cat
 			descriptor, ok := c.registry.Lookup(provision.Capability)
 			if !ok || descriptor.Deprecated {
 				return ToolCatalogSnapshot{}, fmt.Errorf("provider %q declares unknown or deprecated capability %q", provider.AdapterName, provision.Capability)
+			}
+			if strings.HasPrefix(string(provision.Capability), string(ExternalCapabilityPrefix)) {
+				// An external capability's governed effect set is whatever the
+				// host admitted at registration time (already bounded by the
+				// namespace ceiling). A publishing provider may not declare an
+				// effect the registered descriptor does not permit, so an
+				// installed vendor tool cannot silently widen its authority
+				// past what was reviewed.
+				for _, e := range provider.Effects {
+					if !effectWithinCeiling(e, descriptor.Effects) {
+						return ToolCatalogSnapshot{}, fmt.Errorf("provider %q capability %q effect %q is not permitted by its registered descriptor %v", provider.AdapterName, provision.Capability, e, descriptor.Effects)
+					}
+				}
 			}
 			if err := validateProvision(descriptor, provision); err != nil {
 				return ToolCatalogSnapshot{}, fmt.Errorf("provider %q: %w", provider.AdapterName, err)

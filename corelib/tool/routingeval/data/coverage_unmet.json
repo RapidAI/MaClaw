@@ -22,9 +22,8 @@
         ]
       },
       "expected": {
-        "no_selections": true,
+        "selections": [{"need_id": "search"}],
         "unmet": [
-          {"need_id": "search", "reason": "catalog_incomplete"},
           {"need_id": "generate", "reason": "catalog_incomplete"}
         ]
       }

@@ -32,6 +32,10 @@ type DynamicProviderDescriptor struct {
 	Ready                bool
 	ReadyUntil           time.Time
 	ChannelScopes        []string
+	// TrustTier is projected from the resolved control-plane contract family
+	// (reviewed -> approved, open lookup -> unreviewed). The host adapter sets
+	// it from entry.Contract.TrustTier; discovery metadata cannot influence it.
+	TrustTier ProviderTrustTier
 	InvocationSchema     map[string]interface{}
 	// ModelFunction is set only by a code-reviewed binding whose capability
 	// already has a stable prompt spelling. Empty keeps the opaque grant token.
@@ -91,6 +95,7 @@ func (d DynamicProviderDescriptor) Project() (ProviderSpec, map[string]interface
 		Ready:                  d.Ready,
 		ReadyUntil:             d.ReadyUntil,
 		ChannelScopes:          append([]string(nil), d.ChannelScopes...),
+		TrustTier:              d.TrustTier,
 	}
 	return provider, map[string]interface{}{
 		"type": "function",

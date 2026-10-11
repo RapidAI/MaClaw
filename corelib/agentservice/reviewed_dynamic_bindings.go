@@ -24,19 +24,107 @@ func reviewedWorklogReadContract() DynamicCapabilityContract {
 			Capability: coretool.CapabilityRecordReadWorklog,
 			Quality:    3,
 		}},
-		Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+		Effects:   []coretool.EffectClass{coretool.EffectReadOnly},
+		TrustTier: coretool.TrustTierApproved,
+	}
+}
+
+// reviewedWorklogUpdateContract is the append/update half of the external
+// time-block work record. It is deliberately not a read: the mutation writes
+// a system of record this process cannot read back, so the effect is
+// EffectExternalEffect and every selection settles through the host's
+// external-effect receipt boundary rather than the provider's own result.
+// Quality is 2 so a host-owned managed adapter, if one is ever published,
+// still outranks it.
+func reviewedWorklogUpdateContract() DynamicCapabilityContract {
+	return DynamicCapabilityContract{
+		Provisions: []coretool.CapabilityProvision{{
+			Capability: coretool.CapabilityRecordUpdateWorklog,
+			Quality:    2,
+		}},
+		Effects:   []coretool.EffectClass{coretool.EffectExternalEffect},
+		TrustTier: coretool.TrustTierApproved,
 	}
 }
 
 // ReviewedMCPCapabilityContracts is the code-reviewed MCP tool-name map.
-// work_log_query is the only attested read implementation that any observed
-// server may publish. Mutation tool names are not guessed. A product-scoped
-// tool such as web_search_prime is intentionally absent: publishing it here
-// would admit the same name on every server.
+// work_log_query and work_log_update are the only attested read and mutation
+// implementations that any observed server may publish: the name is the
+// reviewed contract, so a server installed later publishes through this row
+// without a code change, and a differently named tool still has to be
+// reviewed here before it can carry the capability. A product-scoped tool
+// such as web_search_prime is intentionally absent: publishing it here would
+// admit the same name on every server.
 func ReviewedMCPCapabilityContracts() map[string]DynamicCapabilityContract {
 	return map[string]DynamicCapabilityContract{
-		"work_log_query": reviewedWorklogReadContract(),
+		"work_log_query":  reviewedWorklogReadContract(),
+		"work_log_update": reviewedWorklogUpdateContract(),
 	}
+}
+
+// ReviewedMCPOpenLookupContract is the reviewed declaration that makes an
+// arbitrary installed MCP tool callable.
+//
+// A tools/list name is reviewed per capability, so a server nobody has
+// reviewed would otherwise be invisible to the model forever. information.
+// lookup is the one family the reviewed vocabulary keeps open: any observed
+// server may carry it and the host does not pre-approve a name.
+//
+// Effect envelope: the open family declares BOTH EffectReadOnly and
+// EffectExternalEffect. That is the capability's allowed envelope, not the
+// effect of any one tool. The per-tool contract narrows it:
+// openLookupEffectsForTool classifies each observed tool from its vendor
+// annotations, so a read-only-annotated tool matches a read-only need and runs
+// without a write boundary, while a write or unannotated tool is selected with
+// EffectExternalEffect and settles through the host's external-effect receipt
+// boundary — the same confirmation path a reviewed mutation uses. An arbitrary
+// installed MCP can therefore be called to act on an external system, and that
+// act is never silent.
+//
+// scope is required by the descriptor. An arbitrary tool is reference
+// retrieval: it answers from whatever it is pointed at, and it is not a
+// freshness-bearing current-facts source the way a web search is.
+// Quality is 1, below every reviewed and host-owned provision, so a specific
+// contract always wins over this open one.
+func ReviewedMCPOpenLookupContract() DynamicCapabilityContract {
+	return DynamicCapabilityContract{
+		Provisions: []coretool.CapabilityProvision{{
+			Capability: CapabilityInformationLookup,
+			Qualifiers: map[string]string{QualifierInformationScope: InformationScopeReference},
+			Quality:    1,
+		}},
+		Effects:   []coretool.EffectClass{coretool.EffectReadOnly, coretool.EffectExternalEffect},
+		TrustTier: coretool.TrustTierUnreviewed,
+	}
+}
+
+// openLookupEffectsForTool classifies one arbitrary, unreviewed MCP tool by
+// the vendor-declared annotations observed at tools/list time. The host never
+// trusts an unknown vendor tool to be side-effect-free:
+//   - an explicit readOnlyHint == true  -> read-only, silent read path;
+//   - anything else (readOnlyHint absent or false, a destructiveHint, or no
+//     annotation at all) -> EffectExternalEffect, gated by the receipt boundary.
+//
+// The capability envelope (ReviewedMCPOpenLookupContract) already permits both
+// effects, so the narrowed per-tool contract still satisfies the planner's
+// effectsWithinCapability check; only the selected tool's effect class changes.
+func openLookupEffectsForTool(tool ObservedMCPTool) []coretool.EffectClass {
+	if tool.Annotations != nil && tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint {
+		return []coretool.EffectClass{coretool.EffectReadOnly}
+	}
+	return []coretool.EffectClass{coretool.EffectExternalEffect}
+}
+
+// reviewedContractOnlyCapabilities names the capability constants that have no
+// host attach site and are servable only through a published MCP/Skill
+// contract. It is the reviewed answer to "where can this capability come
+// from" for the families the host does not own, so a wiring test can assert
+// both halves: the family is contract-only, and a reviewed binding still
+// provisions it.
+var reviewedContractOnlyCapabilities = []string{
+	"CapabilityInformationLookup",
+	"CapabilityRecordReadWorklog",
+	"CapabilityRecordUpdateWorklog",
 }
 
 // ReviewedMCPWebSearchPrimeGlobalKey is the stable marketplace identity of
@@ -111,7 +199,8 @@ func reviewedWebSearchPrimeContract() DynamicCapabilityContract {
 			{Capability: CapabilityInformationSearchWeb, Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessReference}, Quality: reviewedMCPWebSearchPrimeQuality},
 			{Capability: CapabilityInformationSearchWeb, Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessCurrent}, Quality: reviewedMCPWebSearchPrimeQuality},
 		},
-		Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+		Effects:   []coretool.EffectClass{coretool.EffectReadOnly},
+		TrustTier: coretool.TrustTierApproved,
 	}
 }
 

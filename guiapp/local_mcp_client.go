@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -391,6 +392,11 @@ func (c *LocalMCPClient) discoverToolsContext(ctx context.Context) ([]MCPToolVie
 			Name        string                 `json:"name"`
 			Description string                 `json:"description"`
 			InputSchema map[string]interface{} `json:"inputSchema"`
+			Annotations  *struct {
+				ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+				DestructiveHint *bool `json:"destructiveHint,omitempty"`
+			} `json:"annotations,omitempty"`
+			XCapabilities []string `json:"x_capabilities,omitempty"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(result, &listResult); err != nil {
@@ -399,11 +405,25 @@ func (c *LocalMCPClient) discoverToolsContext(ctx context.Context) ([]MCPToolVie
 
 	tools := make([]MCPToolView, len(listResult.Tools))
 	for i, t := range listResult.Tools {
-		tools[i] = MCPToolView{
+		view := MCPToolView{
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 		}
+		if t.Annotations != nil {
+			view.Annotations = &agentservice.MCPToolAnnotations{
+				ReadOnlyHint:    t.Annotations.ReadOnlyHint,
+				DestructiveHint: t.Annotations.DestructiveHint,
+			}
+		}
+		for _, c := range t.XCapabilities {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			view.DeclaredCapabilities = append(view.DeclaredCapabilities, coretool.CapabilityID(c))
+		}
+		tools[i] = view
 	}
 
 	c.stateMu.Lock()

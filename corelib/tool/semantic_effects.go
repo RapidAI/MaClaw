@@ -117,6 +117,17 @@ func CapabilityNeedHasSideEffect(registry *CapabilityRegistry, need CapabilityNe
 	if capability == "" {
 		return false
 	}
+	// information.lookup is the open family whose capability envelope now
+	// permits both read-only and external-effect so an arbitrary installed MCP
+	// can be called to write. The need itself is a read: a succeeded lookup is
+	// not a mutation to replay, and an external-effect write by an unreviewed
+	// tool is settled by the receipt coordinator, not by session continuation.
+	// Without this carve-out the relaxed envelope would misclassify every
+	// lookup as a side effect and drift a succeeded read into an unfinished
+	// mutation on replay.
+	if capability == "information.lookup" {
+		return false
+	}
 	if registry != nil {
 		if descriptor, ok := registry.Lookup(need.Capability); ok {
 			if len(descriptor.Effects) == 0 {

@@ -32,7 +32,28 @@ type DynamicCapabilityContract struct {
 	// non-matching binding is quarantined by the runtime bridge. Tests that
 	// construct catalog entries directly may omit it only because they do not
 	// model a Service-owned provider lifecycle.
+	//
+	// ObservedBindingDigest is the *observed* binding (full schema digest). It
+	// is retained for audit and runtime quarantine matching, but it is NOT part
+	// of the grant-stable identity (see StableBindingKey): a vendor description
+	// or parameter-label tweak (schema drift with no capability change) must not
+	// invalidate in-flight grants.
 	ObservedBindingDigest string
+	// StableBindingKey is the grant-stable identity of this concrete binding:
+	// "global_key:capability:tool_name" for MCP, "stable_id:version:content_digest"
+	// for Skill. It deliberately excludes the observed schema digest so a schema
+	// drift that does not change the capability/effect envelope keeps the same
+	// grant identity. A substantive change (effect, provision, or tool rename)
+	// still rotates the digest and retires in-flight grants as intended.
+	StableBindingKey string
+	// TrustTier is the explicit trust classification of this contract, set by
+	// the trusted publisher from the resolved contract family: a code-reviewed
+	// binding (work_log, web-search-prime) is approved, the open information.
+	// lookup family is unreviewed. It is projected onto the rendered ProviderSpec
+	// so bestProvider can prefer a trusted provider of the same capability over
+	// an arbitrary unreviewed installation. It is NOT part of Digest: a tier
+	// change must not rotate in-flight grants.
+	TrustTier coretool.ProviderTrustTier
 }
 
 func (c DynamicCapabilityContract) declared() bool {
@@ -111,16 +132,21 @@ func cloneDynamicCapabilityContract(in DynamicCapabilityContract) DynamicCapabil
 
 // Digest is a stable identity component. It includes every declaration that
 // affects semantic feasibility or the maximum observable effect, so a control
-// plane contract change cannot silently inherit an old binding/grant.
+// plane contract change cannot silently inherit an old binding/grant. The
+// binding component is the grant-stable identity (StableBindingKey), which
+// excludes the observed schema digest: a vendor description or parameter-label
+// tweak (schema drift) rotates ObservedBindingDigest but NOT this Digest, so
+// in-flight grants survive it. A substantive envelope change still rotates the
+// Digest and retires grants as intended.
 func (c DynamicCapabilityContract) Digest() string {
 	canonical := struct {
 		Provisions []dynamicContractProvision `json:"provisions"`
 		Effects    []string                   `json:"effects"`
 		Consumes   []dynamicContractArtifact  `json:"consumes"`
 		Produces   []dynamicContractArtifact  `json:"produces"`
-		Binding    string                     `json:"observed_binding_digest,omitempty"`
+		Binding    string                     `json:"stable_binding_key,omitempty"`
 	}{}
-	canonical.Binding = strings.TrimSpace(c.ObservedBindingDigest)
+	canonical.Binding = strings.TrimSpace(c.StableBindingKey)
 	for _, provision := range c.Provisions {
 		qualifiers := make(map[string]string, len(provision.Qualifiers))
 		for key, value := range provision.Qualifiers {

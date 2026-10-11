@@ -30,6 +30,13 @@ type MCPToolView struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+	Annotations  *MCPToolAnnotations    `json:"annotations,omitempty"`
+	// DeclaredCapabilities carries vendor self-declared external (x:) capability
+	// IDs. The wire field is the non-standard "x_capabilities" array a vendor
+	// MCP may include in a tools/list tool entry to name the capabilities its
+	// tool serves; absent in standard MCP, in which case the tool is routed only
+	// through the open lookup family.
+	DeclaredCapabilities []coretool.CapabilityID `json:"declared_capabilities,omitempty"`
 }
 
 type MCPServerView struct {
@@ -966,6 +973,25 @@ func cloneMCPTools(in []MCPToolView) []MCPToolView {
 	return out
 }
 
+// toCapabilityIDs trims and drops empty entries from a wire capability list.
+func toCapabilityIDs(in []string) []coretool.CapabilityID {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]coretool.CapabilityID, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, coretool.CapabilityID(s))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (rt *userMCPRuntime) remoteState(serverID string) *remoteMCPRuntime {
 	if rt == nil {
 		return nil
@@ -1104,23 +1130,33 @@ func (rt *userMCPRuntime) checkRemoteWithClient(client *http.Client, entry corel
 		rt.recordRemoteFailure(entry.ID)
 		return err
 	}
-	var parsed struct {
-		Result struct {
-			Tools []struct {
-				Name        string                 `json:"name"`
-				Description string                 `json:"description"`
-				InputSchema map[string]interface{} `json:"inputSchema"`
-			} `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		rt.recordRemoteFailure(entry.ID)
-		return fmt.Errorf("parse MCP tools/list response: %w", err)
-	}
-	tools := make([]MCPToolView, 0, len(parsed.Result.Tools))
-	for _, item := range parsed.Result.Tools {
-		tools = append(tools, MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema})
-	}
+		var parsed struct {
+			Result struct {
+				Tools []struct {
+					Name        string                 `json:"name"`
+					Description string                 `json:"description"`
+					InputSchema map[string]interface{} `json:"inputSchema"`
+					Annotations  *struct {
+						ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+						DestructiveHint *bool `json:"destructiveHint,omitempty"`
+					} `json:"annotations,omitempty"`
+					XCapabilities []string `json:"x_capabilities,omitempty"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(payload, &parsed); err != nil {
+			rt.recordRemoteFailure(entry.ID)
+			return fmt.Errorf("parse MCP tools/list response: %w", err)
+		}
+		tools := make([]MCPToolView, 0, len(parsed.Result.Tools))
+		for _, item := range parsed.Result.Tools {
+			view := MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema}
+			if item.Annotations != nil {
+				view.Annotations = &MCPToolAnnotations{ReadOnlyHint: item.Annotations.ReadOnlyHint, DestructiveHint: item.Annotations.DestructiveHint}
+			}
+			view.DeclaredCapabilities = toCapabilityIDs(item.XCapabilities)
+			tools = append(tools, view)
+		}
 	rt.mu.Lock()
 	state := rt.remote[entry.ID]
 	if state == nil {
@@ -1447,6 +1483,11 @@ func (c *localMCPClient) DiscoverTools() ([]MCPToolView, error) {
 			Name        string                 `json:"name"`
 			Description string                 `json:"description"`
 			InputSchema map[string]interface{} `json:"inputSchema"`
+			Annotations  *struct {
+				ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+				DestructiveHint *bool `json:"destructiveHint,omitempty"`
+			} `json:"annotations,omitempty"`
+			XCapabilities []string `json:"x_capabilities,omitempty"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(result, &parsed); err != nil {
@@ -1454,7 +1495,12 @@ func (c *localMCPClient) DiscoverTools() ([]MCPToolView, error) {
 	}
 	tools := make([]MCPToolView, 0, len(parsed.Tools))
 	for _, item := range parsed.Tools {
-		tools = append(tools, MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema})
+		view := MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema}
+		if item.Annotations != nil {
+			view.Annotations = &MCPToolAnnotations{ReadOnlyHint: item.Annotations.ReadOnlyHint, DestructiveHint: item.Annotations.DestructiveHint}
+		}
+		view.DeclaredCapabilities = toCapabilityIDs(item.XCapabilities)
+		tools = append(tools, view)
 	}
 	c.stateMu.Lock()
 	c.tools = tools
