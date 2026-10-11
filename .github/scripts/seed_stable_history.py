@@ -52,11 +52,26 @@ def main():
         with path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
+        # Mirror URLs must match verify_update_mirror's expectations exactly:
+        # every mirror root, with the LAST one as the canonical "url" (the
+        # COS-first order sync_cos_release uses). While the COS upload is
+        # paused its URL is still advertised; the R2 half is what the gate
+        # fetches when VERIFY_COS_MIRROR=0.
+        r2_base = os.environ.get("R2_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        cos_base = os.environ.get("COS_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        urls = []
+        if r2_base:
+            urls.append(f"{r2_base}/releases/{build_path}/{asset_path}")
+        if cos_base:
+            urls.append(f"{cos_base}/releases/{build_path}/{asset_path}")
+        if not urls:
+            raise RuntimeError("R2_PUBLIC_BASE_URL/COS_PUBLIC_BASE_URL are required")
         assets[path.name] = {
             "name": path.name,
             "size": path.stat().st_size,
             "sha256": digest.hexdigest(),
-            "url": f"/releases/{build_path}/{asset_path}",
+            "urls": urls,
+            "url": urls[-1],
         }
     published_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     history = {
