@@ -780,8 +780,16 @@ func TestIMSemanticNewNonDocumentAttachmentDoesNotReuseActiveContext(t *testing.
 		"desktop-user", "读取这张新图片", "desktop", "root-image", "turn-image",
 		&intent.ClassificationResult{Primary: intent.LabelDocumentRead, Confidence: .98}, []MessageAttachment{image},
 	)
-	if !handled || err == nil || !strings.Contains(err.Error(), "trusted_document_input_missing") {
-		t.Fatalf("new attachment must not reuse active document: handled=%v err=%v", handled, err)
+	// The new image must not take over the grant captured for the older
+	// document. Leaving governed planning outright is the stronger answer: no
+	// document need is planned, so that context cannot be bound to this turn
+	// at all. The old red HostReject protected the same thing, but paid for it
+	// by refusing a turn whose image the host had already staged.
+	if handled || err != nil {
+		t.Fatalf("new image must not reuse active document: handled=%v err=%v", handled, err)
+	}
+	if !h.hasActiveLocalDocument("desktop-user", "desktop", "") {
+		t.Fatal("demoted turn must not consume the captured document context")
 	}
 }
 
@@ -3551,6 +3559,260 @@ func TestSemanticWeakDocumentReadImageDescribeFallsThroughToChat(t *testing.T) {
 	}
 	if !loopContextHasChatProjection(ctx) {
 		t.Fatal("leftover router must see the chat-projection marker")
+	}
+}
+
+// Production 2026-10-11: a desktop turn that picked 主屏截图.jpg and asked
+// 「图上有什么？」 came back as 「请在当前消息中重新选择一份要读取的文档」.
+// L2 said screenshot 0.72 (under the 0.78 early exit), the L3 tree overrode
+// it with document_read 0.75 — layer 3, not degraded, so above the 0.70 tree
+// floor — and a document_read plan cannot consume an image attachment. That
+// verdict is unsatisfiable by construction and must demote to vision, not
+// refuse the turn.
+func TestSemanticConfirmedDocumentReadOnImageOnlyTurnFallsThroughToVision(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	text := "图上有什么？\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\主屏截图.jpg"
+	photo := []MessageAttachment{{Type: "image", FileName: "主屏截图.jpg", MimeType: "image/jpeg", Data: "c2NyZWVuc2hvdA=="}}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Confidence: 0.75, Layer: 3,
+			Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	// Same order the loop uses: staging demotes the intent, then the governed
+	// planner decides. One predicate drives both, so a fix that only touched
+	// one of them would fail here.
+	applyStagedImageUnderstandRuntime(ctx, text, photo)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx, "user-1", text, "desktop", photo)
+	if err != nil || handled || surface != nil {
+		t.Fatalf("tree-confirmed document_read on an image-only turn must fall through: surface=%#v handled=%v err=%v", surface, handled, err)
+	}
+	if ctx.Runtime.SemanticIntent == nil || ctx.Runtime.SemanticIntent.Primary != intent.LabelUnknown {
+		t.Fatalf("confirmed document_read on a staged image must demote, got %#v", ctx.Runtime.SemanticIntent)
+	}
+	if !loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("demoted image turn must keep the legacy name router closed")
+	}
+}
+
+// The counterpart: an image riding along with a real document attachment is a
+// satisfiable document_read verdict and must keep its governed plan. Demoting
+// it would strip document tools from a turn that actually has a document.
+func TestSemanticDocumentReadWithDocumentAttachmentKeepsPlan(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	text := "总结这份报告\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\report.pdf"
+	docs := []MessageAttachment{
+		{Type: "file", FileName: "report.pdf", MimeType: "application/pdf", Data: "cGRm"},
+		{Type: "image", FileName: "chart.png", MimeType: "image/png", Data: "cG5n"},
+	}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Confidence: 0.75, Layer: 3,
+			Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	applyStagedImageUnderstandRuntime(ctx, text, docs)
+	_, _, _, _ = h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx, "user-1", text, "desktop", docs)
+	if ctx.Runtime.SemanticIntent == nil || ctx.Runtime.SemanticIntent.Primary != intent.LabelDocumentRead {
+		t.Fatalf("document_read with a document attachment must keep its plan, got %#v", ctx.Runtime.SemanticIntent)
+	}
+	if loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("a real document attachment must not demote the turn to vision")
+	}
+}
+
+// The same production case with a screenshot secondary. Screenshot is not a
+// mutating label, and the host already staged the bytes, so a verdict that
+// names both is still a misroute that no tool can satisfy — excluding it left
+// the original refusal reachable through a second label combination.
+func TestSemanticConfirmedDocumentReadWithScreenshotSecondaryFallsThroughToVision(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	text := "这屏幕上的报错是什么意思？\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\主屏截图.jpg"
+	photo := []MessageAttachment{{Type: "image", FileName: "主屏截图.jpg", MimeType: "image/jpeg", Data: "c2NyZWVuc2hvdA=="}}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Secondary: []intent.IntentLabel{intent.LabelScreenshot},
+			Confidence: 0.75, Layer: 3, Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	applyStagedImageUnderstandRuntime(ctx, text, photo)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx, "user-1", text, "desktop", photo)
+	if err != nil || handled || surface != nil {
+		t.Fatalf("document_read + screenshot on an image-only turn must fall through: surface=%#v handled=%v err=%v", surface, handled, err)
+	}
+	if !loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("demoted image turn must keep the legacy name router closed")
+	}
+}
+
+// A lookup label on the same turn keeps the fail-closed path: demoting would
+// drop a real retrieval tool, not merely a refused document.
+func TestSemanticDocumentReadWithSearchOnImageOnlyTurnStillFailsClosed(t *testing.T) {
+	text := "图上这是什么？顺便搜一下出处\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\logo.png"
+	photo := []MessageAttachment{{Type: "image", FileName: "logo.png", MimeType: "image/png", Data: "c2NyZWVuc2hvdA=="}}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Secondary: []intent.IntentLabel{intent.LabelSearch},
+			Confidence: 0.75, Layer: 3, Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	applyStagedImageUnderstandRuntime(ctx, text, photo)
+	if loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("a lookup verdict must not be demoted to a plain answer")
+	}
+	h2 := &IMMessageHandler{registry: NewToolRegistry()}
+	_, handled, err := h2.semanticPlanForTurnWithClassificationAndAttachments(
+		"desktop-user", text, "desktop", "root-search-image", "turn-search-image",
+		ctx.Runtime.SemanticIntent, photo,
+	)
+	if !handled || err == nil || !strings.Contains(err.Error(), "trusted_document_input_missing") {
+		t.Fatalf("document_read + search must keep failing closed: handled=%v err=%v", handled, err)
+	}
+}
+
+// R7 guard: a document_read misroute may carry a real, satisfiable read-only
+// capability as a low-confidence secondary. knowledge_read needs no document,
+// so an image-only turn with this combination must stay in governed planning
+// (never demoted to a vision answer) — demoting it would silently drop the
+// knowledge tool the user actually asked for. The verdict keeps its intent and
+// the legacy name router stays closed.
+func TestSemanticDocumentReadWithKnowledgeReadOnImageOnlyTurnNotDemoted(t *testing.T) {
+	text := "图上这是什么品牌的芯片？查一下它的资料\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\chip.jpg"
+	photo := []MessageAttachment{{Type: "image", FileName: "chip.jpg", MimeType: "image/jpeg", Data: "c2NyZWVuc2hvdA=="}}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Secondary: []intent.IntentLabel{intent.LabelKnowledgeRead},
+			Confidence: 0.75, Layer: 3, Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	applyStagedImageUnderstandRuntime(ctx, text, photo)
+	if loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("document_read + knowledge_read must not be demoted to a vision answer")
+	}
+	if ctx.Runtime.SemanticIntent == nil || ctx.Runtime.SemanticIntent.Primary != intent.LabelDocumentRead {
+		t.Fatalf("the knowledge_read secondary must survive demotion, got %#v", ctx.Runtime.SemanticIntent)
+	}
+}
+
+// Same contract for a file_read secondary: the user may have pasted an image
+// and attached a real file. file_read is satisfiable without a document, so it
+// must not be dropped by the document_read misroute demotion either.
+func TestSemanticDocumentReadWithFileReadOnImageOnlyTurnNotDemoted(t *testing.T) {
+	text := "这张图旁边这份日志讲了什么？\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\trace.jpg"
+	photo := []MessageAttachment{{Type: "image", FileName: "trace.jpg", MimeType: "image/jpeg", Data: "c2NyZWVuc2hvdA=="}}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Secondary: []intent.IntentLabel{intent.LabelFileRead},
+			Confidence: 0.75, Layer: 3, Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	applyStagedImageUnderstandRuntime(ctx, text, photo)
+	if loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("document_read + file_read must not be demoted to a vision answer")
+	}
+	if ctx.Runtime.SemanticIntent == nil || ctx.Runtime.SemanticIntent.Primary != intent.LabelDocumentRead {
+		t.Fatalf("the file_read secondary must survive demotion, got %#v", ctx.Runtime.SemanticIntent)
+	}
+}
+
+// A document the user picked in this very message is this turn's own
+// authorization, so a staged image riding along must not make it unusable: the
+// picker-scoped reuse gate binds it instead of refusing the turn (2026-10-11
+// residual). The historical marker is the differential — an older selection
+// must still fall through rather than bind a document from a previous turn.
+func TestSemanticDocumentReadWithCurrentPickerDocumentAndImageBindsSelection(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	path := filepath.Join(t.TempDir(), "resume.txt")
+	if err := os.WriteFile(path, []byte("resume"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.captureSelectedLocalDocuments("desktop-user", "desktop", "", filePathPromptPrefix+"\n"+path+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	image := MessageAttachment{Type: "image", FileName: "chart.png", MimeType: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("png"))}
+	classification := intent.ClassificationResult{Primary: intent.LabelDocumentRead, Confidence: .98}
+
+	_, handled, err := h.semanticPlanForTurnWithClassificationAndAttachments(
+		"desktop-user", "总结这份文档\n"+filePathPromptPrefix+"\n"+path, "desktop", "root-picker-image", "turn-picker-image",
+		&classification, []MessageAttachment{image},
+	)
+	if err != nil || !handled {
+		t.Fatalf("a document picked this turn must stay bindable next to a staged image: handled=%v err=%v", handled, err)
+	}
+
+	_, handled, err = h.semanticPlanForTurnWithClassificationAndAttachments(
+		"desktop-user", "总结这份文档\n"+filePathPromptPrefixHistorical+"\n"+path, "desktop", "root-old-image", "turn-old-image",
+		&classification, []MessageAttachment{image},
+	)
+	if err != nil || handled {
+		t.Fatalf("a historical picker selection must not bind for an image turn: handled=%v err=%v", handled, err)
+	}
+}
+
+// semanticTurnHasDocumentAttachment decides demotion by re-reading the
+// attachment list, so it must agree with the consumer it predicts
+// (semanticDocumentInputsForTurn) about one thing only: is there a document
+// here at all. A document with bytes and a document without bytes both answer
+// yes — the second one fails loudly instead of disappearing, and the predicate
+// must not be the reason it does.
+func TestSemanticTurnHasDocumentAttachmentMatchesDocumentInputsForTurn(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("payload"))
+	cases := []struct {
+		name        string
+		attachments []MessageAttachment
+	}{
+		{"image only", []MessageAttachment{{Type: "image", FileName: "shot.jpg", MimeType: "image/jpeg", Data: encoded}}},
+		{"pdf with bytes", []MessageAttachment{{Type: "file", FileName: "a.pdf", MimeType: "application/pdf", Data: encoded}}},
+		{"pdf without bytes", []MessageAttachment{{Type: "file", FileName: "a.pdf", MimeType: "application/pdf"}}},
+		{"markdown by extension", []MessageAttachment{{Type: "file", FileName: "notes.md", MimeType: "", Data: encoded}}},
+		{"document by mime only", []MessageAttachment{{Type: "file", FileName: "attachment.bin", MimeType: "application/pdf", Data: encoded}}},
+		{"unknown shape", []MessageAttachment{{Type: "file", FileName: "a.bin", MimeType: "application/octet-stream", Data: encoded}}},
+		{"image beside empty pdf", []MessageAttachment{
+			{Type: "image", FileName: "shot.jpg", MimeType: "image/jpeg", Data: encoded},
+			{Type: "file", FileName: "a.pdf", MimeType: "application/pdf"},
+		}},
+	}
+	for _, testCase := range cases {
+		inputs, err := semanticDocumentInputsForTurn("root", "turn", "session", "principal", testCase.attachments)
+		documentPresent := err != nil || len(inputs) > 0
+		if got := semanticTurnHasDocumentAttachment(testCase.attachments); got != documentPresent {
+			t.Fatalf("%s: predicate says document present %v, consumer says %v (inputs=%d err=%v)",
+				testCase.name, got, documentPresent, len(inputs), err)
+		}
+	}
+}
+
+// A document attachment that arrived without content is a broken ingress, and
+// the turn asked for that document. Demoting it to a vision answer would
+// swallow the failure and reply to a question the user never asked, which is
+// worse than the refusal — so the content failure must still surface, and the
+// staged image must not turn it into a picture answer.
+//
+// No picker block on purpose: a current picker selection already blocks the
+// demotion for its own reason, which would hide the behaviour under test.
+func TestSemanticEmptyDocumentAttachmentWithImageKeepsContentFailure(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	text := "总结这份文档"
+	attachments := []MessageAttachment{
+		{Type: "file", FileName: "report.pdf", MimeType: "application/pdf"},
+		{Type: "image", FileName: "chart.png", MimeType: "image/png", Data: "cG5n"},
+	}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelDocumentRead, Confidence: 0.98, Layer: 3,
+			Reason: "tree-after-embedding: document_read (0.750)",
+		},
+	}}
+	applyStagedImageUnderstandRuntime(ctx, text, attachments)
+	if loopContextIsVisionFallthrough(ctx) {
+		t.Fatal("a broken document attachment must not demote the turn to a vision answer")
+	}
+	_, handled, err := h.semanticPlanForTurnWithClassificationAndAttachments(
+		"desktop-user", text, "desktop", "root-empty-doc", "turn-empty-doc",
+		&intent.ClassificationResult{Primary: intent.LabelDocumentRead, Confidence: .98}, attachments,
+	)
+	if !handled || err == nil || !strings.Contains(err.Error(), "trusted_document_attachment_content_missing") {
+		t.Fatalf("an empty document attachment must still fail loudly: handled=%v err=%v", handled, err)
 	}
 }
 
