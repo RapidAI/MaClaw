@@ -17,13 +17,25 @@ def main():
     tag = sys.argv[1].strip()
     try:
         with open("stable-history.json", encoding="utf-8") as source:
-            first = json.load(source)["releases"][0]["build"].strip()
+            first_release = json.load(source)["releases"][0]
+        first = first_release["build"].strip()
     except Exception as exc:
         print(f"[history-first-build] unreadable catalogue: {exc}", file=sys.stderr)
         return 1
     if first != tag:
         print(f"[history-first-build] stale: first build {first!r} != {tag!r}", file=sys.stderr)
         return 1
+    # A catalogue from the retired COS-sync writer carries a relative "url"
+    # and no "urls" list; verify_update_mirror rejects that shape. Treat any
+    # entry missing the two-mirror "urls" contract as stale so it is rebuilt.
+    assets = first_release.get("assets")
+    if not isinstance(assets, dict) or not assets:
+        print("[history-first-build] stale: no assets in current release", file=sys.stderr)
+        return 1
+    for name, entry in assets.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("urls"), list) or not entry["urls"]:
+            print(f"[history-first-build] stale: {name} lacks the urls list", file=sys.stderr)
+            return 1
     return 0
 
 
