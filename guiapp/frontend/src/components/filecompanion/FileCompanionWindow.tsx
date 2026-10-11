@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
     ChooseFileCompanionFiles,
     ClearFileCompanionChat,
+    FileCompanionExportPDF,
     FileCompanionImportKnowledge,
     FileCompanionOpen,
     FileCompanionReplaceOffice,
@@ -14,6 +15,7 @@ import {
 import { WindowHide } from "../../../wailsjs/runtime";
 import { useToast } from "../Toast";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
+import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
 import { MessageContentRenderer } from "../ai/MessageContentRenderer";
 import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks } from "../ai/aiAssistantMarkdown";
@@ -21,7 +23,9 @@ import { lightTheme } from "../ai/aiAssistantPanelTheme";
 import { isHistoryResetCommandText } from "../ai/composeAction";
 import { cleanReasoningTrailForBody, resolveVisibleAssistantReply } from "../ai/assistantReasoningBody";
 import { stripAssistantToolCallMarkers } from "../ai/assistantToolCall";
+import { useAssistantOutputScroll } from "../ai/useAssistantOutputScroll";
 import { FileCompanionComposer } from "./FileCompanionComposer";
+import { CompanionFigureStrip, type CompanionFigure } from "./CompanionFigureStrip";
 import { companionVisibleText, finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { PaperResultCard } from "./PaperResultCard";
 import { windowDragHandleProps } from "../../utils/windowDrag";
@@ -207,7 +211,7 @@ type CompanionDoc = {
     Messages?: CompanionMessageDoc[];
 };
 
-type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string };
+type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string; figures?: unknown[]; Figures?: unknown[] };
 
 type SaveResult = {
     saved?: boolean;
@@ -220,7 +224,32 @@ type SaveResult = {
     Error?: string;
 };
 
-type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string };
+type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; figures?: CompanionFigure[] };
+// Stable identity keeps the scroll-follow effect from re-planning on every
+// render while no file is open.
+const NO_COMPANION_MESSAGES: ChatMessage[] = [];
+
+// Figures come from Go with lower-case JSON tags and from tests and restored
+// history as plain objects, so both spellings of each field are read.
+function figureFromValue(value: unknown): CompanionFigure | null {
+    if (!value || typeof value !== "object") return null;
+    const item = value as { label?: unknown; Label?: unknown; caption?: unknown; Caption?: unknown; path?: unknown; Path?: unknown };
+    const path = String(item.path ?? item.Path ?? "").trim();
+    if (!path) return null;
+    const label = String(item.label ?? item.Label ?? "").trim();
+    const caption = String(item.caption ?? item.Caption ?? "").trim();
+    return { label, caption, path };
+}
+
+function figuresFromValue(raw: unknown): CompanionFigure[] {
+    const list = Array.isArray(raw) ? raw : [];
+    const out: CompanionFigure[] = [];
+    list.forEach((entry) => {
+        const figure = figureFromValue(entry);
+        if (figure) out.push(figure);
+    });
+    return out;
+}
 
 const assistantMark = ":assistant";
 
@@ -347,8 +376,9 @@ function messagesFromDoc(doc: CompanionDoc): ChatMessage[] {
         const text = companionVisibleText(String(item.text ?? item.Text ?? ""));
         const reasoning = role === "assistant" ? companionVisibleText(String(item.reasoning ?? item.Reasoning ?? "")) : "";
         const resultPath = role === "assistant" ? String(item.resultPath ?? item.ResultPath ?? "").trim() : "";
+        const figures = role === "assistant" ? figuresFromValue(item.figures ?? item.Figures) : [];
         if (!text.trim() && !reasoning.trim() && !resultPath) return;
-        out.push({ id: `restored:${index}`, role, text, reasoning, resultPath: resultPath || undefined });
+        out.push({ id: `restored:${index}`, role, text, reasoning, resultPath: resultPath || undefined, figures: figures.length > 0 ? figures : undefined });
     });
     return out;
 }
@@ -693,7 +723,7 @@ function MarkdownSourceEditor({
     );
 }
 
-function CompanionActionIcon({ name }: { name: "paper" | "knowledge" | "cloud" | "close" }) {
+function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "close" | "copy" | "pdf" | "check"; size?: number }) {
     const common = {
         fill: "none",
         stroke: "currentColor",
@@ -702,7 +732,22 @@ function CompanionActionIcon({ name }: { name: "paper" | "knowledge" | "cloud" |
         strokeLinejoin: "round" as const,
     };
     return (
-        <svg className="file-companion-tool-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <svg className="file-companion-tool-icon" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            {name === "copy" && (
+                <>
+                    <rect {...common} x="9" y="9" width="10.5" height="10.5" rx="2.2" />
+                    <path {...common} d="M15.5 5.6A2.1 2.1 0 0 0 13.4 4.5H6.6A2.1 2.1 0 0 0 4.5 6.6v6.8A2.1 2.1 0 0 0 5.6 15.5" />
+                </>
+            )}
+            {name === "pdf" && (
+                <>
+                    <path {...common} d="M12.6 4.5H7.4a1.8 1.8 0 0 0-1.8 1.8v11.4a1.8 1.8 0 0 0 1.8 1.8h9.2a1.8 1.8 0 0 0 1.8-1.8V10z" />
+                    <path {...common} d="M12.6 4.5V10h5.8" />
+                    <path {...common} d="M12 13.4v4.2" />
+                    <path {...common} d="m9.9 15.4 2.1 2.2 2.1-2.2" />
+                </>
+            )}
+            {name === "check" && <path {...common} d="m5 12.8 4.4 4.2L19 6.6" />}
             {name === "paper" && (
                 <>
                     <path {...common} d="M6.5 3.5h6.8L17.5 8v12.5h-11z" />
@@ -734,6 +779,122 @@ function CompanionActionIcon({ name }: { name: "paper" | "knowledge" | "cloud" |
                 </>
             )}
         </svg>
+    );
+}
+
+type CompanionActionState = "idle" | "busy" | "ok" | "err";
+
+const COMPANION_ACTION_STATE_MS = 1600;
+
+function CompanionBubbleAction({
+    name,
+    label,
+    doneLabel,
+    failedLabel,
+    state,
+    testId,
+    onClick,
+}: {
+    name: Parameters<typeof CompanionActionIcon>[0]["name"];
+    label: string;
+    doneLabel: string;
+    failedLabel: string;
+    state: CompanionActionState;
+    testId: string;
+    onClick: () => void;
+}) {
+    return (
+        <button
+            type="button"
+            className="file-companion-bubble-action"
+            data-testid={testId}
+            data-state={state}
+            aria-label={label}
+            title={state === "ok" ? doneLabel : state === "err" ? failedLabel : label}
+            aria-busy={state === "busy"}
+            disabled={state === "busy"}
+            onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onClick();
+            }}
+        >
+            {state === "ok" ? <CompanionActionIcon name="check" size={13} /> : <CompanionActionIcon name={name} size={13} />}
+        </button>
+    );
+}
+
+/**
+ * One control's result tick: a green check after a success, a red glyph after a
+ * failure, both back to the plain icon on their own. Two controls on a bubble
+ * each keep their own tick, so a finished copy does not look like a finished
+ * export.
+ */
+function useCompanionActionState(): [CompanionActionState, (next: CompanionActionState) => void] {
+    const [state, setState] = useState<CompanionActionState>("idle");
+    const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const mounted = useRef(true);
+    useEffect(() => () => {
+        mounted.current = false;
+        if (timer.current) clearTimeout(timer.current);
+    }, []);
+    const settle = (next: CompanionActionState) => {
+        if (!mounted.current) return;
+        setState(next);
+        if (timer.current) clearTimeout(timer.current);
+        if (next === "idle") return;
+        timer.current = setTimeout(() => {
+            if (mounted.current) setState("idle");
+        }, COMPANION_ACTION_STATE_MS);
+    };
+    return [state, settle];
+}
+
+/**
+ * Top-right controls on one companion answer: copy the Markdown source, and
+ * render it into a PDF the reader names.
+ */
+function CompanionMessageActions({ path, markdown, messageId }: { path: string; markdown: string; messageId: string }) {
+    const [copyState, settleCopy] = useCompanionActionState();
+    const [exportState, settleExport] = useCompanionActionState();
+    const { showToast } = useToast();
+    const runCopy = async () => {
+        settleCopy("busy");
+        settleCopy((await copyTextToClipboard(markdown)) ? "ok" : "err");
+    };
+    const runExport = async () => {
+        settleExport("busy");
+        try {
+            const dest = await FileCompanionExportPDF(path, markdown);
+            // An empty path is the reader cancelling the save dialog.
+            if (dest) showToast("已导出 PDF", "success", 6000);
+            settleExport(dest ? "ok" : "idle");
+        } catch (err) {
+            showToast(exportErrorText(err), "error", 6000);
+            settleExport("err");
+        }
+    };
+    return (
+        <div className="file-companion-bubble-actions" data-testid={`file-companion-actions-${messageId}`}>
+            <CompanionBubbleAction
+                name="copy"
+                label="复制为 Markdown"
+                doneLabel="已复制"
+                failedLabel="复制失败"
+                state={copyState}
+                testId={`file-companion-copy-${messageId}`}
+                onClick={() => { void runCopy(); }}
+            />
+            <CompanionBubbleAction
+                name="pdf"
+                label="导出为 PDF"
+                doneLabel="已导出"
+                failedLabel="导出失败"
+                state={exportState}
+                testId={`file-companion-export-pdf-${messageId}`}
+                onClick={() => { void runExport(); }}
+            />
+        </div>
     );
 }
 
@@ -929,6 +1090,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             const note = errText ? turnErrorText(errText) : "";
             const shown = text && note && !text.includes(note) ? `${text}\n\n${note}` : (text || note);
             const localPath = eventString(parsed.body, "local_file_path", "LocalFilePath");
+            // Drawings from the open file travel with the reply, not inside its
+            // text, so a cited chart is shown instead of only described.
+            const figures = errText ? [] : figuresFromValue(parsed.body.file_companion_figures ?? parsed.body.FileCompanionFigures);
             const paper = paperRequestIds.current.has(parsed.requestID);
             if (paper) paperRequestIds.current.delete(parsed.requestID);
             const resultPath = paper && !errText && localPath ? localPath : "";
@@ -956,6 +1120,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         text: resultPath ? "已生成论文解读" : (shown ? finished.text : (streamed?.text || "")),
                         reasoning: finished.reasoning,
                         resultPath: resultPath || streamed?.resultPath,
+                        figures: figures.length > 0 ? figures : streamed?.figures,
                     };
                     if (index >= 0) messages[index] = { ...messages[index], ...next };
                     else messages.push(next);
@@ -1188,27 +1353,30 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const seenEditor = useRef(activeTab?.content ?? "");
     const editorValueChanged = seenEditor.current !== (activeTab?.content ?? "");
     seenEditor.current = activeTab?.content ?? "";
-    const chatScrollRef = useRef<HTMLDivElement | null>(null);
-    const chatStick = useRef(true);
-    const chatPinning = useRef(false);
-    const chatActive = useRef(active);
-    const chatTail = activeTab && activeTab.messages.length > 0 ? activeTab.messages[activeTab.messages.length - 1].text : "";
+    // Follow reuses the assistant transcript's hardened scroller: the old
+    // version latched off permanently on long answers, because it read the
+    // distance to the bottom inside the async scroll event, where a delay
+    // between content growth and the pin looks like "the reader left".
+    const companionMessages = activeTab?.messages ?? NO_COMPANION_MESSAGES;
+    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom } = useAssistantOutputScroll({
+        activityKey: active,
+        hasConversation: companionMessages.length > 0,
+        messages: companionMessages,
+        ready: true,
+    });
+    // One scroller serves every file, so its scrollTop survives a tab switch.
+    // A selected file always opens on its newest message, even when the follow
+    // latch was left off in the previous file's transcript.
+    const prevActivePathRef = useRef(active);
     useEffect(() => {
-        const node = chatScrollRef.current;
-        if (!node) return;
-        if (chatActive.current !== active) {
-            chatActive.current = active;
-            chatStick.current = true;
-        }
-        if (!chatStick.current) return;
-        chatPinning.current = true;
-        node.scrollTop = node.scrollHeight;
-        chatPinning.current = false;
-    }, [active, activeTab?.messages.length, chatTail, activeTab?.status]);
+        if (prevActivePathRef.current === active) return;
+        prevActivePathRef.current = active;
+        scrollToBottom("auto", true, 1);
+    }, [active, scrollToBottom]);
     const kind: FilePreviewKind = activeTab ? filePreviewKindFromName(activeTab.name) : "text";
     const textEditorKind = kind === "markdown" || kind === "text" || kind === "code" || kind === "html";
     const showEditor = Boolean(activeTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
-    const showPreview = Boolean(activeTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "html" || kind === "latex"));
+    const showPreview = Boolean(activeTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "html" || kind === "latex"));
     const emptyFile = Boolean(activeTab && !activeTab.error && !showEditor && activeTab.size <= 0);
     const htmlPreviewing = Boolean(activeTab && kind === "html" && activeTab.htmlPreview);
     const showSource = showEditor && !htmlPreviewing;
@@ -1325,7 +1493,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const sessionId = activeTab.sessionId;
         const selection = activeTab.selection;
         const selectionStart = activeTab.selectionStart;
-        chatStick.current = true;
+        // A new question always re-arms the follow, even if the reader had
+        // scrolled away during the previous answer.
+        scrollToBottom("auto", true);
         sendingRef.current = true;
         setSendingPath(tabPath);
         const requestID = `file-companion-${Date.now()}`;
@@ -1385,7 +1555,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         if (!activeTab || activeTab.error || sendingRef.current || activeTab.status.trim() || sendingPath === activeTab.path) return;
         const tabPath = activeTab.path;
         const sessionId = activeTab.sessionId;
-        chatStick.current = true;
+        scrollToBottom("auto", true);
         sendingRef.current = true;
         setSendingPath(tabPath);
         setPaperBusyPath(tabPath);
@@ -1437,7 +1607,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         introSerialRef.current += 1;
         const requestID = `file-companion-intro-${Date.now()}-${introSerialRef.current}`;
         bindCompanionRequest(sessionId, requestID);
-        if (activeRef.current === tabPath) chatStick.current = true;
+        if (activeRef.current === tabPath) scrollToBottom("auto", true);
         const message: ChatMessage = { id: `${requestID}:user`, role: "user", text };
         setTabs((current) => current.map((item) => {
             if (item.path !== tabPath || item.messages.length > 0) return item;
@@ -1735,13 +1905,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     <section className="file-companion-chat" data-testid="file-companion-chat" style={{ width: chatWidth }}>
                         {activeTab.status ? <div data-testid="file-companion-progress" style={{ padding: "8px 12px", color: "#64748b" }}>{activeTab.status}</div> : null}
                         <div
-                            ref={chatScrollRef}
+                            ref={outputContainerRef}
                             data-testid="file-companion-chat-log"
-                            onScroll={(event) => {
-                                if (chatPinning.current) return;
-                                const node = event.currentTarget;
-                                chatStick.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
-                            }}
+                            onScroll={handleScroll}
+                            onWheel={handleUserScrollIntent}
+                            onTouchMove={handleUserScrollIntent}
+                            onPointerDown={handleUserScrollIntent}
                             style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
                             {activeTab.messages.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "#94a3b8", fontSize: 13 }}>针对当前文件提问</p> : null}
@@ -1754,10 +1923,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     ? { content: message.text, reasoning: "" }
                                     : resolveVisibleAssistantReply(message.text, cleanedReasoning, { live: streaming });
                                 const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning).trim();
-                                const paperPending = !mine && !message.resultPath && paperRequestIds.current.has(paperRequestOf(message.id));
-                                const answerText = message.resultPath ? "已生成论文解读" : paperPending ? "正在生成论文解读…" : visibleReply.content;
-                                return (
-                                    <div key={message.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
+                                                const paperPending = !mine && !message.resultPath && paperRequestIds.current.has(paperRequestOf(message.id));
+                                                const answerText = message.resultPath ? "已生成论文解读" : paperPending ? "正在生成论文解读…" : visibleReply.content;
+                                                // Both controls work on finished Markdown. Mid-stream text would copy a
+                                                // half answer, and the paper reply exports through its own result card.
+                                                const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
+                                                return (
+                                                    <div key={message.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
                                         <div
                                             data-testid={`file-companion-message-${message.role}`}
                                             style={{
@@ -1773,10 +1945,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 lineHeight: 1.55,
                                                 overflowWrap: "anywhere",
                                             }}
-                                        >
-                                            {displayReasoning ? (
-                                                <AssistantReasoningPanel
-                                                    defaultOpen={streaming}
+                                            >
+                                                {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} /> : null}
+                                                {displayReasoning ? (
+                                                    <AssistantReasoningPanel
+                                                        defaultOpen={streaming}
                                                     label={streaming ? "正在思考" : "思考过程"}
                                                     lang="zh-Hans"
                                                     theme={lightTheme}
@@ -1795,11 +1968,15 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                     messageId={message.id}
                                                 />
                                                 {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} /> : null}
+                                                {!mine && message.figures && message.figures.length > 0 ? (
+                                                    <CompanionFigureStrip figures={message.figures} messageId={message.id} />
+                                                ) : null}
                                             </div>
                                         </div>
                                     </div>
                                 );
                             })}
+                            <div ref={outputEndRef} />
                         </div>
                         <FileCompanionComposer
                             path={activeTab.path}

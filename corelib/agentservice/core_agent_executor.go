@@ -46,6 +46,10 @@ const (
 	metaAskUserInputType   = "ask_user_input_type"
 	metaAskUserOptionsJSON = "ask_user_options_json"
 	metaAskUserSecretName  = "ask_user_secret_name"
+	// metaPartialResult marks an assistant message assembled from a run that
+	// ended in an error. The text is real output from earlier rounds, not a
+	// summary of the failure, so the reader can see how far the run got.
+	metaPartialResult = "partial_result"
 )
 
 type CoreAgentExecutor struct {
@@ -139,6 +143,12 @@ type CoreAgentExecutor struct {
 	// durable runtime ledger has been opened. Only explicitly marked coding
 	// workflow requests use it; ordinary chat never changes execution path.
 	codingRuntimeStore codingruntime.Store
+	// service is the owning service host, set once after construction. The loop
+	// reaches per-run state through it — currently the mid-run supplement
+	// queue — and only ever by run id supplied host-side in ExecuteRequest.
+	// It is optional: without it the supplement hook stays off rather than
+	// guessing a run from session-scoped state.
+	service *Service
 	// childExecutions holds only live, process-local cancellation handles for
 	// detached read-only runtime children. The Ledger remains the durable source
 	// of truth; this lets API run cancellation interrupt a currently blocking
@@ -287,6 +297,27 @@ func (e *CoreAgentExecutor) SetCodingRuntimeStore(store codingruntime.Store) {
 	e.mu.Lock()
 	e.codingRuntimeStore = store
 	e.mu.Unlock()
+}
+
+// SetService injects the owning service host. It is optional and deliberately
+// so: when it is absent, the mid-run supplement hook stays disabled instead of
+// reaching for a session-scoped approximation of the current run.
+func (e *CoreAgentExecutor) SetService(svc *Service) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.service = svc
+	e.mu.Unlock()
+}
+
+func (e *CoreAgentExecutor) getService() *Service {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.service
 }
 
 func (e *CoreAgentExecutor) getCodingRuntimeStore() codingruntime.Store {
@@ -742,11 +773,37 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		cb.moaActive = true
 	}
 	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config), llmCfg.EffectiveContextTokens())
+	// Supplements reach the loop only through this hook, and only when the
+	// request names its run. req.RunID is set by the service ingress and is
+	// excluded from transport JSON, so neither the model nor client tools can
+	// pick which run's supplements are delivered.
+	//
+	// The bot id only names the log file the applied stage is written to. It is
+	// metadata from the request, never a routing key: the run id is what
+	// decides whose supplements are delivered.
+	supplementHooks := newSupplementHook(e.getService(), botlog.FromMeta(req.Message.Metadata), req.RunID)
+	// A desktop run can iterate a hundred-plus times, and the loop only ever
+	// appends. Without a mid-loop trim the request grows until it blows the
+	// context window and burns the provider's period quota re-sending history.
+	// Read the config from cb every round: hosts may escalate the model, and
+	// the context window is what decides when to trim.
+	compressionHooks := agent.NewCompressionHook(func() corelib.MaclawLLMConfig { return cb.GetLLMConfig() }, cb.httpClient)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v moa_preset=%q", req.Session.ID, req.OnToken != nil, cb.moaRequestPreset)
-	result := agentruntime.RunAgentTurnWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient)
+	result := agentruntime.RunAgentTurnWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient, supplementHooks, compressionHooks)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	if result.Error != "" {
-		return nil, errors.New(result.Error)
+		// Keep whatever the model already produced. A run cut short by an
+		// upstream throttle has often finished the actual work in earlier
+		// rounds; returning only the error surfaces it as an empty turn and
+		// leaves the reader unable to tell what is already done.
+		if partial := strings.TrimSpace(result.Text); partial != "" {
+			return &ExecuteResult{
+				Content:    partial,
+				OutputType: "text/plain",
+				Metadata:   map[string]string{metaPartialResult: "true"},
+			}, loopFailureError(&result)
+		}
+		return nil, loopFailureError(&result)
 	}
 	metadata := map[string]string{
 		"executor": "core_agent",
@@ -972,6 +1029,24 @@ func (e *CoreAgentExecutor) resourcesForUser(tenantID, userID, dataDir string) (
 	}
 	e.userMemory[key] = store
 	return store, nil
+}
+
+// SharedUserMemoryStore returns the long-lived store this executor already
+// holds for one user, or nil when no turn has opened one yet.
+//
+// It exists so a preference recorded through the service API can be written
+// into the very instance the next worker turn will read. Two Store objects over
+// one directory are not interchangeable: the JSON backend has no cross-instance
+// sync at all, so a write through a second, short-lived store is invisible to
+// the memoized one for the rest of the process, and the preference only appears
+// after a restart. The SQLite backend does poll, but that trades a correctness
+// bug for up to DefaultSyncInterval of latency on every read.
+//
+// Callers must not Stop a store returned here; it is not theirs to close.
+func (e *CoreAgentExecutor) SharedUserMemoryStore(tenantID, userID string) *memory.Store {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.userMemory[tenantID+":"+userID]
 }
 
 func memoryOwnerIDForPrincipal(principal Principal) string {
@@ -3195,4 +3270,52 @@ func wrapVisibleChatTokenCallback(cb func(string)) func(string) {
 			cb(cleaned)
 		}
 	}
+}
+
+// loopError reports the loop's user-facing text verbatim while keeping the
+// underlying cause reachable through errors.Is and errors.As.
+type loopError struct {
+	msg   string
+	cause error
+}
+
+func (e *loopError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.msg
+}
+
+func (e *loopError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// loopFailureError turns a failed LoopResult into an error the caller can
+// classify.
+//
+// Returning errors.New(result.Error) alone discarded the cause, and result.Error
+// is produced by llm.UserFacingError, which flattens an *llm.HTTPStatusError to
+// prose and drops StatusCode and Body. What survived could only be classified by
+// matching that prose back against the marker substrings it was built from, so
+// a period-quota refusal looked like any other failure to every layer above the
+// loop. Error() stays byte-identical to result.Error — it is stored on the run
+// and shown to the reader — while Unwrap hands the real cause to errors.Is.
+func loopFailureError(result *agent.LoopResult) error {
+	if result == nil {
+		return errors.New("agent loop failed")
+	}
+	if result.Err == nil {
+		return errors.New(result.Error)
+	}
+	cause := result.Err
+	if agentruntime.IsHubPeriodLimitError(cause) {
+		// Keep both identities. The sentinel is what callers branch on; the
+		// original *llm.HTTPStatusError still carries StatusCode and Body for
+		// anything that needs the provider's own wording.
+		cause = errors.Join(ErrLLMPeriodLimited, cause)
+	}
+	return &loopError{msg: result.Error, cause: cause}
 }

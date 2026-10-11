@@ -385,7 +385,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		run.CompletedAt = &completed
 		run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
 		terminalStatus = "failed"
-		failedEvent := runTerminalEventFor(run, "run.failed", map[string]any{"error": run.Error})
+		failedEvent := runTerminalEventFor(run, "run.failed", runFailurePayload(run.Error, histErr))
 		committed, terminalErr := s.saveRunTerminalWithEvents(run, []RunEvent{failedEvent})
 		if terminalErr != nil {
 			// Transaction failure means the repository could not make the
@@ -403,11 +403,17 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	execMsg.Content = effectiveContent
 	execCtx, cancelExec := context.WithCancel(ctx)
 	execReq := ExecuteRequest{
-		Principal:          p,
-		Tenant:             tenant,
-		User:               user,
-		Instance:           inst,
-		Session:            sess,
+		Principal: p,
+		Tenant:    tenant,
+		User:      user,
+		Instance:  inst,
+		Session:   sess,
+		// RunID carries the admitted run to the executor. A session can have
+		// several runs live at once, so hosts must not reconstruct this from
+		// Session or a loop identifier: doing so would attach one turn's state
+		// to another run. It is host-only (excluded from transport JSON) and
+		// set here, at the single place the run is created.
+		RunID:              run.ID,
 		Message:            execMsg,
 		History:            history,
 		DataDir:            inst.DataDir,
@@ -465,13 +471,19 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			Events: serviceRuntimeEventSink{service: s, run: run},
 		})
 		execErr = runtimeErr
-		if execErr == nil && runtimeResult.Output != nil {
+		// Take the output even when the turn failed. A run cut short mid-way has
+		// still produced text in earlier rounds, and dropping it here is what
+		// turns a mostly-finished run into an empty turn the reader cannot
+		// resume from.
+		if runtimeResult.Output != nil {
 			var ok bool
 			res, ok = runtimeResult.Output.(*ExecuteResult)
 			if !ok {
 				if value, valueOK := runtimeResult.Output.(ExecuteResult); valueOK {
 					res = &value
-				} else {
+				} else if execErr == nil {
+					// Keep the real failure: a type mismatch is not worth
+					// replacing the reason the turn actually ended.
 					execErr = fmt.Errorf("agent runtime returned unexpected result type %T", runtimeResult.Output)
 				}
 			}
@@ -482,40 +494,62 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if execErr == nil && res == nil {
 		execErr = fmt.Errorf("agent runtime returned nil result")
 	}
+	// Read the cancellation state before cancelExec runs. cancelExec always
+	// cancels the derived context, so testing execCtx.Err() afterwards is true
+	// for every failure and would report a provider throttle — or any executor
+	// error — as though the person had asked to stop.
+	execCanceled := errors.Is(execCtx.Err(), context.Canceled)
 	s.clearRunCancel(run.ID)
 	cancelExec()
 	completed := s.now()
+	// The executor has returned, so nothing can consume this run's supplements
+	// after this point. Reap here rather than per-branch: success, failure and
+	// cancellation all converge on this line, and each of them owes the person
+	// an honest report for anything queued but unconsumed.
+	s.reapRunSupplements(run.ID)
 	run.CompletedAt = &completed
 	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
 	if execErr != nil {
-		if errors.Is(execCtx.Err(), context.Canceled) || errors.Is(execErr, context.Canceled) {
+		// A run that failed may still have produced real output: a run cut
+		// short by an upstream throttle has usually finished the actual work
+		// in earlier rounds. Keeping that text is the difference between "it
+		// broke, start over" and "it broke here, this part is done".
+		var partialMessage *Message
+		if res != nil && strings.TrimSpace(res.Content) != "" {
+			msg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleAssistant, OutputType: defaultString(res.OutputType, "text/plain"), Content: agentruntime.UserFacingText(textutil.SanitizeVisibleChatText(res.Content)), Metadata: cloneMap(res.Metadata), CreatedAt: completed}
+			if msg.Metadata == nil {
+				msg.Metadata = map[string]string{}
+			}
+			msg.Metadata[metaPartialResult] = "true"
+			partialMessage = &msg
+			run.AssistantMessageID = msg.ID
+		}
+		// A cancelled execution context is the normal end state of a long run
+		// whose client has moved on, so it is not by itself proof that the
+		// person asked to stop. When the executor also reports a concrete
+		// cause, that cause is what the reader can act on: "run cancelled"
+		// alone turns a provider period-quota exhaustion — wait six hours and
+		// resend — into a dead end. Keep both, executor reason last.
+		if errors.Is(execErr, context.Canceled) {
 			run.Status = RunStatusCancelled
 			terminalStatus = "cancelled"
 			run.Error = "run cancelled"
-			cancelledEvent := runTerminalEventFor(run, "run.cancelled", map[string]any{"error": run.Error})
-			committed, terminalErr := s.saveRunTerminalWithEvents(run, []RunEvent{cancelledEvent})
-			if terminalErr != nil {
-				_ = s.store.SaveRun(run)
-				committed = false
-			}
-			if !committed {
-				s.emitRunEvent(run, cancelledEvent.Type, cancelledEvent.Payload)
-			}
+		} else if execCanceled {
+			run.Status = RunStatusCancelled
+			terminalStatus = "cancelled"
+			run.Error = "run cancelled: " + execErr.Error()
+		}
+		if run.Status == RunStatusCancelled {
+			cancelledEvent := runTerminalEventFor(run, "run.cancelled", runFailurePayload(run.Error, execErr))
+			s.saveRunTerminal(run, cancelledEvent, partialMessage)
 			_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.cancelled", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: mergeCorrelationMetadata(ctx, map[string]string{"instance_id": instanceID, "session_id": sessionID})})
 			return &run, nil, execErr
 		}
 		run.Status = RunStatusFailed
 		terminalStatus = "failed"
 		run.Error = execErr.Error()
-		failedEvent := runTerminalEventFor(run, "run.failed", map[string]any{"error": run.Error})
-		committed, terminalErr := s.saveRunTerminalWithEvents(run, []RunEvent{failedEvent})
-		if terminalErr != nil {
-			_ = s.store.SaveRun(run)
-			committed = false
-		}
-		if !committed {
-			s.emitRunEvent(run, failedEvent.Type, failedEvent.Payload)
-		}
+		failedEvent := runTerminalEventFor(run, "run.failed", runFailurePayload(run.Error, execErr))
+		s.saveRunTerminal(run, failedEvent, partialMessage)
 		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.failed", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: mergeCorrelationMetadata(ctx, map[string]string{"instance_id": instanceID, "session_id": sessionID})})
 		return &run, nil, execErr
 	}
@@ -547,7 +581,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		run.Error = err.Error()
 		run.CompletedAt = &completed
 		run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
-		failedEvent := runTerminalEventFor(run, "run.failed", map[string]any{"error": run.Error})
+		failedEvent := runTerminalEventFor(run, "run.failed", runFailurePayload(run.Error, err))
 		committed, terminalErr := s.saveRunTerminalWithEvents(run, []RunEvent{failedEvent})
 		if terminalErr != nil {
 			_ = s.store.SaveRun(run)

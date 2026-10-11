@@ -109,6 +109,19 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 		},
 		CancelCtx: cancelCtx,
 	}
+	// The open file travels as implicit context. Drawings do the same: they are
+	// already part of the answer's subject, and the model has no tool to go and
+	// read them itself.
+	var turnFigures []companionFigure
+	if fileCompanionTurnUsesFigures(selection, paper, agent.IsImageFilePath(path)) {
+		if inventory := a.fileCompanionFigures(canonical); len(inventory) > 0 {
+			msg, turnFigures = a.fileCompanionAttachFigures(msg, inventory)
+		}
+	}
+	// The turn's 图N list starts with whatever went out with the question.
+	// Companion tools append to the same list, so a rendered page continues
+	// the numbering instead of starting its own.
+	a.seedFileCompanionTurnFigures(userID, turnFigures)
 	if agent.IsImageFilePath(path) {
 		msg = a.attachFileCompanionImage(msg, path)
 	}
@@ -135,6 +148,14 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 		streamEvents.emit("ai-assistant-stream-done", "")
 	}
 	resp := a.imHandler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	if resp != nil {
+		// The reply is matched against the whole turn list: the figures the
+		// question carried plus any page renders or extracts the tools made
+		// while answering.
+		if figures := a.fileCompanionTurnFigures(userID); len(figures) > 0 {
+			resp.FileCompanionFigures = fileCompanionFiguresForReply(figures, text, resp.Text)
+		}
+	}
 	if paper {
 		return a.fileCompanionDeliverPaper(canonical, sessionID, userID, requestID, resp)
 	}
@@ -233,14 +254,16 @@ func (a *App) recordCompanionEvent(name, data string) {
 }
 
 func fileCompanionPrompt(name, ext string) string {
-	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件，不要使用工具。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
+	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
 	switch strings.ToLower(ext) {
+	case ".pdf":
+		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 把某一页整页渲染成图片；pdf_extract_images 提取文档内嵌位图（矢量图表用渲染）。工具生成的图按「图N」连续编号，回答里写「图N」，宿主会把那张原图放在回答下面展示给用户；没有编号的图不要编造图号。"
 	case ".xlsx":
-		return base + "如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
+		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":
-		return base + "如果用户要求修改这个幻灯片，只返回一个完整的 JSON 对象 {\"title\":\"\",\"slides\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 slides JSON。"
+		return base + "不要使用工具。如果用户要求修改这个幻灯片，只返回一个完整的 JSON 对象 {\"title\":\"\",\"slides\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 slides JSON。"
 	default:
-		return base + "用户选中一段并要求翻译或改写时，只返回改写后的文字。宿主会把这段文字追加到选区之后，原文保留。"
+		return base + "不要使用工具。用户选中一段并要求翻译或改写时，只返回改写后的文字。宿主会把这段文字追加到选区之后，原文保留。"
 	}
 }
 
@@ -404,7 +427,6 @@ func (a *App) fileCompanionDropChat(userID, side string) error {
 	}
 	st := a.companionRuntime()
 	st.chatMu.Lock()
-	defer st.chatMu.Unlock()
 	if st.chatGen == nil {
 		st.chatGen = map[string]uint64{}
 	}
@@ -413,6 +435,18 @@ func (a *App) fileCompanionDropChat(userID, side string) error {
 		st.chatDiscard = map[string]bool{}
 	}
 	st.chatDiscard[userID] = true
+	// The turn registry lives under the runtime lock. A cleared chat drops its
+	// live figures and their servable paths, so a reopen cannot show a render
+	// from a transcript that no longer exists.
+	st.mu.Lock()
+	if st.turnFigures != nil {
+		delete(st.turnFigures, userID)
+	}
+	if st.figureLedger != nil {
+		delete(st.figureLedger, userID)
+	}
+	st.mu.Unlock()
+	st.chatMu.Unlock()
 	if a.imHandler != nil && a.imHandler.memory != nil {
 		a.imHandler.memory.Clear(userID)
 		_ = a.imHandler.memory.FlushNow()
@@ -588,9 +622,19 @@ func (a *App) fileCompanionHistory(sessionID string) []FileCompanionMessage {
 		return nil
 	}
 	userID := "file-companion:" + sessionID
+	// Restored bubbles resolve the same figure numbers the live reply did, so a
+	// reopened window still shows the drawings the answer was talking about.
+	// The lookup stays cheap: opening a tab must not start a PDF parse.
+	// Tool-produced figures ride along: they sit in the turn registry, not in
+	// the document inventory.
+	inventory := append([]companionFigure(nil), a.fileCompanionFiguresBounded(a.fileCompanionSessionPath(sessionID), true)...)
+	inventory = append(inventory, a.fileCompanionTurnFigures(userID)...)
+	restore := func(entries []agent.ConversationEntry) []FileCompanionMessage {
+		return a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries, inventory))
+	}
 	if a.imHandler != nil && a.imHandler.memory != nil {
 		if entries := a.imHandler.memory.Load(userID); len(entries) > 0 {
-			return a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries))
+			return restore(entries)
 		}
 	}
 	side := filepath.Join(a.GetDataDir(), "file-companion", "sessions", sessionID+".json")
@@ -599,14 +643,31 @@ func (a *App) fileCompanionHistory(sessionID string) []FileCompanionMessage {
 		logFileCompanion("history unreadable session=%s", sessionID)
 		return nil
 	}
-	return a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries))
+	return restore(entries)
 }
 
-func fileCompanionDisplayMessages(entries []agent.ConversationEntry) []FileCompanionMessage {
+// fileCompanionSessionPath is the open file behind one session id.
+func (a *App) fileCompanionSessionPath(sessionID string) string {
+	if a == nil {
+		return ""
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for canonical := range st.grants {
+		if fileCompanionSessionID(canonical) == sessionID {
+			return canonical
+		}
+	}
+	return ""
+}
+
+func fileCompanionDisplayMessages(entries []agent.ConversationEntry, figures []companionFigure) []FileCompanionMessage {
 	if len(entries) == 0 {
 		return nil
 	}
 	out := make([]FileCompanionMessage, 0, len(entries))
+	asked := ""
 	for _, entry := range entries {
 		role := strings.ToLower(strings.TrimSpace(entry.Role))
 		if role != "user" && role != "assistant" {
@@ -617,15 +678,26 @@ func fileCompanionDisplayMessages(entries []agent.ConversationEntry) []FileCompa
 		text := raw
 		if role == "user" {
 			text = fileCompanionVisibleUserText(text)
+			if !paper {
+				asked = text
+			}
+			if text == "" {
+				continue
+			}
+			out = append(out, FileCompanionMessage{Role: role, Text: text, Paper: paper})
+			continue
 		}
-		reasoning := ""
-		if role == "assistant" {
-			reasoning = strings.TrimSpace(entry.ReasoningContent)
-		}
+		reasoning := strings.TrimSpace(entry.ReasoningContent)
 		if text == "" && reasoning == "" {
 			continue
 		}
-		out = append(out, FileCompanionMessage{Role: role, Text: text, Reasoning: reasoning, Paper: paper})
+		out = append(out, FileCompanionMessage{
+			Role:      role,
+			Text:      text,
+			Reasoning: reasoning,
+			Paper:     false,
+			Figures:   fileCompanionFiguresForReply(figures, asked, text),
+		})
 	}
 	if len(out) == 0 {
 		return nil
@@ -651,6 +723,26 @@ func fileCompanionEntryText(content interface{}) string {
 	switch v := content.(type) {
 	case string:
 		return v
+	case []interface{}:
+		// A vision turn stores the question as multimodal blocks: one text
+		// block plus one block per attached drawing. Only the text blocks are
+		// displayable — marshalling the whole shape would print base64 into
+		// the bubble and hide the markers the visible-text cut looks for.
+		var parts []string
+		for _, block := range v {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			kind, _ := bm["type"].(string)
+			if !normalizeIMContentBlockKind(kind).IsText() {
+				continue
+			}
+			if text, ok := bm["text"].(string); ok && strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n\n")
 	case nil:
 		return ""
 	default:

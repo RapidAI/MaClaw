@@ -109,6 +109,7 @@ func TestMaclawAppDependencyUpdatePreservesSkillMarketSource(t *testing.T) {
 		t.Fatalf("WriteFile SKILL.md: %v", err)
 	}
 	app := &App{testHomeDir: tmpHome}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubCenterURL:  server.URL,
 		RemoteHubCenterURLs: []string{server.URL},
@@ -191,6 +192,7 @@ func TestMaclawAppDependencyUpdateClearsCompensationAfterRollback(t *testing.T) 
 		t.Fatal(err)
 	}
 	app := &App{testHomeDir: tmpHome}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL},
 		NLSkills: []corelib.NLSkillEntry{{Name: "rollback_dep", SkillDir: skillDir, Status: "active", Source: "skillmarket", HubSkillID: marketID, HubVersion: "1.0.0"}},
@@ -232,6 +234,7 @@ func TestMaclawAppDependencyUpdateBlocksNonCanonicalDirectory(t *testing.T) {
 		t.Fatalf("write custom dependency package: %v", err)
 	}
 	app := &App{testHomeDir: tmpHome}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
 		Name: "canonical-name", SkillDir: customDir, Status: "active",
 		Source: "skillmarket", HubSkillID: "legacy-id", HubVersion: "1.0.0",

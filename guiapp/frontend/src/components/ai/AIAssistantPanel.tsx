@@ -1,6 +1,7 @@
 import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
 import { type ChatMessage } from "./useAIAssistant";
 import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
+import { userTurnDisplayOptions, stripUserTurnPromptArtifacts } from "./userTurnDisplay";
 import { useVoiceInput } from "./useVoiceInput";
 import { useVoiceTextSubmit } from "./useVoiceTextSubmit";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
@@ -34,6 +35,7 @@ import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
+import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { codingStepsAllPassed, executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick, resolveTaskExecutionStatus } from "./assistantTaskExecutionChrome";
 import { windowDragHandleProps, windowNoDragRegionProps } from "../../utils/windowDrag";
 import { TaskMoreActions } from "./TaskMoreActions";
@@ -1365,7 +1367,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         // If the UI unmounts or a transient route error occurs,
                         // retaining this state allows a later reconnect to retry
                         // instead of silently losing an IM-started task.
-                        void sendMessageForTabRef.current?.(pendingInitial.text, { tabId, project_path: projectPath })
+                        void sendMessageForTabRef.current?.(pendingInitial.text, { tabId, project_path: projectPath, ...userTurnDisplayOptions(pendingInitial.text) })
                             .then((sent) => {
                                 if (sent === false) return;
                                 const current = getTabState(tabId);
@@ -3012,6 +3014,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             void sendMessageForTabRef.current?.(pendingRemote.text, {
                 tabId,
                 project_path: projectPath || pendingRemote.projectPath,
+                ...userTurnDisplayOptions(pendingRemote.text),
             }).then((sent) => {
                 if (sent === false) return;
                 const current = getTabState(tabId);
@@ -3761,7 +3764,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         },
         // Wizard expert handoff: deliver the composer's first message through
         // the freshly opened expert tab (backend expert branch triggers on it).
-        sendExpertMessage: (text, expertId) => sendMessageForTab(text, { queue_session_key: expertSessionKey(expertId) }),
+        sendExpertMessage: (text, expertId) => sendMessageForTab(text, { queue_session_key: expertSessionKey(expertId), ...userTurnDisplayOptions(text) }),
         onEnsureExpertTask: props.onEnsureExpertTask,
         onEnsureAssistantTabTask: props.onEnsureAssistantTabTask,
     });
@@ -4545,7 +4548,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [cancelSession, isBusy, lang, sendMessageForTab, showConfirm]);
     const deriveTaskNameFromMessages = useCallback(() => {
         const firstUser = messages.find((m: ChatMessage) => m.role === "user");
-        const text = firstUser && typeof firstUser.content === "string" ? firstUser.content.trim() : "";
+        // Task names come from what the user said. The first message of older
+        // tasks still carries the composer's file-picker block in storage, and
+        // that prompt machinery must not become the task title.
+        const text = firstUser && typeof firstUser.content === "string"
+            ? stripUserTurnPromptArtifacts(firstUser.content)
+            : "";
         const runes = [...text];
         return runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "Saved task" : "\u5df2\u4fdd\u5b58\u4efb\u52a1");
     }, [lang, messages]);
@@ -5944,7 +5952,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 aria-hidden={!showWelcomeView ? true : undefined}
                 style={!showWelcomeView ? executionSecondaryChromeStyle : undefined}
             >
-                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab || hasTaskResult} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} hideNotifications={!showWelcomeView} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab || hasTaskResult} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both (quick-settings / status strip spans into the code-preview column). */}
             <div className="aap-panel-main" data-testid="ai-panel-main">
@@ -6593,6 +6601,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 >
                     <TaskExecutionHeading activeTab={activeTab} lang={lang} status={taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
+                        <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
+                            <AssistantTitleBarNotifications active={panelActive} inline={false} lang={lang} theme={t} />
+                        </div>
                         {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>

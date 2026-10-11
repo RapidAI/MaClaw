@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,54 @@ func TestAttributivePercentDoesNotBecomeWorklogUpdate(t *testing.T) {
 	}
 }
 
+// TestWorklogUpdateUtterancePlansReviewedMCPWriter is the production turn
+// from the 2026-10-10 report: an observed server presenting the reviewed
+// mutation name must plan that writer instead of answering
+// "当前能力目录未覆盖这项请求". The optional read leg is not required to be
+// present, so a server that only exposes the mutation still plans.
+func TestWorklogUpdateUtterancePlansReviewedMCPWriter(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{},
+		"additionalProperties": false,
+	}
+	tools := []MCPToolView{{Name: "work_log_update", Description: "update the morning work log", InputSchema: schema}}
+	seedObservedRemoteMCP(t, app, "tengyun", tools)
+	if err := app.publishReviewedMCPServerTools("tengyun", tools); err != nil {
+		t.Fatal(err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	stored := &intent.ClassificationResult{Primary: intent.LabelTaskTrack, Confidence: .98}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"desktop-user", worklogProductionUtterance, "desktop", "root-worklog-writer", "turn-worklog-writer", stored,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
+	}
+	selection, ok := semanticSelectionForCapability(surface.plan, tool.CapabilityRecordUpdateWorklog)
+	if !ok || selection.Provider.Kind != "mcp" || selection.Provider.ProviderID != "tengyun" {
+		t.Fatalf("update selection=%+v ok=%v", selection, ok)
+	}
+	for _, effect := range selection.Effects {
+		if effect != tool.EffectExternalEffect {
+			t.Fatalf("update effect=%v", effect)
+		}
+	}
+	if len(surface.plan.Unmet) != 0 {
+		t.Fatalf("unmet=%+v", surface.plan.Unmet)
+	}
+	// The write goes to an external system of record, so the turn settles on
+	// the host's external-effect receipt boundary rather than the provider's
+	// own result. That is asserted here so a later effect downgrade cannot
+	// quietly turn a recorded mutation into a self-certified success.
+	if !tool.SelectionRequiresExternalReceipt(selection) {
+		t.Fatalf("update selection is not receipt-bound: %+v", selection)
+	}
+}
+
 func TestTodoUtteranceStillPlansLocalTask(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	stored := &intent.ClassificationResult{Primary: intent.LabelTaskTrack, Confidence: .98}
@@ -160,6 +209,7 @@ func TestReviewedMCPPublicationQuarantinesUnlistedTools(t *testing.T) {
 	tools := []MCPToolView{
 		{Name: "work_log_update", Description: "update the morning work log", InputSchema: schema},
 		{Name: "work_log_query", Description: "query work log", InputSchema: schema},
+		{Name: "work_log_delete", Description: "delete a work log entry", InputSchema: schema},
 	}
 	seedObservedRemoteMCP(t, app, "tengyun", tools)
 	if err := app.publishReviewedMCPServerTools("tengyun", tools); err != nil {
@@ -170,21 +220,54 @@ func TestReviewedMCPPublicationQuarantinesUnlistedTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var query, mutation agentservice.MCPToolEntry
+	var query, mutation, unlisted agentservice.MCPToolEntry
 	for _, entry := range project.mcpEntries {
 		switch entry.ToolName {
 		case "work_log_query":
 			query = entry
 		case "work_log_update":
 			mutation = entry
+		case "work_log_delete":
+			unlisted = entry
 		}
 	}
 	want := agentservice.DynamicMCPObservedBindingDigest("tengyun", "work_log_query", schema)
 	if query.Contract.ObservedBindingDigest != want || query.Contract.Provisions[0].Capability != tool.CapabilityRecordReadWorklog || query.Contract.Provisions[0].Quality != 3 {
 		t.Fatalf("project query contract=%#v", query.Contract)
 	}
-	if len(mutation.Contract.Provisions) != 0 || mutation.Contract.ObservedBindingDigest != "" {
-		t.Fatalf("description-only mutation was contracted: %#v", mutation.Contract)
+	// The mutation is reviewed by name, so any observed server that presents
+	// it carries the capability. Its effect is the external one: the record
+	// lives in a system this process cannot read back.
+	wantUpdate := agentservice.DynamicMCPObservedBindingDigest("tengyun", "work_log_update", schema)
+	if mutation.Contract.ObservedBindingDigest != wantUpdate ||
+		mutation.Contract.Provisions[0].Capability != tool.CapabilityRecordUpdateWorklog ||
+		mutation.Contract.Provisions[0].Quality != 2 ||
+		mutation.Contract.Effects[0] != tool.EffectExternalEffect {
+		t.Fatalf("project mutation contract=%#v", mutation.Contract)
+	}
+	// A neighbouring name for another mutation of the same record is not the
+	// reviewed name, so reviewing work_log_update must not widen into it.
+	// The open family does make it callable, and because the host cannot trust
+	// an unreviewed vendor tool to be read-only, it is classified fail-safe as
+	// an external effect gated by the receipt boundary — that is the relaxed
+	// "arbitrary installed MCP may write" posture. The invariant that still
+	// holds is that the unreviewed name never gains the REVIEWED mutation
+	// capability: no record.update.worklog may come from it.
+	if len(unlisted.Contract.Provisions) == 0 {
+		t.Fatalf("unlisted tool was not contracted at all: %#v", unlisted.Contract)
+	}
+	for _, provision := range unlisted.Contract.Provisions {
+		if provision.Capability == tool.CapabilityRecordUpdateWorklog {
+			t.Fatalf("unlisted name gained the reviewed mutation: %#v", unlisted.Contract)
+		}
+	}
+	if unlisted.Contract.Provisions[0].Capability != agentservice.CapabilityInformationLookup {
+		t.Fatalf("unlisted name not on the open family: %#v", unlisted.Contract)
+	}
+	for _, effect := range unlisted.Contract.Effects {
+		if effect != tool.EffectExternalEffect && effect != tool.EffectReadOnly {
+			t.Fatalf("unlisted name contracted an unexpected effect: %#v", unlisted.Contract)
+		}
 	}
 	other, err := h.semanticDynamicInventory(context.Background(), "user-1")
 	if err != nil {
@@ -209,6 +292,398 @@ func TestReviewedMCPPublicationQuarantinesUnlistedTools(t *testing.T) {
 		if entry.ToolName == "work_log_query" && (len(entry.Contract.Provisions) != 0 || entry.Contract.ObservedBindingDigest != "") {
 			t.Fatalf("disappeared query stayed contracted: %#v", entry.Contract)
 		}
+	}
+}
+
+// TestArbitraryMCPToolIsCallableThroughOpenLookup is the root-cause test for
+// "a newly installed MCP is unusable". A tools/list name nobody reviewed must
+// still be callable: it is published under the open read-only family, so the
+// model can invoke an arbitrary MCP tool, while the effect stays read-only and
+// the tool never enters the external-effect receipt path.
+func TestArbitraryMCPToolIsCallableThroughOpenLookup(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
+		"additionalProperties": false,
+	}
+	tools := []MCPToolView{{Name: "totally_new_vendor_tool", Description: "anything", InputSchema: schema}}
+	seedObservedRemoteMCP(t, app, "brand-new-mcp", tools)
+	if err := app.publishReviewedMCPServerTools("brand-new-mcp", tools); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{app: app}
+	inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry agentservice.MCPToolEntry
+	for _, candidate := range inventory.mcpEntries {
+		if candidate.ToolName == "totally_new_vendor_tool" {
+			entry = candidate
+		}
+	}
+	if entry.ToolName == "" {
+		t.Fatalf("arbitrary tool was not contracted: %#v", inventory.mcpEntries)
+	}
+	if len(entry.Contract.Provisions) != 1 ||
+		entry.Contract.Provisions[0].Capability != agentservice.CapabilityInformationLookup ||
+		entry.Contract.Effects[0] != tool.EffectExternalEffect {
+		t.Fatalf("arbitrary contract=%#v", entry.Contract)
+	}
+	// The binding must be digest-bound, so a schema change on the same name
+	// cannot keep the old authority.
+	if entry.Contract.ObservedBindingDigest != agentservice.DynamicMCPObservedBindingDigest("brand-new-mcp", "totally_new_vendor_tool", schema) {
+		t.Fatalf("digest=%q", entry.Contract.ObservedBindingDigest)
+	}
+	// An arbitrary, unannotated MCP tool is callable but fail-safe treated as
+	// an external effect: it is not silently assumed read-only, so its
+	// selection is receipt-bound and settles through the external-effect
+	// boundary rather than running with no confirmation.
+	selection := tool.PlannedSelection{Effects: entry.Contract.Effects}
+	if !tool.SelectionRequiresExternalReceipt(selection) {
+		t.Fatalf("open lookup selection is not receipt-bound: %+v", selection)
+	}
+	catalog, err := agentservice.BuildDynamicSemanticCatalog(inventory.mcpEntries, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Providers) != 1 || catalog.Providers[0].Binding.Kind != "mcp" {
+		t.Fatalf("catalog providers=%#v", catalog.Providers)
+	}
+	// The provider must carry the open capability, or it is in the catalog but
+	// nothing can ever select it for a need.
+	provides := catalog.Providers[0].Provides
+	if len(provides) != 1 || provides[0].Capability != agentservice.CapabilityInformationLookup {
+		t.Fatalf("catalog provision=%#v", provides)
+	}
+}
+
+// TestArbitraryMCPReachesTheModelSurface closes the loop the publication test
+// opens: the arbitrary tool must be demanded, planned, and rendered on a live
+// managed turn — not merely present in the inventory. The open family's
+// optional ambient need is the only demand route, because a label rule would
+// be an owner statement about user outcomes and a vendor tool is not one.
+func TestArbitraryMCPReachesTheModelSurface(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
+		"additionalProperties": false,
+	}
+	tools := []MCPToolView{{Name: "totally_new_vendor_tool", Description: "anything", InputSchema: schema}}
+	seedObservedRemoteMCP(t, app, "brand-new-mcp", tools)
+	if err := app.publishReviewedMCPServerTools("brand-new-mcp", tools); err != nil {
+		t.Fatal(err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	stored := &intent.ClassificationResult{Primary: intent.LabelKnowledgeRead, Confidence: .98}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"desktop-user", "查一下上周的项目进展", "desktop", "root-open-lookup", "turn-open-lookup", stored,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
+	}
+	selection, ok := semanticSelectionForCapability(surface.plan, agentservice.CapabilityInformationLookup)
+	if !ok {
+		t.Fatalf("open family never planned: selections=%+v unmet=%+v", surface.plan.Selections, surface.plan.Unmet)
+	}
+	if selection.Provider.Kind != "mcp" || selection.Provider.ProviderID != "brand-new-mcp" {
+		t.Fatalf("open selection=%+v", selection)
+	}
+	if len(surface.plan.Unmet) != 0 {
+		t.Fatalf("optional open need produced unmet rows: %+v", surface.plan.Unmet)
+	}
+	if selection.Effects[0] != tool.EffectExternalEffect {
+		t.Fatalf("open selection effects=%v", selection.Effects)
+	}
+	// The grant must be on the rendered surface: publish+plan without a model
+	// visible invoke token is still unusable.
+	rendered := false
+	for name := range surface.grants {
+		if strings.HasPrefix(name, "invoke_") {
+			rendered = true
+		}
+	}
+	if !rendered {
+		t.Fatalf("open family planned but never rendered: grants=%v", surface.grants)
+	}
+}
+
+// TestOpenLookupNeedRequiresAProvider keeps the demand side inert on hosts
+// with no dynamic provider: no installed MCP means no extra need on any
+// managed turn, so unplugged hosts keep their exact historical plan shape.
+func TestOpenLookupNeedRequiresAProvider(t *testing.T) {
+	needs := []tool.CapabilityNeed{{ID: "need:x", Capability: tool.CapabilityKnowledgeReadLocal, Polarity: tool.NeedRequire}}
+	got := semanticNeedsWithDynamicLookupForProviders(needs, nil)
+	if len(got) != 1 {
+		t.Fatalf("no provider must not add a need: %+v", got)
+	}
+	providers := []tool.ProviderSpec{{
+		AdapterName: "dynamic_mcp_probe",
+		Binding:     tool.ProviderBinding{Kind: "mcp", ProviderID: "brand-new-mcp", ImplementationID: "totally_new_vendor_tool"},
+		Provides:    []tool.CapabilityProvision{{Capability: agentservice.CapabilityInformationLookup, Quality: 1}},
+		Effects:     []tool.EffectClass{tool.EffectReadOnly},
+	}}
+	got = semanticNeedsWithDynamicLookupForProviders(needs, providers)
+	if len(got) != 2 || got[1].Capability != agentservice.CapabilityInformationLookup || got[1].Required {
+		t.Fatalf("open lookup need=%+v", got[1])
+	}
+	got = semanticNeedsWithDynamicLookupForProviders(got, providers)
+	if len(got) != 2 {
+		t.Fatalf("second pass must not duplicate the need: %+v", got)
+	}
+}
+
+// TestTightBudgetOmitsTheOpenNeed pins the safety property under a selection
+// budget that cannot fit the open family: the optional need lands in
+// plan.Omitted with optional_budget_omitted, never in plan.Unmet — a tight
+// budget must not turn an installed MCP into a failed turn or a host reject.
+func TestTightBudgetOmitsTheOpenNeed(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
+		"additionalProperties": false,
+	}
+	tools := []MCPToolView{{Name: "totally_new_vendor_tool", Description: "x", InputSchema: schema}}
+	seedObservedRemoteMCP(t, app, "brand-new-mcp", tools)
+	if err := app.publishReviewedMCPServerTools("brand-new-mcp", tools); err != nil {
+		t.Fatal(err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	stored := &intent.ClassificationResult{Primary: intent.LabelKnowledgeRead, Confidence: .98}
+	ctx := withSemanticPlanningBudget(context.Background(), 1)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		ctx, "desktop-user", "查一下上周的项目进展", "desktop", "root-budget", "turn-budget", stored, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
+	}
+	for _, sel := range surface.plan.Selections {
+		if sel.FitProof.MatchedCapability == agentservice.CapabilityInformationLookup {
+			t.Fatalf("open family planned under budget=1: %+v", sel)
+		}
+	}
+	if len(surface.plan.Unmet) != 0 {
+		t.Fatalf("open need produced unmet rows under a tight budget: %+v", surface.plan.Unmet)
+	}
+	omitted := false
+	for _, item := range surface.plan.Omitted {
+		if item.NeedID == "need:~ambient:"+string(agentservice.CapabilityInformationLookup) &&
+			item.ReasonCode == "optional_budget_omitted" {
+			omitted = true
+		}
+	}
+	if !omitted {
+		t.Fatalf("open need missing from Omitted: %+v", surface.plan.Omitted)
+	}
+}
+
+// TestDegradedMCPDoesNotPublishOpenLookup keeps the readiness gate honest: a
+// server whose observation did not succeed must not hand an arbitrary tool a
+// capability, or an unreachable server becomes callable on the strength of a
+// stale tools/list alone.
+func TestDegradedMCPDoesNotPublishOpenLookup(t *testing.T) {	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	schema := map[string]interface{}{"type": "object"}
+	tools := []MCPToolView{{Name: "totally_new_vendor_tool", InputSchema: schema}}
+	seedObservedRemoteMCP(t, app, "brand-new-mcp", tools)
+	app.mcpRegistry.health["brand-new-mcp"].Status = mcpHealthStatusDegraded
+	if err := app.publishReviewedMCPServerTools("brand-new-mcp", tools); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{app: app}
+	inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range inventory.mcpEntries {
+		if entry.ToolName != "totally_new_vendor_tool" {
+			continue
+		}
+		if len(entry.Contract.Provisions) != 0 || entry.Contract.ObservedBindingDigest != "" {
+			t.Fatalf("degraded server published an arbitrary tool: %#v", entry.Contract)
+		}
+	}
+}
+
+// TestLocalStdioMCPJoinsTheOpenFamily keeps the local admission honest: the
+// real sync path publishes a local stdio server's tools while its client is
+// running, and that running client IS the finished observation — the gate
+// must admit it, or every unreviewed tool on npx-style servers is invisible.
+func TestLocalStdioMCPJoinsTheOpenFamily(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
+		"additionalProperties": false,
+	}
+	tools := []MCPToolView{{Name: "local_vendor_tool", Description: "x", InputSchema: schema}}
+	app.mcpRegistry = NewMCPRegistry(app)
+	app.localMCPManager = NewLocalMCPManager(app.mcpRegistry)
+	if err := app.mcpRegistry.RegisterLocal(corelib.LocalMCPServerEntry{ID: "local-stdio", Name: "local-stdio", Command: "echo", AutoStart: true}); err != nil {
+		t.Fatalf("register local: %v", err)
+	}
+	app.localMCPManager.mu.Lock()
+	app.localMCPManager.clients["local-stdio"] = &LocalMCPClient{entry: corelib.LocalMCPServerEntry{ID: "local-stdio", Name: "local-stdio"}, running: true, tools: append([]MCPToolView(nil), tools...)}
+	app.localMCPManager.mu.Unlock()
+
+	// The sync path: recordRuntimeSyncReady (a no-op for non-market sources)
+	// then publish while the client is running.
+	if err := app.publishReviewedMCPServerTools("local-stdio", tools); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{app: app}
+	inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range inventory.mcpEntries {
+		if entry.ToolName != "local_vendor_tool" {
+			continue
+		}
+		found = true
+		if len(entry.Contract.Provisions) != 1 || entry.Contract.Provisions[0].Capability != agentservice.CapabilityInformationLookup {
+			t.Fatalf("local stdio contract=%#v", entry.Contract)
+		}
+		if entry.Contract.ObservedBindingDigest != agentservice.DynamicMCPObservedBindingDigest("local-stdio", "local_vendor_tool", schema) {
+			t.Fatalf("local stdio digest=%q", entry.Contract.ObservedBindingDigest)
+		}
+	}
+	if !found {
+		t.Fatalf("local stdio tool missing from inventory: %#v", inventory.mcpEntries)
+	}
+
+	// A stopped client is not an observation: publishing must fail closed.
+	app.localMCPManager.mu.Lock()
+	app.localMCPManager.clients["local-stdio"].running = false
+	app.localMCPManager.mu.Unlock()
+	if err := app.publishReviewedMCPServerTools("local-stdio", tools); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err = h.semanticDynamicInventory(context.Background(), "desktop-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range inventory.mcpEntries {
+		if entry.ToolName == "local_vendor_tool" && len(entry.Contract.Provisions) != 0 {
+			t.Fatalf("stopped client still published: %#v", entry.Contract)
+		}
+	}
+}
+
+// TestFirstDiscoveryPublishesOpenFamilyAndExecutes drives the real first-contact
+// lifecycle over a live MCP JSON-RPC server: the tools/list observation itself
+// must admit its own unreviewed tools (health recorded before publication, or
+// the gate reads the pre-probe unknown state and drops every arbitrary tool on
+// first discovery), and the planned selection must dispatch tools/call with the
+// model's arguments and return the vendor content.
+func TestFirstDiscoveryPublishesOpenFamilyAndExecutes(t *testing.T) {
+	var calledTool string
+	var calledArgs map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int             `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{"protocolVersion": "2025-03-26", "capabilities": map[string]interface{}{}},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{"tools": []map[string]interface{}{{
+					"name":        "totally_new_vendor_tool",
+					"description": "anything",
+					"inputSchema": map[string]interface{}{
+						"type":                 "object",
+						"properties":           map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
+						"additionalProperties": false,
+					},
+					"annotations": map[string]interface{}{"readOnlyHint": true},
+				}}},
+			})
+		case "tools/call":
+			var params struct {
+				Name      string                 `json:"name"`
+				Arguments map[string]interface{} `json:"arguments"`
+			}
+			_ = json.Unmarshal(req.Params, &params)
+			calledTool = params.Name
+			calledArgs = params.Arguments
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{"content": []map[string]interface{}{
+					{"type": "text", "text": "vendor says: hello"},
+				}},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": map[string]interface{}{},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MCPServers = append(cfg.MCPServers, corelib.MCPServerEntry{ID: "brand-new-mcp", Name: "brand-new-mcp", EndpointURL: srv.URL})
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	app.mcpRegistry = NewMCPRegistry(app)
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	// First contact: no seeded cache, no seeded health. The probe itself must
+	// publish the open-family contract.
+	if err := app.mcpRegistry.HealthCheck("brand-new-mcp"); err != nil {
+		t.Fatalf("health check: %v", err)
+	}
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	stored := &intent.ClassificationResult{Primary: intent.LabelKnowledgeRead, Confidence: .98}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"desktop-user", "查一下上周的项目进展", "desktop", "root-exec", "turn-exec", stored,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
+	}
+	selection, ok := semanticSelectionForCapability(surface.plan, agentservice.CapabilityInformationLookup)
+	if !ok {
+		t.Fatalf("open family not planned on first discovery: unmet=%+v omitted=%+v", surface.plan.Unmet, surface.plan.Omitted)
+	}
+	if selection.Provider.ProviderID != "brand-new-mcp" {
+		t.Fatalf("selection provider=%+v", selection.Provider)
+	}
+	if tool.SelectionRequiresExternalReceipt(selection) {
+		t.Fatalf("open selection is receipt-bound: %+v", selection)
+	}
+
+	// Execute through the same bridge the shared loop uses.
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop"}
+	result, _ := cb.executeSemanticDynamicProviderWithContext(context.Background(), selection, `{"q":"weekly progress"}`)
+	if !result.Succeeded || !strings.Contains(result.Result, "vendor says: hello") {
+		t.Fatalf("execution result=%#v", result)
+	}
+	if calledTool != "totally_new_vendor_tool" || calledArgs["q"] != "weekly progress" {
+		t.Fatalf("server saw tool=%q args=%#v", calledTool, calledArgs)
 	}
 }
 
@@ -257,8 +732,14 @@ func TestReviewedMCPCapabilityIdentityPublishesInstalledSearchTool(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, entry := range blocked.mcpEntries {
-		if len(entry.Contract.Provisions) != 0 {
-			t.Fatalf("instance id contracted %s: %#v", entry.ToolName, entry.Contract)
+		// Without the reviewed product identity, no entry may carry the
+		// product-scoped search capability. The open family may still make
+		// a tool callable for read-only retrieval; what must never happen is
+		// the identity-gated product contract appearing on identity alone.
+		for _, provision := range entry.Contract.Provisions {
+			if provision.Capability == agentservice.CapabilityInformationSearchWeb {
+				t.Fatalf("instance id contracted %s: %#v", entry.ToolName, entry.Contract)
+			}
 		}
 	}
 	server.Capability.GlobalKey = agentservice.ReviewedMCPWebSearchPrimeGlobalKey
@@ -287,20 +768,36 @@ func TestReviewedMCPCapabilityIdentityPublishesInstalledSearchTool(t *testing.T)
 	if len(search.Contract.Provisions) != 2 || search.Contract.Provisions[0].Capability != tool.CapabilityID("information.search.web") || search.Contract.Provisions[0].Quality <= 2 {
 		t.Fatalf("search contract=%#v", search.Contract)
 	}
-	if len(extra.Contract.Provisions) != 0 {
-		t.Fatalf("description-only tool was contracted: %#v", extra.Contract)
+	// An unreviewed name is callable through the open read-only family, but it
+	// must not render as the reviewed product's model function: the identity
+	// join is what maps web_search onto search_query, and no description or
+	// neighbouring name may reach that spelling.
+	for _, provision := range extra.Contract.Provisions {
+		if provision.Capability == agentservice.CapabilityInformationSearchWeb {
+			t.Fatalf("description-only tool gained the product search: %#v", extra.Contract)
+		}
 	}
 	catalog, err := agentservice.BuildDynamicSemanticCatalog(project.mcpEntries, nil)
-	if err != nil || len(catalog.Providers) != 1 {
-		t.Fatalf("providers=%d err=%v", len(catalog.Providers), err)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
 	}
-	if catalog.Providers[0].Binding.ImplementationID != agentservice.ReviewedMCPWebSearchPrimeTool {
-		t.Fatalf("provider=%#v", catalog.Providers[0].Binding)
+	var product *tool.ProviderSpec
+	for i := range catalog.Providers {
+		if catalog.Providers[i].Binding.ImplementationID == agentservice.ReviewedMCPWebSearchPrimeTool {
+			product = &catalog.Providers[i]
+		}
+		if tool.SemanticModelFunctionName(catalog.Providers[i].AdapterName) == "web_search" &&
+			catalog.Providers[i].Binding.ImplementationID != agentservice.ReviewedMCPWebSearchPrimeTool {
+			t.Fatalf("%q rendered as web_search", catalog.Providers[i].Binding.ImplementationID)
+		}
 	}
-	if tool.SemanticModelFunctionName(catalog.Providers[0].AdapterName) != "web_search" {
-		t.Fatalf("adapter %q did not render as web_search", catalog.Providers[0].AdapterName)
+	if product == nil || product.Binding.ImplementationID != agentservice.ReviewedMCPWebSearchPrimeTool {
+		t.Fatalf("product provider missing: %#v", catalog.Providers)
 	}
-	params := catalog.Definitions[catalog.Providers[0].AdapterName]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if tool.SemanticModelFunctionName(product.AdapterName) != "web_search" {
+		t.Fatalf("adapter %q did not render as web_search", product.AdapterName)
+	}
+	params := catalog.Definitions[product.AdapterName]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
 	if _, ok := params["properties"].(map[string]interface{})["query"]; !ok {
 		t.Fatalf("model schema=%#v", params)
 	}

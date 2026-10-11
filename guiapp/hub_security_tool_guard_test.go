@@ -315,3 +315,37 @@ func TestHubSecurityBlocksDirectMCPNetworkAndLocalCommand(t *testing.T) {
 		t.Fatalf("local MCP register err=%v, want sandbox rejection", err)
 	}
 }
+
+// The trusted browser adapter streams page content back into the model, so the
+// semantic trusted-adapter path must route it through the same Hub network
+// gate as web_fetch. This pins the wiring end to end: hubSecurityCache ->
+// effectiveHubSecurityConfig -> EnforceConfig must deny a browser call to a
+// domain the allowlist does not cover.
+func TestHubSecurityToolGuardGatesBrowserUnderAllowlist(t *testing.T) {
+	app := &App{}
+	app.hubSecurityCache.mu.Lock()
+	app.hubSecurityCache.policy = &HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy: &HubEffectivePolicy{
+			NetworkLevel:         "allowlist",
+			NetworkAllowlist:     []string{"api.example.com"},
+			FileOutboundEnabled:  true,
+			ImageOutboundEnabled: true,
+		},
+	}
+	app.hubSecurityCache.mu.Unlock()
+	h := &IMMessageHandler{app: app}
+
+	if ok, reason := h.enforceHubSecurityToolPolicy("browser", map[string]interface{}{"url": "https://app.uned.es/soid"}); ok || !strings.Contains(reason, "allowlist") {
+		t.Fatalf("browser outside allowlist allowed=%v reason=%q, want allowlist rejection", ok, reason)
+	}
+	if ok, _ := h.enforceHubSecurityToolPolicy("browser", map[string]interface{}{"url": "https://api.example.com/v1"}); !ok {
+		t.Fatalf("allowlisted browser blocked, want allowed")
+	}
+	// At the default level the browser stays usable; the gate only bites when
+	// the Hub actually restricts the network.
+	app.hubSecurityCache.policy.Policy.NetworkLevel = "full"
+	if ok, _ := h.enforceHubSecurityToolPolicy("browser", map[string]interface{}{"url": "https://app.uned.es/soid"}); !ok {
+		t.Fatalf("browser blocked under default level, want allowed")
+	}
+}

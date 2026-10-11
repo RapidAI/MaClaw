@@ -11,6 +11,7 @@
 package goal
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,41 @@ const (
 	StatusComplete    Status = "complete"
 	StatusFailed      Status = "failed"
 )
+
+// StatusOptions is the closed set of statuses a managed turn may set on a
+// goal, and the enum both hosts render into the invocation schema. The rest
+// of the lifecycle is system-controlled (pause, resume, budget) and never a
+// model-supplied argument. It is documentation for the model, not a boundary:
+// StatusCanonical is the boundary, and a set rendered apart from it is the
+// drift this package already avoids for IsTerminal by keeping both answers
+// next to the type itself.
+func StatusOptions() []string {
+	return []string{"complete", "failed"}
+}
+
+// StatusCanonical maps model-supplied status text to the lifecycle value it
+// records. Aliases ("completed", "fail") are accepted but never advertised: a
+// model that sends one means the same thing as the canonical name it is
+// aliased from. An empty or unknown string is refused -- unlike a schedule
+// record's optional status, an update turn only parses a status it intends to
+// set, so there is no unset reading to preserve.
+func StatusCanonical(raw string) (Status, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "complete", "completed":
+		return StatusComplete, true
+	case "failed", "fail":
+		return StatusFailed, true
+	default:
+		return "", false
+	}
+}
+
+// StatusHint renders the canonical vocabulary for a rejection message, so a
+// model that ignored the enum still learns the valid names from its first
+// failure and can retry inside the turn.
+func StatusHint() string {
+	return "allowed: " + strings.Join(StatusOptions(), ", ")
+}
 
 // Goal represents a persisted long-running task objective.
 type Goal struct {

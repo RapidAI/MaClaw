@@ -62,6 +62,19 @@ type fileCompanionRuntime struct {
 	emitted   [][]string
 	grants    map[string]*fileCompanionGrant
 	fileMu    map[string]*sync.Mutex
+	// figures caches each open document's image inventory. The key is the
+	// canonical path; size and mtime decide whether it must be rebuilt.
+	figures map[string]*companionFigureInventory
+	// turnFigures is one live turn's displayable 图N list: the figures
+	// attached at turn start, then whatever companion tools produced. Keyed
+	// by user id ("file-companion:<session>"); a new turn reseeds it.
+	turnFigures map[string][]companionFigure
+	// figureLedger is what the display bridge may still serve: every figure
+	// this session produced, however many turns ago. Numbering restarts with
+	// each turn, but an earlier bubble must not lose its drawing when a later
+	// turn reseeds the numbering list. Append-only and bounded per session;
+	// /clear forgets it along with the transcript.
+	figureLedger map[string][]string
 
 	// recordEvents keeps the final companion reply for tests. Production
 	// leaves it false, so the slice stays empty.
@@ -96,6 +109,12 @@ func (a *App) companionRuntime() *fileCompanionRuntime {
 	}
 	if a.fileCompanion.fileMu == nil {
 		a.fileCompanion.fileMu = map[string]*sync.Mutex{}
+	}
+	if a.fileCompanion.figures == nil {
+		a.fileCompanion.figures = map[string]*companionFigureInventory{}
+	}
+	if a.fileCompanion.turnFigures == nil {
+		a.fileCompanion.turnFigures = map[string][]companionFigure{}
 	}
 	return a.fileCompanion
 }

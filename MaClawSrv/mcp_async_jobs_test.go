@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -125,6 +126,7 @@ func TestAsyncMCPUpdateJobLifecycle(t *testing.T) {
 
 func TestAsyncMCPStartJobLifecycle(t *testing.T) {
 	_, _, token, server := newMCPAuthenticatedServer(t)
+	t.Setenv("MACLAW_MCP_SPAWN_TRUST_DIRS", filepath.Dir(os.Args[0]))
 
 	cmd := os.Args[0]
 	body := fmt.Sprintf(`{"kind":"local","name":"Local Echo","command":%q,"args":["-test.run=TestLocalMCPHelperProcess","--"],"env":{"GO_WANT_LOCAL_MCP_HELPER":"1"}}`, cmd)
@@ -170,6 +172,7 @@ func TestAsyncMCPStartJobLifecycle(t *testing.T) {
 
 func TestAsyncMCPHealthCheckJobLifecycle(t *testing.T) {
 	_, _, token, server := newMCPAuthenticatedServer(t)
+	t.Setenv("MACLAW_MCP_SPAWN_TRUST_DIRS", filepath.Dir(os.Args[0]))
 
 	cmd := os.Args[0]
 	body := fmt.Sprintf(`{"kind":"local","name":"Local Echo","command":%q,"args":["-test.run=TestLocalMCPHelperProcess","--"],"env":{"GO_WANT_LOCAL_MCP_HELPER":"1"}}`, cmd)

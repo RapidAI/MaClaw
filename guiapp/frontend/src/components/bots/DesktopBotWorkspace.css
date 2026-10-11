@@ -124,6 +124,15 @@
     line-height: 1.5;
 }
 
+/* 头部右上角的一组按钮：新建在前，模型设置在它右侧。两个都保持等高，
+   免得标题换行时两个按钮错位。 */
+.desktop-bot-workspace__bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
 .desktop-bot-workspace__create {
     border: 1px solid transparent;
     background: var(--mc-accent, #2f6fbc);
@@ -137,6 +146,21 @@
 
 .desktop-bot-workspace__create:hover {
     filter: brightness(1.06);
+}
+
+.desktop-bot-workspace__settings {
+    border: 1px solid var(--theme-border, #d0d5dd);
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text, #101828);
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.desktop-bot-workspace__settings:hover {
+    background: var(--theme-surface-muted, #f2f4f7);
 }
 
 .desktop-bot-workspace__list {
@@ -265,16 +289,14 @@
 
 .desktop-bot-workspace__row:hover .desktop-bot-workspace__actions,
 .desktop-bot-workspace__row:focus-within .desktop-bot-workspace__actions,
-.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__actions,
-.desktop-bot-workspace__row.is-editing .desktop-bot-workspace__actions {
+.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__actions {
     opacity: 1;
     pointer-events: auto;
 }
 
 .desktop-bot-workspace__row:hover .desktop-bot-workspace__open,
 .desktop-bot-workspace__row:focus-within .desktop-bot-workspace__open,
-.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__open,
-.desktop-bot-workspace__row.is-editing .desktop-bot-workspace__edit {
+.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__open {
     padding-right: var(--desktop-bot-row-actions);
 }
 
@@ -314,23 +336,106 @@
     border-color: color-mix(in srgb, var(--theme-danger, #d92d20) 40%, transparent);
 }
 
-.desktop-bot-workspace__edit {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+/* 编辑 Bot 信息弹窗：表单字段与提示，骨架复用 custom-dialog 样式。 */
+.bot-edit-dialog__field + .bot-edit-dialog__field {
+    margin-top: 14px;
 }
 
-.desktop-bot-workspace__edit input {
-    width: 100%;
-    box-sizing: border-box;
-    border: 1px solid var(--theme-border, #d0d5dd);
+.bot-edit-dialog__label {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-edit-dialog__input {
+    min-height: 38px;
+    padding: 8px 12px;
     border-radius: 8px;
-    padding: 8px 10px;
-    font: inherit;
-    color: inherit;
-    background: transparent;
+    font-size: 0.875rem;
+}
+
+.bot-edit-dialog__notice {
+    margin: 14px 0 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--theme-danger, #d92d20);
+}
+
+/* Bot 大模型设置弹窗：两个互斥选项各自成组，选中项的细节缩进一点，
+   看得出从属于上面的单选。 */
+.bot-llm-dialog__hint {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-llm-dialog__option {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid var(--theme-border, #eaecf0);
+    border-radius: 10px;
+    background: var(--theme-surface-muted, #f9fafb);
+}
+
+.bot-llm-dialog__radio {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--theme-text, #101828);
+    cursor: pointer;
+}
+
+.bot-llm-dialog__radio input {
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--mc-accent, #2f6fbc);
+}
+
+.bot-llm-dialog__radio input:disabled {
+    cursor: not-allowed;
+}
+
+.bot-llm-dialog__radio input:disabled + span {
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-llm-dialog__subhint {
+    margin: 8px 0 0;
+    padding-left: 24px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-llm-dialog__field {
+    margin-top: 10px;
+    padding-left: 24px;
+}
+
+.bot-llm-dialog__label {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-llm-dialog__select,
+.bot-llm-dialog__input {
+    min-height: 38px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 0.875rem;
+}
+
+.bot-llm-dialog__notice {
+    margin: 14px 0 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--theme-danger, #d92d20);
 }
 
 /* 主区：会话面板。消息区滚动，输入条钉在这一列底部。 */

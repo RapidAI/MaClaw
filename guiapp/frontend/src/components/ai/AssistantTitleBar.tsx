@@ -42,6 +42,8 @@ interface AssistantTitleBarProps {
     clearHistory: () => void;
     /** When true, the "New conversation" button is disabled to prevent clearing an in-progress session. */
     clearHistoryDisabled?: boolean;
+    /** Suppress the notification bell — used on the execution view, which hosts its own bell in the task header. */
+    hideNotifications?: boolean;
     inline: boolean;
     lang: string;
     maximized: boolean;
@@ -78,7 +80,7 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     handler();
 };
-export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, hideNotifications, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     // Keep title-bar state controls on the active shell palette in both schemes.
     const themeSuccess = "var(--theme-success, #4f7f6f)";
     const rootStyle: WailsDragStyle = {
@@ -127,7 +129,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
             <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { "--wails-draggable": "no-drag", position: "relative", zIndex: 30010 } satisfies WailsDragStyle : {}) }}>
                 <div data-testid="ai-titlebar-tools-group" className="atb-tools-group">
                     <AssistantUpdateNotice variant="floating" inline={inline} lang={lang} onDismissAppUpdate={onDismissAppUpdate} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} theme={t} themeMode={themeMode} updateAvailable={updateAvailable} />
-                    <AssistantTitleBarNotifications active={active} inline={inline} lang={lang} theme={t} />
+                    {hideNotifications ? null : <AssistantTitleBarNotifications active={active} inline={inline} lang={lang} theme={t} />}
                     <AssistantMobileDocsControl lang={lang} theme={t} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />

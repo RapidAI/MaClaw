@@ -188,6 +188,22 @@ func ParseGlobalThinkingMode(raw string) (mode string, ok bool) {
 	}
 }
 
+// GlobalThinkingModeOptions is the closed set of canonical thinking modes the
+// config capability advertises in its invocation schema, and the vocabulary
+// every host spells back. Legacy truthy/falsy aliases are accepted by
+// ParseGlobalThinkingMode but never advertised, so a host cannot drift from
+// the spelling the setting persists.
+func GlobalThinkingModeOptions() []string {
+	return []string{"enabled", "disabled"}
+}
+
+// GlobalThinkingModeHint renders the canonical vocabulary for a rejection
+// message, so a model that ignored the enum still learns the valid names from
+// its first failure and can retry inside the turn.
+func GlobalThinkingModeHint() string {
+	return "allowed: " + strings.Join(GlobalThinkingModeOptions(), ", ")
+}
+
 // NormalizeGlobalThinkingMode returns the canonical persisted spelling, or
 // the legacy auto/unset value for unknown input.
 func NormalizeGlobalThinkingMode(raw string) string {

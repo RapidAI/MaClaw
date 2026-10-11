@@ -12,6 +12,7 @@ import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
 import type { CodingTaskLaunch } from "./codingTaskLaunch";
+import { userTurnDisplayOptions } from "./userTurnDisplay";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export type PendingProjectTabOpen = CodingTaskLaunch;
@@ -543,6 +544,9 @@ export function usePendingAssistantTabOpen({
             if (shouldDeferRemoteInitialSend) return;
 
             const msg = initialMessage || taskTitle;
+            // Task creation carries only the outgoing text, which includes the
+            // composer's file-picker marker block and its vision routing note.
+            // Show the user's prose and previews, never that prompt machinery.
             await send(msg, {
                 tabId: tab.id,
                 project_path: tab.projectPath,
@@ -552,6 +556,7 @@ export function usePendingAssistantTabOpen({
                 im_task_title: taskTitle,
                 // Wizard「无工作流」：首条消息跳过工作流语义拦截。
                 ...(noWorkflowInterception ? { no_workflow_interception: true } : {}),
+                ...userTurnDisplayOptions(msg),
             }).catch(() => {});
         })();
     }, [pendingProjectTabOpen]);

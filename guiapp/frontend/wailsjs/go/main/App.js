@@ -1163,6 +1163,10 @@ export function FileCompanionUploadCloud(arg1) {
   return window['go']['main']['App']['FileCompanionUploadCloud'](arg1);
 }
 
+export function FileCompanionExportPDF(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportPDF'](arg1, arg2);
+}
+
 export function FileCompanionReplaceOffice(arg1, arg2) {
   return window['go']['main']['App']['FileCompanionReplaceOffice'](arg1, arg2);
 }
@@ -4490,6 +4494,26 @@ export function UnderstandDesktopBotTask(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UnderstandDesktopBotTask'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function EvaluateDesktopTaskSupplement(arg1, arg2, arg3) {
+  return window['go']['main']['App']['EvaluateDesktopTaskSupplement'](arg1, arg2, arg3);
+}
+
+export function AppendDesktopBotSupplement(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AppendDesktopBotSupplement'](arg1, arg2, arg3);
+}
+
+export function GetDesktopBotSupplements(arg1, arg2) {
+  return window['go']['main']['App']['GetDesktopBotSupplements'](arg1, arg2);
+}
+
+export function GetActiveDesktopRuns(arg1) {
+  return window['go']['main']['App']['GetActiveDesktopRuns'](arg1);
+}
+
+export function PersistDesktopBotPreference(arg1, arg2) {
+  return window['go']['main']['App']['PersistDesktopBotPreference'](arg1, arg2);
+}
+
 export function ArmDesktopBotSchedule(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
   return window['go']['main']['App']['ArmDesktopBotSchedule'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
@@ -4520,6 +4544,14 @@ export function RenameDesktopBot(arg1, arg2, arg3) {
 
 export function DeleteDesktopBot(arg1) {
   return window['go']['main']['App']['DeleteDesktopBot'](arg1);
+}
+
+export function GetDesktopBotLLM() {
+  return window['go']['main']['App']['GetDesktopBotLLM']();
+}
+
+export function SaveDesktopBotLLM(arg1) {
+  return window['go']['main']['App']['SaveDesktopBotLLM'](arg1);
 }
 
 export function SendMessageForTab(arg1, arg2, arg3) {
@@ -5504,4 +5536,8 @@ export function RecallBotSecret(arg1) {
 
 export function FillBotSecret(arg1, arg2) {
   return window['go']['main']['App']['FillBotSecret'](arg1, arg2);
+}
+
+export function FileCompanionFigureDataURL(arg1) {
+  return window['go']['main']['App']['FileCompanionFigureDataURL'](arg1);
 }

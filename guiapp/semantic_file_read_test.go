@@ -108,8 +108,21 @@ func TestIMSemanticFileReadExecutesPathQueryWithoutKeywordBranch(t *testing.T) {
 	if seenPath != "notes.txt" || seenQuery != "" || seenPattern != "" || seenStart != 0 {
 		t.Fatalf("dispatch path=%q query=%q file_pattern=%q start_line=%d", seenPath, seenQuery, seenPattern, seenStart)
 	}
-	if replay := cb.ExecuteTool(name, `{"path":"notes.txt"}`); !strings.Contains(replay, "invocation_grant_replayed") {
-		t.Fatalf("replay=%q", replay)
+	// The baseline repeat ceiling issues fs.read.local siblings one at a time:
+	// the same call re-executes on the next sibling until the family budget is
+	// spent, and only then the one-shot replay guard answers.
+	replay := ""
+	for call := 2; call <= 16; call++ {
+		replay = cb.ExecuteTool(name, `{"path":"notes.txt"}`)
+		if strings.Contains(replay, "invocation_grant_replayed") {
+			break
+		}
+		if !strings.Contains(replay, "hello workspace") {
+			t.Fatalf("repeat read #%d=%q", call, replay)
+		}
+	}
+	if !strings.Contains(replay, "invocation_grant_replayed") {
+		t.Fatalf("spent read family never answered replay: %q", replay)
 	}
 }
 

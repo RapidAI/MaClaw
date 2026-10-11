@@ -1945,13 +1945,13 @@
   border-color: var(--mc-line-subtle) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-execution-actions button:not(.task-window-btn),
+#App .mc-task-execution-actions button:not(.task-window-btn):not(:where([data-notification-tree] button)),
 #App .mc-task-more-menu > summary {
   background: var(--mc-surface) !important;
   border-color: var(--mc-line) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-execution-actions button:not(.task-window-btn):hover:not(:disabled),
+#App .mc-task-execution-actions button:not(.task-window-btn):not(:where([data-notification-tree] button)):hover:not(:disabled),
 #App .mc-task-more-menu > summary:hover {
   background: color-mix(in srgb, var(--mc-accent) 7%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-line)) !important;

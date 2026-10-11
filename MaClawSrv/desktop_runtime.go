@@ -32,6 +32,34 @@ const desktopContainerEnv = "MACLAW_DESKTOP_CONTAINER"
 const desktopSessionOwner = "maclawsrv-desktop"
 const desktopMaxSteps = 16
 
+// The desktop tool's action vocabulary is one list answering four questions
+// that must never disagree: what the execute-phase schema advertises, what the
+// validation accepts, what the refusal spells out, and what the description
+// teaches. Plan phase exposes the read-only prefix of the same list; which of
+// the remaining actions a plan-phase turn may take is the phase gate's own
+// decision, not a second vocabulary.
+var desktopExecuteActions = []string{"navigate", "probe", "click", "type", "press", "task_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash"}
+
+var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list"}
+
+func desktopActionAllowed(action string) bool {
+	for _, allowed := range desktopExecuteActions {
+		if action == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopPlanActionAllowed(action string) bool {
+	for _, allowed := range desktopPlanActions {
+		if action == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // desktopRuntimeModule exposes a virtual desktop to MaClawSrv turns.
 // Every bot belonging to one user shares that user's desktop. A different
 // user gets a different display, browser profile, and CDP endpoint.
@@ -68,7 +96,10 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action": map[string]any{"type": "string", "description": "probe, screenshot, app_list, file_read, or file_list"},
+					// The enum is documentation, not the boundary: the
+					// dispatcher's allow check and the refusal that names the
+					// list stay the enforcement.
+					"action": map[string]any{"type": "string", "description": "probe, screenshot, app_list, file_read, or file_list", "enum": desktopPlanActions},
 					"path":   map[string]any{"type": "string", "description": "Container path for file_read or file_list, such as /home/desktop/Desktop/a.c or ~/Desktop/a.c"},
 					"query":  map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
 				},
@@ -100,7 +131,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":      map[string]any{"type": "string", "description": "probe, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, or bash"},
+				"action":      map[string]any{"type": "string", "description": "probe, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, or bash", "enum": desktopExecuteActions},
 				"path":        map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
 				"old_string":  map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
 				"new_string":  map[string]any{"type": "string", "description": "Replacement text for file_edit."},
@@ -242,10 +273,8 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", err
 	}
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
-	switch action {
-	case "navigate", "probe", "click", "type", "press", "task_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash":
-	default:
-		return "", fmt.Errorf("desktop action must be probe, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, or bash")
+	if !desktopActionAllowed(action) {
+		return "", fmt.Errorf("desktop action must be %s", strings.Join(desktopExecuteActions, ", "))
 	}
 	// Deliver attaches one file to this chat. A path reads that file from the
 	// desktop. A name and content build the file here. A login in progress
@@ -272,8 +301,10 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", fmt.Errorf("desktop press requires key")
 	}
 	if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
-		switch action {
-		case "navigate", "click", "type", "press", "task_run", "app_run", "app_open", "install", "deliver", "file_write", "file_edit", "bash":
+		// Plan may only observe. Every action outside the plan vocabulary is
+		// blocked by derivation, so adding an action to the execute list
+		// decides its plan-phase posture in the same stroke.
+		if !desktopPlanActionAllowed(action) {
 			return "", fmt.Errorf("plan phase blocks %s until the user confirms", action)
 		}
 	}

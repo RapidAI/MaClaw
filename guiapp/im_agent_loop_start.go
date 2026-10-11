@@ -136,13 +136,13 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		semanticHandled = true
 		log.Printf("[pet-companion] chat turn without tools user=%q", opts.UserID)
 	} else if fileCompanionTurnWithoutTools(opts.UserID, opts.Platform) {
-		// Skipping prepareAgentLoopTools is not an empty surface: semantic
-		// routing would still attach the shared tools. Mark the turn handled
-		// before that call and leave both slices nil.
+		// The companion's closed surface: read-only document tools bound to
+		// the open file, or nothing when the file type needs no tools. The
+		// legacy router and the semantic planner never run for this owner.
 		semanticHandled = true
-		tools = nil
-		baseTools = nil
-		log.Printf("[file-companion] turn without tools user=%q", opts.UserID)
+		tools = h.fileCompanionClosedSurfaceTools(opts.UserID)
+		baseTools = tools
+		log.Printf("[file-companion] closed tool surface tools=%d user=%q", len(tools), opts.UserID)
 	} else if loopContextTurnAnswerOnly(ctx) {
 		semanticHandled = true
 		tools = nil
@@ -241,7 +241,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		}
 	}
 	toolsTokenBudget := toolSet.ToolsTokenBudget
-	if semanticSurface != nil || (loopContextIsVisionFallthrough(ctx) && len(tools) > 0) {
+	if semanticSurface != nil || (loopContextIsVisionFallthrough(ctx) && len(tools) > 0) || (fileCompanionToolsDisabled(opts.UserID) && len(tools) > 0) {
 		toolsTokenBudget = estimateToolsTokens(tools)
 	}
 	if telemetry != nil {

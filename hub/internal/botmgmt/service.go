@@ -74,6 +74,11 @@ type record struct {
 	Grants         []Grant               `json:"grants,omitempty"`
 	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
 	LLM            llmSettings           `json:"llm,omitempty"`
+	// OwnerLLMOverrides is the provider each bot owner picked for their own
+	// bots, keyed by hub user id. It lives on the record rather than on the
+	// principal so the choice survives a principal that has not been
+	// provisioned yet; it is applied on that owner's first bot open.
+	OwnerLLMOverrides map[string]*ownerLLMOverride `json:"owner_llm_overrides,omitempty"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.

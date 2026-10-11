@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 )
 
 func TestHubSecurityCacheUpdate_ParsesPolicy(t *testing.T) {
@@ -52,6 +53,95 @@ func TestHubSecurityCacheUpdate_ParsesPolicy(t *testing.T) {
 	}
 	if got.Policy.YoloModeAllowed {
 		t.Error("expected yolo_mode_allowed=false")
+	}
+}
+
+// The other direction, and the one that caused an outage: a payload that simply
+// omits the outbound knobs must not be read as "Hub disabled outbound".
+//
+// Go decodes an absent key to false, and EnforceConfig reads false as a denial,
+// so without the raw-payload check an older Hub or a partial push silently
+// blocks every send_file/send_to_im/image tool — indistinguishable from a
+// deliberate block, and with nothing in the log to say why. The permissive
+// product default is restored instead, matching the fail-open reading the
+// network_level gate already uses for an unset level.
+func TestHubSecurityCacheUpdate_AbsentOutboundKnobsKeepPermissiveDefault(t *testing.T) {
+	cache := &hubSecurityCache{}
+
+	payload := json.RawMessage(`{
+		"security_policy": {
+			"centralized_security": true,
+			"policy": {
+				"guardrail_mode": "standard",
+				"network_level": "full"
+			}
+		}
+	}`)
+
+	if !cache.update(payload) {
+		t.Fatal("expected policy change on first update")
+	}
+	got := cache.get()
+	if got == nil || got.Policy == nil {
+		t.Fatal("expected non-nil effective policy")
+	}
+	if !got.Policy.FileOutboundEnabled {
+		t.Error("absent file_outbound_enabled must default to enabled, not silently deny file outbound")
+	}
+	if !got.Policy.ImageOutboundEnabled {
+		t.Error("absent image_outbound_enabled must default to enabled, not silently deny image outbound")
+	}
+
+	// The restored default must actually reach the gate as "allowed".
+	cfg := corelib.AppConfig{
+		HubSecurityCentralized: true,
+		NetworkLevel:           got.Policy.NetworkLevel,
+		FileOutboundEnabled:    got.Policy.FileOutboundEnabled,
+		ImageOutboundEnabled:   got.Policy.ImageOutboundEnabled,
+	}
+	if ok, reason := clientsecurity.EnforceConfig(cfg, "send_file", map[string]interface{}{"path": "a.txt"}); !ok {
+		t.Fatalf("send_file denied under an omitted knob reason=%q, want allowed", reason)
+	}
+}
+
+// An explicit false is a decision, not an omission, so the default fill-in must
+// leave it alone. This guards the fix from becoming a fail-open: without this,
+// "restore the default whenever false" would defeat an intentional block.
+func TestHubSecurityCacheUpdate_ExplicitOutboundDenialSurvivesDefaultFill(t *testing.T) {
+	cache := &hubSecurityCache{}
+
+	payload := json.RawMessage(`{
+		"security_policy": {
+			"centralized_security": true,
+			"policy": {
+				"file_outbound_enabled": false,
+				"image_outbound_enabled": false
+			}
+		}
+	}`)
+
+	if !cache.update(payload) {
+		t.Fatal("expected policy change on first update")
+	}
+	got := cache.get()
+	if got == nil || got.Policy == nil {
+		t.Fatal("expected non-nil effective policy")
+	}
+	if got.Policy.FileOutboundEnabled {
+		t.Error("explicit file_outbound_enabled=false must be preserved, not overwritten by the default")
+	}
+	if got.Policy.ImageOutboundEnabled {
+		t.Error("explicit image_outbound_enabled=false must be preserved, not overwritten by the default")
+	}
+
+	cfg := corelib.AppConfig{
+		HubSecurityCentralized: true,
+		NetworkLevel:           "full",
+		FileOutboundEnabled:    got.Policy.FileOutboundEnabled,
+		ImageOutboundEnabled:   got.Policy.ImageOutboundEnabled,
+	}
+	if ok, _ := clientsecurity.EnforceConfig(cfg, "send_file", map[string]interface{}{"path": "a.txt"}); ok {
+		t.Fatal("send_file allowed despite an explicit Hub denial")
 	}
 }
 
@@ -521,6 +611,99 @@ func TestPersistHubSecurityPolicyClearsRemovedSliceSettings(t *testing.T) {
 	}
 	if cfg.SmartRouteEnabled {
 		t.Fatal("SmartRouteEnabled = true, want persisted false")
+	}
+}
+
+// When Hub omits the network level, the persisted config must revert to the
+// product default ("full"), not retain the previous value. Retaining it made
+// the on-disk policy disagree with the live gate (which reads empty as "full")
+// and, paired with the unconditionally cleared allowlist, recreated the
+// stale-allowlist deny-everything state behind the 2026-10-11 outage.
+func TestPersistHubSecurityPolicyRevertsToDefaultWhenHubOmitsLevel(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HubSecurityCentralized = true
+		cfg.NetworkLevel = "allowlist"
+		cfg.NetworkAllowlist = []string{"api.example.com"}
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	// Hub pushes an effective policy that names no network level.
+	app.persistHubSecurityPolicy(&HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy:              &HubEffectivePolicy{FileOutboundEnabled: true, ImageOutboundEnabled: true},
+	})
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	// Reverted to unset (empty), not the stale "allowlist" that previously
+	// denied everything when paired with the cleared allowlist. The live gate
+	// reads empty as the product default "full".
+	if cfg.NetworkLevel != "" {
+		t.Fatalf("NetworkLevel = %q, want reverted to unset (empty) when Hub omits the level; the live gate reads empty as \"full\"", cfg.NetworkLevel)
+	}
+	if len(cfg.NetworkAllowlist) != 0 {
+		t.Fatalf("NetworkAllowlist = %#v, want cleared by this push", cfg.NetworkAllowlist)
+	}
+	// The live gate must read the unset level as "full" (every network tool
+	// allowed): this is the consistency fix — the on-disk value no longer
+	// disagrees with enforceNetworkLevel, and the stale allowlist+0-entries
+	// deny-everything state behind the 2026-10-11 outage cannot recur.
+	if ok, reason := clientsecurity.EnforceConfig(cfg, "web_fetch", map[string]interface{}{"url": "https://example.com"}); !ok {
+		t.Fatalf("unset level let web_fetch be refused (%q); gate must read empty as full", reason)
+	}
+
+	// An explicit level is what actually moves the client.
+	app.persistHubSecurityPolicy(&HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy:              &HubEffectivePolicy{NetworkLevel: "intranet", FileOutboundEnabled: true, ImageOutboundEnabled: true},
+	})
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config after explicit level: %v", err)
+	}
+	if cfg.NetworkLevel != "intranet" {
+		t.Fatalf("NetworkLevel = %q, want the Hub-supplied value", cfg.NetworkLevel)
+	}
+}
+
+// A non-empty level the gate does not understand must be stored verbatim, so
+// the live gate keeps refusing it as unrecognized. Overwriting it with "" or
+// "full" would have turned a malformed policy into fail-open.
+func TestPersistHubSecurityPolicyKeepsUnrecognizedLevelVerbatim(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HubSecurityCentralized = true
+		cfg.NetworkLevel = "full"
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	app.persistHubSecurityPolicy(&HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy:              &HubEffectivePolicy{NetworkLevel: "allow-list", FileOutboundEnabled: true, ImageOutboundEnabled: true},
+	})
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.NetworkLevel != "allow-list" {
+		t.Fatalf("NetworkLevel = %q, want the unrecognized value stored verbatim so the gate refuses it", cfg.NetworkLevel)
+	}
+	if ok, reason := clientsecurity.EnforceConfig(cfg, "web_fetch", map[string]interface{}{"url": "https://example.com"}); ok {
+		t.Fatalf("unrecognized level %q allowed web_fetch; want refusal (reason=%q)", cfg.NetworkLevel, reason)
 	}
 }
 

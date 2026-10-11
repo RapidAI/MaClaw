@@ -8,7 +8,9 @@ import (
 	transporthttp "github.com/RapidAI/CodeClaw/MaClawSrv/transport/http"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -758,6 +760,43 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p ag
 	}
 	items, meta := paginateRuns(out, page)
 	writeJSON(w, http.StatusOK, listResponse(sanitizeRunsForAPI(s.svc.DataRoot(), items), meta))
+}
+
+// handleSupplementRun accepts supplementary input for a run still executing.
+// It is addressed by run id and resolves ownership inside the service, so a
+// caller cannot aim input at another principal's run.
+func (s *HTTPServer) handleSupplementRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	// Kill switch (design doc §3.1f). The GUI classifier short-circuits on the
+	// same variable, so this only stops a caller that bypassed it; refusing
+	// here keeps the server-side door shut while the feature is off.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_SUPPLEMENT")), "off") {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "supplement disabled"})
+		return
+	}
+	var in struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	out, err := s.svc.AppendRunSupplement(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"), in.Content)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleListRunSupplements reports the supplements recorded for one run, so the
+// client can tell which reached the loop and which arrived too late.
+func (s *HTTPServer) handleListRunSupplements(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.RunSupplements(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

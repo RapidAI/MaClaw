@@ -271,7 +271,10 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 		`id="centerAcceptPublicSignup"`,
 		`id="centerCorporateEmailDomainsHero"`,
 		`id="centerAcceptPublicSignupHero"`,
-		`id="subtab-workflows" type="button" onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"`,
+		// The subtab button also carries class and data-icon attributes now,
+		// so the contract anchors on the id and the behaviour it wires up.
+		`id="subtab-workflows"`,
+		`onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"`,
 		`id="marketplace-subtab-workflows"`,
 		`id="marketplaceWorkflowReviewsList"`,
 		`id="marketplaceWorkflowReviewDetail"`,
@@ -1253,7 +1256,9 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 		`button.setAttribute('aria-pressed', button.classList.contains('active') ? 'true' : 'false')`,
 		`function enhanceAdminNavigation(root)`,
 		`button.setAttribute('aria-current', active ? 'page' : 'false')`,
-		`button.tabIndex = active ? 0 : -1`,
+		// The roving tabindex skips hidden buttons as well; the contract is
+		// that exactly the active, visible button is tabbable.
+		`button.tabIndex = (active && !hidden) ? 0 : -1`,
 		`function bindAdminNavigationKeyboard()`,
 		`event.target.closest('.nav')`,
 		`buttons[next].click()`,

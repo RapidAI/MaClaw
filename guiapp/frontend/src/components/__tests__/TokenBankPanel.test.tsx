@@ -861,7 +861,13 @@ describe('TokenBankPanel', () => {
         expect(ticket.querySelector('svg')).toBeTruthy();
     });
 
+    // Fixtures that mean "still claimable" must expire relative to the run:
+    // a baked-in date eventually passes and silently flips the card to its
+    // overdue state.
+    const futureExpiry = () => new Date(Date.now() + 7 * 86_400_000).toISOString();
+
     it('shows who claimed a gift and whether they have withdrawn it', async () => {
+        const heldExpiry = futureExpiry();
         listGiftsMock.mockResolvedValue({
             share_links: [
                 {
@@ -872,7 +878,7 @@ describe('TokenBankPanel', () => {
                     claimed_by_email: 'pat@example.com',
                     claimed_by_user_id: 'user-pat',
                     claimed_at: '2026-10-03T01:02:03Z',
-                    expires_at: '2026-10-10T00:02:17Z',
+                    expires_at: heldExpiry,
                 },
                 {
                     id: 'gift_due',
@@ -922,8 +928,8 @@ describe('TokenBankPanel', () => {
         expect(held.textContent).toContain('领取人 pat@example.com');
         expect(held.textContent).toContain(`领取时间 ${formatGiftInstant('2026-10-03T01:02:03Z')}`);
         expect(held.textContent).toContain('积分仍冻结');
-        expect(held.textContent).toContain(`退回时间 ${formatGiftInstant('2026-10-10T00:02:17Z')}`);
-        expect(held.textContent).not.toContain('2026-10-10T00:02:17Z');
+        expect(held.textContent).toContain(`退回时间 ${formatGiftInstant(heldExpiry)}`);
+        expect(held.textContent).not.toContain(heldExpiry);
         const due = getByTestId('tbk-gift-claim-gift_due');
         expect(due.textContent).toContain('已过退回时间，积分尚未退回');
         expect(due.textContent).toContain('积分退回前对方仍可提取');
@@ -961,7 +967,7 @@ describe('TokenBankPanel', () => {
                 id: `gift_${index + 1}`,
                 credits_micro: (index + 1) * 1_000_000,
                 status: 'active',
-                expires_at: '2026-10-08T00:00:00Z',
+                expires_at: futureExpiry(),
             })),
         });
         const { getByRole, getByTestId, queryByTestId, queryByText } = render(<TokenBankPanel lang="en" />);
@@ -1000,7 +1006,7 @@ describe('TokenBankPanel', () => {
             id: `gift_${index + 1}`,
             credits_micro: 1_000_000,
             status: 'active',
-            expires_at: '2026-10-08T00:00:00Z',
+            expires_at: futureExpiry(),
         }));
         listGiftsMock.mockResolvedValue({ share_links: sent });
         createGiftMock.mockResolvedValue({
@@ -1016,7 +1022,7 @@ describe('TokenBankPanel', () => {
         await waitFor(() => expect(getByTestId('tbk-gift-gift_21')).toBeTruthy());
 
         listGiftsMock.mockResolvedValue({
-            share_links: [{ id: 'gift_new', credits_micro: 1_000_000, status: 'active', expires_at: '2026-10-08T00:00:00Z' }, ...sent],
+            share_links: [{ id: 'gift_new', credits_micro: 1_000_000, status: 'active', expires_at: futureExpiry() }, ...sent],
         });
         fireEvent.click(getByText('Gift credits'));
         fireEvent.change(getByLabelText('Credits to gift'), { target: { value: '1' } });
@@ -1028,7 +1034,7 @@ describe('TokenBankPanel', () => {
 
     it('does not put the claim code on the owner list', async () => {
         listGiftsMock.mockResolvedValue({
-            share_links: [{ id: 'gift_1', credits_micro: 1_000_000, status: 'active', expires_at: '2026-10-08T00:00:00Z' }],
+            share_links: [{ id: 'gift_1', credits_micro: 1_000_000, status: 'active', expires_at: futureExpiry() }],
         });
         const { getByTestId, queryByText } = render(<TokenBankPanel lang="en" />);
         const list = await waitFor(() => getByTestId('tbk-gift-list'));

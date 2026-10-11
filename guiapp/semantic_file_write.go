@@ -40,7 +40,11 @@ func semanticTrustedFileWriteInvocationSchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path":    map[string]interface{}{"type": "string"},
 			"content": map[string]interface{}{"type": "string"},
-			"mode":    map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so the check via
+			// NormalizeWriteModeKind stays the boundary and this is
+			// documentation for the model.
+			"mode":    map[string]interface{}{"type": "string", "enum": tool.WriteModeOptions()},
 			// Replacing one exact passage is an outcome whole-file content
 			// cannot express. Which pair is present decides the outcome, so the
 			// schema needs no action or operation field, and it carries none of
@@ -166,7 +170,7 @@ func semanticTrustedFileWriteArgsAllowed(args map[string]interface{}) (trustedFi
 		return trustedFileWriteRequest{}, fmt.Errorf("trusted_file_write_arguments_rejected")
 	}
 	if _, err := tool.NormalizeWriteModeKind(req.mode); err != nil {
-		return trustedFileWriteRequest{}, fmt.Errorf("trusted_file_write_mode_rejected")
+		return trustedFileWriteRequest{}, fmt.Errorf("trusted_file_write_mode_rejected (%s)", tool.WriteModeHint())
 	}
 	return req, nil
 }
@@ -185,7 +189,7 @@ func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode str
 	}
 	resolvedMode, err := tool.NormalizeWriteModeKind(mode)
 	if err != nil {
-		return "", fmt.Errorf("trusted_file_write_mode_rejected")
+		return "", fmt.Errorf("trusted_file_write_mode_rejected (%s)", tool.WriteModeHint())
 	}
 	if len(content) > writeFileMaxSize {
 		return "", fmt.Errorf("trusted_file_write_content_too_large")

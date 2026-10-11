@@ -5,14 +5,22 @@ import { EventsOn } from '../../../wailsjs/runtime';
 import {
     ArmDesktopBotSchedule,
     CreateDesktopBot,
+    AppendDesktopBotSupplement,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
+    EvaluateDesktopTaskSupplement,
     FillBotSecret,
+    GetActiveDesktopRuns,
+    GetDesktopBotSupplements,
+    GetDesktopBotLLM,
+    GetMaclawLLMProviders,
     ListDesktopBots,
     ListDesktopBotSchedules,
+    PersistDesktopBotPreference,
     RecallBotSecret,
     ReleaseDesktopBotWatch,
     RenameDesktopBot,
+    SaveDesktopBotLLM,
     OpenFileOrShowInFolder,
     ReadDesktopBotShot,
     SaveBotSecret,
@@ -41,16 +49,20 @@ import {
     notePendingBotDesktop,
     saveBotMessages,
     settlePendingBotReply,
+    applySupplementOutcomes,
     type BotPhase,
     type DesktopBot,
     type DesktopBotAsk,
     type DesktopBotFile,
     type DesktopBotMessage,
+    type DesktopBotNoReading,
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { DesktopBotComposer } from './DesktopBotComposer';
+import { BotEditDialog } from './BotEditDialog';
+import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
 import { BotRailIcon } from '../layout/SidebarNavIcons';
@@ -122,6 +134,11 @@ type WorkPace = 'direct' | 'confirm' | 'ask' | 'reply' | 'schedule';
 // A plan turn that forgot the field still waits. An execute turn that forgot
 // it starts, and an execute turn never stays a reply. A schedule stays a
 // schedule on an execute turn, because the confirmed work is itself timed.
+// The execute override also takes an explicit confirm or reply: the person
+// already confirmed, so nothing here asks a second time. Go's desktopBotPace
+// deliberately keeps confirm on an execute turn — its gate only decides
+// whether an empty order fails — and this override is where the no-second-
+// confirmation rule actually lives.
 function workPace(understood: Record<string, unknown>, turnPhase: BotPhase): WorkPace {
     const raw = String(understood.pace || understood.Pace || '').trim().toLowerCase();
     if (raw === 'ask') return 'ask';
@@ -149,26 +166,79 @@ function emptyOrderPace(
     return 'failed';
 }
 
-function omittedWorkOrder(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : '';
-    return message.includes('omitted the work order');
-}
-
-function omittedSchedule(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : '';
-    return message.includes('omitted the schedule');
-}
-
 function missedSchedule(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : '';
-    return message.includes('no desktop bot schedule matched');
+    return failureMessage(error).includes('no desktop bot schedule matched');
 }
 
-function readingFailure(error: unknown, words: { orderMissing: string; scheduleMissing: string; scheduleNone: string }): string {
-    if (missedSchedule(error)) return words.scheduleNone;
-    if (omittedSchedule(error)) return words.scheduleMissing;
-    if (omittedWorkOrder(error)) return words.orderMissing;
-    return '';
+// A Go error crosses the generated binding as its own value, not as an Error.
+// Reading it as one drops the reason, and the chat then shows nothing but a
+// placeholder: that is how every failure here used to become "the backend
+// agent is unavailable", including a plain timeout on the reading model.
+function failureMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    const raw = error && typeof error === 'object' ? (error as { message?: unknown }).message : undefined;
+    return String(raw ?? error ?? '');
+}
+
+// One reading of one message. Go decides what came back, where the call is
+// actually watched, so nothing here matches English error strings across a
+// transport boundary any more.
+// - read: an arrangement this person can act on.
+// - unread: an answer came back and it was not a usable reading.
+// - unscheduled: timed work whose time was never named.
+// - unreachable: no answer at all.
+// The last three are reports about the helper, not verdicts on the message: in
+// every one of them, nothing has been sent to the desktop.
+type BotReading =
+    | { kind: 'read'; told: string; instruction: string; persona: string; pace: WorkPace; understood: Record<string, unknown> }
+    | { kind: 'unread' }
+    | { kind: 'unscheduled' }
+    | { kind: 'unreachable' };
+
+// The reason a turn has no reading. Not good or bad — just what to tell.
+// Shared with DesktopBotMessage so the two cannot drift apart again.
+type NoReading = DesktopBotNoReading;
+
+async function readDesktopBotTurn(
+    content: string,
+    phase: BotPhase,
+    lang: string,
+    earlier: string[],
+    persona: string,
+): Promise<BotReading> {
+    let understood: Record<string, unknown>;
+    try {
+        understood = await UnderstandDesktopBotTask(content, phase, lang, earlier, persona) as Record<string, unknown>;
+    } catch (error) {
+        // The reading itself could not be attempted: no text, no backend. That
+        // is not this person's fault and it is not a reading.
+        throw new Error(failureMessage(error).trim() || 'desktop bot reading failed');
+    }
+    understood = understood ?? {};
+    switch (String(understood.reading ?? understood.Reading ?? '').trim()) {
+        case 'unreachable': return { kind: 'unreachable' };
+        case 'unscheduled': return { kind: 'unscheduled' };
+        case 'unread': return { kind: 'unread' };
+    }
+    const told = String(understood.told ?? understood.Told ?? '').trim();
+    const instruction = String(understood.instruction ?? understood.Instruction ?? '').trim();
+    const personaRaw = String(understood.persona ?? understood.Persona ?? '').trim();
+    const pace = workPace(understood, phase);
+    const decided = emptyOrderPace(pace, instruction, personaRaw, phase, scheduleOf(understood).mode);
+    if (decided === 'failed') return { kind: 'unread' };
+    return { kind: 'read', told, instruction, persona: personaRaw, pace: decided, understood };
+}
+
+// The reading failed. Say so in this language and leave the words parked, so
+// one click either reads again or sends exactly what was typed.
+function noReadingReply(kind: NoReading, words: { orderMissing: string; scheduleMissing: string; readingLost: string }, content: string, phase: BotPhase) {
+    return {
+        content: kind === 'unscheduled' ? words.scheduleMissing : kind === 'unread' ? words.orderMissing : words.readingLost,
+        failed: true,
+        phase: undefined,
+        noReading: { text: content, phase, kind },
+    } as Pick<DesktopBotMessage, 'content' | 'failed' | 'phase' | 'noReading'>;
 }
 
 type ScheduleSpec = { name: string; mode: string; interval: number; hour: number; minute: number; day: number };
@@ -346,6 +416,34 @@ function askFrom(data: Record<string, unknown>): DesktopBotAsk | undefined {
     return { inputType, secretName, question, options };
 }
 
+// The provider list this dialog offers is the desktop's own list, which the
+// backend serializes from corelib's struct. Field names arrive lower-cased here,
+// but the Wails type is `any`, so every read tolerates both casings.
+type DesktopProviderWire = Record<string, unknown> | undefined | null;
+
+function wireField(entry: DesktopProviderWire, lower: string, upper: string): string {
+    if (!entry) return '';
+    const raw = entry[lower] ?? entry[upper];
+    return typeof raw === 'string' ? raw : '';
+}
+
+// Only providers carrying a key can actually serve the bot; offering the rest
+// would push into MaClawSrv a route that cannot call anything. Names the hub
+// reserves, or that duplicate one of the account's own providers, are left for
+// the hub to refuse — it answers with the reason, and only it knows the list.
+function usableDesktopLLMProviders(entries: DesktopProviderWire[]): BotLLMProviderOption[] {
+    return entries
+        .map(entry => ({
+            name: wireField(entry, 'name', 'Name').trim(),
+            url: wireField(entry, 'url', 'URL').trim(),
+            key: wireField(entry, 'key', 'Key').trim(),
+            model: wireField(entry, 'model', 'Model').trim(),
+            protocol: wireField(entry, 'protocol', 'Protocol').trim(),
+            wireAPI: wireField(entry, 'wire_api', 'WireAPI').trim(),
+        }))
+        .filter(item => item.name !== '' && item.key !== '');
+}
+
 function copy(lang: string) {
     if (lang === 'en') {
         return {
@@ -353,7 +451,9 @@ function copy(lang: string) {
             shared: 'Each bot is another instance of your MaClawSrv user. They share your cloud desktop.',
             empty: 'No bots yet.',
             create: 'New',
-            rename: 'Rename',
+            editInfo: 'Edit info',
+            editTitle: 'Edit bot info',
+            close: 'Close',
             save: 'Save',
             cancel: 'Cancel',
             remove: 'Delete',
@@ -414,6 +514,9 @@ function copy(lang: string) {
             unavailable: 'The backend agent is unavailable.',
             orderMissing: 'That message did not become an order, so it was not sent.',
             scheduleMissing: 'That message did not become a schedule, so none was set.',
+            readingLost: 'I could not turn that into an arrangement — the service that reads your messages did not answer. You can send your own words as they are, or have me read it again.',
+            readingAgain: 'Read it again',
+            readingVerbatim: 'Send my own words',
             scheduleNone: 'No matching schedule was found.',
             scheduleSet: 'The schedule is set. The result will be reported here.',
             scheduleStopped: 'The schedule is stopped.',
@@ -423,6 +526,18 @@ function copy(lang: string) {
             scheduleRemoveAsk: (name: string) => `Delete schedule "${name}"?`,
             schedulePaused: 'Paused',
             accountChanged: 'This message was not sent. The account changed before it went out.',
+            llmSettings: 'Model',
+            llmSettingsHint: 'Choose the model these bots run on',
+            llmTitle: 'Model for your bots',
+            llmSharedHint: 'Every bot of this account runs on the same model. Changing it here moves all of them.',
+            llmUseDefault: 'Default',
+            llmDefaultHint: 'Hand the bots back to whatever the service resolves for you — either your own route, or the provider an administrator picked.',
+            llmUseProvider: 'Pick a provider from this computer',
+            llmProviderLabel: 'Provider',
+            llmModelLabel: 'Model',
+            llmModelPlaceholder: 'Model name, e.g. gpt-4o-mini',
+            llmNoProviders: 'No provider on this computer has a key yet. Add one under Settings → Providers first.',
+            llmModelRequired: 'Fill in the model name.',
         };
     }
     if (lang === 'zh-Hant') {
@@ -431,7 +546,9 @@ function copy(lang: string) {
             shared: '每個 Bot 都是你在 MaClawSrv 上的一個實例，共用你的雲端桌面。',
             empty: '還沒有 Bot。',
             create: '新建',
-            rename: '改名',
+            editInfo: '編輯資訊',
+            editTitle: '編輯 Bot 資訊',
+            close: '關閉',
             save: '儲存',
             cancel: '取消',
             remove: '刪除',
@@ -492,6 +609,9 @@ function copy(lang: string) {
             unavailable: '後台 agent 不可用。',
             orderMissing: '這句沒整理成可執行的安排，沒有發出。',
             scheduleMissing: '這句沒有整理成定時安排，沒有設定。',
+            readingLost: '這句沒讀成安排——幫我讀話的服務暫時沒回應。可以照你的原話發過去，或讓我再讀一次。',
+            readingAgain: '再讀一次',
+            readingVerbatim: '照原話發出',
             scheduleNone: '沒有找到要取消的定時安排。',
             scheduleSet: '定時安排已設定。到時會在這裡匯報。',
             scheduleStopped: '定時安排已停止。',
@@ -501,6 +621,18 @@ function copy(lang: string) {
             scheduleRemoveAsk: (name: string) => `確定刪除定時任務「${name}」？`,
             schedulePaused: '已暫停',
             accountChanged: '這條沒有發出。發出前帳號已經切換。',
+            llmSettings: '模型',
+            llmSettingsHint: '設定 Bot 用哪個模型',
+            llmTitle: 'Bot 用的模型',
+            llmSharedHint: '這個帳號底下的所有 Bot 都跑同一個模型，這裡改了會一起生效。',
+            llmUseDefault: '預設',
+            llmDefaultHint: '交回服務自己決定：可能是你在 Hub 上的線路，也可能是管理員指定的服務商。',
+            llmUseProvider: '從這台電腦的服務商裡挑一個',
+            llmProviderLabel: '服務商',
+            llmModelLabel: '模型',
+            llmModelPlaceholder: '模型名，例如 gpt-4o-mini',
+            llmNoProviders: '這台電腦還沒有填好 key 的服務商。先到設定 → 服務商新增一個。',
+            llmModelRequired: '請填模型名。',
         };
     }
     return {
@@ -508,7 +640,9 @@ function copy(lang: string) {
         shared: '每个 Bot 都是你在 MaClawSrv 上的一个实例，共用你的云端桌面。',
         empty: '还没有 Bot。',
         create: '新建',
-        rename: '改名',
+        editInfo: '编辑信息',
+        editTitle: '编辑 Bot 信息',
+        close: '关闭',
         save: '保存',
         cancel: '取消',
         remove: '删除',
@@ -567,8 +701,11 @@ function copy(lang: string) {
         returnCommand: RETURN_COMMAND,
         emptyResult: '后台没有返回结果。',
         unavailable: '后台 agent 不可用。',
-        orderMissing: '这句没整理成可执行的安排，没有发出。',
-        scheduleMissing: '这句没有整理成定时安排，没有设定。',
+            orderMissing: '这句没整理成可执行的安排，没有发出。',
+            scheduleMissing: '这句没有整理成定时安排，没有设定。',
+            readingLost: '这句没读成安排——帮我读话的服务暂时没有回应。可以照你的原话发过去，或者让我再读一次。',
+            readingAgain: '再读一次',
+            readingVerbatim: '照原话发出',
         scheduleNone: '没有找到要取消的定时安排。',
         scheduleSet: '定时安排已设定。到时会在这里汇报。',
         scheduleStopped: '定时安排已停止。',
@@ -578,6 +715,18 @@ function copy(lang: string) {
         scheduleRemoveAsk: (name: string) => `确定删除定时任务「${name}」？`,
         schedulePaused: '已暂停',
         accountChanged: '这条没有发出。发出前账号已经切换。',
+        llmSettings: '模型',
+        llmSettingsHint: '设置 Bot 用哪个模型',
+        llmTitle: 'Bot 用的模型',
+        llmSharedHint: '这个账号下的所有 Bot 都跑同一个模型，这里改了会一起生效。',
+        llmUseDefault: '默认',
+        llmDefaultHint: '交回服务自己决定：可能是你在 Hub 上的线路，也可能是管理员指定的服务商。',
+        llmUseProvider: '从这台电脑的服务商里挑一个',
+        llmProviderLabel: '服务商',
+        llmModelLabel: '模型',
+        llmModelPlaceholder: '模型名，例如 gpt-4o-mini',
+        llmNoProviders: '这台电脑还没有填好 key 的服务商。先到设置 → 服务商添加一个。',
+        llmModelRequired: '请填模型名。',
     };
 }
 
@@ -679,6 +828,31 @@ export function bindDesktopBotResultStore() {
     EventsOn('ai-assistant-response', handleDesktopBotResult);
     EventsOn('desktop-bot-view', handleDesktopBotView);
     EventsOn('desktop-bot-report', handleDesktopBotReport);
+    EventsOn('desktop-bot-supplement-state', handleDesktopBotSupplementState);
+}
+
+// handleDesktopBotSupplementState receives one finished run's supplement
+// outcomes and upgrades the receipts on screen. The payload's items carry the
+// original words of missed items so they can be offered once more; the words
+// stay in this bubble only and are never written anywhere else.
+export function handleDesktopBotSupplementState(payload: unknown) {
+    let data: Record<string, unknown>;
+    try {
+        data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown>;
+    } catch {
+        return;
+    }
+    if (!data || typeof data !== 'object') return;
+    const sessionKey = String(data.session_key || data.SessionKey || '');
+    const split = sessionKey.lastIndexOf(':');
+    const botId = String(data.bot_id || data.BotID || '').trim() || (split > 0 ? sessionKey.slice(split + 1) : '');
+    if (!botId) return;
+    const userId = split > 0 ? sessionKey.slice(0, split) : '';
+    if (!userId) return;
+    const runId = String(data.run_id || data.RunID || '').trim();
+    if (!runId) return;
+    const items = Array.isArray(data.items) ? data.items as Array<{ id?: string; state?: string; content?: string }> : [];
+    applySupplementOutcomes(userId, botId, runId, items);
 }
 
 export function handleDesktopBotView(payload: unknown) {
@@ -1090,7 +1264,7 @@ function identityFraction(left: number, top: number, travel: { maxX: number; max
     return { nx: Math.min(1, Math.max(0, nx)), ny: Math.min(1, Math.max(0, ny)) };
 }
 
-function RowActionIcon({ name }: { name: 'rename' | 'remove' | 'save' | 'cancel' }) {
+function RowActionIcon({ name }: { name: 'rename' | 'remove' }) {
     const stroke = {
         fill: 'none',
         stroke: 'currentColor',
@@ -1111,13 +1285,6 @@ function RowActionIcon({ name }: { name: 'rename' | 'remove' | 'save' | 'cancel'
                     <path {...stroke} d="M3 4.2h10" />
                     <path {...stroke} d="M6.2 4.1V2.7h3.6v1.4" />
                     <path {...stroke} d="m4.2 4.2.6 9.2h6.4l.6-9.2" />
-                </>
-            )}
-            {name === 'save' && <path {...stroke} d="M3.2 8.3 6.4 11.5 12.8 4.6" />}
-            {name === 'cancel' && (
-                <>
-                    <path {...stroke} d="M4 4 12 12" />
-                    <path {...stroke} d="M12 4 4 12" />
                 </>
             )}
         </svg>
@@ -1146,9 +1313,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const hiddenBotIds = useRef<Set<string>>(new Set());
     const renamedBots = useRef<Map<string, { title: string; description: string }>>(new Map());
     const [selectedId, setSelectedId] = useState('');
-    const [editingId, setEditingId] = useState('');
-    const editingIdRef = useRef(editingId);
-    editingIdRef.current = editingId;
     const userIdRef = useRef(userId);
     userIdRef.current = userId;
     // Non-zero while a confirm dialog or its delete request is in progress.
@@ -1158,8 +1322,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const removeSeq = useRef(0);
     const scheduleDeleteLock = useRef(false);
     const scheduleLoadGen = useRef(0);
-    const [draftTitle, setDraftTitle] = useState('');
-    const [draftDescription, setDraftDescription] = useState('');
+    // Edit-bot dialog. Drafts live inside the dialog; the parent holds the
+    // bot being edited so the row never mutates into a form.
+    const [editBot, setEditBot] = useState<DesktopBot | null>(null);
+    const [editSaving, setEditSaving] = useState(false);
+    const [editNotice, setEditNotice] = useState('');
+    // Model dialog. The choice is per account, not per bot, which is why it is
+    // opened from the list header rather than from a row.
+    const [llmOpen, setLlmOpen] = useState(false);
+    const [llmProviders, setLlmProviders] = useState<BotLLMProviderOption[]>([]);
+    const [llmMode, setLlmMode] = useState<'default' | 'custom'>('default');
+    const [llmName, setLlmName] = useState('');
+    const [llmModel, setLlmModel] = useState('');
+    const [llmSaving, setLlmSaving] = useState(false);
+    const [llmNotice, setLlmNotice] = useState('');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
@@ -1344,6 +1520,31 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             watchBotReplies(userId, null);
         };
     }, [userId, selectedId]);
+
+    // A supplement receipt whose run ended while this page was closed never
+    // saw the push event. One pull per run per session asks the server for the
+    // final state and settles the bubble; a failed pull leaves the key out so
+    // a later render can ask again.
+    const supplementPullsDone = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        if (!userId || !selectedId) return;
+        const runIds = new Set<string>();
+        for (const item of messagesForBot(userId, selectedId)) {
+            if (!item.supplementId || item.supplementOutcome) continue;
+            const runId = String(item.supplementRunId || '').trim();
+            if (runId !== '') runIds.add(runId);
+        }
+        for (const runId of runIds) {
+            const key = `${userId}:${selectedId}:${runId}`;
+            if (supplementPullsDone.current.has(key)) continue;
+            supplementPullsDone.current.add(key);
+            void GetDesktopBotSupplements(selectedId, runId).then(items => {
+                if (Array.isArray(items) && items.length > 0) applySupplementOutcomes(userId, selectedId, runId, items);
+            }).catch(() => {
+                supplementPullsDone.current.delete(key);
+            });
+        }
+    }, [userId, selectedId, messagesByBot]);
 
     useLayoutEffect(() => {
         const el = workspaceRef.current;
@@ -1664,9 +1865,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         removeLock.current = 0;
         setBots([]);
         setSelectedId('');
-        setEditingId('');
-        setDraftTitle('');
-        setDraftDescription('');
+        setEditBot(null);
+        setEditSaving(false);
+        setEditNotice('');
         setMessagesByBot({});
         setPersonaByBot(personasForUser(userId));
         setCommand('');
@@ -1920,8 +2121,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }));
             setScheduleNotice('');
         } catch (error) {
-            const message = error instanceof Error ? error.message : '';
-            setScheduleNotice(readingFailure(error, text) || message || text.unavailable);
+            const message = friendlyFailure(failureMessage(error), lang);
+            setScheduleNotice(missedSchedule(error) ? text.scheduleNone : message || text.unavailable);
         } finally {
             scheduleDeleteLock.current = false;
         }
@@ -1954,25 +2155,98 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
     };
 
-    const saveEdit = async (botId: string) => {
-        const title = draftTitle.trim();
-        const description = draftDescription.trim();
-        if (!title) return;
+    const submitEdit = async (title: string, description: string) => {
+        const botId = editBot?.id;
+        if (!botId || editSaving) return;
         const gen = loadGen.current;
-        setListNotice('');
+        setEditSaving(true);
+        setEditNotice('');
         try {
             await RenameDesktopBot(botId, title, description);
         } catch (error) {
             if (gen !== loadGen.current) return;
-            setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+            setEditNotice(error instanceof Error && error.message ? error.message : text.unavailable);
             return;
+        } finally {
+            setEditSaving(false);
         }
         if (gen !== loadGen.current) return;
         renamedBots.current.set(botId, { title, description });
         setBots(prev => prev.map(bot => bot.id === botId ? { ...bot, title, description } : bot));
-        setEditingId('');
-        setDraftTitle('');
-        setDraftDescription('');
+        setEditBot(null);
+    };
+
+    // Both halves of the model dialog load together: without the provider list
+    // the saved choice cannot be shown as selected, and without the saved choice
+    // the list has nothing to point at. Either failing leaves nothing to show.
+    const openLLMSettings = async () => {
+        if (llmOpen) return;
+        const gen = loadGen.current;
+        setLlmNotice('');
+        try {
+            const [current, rawProviders] = await Promise.all([
+                GetDesktopBotLLM(),
+                GetMaclawLLMProviders() as Promise<{ providers?: DesktopProviderWire[]; Providers?: DesktopProviderWire[] } | null>,
+            ]);
+            if (gen !== loadGen.current) return;
+            const entries = rawProviders?.providers ?? rawProviders?.Providers ?? [];
+            setLlmProviders(usableDesktopLLMProviders(Array.isArray(entries) ? entries : []));
+            setLlmMode(current?.mode === 'custom' ? 'custom' : 'default');
+            setLlmName(String(current?.name ?? '').trim());
+            setLlmModel(String(current?.model ?? '').trim());
+            setLlmOpen(true);
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+        }
+    };
+
+    const submitLLM = async (payload: BotLLMSettingsSubmit) => {
+        if (llmSaving) return;
+        const gen = loadGen.current;
+        setLlmSaving(true);
+        setLlmNotice('');
+        let saved: { mode?: string; name?: string; model?: string; warning?: string } | undefined;
+        try {
+            if (payload.mode === 'default') {
+                saved = await SaveDesktopBotLLM({ mode: 'default' });
+            } else if (payload.provider) {
+                saved = await SaveDesktopBotLLM({
+                    mode: 'custom',
+                    name: payload.provider.name,
+                    url: payload.provider.url,
+                    key: payload.provider.key,
+                    model: payload.model,
+                    protocol: payload.provider.protocol,
+                    wire_api: payload.provider.wireAPI,
+                });
+            }
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            setLlmNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+            return;
+        } finally {
+            setLlmSaving(false);
+        }
+        if (gen !== loadGen.current) return;
+        if (!saved) return;
+        // The choice is stored even when the push to MaClawSrv failed, so the
+        // dialog stays open to say so instead of closing on a half-applied
+        // change. The bots pick it up at their next open.
+        if (saved?.warning) {
+            setLlmNotice(saved.warning);
+            return;
+        }
+        if (saved?.mode === 'custom') {
+            setLlmMode('custom');
+            setLlmName(String(saved.name ?? '').trim());
+            setLlmModel(String(saved.model ?? '').trim());
+        } else {
+            setLlmMode('default');
+            setLlmName('');
+            setLlmModel('');
+        }
+        setLlmOpen(false);
     };
 
     const remove = async (botId: string) => {
@@ -2050,11 +2324,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 delete next[botId];
                 return next;
             });
-            if (editingIdRef.current === botId) {
-                setEditingId('');
-                setDraftTitle('');
-                setDraftDescription('');
-            }
+            if (editBot?.id === botId) setEditBot(null);
             setSelectedId(current => current === botId ? '' : current);
             setMessagesByBot(prev => {
                 const copy = { ...prev };
@@ -2070,10 +2340,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // MaClawSrv does not serialize two turns on one session. A message sent
     // while a run is going is accepted and queued here; the queue drains in
     // order every time a reply settles.
-    const queueRef = useRef<Map<string, Array<{ text: string; phase: BotPhase }>>>(new Map());
+    const queueRef = useRef<Map<string, Array<{ text: string; phase: BotPhase; verbatim?: boolean }>>>(new Map());
     // Readings finish out of order. Slots keep the order the person sent them,
     // so a fast later reading cannot run before an earlier one.
-    type ReadAhead = { text: string; phase: BotPhase; settled: boolean; enqueue: boolean };
+    // verbatim marks a queue entry whose reading already failed once: this
+    // person chose their own words, so the queue must not read it again.
+    type ReadAhead = { text: string; phase: BotPhase; settled: boolean; enqueue: boolean; verbatim?: boolean };
     const readAheadRef = useRef<Map<string, ReadAhead[]>>(new Map());
 
     const dropAutoPanel = (botId: string) => {
@@ -2083,7 +2355,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         latchRef.current[botId] = false;
     };
 
-    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue') => {
+    // verbatim starts the turn from the person's own words, with no reading.
+    // The reading is a helper for the turn, not a gate on it: once it has
+    // failed and this person has chosen to send what they typed, that choice
+    // is the order.
+    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false) => {
         const turnPhase = phaseFor(content, phase);
         // The missed reply was still holding the keyboard. This dispatch is the
         // agent continuing in that same browser, so the person no longer types.
@@ -2121,6 +2397,42 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             dropAutoPanel(botId);
             drainIfIdle(botId);
         };
+        // No reading was made, so this turn has not started and nothing was
+        // sent. The bubble keeps the sentence that was typed and offers the
+        // two ways out: read again, or send those words exactly as they are.
+        const parkNoReading = (kind: NoReading) => {
+            if (pending.settled) return;
+            pending.settled = true;
+            pendingRef.current.delete(ticket);
+            clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+            const stored = messagesForBot(ownerId, botId);
+            commit(botId, stored.map(item => item.id === assistantMessage.id
+                ? { ...item, ...noReadingReply(kind, text, content, turnPhase), pending: false }
+                : item));
+            dropAutoPanel(botId);
+            drainIfIdle(botId);
+        };
+        // The message was meant for a run and no run took it — the run had
+        // ended, or several were live and picking one would have been a guess.
+        // The reason is shown and the words are parked so one click sends them
+        // as a new turn; nothing here decides for the person.
+        const parkUnrouted = (reason: string, words: string, phase: BotPhase) => {
+            if (pending.settled) return;
+            pending.settled = true;
+            pendingRef.current.delete(ticket);
+            clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+            const stored = messagesForBot(ownerId, botId);
+            commit(botId, stored.map(item => item.id === assistantMessage.id ? {
+                ...item,
+                content: reason,
+                pending: false,
+                failed: true,
+                phase: undefined,
+                noReading: { text: words, phase, kind: 'unrouted' },
+            } : item));
+            dropAutoPanel(botId);
+            drainIfIdle(botId);
+        };
         // Reading the message can take the whole model timeout. If the account
         // changes in that time, the order stays with the account that wrote it.
         const leaveAccount = () => {
@@ -2143,104 +2455,132 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             let instruction = '';
             let told = '';
             let sendPhase: BotPhase = turnPhase;
-            try {
-                const understood = await UnderstandDesktopBotTask(content, turnPhase, lang, earlier, personaForBot(ownerId, botId)) as Record<string, unknown>;
-                told = String(understood?.told || understood?.Told || '').trim();
-                instruction = String(understood?.instruction || understood?.Instruction || '').trim();
-                const personaRaw = String(understood?.persona || understood?.Persona || '').trim();
-                let pace = workPace(understood, turnPhase);
-                const spec = scheduleOf(understood);
-                const decided = emptyOrderPace(pace, instruction, personaRaw, turnPhase, spec.mode);
-                if (decided === 'failed') throw new Error(text.orderMissing);
-                pace = decided;
-                if (pace !== 'schedule' && !told && !instruction) throw new Error(text.orderMissing);
-                if (personaRaw && !ownerLeft() && !bubbleGone()) keepPersona(ownerId, botId, personaRaw);
-                if (pace === 'ask') {
+            if (verbatim) {
+                // No reading was made. The person asked for their own words,
+                // and those words are still the clearest order there is.
+                instruction = content.trim();
+            } else {
+                let pace: WorkPace = 'confirm';
+                let understood: Record<string, unknown> = {};
+                let keepIdentity = '';
+                try {
+                    const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId));
+                    if (reading.kind !== 'read') {
+                        // This turn has not started. It stops here with the
+                        // sentence that was typed, which is why the reading
+                        // failing is not the same as the turn failing.
+                        if (!ownerLeft()) parkNoReading(reading.kind);
+                        else leaveAccount();
+                        return;
+                    }
+                    understood = reading.understood;
+                    told = reading.told;
+                    instruction = reading.instruction;
+                    pace = reading.pace;
+                    keepIdentity = reading.persona;
                     if (ownerLeft()) {
                         leaveAccount();
                         return;
                     }
                     if (bubbleGone()) return;
-                    pending.settled = true;
-                    pendingRef.current.delete(ticket);
-                    clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                    const question = told || instruction;
-                    const stored = messagesForBot(ownerId, botId);
-                    // A question answered here is not a desktop turn. Leave the
-                    // phase off so it does not cover an arrangement still waiting.
-                    const settled = stored.map(item => item.id === assistantMessage.id ? {
-                        ...item,
-                        content: question,
-                        pending: false,
-                        phase: undefined,
-                        askUser: { question },
-                    } : item);
-                    commit(botId, settled);
-                    drainIfIdle(botId);
-                    return;
-                }
-                if (pace === 'reply') {
+                    if (keepIdentity) {
+                        keepPersona(ownerId, botId, keepIdentity);
+                        // The worker runs on the server, so a preference kept
+                        // only here would never shape future work. This is a
+                        // hint for later turns and must not fail the turn.
+                        // A hyphen withdraws it, and that has to reach the
+                        // server too: a preference still honoured after being
+                        // taken back explains itself nowhere on screen.
+                        void PersistDesktopBotPreference(botId, keepIdentity).catch(() => undefined);
+                    }
+                    if (pace === 'ask') {
+                        if (ownerLeft()) {
+                            leaveAccount();
+                            return;
+                        }
+                        if (bubbleGone()) return;
+                        pending.settled = true;
+                        pendingRef.current.delete(ticket);
+                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                        const question = told || instruction;
+                        const stored = messagesForBot(ownerId, botId);
+                        // A question answered here is not a desktop turn. Leave the
+                        // phase off so it does not cover an arrangement still waiting.
+                        const settled = stored.map(item => item.id === assistantMessage.id ? {
+                            ...item,
+                            content: question,
+                            pending: false,
+                            phase: undefined,
+                            askUser: { question },
+                        } : item);
+                        commit(botId, settled);
+                        drainIfIdle(botId);
+                        return;
+                    }
+                    if (pace === 'reply') {
+                        if (ownerLeft()) {
+                            leaveAccount();
+                            return;
+                        }
+                        if (bubbleGone()) return;
+                        pending.settled = true;
+                        pendingRef.current.delete(ticket);
+                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                        const answer = told || instruction;
+                        const stored = messagesForBot(ownerId, botId);
+                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
+                            ...item,
+                            content: answer,
+                            pending: false,
+                            chat: true,
+                            phase: undefined,
+                        } : item));
+                        drainIfIdle(botId);
+                        return;
+                    }
+                    if (pace === 'schedule') {
+                        if (ownerLeft()) {
+                            leaveAccount();
+                            return;
+                        }
+                        if (bubbleGone()) return;
+                        await armDesktopSchedule(botId, understood, instruction);
+                        if (ownerLeft()) {
+                            leaveAccount();
+                            return;
+                        }
+                        if (bubbleGone()) return;
+                        pending.settled = true;
+                        pendingRef.current.delete(ticket);
+                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                        const answer = scheduleAck(told, scheduleOf(understood).mode, text);
+                        const stored = messagesForBot(ownerId, botId);
+                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
+                            ...item,
+                            content: answer,
+                            pending: false,
+                            chat: true,
+                            phase: undefined,
+                        } : item));
+                        drainIfIdle(botId);
+                        return;
+                    }
+                    if (pace === 'direct' && turnPhase !== 'execute') {
+                        const stored = messagesForBot(ownerId, botId);
+                        commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, phase: 'execute' as const } : item));
+                    }
+                    sendPhase = pace === 'direct' ? 'execute' : turnPhase;
+                } catch (error) {
+                    // Nothing went to the desktop: either the reading could not
+                    // even be attempted, or a timer named by nobody was refused.
                     if (ownerLeft()) {
                         leaveAccount();
                         return;
                     }
-                    if (bubbleGone()) return;
-                    pending.settled = true;
-                    pendingRef.current.delete(ticket);
-                    clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                    const answer = told || instruction;
-                    const stored = messagesForBot(ownerId, botId);
-                    commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                        ...item,
-                        content: answer,
-                        pending: false,
-                        chat: true,
-                        phase: undefined,
-                    } : item));
-                    drainIfIdle(botId);
+                    const raw = missedSchedule(error) ? text.scheduleNone : friendlyFailure(failureMessage(error), lang) || text.unavailable;
+                    failPending(raw);
                     return;
                 }
-                if (pace === 'schedule') {
-                    if (ownerLeft()) {
-                        leaveAccount();
-                        return;
-                    }
-                    if (bubbleGone()) return;
-                    await armDesktopSchedule(botId, understood, instruction);
-                    if (ownerLeft()) {
-                        leaveAccount();
-                        return;
-                    }
-                    if (bubbleGone()) return;
-                    pending.settled = true;
-                    pendingRef.current.delete(ticket);
-                    clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                    const answer = scheduleAck(told, spec.mode, text);
-                    const stored = messagesForBot(ownerId, botId);
-                    commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                        ...item,
-                        content: answer,
-                        pending: false,
-                        chat: true,
-                        phase: undefined,
-                    } : item));
-                    drainIfIdle(botId);
-                    return;
-                }
-                if (pace === 'direct' && turnPhase !== 'execute') {
-                    const stored = messagesForBot(ownerId, botId);
-                    commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, phase: 'execute' as const } : item));
-                }
-                sendPhase = pace === 'direct' ? 'execute' : turnPhase;
-            } catch (error) {
-                if (ownerLeft()) {
-                    leaveAccount();
-                    return;
-                }
-                const message = error instanceof Error ? error.message : '';
-                const raw = readingFailure(error, text) || message || text.unavailable;
-                failPending(raw);
-                return;
             }
             if (ownerLeft()) {
                 leaveAccount();
@@ -2260,6 +2600,53 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return;
             }
             pending.admitted = true;
+            // A turn already running may still want this message. Ask before
+            // sending it as new work: once words are inside another run's
+            // context there is no taking them back, and when several runs are
+            // live only the person can say which one they meant.
+            try {
+                const activeRuns = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string; task_text?: string; waiting_for_user?: boolean }>) || [];
+                const candidates = activeRuns.filter(item => item && !item.waiting_for_user && String(item.run_id || '').trim() !== '');
+                if (candidates.length > 0 && content) {
+                    const verdict = await EvaluateDesktopTaskSupplement(String(candidates[0].task_text || ''), content.trim(), lang) as { is_supplement?: boolean; instruction?: string } | null;
+                    if (verdict && verdict.is_supplement) {
+                        const targetID = candidates.length === 1 ? String(candidates[0].run_id || '') : '';
+                        const receipt = await AppendDesktopBotSupplement(botId, targetID, String(verdict.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
+                        const note = String(receipt?.message || '已收到，会在当前任务的下一步生效。');
+                        if (receipt?.stage === 'queued') {
+                            // Only the receipt's ids go on the bubble. The
+                            // terminal answer (applied / missed) arrives later
+                            // from the run itself and lands on these ids.
+                            const supplementId = String(receipt.supplement_id || '').trim();
+                            const settled = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? {
+                                ...item,
+                                content: note,
+                                pending: false,
+                                ack: true,
+                                understood: true,
+                                supplementId: supplementId || undefined,
+                                supplementRunId: targetID || undefined,
+                            } : item);
+                            saveBotMessages(ownerId, botId, foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id)));
+                            clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                            pending.settled = true;
+                            pendingRef.current.delete(ticket);
+                            return;
+                        }
+                        // Anything but queued means the words never reached a
+                        // run, and the note says so. Falling through to send
+                        // them as new work would contradict it, so they are
+                        // parked instead: the reason is shown, and the text
+                        // stays recoverable.
+                        if (!ownerLeft()) parkUnrouted(note, content.trim(), turnPhase);
+                        else leaveAccount();
+                        return;
+                    }
+                }
+            } catch {
+                // Falling through and sending as a new task is honest: it does
+                // what the person asked, just without folding into the run.
+            }
             try {
                 const response = await SendDesktopBotTask(botId, instruction, sendPhase) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string };
                 if (ownerLeft()) {
@@ -2325,7 +2712,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 pending.settled = true;
                 pendingRef.current.delete(ticket);
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                const raw = error instanceof Error && error.message ? error.message : text.unavailable;
+                const raw = friendlyFailure(failureMessage(error), lang) || text.unavailable;
                 const stored = messagesForBot(ownerId, botId);
                 const failed = stored.map(item => item.id === assistantMessage.id ? { ...item, content: raw, pending: false, failed: true } : item);
                 if (ownerLeft()) {
@@ -2347,7 +2734,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // even when a reload rebuilt the queue in chat order.
     const continuationQueued = (item: { text: string; phase: BotPhase }) =>
         item.phase === 'execute' && item.text === RETURN_COMMAND;
-    const takeNextQueued = (botId: string, queue: Array<{ text: string; phase: BotPhase }>) => {
+    const takeNextQueued = (botId: string, queue: Array<{ text: string; phase: BotPhase; verbatim?: boolean }>) => {
         const resumeAt = queue.findIndex(continuationQueued);
         if (resumeAt >= 0) return queue.splice(resumeAt, 1)[0];
         if (messagesForBot(userId, botId).some(item => item.userControl || item.attentionReason)) return undefined;
@@ -2381,7 +2768,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return copy;
         });
         commit(botId, next);
-        startTask(botId, nextSend.text, nextSend.phase, 'fromQueue');
+        startTask(botId, nextSend.text, nextSend.phase, 'fromQueue', nextSend.verbatim === true);
     };
     // A fast later reading must not run before an earlier message that is
     // still being classified. A local answer is not a queue item, and it
@@ -2394,7 +2781,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         while (slots.length > 0 && slots[0].settled) {
             const item = slots.shift();
             if (!item?.enqueue) continue;
-            queued = [...queued, { text: item.text, phase: item.phase }];
+            queued = [...queued, { text: item.text, phase: item.phase, verbatim: item.verbatim }];
             added = true;
         }
         if (slots.length === 0) readAheadRef.current.delete(`${ownerId}\0${botId}`);
@@ -2408,7 +2795,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const readAheadOpen = (ownerId: string, botId: string) =>
         (readAheadRef.current.get(`${ownerId}\0${botId}`) || []).some(slot => !slot.settled);
 
-    const send = async (preset?: string, phase: BotPhase = 'plan') => {
+    // verbatim starts the turn from the person's own words, skipping the
+    // reading. The reading is a helper for the turn, not a gate on it: once it
+    // has failed and this person chose their own words, that choice is the order.
+    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false) => {
         if (!selected) return;
         if (!preset && secretOpenRef.current) return;
         const botId = selected.id;
@@ -2432,7 +2822,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             commit(botId, [...prior, userMessage]);
             const earlier = earlierUserAsks(prior, content, 'now');
             const ownerId = userId;
-            const slot: ReadAhead = { text: content, phase: turnPhase, settled: false, enqueue: false };
+            const slot: ReadAhead = { text: content, phase: turnPhase, settled: false, enqueue: false, verbatim };
             const readKey = `${ownerId}\0${botId}`;
             const pendingReads = readAheadRef.current.get(readKey) || [];
             pendingReads.push(slot);
@@ -2440,75 +2830,73 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             void (async () => {
                 let enqueue = false;
                 try {
-                    let pace: WorkPace = 'confirm';
-                    let told = '';
-                    let instruction = '';
-                    let readingFailed = '';
-                    let understood: Record<string, unknown> = {};
-                    try {
-                        understood = await UnderstandDesktopBotTask(content, turnPhase, lang, earlier, personaForBot(ownerId, botId)) as Record<string, unknown>;
-                        told = String(understood?.told || understood?.Told || '').trim();
-                        instruction = String(understood?.instruction || understood?.Instruction || '').trim();
-                        const personaRaw = String(understood?.persona || understood?.Persona || '').trim();
-                        pace = workPace(understood, turnPhase);
-                        const decided = emptyOrderPace(pace, instruction, personaRaw, turnPhase, scheduleOf(understood).mode);
-                        if (decided === 'failed') {
-                            readingFailed = text.orderMissing;
-                        } else {
-                            pace = decided;
-                            if (personaRaw && userIdRef.current === ownerId) keepPersona(ownerId, botId, personaRaw);
-                        }
-                    } catch (error) {
-                        readingFailed = readingFailure(error, text);
-                        if (!readingFailed) pace = 'confirm';
-                    }
-                    if (userIdRef.current !== ownerId) return;
-                    if (readingFailed) {
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, [...stored, { id: messageID(), role: 'assistant', content: readingFailed, failed: true }]);
-                        return;
-                    }
-                    if (pace === 'schedule') {
-                        const spec = scheduleOf(understood);
-                        try {
-                            await armDesktopSchedule(botId, understood, instruction);
-                        } catch (error) {
-                            if (userIdRef.current !== ownerId) return;
-                            const raw = readingFailure(error, text) || (error instanceof Error && error.message ? error.message : text.unavailable);
-                            const stored = messagesForBot(ownerId, botId);
-                            commit(botId, [...stored, { id: messageID(), role: 'assistant', content: raw, failed: true }]);
-                            return;
-                        }
+                    if (slot.verbatim) {
+                        // Nothing to read: this entry is the person's own words
+                        // going into the queue exactly as they were typed.
+                        enqueue = true;
+                    } else {
+                        let pace: WorkPace = 'confirm';
+                        let told = '';
+                        let instruction = '';
+                        let understood: Record<string, unknown> = {};
+                        const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId));
                         if (userIdRef.current !== ownerId) return;
-                        const answer = scheduleAck(told, spec.mode, text);
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
-                        return;
-                    }
-                    // Small talk and a missing-fact question are answered here.
-                    // They do not wait for the desktop turn, and they are not sent on.
-                    if (pace === 'reply' || pace === 'ask') {
-                        const answer = told || instruction;
-                        if (!answer) {
-                            pace = 'confirm';
-                        } else {
+                        if (reading.kind !== 'read') {
+                            // Nothing is queued and nothing was sent: the queue
+                            // only holds work somebody stated.
                             const stored = messagesForBot(ownerId, botId);
-                            const local: DesktopBotMessage = pace === 'ask'
-                                ? { id: messageID(), role: 'assistant', content: answer, askUser: { question: answer } }
-                                : { id: messageID(), role: 'assistant', content: answer, chat: true };
-                            commit(botId, [...stored, local]);
+                            commit(botId, [...stored, { id: messageID(), role: 'assistant', ...noReadingReply(reading.kind, text, content, turnPhase) }]);
                             return;
                         }
+                        understood = reading.understood;
+                        told = reading.told;
+                        instruction = reading.instruction;
+                        pace = reading.pace;
+                        if (reading.persona && userIdRef.current === ownerId) keepPersona(ownerId, botId, reading.persona);
+                        if (pace === 'schedule') {
+                            const spec = scheduleOf(understood);
+                            try {
+                                await armDesktopSchedule(botId, understood, instruction);
+                            } catch (error) {
+                                if (userIdRef.current !== ownerId) return;
+                                const raw = missedSchedule(error)
+                                    ? text.scheduleNone
+                                    : friendlyFailure(failureMessage(error), lang) || text.unavailable;
+                                const stored = messagesForBot(ownerId, botId);
+                                commit(botId, [...stored, { id: messageID(), role: 'assistant', content: raw, failed: true }]);
+                                return;
+                            }
+                            if (userIdRef.current !== ownerId) return;
+                            const answer = scheduleAck(told, spec.mode, text);
+                            const stored = messagesForBot(ownerId, botId);
+                            commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
+                            return;
+                        }
+                        // Small talk and a missing-fact question are answered here.
+                        // They do not wait for the desktop turn, and they are not sent on.
+                        if (pace === 'reply' || pace === 'ask') {
+                            const answer = told || instruction;
+                            if (!answer) {
+                                pace = 'confirm';
+                            } else {
+                                const stored = messagesForBot(ownerId, botId);
+                                const local: DesktopBotMessage = pace === 'ask'
+                                    ? { id: messageID(), role: 'assistant', content: answer, askUser: { question: answer } }
+                                    : { id: messageID(), role: 'assistant', content: answer, chat: true };
+                                commit(botId, [...stored, local]);
+                                return;
+                            }
+                        }
+                        const stored = messagesForBot(ownerId, botId);
+                        const at = stored.findIndex(item => item.id === userMessage.id);
+                        const queuedUser: DesktopBotMessage = { ...userMessage, queued: true };
+                        const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: queuedAckReply(content, lang, waitingOnPerson ? 'keyboard' : (queuedBehind ? 'ahead' : 'task')), ack: true };
+                        const next = at >= 0
+                            ? [...stored.slice(0, at), queuedUser, ackMessage, ...stored.slice(at + 1)]
+                            : [...stored, queuedUser, ackMessage];
+                        commit(botId, next);
+                        enqueue = true;
                     }
-                    const stored = messagesForBot(ownerId, botId);
-                    const at = stored.findIndex(item => item.id === userMessage.id);
-                    const queuedUser: DesktopBotMessage = { ...userMessage, queued: true };
-                    const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: queuedAckReply(content, lang, waitingOnPerson ? 'keyboard' : (queuedBehind ? 'ahead' : 'task')), ack: true };
-                    const next = at >= 0
-                        ? [...stored.slice(0, at), queuedUser, ackMessage, ...stored.slice(at + 1)]
-                        : [...stored, queuedUser, ackMessage];
-                    commit(botId, next);
-                    enqueue = true;
                 } finally {
                     slot.settled = true;
                     slot.enqueue = enqueue && userIdRef.current === ownerId;
@@ -2517,13 +2905,21 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             })();
             return;
         }
-        startTask(botId, content, turnPhase, 'now');
+        startTask(botId, content, turnPhase, 'now', verbatim);
         if (!preset) setCommand('');
     };
 
     const markAskResolved = (botId: string, messageId: string) => {
         const stored = messagesForBot(userId, botId);
         commit(botId, stored.map(item => item.id === messageId ? { ...item, askResolved: true } : item));
+    };
+
+    // A parked sentence offers one choice each. Taking one takes the buttons
+    // away with it: the choice has been made, and a second click would send
+    // the same words to the desktop a second time.
+    const consumeNoReading = (botId: string, messageId: string) => {
+        const stored = messagesForBot(userId, botId);
+        commit(botId, stored.map(item => item.id === messageId && item.noReading ? { ...item, noReading: undefined } : item));
     };
 
     const appendNote = (botId: string, content: string) => {
@@ -2974,7 +3370,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         <h1><BotRailIcon size={20} testId="desktop-bot-title-icon" className="desktop-bot-workspace__title-icon" />{text.listTitle}</h1>
                         <p>{text.shared}</p>
                     </div>
-                    <button type="button" className="desktop-bot-workspace__create" data-testid="desktop-bot-create" onClick={create}>{text.create}</button>
+                    <div className="desktop-bot-workspace__bar-actions">
+                        <button type="button" className="desktop-bot-workspace__create" data-testid="desktop-bot-create" onClick={create}>{text.create}</button>
+                        <button type="button" className="desktop-bot-workspace__settings" data-testid="desktop-bot-llm" aria-label={text.llmSettingsHint} title={text.llmSettingsHint} onClick={() => { void openLLMSettings(); }}>{text.llmSettings}</button>
+                    </div>
                 </header>
                 {listNotice ? <p className="desktop-bot-workspace__empty" data-testid="desktop-bot-list-error" role="status">{listNotice}</p> : null}
                 {bots.length === 0 && !listFailed ? (
@@ -2982,41 +3381,26 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 ) : (
                     <ul className="desktop-bot-workspace__list">
                         {bots.map(bot => {
-                            const editing = editingId === bot.id;
                             const description = bot.description || text.defaultDescription;
                             const rowPhase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id));
                             return (
-                                <li key={bot.id} className={'desktop-bot-workspace__row' + (selectedId === bot.id ? ' is-selected' : '') + (editing ? ' is-editing' : '')} data-testid={`desktop-bot-${bot.id}`}>
-                                    {editing ? (
-                                        <div className="desktop-bot-workspace__edit">
-                                            <input aria-label={text.name} value={draftTitle} maxLength={40} onChange={event => setDraftTitle(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveEdit(bot.id); if (event.key === 'Escape') setEditingId(''); }} />
-                                            <input aria-label={text.description} value={draftDescription} maxLength={80} onChange={event => setDraftDescription(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveEdit(bot.id); if (event.key === 'Escape') setEditingId(''); }} />
-                                        </div>
-                                    ) : (
-                                        <button type="button" className="desktop-bot-workspace__open" aria-pressed={selectedId === bot.id} onClick={() => selectBot(bot)}>
-                                            <span className="desktop-bot-workspace__avatar" style={{ background: botColor(bot.title) }} aria-hidden="true">{botInitial(bot.title)}</span>
-                                            <span className="desktop-bot-workspace__who">
-                                                <strong>{bot.title}</strong>
-                                                <span>{description}</span>
+                                <li key={bot.id} className={'desktop-bot-workspace__row' + (selectedId === bot.id ? ' is-selected' : '')} data-testid={`desktop-bot-${bot.id}`}>
+                                    <button type="button" className="desktop-bot-workspace__open" aria-pressed={selectedId === bot.id} onClick={() => selectBot(bot)}>
+                                        <span className="desktop-bot-workspace__avatar" style={{ background: botColor(bot.title) }} aria-hidden="true">{botInitial(bot.title)}</span>
+                                        <span className="desktop-bot-workspace__who">
+                                            <strong>{bot.title}</strong>
+                                            <span>{description}</span>
+                                        </span>
+                                        {rowPhase ? (
+                                            <span className="desktop-bot-workspace__state is-working" data-testid={`desktop-bot-row-state-${bot.id}`} aria-label={rowPhase === 'execute' ? text.workingTag : text.arrangingTag}>
+                                                <i />
                                             </span>
-                                            {rowPhase ? (
-                                                <span className="desktop-bot-workspace__state is-working" data-testid={`desktop-bot-row-state-${bot.id}`} aria-label={rowPhase === 'execute' ? text.workingTag : text.arrangingTag}>
-                                                    <i />
-                                                </span>
-                                            ) : null}
-                                        </button>
-                                    )}
-                                    {!editing ? (
-                                        <div className="desktop-bot-workspace__actions">
-                                            <button type="button" aria-label={text.rename} title={text.rename} onClick={() => { setEditingId(bot.id); setDraftTitle(bot.title); setDraftDescription(bot.description); }}><RowActionIcon name="rename" /></button>
-                                            <button type="button" data-testid={`desktop-bot-delete-${bot.id}`} aria-label={text.remove} title={text.remove} onClick={() => { void remove(bot.id); }}><RowActionIcon name="remove" /></button>
-                                        </div>
-                                    ) : (
-                                        <div className="desktop-bot-workspace__actions">
-                                            <button type="button" aria-label={text.save} title={text.save} onClick={() => saveEdit(bot.id)}><RowActionIcon name="save" /></button>
-                                            <button type="button" aria-label={text.cancel} title={text.cancel} onClick={() => setEditingId('')}><RowActionIcon name="cancel" /></button>
-                                        </div>
-                                    )}
+                                        ) : null}
+                                    </button>
+                                    <div className="desktop-bot-workspace__actions">
+                                        <button type="button" data-testid={`desktop-bot-edit-${bot.id}`} aria-label={text.editInfo} title={text.editInfo} onClick={() => { setEditBot(bot); setEditNotice(''); }}><RowActionIcon name="rename" /></button>
+                                        <button type="button" data-testid={`desktop-bot-delete-${bot.id}`} aria-label={text.remove} title={text.remove} onClick={() => { void remove(bot.id); }}><RowActionIcon name="remove" /></button>
+                                    </div>
                                 </li>
                             );
                         })}
@@ -3127,6 +3511,28 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                     <span className="desktop-bot-chat__choice-mark" aria-hidden="true">✓</span>
                                                 </button>
                                             ))}
+                                        </div>
+                                    ) : null}
+                                    {message.noReading ? (
+                                        <div className="desktop-bot-chat__choices" data-testid="desktop-bot-no-reading">
+                                            {/* Timed work whose time was never named cannot be armed by a
+                                                verbatim resend; only the person can say when it should run. */}
+                                            {message.noReading.kind === 'unscheduled' ? null : (
+                                                <button type="button" data-testid="desktop-bot-reading-verbatim" onClick={() => { consumeNoReading(selected.id, message.id); void send(message.noReading!.text, message.noReading!.phase, true); }}>
+                                                    <span className="desktop-bot-chat__choice-key" aria-hidden="true">→</span>
+                                                    <span>{text.readingVerbatim}</span>
+                                                </button>
+                                            )}
+                                            {/* Reading it again only makes sense when the reading failed. A
+                                                message that was routed nowhere was understood perfectly well;
+                                                offering to re-read it would send the person back into the
+                                                same branch that just declined it. */}
+                                            {message.noReading.kind === 'unrouted' ? null : (
+                                                <button type="button" data-testid="desktop-bot-reading-again" onClick={() => { consumeNoReading(selected.id, message.id); void send(message.noReading!.text, message.noReading!.phase); }}>
+                                                    <span className="desktop-bot-chat__choice-key" aria-hidden="true">⟳</span>
+                                                    <span>{text.readingAgain}</span>
+                                                </button>
+                                            )}
                                         </div>
                                     ) : null}
                                     {secretForSelected && secretForSelected.messageId === message.id ? (
@@ -3316,6 +3722,52 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             ) : null}
             <BotFilePreview lang={lang} botId={selectedId} />
             {visibleShot ? <BotShotPreview src={visibleShot} alt={text.screenshot} closeLabel={text.closePreview} onClose={closeShot} /> : null}
+            {editBot ? (
+                <BotEditDialog
+                    key={editBot.id}
+                    initialTitle={editBot.title}
+                    initialDescription={editBot.description}
+                    labels={{
+                        title: text.editTitle,
+                        name: text.name,
+                        description: text.description,
+                        save: text.save,
+                        cancel: text.cancel,
+                        close: text.close,
+                    }}
+                    notice={editNotice}
+                    saving={editSaving}
+                    onClose={() => setEditBot(null)}
+                    onSubmit={(title, description) => { void submitEdit(title, description); }}
+                />
+            ) : null}
+            {llmOpen ? (
+                <BotLLMSettingsDialog
+                    labels={{
+                        title: text.llmTitle,
+                        sharedHint: text.llmSharedHint,
+                        useDefault: text.llmUseDefault,
+                        defaultHint: text.llmDefaultHint,
+                        useProvider: text.llmUseProvider,
+                        providerLabel: text.llmProviderLabel,
+                        modelLabel: text.llmModelLabel,
+                        modelPlaceholder: text.llmModelPlaceholder,
+                        noProviders: text.llmNoProviders,
+                        modelRequired: text.llmModelRequired,
+                        save: text.save,
+                        cancel: text.cancel,
+                        close: text.close,
+                    }}
+                    providers={llmProviders}
+                    initialMode={llmMode}
+                    initialName={llmName}
+                    initialModel={llmModel}
+                    notice={llmNotice}
+                    saving={llmSaving}
+                    onClose={() => setLlmOpen(false)}
+                    onSubmit={payload => { void submitLLM(payload); }}
+                />
+            ) : null}
         </section>
     );
 }

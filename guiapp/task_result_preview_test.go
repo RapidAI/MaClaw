@@ -323,6 +323,82 @@ func TestIsTaskResultOfficeExt(t *testing.T) {
 	}
 }
 
+func TestPreviewTaskResultFileXlsxServesOriginal(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.xlsx")
+	body := []byte("PK\x03\x04xlsx")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "xlsx" || got.Language != "xlsx" || got.PreviewURL == "" {
+		t.Fatalf("xlsx preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if gotType := rec.Header().Get("Content-Type"); !strings.Contains(gotType, "spreadsheetml.sheet") {
+		t.Fatalf("content type = %q", gotType)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatalf("body = %q", rec.Body.Bytes())
+	}
+}
+
+func TestPreviewTaskResultFileXlsServesOriginal(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.xls")
+	body := []byte("\xd0\xcf\x11\xe0legacy")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "xlsx" || got.PreviewURL == "" {
+		t.Fatalf("xls preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if gotType := rec.Header().Get("Content-Type"); !strings.Contains(gotType, "ms-excel") {
+		t.Fatalf("content type = %q", gotType)
+	}
+}
+
+func TestPreviewTaskResultFileXlsxPreviewURLIsNotTextExtract(t *testing.T) {
+	// The old path returned the cell-per-line extract as the payload body;
+	// the grid renderer must receive a byte lease instead.
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.xlsx")
+	if err := os.WriteFile(path, []byte("PK\x03\x04xlsx"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind == "text" || got.Language == "markdown" || got.Content != "" {
+		t.Fatalf("xlsx payload should be a lease, got %+v", got)
+	}
+	if got.PreviewURL == "" {
+		t.Fatalf("preview url missing: %+v", got)
+	}
+}
+
 func TestExportTaskResultFileCopiesToChosenPath(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "report.docx")

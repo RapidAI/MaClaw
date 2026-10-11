@@ -240,7 +240,11 @@ func (a *App) executeDesktopBotScheduledTask(ctx context.Context, task *schedule
 		return "", fmt.Errorf("desktop bot id is required")
 	}
 	order := "This occurrence of a schedule is already set. Do the work below once and put the result in the reply. Do not create, change, or cancel a schedule.\n" + strings.TrimSpace(task.Action)
-	result, err := a.relayDesktopBot(ctx, task.DesktopBotID, order, "execute")
+	// A scheduled occurrence has no client request behind it, so there is no
+	// request id to name the run by. setActiveDesktopRunID skips empty ones,
+	// which leaves this turn unaddressable for supplements — it has no
+	// conversation waiting to add anything.
+	result, err := a.relayDesktopBot(ctx, task.DesktopBotID, order, "execute", "")
 	text := strings.TrimSpace(result.Text)
 	if err != nil && text == "" {
 		text = err.Error()

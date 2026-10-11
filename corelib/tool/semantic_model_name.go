@@ -1,6 +1,11 @@
 package tool
 
-import "strings"
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+)
 
 // SemanticModelFunctionName is the host-owned name the model sees for a
 // catalog adapter. It is stable across turns and matches the ordinary tool
@@ -35,13 +40,63 @@ const reviewedDynamicPromptPrefix = "reviewed-prompt:"
 // AllowReviewedDynamicPrompt is the sealed set of prompt spellings a
 // code-reviewed dynamic implementation may render as. It is not a vendor
 // tool allowlist.
-func AllowReviewedDynamicPrompt(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "web_search":
-		return true
-	default:
-		return false
+//
+// The set is registry-driven rather than a literal switch so a second reviewed
+// binding does not have to come back here to edit a case arm — but it stays
+// sealed in the only way that matters: registration is accepted only for a
+// spelling the host surface already exposes as its own stable name. A vendor
+// name can never be registered, so a reviewed binding can alias itself onto
+// an existing prompt contract and nothing else.
+//
+// The mutex is not optional. AllowReviewedDynamicPrompt is on the planner's
+// read path and planning runs concurrently across turns and sessions, while
+// registration mutates the same map. An unsynchronized map with a concurrent
+// writer does not degrade gracefully — the runtime throws a fatal, unrecoverable
+// error rather than returning a wrong answer.
+var (
+	reviewedDynamicPromptMu    sync.RWMutex
+	reviewedDynamicPromptNames = map[string]struct{}{"web_search": {}}
+)
+
+// RegisterReviewedDynamicPrompt admits a prompt spelling that a code-reviewed
+// dynamic implementation may render as. The name must already be a stable host
+// spelling; anything else is rejected rather than registered, so the set cannot
+// grow a new model-visible name by this route.
+func RegisterReviewedDynamicPrompt(name string) error {
+	spelling := strings.TrimSpace(name)
+	if spelling == "" {
+		return fmt.Errorf("reviewed dynamic prompt name is empty")
 	}
+	if !semanticStableHostAdapter(spelling) {
+		return fmt.Errorf("reviewed dynamic prompt %q is not a stable host spelling", spelling)
+	}
+	reviewedDynamicPromptMu.Lock()
+	defer reviewedDynamicPromptMu.Unlock()
+	reviewedDynamicPromptNames[spelling] = struct{}{}
+	return nil
+}
+
+// ReviewedDynamicPromptNames lists the current sealed set so a host can assert
+// its own surface rather than trust the registry to stay as small as its
+// first author left it.
+func ReviewedDynamicPromptNames() []string {
+	reviewedDynamicPromptMu.RLock()
+	defer reviewedDynamicPromptMu.RUnlock()
+	out := make([]string, 0, len(reviewedDynamicPromptNames))
+	for name := range reviewedDynamicPromptNames {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AllowReviewedDynamicPrompt reports whether name is currently admissible as a
+// reviewed dynamic prompt spelling.
+func AllowReviewedDynamicPrompt(name string) bool {
+	reviewedDynamicPromptMu.RLock()
+	defer reviewedDynamicPromptMu.RUnlock()
+	_, ok := reviewedDynamicPromptNames[strings.TrimSpace(name)]
+	return ok
 }
 
 func reviewedDynamicPromptName(adapter string) (string, bool) {

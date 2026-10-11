@@ -111,6 +111,11 @@ func runServer(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
+	// The executor needs the service host so the agent loop can reach per-run
+	// state (mid-run supplements) by run id, which only the ingress supplies.
+	// Without it the hook stays off rather than inferring a run from
+	// session-scoped state.
+	executor.SetService(svc)
 	// srv is a headless host: desktop/audio side effects are explicitly
 	// unavailable while server-side capabilities remain discoverable.
 	svc.SetRuntimeHostCapabilities(agentruntime.HeadlessHostCapabilities{Capabilities: map[string]bool{
@@ -241,9 +246,9 @@ func runServer(ctx context.Context) error {
 		// Ordinary responses. Synchronous /messages replaces this per request
 		// in allowMessageResponseWrite because that handler writes nothing
 		// until the turn finishes.
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		WriteTimeout:   120 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 	tlsCertFile := os.Getenv("MACLAW_TLS_CERT_FILE")
 	tlsKeyFile := os.Getenv("MACLAW_TLS_KEY_FILE")

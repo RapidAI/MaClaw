@@ -243,3 +243,65 @@ func TestScheduleManagerForDataDirRequiresPersistPathAndDoesNotStart(t *testing.
 		t.Fatalf("administer store must not fire tasks, got=%#v", got)
 	}
 }
+
+// TestReviewedHostScheduleStatusVocabulary pins the alias shape at this host:
+// the schema advertises only canonical names, while the runtime also accepts
+// their aliases and the empty-is-unset reading. Both come from the shared
+// contract, so the host cannot drift from the GUI surface serving the same
+// capability.
+func TestReviewedHostScheduleStatusVocabulary(t *testing.T) {
+	schema := reviewedHostScheduleInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schedule schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schedule schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("status must publish a non-empty enum, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := reviewedHostScheduleStatus(name)
+		if !ok || canonical != name {
+			t.Fatalf("schema advertises status %q, but the runtime maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for sent, want := range map[string]string{"pause": "paused", "resume": "active"} {
+		canonical, ok := reviewedHostScheduleStatus(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	if _, ok := reviewedHostScheduleStatus(""); !ok {
+		t.Fatal("empty status must stay accepted-as-unset")
+	}
+	for _, invented := range []string{"disabled", "enabled", "off"} {
+		_, err := administerScheduleStatusProbe(t, invented)
+		if err == nil || !strings.Contains(err.Error(), "host_schedule_status_rejected") {
+			t.Fatalf("status %q = %v, want host_schedule_status_rejected", invented, err)
+		}
+		// The refusal must name the canonical vocabulary so the first failure
+		// can redirect the turn instead of ending it.
+		for _, valid := range coretool.ScheduleStatusOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}
+
+// administerScheduleStatusProbe drives one invented status through the real
+// administer path — an update-shaped record (an id plus a status) passes the
+// presence, name, and range gates and arrives at the status check.
+func administerScheduleStatusProbe(t *testing.T, status string) (string, error) {
+	t.Helper()
+	store, err := scheduler.NewManager(filepath.Join(t.TempDir(), "schedules.json"))
+	if err != nil {
+		return "", err
+	}
+	cb := &coreAgentCallbacks{principal: Principal{TenantID: "tenant", UserID: "user"}, schedules: store}
+	return cb.AdministerReviewedHostSchedule(context.Background(), cb.principal, reviewedHostScheduleArgs{ID: "task-1", Status: status})
+}

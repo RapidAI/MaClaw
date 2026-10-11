@@ -26,7 +26,10 @@ func reviewedHostConfigInvocationSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"max_iterations": map[string]interface{}{"type": "integer"},
-			"thinking_mode":  map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so the check in the administer
+			// path stays the boundary and this is documentation for the model.
+			"thinking_mode":  map[string]interface{}{"type": "string", "enum": corelib.GlobalThinkingModeOptions()},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -220,7 +223,7 @@ func (s *Service) AdministerReviewedHostConfig(ctx context.Context, principal Pr
 	default:
 		mode, modeOK := reviewedHostConfigThinkingMode(thinkingMode)
 		if !modeOK {
-			return "", fmt.Errorf("host_config_thinking_mode_rejected")
+			return "", fmt.Errorf("host_config_thinking_mode_rejected (%s)", corelib.GlobalThinkingModeHint())
 		}
 		next.MaclawLLMThinkingMode = mode
 	}

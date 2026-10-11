@@ -410,8 +410,21 @@ func TestIMSemanticFileWriteExecutesWithoutWriteFileSoup(t *testing.T) {
 	if seenPath != "notes.txt" || seenContent != "hello" || seenMode != "append" {
 		t.Fatalf("dispatch path=%q content=%q mode=%q", seenPath, seenContent, seenMode)
 	}
-	if replay := cb.ExecuteTool(name, `{"path":"notes.txt","content":"hello","mode":"append"}`); !strings.Contains(replay, "invocation_grant_replayed") {
-		t.Fatalf("replay=%q", replay)
+	// The baseline repeat ceiling issues fs.write.local siblings one at a time:
+	// the same call re-executes on the next sibling until the family budget is
+	// spent, and only then the one-shot replay guard answers.
+	replay := ""
+	for call := 2; call <= 12; call++ {
+		replay = cb.ExecuteTool(name, `{"path":"notes.txt","content":"hello","mode":"append"}`)
+		if strings.Contains(replay, "invocation_grant_replayed") {
+			break
+		}
+		if !strings.Contains(replay, "Written to notes.txt") {
+			t.Fatalf("repeat write #%d=%q", call, replay)
+		}
+	}
+	if !strings.Contains(replay, "invocation_grant_replayed") {
+		t.Fatalf("spent write family never answered replay: %q", replay)
 	}
 }
 
@@ -731,5 +744,45 @@ func TestTrustedWriteOfExistingTemplateStillOpensPreview(t *testing.T) {
 	}
 	if got == nil || got.OpType != "create" || !got.ForceOpen || !strings.Contains(got.FilePath, "chapter.tex") {
 		t.Fatalf("new tex preview=%v", got)
+	}
+}
+
+// TestTrustedFileWriteModeVocabulary pins the mode vocabulary at this host:
+// the schema advertises exactly the canonical pair the shared
+// NormalizeWriteModeKind enforces, aliases stay refused, an invented mode is
+// refused with the canonical vocabulary named, and the empty reading stays
+// overwrite-as-default without entering the advertised set.
+func TestTrustedFileWriteModeVocabulary(t *testing.T) {
+	schema := semanticTrustedFileWriteInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("file-write schema has no properties: %#v", schema)
+	}
+	mode, ok := properties["mode"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("file-write schema has no mode property: %#v", properties)
+	}
+	enum, ok := mode["enum"].([]string)
+	if !ok || len(enum) != 2 {
+		t.Fatalf("mode must advertise the canonical pair, got %#v", mode["enum"])
+	}
+	for _, name := range enum {
+		if _, err := tool.NormalizeWriteModeKind(name); err != nil {
+			t.Fatalf("schema advertises mode %q, but the canonicalizer refuses it: %v", name, err)
+		}
+	}
+	if resolved, err := tool.NormalizeWriteModeKind(""); err != nil || resolved != tool.WriteModeOverwrite {
+		t.Fatalf("empty mode = (%q, %v), want overwrite-as-default", resolved, err)
+	}
+	for _, invented := range []string{"replace", "write", "overwrite_append"} {
+		req, err := semanticTrustedFileWriteArgsAllowed(map[string]interface{}{"path": "a.txt", "content": "x", "mode": invented})
+		if err == nil || !strings.Contains(err.Error(), "trusted_file_write_mode_rejected") {
+			t.Fatalf("mode %q = (%#v, %v), want trusted_file_write_mode_rejected", invented, req, err)
+		}
+		for _, valid := range tool.WriteModeOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
 	}
 }

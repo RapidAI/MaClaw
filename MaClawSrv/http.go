@@ -144,11 +144,20 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	reviewedRegistry, err := agentservice.NewReviewedDynamicCapabilityRegistry()
-	if err != nil {
-		return nil, fmt.Errorf("create reviewed capability registry: %w", err)
+	// The publisher must register vendor-declared external (x:) capabilities
+	// into the SAME registry the planner catalog reads. ConfigureDynamicSemanticRouting
+	// stores that registry on the Service, so reuse it here. If routing has not
+	// been configured (e.g. some embedder/test paths), fall back to a fresh
+	// registry so behavior is unchanged for those callers.
+	capabilityRegistry := svc.DynamicSemanticRegistry()
+	if capabilityRegistry == nil {
+		fallbackRegistry, regErr := agentservice.NewReviewedDynamicCapabilityRegistry()
+		if regErr != nil {
+			return nil, fmt.Errorf("create reviewed capability registry: %w", regErr)
+		}
+		capabilityRegistry = fallbackRegistry
 	}
-	publisher, err := agentservice.NewDynamicCapabilityContractPublisher(svc, reviewedRegistry)
+	publisher, err := agentservice.NewDynamicCapabilityContractPublisher(svc, capabilityRegistry)
 	if err != nil {
 		return nil, fmt.Errorf("create dynamic capability publisher: %w", err)
 	}

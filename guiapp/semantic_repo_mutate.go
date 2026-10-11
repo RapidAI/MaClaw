@@ -34,7 +34,7 @@ func semanticTrustedRepoMutateDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedRepoMutateAdapter,
-			"description": "Commit or push the bound workspace repository. Push requires a remote receipt.",
+			"description": "Commit or push the bound workspace repository. Commit requires message; push requires a remote receipt.",
 			"parameters":  semanticTrustedRepoMutateInvocationSchema(),
 		},
 	}
@@ -44,7 +44,11 @@ func semanticTrustedRepoMutateInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action":  map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the verb, which is
+			// how the browser adapter started refusing "open" (2026-10-10). The
+			// canonicalizer does not read enum, so the check in ArgsAllowed
+			// stays the boundary and this is documentation for the model.
+			"action": map[string]interface{}{"type": "string", "enum": tool.RepoMutateActions()},
 			"message": map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{"action"},
@@ -76,12 +80,13 @@ func semanticTrustedRepoMutateArgsAllowed(args map[string]interface{}) (action, 
 	if !hasAction {
 		return "", "", fmt.Errorf("trusted_repo_mutate_action_required")
 	}
-	switch action {
-	case "commit", "push":
-	default:
-		return "", "", fmt.Errorf("trusted_repo_mutate_action_rejected")
+	// Re-checked against the enum the model was shown, because a boundary that
+	// only exists in a rendered document is not a boundary. The set is the
+	// shared repo-mutate contract, not a host copy.
+	if !tool.RepoMutateActionAllowed(action) {
+		return "", "", fmt.Errorf("trusted_repo_mutate_action_rejected (%s)", tool.RepoMutateActionHint())
 	}
-	if action == "commit" && message == "" {
+	if tool.RepoMutateNeedsMessage(action) && message == "" {
 		return "", "", fmt.Errorf("trusted_repo_mutate_message_required")
 	}
 	return action, message, nil
@@ -109,7 +114,9 @@ func (h *IMMessageHandler) mutateTrustedRepo(principalID, action, message string
 	case "push":
 		return pushTrustedRepo(ctx, workspace)
 	default:
-		return "", fmt.Errorf("trusted_repo_mutate_action_rejected")
+		// Unreachable while ArgsAllowed gates the same set, but if the two
+		// ever drift the message must still tell the model the real names.
+		return "", fmt.Errorf("trusted_repo_mutate_action_rejected (%s)", tool.RepoMutateActionHint())
 	}
 }
 

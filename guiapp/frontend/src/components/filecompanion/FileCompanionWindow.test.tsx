@@ -26,6 +26,9 @@ const quit = vi.fn();
 const hideWindow = vi.fn();
 const openResult = vi.fn();
 const saveResult = vi.fn();
+const figureDataURL = vi.fn();
+const exportPdf = vi.fn();
+const clipboardWrite = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetFileCompanionBoot: (...args: unknown[]) => boot(...args),
@@ -40,6 +43,8 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
     OpenFileOrShowInFolder: (...args: unknown[]) => openResult(...args),
     ExportTaskResultFile: (...args: unknown[]) => saveResult(...args),
+    FileCompanionFigureDataURL: (...args: unknown[]) => figureDataURL(...args),
+    FileCompanionExportPDF: (...args: unknown[]) => exportPdf(...args),
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -109,6 +114,11 @@ beforeEach(() => {
     hideWindow.mockReset();
     openResult.mockReset();
     saveResult.mockReset();
+    figureDataURL.mockReset();
+    exportPdf.mockReset();
+    clipboardWrite.mockReset();
+    clipboardWrite.mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText: clipboardWrite } });
     localStorage.removeItem("maclaw.fileCompanionInputHistory.v1");
     ready.mockResolvedValue(undefined);
     replaceOffice.mockResolvedValue(undefined);
@@ -120,6 +130,7 @@ beforeEach(() => {
     choose.mockResolvedValue([]);
     openResult.mockResolvedValue(undefined);
     saveResult.mockResolvedValue("D:/out/paper.pdf");
+    figureDataURL.mockImplementation(async (path: string) => `data:image/png;base64,${path}`);
 });
 
 describe("revealCompanionTab", () => {
@@ -762,6 +773,85 @@ describe("FileCompanionWindow", () => {
         });
     });
 
+    it("shows the drawing an answer refers to, and zoom it on click", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/figs.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "总结一下" },
+                {
+                    role: "assistant",
+                    text: "整体如图1所示。",
+                    figures: [{ label: "图1", caption: "整体架构", path: "C:/notes/img/archured.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("整体如图1所示。");
+        await waitFor(() => expect(figureDataURL).toHaveBeenCalledWith("C:/notes/img/archured.png"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-figure-image")).toBeTruthy());
+        expect(screen.getByText(/原文配图/)).toBeTruthy();
+        expect((screen.getByTestId("file-companion-figure-image") as HTMLImageElement).getAttribute("src")).toBe("data:image/png;base64,C:/notes/img/archured.png");
+        fireEvent.click(screen.getByTestId("file-companion-figure-image"));
+        const zoom = screen.getByTestId("file-companion-figure-zoom");
+        expect(zoom.getAttribute("role")).toBe("dialog");
+        expect(zoom.getAttribute("aria-modal")).toBe("true");
+        expect(zoom.getAttribute("aria-label")).toBe("图1 · 整体架构");
+        fireEvent.click(screen.getByTestId("file-companion-figure-zoom"));
+        expect(screen.queryByTestId("file-companion-figure-zoom")).toBeNull();
+    });
+
+    it("shows figures that arrive with a streamed reply", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/streamed.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        fireEvent.change(await screen.findByTestId("file-companion-input"), { target: { value: "这篇讲了什么" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:streamed.md",
+                text: "方法如图2所示。",
+                request_id: "figs",
+                file_companion_figures: [{ index: 2, label: "图2", caption: "训练流程", path: "C:/notes/img/trained.png" }],
+            }));
+        });
+        await screen.findByText("方法如图2所示。");
+        await waitFor(() => expect(screen.getByTestId("file-companion-figure-image")).toBeTruthy());
+        expect(figureDataURL).toHaveBeenCalledWith("C:/notes/img/trained.png");
+    });
+
+    it("shows no drawings when the reply names none", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/plain.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "assistant", text: "这段文字没有问题。" },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这段文字没有问题。");
+        expect(screen.queryByTestId("file-companion-figure-image")).toBeNull();
+        expect(figureDataURL).not.toHaveBeenCalled();
+    });
+
+    it("says so when a drawing cannot be fetched", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/broken.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "总结一下" },
+                { role: "assistant", text: "整体如图1所示。", figures: [{ label: "图1", caption: "整体架构", path: "C:/notes/img/gone.png" }] },
+            ],
+        }));
+        figureDataURL.mockRejectedValue(new Error("gone"));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("整体如图1所示。");
+        await waitFor(() => expect(screen.getByText("无法取图")).toBeTruthy());
+        expect(screen.queryByTestId("file-companion-figure-image")).toBeNull();
+    });
+
     it("clears the right chat on /clear and does not ask the model", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
@@ -1401,12 +1491,83 @@ describe("FileCompanionWindow", () => {
         Object.defineProperty(log, "scrollHeight", { configurable: true, value: 400 });
         Object.defineProperty(log, "clientHeight", { configurable: true, value: 80 });
         log.scrollTop = 0;
+        // Leaving the tail is a gesture, not a distance reading: the upward
+        // wheel is what the follow logic latches on.
+        fireEvent.wheel(log, { deltaY: -40 });
         fireEvent.scroll(log);
         runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "later", request_id: "r1" }));
         await waitFor(() => {
             expect(log.textContent).toContain("later");
         });
         expect(log.scrollTop).toBe(0);
+    });
+
+    it("keeps following a long answer when a scroll arrives without a gesture", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1" }));
+        const runtime = installRuntime();
+        renderWindow();
+        const log = await screen.findByTestId("file-companion-chat-log");
+        Object.defineProperty(log, "scrollHeight", { configurable: true, value: 400 });
+        Object.defineProperty(log, "clientHeight", { configurable: true, value: 80 });
+        log.scrollTop = 0;
+        // No wheel/touch/pointer gesture: this scroll reports the position
+        // after content grew, not the reader leaving the tail.
+        fireEvent.scroll(log);
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "later", request_id: "r1" }));
+        await waitFor(() => {
+            expect(log.textContent).toContain("later");
+        });
+        await waitFor(() => {
+            expect(log.scrollTop).toBe(400);
+        });
+    });
+
+    it("re-pins when only the thinking trail grows", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1" }));
+        const runtime = installRuntime();
+        renderWindow();
+        const log = await screen.findByTestId("file-companion-chat-log");
+        Object.defineProperty(log, "scrollHeight", { configurable: true, value: 400 });
+        Object.defineProperty(log, "clientHeight", { configurable: true, value: 80 });
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "first", request_id: "r1" }));
+        await waitFor(() => {
+            expect(log.textContent).toContain("first");
+        });
+        log.scrollTop = 0;
+        // U+0001 marks the reasoning lane, so the answer text stays put while
+        // the thought grows the bubble.
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "\u0001still thinking", request_id: "r1" }));
+        await waitFor(() => {
+            expect(log.scrollTop).toBe(400);
+        });
+    });
+
+    it("opens the newly selected file's chat at its newest message", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1" }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        await screen.findByTestId("file-companion-tab-b.md");
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        const log = await screen.findByTestId("file-companion-chat-log");
+        Object.defineProperty(log, "scrollHeight", { configurable: true, value: 400 });
+        Object.defineProperty(log, "clientHeight", { configurable: true, value: 80 });
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "answer for a", request_id: "r1" }));
+        await waitFor(() => {
+            expect(log.textContent).toContain("answer for a");
+        });
+        log.scrollTop = 0;
+        fireEvent.wheel(log, { deltaY: -40 });
+        fireEvent.scroll(log);
+        // One scroller serves every file, so the switch must not inherit the
+        // previous file's scrolled-up position.
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        await waitFor(() => {
+            expect(log.scrollTop).toBe(400);
+        });
     });
 
     it("keeps a later edit when an autosave finishes late", async () => {
@@ -1886,6 +2047,116 @@ describe("FileCompanionWindow", () => {
         expect(screen.queryByTestId("file-companion-chat-empty")).toBeNull();
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("我的问题");
+    });
+
+    it("copies an answer as Markdown, unchanged by the bubble rendering", async () => {
+        const answer = "## 小结\n\n**重点** 在第二段。\n\n- 第一点\n- 第二点\n";
+        exportPdf.mockResolvedValue("");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "user", text: "总结一下" }, { role: "assistant", text: answer }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("小结");
+
+        const copy = screen.getByTestId("file-companion-copy-restored:1");
+        expect(copy.getAttribute("title")).toBe("复制为 Markdown");
+        fireEvent.click(copy);
+        // The bubble shows the answer trimmed, and the copy carries what the
+        // bubble shows, Markdown markers and all.
+        await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(answer.trim()));
+        await waitFor(() => expect(copy.getAttribute("data-state")).toBe("ok"));
+        expect(copy.getAttribute("title")).toBe("已复制");
+        // The own question carries no controls: only answers are copied out.
+        expect(screen.queryAllByTestId(/^file-companion-copy-/)).toHaveLength(1);
+        expect(screen.queryAllByTestId(/^file-companion-export-pdf-/)).toHaveLength(1);
+    });
+
+    it("exports an answer to the PDF the reader names", async () => {
+        const answer = "# 摘要\n\n这是正文。\n";
+        exportPdf.mockResolvedValue("C:/out/a-回答.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "user", text: "总结一下" }, { role: "assistant", text: answer }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("摘要");
+
+        const pdf = screen.getByTestId("file-companion-export-pdf-restored:1");
+        expect(pdf.getAttribute("title")).toBe("导出为 PDF");
+        fireEvent.click(pdf);
+        await waitFor(() => expect(exportPdf).toHaveBeenCalledWith("C:/notes/a.md", answer.trim()));
+        await screen.findByText("已导出 PDF");
+        expect(pdf.getAttribute("data-state")).toBe("ok");
+    });
+
+    it("reports a failed export instead of claiming success", async () => {
+        exportPdf.mockRejectedValue(new Error("没有可用的中文字体，无法生成 PDF"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        const pdf = screen.getByTestId("file-companion-export-pdf-restored:0");
+        fireEvent.click(pdf);
+        await screen.findByText("没有可用的中文字体，无法生成 PDF");
+        await waitFor(() => expect(pdf.getAttribute("data-state")).toBe("err"));
+        expect(pdf.getAttribute("title")).toBe("导出失败");
+    });
+
+    it("stays quiet when the export dialog is cancelled", async () => {
+        exportPdf.mockResolvedValue("");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        const pdf = screen.getByTestId("file-companion-export-pdf-restored:0");
+        fireEvent.click(pdf);
+        await waitFor(() => expect(exportPdf).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText("已导出 PDF")).toBeNull();
+        expect(pdf.getAttribute("data-state")).toBe("idle");
+    });
+
+    it("offers no answer controls while the reply is still streaming", async () => {
+        let release: () => void = () => undefined;
+        send.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        fireEvent.change(await screen.findByTestId("file-companion-input"), { target: { value: "总结一下" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        act(() => {
+            runtime.emit("ai-assistant-token", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "正在整理答案。",
+                request_id: "copy-live",
+            }));
+        });
+        await screen.findByText("正在整理答案。");
+        // A streaming answer is not finished Markdown yet, so it offers neither
+        // control; they appear once the reply settles.
+        expect(screen.queryAllByTestId(/^file-companion-copy-/)).toHaveLength(0);
+        expect(screen.queryAllByTestId(/^file-companion-export-pdf-/)).toHaveLength(0);
+        await act(async () => { release(); await Promise.resolve(); });
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "整理好了。",
+                request_id: "copy-live",
+            }));
+        });
+        await waitFor(() => expect(screen.queryAllByTestId(/^file-companion-copy-/)).toHaveLength(1));
     });
 
     it("asks again when a closed empty chat is opened, and skips a chat that was restored", async () => {

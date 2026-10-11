@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestDynamicToolBuilder_DoesNotEmitLegacyDynamicGateways(t *testing.T) {
+func TestDynamicToolBuilder_SuppressesOnlyProviderPickingGateway(t *testing.T) {
 	r := NewToolRegistry()
 	for _, name := range []string{"manage_skill", "call_mcp_tool", "read_file"} {
 		r.Register(RegisteredTool{Name: name, Description: name + " description", Category: ToolCategoryBuiltin, Status: RegToolAvailable})
@@ -13,11 +13,24 @@ func TestDynamicToolBuilder_DoesNotEmitLegacyDynamicGateways(t *testing.T) {
 
 	b := NewDynamicToolBuilder(r)
 	for _, defs := range [][]map[string]interface{}{b.BuildAll(), b.Build("run the installed skill")} {
+		var sawManageSkill bool
 		for _, def := range defs {
 			name := extractToolName(def)
-			if name == "manage_skill" || name == "call_mcp_tool" {
-				t.Fatalf("generic builder emitted legacy dynamic gateway %q: %#v", name, defs)
+			// call_mcp_tool selects its provider in the arguments, so it must
+			// never reach the model through the generic builder.
+			if name == "call_mcp_tool" {
+				t.Fatalf("generic builder emitted provider-picking gateway %q: %#v", name, defs)
 			}
+			if name == "manage_skill" {
+				sawManageSkill = true
+			}
+		}
+		// manage_skill is a host-bound baseline, not a provider picker: a full
+		// surface pins the local skill runtime and the desktop executor binds
+		// the call to the local skill registry, so the builder emits it. The
+		// Router keeps it out of *retrieval ranking* instead.
+		if !sawManageSkill {
+			t.Fatalf("manage_skill baseline must be emitted by the full surface: %#v", defs)
 		}
 	}
 }

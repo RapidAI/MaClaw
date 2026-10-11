@@ -569,10 +569,23 @@ func TestRouter_BrowserSessionPinDoesNotRestoreMatchedSkillGateway(t *testing.T)
 	}
 }
 
-func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
+// The generic builder emits manage_skill as a host-bound execution baseline:
+// a full surface pins the local skill runtime and the desktop executor binds
+// the call to the local skill registry. Only the provider-picking
+// call_mcp_tool gateway is suppressed (omittedFromHostToolCatalog).
+//
+// manage_skill is kept out of *retrieval ranking* by the Router, not by this
+// builder -- see TestManageSkillIsHostBoundBaselineNotProviderPicker. These
+// four cases replace assertions that manage_skill must be absent, which
+// described the pre-2026-10-06 contract where IsLegacyModelDynamicGateway
+// gated the builder directly. That gate was narrowed to call_mcp_tool when the
+// builder started emitting manage_skill as a baseline; the assertions were
+// left behind and have been stale ever since.
+func TestDynamicToolBuilder_EmitsManageSkillBaselineWithSkillProvider(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "call_mcp_tool", Description: "call mcp tool", Category: CategoryBuiltin})
 	for i := 0; i < 25; i++ {
 		reg.Register(RegisteredTool{
 			Name:        fmt.Sprintf("filler_%d", i),
@@ -594,12 +607,15 @@ func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
 
 	result := builder.Build("帮我部署应用")
 
-	if toolIndexForTest(result, "manage_skill") >= 0 {
-		t.Fatalf("dynamic skill gateway must not be emitted by the generic builder: %v", toolNamesForTest(result))
+	if toolIndexForTest(result, "manage_skill") < 0 {
+		t.Fatalf("manage_skill must be emitted as a host-bound baseline: %v", toolNamesForTest(result))
+	}
+	if toolIndexForTest(result, "call_mcp_tool") >= 0 {
+		t.Fatalf("provider-picking call_mcp_tool must stay suppressed: %v", toolNamesForTest(result))
 	}
 }
 
-func TestDynamicToolBuilder_DoesNotExposeMatchedSkillBelowLegacyThreshold(t *testing.T) {
+func TestDynamicToolBuilder_EmitsManageSkillBaselineBelowLegacyThreshold(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
@@ -627,29 +643,38 @@ func TestDynamicToolBuilder_DoesNotExposeMatchedSkillBelowLegacyThreshold(t *tes
 	if score <= 0 || score > 0.3 || len(matched) == 0 {
 		t.Fatalf("skill score = %.4f matched=%v, want low positive match", score, matched)
 	}
+	// The baseline is emitted from the registry's builtin set, so a low skill
+	// score does not gate it. Only the ranking slot is withheld.
 	result := builder.Build("shared")
-	if toolIndexForTest(result, "manage_skill") >= 0 {
-		t.Fatalf("low-score matched skill must not expose legacy gateway: %#v", result)
+	if toolIndexForTest(result, "manage_skill") < 0 {
+		t.Fatalf("manage_skill baseline must not be gated by skill score: %#v", result)
 	}
 }
 
-func TestDynamicToolBuilder_DoesNotExposeMatchedSkillWithoutRouting(t *testing.T) {
+func TestDynamicToolBuilder_EmitsManageSkillBaselineWithoutRouting(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "call_mcp_tool", Description: "call mcp tool", Category: CategoryBuiltin})
 
 	builder := NewDynamicToolBuilder(reg)
 	builder.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "live-skill", Triggers: []string{"live"}, Description: "live lookup", Capabilities: []string{"current_data"}},
 	}})
 
+	// Three registered tools are below maxDirectTools, so this exercises the
+	// unfiltered path: the baseline still appears there, and call_mcp_tool is
+	// still suppressed on it.
 	result := builder.Build("live")
-	if toolIndexForTest(result, "manage_skill") >= 0 {
-		t.Fatalf("matched skill must not expose a generic gateway: %#v", result)
+	if toolIndexForTest(result, "manage_skill") < 0 {
+		t.Fatalf("manage_skill baseline must be emitted on the small-catalog path: %#v", result)
+	}
+	if toolIndexForTest(result, "call_mcp_tool") >= 0 {
+		t.Fatalf("provider-picking call_mcp_tool must stay suppressed: %v", toolNamesForTest(result))
 	}
 }
 
-func TestDynamicToolBuilder_DoesNotPrioritizeMatchedSkillGateway(t *testing.T) {
+func TestDynamicToolBuilder_EmitsManageSkillBaselineUnderBudgetPressure(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "web_search", Description: "search web", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
@@ -667,8 +692,10 @@ func TestDynamicToolBuilder_DoesNotPrioritizeMatchedSkillGateway(t *testing.T) {
 		{Name: "Live Lookup", Triggers: []string{"live"}, Description: "live current data lookup", Capabilities: []string{"current_data"}},
 	}})
 
+	// Budget pressure trims the dynamic slots. The baseline is not a dynamic
+	// candidate, so it must survive the trim rather than be ranked into it.
 	result := builder.Build("live")
-	if toolIndexForTest(result, "manage_skill") >= 0 {
-		t.Fatalf("dynamic skill gateway must not enter generic ranking: %v", toolNamesForTest(result))
+	if toolIndexForTest(result, "manage_skill") < 0 {
+		t.Fatalf("manage_skill baseline must survive budget pressure: %v", toolNamesForTest(result))
 	}
 }

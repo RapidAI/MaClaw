@@ -40,7 +40,7 @@ func semanticTrustedComputerUseDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedComputerUseAdapter,
-			"description": "Perform one host-observed desktop action. Group sessions and missing CU runtimes stay unmet.",
+			"description": "Perform one host-observed desktop action: observe the screen, click, or finish with done. Group sessions and missing CU runtimes stay unmet.",
 			"parameters":  semanticTrustedComputerUseInvocationSchema(),
 		},
 	}
@@ -50,7 +50,11 @@ func semanticTrustedComputerUseInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action": map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the verb, which is
+			// how the browser adapter started refusing "open" (2026-10-10). The
+			// canonicalizer does not read enum, so the check in ArgsAllowed
+			// stays the boundary and this is documentation for the model.
+			"action": map[string]interface{}{"type": "string", "enum": tool.ComputerControlActions()},
 		},
 		"required":             []string{"action"},
 		"additionalProperties": false,
@@ -78,10 +82,10 @@ func semanticTrustedComputerUseArgsAllowed(args map[string]interface{}) (action 
 	if !hasAction {
 		return "", fmt.Errorf("trusted_computer_use_action_required")
 	}
-	switch action {
-	case "observe", "click", "done":
-	default:
-		return "", fmt.Errorf("trusted_computer_use_action_rejected")
+	// Re-checked against the enum the model was shown, because a boundary that
+	// only exists in a rendered document is not a boundary.
+	if !tool.ComputerControlActionAllowed(action) {
+		return "", fmt.Errorf("trusted_computer_use_action_rejected (%s)", tool.ComputerControlActionHint())
 	}
 	return action, nil
 }
@@ -122,7 +126,9 @@ func (h *IMMessageHandler) controlTrustedDesktop(principalID, action string) (st
 		}
 		text = completed
 	default:
-		return "", fmt.Errorf("trusted_computer_use_action_rejected")
+		// Unreachable while ArgsAllowed gates the same set, but if the two
+		// ever drift the message must still tell the model the real names.
+		return "", fmt.Errorf("trusted_computer_use_action_rejected (%s)", tool.ComputerControlActionHint())
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {

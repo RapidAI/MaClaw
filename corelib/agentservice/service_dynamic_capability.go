@@ -300,6 +300,20 @@ func (s *Service) ConfigureDynamicSemanticRouting(registry *coretool.CapabilityR
 	if s == nil {
 		return fmt.Errorf("service is unavailable")
 	}
+	// The planner catalog and the dynamic capability publisher must share this
+	// one vocabulary instance (see Service.registry): the publisher registers
+	// vendor-declared external capabilities into it at publish time, and the
+	// catalog validates provisions against it. A divergent registry would make
+	// those capabilities "unknown" during PublishWithCoverage and break routing.
+	//
+	// Published under dynamicSemanticMu so a concurrent
+	// DynamicSemanticRegistry() read cannot observe a torn/partial value. The
+	// assignment is its own minimal critical section: the calls below hand `s`
+	// to the executor and start a background worker, both of which may re-enter
+	// this mutex, so holding it across them would self-deadlock.
+	s.dynamicSemanticMu.Lock()
+	s.registry = registry
+	s.dynamicSemanticMu.Unlock()
 	configurer, ok := s.executor.(interface {
 		SetDynamicSemanticRouting(DynamicSemanticRouting) error
 	})

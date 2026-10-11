@@ -225,3 +225,64 @@ func TestAdmittedDesktopFailureSettlesWhenTheRunFails(t *testing.T) {
 		t.Fatalf("failed run stop=%d, want 1", desk.stop)
 	}
 }
+
+// TestDesktopRunSupplementsReportsTheRecordedOutcome checks the read side of
+// the supplement contract: the final states of one run's supplements come back
+// verbatim, addressed through the bot's own instance, and an unknown bot is
+// reported as not found rather than proxied.
+func TestDesktopRunSupplementsReportsTheRecordedOutcome(t *testing.T) {
+	var gotPath string
+	tokenCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			tokenCalls++
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/runs/run_42/supplements"):
+			gotPath = r.URL.Path
+			_, _ = w.Write([]byte(`{"items":[{"id":"sup-1","run_id":"run_42","state":"missed","content":"只要前5条"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+
+	items, err := svc.DesktopRunSupplements(context.Background(), "tenant-a", "alice", "bot_alice", "run_42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "sup-1" || items[0].State != "missed" || items[0].Content != "只要前5条" {
+		t.Fatalf("items = %#v", items)
+	}
+	if want := "/api/v1/instances/inst_alice/runs/run_42/supplements"; !strings.HasSuffix(gotPath, want) {
+		t.Fatalf("asked %q, want suffix %q", gotPath, want)
+	}
+	if tokenCalls == 0 {
+		t.Fatal("the proxy did not authenticate as the owner")
+	}
+
+	// Another bot's record is not this caller's, so it is not found — the
+	// proxy must not widen the question past the named bot.
+	if _, err := svc.DesktopRunSupplements(context.Background(), "tenant-a", "alice", "bot_other", "run_42"); err == nil {
+		t.Fatal("an unknown bot answered")
+	}
+}

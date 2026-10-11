@@ -281,7 +281,11 @@ func paperFindPDFTool(name string) string {
 }
 
 func paperRenderFigurePages(source, dir string, pages []int, sessionID string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Matches the companion's own page render: on a loaded machine a first
+	// PyMuPDF call (importing the module, warming the page tree) takes well
+	// past half a minute, and a timeout here degrades the answer to extracted
+	// images rather than failing.
+	ctx, cancel := context.WithTimeout(context.Background(), fileCompanionRenderBudget)
 	defer cancel()
 	engine := paperRasterEngines()
 	var pyErr error

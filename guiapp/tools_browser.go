@@ -140,11 +140,15 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	})
 	// Catalog registration only: the browser family drives an external effect,
 	// so it is served on managed turns exclusively by the trusted host adapter
-	// (intent rule LabelBrowser → browser.control.web, published only when a
-	// browser runtime/session is live; a confident turn without one HostRejects
-	// as unmet rather than falling back to this legacy tool). Only the merged
-	// entry is annotated; the individual browser_* handlers are internal
-	// dispatch targets, never separate catalog providers.
+	// (intent rule LabelBrowser → browser.control.web). That adapter publishes
+	// whenever the host is servable: a live session, a discoverable CDP
+	// runtime, or an installed Chrome/Edge the managed launcher can start (a
+	// restart with no runtime yet is recoverable, not infeasible — publishing
+	// only on "already alive" is the 2026-10-10 catalog-refusal incident). A
+	// confident turn on a host with no browser at all HostRejects as unmet
+	// rather than falling back to this legacy tool. Only the merged entry is
+	// annotated; the individual browser_* handlers are internal dispatch
+	// targets, never separate catalog providers.
 	annotateSemanticTool(registry, MergedBrowserToolName, []tool.CapabilityProvision{{
 		Capability: tool.CapabilityBrowserControlWeb, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectExternalEffect})

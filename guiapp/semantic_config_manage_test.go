@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -163,4 +164,60 @@ func TestIMSemanticConfigPersistsSafeFieldsOnly(t *testing.T) {
 	if got := app.GetMaclawLLMThinkingMode(); got != "disabled" {
 		t.Fatalf("persisted thinking=%q", got)
 	}
+}
+
+// TestTrustedConfigThinkingModeVocabulary pins the drift fix: the GUI surface
+// used to keep its own spelling list and refused "true", which the shared
+// parser the agent-service surface uses accepts. After the delegation both
+// hosts answer "which spellings exist" identically: canonical names advertised
+// in the enum, legacy truthy/falsy aliases still accepted-but-unadvertised,
+// auto still reading as unset. The refusal must name the canonical set so the
+// first failure can redirect the turn instead of ending it.
+func TestTrustedConfigThinkingModeVocabulary(t *testing.T) {
+	schema := semanticTrustedConfigInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("config schema has no properties: %#v", schema)
+	}
+	thinking, ok := properties["thinking_mode"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("config schema has no thinking_mode property: %#v", properties)
+	}
+	enum, ok := thinking["enum"].([]string)
+	if !ok || len(enum) != 2 {
+		t.Fatalf("thinking_mode must advertise the canonical pair, got %#v", thinking["enum"])
+	}
+	for _, name := range enum {
+		mode, ok := semanticTrustedConfigThinkingMode(name)
+		if !ok || mode != name {
+			t.Fatalf("schema advertises mode %q, but the parser maps it to (%q, %v)", name, mode, ok)
+		}
+	}
+	// The shared set: legacy spellings accepted on both hosts, not advertised.
+	for _, sent := range []string{"true", "1", "false", "none", "on", "disable", "auto", ""} {
+		if _, ok := semanticTrustedConfigThinkingMode(sent); !ok {
+			t.Fatalf("enumless-but-valid spelling %q must stay accepted by the shared parser", sent)
+		}
+	}
+	for _, invented := range []string{"zhipu", "high", "medium"} {
+		_, err := administerConfigThinkingModeProbe(t, invented)
+		if err == nil || !strings.Contains(err.Error(), "trusted_config_thinking_mode_rejected") {
+			t.Fatalf("mode %q = %v, want trusted_config_thinking_mode_rejected", invented, err)
+		}
+		for _, valid := range corelib.GlobalThinkingModeOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}
+
+// administerConfigThinkingModeProbe drives one invented mode through the real
+// administer path, the same way a thinking-only update turn does: the app
+// fixture lets the config manager exist so the parse and its refusal are the
+// first rejection the turn hits.
+func administerConfigThinkingModeProbe(t *testing.T, mode string) (string, error) {
+	t.Helper()
+	h := &IMMessageHandler{app: &App{testHomeDir: t.TempDir()}}
+	return h.administerTrustedConfig("user-1", 0, false, mode, true)
 }

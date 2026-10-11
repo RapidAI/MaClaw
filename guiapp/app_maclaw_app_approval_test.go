@@ -13,6 +13,20 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+// closeAppLazilyOpenedStores releases the SQLite handles an app-level test may
+// have opened lazily (dynamic capability contracts, memory store). Windows
+// TempDir cleanup fails while a handle is open, so a test that reaches these
+// stores must stop them before its TempDir goes away.
+func closeAppLazilyOpenedStores(app *App) {
+	app.closeSemanticInvocationStore()
+	app.memoryStoreMu.Lock()
+	if app.memoryStore != nil {
+		app.memoryStore.Stop()
+		app.memoryStore = nil
+	}
+	app.memoryStoreMu.Unlock()
+}
+
 // pinApprovalWorkflowTestLLMConfig selects a loopback no-auth LLM provider so
 // skill runs that start the default-on GUI OpenAI proxy (corelib.NeedsOpenAIProxyAuto)
 // pass upstream validation instead of inheriting the machine's real provider.
@@ -1808,6 +1822,7 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"progress_instances":[{"status":"pending","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"manager.approval","workflow_node_ids":["expense.submit","manager.approval"],"current_assignee":"manager","current_assignee_type":"user","business_status":"finance_pending","result_status":"running","result":"manager review started","result_payload":{"text":"manager review started","business_record":{"id":"expense-runner-1","status":"finance_pending"}},"outputs":[{"type":"content","title":"Workflow Progress","text":"manager review started","status":"running"}]}],"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-runner-1","business_status":"finance_approved","result_status":"approved","result":"approved by workflow skill","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-runner-1","status":"finance_approved"},"text":"approved by workflow skill"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by workflow skill"},{"type":"artifact","title":"Workflow PDF","artifact":{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}}],"artifacts":[{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -1995,6 +2010,7 @@ func TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult(t *te
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"attention","lane":"attention","workflow_instance_id":"wf-attn-runner-1","approval_id":"approval-attn-runner-1","record_id":"expense-attn-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.attention","workflow_node_ids":["expense.submit","manager.approval","expense.attention"],"business_status":"finance_attention","result_status":"attention","result":"invoice missing, view only","result_payload":{"approval_result":"attention","business_status":"finance_attention","business_record":{"id":"expense-attn-runner-1","status":"finance_attention"},"text":"invoice missing, view only"},"outputs":[{"type":"content","title":"Needs attention","text":"invoice missing, view only","status":"attention"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -2146,6 +2162,7 @@ func TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult(t *testing.T) 
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"rejected","lane":"handled","workflow_instance_id":"wf-reject-runner-1","approval_id":"approval-reject-runner-1","record_id":"expense-reject-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-reject-runner-1","business_status":"finance_rejected","result_status":"rejected","result":"rejected by policy","result_payload":{"approval_result":"rejected","business_status":"finance_rejected","business_record":{"id":"expense-reject-runner-1","status":"finance_rejected"},"text":"rejected by policy"},"outputs":[{"type":"content","title":"Workflow Decision","text":"rejected by policy","status":"rejected"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -2304,6 +2321,7 @@ func TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"timeout","lane":"handled","workflow_instance_id":"wf-timeout-runner-1","approval_id":"approval-timeout-runner-1","record_id":"expense-timeout-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.timeout","workflow_node_ids":["expense.submit","manager.approval","expense.timeout"],"workflow_decision_id":"decision-timeout-runner-1","business_status":"approval_timeout","result_status":"timeout","result":"approval timed out","result_payload":{"approval_result":"timeout","business_status":"approval_timeout","business_record":{"id":"expense-timeout-runner-1","status":"approval_timeout"},"text":"approval timed out"},"outputs":[{"type":"content","title":"Workflow Timeout","text":"approval timed out","status":"timeout"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -2462,6 +2480,7 @@ func TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult(t *testing.T)
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"cancelled","lane":"handled","workflow_instance_id":"wf-cancel-runner-1","approval_id":"approval-cancel-runner-1","record_id":"expense-cancel-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.cancelled","workflow_node_ids":["expense.submit","manager.approval","expense.cancelled"],"workflow_decision_id":"decision-cancel-runner-1","business_status":"approval_cancelled","result_status":"cancelled","result":"approval cancelled by requester","result_payload":{"approval_result":"cancelled","business_status":"approval_cancelled","business_record":{"id":"expense-cancel-runner-1","status":"approval_cancelled"},"text":"approval cancelled by requester"},"outputs":[{"type":"content","title":"Workflow Cancelled","text":"approval cancelled by requester","status":"cancelled"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -2620,6 +2639,7 @@ func TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult(t *testin
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"requires_input","workflow_instance_id":"wf-input-runner-1","approval_id":"approval-input-runner-1","record_id":"expense-input-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.require_input","workflow_node_ids":["expense.submit","expense.require_input"],"workflow_decision_id":"decision-input-runner-1","business_status":"waiting_for_requester","result_status":"requires_input","result":"missing invoice attachment","result_payload":{"approval_result":"requires_input","business_status":"waiting_for_requester","requires_input":{"fields":["invoice_attachment"],"message":"missing invoice attachment"},"business_record":{"id":"expense-input-runner-1","status":"waiting_for_requester"},"text":"missing invoice attachment"},"outputs":[{"type":"content","kind":"requires_input","title":"Missing materials","text":"missing invoice attachment","status":"requires_input"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -2779,6 +2799,7 @@ func TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement(t *t
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-input-runner-2","approval_id":"approval-input-runner-2","record_id":"expense-input-runner-2","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.require_input","manager.approval","expense.result"],"workflow_decision_id":"decision-input-runner-2","business_status":"finance_approved","result_status":"approved","result":"approved after supplemental input","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-input-runner-2","status":"finance_approved"},"text":"approved after supplemental input"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved after supplemental input","status":"approved"}]}}`
 	pinApprovalWorkflowTestLLMConfig(t, app)
@@ -2985,6 +3006,7 @@ func TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult(t *testi
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeAppLazilyOpenedStores(app) })
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	failCommand := `exit 7`
 	if os.PathSeparator == '\\' {

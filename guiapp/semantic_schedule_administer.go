@@ -70,7 +70,7 @@ func semanticTrustedScheduleInvocationSchema() map[string]interface{} {
 			"name":             map[string]interface{}{"type": "string"},
 			"task_action":      map[string]interface{}{"type": "string"},
 			"id":               map[string]interface{}{"type": "string"},
-			"status":           map[string]interface{}{"type": "string"},
+			"status":           map[string]interface{}{"type": "string", "enum": tool.ScheduleStatusOptions()},
 			"hour":             map[string]interface{}{"type": "integer"},
 			"minute":           map[string]interface{}{"type": "integer"},
 			"day_of_week":      map[string]interface{}{"type": "integer"},
@@ -162,17 +162,13 @@ func semanticTrustedScheduleDispatch(a semanticTrustedScheduleArgs) (string, boo
 	return "delete", true
 }
 
+// semanticTrustedScheduleStatus maps what the model sent to the canonical
+// value the record stores. The vocabulary, its aliases, and the empty-is-unset
+// reading all live in the shared schedule contract: the GUI surface and the
+// agent-service surface both serve schedule.administer.local, and two copies
+// of this answer would drift.
 func semanticTrustedScheduleStatus(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "paused", "pause":
-		return "paused", true
-	case "active", "resume":
-		return "active", true
-	case "":
-		return "", true
-	default:
-		return "", false
-	}
+	return tool.ScheduleStatusCanonical(raw)
 }
 
 func (h *IMMessageHandler) administerTrustedSchedule(principalID string, args semanticTrustedScheduleArgs) (string, error) {
@@ -212,7 +208,7 @@ func (h *IMMessageHandler) administerTrustedSchedule(principalID string, args se
 	}
 	status, statusOK := semanticTrustedScheduleStatus(args.Status)
 	if !statusOK {
-		return "", fmt.Errorf("trusted_schedule_status_rejected")
+		return "", fmt.Errorf("trusted_schedule_status_rejected (%s)", tool.ScheduleStatusHint())
 	}
 	manager := h.scheduledTaskManagerForTool()
 	if manager == nil {

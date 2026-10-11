@@ -43,9 +43,9 @@ type MCPToolAnnotations struct {
 // the host default effect ceiling) and publishes a specific contract so the
 // planner can name the tool by capability rather than only generic lookup.
 type ObservedMCPTool struct {
-	Name        string
-	InputSchema map[string]interface{}
-	Annotations  *MCPToolAnnotations
+	Name                 string
+	InputSchema          map[string]interface{}
+	Annotations          *MCPToolAnnotations
 	DeclaredCapabilities []coretool.CapabilityID
 }
 
@@ -563,9 +563,54 @@ func (p *DynamicCapabilityContractPublisher) mergeVendorDeclaredCapabilities(pri
 			ID:      capID,
 			Version: "v1",
 			Owner:   "vendor",
-			Summary: fmt.Sprintf("Vendor-declared capability %s from installed MCP %s/%s", capID, serverID, tool.Name),
-			Effects: append([]coretool.EffectClass(nil), contract.Effects...),
+			// The descriptor is the governed vocabulary entry for the
+			// capability, not a binding record: it must not carry
+			// server/tool identity. Two installed servers declaring the same
+			// x: capability must produce an identical descriptor so
+			// registration is idempotent across servers; baking the server or
+			// tool name in here would make the second server's descriptor
+			// conflict with the first and silently drop the capability.
+			Summary: fmt.Sprintf("Vendor-declared capability %s", capID),
+			// Effects is filled below: it must be identity-free for the same
+			// reason. contract.Effects is per-tool -- the open family narrows
+			// it from the tool's MCP readOnlyHint, so one server may declare
+			// the capability as ReadOnly while another declares it as
+			// ExternalEffect. externalDescriptorEqual compares the descriptor
+			// field by field and the registry never updates an existing one, so
+			// a descriptor carrying any single server's value would conflict
+			// with every other server that declares the same capability.
+			//
+			// The descriptor therefore carries the capability's NAMESPACE
+			// EFFECT CEILING: a host-reviewed constant, independent of which
+			// servers are installed and of how each annotated its tools, so all
+			// registrations are identical and idempotent.
+			//
+			// This grants no authority. The descriptor only states the maximum
+			// outcome space the namespace may ever use; what a given provider
+			// may actually declare is still checked twice -- contract.Effects
+			// is the per-server execution envelope enforced at publication and
+			// settlement, and PublishWithCoverage rejects any provider effect
+			// the descriptor does not permit. Because the ceiling is exactly
+			// what RegisterExternalCapability validates against, a namespace
+			// the host never widened can never acquire sensitive or
+			// local_mutation authority through an installed server.
+			//
+			// That last property is exactly why the ceiling check below is
+			// mandatory rather than redundant. Since desc.Effects IS the
+			// ceiling, RegisterExternalCapability's own loop compares the
+			// ceiling against itself and can never fail: without this explicit
+			// per-provider check, registration would succeed for ANY server
+			// whose tool envelope exceeds what the host reviewed, and the only
+			// remaining guard would be the later PublishWithCoverage step --
+			// which runs after the capability has already entered the governed
+			// vocabulary. Fail closed here, before registration.
 		}
+		nsCeiling := p.registry.ExternalEffectCeiling(ns)
+		if !coretool.EffectsWithinCeiling(contract.Effects, nsCeiling) {
+			errs = append(errs, fmt.Errorf("vendor capability %q from %s/%s declares effects %v exceeding namespace %q ceiling %v", capID, serverID, tool.Name, contract.Effects, ns, nsCeiling))
+			continue
+		}
+		desc.Effects = nsCeiling
 		if err := p.registry.RegisterExternalCapability(ns, desc); err != nil {
 			errs = append(errs, fmt.Errorf("register vendor capability %q: %w", capID, err))
 			continue
@@ -608,10 +653,10 @@ func (p *DynamicCapabilityContractPublisher) recordDeclaredExternal(serverID str
 // closes plan §2.1's "installed but not reviewed" gap: the provider is listed
 // (not silently hidden) and can trigger a petition to widen its ceiling.
 type InstalledNotReviewedProvider struct {
-	ServerID            string
+	ServerID             string
 	DeclaredCapabilities []coretool.CapabilityID
-	Namespace           string
-	CeilingReviewed     bool
+	Namespace            string
+	CeilingReviewed      bool
 }
 
 // ListInstalledNotReviewedProviders returns every installed MCP server that
@@ -635,10 +680,10 @@ func (p *DynamicCapabilityContractPublisher) ListInstalledNotReviewedProviders()
 			ceilingReviewed = !p.registry.ExternalCeilingIsDefault(ns)
 		}
 		out = append(out, InstalledNotReviewedProvider{
-			ServerID:            serverID,
+			ServerID:             serverID,
 			DeclaredCapabilities: append([]coretool.CapabilityID(nil), caps...),
-			Namespace:           ns,
-			CeilingReviewed:     ceilingReviewed,
+			Namespace:            ns,
+			CeilingReviewed:      ceilingReviewed,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })

@@ -208,3 +208,59 @@ func TestIMSemanticKnowledgeAdminScopesStoreToPrincipal(t *testing.T) {
 		t.Fatalf("desktop host-local disable=%q err=%v", localUpdated, err)
 	}
 }
+
+// TestTrustedKnowledgeAdminStatusVocabulary pins the vocabulary at this host:
+// the schema advertises only canonical names, imperative aliases still reach
+// them, and the refusal names the canonical set. Both come from the shared
+// knowledge-admin contract, so this host cannot drift from the agent-service
+// surface serving knowledge.administer.
+func TestTrustedKnowledgeAdminStatusVocabulary(t *testing.T) {
+	schema := semanticTrustedKnowledgeAdminInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("knowledge-admin schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("knowledge-admin schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) != 3 {
+		t.Fatalf("status must advertise the canonical set, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := semanticTrustedKnowledgeAdminStatus(name)
+		if !ok || canonical != name {
+			t.Fatalf("schema advertises status %q, but the parser maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for sent, want := range map[string]string{"disable": "disabled", "active": "enabled", "delete": "deleted"} {
+		canonical, ok := semanticTrustedKnowledgeAdminStatus(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	if _, ok := semanticTrustedKnowledgeAdminStatus(""); !ok {
+		t.Fatal("empty status must stay accepted-as-unset")
+	}
+	for _, invented := range []string{"archived", "paused", "purged"} {
+		_, err := administerKnowledgeStatusProbe(t, invented)
+		if err == nil || !strings.Contains(err.Error(), "trusted_knowledge_admin_status_rejected") {
+			t.Fatalf("status %q = %v, want trusted_knowledge_admin_status_rejected", invented, err)
+		}
+		for _, valid := range tool.KnowledgeAdminStatusOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}
+
+// administerKnowledgeStatusProbe drives one invented status through the real
+// administer path. With no backing store the run reaches the status check
+// before the store matters, which is exactly the shape an update turn has.
+func administerKnowledgeStatusProbe(t *testing.T, status string) (string, error) {
+	t.Helper()
+	h := &IMMessageHandler{app: &App{testHomeDir: t.TempDir()}}
+	return h.administerTrustedKnowledge("user-1", "src-1", status, false, false)
+}

@@ -159,25 +159,41 @@ func TestReviewedMCPObservationPublishesExactToolNameOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ReviewedMCPCapabilityContracts(); len(got) != 1 || got["work_log_query"].ObservedBindingDigest != "" || got["work_log_query"].Provisions[0].Capability != coretool.CapabilityRecordReadWorklog {
-		t.Fatalf("reviewed MCP map=%#v", got)
+	query := ReviewedMCPCapabilityContracts()["work_log_query"]
+	mutation := ReviewedMCPCapabilityContracts()["work_log_update"]
+	if len(ReviewedMCPCapabilityContracts()) != 2 || query.ObservedBindingDigest != "" || mutation.ObservedBindingDigest != "" {
+		t.Fatalf("reviewed MCP map=%#v", ReviewedMCPCapabilityContracts())
+	}
+	if query.Provisions[0].Capability != coretool.CapabilityRecordReadWorklog || query.Effects[0] != coretool.EffectReadOnly {
+		t.Fatalf("reviewed query contract=%#v", query)
+	}
+	if mutation.Provisions[0].Capability != coretool.CapabilityRecordUpdateWorklog || mutation.Effects[0] != coretool.EffectExternalEffect {
+		t.Fatalf("reviewed mutation contract=%#v", mutation)
 	}
 	if len(ReviewedSkillCapabilityContracts()) != 0 {
 		t.Fatalf("reviewed skill map must stay empty until a stable ID is reviewed: %#v", ReviewedSkillCapabilityContracts())
 	}
 	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"day": map[string]interface{}{"type": "string"}}}
 	principal := Principal{TenantID: "desktop", UserID: "desktop-user"}
-	// work_log_update is absent from the reviewed map even when a description
-	// would say it edits a work record. The observation carries no description
-	// into the publisher.
+	// work_log_write is a plausible neighbouring name for the same act and is
+	// absent from the reviewed map. A reviewed name is what admits a
+	// mutation, so this one stays unpublished even though work_log_update
+	// next to it is admitted. The observation carries no description into
+	// the publisher.
 	if err := publisher.PublishReviewedMCPObservation(principal, "tengyun", []ObservedMCPTool{
+		{Name: "work_log_write", InputSchema: schema},
 		{Name: "work_log_update", InputSchema: schema},
 		{Name: "work_log_query", InputSchema: schema},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "tengyun", "work_log_update"); ok {
+	if _, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "tengyun", "work_log_write"); ok {
 		t.Fatal("unlisted mutation tool was published")
+	}
+	update, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "tengyun", "work_log_update")
+	wantUpdateDigest := DynamicMCPObservedBindingDigest("tengyun", "work_log_update", schema)
+	if !ok || update.ObservedBindingDigest != wantUpdateDigest || update.Provisions[0].Capability != coretool.CapabilityRecordUpdateWorklog || update.Provisions[0].Quality != 2 || update.Effects[0] != coretool.EffectExternalEffect {
+		t.Fatalf("update contract=%#v ok=%v", update, ok)
 	}
 	contract, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "tengyun", "work_log_query")
 	wantDigest := DynamicMCPObservedBindingDigest("tengyun", "work_log_query", schema)
@@ -210,7 +226,7 @@ func TestReviewedMCPCapabilityBindingJoinsIdentityNotToolName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ReviewedMCPCapabilityContracts(); len(got) != 1 || got[ReviewedMCPWebSearchPrimeTool].Provisions != nil {
+	if got := ReviewedMCPCapabilityContracts(); len(got) != 2 || got[ReviewedMCPWebSearchPrimeTool].Provisions != nil {
 		t.Fatalf("product tool must stay out of the server-agnostic map: %#v", got)
 	}
 	schema := map[string]interface{}{

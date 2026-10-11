@@ -13,6 +13,7 @@ import { cloudSafePathLabel, cloudWorkspaceRootFromPath, isCloudWorkspaceFilePat
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
+import { userTurnDisplayView } from "./userTurnDisplay";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { isBrowserEchoFieldLabel, stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
@@ -1524,6 +1525,13 @@ export function renderMessage(
     switch (msg.role) {
         case "user":
             const isGuideInjection = msg.kind === "guideInjection";
+            // Some turns are stored with the composer's outgoing text, which
+            // carries the file-picker marker block and the host's vision/OCR
+            // notes. Those are prompt machinery, never something the user said,
+            // so they are peeled off for display — and the file paths they
+            // carry become the attachment previews shown beside the bubble.
+            const userTurn = userTurnDisplayView(msg.content || "", msg.attachments);
+            const userTurnText = userTurn.text;
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} className="aamd-msg-user">
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
@@ -1563,10 +1571,10 @@ export function renderMessage(
                             borderRadius: 16,
                         }}
                     >
-                        {msg.content && <div>{msg.content}</div>}
-                        {!!msg.attachments?.length && (
-                            <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: msg.content ? 7 : 0 }}>
-                                {msg.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
+                        {userTurnText && <div>{userTurnText}</div>}
+                        {!!userTurn.attachments.length && (
+                            <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6, marginTop: userTurnText ? 7 : 0 }}>
+                                {userTurn.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
                             </div>
                         )}
                     </ChatBubbleFrame>

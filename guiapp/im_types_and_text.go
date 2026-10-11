@@ -73,6 +73,10 @@ type IMAgentResponse struct {
 	ThumbnailBase64   string   `json:"thumbnail_base64,omitempty"`
 	Error             string   `json:"error,omitempty"`
 	ResponseSource    string   `json:"response_source,omitempty"`
+	// FileCompanionFigures carries drawings from the open file that belong to
+	// this answer. Only the desktop file-companion window reads it; ordinary
+	// replies leave it empty, so it never reaches another client.
+	FileCompanionFigures []FileCompanionFigure `json:"file_companion_figures,omitempty"`
 	// ToolCallsInTurn is internal cache-safety metadata. It is never sent to
 	// clients; answer caching must not replay responses produced via tools.
 	ToolCallsInTurn int    `json:"-"`

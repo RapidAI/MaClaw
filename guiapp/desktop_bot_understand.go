@@ -3,12 +3,16 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // DesktopBotUnderstanding is the foreground agent's reading of one message.
@@ -31,7 +35,41 @@ type DesktopBotUnderstanding struct {
 	// model's own words. Empty means this message did not change it. A
 	// single hyphen withdraws it. It is not a desktop order.
 	Persona string `json:"persona"`
+	// SupplementOf is set when this message was read as supplementary
+	// information for work already being planned.
+	//
+	// It is a signal, not the decision. Models may omit it indefinitely, so an
+	// empty value never means "not a supplement": the reading is still judged
+	// from the earlier messages and this one. Treating absence as a new task
+	// would silently undo the fusion this prompt asks for.
+	SupplementOf string `json:"supplement_of,omitempty"`
+	// Reading is empty when this message was read. Otherwise it names, in one
+	// word, why there is no reading: unreachable, unread, or unscheduled. The
+	// other fields are empty in that case, so no order can reach the worker
+	// from a reading that never happened. It is decided here, where the
+	// failure is observed, and no layer has to guess it back out of an error
+	// string; the model cannot set it either.
+	Reading string `json:"reading,omitempty"`
 }
+
+// The reading of a message is a helper for the turn, not the turn itself, so a
+// helper that fails is reported instead of being allowed to cancel the turn.
+// These are the reports. Each one keeps the person's own words available, and
+// none of them invents an order.
+const (
+	// desktopBotReadingUnreachable means no reading came back at all: the model
+	// did not answer inside the budget, could not be reached, or stood behind
+	// a rate or endpoint gate. It says nothing about the message.
+	desktopBotReadingUnreachable = "unreachable"
+	// desktopBotReadingUnread means an answer came back and it was not a
+	// usable reading: not the object asked for, or an order that was promised
+	// but left empty. Asking the same model again for the same sentence is not
+	// how this one is fixed.
+	desktopBotReadingUnread = "unread"
+	// desktopBotReadingUnscheduled means it promised timed work and did not
+	// say when it should run. No timer is armed from a time nobody named.
+	desktopBotReadingUnscheduled = "unscheduled"
+)
 
 // DesktopBotSchedule is the time the foreground arms. Mode is create or
 // cancel. IntervalMinutes above zero repeats. Otherwise Hour and Minute are
@@ -52,8 +90,23 @@ const (
 	desktopBotUnderstandToldMax    = 500
 	desktopBotUnderstandOrderMax   = 4000
 	desktopBotUnderstandPersonaMax = 2000
-	desktopBotUnderstandEarlierMax = 12
+	// Twenty, not twelve: supplements arrive as several short messages building
+	// on one request, and a window too small drops the request they modify.
+	desktopBotUnderstandEarlierMax = 20
 	desktopBotUnderstandLineMax    = 500
+
+	// desktopBotReadBudget is everything one reading may spend — first attempt,
+	// second attempt, parse and all. Measured readings of this prompt take
+	// about 12-26s: this is a reasoning model and it answers with 1-3k output
+	// tokens, and local time-to-first-byte is under a second, so the cost is
+	// generation, not the route. Two unrelated deadlines used to guard this
+	// call, a 30s client and a 35s context, which left a whole message dead at
+	// whichever fired first and no room for a second try. One number now
+	// covers the reading, and every attempt is cut from it.
+	desktopBotReadBudget = 45 * time.Second
+	// desktopBotReadAttempts is how many calls one reading gets. A second try
+	// is spent only on a failure that passing time is likely to clear.
+	desktopBotReadAttempts = 2
 )
 
 var (
@@ -61,9 +114,18 @@ var (
 	desktopBotFilledTask = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63} 已在本地填入当前密码框。`)
 )
 
+// desktopBotUnderstandRequest is one attempt at reading a message. timeoutSec
+// is that attempt's own client deadline, cut from the reading's total budget,
+// so an attempt can never outlive the reading it belongs to.
+type desktopBotUnderstandRequest struct {
+	systemPrompt string
+	userPrompt   string
+	timeoutSec   int
+}
+
 // desktopBotUnderstandFunc is the no-tool model call. Tests replace it.
 // The desktop worker is a different call and is not used here.
-type desktopBotUnderstandFunc func(ctx context.Context, app *App, systemPrompt, userPrompt string) (string, error)
+type desktopBotUnderstandFunc func(ctx context.Context, app *App, req desktopBotUnderstandRequest) (string, error)
 
 var desktopBotUnderstandLLM desktopBotUnderstandFunc = callDesktopBotUnderstandLLM
 
@@ -82,16 +144,19 @@ pace is direct, confirm, ask, reply, or schedule.
 
 schedule is an object, only when pace is schedule. mode is create or cancel. name is a short stable name. For create, either interval_minutes is a positive integer of minutes, or hour and minute name a clock time and interval_minutes is 0 or omitted. One minute is 1, one hour is 60, one day is 1440. hour is 0 through 23 and minute is 0 through 59. day_of_week is 0 for Sunday through 6 for Saturday. Omit day_of_week to run every day. For cancel, instruction is an empty string. name is the schedule to stop. An empty name stops every timed job of this bot. told says what stopped.
 
-persona is the identity this bot keeps. Leave it an empty string when this message does not change who the bot is.
+persona is the identity and persistent user preferences this bot keeps. Leave it an empty string when this message does not change who the bot is and does not express new user preferences.
 
-When the latest message tells you who this bot is — the name to use, how people should address it, the role it keeps, or how it should speak and introduce itself — that is not desktop work. If that message does not also ask for desktop work, pace is reply, instruction is an empty string, and persona is the whole identity to keep after this message, in your own words, concrete enough for a later job to use. told acknowledges that identity. Do not promise desktop work and do not ask for confirmation. If the same message also asks for desktop work, pace is direct or confirm from that work, instruction is only that work, and persona is still the whole identity.
+When the latest message tells you who this bot is — the name to use, how people should address it, the role it keeps, or how it should speak and introduce itself — or expresses user interaction and execution preferences (such as preferring multiple screenshots/images showing key milestones, preferring structured tables, visual summaries, or specific formats), that is not desktop work. If that message does not also ask for desktop work, pace is reply, instruction is an empty string, and persona is the whole identity and accumulated user preferences to keep after this message, in your own words, concrete enough for a later job to use. told acknowledges that identity or preference. Do not promise desktop work and do not ask for confirmation. If the same message also asks for desktop work, pace is direct or confirm from that work, instruction is only that work, and persona is still the whole identity and preferences.
 
-persona already kept is a fact passed below. If this message does not change it, leave persona empty. If it changes it, persona is the whole identity after the change, including the parts that still hold. If they withdraw that identity, persona is a single hyphen.
+persona already kept is a fact passed below. If this message does not change it, leave persona empty. If it changes it, persona is the whole identity and accumulated preferences after the change, including the parts that still hold. If they withdraw that identity or preferences, persona is a single hyphen.
 
-When a persona is already kept and this message is desktop work, the work order carries the identity facts this job needs. Do not invent an identity.
+When a persona is already kept and this message is desktop work:
+- The work order carries the identity facts this job needs. Do not invent an identity.
+- Proactively adapt instruction to the kept user preferences: if the person prefers multiple pictures/screenshots, explicitly require the worker to take multiple screenshots at key milestones and attach them in the final presentation; if the person prefers tables or structured summaries, require the worker to structure the final answer accordingly. Make the bot smarter and more adaptive across tasks without requiring the person to repeat their preferences every turn.
 
 The phase is a fact about this turn:
-- plan: choose pace from the latest message. A clear request is direct, even when it opens a page or delivers a file. A clear timed or repeating request is schedule. confirm is only for a large or hard-to-undo change. ask is only when you cannot proceed without this person. reply is small talk, a question about who this bot is, or an identity with no desktop work. reply does not call the worker. Classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
+- plan: choose pace from the latest message. A clear request is direct, even when it opens a page or delivers a file. A clear timed or repeating request is schedule. confirm is only for a large or hard-to-undo change. ask is only when you cannot proceed without this person. reply is small talk, a question about who this bot is, or an identity with no desktop work. reply does not call the worker.
+When earlier messages contain a task being planned or arranged, and the latest message provides supplementary information, additional requirements, constraints, filters, or modifications (e.g. adding filtering criteria, changing output format, adding steps), do not treat it as an isolated request. Seamlessly fuse and synthesize the earlier task and the supplementary requirements into a complete, updated work order in instruction, and present the updated arrangement in told. If the task was awaiting confirmation or is a multi-step arrangement, keep pace as confirm (or direct if clear and safe) so the person can review the updated plan. Otherwise classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
 - execute: they already confirmed, or this is the direct work. pace is direct, unless the confirmed work is itself timed or repeating: then pace is schedule and schedule carries that time. instruction is the concrete work taken from the earlier messages and this message. Do the work now. Do not ask them to confirm again. Use ask only when a fact still blocks the work.
 
 The confirmation control is exactly: 安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。
@@ -99,7 +164,7 @@ When the latest message is that sentence, the task is the earlier user messages.
 
 Do not ask this person to choose a method. Do not reuse a stock sentence. Do not match the message against a list of phrases. Do not add keys other than schedule, markdown, or text outside the JSON object. instruction and persona may be empty strings. told may not.`
 
-func callDesktopBotUnderstandLLM(ctx context.Context, app *App, systemPrompt, userPrompt string) (string, error) {
+func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUnderstandRequest) (string, error) {
 	if app == nil {
 		return "", fmt.Errorf("AI assistant backend is unavailable")
 	}
@@ -112,9 +177,9 @@ func callDesktopBotUnderstandLLM(ctx context.Context, app *App, systemPrompt, us
 		return "", fmt.Errorf("LLM not configured")
 	}
 	result, err := handler.LLMClassify(ctx, LLMClassifyRequest{
-		SystemPrompt:      systemPrompt,
-		UserMessage:       userPrompt,
-		TimeoutSec:        30,
+		SystemPrompt:      req.systemPrompt,
+		UserMessage:       req.userPrompt,
+		TimeoutSec:        req.timeoutSec,
 		Tag:               "desktop-bot-understand",
 		PreferLightweight: false,
 	})
@@ -132,8 +197,12 @@ func callDesktopBotUnderstandLLM(ctx context.Context, app *App, systemPrompt, us
 
 // UnderstandDesktopBotTask reads one message and returns the person's sentence,
 // the desktop worker's order, and any identity to keep. Protocol controls pass
-// through unchanged. A model or parse failure is returned; no stock order is
-// sent in its place. persona is the identity already kept for this bot.
+// through unchanged. persona is the identity already kept for this bot.
+//
+// A reading that cannot be made is reported, never replaced: no stock order is
+// sent in its place, and the missing reading does not take the turn down with
+// it. The result is empty except for Reading, which names what happened so the
+// caller can decide what to do with the person's own words.
 func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []string, persona string) (*DesktopBotUnderstanding, error) {
 	text := strings.TrimSpace(content)
 	if text == "" {
@@ -148,34 +217,113 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	if a == nil {
 		return nil, fmt.Errorf("AI assistant backend is unavailable")
 	}
-	userPrompt := desktopBotUnderstandUser(text, phase, lang, earlier, persona)
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	var userPref string
+	a.memoryStoreMu.Lock()
+	ms := a.memoryStore
+	a.memoryStoreMu.Unlock()
+	if ms != nil {
+		userPref = ms.UserPreferenceSummaryForPrompt(memory.UserPreferenceSummaryPromptOptions{MaxRunes: 300})
+	}
+	userPrompt := desktopBotUnderstandUser(text, phase, lang, earlier, persona, userPref)
+	started := time.Now()
+	deadline := started.Add(desktopBotReadBudget)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandSystem, userPrompt)
-	if err != nil {
-		log.Printf("[desktop-bot-understand] phase=%s earlier=%d text_len=%d err=%v", phase, len(earlier), utf8.RuneCountInString(text), err)
-		return nil, err
+	for attempt := 1; attempt <= desktopBotReadAttempts; attempt++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		// Every attempt answers to the reading's own budget, not to a number
+		// of its own, so a later attempt cannot spend time already given away.
+		// Truncation keeps the client timeout strictly under the ctx deadline:
+		// when the budget fires, reqCtx.Err() is non-nil at the observe point
+		// and the failure gate records no endpoint ban for it.
+		timeoutSec := int(remaining / time.Second)
+		if timeoutSec < 1 {
+			timeoutSec = 1
+		}
+		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
+			systemPrompt: desktopBotUnderstandSystem,
+			userPrompt:   userPrompt,
+			timeoutSec:   timeoutSec,
+		})
+		if err != nil {
+			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d err=%v",
+				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
+			// Retry only what waiting is likely to fix, and only while most of
+			// the budget is unspent: a fault that shows up after tens of
+			// seconds of generation is not going to be answered in the
+			// remainder either.
+			if attempt < desktopBotReadAttempts && desktopBotReadFaultClears(err) && time.Until(deadline)*2 > desktopBotReadBudget {
+				continue
+			}
+			return desktopBotReadingLost(desktopBotReadingUnreachable, "no answer", text, phase, len(earlier)), nil
+		}
+		understood, parseErr := parseDesktopBotUnderstanding(raw)
+		if parseErr != nil {
+			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d result_len=%d parse_err=%v",
+				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(raw), parseErr)
+			return desktopBotReadingLost(desktopBotReadingUnread, "answer was not a reading", text, phase, len(earlier)), nil
+		}
+		understood.Pace = desktopBotPace(understood.Pace, phase)
+		if err := normalizeDesktopBotSchedule(understood); err != nil {
+			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d schedule_err=%v",
+				phase, understood.Pace, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
+			return desktopBotReadingLost(desktopBotReadingUnscheduled, "timed work without a time", text, phase, len(earlier)), nil
+		}
+		// An empty order stays a reply only when the model said so, or when this
+		// message only keeps or withdraws an identity. A direct or confirm reading
+		// that forgot the order is a failed reading: it is not chat, and it is not sent.
+		if err := desktopBotEmptyOrder(understood, phase); err != nil {
+			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d empty_order=%v",
+				phase, understood.Pace, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
+			return desktopBotReadingLost(desktopBotReadingUnread, "order was empty", text, phase, len(earlier)), nil
+		}
+		log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s attempt=%d elapsed=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
+			phase, understood.Pace, lang, attempt, time.Since(started).Round(time.Millisecond), len(earlier),
+			utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
+		return understood, nil
 	}
-	understood, err := parseDesktopBotUnderstanding(raw)
-	if err != nil {
-		log.Printf("[desktop-bot-understand] phase=%s earlier=%d text_len=%d result_len=%d parse_err=%v", phase, len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(raw), err)
-		return nil, err
+	return desktopBotReadingLost(desktopBotReadingUnreachable, "budget spent", text, phase, len(earlier)), nil
+}
+
+// desktopBotReadingLost reports a reading that was not made. No order, no
+// sentence, and no schedule: an empty result cannot reach the worker, so the
+// only thing a caller can do with it is tell the truth and keep the person's
+// own words.
+func desktopBotReadingLost(class, outcome, text, phase string, earlier int) *DesktopBotUnderstanding {
+	log.Printf("[desktop-bot-understand] no reading class=%s outcome=%s phase=%s earlier=%d text_len=%d", class, outcome, phase, earlier, utf8.RuneCountInString(text))
+	return &DesktopBotUnderstanding{Reading: class}
+}
+
+// desktopBotReadFaultClears says whether waiting is likely to fix this failure:
+// the route, the server, or a credit window blinked, things that cost almost
+// nothing and pass on their own. A timeout deliberately does not qualify. When
+// the budget itself fired, the attempt already spent the whole allowance one
+// reading gets, and another slow generation is not bought with the remainder.
+// A malformed answer does not qualify either — that is a matter for the parse.
+func desktopBotReadFaultClears(err error) bool {
+	if err == nil {
+		return false
 	}
-	understood.Pace = desktopBotPace(understood.Pace, phase)
-	if err := normalizeDesktopBotSchedule(understood); err != nil {
-		log.Printf("[desktop-bot-understand] phase=%s pace=%s earlier=%d text_len=%d schedule_err=%v", phase, understood.Pace, len(earlier), utf8.RuneCountInString(text), err)
-		return nil, err
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
 	}
-	// An empty order stays a reply only when the model said so, or when this
-	// message only keeps or withdraws an identity. A direct or confirm reading
-	// that forgot the order is a failed reading: it is not chat, and it is not sent.
-	if err := desktopBotEmptyOrder(understood, phase); err != nil {
-		log.Printf("[desktop-bot-understand] phase=%s pace=%s earlier=%d text_len=%d empty_order=%v", phase, understood.Pace, len(earlier), utf8.RuneCountInString(text), err)
-		return nil, err
+	if desktopBotReadTimeout(err.Error()) {
+		return false
 	}
-	log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
-		phase, understood.Pace, lang, len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
-	return understood, nil
+	return isNetworkLLMRetryError(err) || isRetryableLLMError(err)
+}
+
+// desktopBotReadTimeout names the timeout markers the shared classifier counts
+// as network errors, which they are — just not the retryable kind here. The
+// strings are deliberate: net.Error.Timeout() also fires for fast connect and
+// handshake timeouts, which leave most of the budget unspent and are worth one
+// more try. Only the attempt's own spent allowance must not be retried.
+func desktopBotReadTimeout(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "client.timeout") || strings.Contains(lower, "context deadline exceeded")
 }
 
 // desktopBotPace keeps a missing or unknown pace on the safe side. A plan
@@ -285,7 +433,7 @@ func desktopBotProtocolUnderstanding(text, phase string) (*DesktopBotUnderstandi
 	return nil, false
 }
 
-func desktopBotUnderstandUser(text, phase, lang string, earlier []string, persona string) string {
+func desktopBotUnderstandUser(text, phase, lang string, earlier []string, persona string, userPref ...string) string {
 	if lang == "" {
 		lang = "the language of the latest message"
 	}
@@ -296,6 +444,9 @@ func desktopBotUnderstandUser(text, phase, lang string, earlier []string, person
 		b.WriteString("(none)\n")
 	} else {
 		fmt.Fprintf(&b, "%s\n", clipRunes(persona, desktopBotUnderstandPersonaMax))
+	}
+	if len(userPref) > 0 && strings.TrimSpace(userPref[0]) != "" {
+		fmt.Fprintf(&b, "user preferences:\n%s\n", clipRunes(strings.TrimSpace(userPref[0]), 600))
 	}
 	b.WriteString("earlier user messages:\n")
 	kept := 0
@@ -370,12 +521,22 @@ func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 		parsed.Told = strings.TrimSpace(parsed.Told)
 		parsed.Instruction = strings.TrimSpace(parsed.Instruction)
 		parsed.Persona = strings.TrimSpace(parsed.Persona)
+		parsed.SupplementOf = strings.TrimSpace(parsed.SupplementOf)
+		// A model does not get to say what its own reading is worth: that is
+		// decided by whoever watched the call.
+		parsed.Reading = ""
 		if parsed.Persona == "..." {
 			parsed.Persona = ""
 		}
 		// A hyphen is the withdrawal. Anything else is the identity to keep.
 		if parsed.Persona != "-" {
 			parsed.Persona = clipRunes(parsed.Persona, desktopBotUnderstandPersonaMax)
+		}
+		// Claiming to supplement earlier work but producing no merged order is
+		// a reading that did not fuse. It fails here rather than degrading into
+		// an incomplete order: half-merged work is worse than asking again.
+		if parsed.SupplementOf != "" && parsed.Instruction == "" {
+			continue
 		}
 		// told is required. An empty instruction stays in the reading; pace
 		// decides whether it is a reply or a missing order. A placeholder is not a reading.
@@ -463,4 +624,113 @@ func clipRunes(s string, max int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:max])
+}
+
+// DesktopTaskSupplementEval is the verdict on whether a new user message is
+// supplementary info for the in-flight background task or a new task.
+type DesktopTaskSupplementEval struct {
+	IsSupplement bool   `json:"is_supplement"`
+	Reason       string `json:"reason,omitempty"`
+	Instruction  string `json:"instruction,omitempty"`
+}
+
+// desktopSupplementDisabled reports the kill switch from design doc §3.1f:
+// MACLAW_SUPPLEMENT=off turns the whole supplement feature off, and every
+// message goes out as an ordinary new task instead. Reading the variable at
+// call time (it is a crash-only toggle, not a hot path) keeps the switch
+// effective for a process that is restarted with it set, and lets a dev
+// process flip it without a rebuild.
+func desktopSupplementDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_SUPPLEMENT")), "off")
+}
+
+const desktopTaskSupplementSystem = `You are an evaluator for a cloud desktop AI assistant. An active task is currently executing in the background on the cloud desktop. The user has just sent a new message.
+Determine whether the new message is:
+1. A supplement, refinement, additional constraint, filter, format requirement, or modification to the currently running active task (e.g. "只要前5条", "按日期倒序", "也带上截图", "保存为markdown", "格式改成表格", "顺便也把作者名字记下来", "还要...", "另外...").
+2. A completely new, independent task (e.g. "打开另一个网站", "查询天气", an unrelated request).
+3. Small talk or a general query (e.g. "你好", "你是谁").
+
+Return JSON with:
+- "is_supplement": true if it is a supplement to the active task; false if it is a new task or small talk.
+- "reason": brief explanation.
+- "instruction": if is_supplement is true, a concise directive summarizing the supplemental requirement to inject into the ongoing execution; otherwise empty string.`
+
+// EvaluateDesktopTaskSupplement decides whether a message sent while a task is running
+// is supplementary information for the running task or an independent new task.
+func (a *App) EvaluateDesktopTaskSupplement(activeTask, newMessage, lang string) (*DesktopTaskSupplementEval, error) {
+	activeTask = strings.TrimSpace(activeTask)
+	newMessage = strings.TrimSpace(newMessage)
+	if activeTask == "" || newMessage == "" {
+		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "empty input"}, nil
+	}
+	if newMessage == desktopBotConfirmTask || newMessage == desktopBotReturnTask || desktopBotFilledTask.MatchString(newMessage) || desktopBotSavedTask.MatchString(newMessage) {
+		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "protocol command"}, nil
+	}
+	// Kill switch (§3.1f): with the feature off the classifier short-circuits
+	// to "new task", so the caller sends the words through the ordinary
+	// SendDesktopBotTask path and nothing is ever offered to a running turn.
+	if desktopSupplementDisabled() {
+		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "supplement disabled"}, nil
+	}
+
+	if a != nil {
+		if hub := a.hubClient(); hub != nil {
+			if handler := hub.ensureIMHandler(); handler != nil {
+				userPrompt := fmt.Sprintf("active running task:\n%s\n\nnew message:\n%s\n\nlanguage:\n%s",
+					clipRunes(activeTask, 500), clipRunes(newMessage, 500), lang)
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				res, err := handler.LLMClassify(ctx, LLMClassifyRequest{
+					SystemPrompt:      desktopTaskSupplementSystem,
+					UserMessage:       userPrompt,
+					TimeoutSec:        12,
+					Tag:               "desktop-bot-eval-supplement",
+					PreferLightweight: true,
+				})
+				if err == nil && res != nil {
+					content := desktopBotUnderstandText(res.Text, res.Reasoning)
+					if content != "" {
+						var eval DesktopTaskSupplementEval
+						for _, block := range desktopBotJSONObjects(content) {
+							if err := json.Unmarshal([]byte(block), &eval); err == nil {
+								if eval.IsSupplement && eval.Instruction == "" {
+									eval.Instruction = newMessage
+								}
+								return &eval, nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return heuristicDesktopTaskSupplement(activeTask, newMessage), nil
+}
+
+func heuristicDesktopTaskSupplement(activeTask, newMessage string) *DesktopTaskSupplementEval {
+	lower := strings.ToLower(newMessage)
+	if strings.HasPrefix(lower, "新任务") || strings.HasPrefix(lower, "新的任务") || strings.HasPrefix(lower, "另外做") || strings.HasPrefix(lower, "做完这个后") || strings.HasPrefix(lower, "new task") {
+		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "explicit new task"}
+	}
+	if lower == "你好" || lower == "您好" || lower == "hello" || lower == "hi" || lower == "谢谢" || lower == "多谢" || lower == "thanks" || lower == "thank you" || lower == "你是谁" || lower == "你是谁呀" || lower == "你是谁？" {
+		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "small talk"}
+	}
+	supplementKeywords := []string{
+		"补充", "还有", "另外", "顺便", "再加", "记得", "并且", "同时", "也",
+		"改成", "只要", "不要", "加上", "格式改成", "带上", "还要", "额外",
+		"过滤", "仅限", "按", "导出为", "保存为", "截图", "多图",
+		"also", "supplement", "additionally", "in addition", "furthermore",
+		"filter by", "save as", "export as", "remember to", "only", "include screenshot", "change to",
+	}
+	for _, kw := range supplementKeywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return &DesktopTaskSupplementEval{
+				IsSupplement: true,
+				Reason:       fmt.Sprintf("matched supplement keyword %q", kw),
+				Instruction:  newMessage,
+			}
+		}
+	}
+	return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "not classified as supplement"}
 }

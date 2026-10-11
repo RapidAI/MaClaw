@@ -726,10 +726,74 @@ func (DefaultLoopHooks) OnToolExecuted(string, string, string, bool)       {}
 func (DefaultLoopHooks) OnEmptyResponse(int) bool                          { return false }
 func (DefaultLoopHooks) TransformConversation([]interface{}) []interface{} { return nil }
 
+// resolveLoopHooks picks the hooks a loop runs with. RunLoop takes a variadic
+// list so hosts can pass one hook per concern — supplements, context
+// compression — and every supplied hook is applied in order. Taking only the
+// first would silently disable the rest, which is how a compression hook can be
+// wired and still never run.
+func resolveLoopHooks(hooks []LoopHooks) LoopHooks {
+	var live []LoopHooks
+	for _, one := range hooks {
+		if one != nil {
+			live = append(live, one)
+		}
+	}
+	switch len(live) {
+	case 0:
+		return DefaultLoopHooks{}
+	case 1:
+		return live[0]
+	default:
+		return loopHooksChain(live)
+	}
+}
+
+// loopHooksChain applies several hooks in the order they were supplied.
+type loopHooksChain []LoopHooks
+
+func (c loopHooksChain) OnToolExecuted(name, argsJSON, result string, success bool) {
+	for _, h := range c {
+		h.OnToolExecuted(name, argsJSON, result, success)
+	}
+}
+
+// OnEmptyResponse lets the first hook that declines to retry win. An empty
+// model reply must stop the turn, so one hook voting to continue cannot
+// override another voting to exit.
+func (c loopHooksChain) OnEmptyResponse(iteration int) bool {
+	for _, h := range c {
+		if !h.OnEmptyResponse(iteration) {
+			return false
+		}
+	}
+	return true
+}
+
+// TransformConversation threads the conversation through every hook. A hook
+// returning nil means "leave it alone", so its output is skipped rather than
+// clearing the conversation.
+func (c loopHooksChain) TransformConversation(conversation []interface{}) []interface{} {
+	out := conversation
+	for _, h := range c {
+		if next := h.TransformConversation(out); next != nil {
+			out = next
+		}
+	}
+	return out
+}
+
 // LoopResult is the output of RunLoop.
 type LoopResult struct {
-	Text       string
-	Error      string
+	Text  string
+	Error string
+	// Err carries the cause behind Error so it can cross the executor
+	// boundary. Error alone is user-facing prose produced by
+	// llm.UserFacingError, which flattens an *llm.HTTPStatusError to text and
+	// drops StatusCode and Body — everything a caller needs to tell a period
+	// quota from a transport fault. Without Err, classifying a failed run
+	// means matching that prose back against the marker substrings it came
+	// from. Unwrap callers should branch on Err with errors.Is.
+	Err        error
 	Iterations int
 	ToolCalls  int
 	AskUser    *AskUserRequest
@@ -781,10 +845,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 // content payload. userText remains the plain text used for prompt/context
 // construction, while userContent may be a multimodal content array.
 func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent interface{}, history []ConversationEntry, httpClient *http.Client, hooks ...LoopHooks) LoopResult {
-	var h LoopHooks = DefaultLoopHooks{}
-	if len(hooks) > 0 && hooks[0] != nil {
-		h = hooks[0]
-	}
+	var h LoopHooks = resolveLoopHooks(hooks)
 
 	cfg := cb.GetLLMConfig()
 	route := PrimaryRouteDecision(cfg)
@@ -1762,7 +1823,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
 					finishRequest(err)
-					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
+					return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
 				}
 				rotated := false
 				if !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
@@ -1840,7 +1901,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					// settle that request twice. No successor manifest or transport
 					// handoff exists yet.
 					finishRequest(err)
-					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
+					return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
 				}
 				// A retry is a fresh HTTP operation, so it gets a fresh deadline from
 				// the active route. In particular, do not reuse an already-expired
@@ -1929,13 +1990,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if err != nil && (requestBaseCtx.Err() != nil || cb.ShouldStop()) {
 				hostCanceledBeforeFinish = requestBaseCtx.Err() != nil
 				finishRequest(err)
-				return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
+				// Carry what the model already said. A run that dies on a late
+				// retry has usually done real work in earlier rounds — files
+				// written, commands run — and reporting only the error turns
+				// that into an empty turn the reader cannot pick up from.
+				return finish(LoopResult{Text: StripThinkingTags(lastNonEmptyContent), Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 			hostCanceledBeforeFinish = requestBaseCtx.Err() != nil
 			finishRequest(err)
 			if err != nil {
 				disposeSurface(ToolSurfaceTransportFailure)
-				return finish(LoopResult{Error: fmt.Sprintf("LLM call failed: %s", llm.UserFacingError(err)), Iterations: iteration, ToolCalls: totalToolCalls})
+				return finish(LoopResult{Text: StripThinkingTags(lastNonEmptyContent), Error: fmt.Sprintf("LLM call failed: %s", llm.UserFacingError(err)), Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 		} else {
 			// Every completed model-request path must provide either a consumable

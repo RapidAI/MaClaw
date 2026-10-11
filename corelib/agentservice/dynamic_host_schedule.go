@@ -49,7 +49,7 @@ func reviewedHostScheduleInvocationSchema() map[string]interface{} {
 			"name":             map[string]interface{}{"type": "string"},
 			"task_action":      map[string]interface{}{"type": "string"},
 			"id":               map[string]interface{}{"type": "string"},
-			"status":           map[string]interface{}{"type": "string"},
+			"status":           map[string]interface{}{"type": "string", "enum": coretool.ScheduleStatusOptions()},
 			"hour":             map[string]interface{}{"type": "integer"},
 			"minute":           map[string]interface{}{"type": "integer"},
 			"day_of_week":      map[string]interface{}{"type": "integer"},
@@ -91,17 +91,13 @@ func reviewedHostScheduleDispatch(a reviewedHostScheduleArgs) (string, bool) {
 	return "delete", true
 }
 
+// reviewedHostScheduleStatus maps what the model sent to the canonical value
+// the record stores. The vocabulary, its aliases, and the empty-is-unset
+// reading all live in the shared schedule contract: this host and the GUI
+// surface both serve schedule.administer.local, and two copies of this answer
+// would drift.
 func reviewedHostScheduleStatus(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "paused", "pause":
-		return "paused", true
-	case "active", "resume":
-		return "active", true
-	case "":
-		return "", true
-	default:
-		return "", false
-	}
+	return coretool.ScheduleStatusCanonical(raw)
 }
 
 func reviewedHostScheduleInt(raw interface{}) (int, bool) {
@@ -296,7 +292,7 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 	}
 	status, statusOK := reviewedHostScheduleStatus(args.Status)
 	if !statusOK {
-		return "", fmt.Errorf("host_schedule_status_rejected")
+		return "", fmt.Errorf("host_schedule_status_rejected (%s)", coretool.ScheduleStatusHint())
 	}
 	if ctx == nil {
 		ctx = context.Background()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -39,7 +40,10 @@ func semanticTrustedConfigInvocationSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"max_iterations": map[string]interface{}{"type": "integer"},
-			"thinking_mode":  map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so the check in the administer
+			// path stays the boundary and this is documentation for the model.
+			"thinking_mode":  map[string]interface{}{"type": "string", "enum": corelib.GlobalThinkingModeOptions()},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -87,17 +91,13 @@ func semanticTrustedConfigDispatch(hasMax, hasThinking bool) (string, bool) {
 	return "get", true
 }
 
+// semanticTrustedConfigThinkingMode maps what the model sent to the canonical
+// persisted mode. The vocabulary, its legacy truthy/falsy aliases, and the
+// auto-is-unset reading all come from the shared parser the agent-service
+// surface already uses: two hosts serving config administer with different
+// accepted spellings is the drift this delegation removes.
 func semanticTrustedConfigThinkingMode(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "enabled", "enable", "on":
-		return "enabled", true
-	case "disabled", "disable", "off":
-		return "disabled", true
-	case "auto", "":
-		return "", true
-	default:
-		return "", false
-	}
+	return corelib.ParseGlobalThinkingMode(raw)
 }
 
 func semanticTrustedConfigInt(raw interface{}) (int, bool) {
@@ -153,7 +153,7 @@ func (h *IMMessageHandler) administerTrustedConfig(principalID string, maxIterat
 	case "thinking_mode":
 		mode, modeOK := semanticTrustedConfigThinkingMode(thinkingMode)
 		if !modeOK {
-			return "", fmt.Errorf("trusted_config_thinking_mode_rejected")
+			return "", fmt.Errorf("trusted_config_thinking_mode_rejected (%s)", corelib.GlobalThinkingModeHint())
 		}
 		if err := h.app.SetMaclawLLMThinkingMode(mode); err != nil {
 			return "", err

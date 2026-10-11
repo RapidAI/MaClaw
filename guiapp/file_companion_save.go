@@ -53,6 +53,8 @@ type FileCompanionMessage struct {
 	ResultPath string `json:"resultPath,omitempty"`
 	// Paper marks the button turn. A person typing the same label is not one.
 	Paper bool `json:"paper,omitempty"`
+	// Figures are drawings from the open file that this answer refers to.
+	Figures []FileCompanionFigure `json:"figures,omitempty"`
 }
 
 // FileCompanionSaveResult reports a text write. Conflict stops autosave.

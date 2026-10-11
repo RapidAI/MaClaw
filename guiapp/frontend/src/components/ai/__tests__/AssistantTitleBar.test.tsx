@@ -83,6 +83,26 @@ describe('AssistantTitleBar', () => {
         expect(screen.queryByTestId('workflow-toggle-btn')).toBeNull();
     });
 
+    it('drops the notification bell on the execution view, which hosts its own in the task header', () => {
+        render(
+            <AssistantTitleBar
+                clearHistory={vi.fn()}
+                hideNotifications
+                inline={false}
+                lang="zh"
+                maximized={false}
+                onClose={vi.fn()}
+                refreshNews={vi.fn()}
+                showMaximizeToggle={false}
+                theme={overlayTheme}
+                themeMode="light"
+                title="默认任务"
+                trialReflectEnabled={false}
+            />,
+        );
+        expect(screen.queryByTestId('notification-bell-btn')).toBeNull();
+    });
+
     it('keeps primary actions directly after the assistant title', () => {
         render(
             <AssistantTitleBar

@@ -2346,3 +2346,31 @@ func TestSemanticArtifactFileNamePrefersRefNameWithMIMEFallback(t *testing.T) {
 		}
 	}
 }
+
+// semanticTrustedAdapterNetworkToolName must map only the adapters that perform
+// silent network egress into the model context. Local desktop control adapters
+// (shell, file, repo, document read, …) must stay unmapped, or the Hub network
+// gate would wrongly reach them.
+func TestSemanticTrustedAdapterNetworkToolName(t *testing.T) {
+	egress := map[string]string{
+		semanticTrustedBrowserAdapter:   "browser",
+		semanticTrustedWebFetchAdapter:  "web_fetch",
+		semanticTrustedWebSearchAdapter: "web_search",
+	}
+	for adapter, want := range egress {
+		if got := semanticTrustedAdapterNetworkToolName(adapter); got != want {
+			t.Fatalf("adapter %q mapped to %q, want %q", adapter, got, want)
+		}
+	}
+	for _, local := range []string{
+		semanticTrustedShellAdapter,
+		semanticTrustedFileReadAdapter,
+		semanticTrustedRepoInspectAdapter,
+		"semantic_read_trusted_document",
+		semanticTrustedComputerUseAdapter,
+	} {
+		if got := semanticTrustedAdapterNetworkToolName(local); got != "" {
+			t.Fatalf("local adapter %q mapped to %q, want empty (gate must not reach local tools)", local, got)
+		}
+	}
+}

@@ -1652,6 +1652,31 @@ func TestPatchConfigFieldsRejectsGlobalAnswerCache(t *testing.T) {
 	}
 }
 
+// An unrecognized network level must be reported to whoever set it instead of
+// reaching disk, where it is indistinguishable from "full" at enforcement.
+func TestPatchConfigFieldsRejectsUnknownNetworkLevel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	_, err := app.PatchConfigFields(map[string]interface{}{"network_level": "allow-list"})
+	if err == nil {
+		t.Fatal("PatchConfigFields(network_level=allow-list) unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "network_level") || !strings.Contains(err.Error(), "allow-list") {
+		t.Fatalf("error = %v, want it to name the rejected value", err)
+	}
+
+	// The levels the UI selector offers must all be accepted, and an unset
+	// level must land as the documented default rather than as an error.
+	for _, level := range []string{"full", "none", "intranet", "allowlist", "ALLOWLIST", ""} {
+		if _, err := app.PatchConfigFields(map[string]interface{}{"network_level": level}); err != nil {
+			t.Fatalf("PatchConfigFields(network_level=%q) error = %v, want accepted", level, err)
+		}
+	}
+}
+
 func TestPatchConfigFieldsOfficeReadPolicy(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

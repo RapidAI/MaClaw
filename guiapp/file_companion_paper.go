@@ -839,7 +839,7 @@ func (a *App) fileCompanionRecordPaperTurn(sessionID string) {
 		return
 	}
 	n := 0
-	for _, message := range fileCompanionDisplayMessages(a.imHandler.memory.Load("file-companion:" + sessionID)) {
+	for _, message := range fileCompanionDisplayMessages(a.imHandler.memory.Load("file-companion:"+sessionID), nil) {
 		if message.Paper {
 			n++
 		}

@@ -92,6 +92,9 @@ func (a *App) PreviewTaskResultFile(filePath string) (*TaskResultPreview, error)
 		if kind == "pdf" {
 			return previewTaskResultPDF(cleaned, info.Size(), out)
 		}
+		if kind == "xlsx" {
+			return previewTaskResultSpreadsheet(cleaned, out)
+		}
 		return previewTaskResultBinary(cleaned, kind, out)
 	}
 
@@ -214,6 +217,18 @@ func previewHTTPContentType(ext string) (kind, contentType string) {
 		return "pdf", "application/pdf"
 	case ".docx":
 		return "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xlsx":
+		return "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".xlsm":
+		return "xlsx", "application/vnd.ms-excel.sheet.macroEnabled.12"
+	case ".xlsb":
+		return "xlsx", "application/vnd.ms-excel.sheet.binary.macroEnabled.12"
+	case ".xls":
+		return "xlsx", "application/vnd.ms-excel"
+	case ".et", ".ett":
+		return "xlsx", "application/vnd.ms-excel"
+	case ".ods":
+		return "xlsx", "application/vnd.oasis.opendocument.spreadsheet"
 	case ".png":
 		return "image", "image/png"
 	case ".jpg", ".jpeg":
@@ -268,6 +283,16 @@ func previewTaskResultBinary(path, kind string, out *TaskResultPreview) (*TaskRe
 	out.Language = kind
 	out.PreviewURL = taskResultPreviewHTTPPath + "?t=" + token
 	return out, nil
+}
+
+// previewTaskResultSpreadsheet serves the original workbook bytes for the
+// in-app grid renderer and keeps the text extract as the fallback content, so
+// a workbook the JS parser cannot read still previews as text.
+func previewTaskResultSpreadsheet(path string, out *TaskResultPreview) (*TaskResultPreview, error) {
+	if text, _, extractErr := agent.ExtractOfficeText(path); extractErr == nil && strings.TrimSpace(text) != "" {
+		out.Content = text
+	}
+	return previewTaskResultBinary(path, "xlsx", out)
 }
 
 func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Request) {

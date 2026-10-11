@@ -119,6 +119,8 @@ func (s *HTTPServer) registerUserAPIRoutes() {
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}", s.withPrincipal(s.handleGetRun))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}/events", s.withPrincipal(s.handleStreamRunEvents))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/runs/{runId}/cancel", s.withPrincipal(s.handleCancelRun))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/runs/{runId}/supplement", s.withPrincipal(s.handleSupplementRun))
+	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}/supplements", s.withPrincipal(s.handleListRunSupplements))
 
 	// Knowledge base endpoints
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/file", s.withPrincipal(s.handleKnowledgeImportFile))

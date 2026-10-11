@@ -129,7 +129,9 @@ function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
     }, [filePath, isImage]);
 
     if (preview) {
-        return <AttachmentImageThumbnail src={preview} filePath={filePath} fileName={fileName || "attached image"} lang={lang} theme={theme} title={filePath} frameStyle={{ width: "30px", height: "30px", borderRadius: "4px", flexShrink: 0, border: "none", background: "transparent" }} />;
+        // Resolved bytes can still fail to decode in the <img>; fall back to
+        // the type badge instead of a broken-image glyph.
+        return <AttachmentImageThumbnail src={preview} filePath={filePath} fileName={fileName || "attached image"} lang={lang} theme={theme} title={filePath} frameStyle={{ width: "30px", height: "30px", borderRadius: "4px", flexShrink: 0, border: "none", background: "transparent" }} onImageError={() => { setPreview(""); setPreviewFailed(true); }} />;
     }
     if (isImage && !previewFailed) {
         return <span aria-label={fileName} className="aas-thumb-slot" />;

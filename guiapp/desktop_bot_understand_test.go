@@ -3,13 +3,15 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDesktopBotProtocolSkipsTheModel(t *testing.T) {
 	called := false
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		called = true
 		return "", errors.New("model should not be called")
 	}
@@ -52,8 +54,8 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	const told = "你要的是一个能跑起来的程序，以及它跑起来时的画面。"
 	const order = "在这台云桌面的终端里写出这个程序，编译运行，再截正在运行的窗口。"
 	var system, user string
-	desktopBotUnderstandLLM = func(_ context.Context, _ *App, systemPrompt, userPrompt string) (string, error) {
-		system, user = systemPrompt, userPrompt
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		system, user = req.systemPrompt, req.userPrompt
 		return "好的。\n```json\n{\"told\":\"" + told + "\",\"instruction\":\"" + order + "\"}\n```", nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
@@ -84,8 +86,8 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 		t.Fatal("system prompt still offers a placeholder object")
 	}
 
-	desktopBotUnderstandLLM = func(_ context.Context, _ *App, systemPrompt, userPrompt string) (string, error) {
-		system, user = systemPrompt, userPrompt
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		system, user = req.systemPrompt, req.userPrompt
 		return `{"told":"按前面的要求去做。","instruction":"写出并运行前面要的程序，然后截运行窗口。"}`, nil
 	}
 	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "en", []string{"开始吧", cpp}, "")
@@ -104,7 +106,7 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 }
 
 func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"你要处理哪一个文件？","instruction":"你要处理哪一个文件？","pace":"ask"}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
@@ -116,7 +118,7 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 		t.Fatalf("ask was dropped: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我现在去查，查到就做成 PDF 发在这里。","instruction":"检索北京天所并交付 PDF。","pace":"DIRECT"}`, nil
 	}
 	got, err = (&App{}).UnderstandDesktopBotTask("查询 北京天所，生成pdf", "plan", "zh-Hans", nil, "")
@@ -130,7 +132,7 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 		t.Fatal("an unknown pace took a side")
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我是你在这台云桌面上的同事。","instruction":"我是你在这台云桌面上的同事。","pace":"reply"}`, nil
 	}
 	got, err = (&App{}).UnderstandDesktopBotTask("你是谁呀？", "plan", "zh-Hans", nil, "")
@@ -144,7 +146,7 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 		t.Fatal("a confirmed turn was turned into chat")
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我是你在这台云桌面上的同事。","instruction":"","pace":"reply"}`, nil
 	}
 	got, err = (&App{}).UnderstandDesktopBotTask("你是谁呀?", "plan", "zh-Hans", nil, "")
@@ -155,12 +157,17 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 		t.Fatalf("an empty small-talk order was sent onward: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"按前面的安排做。","instruction":"","persona":"这个 Bot 叫 Bot 2。","pace":"reply"}`, nil
 	}
-	_, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"查询 北京天所，生成pdf"}, "")
-	if err == nil || !strings.Contains(err.Error(), "omitted the work order") {
-		t.Fatalf("a confirmed turn with an empty order became chat: %v", err)
+	// An execute turn is not turned into chat even when the reading also keeps
+	// an identity: a confirmed job with no order has nothing to say.
+	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"查询 北京天所，生成pdf"}, "")
+	if err != nil {
+		t.Fatalf("a confirmed turn with an empty order took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnread || got.Instruction != "" {
+		t.Fatalf("a confirmed turn with an empty order became chat: %#v", got)
 	}
 }
 
@@ -168,8 +175,8 @@ func TestDesktopBotPersonaIsNotDesktopWork(t *testing.T) {
 	const kept = "这个 Bot 叫码卡龙真龙，小名真龙。"
 	const told = "我记下了。我是码卡龙真龙，小名真龙。"
 	var system, user string
-	desktopBotUnderstandLLM = func(_ context.Context, _ *App, systemPrompt, userPrompt string) (string, error) {
-		system, user = systemPrompt, userPrompt
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		system, user = req.systemPrompt, req.userPrompt
 		return `{"told":"` + told + `","instruction":"","persona":"` + kept + `","pace":"confirm"}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
@@ -200,8 +207,8 @@ func TestDesktopBotPersonaIsNotDesktopWork(t *testing.T) {
 		t.Fatal("plan phase still treats an identity as outside reply")
 	}
 
-	desktopBotUnderstandLLM = func(_ context.Context, _ *App, _, userPrompt string) (string, error) {
-		user = userPrompt
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		user = req.userPrompt
 		return `{"told":"人设已去掉。","instruction":"","persona":"-"}`, nil
 	}
 	got, err = (&App{}).UnderstandDesktopBotTask("不用保留这些身份了", "plan", "zh-Hans", nil, kept)
@@ -216,7 +223,7 @@ func TestDesktopBotPersonaIsNotDesktopWork(t *testing.T) {
 	}
 
 	const order = "用已记住的身份写一份自我介绍，交付 自述.docx。"
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我是码卡龙真龙。自我介绍我现在写。","instruction":"` + order + `","persona":"` + kept + `","pace":"direct"}`, nil
 	}
 	got, err = (&App{}).UnderstandDesktopBotTask("你叫码卡龙真龙，写一份自我介绍", "plan", "zh-Hans", nil, "")
@@ -228,78 +235,197 @@ func TestDesktopBotPersonaIsNotDesktopWork(t *testing.T) {
 	}
 }
 
+// An empty order is not an answer this person should read, and it is not work
+// for the worker either. It used to be an error, which took the whole turn
+// down with it and left the message nowhere. Now it is a report: no order left
+// this function, and the caller still holds the person's own words.
 func TestDesktopBotEmptyOrderIsNotAReply(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我现在去做。","instruction":"","pace":"direct"}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
-	_, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
-	if err == nil || !strings.Contains(err.Error(), "omitted the work order") {
-		t.Fatalf("a direct reading with no order became chat: %v", err)
+	got, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("a missing order took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnread {
+		t.Fatalf("a direct reading with no order was not reported unread: %#v", got)
+	}
+	if got.Told != "" || got.Instruction != "" || got.Pace != "" || got.Persona != "" {
+		t.Fatalf("an unread result carried an order: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"确认后我按这个做。","instruction":"","pace":"confirm"}`, nil
 	}
-	_, err = (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
-	if err == nil || !strings.Contains(err.Error(), "omitted the work order") {
-		t.Fatalf("a confirm reading with no order became chat: %v", err)
+	got, err = (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("a missing order took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnread {
+		t.Fatalf("a confirm reading with no order was not reported unread: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我现在去做。","instruction":"","pace":"direct"}`, nil
 	}
-	_, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"打开百度"}, "")
-	if err == nil || !strings.Contains(err.Error(), "omitted the work order") {
-		t.Fatalf("a confirmed turn with no order became chat: %v", err)
+	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"打开百度"}, "")
+	if err != nil {
+		t.Fatalf("a missing order took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnread {
+		t.Fatalf("a confirmed turn with no order was not reported unread: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	// An identity without desktop work is still a reading: it becomes a reply,
+	// not a failure.
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我记下了。","instruction":"","persona":"这个 Bot 叫真龙。","pace":"direct"}`, nil
 	}
-	got, err := (&App{}).UnderstandDesktopBotTask("记下这个身份", "plan", "zh-Hans", nil, "")
+	got, err = (&App{}).UnderstandDesktopBotTask("记下这个身份", "plan", "zh-Hans", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Pace != "reply" || got.Instruction != "" || got.Persona != "这个 Bot 叫真龙。" {
 		t.Fatalf("an identity marked direct was sent onward: %#v", got)
 	}
+	if got.Reading != "" {
+		t.Fatalf("a real reading was reported missing: %#v", got)
+	}
 }
 
-func TestDesktopBotUnderstandingStopsWhenTheModelFails(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+// A reading that cannot be made is reported, not invented and not thrown away
+// together with the message. Every class leaves the result empty, so no order
+// can reach the worker through a reading that never happened.
+func TestDesktopBotReadingReportsInsteadOfStoppingTheTurn(t *testing.T) {
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return "我先截一张当前桌面。", nil
 	}
-	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
-	if _, err := (&App{}).UnderstandDesktopBotTask("开发个c++版的hello world程序，运行后发我运行屏幕截图", "plan", "zh-Hans", nil, ""); err == nil {
-		t.Fatal("prose was accepted as an order")
+	got, err := (&App{}).UnderstandDesktopBotTask("开发个c++版的hello world程序，运行后发我运行屏幕截图", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("prose took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnread {
+		t.Fatalf("prose was accepted as a reading: %#v", got)
+	}
+	if got.Told != "" || got.Instruction != "" {
+		t.Fatalf("an unread result carried an order: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"","instruction":"去做"}`, nil
 	}
-	if _, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, ""); err == nil {
-		t.Fatal("an empty statement was accepted")
+	got, err = (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("a statement with no sentence took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnread {
+		t.Fatalf("an empty statement was accepted: %#v", got)
 	}
 
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	calls := 0
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		calls++
 		return "", errors.New("LLM not configured")
 	}
-	_, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
-	if err == nil || !strings.Contains(err.Error(), "LLM not configured") {
-		t.Fatalf("model failure was replaced: %v", err)
+	got, err = (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("an unreachable model took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnreachable {
+		t.Fatalf("an unreachable model was not reported: %#v", got)
+	}
+	if got.Told != "" || got.Instruction != "" || got.Pace != "" {
+		t.Fatalf("an unreachable reading carried an order: %#v", got)
+	}
+	// A misconfiguration is not the kind waiting fixes, so it is not retried
+	// against the same missing configuration.
+	if calls != 1 {
+		t.Fatalf("a permanent failure was tried %d times", calls)
 	}
 
 	long := strings.Repeat("甲", desktopBotUnderstandToldMax+20)
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"` + long + `","instruction":"去做这件事"}`, nil
 	}
-	got, err := (&App{}).UnderstandDesktopBotTask("看一下", "plan", "zh-Hans", nil, "")
+	got, err = (&App{}).UnderstandDesktopBotTask("看一下", "plan", "zh-Hans", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len([]rune(got.Told)) != desktopBotUnderstandToldMax {
 		t.Fatalf("told len=%d", len([]rune(got.Told)))
+	}
+	if got.Reading != "" {
+		t.Fatalf("a real reading was reported missing: %#v", got)
+	}
+}
+
+// The failure mode seen in the field: this model reasons before it answers, and
+// every so often the answer simply takes longer than one reading's budget. One
+// budget now covers the reading, every attempt is cut from it, and the answer
+// that never came is reported instead of surfacing as a dead turn.
+func TestDesktopBotReadingSpendsOneBudget(t *testing.T) {
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	var seen []int
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		seen = append(seen, req.timeoutSec)
+		return "", errors.New("HTTP 502 bad gateway")
+	}
+	got, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("a slow reading took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnreachable {
+		t.Fatalf("class=%q", got.Reading)
+	}
+	if len(seen) != desktopBotReadAttempts {
+		t.Fatalf("a blip was not given one second try: %v", seen)
+	}
+	for i, timeoutSec := range seen {
+		// Every attempt answers to the reading's own budget. Nothing here can
+		// outlive it, and no attempt invents a deadline of its own.
+		if timeoutSec > int(desktopBotReadBudget/time.Second) || timeoutSec < 1 {
+			t.Fatalf("attempt %d got timeout=%ds outside the reading budget", i+1, timeoutSec)
+		}
+	}
+}
+
+// A timeout is not transient: that attempt already spent the reading's whole
+// allowance, so another slow generation is not bought with what remains.
+func TestDesktopBotReadingDoesNotRetryItsOwnDeadline(t *testing.T) {
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	calls := 0
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		calls++
+		return "", fmt.Errorf("Post %q: context deadline exceeded (Client.Timeout exceeded while awaiting headers)", "https://copilot.tencent.com/v2/chat/completions")
+	}
+	got, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("a timed-out reading took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnreachable {
+		t.Fatalf("class=%q", got.Reading)
+	}
+	if calls != 1 {
+		t.Fatalf("a spent deadline was retried %d times", calls)
+	}
+}
+
+// The report is decided by whoever watched the call. A model does not get to
+// declare what its own answer was worth.
+func TestDesktopBotReadingIsNotTheModelsToClaim(t *testing.T) {
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		return `{"told":"我去看看。","instruction":"打开百度并截图。","pace":"direct","reading":"unreachable"}`, nil
+	}
+	got, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reading != "" {
+		t.Fatalf("the model claimed a reading report: %#v", got)
 	}
 }
 
@@ -367,16 +493,17 @@ func TestDesktopBotUnderstandTextPrefersParsedReasoning(t *testing.T) {
 }
 
 func TestCallDesktopBotUnderstandNeedsAModel(t *testing.T) {
-	if _, err := callDesktopBotUnderstandLLM(context.Background(), nil, "system", "user"); err == nil {
+	req := desktopBotUnderstandRequest{systemPrompt: "system", userPrompt: "user", timeoutSec: 30}
+	if _, err := callDesktopBotUnderstandLLM(context.Background(), nil, req); err == nil {
 		t.Fatal("nil app reached a model")
 	}
-	if _, err := callDesktopBotUnderstandLLM(context.Background(), &App{}, "system", "user"); err == nil {
+	if _, err := callDesktopBotUnderstandLLM(context.Background(), &App{}, req); err == nil {
 		t.Fatal("an app with no hub reached a model")
 	}
 }
 
 func TestDesktopBotScheduleReadingKeepsTheRepeat(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"已设好，之后每分钟向你问好。","instruction":"向用户问好一次，把这句问候作为回复。","pace":"schedule","schedule":{"name":"每分钟问好","mode":"create","interval_minutes":1}}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
@@ -396,7 +523,7 @@ func TestDesktopBotScheduleReadingKeepsTheRepeat(t *testing.T) {
 }
 
 func TestDesktopBotScheduleReadingKeepsAClock(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"已设好，每个工作日 8:30 做早间简报。","instruction":"整理早间简报并发在对话里。","pace":"schedule","schedule":{"name":"早间简报","hour":8,"minute":30,"day_of_week":1}}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
@@ -409,19 +536,27 @@ func TestDesktopBotScheduleReadingKeepsAClock(t *testing.T) {
 	}
 }
 
+// A timer nobody named a time for is not armed on a guess. The reading says so,
+// and nothing else comes out of it.
 func TestDesktopBotScheduleReadingRejectsAMissingTime(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我来定时。","instruction":"向用户问好。","pace":"schedule","schedule":{"name":"问好"}}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
-	_, err := (&App{}).UnderstandDesktopBotTask("以后问好", "plan", "zh-Hans", nil, "")
-	if err == nil || !strings.Contains(err.Error(), "omitted the schedule") {
-		t.Fatalf("a schedule without a time was accepted: %v", err)
+	got, err := (&App{}).UnderstandDesktopBotTask("以后问好", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatalf("a missing time took the turn down with it: %v", err)
+	}
+	if got.Reading != desktopBotReadingUnscheduled {
+		t.Fatalf("a schedule without a time was accepted: %#v", got)
+	}
+	if got.Schedule != nil || got.Instruction != "" {
+		t.Fatalf("an untimed schedule armed something: %#v", got)
 	}
 }
 
 func TestDesktopBotScheduleCancelNeedsNoOrder(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"每分钟问好已停止。","instruction":"","pace":"schedule","schedule":{"mode":"cancel","name":"每分钟问好"}}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
@@ -435,7 +570,7 @@ func TestDesktopBotScheduleCancelNeedsNoOrder(t *testing.T) {
 }
 
 func TestDesktopBotReplyDropsAStraySchedule(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, string, string) (string, error) {
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"你好。","instruction":"","pace":"reply","schedule":{"mode":"create","interval_minutes":1}}`, nil
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })

@@ -237,3 +237,106 @@
 
 - 上一轮讨论的 **provider pinning**（用户点名寻址）解决"能不能指定实现"；本计划 Phase 0/2/4 解决"规模伸缩与默认安全"。两者互补，pinning 对应的 `PinForCapability` 已是 `bestProvider` 的一等公民，Phase 2 的 per-tenant 覆盖复用同一机制。
 - legacy 轨道 A 的 BM25 + 18 动态名额**保留为逃生阀**：当受管面因预算/评审来不及覆盖时，动态检索仍能兜底，不应在本案中被削弱。
+
+---
+
+## 8. 实现后review 发现的三处缺陷与修复（2026-10-11）
+
+Phase 0–5 落地后，对全量改动做了一遍严肃代码审查，发现三处真实缺陷。**它们都只有理解了"谁构造、谁持有、谁校验"这条链路才会暴露**，属于实现层不变量，值得写进文档防止重犯。
+
+### 8.1 registry 实例分歧：publisher 与 catalog 必须是同一个实例（严重）
+
+Phase 1 的动态 `x:` 能力是**运行时注册**的：publisher 在发布时把 vendor 自声明能力写进 registry，catalog 在 `PublishWithCoverage` 里用 `registry.Lookup` 校验 provision。**这条链路隐含一个未被表达的前置条件——两者必须共用同一个 `*CapabilityRegistry` 实例。**
+
+`MaClawSrv` 原先在 `http.go` 为 publisher 新建了一个 registry，而 catalog 用的��是 `configureSrvDynamicSemanticRouting` 传入的另一个。后果：任何声明了 `x:` 能力的 MCP 都会让 `PublishWithCoverage` 报 "unknown capability"，**动态路由整体崩**——恰好是 Phase 1 想解决的那类安装即用场景。
+
+修复：`Service` 持有配置时传入的 registry（`Service.registry` + `DynamicSemanticRegistry()` getter），宿主从 getter 构造 publisher；未配置路由时回退新建，保持旧行为。
+
+各宿主核实结论：
+- `MaClawSrv`：唯一跨文件接线。**必须核实调用时序**——`main.go` 先配置路由再构造 HTTP server，getter 才非 nil；顺序反了 nil 回退会让修复静默失效。
+- `hub/internal/httpapi`（mobile）：同一函数内同一变量，publisher 延迟构造，天然安全。
+- `guiapp`：不参与动态语义路由，无此问题。
+
+> ⭐ **不变量**：动态语义路由的 registry 有且只有一个实例，由 `Service` 持有。宿主不得自行 `NewReviewedDynamicCapabilityRegistry()` 来构造 publisher。
+
+### 8.2 descriptor 不得携带绑定身份（能力静默丢失）
+
+vendor descriptor 是**受管控词表项**，不是绑定记录。原先 `Summary` 里烤进了 `serverID/tool.Name`，于是两台不同 MCP 声明同一 `x:acme:translate` 会产生**冲突** descriptor，第二次注册失败、能力被静默丢弃。
+
+修复：`Summary` 不含server/tool 身份。溯源信息不受影响——`recordDeclaredExternal` 独立维护 `map[serverID][]CapabilityID`，「哪个 server 声明了什么」照样可查。
+
+> ⭐ **不变量**：同一 `x:` 能力被任意多个 server 声明时，产生的 descriptor 必须逐字段相同（幂等）。身份信息属于 binding 层，不进词表。
+
+### 8.3 共享字段必须有并发保护
+
+`Service.registry` 引入时是裸字段无锁读写，而同包 `Service.dynamicSemantic` 全程由 `dynamicSemanticMu` 保护。宿主可能在请求 goroutine 读 getter 的同时另一 goroutine 配置路由 → 数据竞争。
+
+修复：纳入同一把 `dynamicSemanticMu`（不引入第三种锁模式）。
+
+> ⚠️ 实施陷阱：把赋值挪进函数里**既有的** `defer Unlock()` 临界区会**自死锁**——该临界区内把 `s` 交给 executor、并启动后台 projection worker，两者都可能回调 Service 再取同一把非可重入 mutex。正确做法是给赋值一个**独立的最小临界区**。
+
+### 8.4 回归测试（4 例，全绿）
+
+`corelib/agentservice/dynamic_capability_publisher_regression_test.go`：
+
+| 测试 | 锁定的不变量 |
+|---|---|
+| `TestMergeVendorDeclaredCapabilityIdempotentAcrossServers` | §8.2 跨 server 幂等 |
+| `TestPublishVendorDeclaredCapabilityVisibleToCatalogOnSharedRegistry` | §8.1 端到端共享契约 |
+| `TestServiceDynamicSemanticRegistryReturnsConfiguredInstance` | §8.1 接线 |
+| `TestServiceDynamicSemanticRegistryConcurrentAccess` | §8.3 并发保护 |
+
+### 8.5 descriptor 的 effects 同样不得携带 per-server 身份（第四处，Fix 2 的漏网之鱼）
+
+§8.2 只修了 `Summary`，但 `externalDescriptorEqual` 是**逐字段**比较，`Effects` 一样会冲突。而开放族路径的 `contract.Effects` 来自 `openLookupEffectsForTool(tool)`——**按每个 tool 自己的 MCP `readOnlyHint` 收窄**：
+
+- serverA 的 tool 标了 `readOnlyHint=true` → `[read_only]`
+- serverB 的 tool 没标/标 false → `[external_effect]`
+
+于是「两台 server 声明同一 `x:` 能力，但一个只读一个非只读」照样产生冲突 descriptor，能力照样被静默丢弃。**这正是 Fix 2 修的那个 bug 的另一个字段面。**
+
+还有第二个面：`externalDescriptorEqual` 按**索引**逐个比较 Effects，所以顺序不同（`[read_only, external_effect]` vs `[external_effect, read_only]`）也会误判冲突——即使集合相同。
+
+修复：vendor descriptor 的 effects 取**该 namespace 的 effect 上限**（`CapabilityRegistry.ExternalEffectCeiling(ns)`，本次新增的导出接口，返回规范序副本）。
+
+**为什么不是「各server 声明值的并集」**（先想到、实测失败后才否掉的方案）：并集只在「新值 ⊆ 已注册值」时收敛。一旦某个 server 声明了更大的效果集，就必须**改写已注册的 descriptor**——而 `RegisterExternalCapability` 对已存在的不同 descriptor **一律拒绝，没有更新/合并语义**。所以并集在第一次反序输入时就会失败。而 namespace 上限是 ns 的**纯函数**，与装了哪些 server、各自怎么标注完全无关 → 所有注册逐字节相同 → 天然幂等。
+
+**这不构成权限放大**（catalog 侧 `PublishWithCoverage` 的校验方向是「provider 声明的 effect 必须落在 descriptor 允许范围内」，即 descriptor 是上界）：
+- descriptor 给满上限 ≠ 放行。单个 provider 实际能声明什么，仍被 `contract.Effects`（per-server 执行信封，发布与结算路径校验）与 `PublishWithCoverage` 双重把关；标了只读的工具照样走静默读路径。
+- 未被host 放宽的 namespace，默认上限就是 `[read_only, external_effect]`——装任何 server 都拿不到 `sensitive` / `local_mutation`。
+
+> ⭐ **不变量（补全 §8.2）**：同一 `x:` 能力的 descriptor 必须在**所有**字段上与 server/tool 无关——`Summary` 和 `Effects` 都是词表级事实，不是绑定级事实。`Effects` 取 namespace 上限这一**纯函数**，因此既与注册顺序无关，也天然免除了并发合并问题（无需额外锁）。
+
+**可复用的教训**：设计「让多来源注册收敛」前，必须先确认目标 API **有没有更新/合并语义**。只有「相同则幂等、不同则拒绝」的语义时，任何依赖「后写覆盖/累积」的设计都会在第一次反序输入时失败。
+
+回归测试：
+- `TestMergeVendorDeclaredCapabilityDivergentEffectsConverge`——相反 `readOnlyHint` 的两台 server 声明同一能力，断言均发布成功、descriptor 等于 namespace 上限、幂等重注册成功，且**收窄 effects 的 descriptor 必须被拒**（防止后续 server 静默改写受管控契约）。
+- `TestMergeVendorDeclaredCapabilityConcurrentConvergence`——多 server 并发发布同一能力，断言全部收敛（`-race` 可一并覆盖 registry 共享访问）。
+
+### 8.6 第四处修复的安全论证：descriptor 取上限不等于权限放宽
+
+`desc.Effects = registry.ExternalEffectCeiling(ns)` 看起来像"把能力声明成最大权限"，值得单独论证为何它没有放宽任何权限——否则这处修复就成了引入后门。
+
+关键在于 **descriptor 是上界，执行信封在别处**，而这条上界恰好**等于 host 复核过的天花板**。
+
+`PublishWithCoverage` 的校验方向（`semantic_catalog.go:855-870`）是 `provider.Effects ⊆ descriptor.Effects`。三个环节各司其职：
+
+| 环节 | 位置 | 作用 |
+|---|---|---|
+| descriptor.Effects | `mergeVendorDeclaredCapabilities` | 词表层的**允许结果空间** = namespace ceiling |
+| provider.Effects | publisher 的 `contract.Effects` | per-server **执行信封**，按该 tool 的 `readOnlyHint` 收窄 |
+| catalog 发布校验 | `PublishWithCoverage` | `effectWithinCeiling(provider.Effects, descriptor.Effects)` |
+
+于是：
+
+- **未放宽的 namespace**拿到默认 ceiling `[read_only, external_effect]`——任何已装 MCP 都拿不到 `sensitive` / `local_mutation`，无论它如何自我标注。
+- **恶意 server 声明 `[sensitive]`** 会在 `PublishWithCoverage` 被拒（catalog 层），也在 publisher 的 `validateContract`（`publisherEffectAllowed`）被拒（发布层）——**双重 fail-closed**。
+- **host 放宽 namespace**时 descriptor 跟着放宽；**host 收窄**时，同一个非只读 server 的声明会立即开始失败——**上界对策略变更立即生效，双向都成立**（这条是 `TestVendorDescriptorCeilingGrantsNoAuthority` 实测出来的，见下）。
+
+> ⚠️ 这里有个容易误判的直觉陷阱：host 收窄 ceiling 到 `[read_only]` 后，一个 `readOnlyHint=false` 的 server 会报 `capability "x:..." does not permit effect "external_effect"`。**这个 FAIL 是正确的安全行为，不是回归**——本轮最初写测试时正是把它当成 bug 查了一轮。
+
+**回归测试 `TestVendorDescriptorCeilingGrantsNoAuthority`** 锁死四点：
+1. 未复核的 namespace 拿不到 `sensitive` / `local_mutation`；
+2. 声明 `sensitive` 的 provider 被 catalog 拒（同时断言 ceiling 内 effect 仍被接受，防止"靠全拒来满足守卫"）；
+3. host 放宽后 descriptor 跟着含 `sensitive`；
+4. host 收窄后，同一个 server 的越界声明 fail-closed。

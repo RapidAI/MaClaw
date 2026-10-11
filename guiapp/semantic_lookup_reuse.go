@@ -158,8 +158,11 @@ func withSemanticReusableLookupFacts(ctx context.Context) context.Context {
 // web lookup the session already recorded. A lookup label is new evidence.
 // A generate or continuation may reuse. A new office classification does not;
 // an office label produced by staying on the open residue does.
-func semanticReuseStoredLookupFacts(_ string, current intent.ClassificationResult) bool {
+func semanticReuseStoredLookupFacts(text string, current intent.ClassificationResult) bool {
 	if current.Degraded || semanticResultHasLookupLabel(current) {
+		return false
+	}
+	if lexicalFreshLookupRequest(text) || lexicalWebSearchRequest(text) {
 		return false
 	}
 	if current.Primary == intent.LabelOffice && !strings.Contains(current.Reason, "session residue") {
@@ -184,14 +187,14 @@ func semanticReusableLookupFacts(ctx context.Context) bool {
 	return flag
 }
 
-func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNeed, ctx context.Context, _ string) ([]tool.CapabilityNeed, bool) {
+func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNeed, ctx context.Context, userText string) ([]tool.CapabilityNeed, bool) {
 	if !semanticNeedsHaveWebLookup(needs) || !semanticNeedsHaveGenerate(needs) || semanticNeedsHaveLiveDataVisual(needs) {
 		return needs, false
 	}
 	// Topic-string alignment is not a fact. Only a host residue that recorded
-	// a successful web lookup for this task, and only when this turn's
-	// classification did not request new evidence.
-	if !semanticReusableLookupFacts(ctx) {
+	// a successful web lookup for this task, and only when the user did not
+	// ask for a fresh one.
+	if lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText) || !semanticReusableLookupFacts(ctx) {
 		return needs, false
 	}
 	kept := make([]tool.CapabilityNeed, 0, len(needs))
@@ -206,6 +209,46 @@ func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNee
 	}
 	log.Printf("[semantic] omit this-turn lookup; session residue already has web facts")
 	return kept, true
+}
+
+// lexicalWebSearchRequest detects an explicit new-search request only when
+// deciding whether prior, trusted lookup evidence may be reused. It is not an
+// intent classifier and must never grant, select, or reclassify a capability.
+func lexicalWebSearchRequest(text string) bool {
+	msg := strings.ToLower(strings.TrimSpace(text))
+	if msg == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"全网搜索", "全网查", "上网搜索", "上网搜", "上网查",
+		"网上搜索", "网上搜", "网上找", "网上查",
+		"在网上搜索", "在网上查找", "在网上找",
+		"联网搜索", "互联网搜索", "联网查",
+		"search the web", "search online", "web search",
+		"google this", "bing this", "look up online",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func lexicalFreshLookupRequest(text string) bool {
+	msg := strings.ToLower(strings.TrimSpace(text))
+	if msg == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"refresh", "latest", "look up again", "search again",
+		"重新查", "再查一遍", "再查一次", "再查一下", "再查",
+		"重新搜索", "再搜", "刷新", "最新", "实时",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // semanticPetitionKeptLookupKey carries the petitioned label into a petition

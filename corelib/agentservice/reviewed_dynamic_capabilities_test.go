@@ -27,8 +27,20 @@ func TestReviewedDynamicCapabilityRegistryIsSealedAndNarrow(t *testing.T) {
 		t.Fatalf("reviewed registry=%#v sealed=%v", registry, registry.Sealed())
 	}
 	descriptor, ok := registry.Lookup(CapabilityInformationLookup)
-	if !ok || len(descriptor.Effects) != 1 || descriptor.Effects[0] != coretool.EffectReadOnly {
-		t.Fatalf("lookup descriptor=%#v found=%v", descriptor, ok)
+	// The open lookup family is intentionally not read-only only: it also
+	// declares EffectExternalEffect so an arbitrary installed MCP can act on
+	// an external system, with that act gated by the receipt confirmation
+	// boundary rather than by a pre-approved tool name. See
+	// ReviewedMCPOpenLookupContract.
+	if !ok || len(descriptor.Effects) != 2 {
+		t.Fatalf("lookup descriptor effects=%#v found=%v", descriptor.Effects, ok)
+	}
+	lookupEffects := map[coretool.EffectClass]bool{}
+	for _, effect := range descriptor.Effects {
+		lookupEffects[effect] = true
+	}
+	if !lookupEffects[coretool.EffectReadOnly] || !lookupEffects[coretool.EffectExternalEffect] {
+		t.Fatalf("lookup descriptor must declare both read-only and external-effect: %#v", descriptor.Effects)
 	}
 	searchWeb, ok := registry.Lookup(CapabilityInformationSearchWeb)
 	if !ok || len(searchWeb.Effects) != 1 || searchWeb.Effects[0] != coretool.EffectReadOnly {

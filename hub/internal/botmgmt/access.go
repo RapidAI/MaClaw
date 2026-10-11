@@ -624,7 +624,10 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
 	}
 	if text == "" {
-		emptyErr := fmt.Errorf("%w: instance returned no result", ErrSrv)
+		// Not ErrSrv: no request to MaClawSrv failed. See the matching note in
+		// desktop_admit.go — calling this "maclawsrv request failed" made bots
+		// report an unreachable server for runs that were merely empty.
+		emptyErr := fmt.Errorf("run ended without a result")
 		traceBot(botID, "empty_result", emptyErr, "instance", instanceID, "handoff", traceYes(body.Handoff))
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)

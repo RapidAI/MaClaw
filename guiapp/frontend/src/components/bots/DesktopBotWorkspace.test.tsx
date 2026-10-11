@@ -30,6 +30,21 @@ const openFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
 const showFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
 const previewFile = vi.hoisted(() => vi.fn(async (_path?: string) => ({ preview_url: '' })));
 const readShot = vi.hoisted(() => vi.fn(async (_path?: string) => ({ mime: 'image/png', data: 'iVBORw0KGgo=' })));
+type BotLLMView = { mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string };
+type BotLLMIn = { mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string };
+const getBotLLM = vi.hoisted(() => vi.fn(async (): Promise<BotLLMView> => ({ mode: 'default', key_set: false })));
+const saveBotLLM = vi.hoisted(() => vi.fn(async (input?: BotLLMIn): Promise<BotLLMView> => ({
+    mode: input?.mode ?? 'default',
+    name: input?.name,
+    model: input?.model,
+    key_set: !!input?.key,
+})));
+const listProviders = vi.hoisted(() => vi.fn(async (): Promise<{ providers: Array<Record<string, unknown>>; current: string }> => ({ providers: [], current: '' })));
+const persistPreference = vi.hoisted(() => vi.fn(async (_botId?: string, _persona?: string) => undefined));
+const listActiveRuns = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<Array<Record<string, unknown>>> => []));
+const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; instruction?: string } | null> => null));
+const appendSupplement = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string, _instruction?: string): Promise<{ accepted?: boolean; stage?: string; message?: string } | null> => null));
+const getSupplements = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string): Promise<Array<{ id: string; state: string; content?: string }>> => []));
 const responseListeners = vi.hoisted(() => ({
     list: [] as Array<(payload: unknown) => void>,
     byEvent: {} as Record<string, (payload: unknown) => void>,
@@ -54,6 +69,14 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ShowItemInFolder: (path: string) => showFile(path),
     PreviewTaskResultFile: (path: string) => previewFile(path),
     ReadDesktopBotShot: (path: string) => readShot(path),
+    GetDesktopBotLLM: () => getBotLLM(),
+    SaveDesktopBotLLM: (input: BotLLMIn) => saveBotLLM(input),
+    GetMaclawLLMProviders: () => listProviders(),
+    PersistDesktopBotPreference: (botId: string, persona: string) => persistPreference(botId, persona),
+    GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
+    EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
+    AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
+    GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
 }));
 
 vi.mock('../../../wailsjs/runtime', () => ({
@@ -67,9 +90,9 @@ vi.mock('../../../wailsjs/runtime', () => ({
     },
 }));
 
-import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport, handleDesktopBotResult, handleDesktopBotView } from './DesktopBotWorkspace';
+import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport, handleDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView } from './DesktopBotWorkspace';
 import type { BotPhase } from './desktopBots';
-import { appendDesktopBotReport } from './desktopBots';
+import { appendDesktopBotReport, applySupplementOutcomes, messagesForBot, saveBotMessages } from './desktopBots';
 import { adoptExistingBotReplies, setBotWindowForeground, unreadBotReplyCount } from './botUnread';
 
 const RETURN_TASK = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
@@ -104,6 +127,8 @@ async function confirmBotDelete(label = '删除') {
 beforeEach(() => {
     localStorage.clear();
     sendTask.mockReset();
+    getSupplements.mockReset();
+    getSupplements.mockResolvedValue([]);
     understandTask.mockReset();
     armSchedule.mockReset();
     armSchedule.mockResolvedValue('task-1');
@@ -140,6 +165,17 @@ beforeEach(() => {
     showFile.mockResolvedValue(undefined);
     previewFile.mockReset();
     previewFile.mockResolvedValue({ preview_url: '' });
+    getBotLLM.mockReset();
+    getBotLLM.mockResolvedValue({ mode: 'default', key_set: false });
+    saveBotLLM.mockReset();
+    saveBotLLM.mockImplementation(async (input?: BotLLMIn) => ({
+        mode: input?.mode ?? 'default',
+        name: input?.name,
+        model: input?.model,
+        key_set: !!input?.key,
+    }));
+    listProviders.mockReset();
+    listProviders.mockResolvedValue({ providers: [], current: '' });
     responseListeners.list = [];
     responseListeners.byEvent = {};
     setBotWindowForeground(false);
@@ -264,11 +300,12 @@ describe('DesktopBotWorkspace', () => {
         expect(list.textContent).toContain('当前用户在 MaClawSrv 上的一个实例，共用云端桌面。');
         expect(screen.getByTestId('desktop-bot-command')).toBeTruthy();
 
-        fireEvent.click(screen.getByRole('button', { name: '改名' }));
-        expect(screen.getByTestId('desktop-bot-bot_1').className).toContain('is-editing');
-        fireEvent.change(screen.getByLabelText('名称'), { target: { value: '值班' } });
-        fireEvent.change(screen.getByLabelText('描述'), { target: { value: '晚上值守' } });
-        fireEvent.click(screen.getByRole('button', { name: '保存' }));
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        const editDialog = await screen.findByTestId('bot-edit-dialog');
+        fireEvent.change(within(editDialog).getByLabelText('名称'), { target: { value: '值班' } });
+        fireEvent.change(within(editDialog).getByLabelText('描述'), { target: { value: '晚上值守' } });
+        fireEvent.click(within(editDialog).getByRole('button', { name: '保存' }));
+        await waitFor(() => expect(screen.queryByTestId('bot-edit-dialog')).toBeNull());
         expect(await screen.findByText('晚上值守')).toBeTruthy();
         expect(list.textContent).toContain('值班');
         expect(list.textContent).toContain('晚上值守');
@@ -292,6 +329,115 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
         expect(screen.queryByText('晚上值守')).toBeNull();
         expect(screen.getByTestId('desktop-bot-pick')).toBeTruthy();
+    });
+
+    // The reading of a message is a helper for the turn. When the helper
+    // cannot answer, the turn must survive it: the chat says what happened and
+    // keeps the words, instead of claiming the backend agent is unavailable.
+    it('parks an unread message instead of blaming the backend agent', async () => {
+        understandTask.mockResolvedValue({ reading: 'unreachable' });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'req-park',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+
+        expect(await screen.findByTestId('desktop-bot-no-reading')).toBeTruthy();
+        expect(screen.queryByText('后台 agent 不可用。')).toBeNull();
+        expect(screen.getByText('这句没读成安排——帮我读话的服务暂时没有回应。可以照你的原话发过去，或者让我再读一次。')).toBeTruthy();
+        // Nothing has been sent, so nothing is occupied: the turn is still
+        // this person's to start.
+        expect(sendTask).not.toHaveBeenCalled();
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+    });
+
+    it('sends your own words when you choose them', async () => {
+        understandTask.mockResolvedValue({ reading: 'unreachable' });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'req-own',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByTestId('desktop-bot-no-reading')).toBeTruthy();
+
+        // Reading it again once the model answers is still just a click away,
+        // and no reading is asked for a second time here.
+        understandTask.mockResolvedValue({ told: '我来安排一下。', instruction: '指令:plan:打开示例网站:', pace: 'direct' });
+        fireEvent.click(screen.getByTestId('desktop-bot-reading-verbatim'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith(expect.any(String), '打开示例网站', 'plan'));
+        expect(understandTask).toHaveBeenCalledTimes(1);
+        // The choice is spent: one click is one send, not a button that can be
+        // pressed again on a desktop somebody else is using.
+        expect(screen.queryByTestId('desktop-bot-no-reading')).toBeNull();
+    });
+
+    it('reads the same sentence again when asked to', async () => {
+        understandTask.mockResolvedValue({ reading: 'unread' });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'req-again',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByTestId('desktop-bot-no-reading')).toBeTruthy();
+        expect(screen.getByText('这句没整理成可执行的安排，没有发出。')).toBeTruthy();
+
+        understandTask.mockResolvedValue({ told: '我来安排一下。', instruction: '指令:plan:打开示例网站:', pace: 'direct' });
+        fireEvent.click(screen.getByTestId('desktop-bot-reading-again'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith(expect.any(String), '指令:plan:打开示例网站:', 'execute'));
+        expect(understandTask).toHaveBeenCalledTimes(2);
+        // One choice per parking: the buttons leave with the first click.
+        expect(screen.queryByTestId('desktop-bot-no-reading')).toBeNull();
+    });
+
+    // Timed work whose time was never named cannot be armed from here, and it
+    // cannot be sent as work either — only this person knows when it should run.
+    it('offers no shortcut for timed work with no time', async () => {
+        understandTask.mockResolvedValue({ reading: 'unscheduled' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '每天早上问好' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+
+        expect(await screen.findByTestId('desktop-bot-no-reading')).toBeTruthy();
+        expect(screen.getByText('这句没有整理成定时安排，没有设定。')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-reading-verbatim')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-reading-again')).toBeTruthy();
+        expect(sendTask).not.toHaveBeenCalled();
+    });
+
+    // The failure of the helper must not be confused with a failure of the
+    // backend: this is the exact bubble the product used to show instead.
+    it('never claims the backend agent is unavailable when the reading fails', async () => {
+        understandTask.mockRejectedValue('desktop bot reading timed out after 30 seconds');
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-log').textContent).toContain('超时'));
+        expect(screen.queryByText('后台 agent 不可用。')).toBeNull();
     });
 
     it('sends a command to the backend agent and shows the returned result', async () => {
@@ -1196,13 +1342,50 @@ describe('DesktopBotWorkspace', () => {
         renameBot.mockRejectedValueOnce(new Error('MaClawSrv 不可达'));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         expect(await screen.findByText('Bot 1')).toBeTruthy();
-        fireEvent.click(screen.getByRole('button', { name: '改名' }));
-        fireEvent.change(screen.getByLabelText('名称'), { target: { value: '新名字' } });
-        fireEvent.click(screen.getByRole('button', { name: '保存' }));
-        expect((await screen.findByTestId('desktop-bot-list-error')).textContent).toBe('MaClawSrv 不可达');
-        fireEvent.click(screen.getByRole('button', { name: '取消' }));
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        const editDialog = await screen.findByTestId('bot-edit-dialog');
+        fireEvent.change(within(editDialog).getByLabelText('名称'), { target: { value: '新名字' } });
+        fireEvent.click(within(editDialog).getByRole('button', { name: '保存' }));
+        expect(await screen.findByText('MaClawSrv 不可达')).toBeTruthy();
+        expect(screen.getByTestId('bot-edit-dialog')).toBeTruthy();
+        fireEvent.click(within(editDialog).getByRole('button', { name: '取消' }));
+        expect(screen.queryByTestId('bot-edit-dialog')).toBeNull();
         expect(screen.getByText('Bot 1')).toBeTruthy();
         expect(screen.queryByText('新名字')).toBeNull();
+    });
+
+    it('edits bot info through the modal dialog and cancels cleanly', async () => {
+        listBots.mockResolvedValueOnce([{ id: 'bot_1', title: 'Bot 1', description: '值班', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('Bot 1')).toBeTruthy();
+
+        // The dialog owns the fields; the row never turns into inputs.
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        const dialog = screen.getByTestId('bot-edit-dialog');
+        expect(within(dialog).getByLabelText('名称')).toBeTruthy();
+        expect(within(screen.getByTestId('desktop-bot-bot_1')).queryByLabelText('名称')).toBeNull();
+
+        // An empty name cannot be saved.
+        const name = within(dialog).getByLabelText('名称') as HTMLInputElement;
+        fireEvent.change(name, { target: { value: '  ' } });
+        expect((within(dialog).getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+
+        // Escape cancels without touching the backend.
+        fireEvent.change(name, { target: { value: '值班' } });
+        fireEvent.keyDown(dialog, { key: 'Escape' });
+        expect(screen.queryByTestId('bot-edit-dialog')).toBeNull();
+        expect(renameBot).not.toHaveBeenCalled();
+        expect(screen.getByText('Bot 1')).toBeTruthy();
+
+        // Reopen and save: the rename reaches the backend and refreshes the row.
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        const reopened = screen.getByTestId('bot-edit-dialog');
+        fireEvent.change(within(reopened).getByLabelText('名称'), { target: { value: '值班' } });
+        fireEvent.change(within(reopened).getByLabelText('描述'), { target: { value: '晚上值守' } });
+        fireEvent.click(within(reopened).getByRole('button', { name: '保存' }));
+        await waitFor(() => expect(renameBot).toHaveBeenCalledWith('bot_1', '值班', '晚上值守'));
+        expect(await screen.findByText('晚上值守')).toBeTruthy();
+        expect(screen.queryByTestId('bot-edit-dialog')).toBeNull();
     });
 
     it('shows the result that arrived after leaving the bots page', async () => {
@@ -2008,6 +2191,47 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByText('这句没整理成可执行的安排，没有发出。')).toBeTruthy();
     });
 
+    // A parked sentence is still the person's order even while the desktop is
+    // busy: choosing their own words queues the turn behind the running one
+    // instead of racing it on the shared desktop.
+    it('queues the verbatim resend until the running task settles', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
+        understandTask.mockImplementation(async (content: string) => {
+            if (String(content) === '打开百度') return { reading: 'unreachable' };
+            return { told: '我现在去查并整理成 PDF 发在这里。', instruction: `指令:plan:${content}`, pace: 'direct' as const };
+        });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-busy-verbatim',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 2'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '查询 北京天气，生成pdf' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开百度' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByTestId('desktop-bot-no-reading')).toBeTruthy();
+
+        // The desktop is still busy: the choice queues, it does not race.
+        fireEvent.click(screen.getByTestId('desktop-bot-reading-verbatim'));
+        await waitFor(() => expect(screen.queryByTestId('desktop-bot-no-reading')).toBeNull());
+        await act(async () => {
+            await new Promise(resolve => setTimeout(resolve, 30));
+        });
+        expect(sendTask).toHaveBeenCalledTimes(1);
+
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-busy-verbatim',
+            session_key: 'alice:bot_1',
+            text: 'PDF 已附在这条对话里。',
+        });
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', '打开百度', 'plan');
+    });
+
     it('does not turn a confirmed job into chat when the order is empty', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         const ask = '把桌面上的旧办公软件卸掉并清掉数据';
@@ -2415,9 +2639,9 @@ describe('DesktopBotWorkspace', () => {
         expect(log.nextElementSibling).toBe(form);
         expect(screen.getByLabelText('Bot').contains(screen.getByTestId('desktop-bot-bot_1'))).toBe(true);
         const botRow = screen.getByTestId('desktop-bot-bot_1');
-        expect(within(botRow).getByRole('button', { name: '改名' }).querySelector('svg')).toBeTruthy();
+        expect(within(botRow).getByRole('button', { name: '编辑信息' }).querySelector('svg')).toBeTruthy();
         expect(within(botRow).getByRole('button', { name: '删除' }).querySelector('svg')).toBeTruthy();
-        expect(botRow.textContent).not.toContain('改名');
+        expect(botRow.textContent).not.toContain('编辑信息');
         expect(botRow.textContent).not.toContain('删除');
 
         let shiftPrevented = false;
@@ -2451,7 +2675,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-chat').contains(box)).toBe(true);
         expect(panel.contains(box)).toBe(false);
         expect(log.nextElementSibling).toBe(form);
-        expect(panel.textContent).not.toContain('改名');
+        expect(panel.textContent).not.toContain('编辑信息');
 
         fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
         const details = screen.getByTestId('desktop-bot-details');
@@ -2888,7 +3112,8 @@ describe('DesktopBotWorkspace', () => {
         expect(css).toContain('.desktop-bot-chat__identity-btn:focus-visible .desktop-bot-chat__chevron');
         expect(css).toMatch(/\.desktop-bot-workspace__actions\s*\{[^}]*position:\s*absolute/);
         expect(css).toMatch(/\.desktop-bot-workspace__actions\s*\{[^}]*pointer-events:\s*none/);
-        expect(css).toMatch(/\.desktop-bot-workspace__row\.is-editing \.desktop-bot-workspace__actions\s*\{[^}]*pointer-events:\s*auto/);
+        expect(css).toMatch(/\.bot-edit-dialog__input\s*\{[^}]*border-radius:\s*8px/);
+        expect(css).toMatch(/\.bot-edit-dialog__notice\s*\{[^}]*var\(--theme-danger/);
         expect(css).toMatch(/\.desktop-bot-workspace__actions button\s*\{[^}]*width:\s*28px/);
         expect(css).toMatch(/\.desktop-bot-workspace__actions button\s*\{[^}]*height:\s*28px/);
         expect(css).toMatch(/\.desktop-bot-workspace__actions button\s*\{[^}]*padding:\s*0/);
@@ -3329,5 +3554,135 @@ describe('DesktopBotWorkspace', () => {
             if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
             else Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
         }
+    });
+
+    it('puts the model entry in the header, to the right of 新建', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '', instance_id: '' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        const create = await screen.findByTestId('desktop-bot-create');
+        const model = screen.getByTestId('desktop-bot-llm');
+        expect(model.compareDocumentPosition(create) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    });
+
+    it('sends the whole provider route when a bot owner picks one', async () => {
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [
+                { name: '空的', url: 'https://empty.example/v1', key: '', model: 'x' },
+                { name: 'Qwen', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-qwen', model: 'qwen-max', protocol: 'openai', wire_api: '' },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
+        // The provider carries its own model, so the common case needs no typing.
+        expect(within(dialog).getByTestId('bot-llm-model')).toHaveProperty('value', 'qwen-max');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith({
+            mode: 'custom',
+            name: 'Qwen',
+            url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            key: 'sk-qwen',
+            model: 'qwen-max',
+            protocol: 'openai',
+            wire_api: '',
+        }));
+        await waitFor(() => expect(screen.queryByTestId('bot-llm-dialog')).toBeNull());
+    });
+
+    // What "默认" restores is whatever the service resolves this owner right now,
+    // so the request must carry nothing else — no remembered provider or model
+    // to fall back to, whether the default comes from the system or an admin.
+    it('asks for plain default when the owner leaves their own model behind', async () => {
+        getBotLLM.mockResolvedValue({ mode: 'custom', name: 'Qwen', model: 'qwen-max', key_set: true });
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [{ name: 'Qwen', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-qwen', model: 'qwen-max', protocol: 'openai' }],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        await waitFor(() => expect(within(dialog).getByTestId('bot-llm-mode-custom')).toHaveProperty('checked', true));
+        expect(within(dialog).getByTestId('bot-llm-model')).toHaveProperty('value', 'qwen-max');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-default'));
+        fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith({ mode: 'default' }));
+        await waitFor(() => expect(screen.queryByTestId('bot-llm-dialog')).toBeNull());
+    });
+
+    it('keeps the dialog open and shows why when the hub refuses a provider', async () => {
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [{ name: 'Qwen', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-qwen', model: 'qwen-max' }],
+        });
+        saveBotLLM.mockRejectedValue(new Error('服务商名已被占用'));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
+        fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
+        expect(await within(dialog).findByText('服务商名已被占用')).toBeTruthy();
+        expect(screen.queryByTestId('bot-llm-dialog')).not.toBeNull();
+    });
+
+    // The hub keeps the choice even when it cannot reach MaClawSrv at that
+    // moment. Closing would look like nothing happened, so the dialog repeats
+    // the reason instead of pretending the change landed everywhere.
+    it('says so when the choice was stored but reached no bot yet', async () => {
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [{ name: 'Qwen', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-qwen', model: 'qwen-max' }],
+        });
+        saveBotLLM.mockResolvedValue({ mode: 'custom', name: 'Qwen', model: 'qwen-max', key_set: true, warning: '这台云服务器暂时连不上，下次打开 bot 时会带上。' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
+        fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
+        expect(await within(dialog).findByText('这台云服务器暂时连不上，下次打开 bot 时会带上。')).toBeTruthy();
+        expect(screen.queryByTestId('bot-llm-dialog')).not.toBeNull();
+    });
+    it('upgrades a queued supplement receipt when the run reports the outcome', () => {
+        saveBotMessages('alice', 'bot_1', [
+            { id: 'm-task', role: 'assistant', content: '正在打开订单页面', pending: false },
+            { id: 'm-sup', role: 'assistant', content: '已收到，会在当前任务的下一步生效。', ack: true, understood: true, supplementId: 'sup-1', supplementRunId: 'run-42' },
+        ]);
+        handleDesktopBotSupplementState({
+            bot_id: 'bot_1',
+            session_key: 'alice:bot_1',
+            run_id: 'run-42',
+            items: [{ id: 'sup-1', state: 'missed', content: '只要前5条' }],
+        });
+        const sup = messagesForBot('alice', 'bot_1').find(item => item.id === 'm-sup');
+        expect(sup?.supplementOutcome).toBe('missed');
+        expect(sup?.failed).toBe(true);
+        expect(sup?.content).toBe('任务已结束，这条补充没能生效。');
+        expect(sup?.noReading?.text).toBe('只要前5条');
+        expect(sup?.noReading?.kind).toBe('unrouted');
+        // The task bubble next to it is untouched.
+        expect(messagesForBot('alice', 'bot_1').find(item => item.id === 'm-task')?.content).toBe('正在打开订单页面');
+    });
+
+    it('marks an applied supplement without parking anything', () => {
+        saveBotMessages('alice', 'bot_1', [
+            { id: 'm-sup', role: 'assistant', content: '已收到，会在当前任务的下一步生效。', ack: true, supplementId: 'sup-9', supplementRunId: 'run-9' },
+        ]);
+        applySupplementOutcomes('alice', 'bot_1', 'run-9', [{ id: 'sup-9', state: 'applied' }]);
+        const sup = messagesForBot('alice', 'bot_1').find(item => item.id === 'm-sup');
+        expect(sup?.supplementOutcome).toBe('applied');
+        expect(sup?.content).toBe('补充已生效。');
+        expect(sup?.failed).toBeUndefined();
+        expect(sup?.noReading).toBeUndefined();
+    });
+
+    it('never rewrites a receipt that already has its terminal answer', () => {
+        saveBotMessages('alice', 'bot_1', [
+            { id: 'm-sup', role: 'assistant', content: '补充已生效。', ack: true, supplementId: 'sup-2', supplementRunId: 'run-2', supplementOutcome: 'applied' },
+        ]);
+        applySupplementOutcomes('alice', 'bot_1', 'run-2', [{ id: 'sup-2', state: 'missed', content: '原文' }]);
+        const sup = messagesForBot('alice', 'bot_1').find(item => item.id === 'm-sup');
+        expect(sup?.supplementOutcome).toBe('applied');
+        expect(sup?.content).toBe('补充已生效。');
     });
 });

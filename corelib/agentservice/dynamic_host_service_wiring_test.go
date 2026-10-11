@@ -154,6 +154,15 @@ func TestEveryReviewedRuleCapabilityHasAProviderRoute(t *testing.T) {
 	// is the one family with no host provider by design, which is why it was
 	// chosen as the first migrated family on the service hosts.
 	dynamicOnly := map[string]bool{"CapabilityInformationLookup": true}
+	// The external time-block work record is the second contract-only family:
+	// the record lives in an external system, so both its read and its
+	// mutation are served by a reviewed MCP binding and neither has a host
+	// attach site. Listing them here instead of attaching a host provider
+	// keeps this test honest: the route is the reviewed name, and a family
+	// that loses its binding has no host provider to fall back on.
+	for _, name := range reviewedContractOnlyCapabilities {
+		dynamicOnly[name] = true
+	}
 
 	attached := capabilityIdentifiersIn(t, "dynamic_host_clock.go", "prepareReviewedDynamicSemanticCatalog")
 	declared := capabilityIdentifiersIn(t, "reviewed_dynamic_capabilities.go", "ReviewedDynamicIntentCapabilityNeedRules")
@@ -164,6 +173,35 @@ func TestEveryReviewedRuleCapabilityHasAProviderRoute(t *testing.T) {
 		}
 		t.Fatalf("a rule needs %s, but no host attach site mentions it and it is not marked dynamic-only: "+
 			"turns for that family plan zero selections on every instance", name)
+	}
+	// Every contract-only family must still name a capability that a reviewed
+	// binding actually provisions. Otherwise dynamic-only becomes a place to
+	// park a family that no instance can ever serve, which is the failure
+	// this test exists to catch.
+	//
+	// information.lookup is left out: it is the open dynamic family, whose
+	// provisions are published from whatever the host lifecycle observes for
+	// a discovered binding rather than from a reviewed constant, so there is
+	// no single capability string to demand here. The two work-record
+	// families are contract-only by name and are checked exactly.
+	provisioned := map[string]bool{}
+	for _, contract := range ReviewedMCPCapabilityContracts() {
+		for _, provision := range contract.Provisions {
+			provisioned[string(provision.Capability)] = true
+		}
+	}
+	for _, contract := range ReviewedSkillCapabilityContracts() {
+		for _, provision := range contract.Provisions {
+			provisioned[string(provision.Capability)] = true
+		}
+	}
+	for name, capability := range map[string]string{
+		"CapabilityRecordReadWorklog":   string(CapabilityRecordReadWorklog),
+		"CapabilityRecordUpdateWorklog": string(CapabilityRecordUpdateWorklog),
+	} {
+		if !provisioned[capability] {
+			t.Fatalf("%s is marked dynamic-only but no reviewed binding provisions %q", name, capability)
+		}
 	}
 }
 

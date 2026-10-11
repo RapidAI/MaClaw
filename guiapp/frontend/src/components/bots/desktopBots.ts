@@ -7,6 +7,15 @@ export interface DesktopBot {
 
 export type BotPhase = 'plan' | 'execute';
 
+// Why a turn has no reading. Not good or bad, just what to tell the person.
+// unrouted differs from the other three: the reading succeeded and the message
+// was understood, but no running task took it.
+//
+// It lives here rather than beside the reader because the parked turn on the
+// bubble has to be able to hold all four; declaring the union twice let the
+// message type fall behind the reader and fail to compile.
+export type DesktopBotNoReading = 'unread' | 'unscheduled' | 'unreachable' | 'unrouted';
+
 // What the latest plan reply still needs from the person.
 // done: the request is already fulfilled, so the reply is the result.
 // arrange: work remains, and the confirm control is the approval.
@@ -311,6 +320,14 @@ export interface DesktopBotMessage {
     // the moment the dispatch starts, so a page reload can recover the queue
     // without double-sending.
     queued?: boolean;
+    // This bubble is a supplement receipt: the words were folded into a
+    // running turn. supplementRunId is the run they were aimed at, and
+    // supplementOutcome is the terminal answer (invariant I4: applied or
+    // missed, nothing else). Only these ids are persisted — the supplement
+    // text itself is never stored here.
+    supplementId?: string;
+    supplementRunId?: string;
+    supplementOutcome?: 'applied' | 'missed';
     // One cloud-desktop screenshot kept only until it is written to a file.
     // Data is standard base64. A saved shot is shotPaths, and these bytes are
     // not written to the transcript.
@@ -322,6 +339,11 @@ export interface DesktopBotMessage {
     files?: DesktopBotFile[];
     // Documents written under the maclaw data directory. The result card opens these.
     localPaths?: string[];
+    // This turn has no reading, so the person's own words are parked on the
+    // bubble: one control sends exactly those words, the other reads again.
+    // Nothing has gone to the desktop yet. The words are kept because the
+    // reading is a helper for the turn, not the turn itself.
+    noReading?: { text: string; phase: BotPhase; kind: DesktopBotNoReading };
 }
 
 export interface DesktopBotImage {
@@ -732,6 +754,46 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
     };
     saveBotMessages(userId, botId, foldPlanConfirmation(next, index));
+}
+
+// applySupplementOutcomes turns a supplement receipt from "queued" into its
+// terminal answer, closing invariant I4 on the UI side. A receipt that already
+// has an outcome is never rewritten, so a repeated event or a stale pull
+// cannot flip a settled bubble back.
+//
+// missed keeps the original words parked on the bubble (kind 'unrouted': the
+// verbatim control shows, "read again" does not — reading these words again
+// was never the failure mode). The words come from the server's in-memory
+// ticket; they are shown and held for one resend, not persisted beyond the
+// transcript this bubble already lives in.
+export function applySupplementOutcomes(userId: string, botId: string, runId: string, outcomes: Array<{ id?: string; state?: string; content?: string }>) {
+    userId = String(userId || '').trim();
+    botId = String(botId || '').trim();
+    runId = String(runId || '').trim();
+    if (!userId || !botId || !runId || !Array.isArray(outcomes) || outcomes.length === 0) return;
+    const byId = new Map(outcomes.filter(item => item && String(item.id || '').trim() !== '').map(item => [String(item.id), item]));
+    if (byId.size === 0) return;
+    const current = messagesForBot(userId, botId);
+    let changed = false;
+    const next = current.map(item => {
+        if (!item.supplementId || item.supplementOutcome) return item;
+        const hit = byId.get(item.supplementId);
+        if (!hit) return item;
+        changed = true;
+        if (hit.state === 'applied') {
+            return { ...item, content: '补充已生效。', supplementOutcome: 'applied' as const };
+        }
+        if (hit.state !== 'missed') return item;
+        const words = String(hit.content || item.noReading?.text || '').trim();
+        return {
+            ...item,
+            content: words !== '' ? '任务已结束，这条补充没能生效。' : '任务已结束，这条补充没能生效，原文已无法找回。',
+            failed: true,
+            supplementOutcome: 'missed' as const,
+            noReading: words !== '' ? { text: words, phase: 'plan' as BotPhase, kind: 'unrouted' as DesktopBotNoReading } : undefined,
+        };
+    });
+    if (changed) saveBotMessages(userId, botId, next);
 }
 
 // appendDesktopBotReport adds one scheduled result. The same request id is

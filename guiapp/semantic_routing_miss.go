@@ -314,3 +314,33 @@ func semanticUnmetHasReason(err error, reason string) bool {
 	}
 	return false
 }
+
+// semanticUnmetPinnedProvider reports whether a plan failed because the
+// implementation the user named could not be selected. It is checked before
+// the generic unmet error so the refusal can name the product the user asked
+// for rather than the capability they never mentioned.
+func semanticUnmetPinnedProvider(unmet []tool.UnmetNeed) bool {
+	for _, item := range unmet {
+		if item.ReasonCode == tool.UnmetReasonPinnedProviderUnavailable {
+			return true
+		}
+	}
+	return false
+}
+
+// semanticPinnedProviderUnavailableError is the refusal for a turn that named
+// an implementation the host could not honor. Silently serving the capability
+// through a different backend is exactly what the user ruled out, so this
+// surfaces the product by name and stops the turn.
+type semanticPinnedProviderUnavailableError struct {
+	Providers []string
+	Unmet     []tool.UnmetNeed
+}
+
+func (e semanticPinnedProviderUnavailableError) Error() string {
+	subject := "你指定的实现"
+	if len(e.Providers) > 0 {
+		subject = strings.Join(e.Providers, "、")
+	}
+	return "pinned provider unavailable: " + subject + " (" + formatSemanticUnmetNeeds(e.Unmet) + ")"
+}

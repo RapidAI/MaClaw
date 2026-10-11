@@ -12,6 +12,7 @@ import { LatexPreviewPanel } from '../ai/LatexPreviewPanel';
 import { PdfPreviewPanel } from '../ai/PdfPreviewPanel';
 import { DocxPreviewPanel } from '../ai/DocxPreviewPanel';
 import { PptxPreviewPanel } from '../ai/PptxPreviewPanel';
+import { XlsxPreviewPanel } from '../ai/XlsxPreviewPanel';
 import {
     isTaskResultPdfPreviewURL,
     localizeTaskResultPreviewError,
@@ -441,7 +442,7 @@ export function filePreviewKindOf(file?: FilePreviewSource | null): FilePreviewK
 export function isVisualFilePreview(file?: FilePreviewSource | null): boolean {
     if (!file) return false;
     const kind = filePreviewKindOf(file);
-    if (kind === 'pptx' || kind === 'docx') return Boolean(file.absPath);
+    if (kind === 'pptx' || kind === 'docx' || kind === 'xlsx') return Boolean(file.absPath);
     if (kind === 'latex') return Boolean(file.absPath) || Boolean(file.latexWorkbench);
     return isChromeLessPreviewKind(kind);
 }
@@ -461,6 +462,9 @@ export function filePreviewUsesSpecialRenderer(file?: FilePreviewSource | null):
     if (!file || isAssistantSourcePreview(file)) return false;
     const kind = filePreviewKindOf(file);
     if (kind === 'pptx' || kind === 'docx') return Boolean(file.absPath);
+    // Workbooks render the grid with a local original; without one they fall
+    // back to the office extract view, so never hand them to PlainCodeView.
+    if (kind === 'xlsx') return true;
     if (kind === 'latex') return Boolean(file.absPath) || Boolean(file.latexWorkbench);
     return kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio'
         || kind === 'office' || kind === 'markdown';
@@ -482,10 +486,11 @@ export function FilePreviewView({
     const diskPath = String(file.absPath || '').trim() || String(file.filePath || '').trim();
     const absPath = kind === 'pptx' || kind === 'docx' ? String(file.absPath || '').trim() : diskPath;
     const fileKey = `${name}:${absPath}:${file.language || ''}`;
-    // Assistant source/diff wins for HTML, SVG, Markdown, and Office extracts.
-    // Raster images, PDF, PPTX, and media keep their visual viewers.
+    // Assistant source/diff wins for HTML, SVG, Markdown, and Office extracts
+    // (including workbooks without a local original). Raster images, PDF,
+    // PPTX, and media keep their visual viewers.
     const yieldToParent = Boolean(children) && (
-        kind === 'html' || kind === 'office' || kind === 'markdown'
+        kind === 'html' || kind === 'office' || kind === 'xlsx' || kind === 'markdown'
         || (kind === 'image' && isAssistantSourcePreview(file))
     );
     if (yieldToParent) return <>{children}</>;
@@ -495,6 +500,17 @@ export function FilePreviewView({
     }
     if (kind === 'docx' && file.absPath) {
         return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;
+    }
+    if (kind === 'xlsx' && file.absPath) {
+        return (
+            <XlsxPreviewPanel
+                key={fileKey}
+                absPath={file.absPath}
+                theme={theme}
+                lang={lang}
+                fallbackContent={file.content}
+            />
+        );
     }
     const latexProject = String(file.projectPath || projectPath || '').trim();
     if (kind === 'latex' && file.latexWorkbench && latexProject && file.filePath) {
@@ -537,7 +553,7 @@ export function FilePreviewView({
     if (kind === 'html') {
         return <HtmlPreviewPanel key={fileKey} absPath={absPath} content={file.content} theme={theme} lang={lang} />;
     }
-    if (kind === 'office') {
+    if (kind === 'office' || kind === 'xlsx') {
         return (
             <OfficePreviewPanel
                 key={fileKey}

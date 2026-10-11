@@ -27,7 +27,10 @@ func reviewedHostFileWriteInvocationSchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path":    map[string]interface{}{"type": "string"},
 			"content": map[string]interface{}{"type": "string"},
-			"mode":    map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so NormalizeWriteModeKind stays
+			// the boundary and this is documentation for the model.
+			"mode":    map[string]interface{}{"type": "string", "enum": coretool.WriteModeOptions()},
 			// Replacing one exact passage is an outcome whole-file content
 			// cannot express. Which pair is present decides the outcome, so the
 			// schema needs no action or operation field, and it carries none of
@@ -186,7 +189,7 @@ func (c *coreAgentCallbacks) WriteReviewedHostFile(ctx context.Context, principa
 	}
 	resolvedMode, err := coretool.NormalizeWriteModeKind(mode)
 	if err != nil {
-		return "", fmt.Errorf("host_file_write_mode_rejected")
+		return "", fmt.Errorf("host_file_write_mode_rejected (%s)", coretool.WriteModeHint())
 	}
 	if ctx != nil {
 		select {

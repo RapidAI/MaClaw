@@ -7879,7 +7879,15 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			if err != nil {
 				return corelib.AppConfig{}, err
 			}
-			cfg.NetworkLevel = strings.TrimSpace(v)
+			// Validated like default_launch_mode right above: a level that
+			// reaches disk unvalidated is indistinguishable from "full" at
+			// enforcement, so a typo silently disables the restriction instead
+			// of being reported back to whoever typed it.
+			level, ok := clientsecurity.NormalizeNetworkLevel(v)
+			if !ok {
+				return corelib.AppConfig{}, fmt.Errorf("invalid network_level %q: valid levels are %s", strings.TrimSpace(v), strings.Join(clientsecurity.KnownNetworkLevels(), ", "))
+			}
+			cfg.NetworkLevel = level
 		case "network_allowlist":
 			v, err := stringSliceField(key, value)
 			if err != nil {
@@ -11400,7 +11408,10 @@ func (a *App) AIAssistantAttachmentPreviewDataURL(path string) (string, error) {
 	}
 	bounds := source.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
-	const maxEdge = 96
+	// 320 keeps the in-chat attachment preview (up to ~140px tall) crisp on
+	// hi-DPI displays while the PNG stays a few KB over the bridge. Composer
+	// chips reuse the same data URL and just downscale it further.
+	const maxEdge = 320
 	if width > maxEdge || height > maxEdge {
 		if width >= height {
 			height = max(1, height*maxEdge/width)

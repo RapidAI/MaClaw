@@ -1105,6 +1105,17 @@ type ExecuteRequest struct {
 	// ingress may attach a previously verified handle before Execute.
 	TaskRelation *TaskRelationDecision `json:"-"`
 
+	// RunID names the admitted run this turn belongs to. Like TaskRelation it is
+	// excluded from transport JSON: request text, a client tool, or a model must
+	// not be able to select another principal's run. Only the authenticated
+	// service ingress sets it, from the run it created at admission.
+	//
+	// Hosts use it to scope per-run state (for example mid-run supplementary
+	// instructions) to exactly one run. Nothing here is derived from the
+	// session: a session may have several runs live at once, so guessing the
+	// run from the session would deliver one turn's content into another run.
+	RunID string `json:"-"`
+
 	// DatabaseApproval is a host-only, request-scoped approval envelope. The
 	// model and wire JSON can never provide this field; the executor copies it
 	// into context immediately before invoking shared database tooling. The

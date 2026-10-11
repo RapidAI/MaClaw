@@ -1666,6 +1666,7 @@ describe('AIAssistantPanel property tests', () => {
             'Cloud drive (shared with the phone)',
             'Buy service redemption cards',
             'Knowledge Base',
+            'Open with companion',
             'Refresh news',
             'New conversation',
         ]);

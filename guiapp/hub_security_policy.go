@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 )
 
 // HubEffectivePolicy mirrors hub/internal/security.EffectivePolicy on the client side.
@@ -151,6 +152,10 @@ func (c *hubSecurityCache) update(raw json.RawMessage) bool {
 	if wrapper.SecurityPolicy == nil {
 		return false
 	}
+	// Fill in the permissive-default booleans the payload left out, before the
+	// policy reaches the cache: by this point "absent" and "explicitly false"
+	// are the same value, and only the raw payload can still tell them apart.
+	applyHubAbsentBoolDefaults(raw, wrapper.SecurityPolicy.Policy)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -160,6 +165,49 @@ func (c *hubSecurityCache) update(raw json.RawMessage) bool {
 		c.policy = wrapper.SecurityPolicy
 	}
 	return changed
+}
+
+// applyHubAbsentBoolDefaults restores the permissive product default for the
+// deny-by-default boolean knobs a payload did not mention.
+//
+// FileOutboundEnabled/ImageOutboundEnabled are deny-by-default gates:
+// EnforceConfig reads a false value as "Hub forbids this outbound". Go decodes
+// an absent JSON key to false, so a policy that merely omits them — an older
+// Hub, a partial push, a hand-rolled payload — silently denies every
+// send_file/send_to_im/image tool while looking exactly like a deliberate
+// "outbound disabled". That is the same unreadable state as the 2026-10-11
+// empty-allowlist outage, on a knob with no log line to explain it, and it is
+// the bool-side twin of the network_level default resolved next to it.
+//
+// The restored default (true) mirrors hub security.DefaultPolicy and corelib's
+// config defaults, matching the fail-open reading the network gate already uses
+// for an unset level. Only absence is filled in: an explicit false from Hub is
+// a decision and is preserved untouched.
+//
+// This must run on the raw payload, before the decoded struct loses the
+// distinction between "absent" and "false".
+func applyHubAbsentBoolDefaults(raw json.RawMessage, ep *HubEffectivePolicy) {
+	if ep == nil {
+		return
+	}
+	var probe struct {
+		SecurityPolicy *struct {
+			Policy map[string]json.RawMessage `json:"policy"`
+		} `json:"security_policy"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || probe.SecurityPolicy == nil || probe.SecurityPolicy.Policy == nil {
+		return
+	}
+	keys := probe.SecurityPolicy.Policy
+
+	if _, ok := keys["file_outbound_enabled"]; !ok && !ep.FileOutboundEnabled {
+		ep.FileOutboundEnabled = true
+		log.Printf("[hub-security] Hub policy omitted file_outbound_enabled; defaulting to enabled (an omitted key is not an instruction to block file outbound)")
+	}
+	if _, ok := keys["image_outbound_enabled"]; !ok && !ep.ImageOutboundEnabled {
+		ep.ImageOutboundEnabled = true
+		log.Printf("[hub-security] Hub policy omitted image_outbound_enabled; defaulting to enabled (an omitted key is not an instruction to block image outbound)")
+	}
 }
 
 // GetHubSecurityPolicy returns the current Hub security policy (exposed to frontend via Wails).
@@ -226,8 +274,15 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 	}
 
 	// 3. network_level -> update network access level (Req 7.7)
+	// The entry count is logged with the level because allowlist mode with no
+	// entry silently denies every domain. Without the count, a Hub that ships
+	// an incomplete policy and a client whose network tools all fail look like
+	// two unrelated problems (2026-10-11).
 	if ep.NetworkLevel != "" {
-		log.Printf("[hub-security] network_level applied: %s", ep.NetworkLevel)
+		log.Printf("[hub-security] network_level applied: %s (allowlist entries: %d)", ep.NetworkLevel, len(ep.NetworkAllowlist))
+		if strings.EqualFold(strings.TrimSpace(ep.NetworkLevel), "allowlist") && len(ep.NetworkAllowlist) == 0 {
+			log.Printf("[hub-security] WARNING: allowlist mode lists no domain, so every silent network tool (web_fetch/web_search/download_file/ssh) is denied; user-visible handoff tools such as open remain available")
+		}
 	}
 
 	// 4. yolo_mode_allowed=false -> force-disable YOLO mode (Req 7.8)
@@ -258,9 +313,34 @@ func (a *App) persistHubSecurityPolicy(policy *HubSecurityPolicy) {
 		if strings.TrimSpace(ep.SandboxMode) != "" {
 			cfg.SandboxMode = ep.SandboxMode
 		}
-		if strings.TrimSpace(ep.NetworkLevel) != "" {
+		if strings.TrimSpace(ep.NetworkLevel) == "" {
+			// Hub sent no network_level. The product default, the live
+			// execution gate, and the config load backfill all treat "not
+			// configured" as "full" (every network tool allowed). Persisting
+			// the previous value here would make the on-disk policy disagree
+			// with the gate that actually enforces it — and, paired with the
+			// unconditionally cleared allowlist below, would recreate the
+			// stale-allowlist deny-everything state behind the 2026-10-11
+			// outage. Revert to the default so the two paths cannot diverge.
+			// An admin who wants a restriction must send it explicitly;
+			// omitting the level means "not managed", not "keep the last one".
+			cfg.NetworkLevel = ""
+			log.Printf("[hub-security] Hub sent no network_level; reverting to default level \"full\" (all network tools allowed)")
+		} else if canonical, ok := clientsecurity.NormalizeNetworkLevel(ep.NetworkLevel); ok {
+			// A recognized level: store the canonical (lower-case) form so the
+			// on-disk value matches the vocabulary EnforceConfig classifies.
+			cfg.NetworkLevel = canonical
+		} else {
+			// A non-empty level EnforceConfig does not understand. Keep it
+			// verbatim rather than overwriting with the default: storing "" or
+			// "full" here would turn a malformed policy into fail-open, whereas
+			// leaving the raw value lets the gate refuse it as unrecognized.
 			cfg.NetworkLevel = ep.NetworkLevel
+			log.Printf("[hub-security] WARNING: Hub sent unrecognized network_level %q; storing verbatim so the gate refuses it (valid levels: %s)", strings.TrimSpace(ep.NetworkLevel), strings.Join(clientsecurity.KnownNetworkLevels(), ", "))
 		}
+		// The allowlist is overwritten unconditionally — deliberately, and
+		// pinned by TestPersistHubSecurityPolicyClearsRemovedSliceSettings: a
+		// domain scope must not outlive the policy that defined it.
 		cfg.NetworkAllowlist = append([]string(nil), ep.NetworkAllowlist...)
 		cfg.YoloModeAllowed = ep.YoloModeAllowed
 		cfg.SmartRouteEnabled = ep.SmartRouteEnabled

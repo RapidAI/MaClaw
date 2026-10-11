@@ -916,12 +916,46 @@ func validateLocalMCPSpawnTarget(command string) error {
 	}
 	target = filepath.Clean(target)
 	dir := filepath.Clean(filepath.Dir(target))
+	trusted := mcpSpawnTrustedTestDirs()
 	for _, root := range untrustedLocalMCPSpawnDirs() {
 		if pathsEqual(dir, root) || isPathUnder(dir, root) {
+			if trustedDirContains(trusted, dir) {
+				continue
+			}
 			return fmt.Errorf("command resolves to %s, inside untrusted directory %s", truncateForErr(target), root)
 		}
 	}
 	return nil
+}
+
+// MACLAW_MCP_SPAWN_TRUST_DIRS is a test hook: `go test` builds the test
+// binary into %TEMP%\go-build*, and the helper-process pattern re-executes
+// that binary as a fake local MCP server, which the Temp rule would always
+// reject. Listing a directory here (os.PathListSeparator-separated) trusts
+// exactly that directory — it stays under every other untrusted rule. A
+// deployment must not set it: each root on the untrusted list is a place an
+// attacker can write to without extra privilege.
+func mcpSpawnTrustedTestDirs() []string {
+	raw := strings.TrimSpace(os.Getenv("MACLAW_MCP_SPAWN_TRUST_DIRS"))
+	if raw == "" {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	for _, d := range filepath.SplitList(raw) {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, filepath.Clean(d))
+		}
+	}
+	return out
+}
+
+func trustedDirContains(trusted []string, dir string) bool {
+	for _, t := range trusted {
+		if pathsEqual(dir, t) || isPathUnder(dir, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // pathsEqual compares two filesystem paths case-insensitively on Windows.

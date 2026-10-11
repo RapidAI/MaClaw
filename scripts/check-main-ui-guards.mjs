@@ -585,10 +585,10 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/AboutPanel.tsx', 1000],
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  // Refreshed 6800 -> 6803 -> 6815 (2026-10-09): the in-flight agent-preview
-  // focus work oscillates this file 6803..6804; headroom absorbs it while
-  // that work is in progress. Re-tighten to the landed value afterwards.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6815],
+  // Refreshed 6800 -> 6803 -> 6815 -> 6825 (2026-10-10): the in-flight
+  // agent-preview focus work oscillates this file around 6803..6814; headroom
+  // absorbs it while that work is in progress. Re-tighten once it lands.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6825],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -1269,6 +1269,37 @@ requireIncludes('guiapp/frontend/src/components/modals/ConfirmDialog.tsx', 'var(
 requireIncludes('guiapp/frontend/src/components/modals/ConfirmDialog.tsx', 'var(--theme-text-primary)', 'confirm dialog theme-aware text');
 requireIncludes('guiapp/frontend/src/components/modals/ConfirmDialog.tsx', 'onConfirm', 'confirm dialog confirm action');
 requireIncludes('guiapp/frontend/src/components/modals/ConfirmDialog.tsx', 'onCancel', 'confirm dialog cancel action');
+// Desktop bot run supplement: the whole feature is a set of thin bridges across
+// four processes (GUI -> Hub -> MaClawSrv -> worker). Any one of them silently
+// disappearing turns "supplement accepted" into a message the user never gets,
+// so each hop is pinned here rather than trusted to review.
+requireIncludes('guiapp/frontend/wailsjs/go/main/App.js', "export function AppendDesktopBotSupplement", 'desktop bot supplement binding implementation');
+requireIncludes('guiapp/frontend/wailsjs/go/main/App.js', "export function GetActiveDesktopRuns", 'desktop bot active-run query binding implementation');
+requireIncludes('guiapp/frontend/wailsjs/go/main/App.js', "export function PersistDesktopBotPreference", 'desktop bot preference persistence binding implementation');
+requireIncludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'export function AppendDesktopBotSupplement', 'desktop bot supplement binding declaration');
+requireIncludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'export function GetActiveDesktopRuns', 'desktop bot active-run query binding declaration');
+requireIncludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'export function PersistDesktopBotPreference', 'desktop bot preference persistence binding declaration');
+requireExcludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'InjectDesktopBotSupplement', 'desktop bot supplement must reach the server, not a local in-memory field');
+// The executor must pass loop hooks, otherwise TransformConversation never runs
+// and every supplement is queued but never applied (invariant I1/I3).
+requireIncludes('corelib/agentservice/core_agent_executor.go', 'newSupplementHook(', 'core agent executor passes supplement loop hooks');
+requireIncludes('corelib/agentservice/run_supplement_hook.go', 'agent.DefaultLoopHooks', 'supplement hook preserves default loop semantics');
+// ExecuteRequest.RunID is host-only; without it supplements key by session and
+// two concurrent runs cross-talk (invariant I2).
+requireIncludes('corelib/agentservice/types.go', 'RunID string `json:"-"`', 'ExecuteRequest carries a host-only run id for supplement routing');
+// The registry cleanup must read run.RunID when the turn returns. A bare defer
+// freezes the value at arm time, which is the empty placeholder, so the entry
+// is re-keyed under the real run id and never removed: every finished run then
+// stays listed as a live supplement target. The Go test covers the semantics;
+// this pins the call site, because the test cannot see it.
+requireExcludes('guiapp/desktop_bot_hub.go', 'defer unregisterActiveDesktopRun(', 'desktop bot run registry cleanup must defer through a closure so it reads the final run id');
+requireIncludes('guiapp/desktop_bot_hub.go', 'defer func() { unregisterActiveDesktopRun(', 'desktop bot run registry cleanup reads run.RunID at return time');
+// The no-reading reason is declared once, in desktopBots, and imported by the
+// workspace. It was declared in both, and widening one (to add 'unrouted')
+// silently left the other behind: every parked turn stopped type-checking.
+requireIncludes('guiapp/frontend/src/components/bots/desktopBots.ts', "export type DesktopBotNoReading = 'unread' | 'unscheduled' | 'unreachable' | 'unrouted'", 'no-reading reason has one shared definition');
+requireIncludes('guiapp/frontend/src/components/bots/desktopBots.ts', 'kind: DesktopBotNoReading', 'parked desktop bot turn accepts every no-reading reason');
+requireIncludes('guiapp/frontend/src/components/bots/DesktopBotWorkspace.tsx', 'type NoReading = DesktopBotNoReading', 'desktop bot workspace reuses the shared no-reading union instead of redeclaring it');
 requireSaveConfigAllowlist();
 requirePatchConfigFieldsSupported();
 requireDynamicPatchConfigFieldsAllowlist();

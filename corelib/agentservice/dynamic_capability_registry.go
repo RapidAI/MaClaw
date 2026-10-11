@@ -311,6 +311,15 @@ func NewSQLiteDynamicCapabilityRegistry(dbPath string) (*SQLiteDynamicCapability
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// Connections are released the moment an operation finishes instead of
+	// being parked in the pool. The registry is a lazily-opened singleton
+	// whose owner may never call Close, and on Windows a parked handle pins
+	// the WAL and SHM files, so the directory cannot be removed (temp dirs in
+	// tests, and any attempt to move or clean the .maclaw tree). Reopening is
+	// cheap and this store is read-mostly, so paying a small open cost per
+	// operation is the right trade for not pinning files for the life of the
+	// process.
+	db.SetMaxIdleConns(0)
 	r := &SQLiteDynamicCapabilityRegistry{db: db}
 	if err := r.init(); err != nil {
 		_ = db.Close()

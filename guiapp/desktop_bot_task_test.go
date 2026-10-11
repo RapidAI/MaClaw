@@ -419,7 +419,7 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			}
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "按这个安排执行", "execute")
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "按这个安排执行", "execute", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -439,7 +439,7 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			return http.StatusBadGateway, fmt.Errorf("MaClawSrv 不可达")
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute")
+		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "")
 		if err == nil || !strings.Contains(err.Error(), "不可达") || calls != 2 {
 			t.Fatalf("err=%v calls=%d", err, calls)
 		}
@@ -456,7 +456,7 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute")
+		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "")
 		if err == nil || !strings.Contains(err.Error(), "unavailable") || calls != 2 {
 			t.Fatalf("err=%v calls=%d", err, calls)
 		}
@@ -477,7 +477,7 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			return http.StatusOK, nil
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "plan")
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "plan", "")
 		if err != nil || got.Text != "做完了" || calls != 3 {
 			t.Fatalf("text=%q err=%v calls=%d", got.Text, err, calls)
 		}
@@ -491,7 +491,7 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			return http.StatusOK, nil
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "看一下", "plan")
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "看一下", "plan", "")
 		if err != nil || got.Text != "同步回复" || calls != 1 {
 			t.Fatalf("text=%q err=%v calls=%d", got.Text, err, calls)
 		}
@@ -509,7 +509,7 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			return http.StatusAccepted, nil
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		_, err := (&App{}).relayDesktopBot(ctx, "bot_1", "打开", "execute")
+		_, err := (&App{}).relayDesktopBot(ctx, "bot_1", "打开", "execute", "")
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("err=%v", err)
 		}

@@ -49,7 +49,8 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 		return fmt.Errorf("%w: hub public url is not configured", ErrSrv)
 	}
 	settings := s.llmSettingsSnapshot(ctx, tenantID)
-	stamp := llmConfigStamp(settings)
+	override := s.ownerLLMOverrideOf(ctx, tenantID, hubUserID)
+	stamp := ownerLLMStamp(settings, override)
 	token, reused, err := s.ownerLLMViewerToken(ctx, tenantID, hubUserID)
 	if err != nil {
 		return err
@@ -62,7 +63,7 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 	if !force && reused && s.ownerLLMConfigCurrent(ctx, tenantID, hubUserID, token, endpoint, stamp) {
 		return nil
 	}
-	if err := s.pushBotOwnerLLM(ctx, rec, *principal, endpoint, token, settings); err != nil {
+	if err := s.pushBotOwnerLLM(ctx, rec, *principal, endpoint, token, settings, override); err != nil {
 		return err
 	}
 	return s.markOwnerLLMPushed(ctx, tenantID, hubUserID, token, endpoint, stamp)
@@ -257,7 +258,7 @@ func (s *Service) reusableOwnerLLMToken(ctx context.Context, tenantID, hubUserID
 	return token, true
 }
 
-func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal ownerPrincipal, endpoint, viewerToken string, settings llmSettings) error {
+func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal ownerPrincipal, endpoint, viewerToken string, settings llmSettings, override *ownerLLMOverride) error {
 	path := "/api/v1/admin/tenants/" + url.PathEscape(principal.TenantID) + "/users/" + url.PathEscape(principal.UserID) + "/config"
 	var current struct {
 		AppConfig map[string]any `json:"app_config"`
@@ -275,7 +276,7 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 		"model":          botLLMModel,
 		"is_hub_service": true,
 	}
-	providers := make([]map[string]any, 0, 1+len(settings.Providers))
+	providers := make([]map[string]any, 0, 2+len(settings.Providers))
 	providers = append(providers, hubProvider)
 	for _, item := range settings.Providers {
 		providers = append(providers, map[string]any{
@@ -288,13 +289,32 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 		})
 	}
 	selected, custom := selectedBotLLMProvider(settings)
-	if custom {
+	switch {
+	case override != nil:
+		// The selected provider is resolved by name inside this same array, so
+		// the override has to be listed there as well as projected onto the
+		// flat fields. Without the entry the name points at nothing, validation
+		// reports it, and the instance stops accepting commands.
+		providers = append(providers, map[string]any{
+			"name":     override.Name,
+			"url":      override.URL,
+			"key":      override.Key,
+			"model":    override.Model,
+			"protocol": override.Protocol,
+			"wire_api": override.WireAPI,
+		})
+		current.AppConfig["maclaw_llm_url"] = override.URL
+		current.AppConfig["maclaw_llm_key"] = override.Key
+		current.AppConfig["maclaw_llm_model"] = override.Model
+		current.AppConfig["maclaw_llm_protocol"] = override.Protocol
+		current.AppConfig["maclaw_llm_current_provider"] = override.Name
+	case custom:
 		current.AppConfig["maclaw_llm_url"] = selected.URL
 		current.AppConfig["maclaw_llm_key"] = selected.Key
 		current.AppConfig["maclaw_llm_model"] = selected.Model
 		current.AppConfig["maclaw_llm_protocol"] = selected.Protocol
 		current.AppConfig["maclaw_llm_current_provider"] = selected.Name
-	} else {
+	default:
 		current.AppConfig["maclaw_llm_url"] = endpoint
 		current.AppConfig["maclaw_llm_key"] = viewerToken
 		current.AppConfig["maclaw_llm_model"] = botLLMModel

@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type Config struct {
@@ -87,12 +88,36 @@ type Service struct {
 	// to integrate with the skill source control system.
 	SkillSourceFilter func(tenantID, userID string) []string
 
+	// registry is the capability vocabulary shared by the dynamic capability
+	// publisher and the planner catalog. Set by ConfigureDynamicSemanticRouting
+	// so that vendor-declared external (x:) capabilities registered at publish
+	// time are visible to the catalog that the planner reads. A single shared
+	// instance is required: the publisher registers x: capabilities into this
+	// registry and PublishWithCoverage validates provider provisions against
+	// it, so a separate registry would make every declared x: capability an
+	// "unknown capability" and break dynamic routing. The publisher is
+	// constructed from this field (see NewHTTPServerWithError) to guarantee
+	// the two never diverge.
+	//
+	// Guarded by dynamicSemanticMu, like dynamicSemantic: hosts may construct
+	// the publisher from a request-goroutine while routing is being configured.
+	registry *coretool.CapabilityRegistry
+
 	// AssistantMessageMetadataHook lets the hosting server attach runtime
 	// capability metadata after an assistant response is produced.
 	AssistantMessageMetadataHook func(ctx context.Context, p Principal, inst Instance, sess Session, run Run, msg Message, cfg corelib.AppConfig) map[string]string
 
-	runMu            sync.Mutex
-	runningRuns      map[string]context.CancelFunc
+	runMu       sync.Mutex
+	runningRuns map[string]context.CancelFunc
+	// supplements carries mid-run supplementary instructions per run, keyed by
+	// run id. It shares runMu with runningRuns: the loop drains a run's queue
+	// while an HTTP handler may be appending to the very same run.
+	//
+	// Deliberately in-process instead of durably stored: a run lives only as
+	// long as this process holds it, so a queue that outlived the process would
+	// hold input that can no longer be delivered. Supplement text is never
+	// written to logs or tables, which is also why it is not persisted.
+	supplements      *runSupplements
 	activeRequests   sync.WaitGroup
 	closed           bool
 	idempotencyMu    sync.Mutex
@@ -462,6 +487,20 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }
+
+// DynamicSemanticRegistry returns the capability vocabulary shared by the
+// dynamic capability publisher and the planner catalog. It is non-nil only
+// after ConfigureDynamicSemanticRouting has run. Hosts construct the publisher
+// from this registry so vendor-declared external (x:) capabilities registered
+// at publish time are visible to the catalog the planner reads.
+func (s *Service) DynamicSemanticRegistry() *coretool.CapabilityRegistry {
+	if s == nil {
+		return nil
+	}
+	s.dynamicSemanticMu.Lock()
+	defer s.dynamicSemanticMu.Unlock()
+	return s.registry
+}
 
 // RuntimeMetrics exposes the shared, transport-neutral runtime counters. The
 // returned collector is safe for concurrent updates and snapshots; callers

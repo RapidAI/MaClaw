@@ -21,6 +21,16 @@ type botAuthenticator interface {
 	AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error)
 }
 
+// Body caps for the JSON this surface accepts. They are generous next to what
+// the downstream service clips to (a supplement is cut to 4000 runes inside
+// MaClawSrv), so a legitimate message never trips them; they exist so one
+// request cannot hand the decoder an unbounded stream.
+const (
+	botMessageBodyLimit    = 256 << 10
+	botSupplementBodyLimit = 64 << 10
+	botPreferenceBodyLimit = 64 << 10
+)
+
 func botMachine(w http.ResponseWriter, r *http.Request, identity botAuthenticator) (*auth.MachinePrincipal, bool) {
 	principal, ok := botViewerPrincipal(w, r, identity)
 	if !ok {
@@ -195,7 +205,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			Content string `json:"content"`
 			Phase   string `json:"phase"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botMessageBodyLimit)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
 			return
 		}
@@ -274,6 +284,135 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 			return
 		}
 		writeJSON(w, http.StatusOK, reply)
+	}
+}
+
+// PostBotPreferenceHandler POST /api/v1/bots/{id}/preference
+// Records a preference so later tasks start with it. The caller must already
+// own the bot; the preference is stored against that bot's own instance.
+func PostBotPreferenceHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botPreferenceBodyLimit)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		if err := svc.SaveBotPreference(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id")), in.Content); err != nil {
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+	}
+}
+
+// DeleteBotPreferenceHandler DELETE /api/v1/bots/{id}/preference
+// Withdraws the preferences recorded on the server. The caller must already own
+// the bot. Without this, a preference taken back in conversation would stay on
+// the instance the worker reads, and later work would keep honouring it.
+func DeleteBotPreferenceHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		if err := svc.WithdrawBotPreference(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id"))); err != nil {
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "withdrawn"})
+	}
+}
+
+// PostBotRunSupplementHandler POST /api/v1/bots/{id}/runs/{runID}/supplement
+// Supplementary input for a command already accepted and still running. It is
+// routed to the named run, never derived from the bot or the session.
+func PostBotRunSupplementHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botSupplementBodyLimit)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		botID := strings.TrimSpace(r.PathValue("id"))
+		runID := strings.TrimSpace(r.PathValue("runID"))
+		result, err := svc.SupplementDesktopRun(r.Context(), principal.TenantID, principal.UserID, botID, runID, in.Content)
+		if err != nil {
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"supplement_id": result.SupplementID,
+			"accepted":      result.Accepted,
+			"state":         result.State,
+			"detail":        result.Detail,
+			"run_id":        runID,
+		})
+	}
+}
+
+// GetBotRunSupplementsHandler GET /api/v1/bots/{id}/runs/{runID}/supplements
+// Reports the final state of the supplements recorded for one run, so the
+// client can show applied or missed instead of leaving a queued receipt
+// unverifiable.
+func GetBotRunSupplementsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		items, err := svc.DesktopRunSupplements(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("runID")))
+		if err != nil {
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// PostBotRunCancelHandler POST /api/v1/bots/{id}/runs/{runID}/cancel
+// Stops work that is still running. Until this existed a person could start a
+// desktop task and then only watch it: the service route existed but was never
+// reachable from here.
+func PostBotRunCancelHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		botID := strings.TrimSpace(r.PathValue("id"))
+		runID := strings.TrimSpace(r.PathValue("runID"))
+		if err := svc.CancelDesktopRun(r.Context(), principal.TenantID, principal.UserID, botID, runID); err != nil {
+			writeBotUserError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "run_id": runID})
 	}
 }
 

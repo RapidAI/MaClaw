@@ -15,10 +15,17 @@ import {
 
 export { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX };
 
+/**
+ * The follow logic only reads identity and a length hint, so any transcript
+ * matching this shape can use it — including surfaces that keep their own
+ * message type (the file companion stores the body in `text`, not `content`).
+ */
+export type AssistantOutputScrollMessage = Pick<ChatMessage, "id" | "role"> & { content?: string };
+
 interface AssistantOutputScrollOptions {
     activityKey?: string;
     hasConversation: boolean;
-    messages: ChatMessage[];
+    messages: AssistantOutputScrollMessage[];
     ready: boolean;
     scrollToTopSeq?: number;
 }

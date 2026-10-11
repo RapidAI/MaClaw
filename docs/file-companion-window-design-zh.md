@@ -316,6 +316,10 @@ IM handler 不能用 `NewIMMessageHandler` 或 `NewIMMessageHandlerWithRuntime`�
 因此这一轮发给模型的定义是空的。没有 `write_file`、`bash`、仓库、知识库写入、shell、delegate，也没有共享的 `write_excel` / `write_pptx`。不进入 `trustedPrincipalBoundWorkspace`。
 - 打开的文件以隐式上下文进入本轮，而不是让模型自己去读盘。文本、HTML、Markdown 以及 PDF/Office 抽取复用 `ExpandUserSelectedFilePaths` 的预算：单文件 `defaultAutoInjectMaxRunesPerFile`（80000 rune），读取上限 `MaxOfficeReadFileBytes`（32 MiB）。超出部分在提示里标明已截断。被标成截断的抽取不能再走 5.5 的宿主写入。
 - 图片使用 `buildOpenAIVisionContent` / `buildAnthropicVisionContent`（`guiapp/im_attachment.go`）把该图片作为 `image_url` 或 Anthropic image block 附在用户消息上。是否真的是视觉模型看当前桌面 LLM 配置的 `SupportsVision`。不支持时不发图片字节，对话里说明当前模型不能看图，只保留文件名；不为此新做 OCR 管线。
+- 原文配图清单（`guiapp/file_companion_figures.go`）。markdown / HTML 读 `![alt](路径)` 与 `<img src>`（含 alt 图题）；docx / PDF 复用已有抽取（`knowledge.ExtractDOCXImages`、`fileCompanionExtractPaperFigures`），内嵌图片落到 `file-companion/figures/<sessionID>/`。清单按 size+mtime 缓存在伴读进程内存。目录包含是硬约束：引用只能落在文档所在目录树内，判断走与授权表相同的 `fileCompanionCanonicalPath` 规范化，符号链接折叠后再比较。跳过远程与 `data:` 目标、小于 512B 的装饰图、扩展名或字节（`image.DecodeConfig` 验证）不是真图片的文件、大于 24MB 的文件；PDF 另有 64MB 上限，清单上限 12 张。
+- 普通问题轮（非选区改写、非论文、打开的文件本身不是图片）把前 4 张图按视觉预算（单轮 16MB、长边 1568、超过 1MB 先降采样）作为附件发出，并在轮次文本的文件路径页脚之后追加「图N 图题」编号附注，要求回答用「图N」指图。回答回来按「图N / Figure N / fig. N」、图题或文件名匹配；无明指且问题是整篇问答（总结/概括/摘要/概述等）时回落前 3 张。选中的图挂在 `IMAgentResponse.FileCompanionFigures`，只含 index/label/caption/path，不含字节。
+- 窗口经新绑定 `FileCompanionFigureDataURL` 取图（见第 6 节）：路径先 `fileCompanionCanonicalPath`，再要求在任一打开文档的当前清单里，否则拒绝；返回 `data:` URL，超过 3MB 或长边超 1600 的先降采样。历史恢复不重放字节：`fileCompanionHistory` 用同一匹配器按当前清单重算每条 assistant 气泡的图。打开标签页与取图授权都走 `fileCompanionFiguresBounded(cheap)`：缓存命中直接用；冷缓存只扫 md/html 这类毫秒级文本，docx/pdf 的解析留到第一个普通问题，开签与取图请求都不付这笔钱。
+- 视觉轮次的用户内容以多模态块持久化。历史展示只取 text 块（`fileCompanionEntryText`），image 块不进气泡，可见文本的截断标记因此始终有效；恢复气泡不打印 base64。
 - `.xlsx` / `.pptx` 的整文件替换是宿主动作，规则在 5.5。模型给出的其他路径一律拒绝，不能落盘，主工作区也不写。
 - 选区翻译/改写由 UI 发起一轮无工具对话，宿主追加结果。模型没有「随便写相邻文件」的工具。
 
@@ -505,6 +509,12 @@ type FileCompanionTurnRequest struct {
 }
 
 func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error
+
+// 原文配图取图。只服务当前打开文档清单里的图：路径先过
+// fileCompanionCanonicalPath，再对照授权表对应的清单，不在其中即拒绝。
+// 返回 data: URL，超过显示上限的先降采样。
+func (a *App) FileCompanionFigureDataURL(path string) (string, error)
+
 func (a *App) FileCompanionImportKnowledge(path string) (knowledge.DirectoryImportResult, error)
 func (a *App) FileCompanionUploadCloud(path string) (*MobileDocumentDraftSummary, error)
 ```

@@ -113,13 +113,22 @@
 .mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:var(--theme-surface); border-bottom:1px solid var(--theme-border); user-select:none; cursor:default; }
 .mc-task-execution-header[data-window-drag] { --wails-draggable: drag; }
 .mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--mc-chrome-ink, var(--theme-text-primary)); }
-.mc-task-execution-header span { color:var(--mc-accent, #2f6fbc); font-size:13px; }
+.mc-task-execution-header span:not(:where([data-notification-tree] span)) { color:var(--mc-accent, #2f6fbc); font-size:13px; }
 .mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
-.mc-task-execution-actions button { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
+.mc-task-execution-actions button:not(:where([data-notification-tree] button)) { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
 .mc-task-execution-actions .task-skill-pause-btn { display:inline-flex; align-items:center; gap:6px; }
 .mc-task-execution-header .task-skill-pause-label { color: var(--theme-danger); }
 .mc-task-execution-actions .task-skill-pause-btn:disabled { cursor: progress; opacity: 0.72; }
 .mc-task-execution-actions .task-skill-pause-btn:disabled .aiti-recording-dot { animation: none; }
+/* Notification bell in the task header (mirrors the welcome-view title-bar
+   bell; .ai-titlebar-tool chrome applies here too). The dropdown panel is
+   position:absolute top:100%, so the header must be its containing block.
+   The bell, its dropdown panel and the urgent toast all render inside the
+   [data-notification-tree] slot below; the header's bare span/button
+   descendant rules exclude that subtree so the notification chrome wins. */
+.mc-task-execution-header { position: relative; }
+.mc-task-notification-slot { display: inline-flex; align-items: center; flex-shrink: 0; }
+.mc-task-notification-slot .atbn-anchor { display: inline-flex; }
 .mc-task-execution-window-controls {
   display: inline-flex;
   align-items: center;
@@ -218,7 +227,7 @@
 .mc-task-execution-status--failed i,
 .mc-task-execution-status--cancelled i { background: var(--theme-danger); box-shadow: 0 0 0 3px rgba(224,90,90,.12); }
 .mc-task-execution-meta { color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title,.mc-task-execution-title-row > .mc-task-execution-title{font-size:16px}}
+@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button:not(:where([data-notification-tree] button)){padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title,.mc-task-execution-title-row > .mc-task-execution-title{font-size:16px}}
 
 /* Workbench task pane: New Task is its own action. Knowledge sits in the open
    stretch before the divider; theme and cloud stay in the later cluster. */
@@ -966,7 +975,7 @@
 #App[data-ai-theme='dark'] .mc-task-execution-status--failed,
 #App[data-ai-theme='dark'] .mc-task-execution-status--cancelled { background: color-mix(in srgb, var(--theme-danger) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-danger) 48%, var(--theme-border)) !important; color: var(--theme-danger) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-meta { color: var(--theme-text-muted) !important; }
-#App[data-ai-theme='dark'] .mc-task-execution-actions button { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; color: var(--theme-text-secondary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-actions button:not(:where([data-notification-tree] button)) { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; color: var(--theme-text-secondary) !important; }
 #App[data-ai-theme='dark'] .mc-task-tab-switcher > summary { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; color: var(--theme-text-secondary) !important; }
 #App[data-ai-theme='dark'] .mc-task-tab-switcher__popover { background: var(--theme-surface) !important; border-color: var(--theme-border) !important; }
 #App[data-ai-theme='dark'] .mc-task-tab-switcher__item { color: var(--theme-text-secondary); }
@@ -3815,4 +3824,48 @@ input.cwshare-url {
   min-width: 0;
   min-height: 0;
   background: #f8fafc;
+}
+
+/* Per-answer copy/export controls. A flow row above the reply keeps them out
+   of the text: an overlaying corner cluster clipped the first line whenever a
+   long answer had to wrap in the narrow companion pane. */
+.file-companion-bubble-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: 0 -2px 2px 0;
+}
+.file-companion-bubble-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.file-companion-bubble-action:hover:not(:disabled),
+.file-companion-bubble-action:focus-visible {
+  opacity: 1;
+  background: #eef2f7;
+  color: #2563eb;
+  outline: none;
+}
+.file-companion-bubble-action:disabled {
+  cursor: default;
+}
+.file-companion-bubble-action[data-state='ok'] {
+  opacity: 1;
+  color: #16a34a;
+}
+.file-companion-bubble-action[data-state='err'] {
+  opacity: 1;
+  color: #dc2626;
 }

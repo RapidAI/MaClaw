@@ -1792,6 +1792,15 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 	if c.sessionTurnDeniesTools() {
 		return false
 	}
+	// The companion's closed surface is decided here too, not only at
+	// exposure: a companion question is often short enough to be routed onto
+	// the light prompt, and the light allowlist knows nothing about these
+	// host-owned names. Without this the model is shown pdf_render_page and
+	// then told the tool is unavailable on this profile - promised, then
+	// refused, which is exactly what the companion did before it had tools.
+	if fileCompanionToolsDisabled(c.userID) {
+		return isFileCompanionHostTool(name)
+	}
 	if c != nil && c.semanticSurface != nil {
 		resolved := c.semanticSurface.resolveFunctionName(name)
 		if resolved == semanticToolsSearchName {
@@ -1851,6 +1860,12 @@ func (c *sharedAgentLoopCallbacks) semanticLightLookup() bool {
 func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	if c.sessionTurnDeniesTools() {
 		return false
+	}
+	// Same closed surface as IsToolAllowedForPromptProfile: what is published
+	// and what may run are decided by one predicate, so a companion turn can
+	// never be shown a tool the authorizer would then reject.
+	if fileCompanionToolsDisabled(c.userID) {
+		return isFileCompanionHostTool(name)
 	}
 	if c == nil || c.semanticSurface == nil {
 		return true
@@ -2580,8 +2595,28 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	}
 	if fileCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
-		c.setVisibleToolDefinitions(nil)
-		return nil
+		// The companion surface is closed by construction: only the read-only
+		// document definitions may reach the wire, always bound to the open
+		// document by the executor rather than by call arguments. Anything
+		// else found on the callback — a rejected legacy provision, a
+		// semantic grant, a forged definition — is dropped here, so a
+		// companion request can never render a tool the executor would
+		// refuse or one that writes.
+		closed := make([]map[string]interface{}, 0, len(c.tools))
+		for _, tool := range c.tools {
+			fn, _ := tool["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			if !isFileCompanionHostTool(name) {
+				continue
+			}
+			closed = append(closed, tool)
+		}
+		if len(closed) == 0 {
+			c.setVisibleToolDefinitions(nil)
+			return nil
+		}
+		c.setVisibleToolDefinitions(closed)
+		return closed
 	}
 	if petCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
@@ -3460,6 +3495,18 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c.sessionTurnDeniesTools() {
 		return c.sessionToolClosedMessage()
 	}
+	// Companion document tools are host-owned and bound to the open file.
+	// They execute before the legacy snapshot checks: their names are not in
+	// the reviewed adapter catalog and must not need to be.
+	if isFileCompanionHostTool(name) && fileCompanionToolsDisabled(c.userID) {
+		// Same progress as the structured path: a render is the slowest thing
+		// a companion turn does, and both entry points must say so.
+		if c.onProgress != nil {
+			c.onProgress(fileCompanionToolProgressText(name, argsJSON))
+		}
+		text, _ := c.handler.executeFileCompanionHostTool(c.userID, name, argsJSON)
+		return text
+	}
 	if c.legacyPetitionAllows(name) {
 		if denied := c.continuationOverlayDenial(name, argsJSON); denied != "" {
 			return denied
@@ -3515,6 +3562,18 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 	var result agent.ToolExecutionResult
 	if c != nil && c.sessionTurnDeniesTools() {
 		result = agent.ToolExecutionResult{Result: c.sessionToolClosedMessage(), Outcome: agent.ToolExecutionOutcomeError}
+	} else if c != nil && isFileCompanionHostTool(name) && fileCompanionToolsDisabled(c.userID) {
+		// The companion surface's executor. Handled before the legacy chain:
+		// these host-owned names are not in the reviewed adapter catalog.
+		if c.onProgress != nil {
+			c.onProgress(fileCompanionToolProgressText(name, argsJSON))
+		}
+		text, ok := c.handler.executeFileCompanionHostTool(c.userID, name, argsJSON)
+		outcome := agent.ToolExecutionOutcomeOK
+		if !ok {
+			outcome = agent.ToolExecutionOutcomeError
+		}
+		result = agent.ToolExecutionResult{Result: text, Outcome: outcome}
 	} else if c != nil && c.legacyPetitionAllows(name) {
 		result = c.ExecuteToolStructured(name, argsJSON)
 	} else if c != nil && c.semanticSurface != nil {
@@ -3998,9 +4057,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	}
 	note, err := c.advanceSemanticToolSurface(selection.ID)
 	if err != nil {
-		return semanticAdvanceAfterSuccess(result, err)
+		return semanticAdvanceAfterSuccess(withSemanticSelectionProvenance(result, selection), err)
 	}
-	return result + note
+	return withSemanticSelectionProvenance(result, selection) + note
 }
 
 // executeSemanticToolCall persists the model call identity before grant
@@ -4337,9 +4396,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName
 	}
 	note, err := c.advanceSemanticToolSurface(selection.ID)
 	if err != nil {
-		return semanticAdvanceAfterSuccess(result, err)
+		return semanticAdvanceAfterSuccess(withSemanticSelectionProvenance(result, selection), err)
 	}
-	return result + note
+	return withSemanticSelectionProvenance(result, selection) + note
 }
 
 func removeToolDefinitionByName(definitions []map[string]interface{}, functionName string) []map[string]interface{} {
@@ -5058,6 +5117,27 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 			return "Delivered the bound document through the desktop IM sender (delivery record " + record.SelectionID + "). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
 		}
 		return "Delivery committed to the current channel (delivery record " + record.SelectionID + "). The artifact is attached to this turn's reply — this result IS the delivery confirmation, the step is complete. Report the file as sent; no further tool or confirmation step exists. Do not say the file was only prepared or is pending."
+	}
+	// Apply the Hub network gate to the trusted host adapters that perform
+	// silent network egress into the model context. The legacy tool path gates
+	// these at im_tool_execution.go, but the semantic surface used to dispatch
+	// them straight to the host without ever consulting EnforceConfig — so a
+	// network_level of allowlist/intranet/none shut web_fetch while leaving the
+	// trusted browser (whose snapshot streams page content back into the model)
+	// wide open. That was the inverse of the risk the gate exists to bound.
+	// Local desktop control adapters (document read, file, repo, shell, audio,
+	// memory, …) are intentionally absent from the map, so the gate never
+	// reaches them; EnforceConfig already leaves non-network tools alone, and
+	// at the default level ("full") the gate returns allowed, which changes
+	// nothing for an unmanaged or fully-open client.
+	if toolName := semanticTrustedAdapterNetworkToolName(selection.AdapterName); toolName != "" {
+		var gateArgs map[string]interface{}
+		if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &gateArgs); err != nil {
+			gateArgs = map[string]interface{}{}
+		}
+		if allowed, reason := c.enforceHubSecurityForTool(toolName, gateArgs); !allowed {
+			return "[system rejected] " + reason
+		}
 	}
 	if selection.Provider.Kind == "builtin" && selection.AdapterName == "semantic_read_trusted_document" {
 		return c.executeTrustedDocumentRead(selection, canonicalArgs)
@@ -6273,6 +6353,33 @@ func (c *sharedAgentLoopCallbacks) executeTrustedBrowser(_ tool.PlannedSelection
 		return "[system unknown] " + err.Error()
 	}
 	return out
+}
+
+// enforceHubSecurityForTool routes a trusted-adapter execution through the Hub
+// network gate. It returns allowed when no security context is wired up, which
+// matches the legacy tool path's behavior: an unmanaged client enforces nothing.
+func (c *sharedAgentLoopCallbacks) enforceHubSecurityForTool(name string, args map[string]interface{}) (bool, string) {
+	if c == nil || c.handler == nil || c.handler.app == nil {
+		return true, ""
+	}
+	return c.handler.app.enforceHubSecurityAppPolicy(name, args)
+}
+
+// semanticTrustedAdapterNetworkToolName maps a trusted host adapter to the
+// canonical tool name EnforceConfig classifies for network scope. Only adapters
+// that fetch remote content into the model context are listed; local desktop
+// control adapters are deliberately absent so the gate never reaches them.
+func semanticTrustedAdapterNetworkToolName(adapter string) string {
+	switch adapter {
+	case semanticTrustedBrowserAdapter:
+		return "browser"
+	case semanticTrustedWebFetchAdapter:
+		return "web_fetch"
+	case semanticTrustedWebSearchAdapter:
+		return "web_search"
+	default:
+		return ""
+	}
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedComputerUse(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {

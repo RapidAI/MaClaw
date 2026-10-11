@@ -186,3 +186,37 @@ func TestReviewedHostTaskUsesTrustedPrincipalAndStore(t *testing.T) {
 		t.Fatal("host without a task store must not attach task.track.local")
 	}
 }
+
+// TestReviewedHostTaskStatusVocabulary pins the vocabulary at this host, the
+// same shape the GUI surface pins: schema advertised set equals the parser's
+// closed set, and the refusal hint names it. The vocabulary lives with the
+// type in the task package, so this host cannot drift.
+func TestReviewedHostTaskStatusVocabulary(t *testing.T) {
+	schema := reviewedHostTaskInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("task schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("task schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) != 5 {
+		t.Fatalf("status must advertise the reviewed set, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := reviewedHostTaskStatus(name)
+		if !ok || canonical != task.Status(name) {
+			t.Fatalf("schema advertises status %q, but the parser maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for _, invented := range []string{"active", "open", "done"} {
+		if _, ok := reviewedHostTaskStatus(invented); ok {
+			t.Fatalf("invented status %q must not be accepted", invented)
+		}
+	}
+	if hint := task.StatusHint(); !strings.Contains(hint, "pending") || !strings.Contains(hint, "in_progress") {
+		t.Fatalf("hint %q does not name the canonical set", hint)
+	}
+}

@@ -18,6 +18,22 @@ const (
 
 const DefaultWriteMode = string(WriteModeOverwrite)
 
+// WriteModeOptions is the closed set of write modes the file-write capability
+// advertises in its invocation schema, derived from the canonical constants so
+// a host cannot render one set while NormalizeWriteModeKind enforces another.
+// The schema declares mode optional, and the empty reading (overwrite) lives
+// in NormalizeWriteModeKind, not in the advertised set.
+func WriteModeOptions() []string {
+	return []string{string(WriteModeOverwrite), string(WriteModeAppend)}
+}
+
+// WriteModeHint renders the canonical vocabulary for a rejection message, so
+// a model that ignored the enum still learns the valid names from its first
+// failure and can retry inside the turn.
+func WriteModeHint() string {
+	return "allowed: " + strings.Join(WriteModeOptions(), ", ")
+}
+
 type PathResolver func() string
 
 func ResolveFileToolPath(path string, projectDirResolver PathResolver) (string, error) {

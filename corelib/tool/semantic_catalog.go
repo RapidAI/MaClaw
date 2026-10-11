@@ -203,6 +203,30 @@ func effectWithinCeiling(e EffectClass, ceiling []EffectClass) bool {
 	return false
 }
 
+// EffectsWithinCeiling reports whether every member of effects is allowed by
+// ceiling.
+//
+// This is the enforcement counterpart to ExternalEffectCeiling. A publisher
+// that stamps a capability's registered descriptor with the namespace ceiling
+// (so registrations stay identical and idempotent across servers) thereby makes
+// RegisterExternalCapability's own ceiling check vacuous: comparing the ceiling
+// against itself can never fail. Such a publisher MUST still call this against
+// the per-provider envelope before registering, or it silently removes the
+// per-provider ceiling check entirely and lets an installed server register a
+// capability whose execution effects exceed what the host reviewed.
+//
+// An empty effects set is within every ceiling: it grants nothing. Callers that
+// treat empty as "unspecified and therefore permitted" must reject it before
+// reaching here.
+func EffectsWithinCeiling(effects []EffectClass, ceiling []EffectClass) bool {
+	for _, e := range effects {
+		if !effectWithinCeiling(e, ceiling) {
+			return false
+		}
+	}
+	return true
+}
+
 // externalEffectCeiling returns the effect ceiling for a namespace, falling
 // back to the package default when the namespace has no explicit override.
 func (r *CapabilityRegistry) externalEffectCeiling(ns string) []EffectClass {
@@ -215,6 +239,58 @@ func (r *CapabilityRegistry) externalEffectCeiling(ns string) []EffectClass {
 		return ceil
 	}
 	return DefaultExternalCapabilityEffectCeiling
+}
+
+// ExternalEffectCeiling returns a copy of the effect ceiling that governs ns,
+// normalized into the canonical planner effect order (read_only,
+// local_mutation, external_effect, sensitive) with duplicates removed.
+//
+// It exists so a host can stamp a vendor-declared external capability's
+// vocabulary descriptor with a namespace-derived, identity-free effect set.
+// External descriptors are compared field by field (externalDescriptorEqual),
+// so a descriptor built from one server's per-tool annotations would conflict
+// with a second server that annotated the same capability differently. Deriving
+// the descriptor from the namespace ceiling instead makes every registration of
+// the same capability identical, so registration is idempotent regardless of how
+// many servers declare it or in which order.
+//
+// The returned slice is always in canonical order because externalDescriptorEqual
+// compares Effects by index; SetExternalCapabilityCeiling stores the caller's
+// order unchanged, so normalization cannot be assumed.
+func (r *CapabilityRegistry) ExternalEffectCeiling(ns string) []EffectClass {
+	// externalEffectCeiling already handles a nil receiver and falls back to the
+	// package default when the namespace has no reviewed override.
+	ceiling := r.externalEffectCeiling(strings.TrimSpace(ns))
+	seen := make(map[EffectClass]bool, len(ceiling))
+	for _, e := range ceiling {
+		seen[e] = true
+	}
+	out := make([]EffectClass, 0, len(seen))
+	for _, e := range canonicalEffectOrder {
+		if seen[e] {
+			out = append(out, e)
+			delete(seen, e)
+		}
+	}
+	// Preserve any effect class that is valid today but not yet listed in
+	// canonicalEffectOrder, so this helper can never silently narrow a ceiling.
+	for _, e := range ceiling {
+		if seen[e] {
+			out = append(out, e)
+			delete(seen, e)
+		}
+	}
+	return out
+}
+
+// canonicalEffectOrder is the planner's effect ordering (see EffectClass).
+// Descriptors that externalDescriptorEqual compares must present effects in
+// this order.
+var canonicalEffectOrder = []EffectClass{
+	EffectReadOnly,
+	EffectLocalMutation,
+	EffectExternalEffect,
+	EffectSensitive,
 }
 
 // ExternalCeilingIsDefault reports whether ns still uses the host default

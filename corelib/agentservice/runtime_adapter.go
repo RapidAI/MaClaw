@@ -132,12 +132,12 @@ func (r *RuntimeExecutor) Execute(ctx context.Context, req agentruntime.TurnRequ
 				// A failed executor can still have emitted token/tool events. Keep
 				// both failures visible so callers can distinguish model failure
 				// from an outbox durability failure and choose a safe retry policy.
-				return agentruntime.TurnResult{}, errors.Join(err, wrapped)
+				return agentruntime.TurnResult{Output: turnOutput(result)}, errors.Join(err, wrapped)
 			}
-			return agentruntime.TurnResult{}, wrapped
+			return agentruntime.TurnResult{Output: turnOutput(result)}, wrapped
 		}
 		if err != nil {
-			return agentruntime.TurnResult{}, err
+			return agentruntime.TurnResult{Output: turnOutput(result)}, err
 		}
 		if result == nil {
 			return agentruntime.TurnResult{}, nil
@@ -146,12 +146,24 @@ func (r *RuntimeExecutor) Execute(ctx context.Context, req agentruntime.TurnRequ
 	}
 	result, err := r.inner.Execute(ctx, concrete)
 	if err != nil {
-		return agentruntime.TurnResult{}, err
+		return agentruntime.TurnResult{Output: turnOutput(result)}, err
 	}
 	if result == nil {
 		return agentruntime.TurnResult{}, nil
 	}
 	return agentruntime.TurnResult{Output: result, Metadata: result.Metadata}, nil
+}
+
+// turnOutput carries the executor's output even when the turn ended in an
+// error. A run cut short mid-way has usually produced real text in earlier
+// rounds, and returning an empty result is what makes it look like nothing
+// happened. A nil pointer must become a nil interface, not a typed nil, so the
+// caller's `Output != nil` test still reads correctly.
+func turnOutput(result *ExecuteResult) any {
+	if result == nil {
+		return nil
+	}
+	return result
 }
 
 type runtimeModuleToolInvoker struct {

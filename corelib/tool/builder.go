@@ -374,31 +374,6 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	return out
 }
 
-func (b *DynamicToolBuilder) matchedSkillCapabilities(matchedSkills []string) []string {
-	return matchedSkillCapabilitiesFromProvider(b.skillProvider, matchedSkills)
-}
-
-func prioritizeMatchedSkillTool(defs []map[string]interface{}, matchedSkill bool) []map[string]interface{} {
-	if !matchedSkill || len(defs) < 2 {
-		return defs
-	}
-	idx := -1
-	for i, def := range defs {
-		if ExtractToolName(def) == "manage_skill" {
-			idx = i
-			break
-		}
-	}
-	if idx <= 0 {
-		return defs
-	}
-	out := make([]map[string]interface{}, 0, len(defs))
-	out = append(out, defs[idx])
-	out = append(out, defs[:idx]...)
-	out = append(out, defs[idx+1:]...)
-	return out
-}
-
 // RegisteredToolToDef converts a RegisteredTool to an OpenAI function calling definition.
 func RegisteredToolToDef(t RegisteredTool) map[string]interface{} {
 	params, err := CanonicalRegisteredToolInvocationSchema(t.InputSchema, t.Required)

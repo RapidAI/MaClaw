@@ -43,8 +43,11 @@ func semanticTrustedKnowledgeAdminInvocationSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"id":      map[string]interface{}{"type": "string"},
-			"status":  map[string]interface{}{"type": "string"},
-			"refresh": map[string]interface{}{"type": "boolean"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so the check via the shared
+			// contract stays the boundary and this is documentation.
+			"status":   map[string]interface{}{"type": "string", "enum": tool.KnowledgeAdminStatusOptions()},
+			"refresh":  map[string]interface{}{"type": "boolean"},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -102,19 +105,12 @@ func semanticTrustedKnowledgeAdminDispatch(id, status string, hasRefresh, refres
 	return "get", true
 }
 
+// semanticTrustedKnowledgeAdminStatus maps what the model sent to the value
+// the record stores. The vocabulary and its aliases live in the shared
+// knowledge-admin contract: the GUI surface and the agent-service surface
+// both serve knowledge.administer, and two copies of this answer would drift.
 func semanticTrustedKnowledgeAdminStatus(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "disabled", "disable":
-		return "disabled", true
-	case "enabled", "enable", "active":
-		return "enabled", true
-	case "deleted", "delete":
-		return "deleted", true
-	case "":
-		return "", true
-	default:
-		return "", false
-	}
+	return tool.KnowledgeAdminStatusCanonical(raw)
 }
 
 func (h *IMMessageHandler) administerTrustedKnowledge(principalID, id, status string, refresh, hasRefresh bool) (string, error) {
@@ -137,7 +133,7 @@ func (h *IMMessageHandler) administerTrustedKnowledge(principalID, id, status st
 	}
 	parsedStatus, statusOK := semanticTrustedKnowledgeAdminStatus(status)
 	if !statusOK {
-		return "", fmt.Errorf("trusted_knowledge_admin_status_rejected")
+		return "", fmt.Errorf("trusted_knowledge_admin_status_rejected (%s)", tool.KnowledgeAdminStatusHint())
 	}
 	store, err := h.app.openKnowledgeStore()
 	if err != nil {

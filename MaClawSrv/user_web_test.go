@@ -1257,12 +1257,15 @@ func TestAdminDefaultClientConfigSchemaOnlyExposesSharedFields(t *testing.T) {
 		t.Fatalf("schema = %d body = %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{"web_search_providers", "default_proxy_enabled", "default_proxy_scope_coding_tools", "security_policy_mode", "network_level", "vector_search_enabled", "maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_providers", "llm_prompt_cache", "tts_voice_id", "knowledge_vision_llm", "auxiliary_llm", "model_routes"} {
+	for _, want := range []string{"web_search_providers", "default_proxy_enabled", "security_policy_mode", "network_level", "vector_search_enabled", "maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_providers", "llm_prompt_cache", "tts_voice_id", "knowledge_vision_llm", "auxiliary_llm", "model_routes"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("client config schema missing shared field %s: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{"memory_max_backups", "yolo_mode_allowed"} {
+	// The coding-tools proxy scope is consumed only by the GUI client
+	// (gui/app_proxy.go); the schema deliberately hides it here so the
+	// server surfaces never show a toggle that does nothing.
+	for _, forbidden := range []string{"default_proxy_scope_coding_tools", "memory_max_backups", "yolo_mode_allowed"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("client config schema should not expose private user field %s: %s", forbidden, body)
 		}

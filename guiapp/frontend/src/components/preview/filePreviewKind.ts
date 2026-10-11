@@ -7,6 +7,7 @@ export type FilePreviewKind =
     | 'pptx'
     | 'docx'
     | 'pdf'
+    | 'xlsx'
     | 'latex'
     | 'image'
     | 'video'
@@ -22,10 +23,11 @@ const IMAGE_EXT = new Set([
 ]);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v']);
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.oga']);
+/** Spreadsheets render as a real grid (.et/.ett are WPS spreadsheet files). */
+const SHEET_EXT = new Set(['.xls', '.xlsx', '.xlsm', '.xlsb', '.et', '.ett', '.ods']);
 /** Legacy Office containers that stay a text extract. .docx / .pptx have their own page renderers. */
 const OFFICE_EXT = new Set([
     '.doc', '.docm', '.dot', '.dotx', '.wps', '.wpt', '.rtf', '.odt',
-    '.xls', '.xlsx', '.xlsm', '.xlsb', '.et', '.ett', '.ods',
     '.ppt', '.pptm', '.pps', '.ppsx', '.dps', '.dpt', '.odp',
 ]);
 
@@ -55,6 +57,7 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     if (ext === '.pptx') return 'pptx';
     if (ext === '.docx') return 'docx';
     if (ext === '.pdf') return 'pdf';
+    if (SHEET_EXT.has(ext)) return 'xlsx';
     if (ext === '.tex' || ext === '.latex' || ext === '.ltx') return 'latex';
     if (IMAGE_EXT.has(ext)) return 'image';
     if (VIDEO_EXT.has(ext)) return 'video';
@@ -64,6 +67,7 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     if (lang === 'pptx') return 'pptx';
     if (lang === 'docx') return 'docx';
     if (lang === 'pdf') return 'pdf';
+    if (lang === 'xlsx') return 'xlsx';
     if (lang === 'latex' || lang === 'tex') return 'latex';
     if (lang === 'image') return 'image';
     if (lang === 'video') return 'video';
@@ -78,12 +82,12 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
 
 /** Previewers that own scrolling / paging and should hide the code minimap. */
 export function isChromeLessPreviewKind(kind: FilePreviewKind): boolean {
-    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'xlsx' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';
 }
 
 /** Native binary/page viewers that need a local original path. */
 export function previewNeedsLocalFile(kind: FilePreviewKind): boolean {
-    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio';
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'xlsx' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio';
 }
 
 /** Whether the mobile library should download the Hub original before previewing. */
@@ -103,7 +107,7 @@ export function companionSupportsFileName(name: string): boolean {
     const ext = fileExtFromName(name);
     if (COMPANION_TEXT_EXT.has(ext)) return true;
     const kind = filePreviewKindFromName(name);
-    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex'
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'xlsx' || kind === 'latex'
         || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html'
         || kind === 'markdown' || kind === 'office' || kind === 'text';
 }
@@ -171,7 +175,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
 export function languageFromFileName(name: string, fallbackLanguage?: string): string {
     const kind = filePreviewKindFromName(name, fallbackLanguage);
     if (kind === 'office' || kind === 'markdown') return 'markdown';
-    if (kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html') {
+    if (kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'xlsx' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html') {
         return kind;
     }
     const ext = fileExtFromName(name);

@@ -787,7 +787,16 @@ func exerciseRouteRevisionDoesNotProjectArtifactToDifferentProducer(t *testing.T
 	if alternate.ID == "" {
 		t.Fatal("missing capture selection")
 	}
-	childPlan.Selections = append(childPlan.Selections, alternate)
+	// Replace the original capture selection rather than appending beside it.
+	// Leaving both in the plan keeps selection:capture -- the very producer
+	// that recorded the artifact -- as a live member of this child plan, so
+	// routeArtifactMatchesPlan legitimately accepts the artifact and the
+	// "different producer" scenario never actually occurs.
+	for i := range childPlan.Selections {
+		if childPlan.Selections[i].ID == "selection:capture" {
+			childPlan.Selections[i] = alternate
+		}
+	}
 	for i := range childPlan.Selections {
 		if childPlan.Selections[i].ID != "selection:deliver" {
 			continue

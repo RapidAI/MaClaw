@@ -26,22 +26,30 @@ func NewDynamicToolBuilder(registry *ToolRegistry) *DynamicToolBuilder {
 // BuildAll returns tool definitions for every available tool (no filtering).
 func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	b.syncRegistry()
-	return b.attachExecutionContracts(filterLegacyModelDynamicGatewayDefinitions(b.inner.BuildAll()))
+	return b.attachExecutionContracts(filterProviderPickingGatewayDefinitions(b.inner.BuildAll()))
 }
 
 // Build returns tool definitions, applying context-aware filtering when
 // the number of available tools exceeds the threshold.
 func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} {
 	b.syncRegistry()
-	return b.attachExecutionContracts(filterLegacyModelDynamicGatewayDefinitions(b.inner.Build(userMessage)))
+	return b.attachExecutionContracts(filterProviderPickingGatewayDefinitions(b.inner.Build(userMessage)))
 }
 
-// filterLegacyModelDynamicGatewayDefinitions is deliberately applied at the
-// GUI wrapper too. The core builder enforces the same invariant, but this
-// protects a partially upgraded or alternate builder from turning a registry
-// entry into legacy model authority. Dynamic Skill/MCP calls are emitted only
-// by their managed, identity-bound surfaces.
-func filterLegacyModelDynamicGatewayDefinitions(defs []map[string]interface{}) []map[string]interface{} {
+// filterProviderPickingGatewayDefinitions drops the one gateway whose
+// arguments elect a provider at call time. manage_skill deliberately stays:
+// it names an installed local skill, the full-surface baseline pins it, and
+// the desktop executor binds the call to the local skill registry -- so it is
+// host-bound, not provider-picking, and falls outside this filter's scope.
+//
+// It is applied here as well as in the core builder: doing so protects a
+// partially upgraded or alternate builder from turning a registry entry into
+// provider-picking model authority. The name previously described the whole
+// legacy dynamic gateway set, which stopped matching what the filter does once
+// the core builder began emitting manage_skill as a baseline (2026-10-06); the
+// wider name invited someone to "repair" this layer by re-suppressing
+// manage_skill from the wrong place.
+func filterProviderPickingGatewayDefinitions(defs []map[string]interface{}) []map[string]interface{} {
 	if len(defs) == 0 {
 		return defs
 	}

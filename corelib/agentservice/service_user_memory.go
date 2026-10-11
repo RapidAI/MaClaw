@@ -131,11 +131,11 @@ func (s *Service) SaveUserMemory(ctx context.Context, p Principal, in UserMemory
 	if category.IsProtected() {
 		return nil, fmt.Errorf("protected memory cannot be created here")
 	}
-	store, err := s.openUserMemoryStore(p)
+	store, release, err := s.userMemoryStoreForWrite(p)
 	if err != nil {
 		return nil, err
 	}
-	defer store.Stop()
+	defer release()
 	tags, err := cleanMemoryTags(in.Tags)
 	if err != nil {
 		return nil, err
@@ -176,11 +176,11 @@ func (s *Service) UpdateUserMemory(ctx context.Context, p Principal, id string, 
 	if category.IsProtected() {
 		return nil, fmt.Errorf("protected memory cannot be edited here")
 	}
-	store, err := s.openUserMemoryStore(p)
+	store, release, err := s.userMemoryStoreForWrite(p)
 	if err != nil {
 		return nil, err
 	}
-	defer store.Stop()
+	defer release()
 	ownerID := memoryOwnerIDForPrincipal(p)
 	if entry, ok := findMutableMemoryEntry(store, id, ownerID); !ok {
 		return nil, ErrRecordNotFound
@@ -208,11 +208,11 @@ func (s *Service) DeleteUserMemory(ctx context.Context, p Principal, id string) 
 	if id == "" {
 		return fmt.Errorf("memory id is required")
 	}
-	store, err := s.openUserMemoryStore(p)
+	store, release, err := s.userMemoryStoreForWrite(p)
 	if err != nil {
 		return err
 	}
-	defer store.Stop()
+	defer release()
 	if entry, ok := findMutableMemoryEntry(store, id, memoryOwnerIDForPrincipal(p)); !ok {
 		return ErrRecordNotFound
 	} else if entry.Category.IsProtected() {
@@ -224,6 +224,38 @@ func (s *Service) DeleteUserMemory(ctx context.Context, p Principal, id string) 
 func (s *Service) openUserMemoryStore(p Principal) (*memory.Store, error) {
 	dataDir := s.userDataRoot(p.TenantID, p.UserID)
 	return memory.OpenDataDirStore(dataDir, memory.StoreModeAuto, filepath.Join(dataDir, "agent_memory.json"))
+}
+
+// sharedUserMemoryStore is implemented by executors that keep one long-lived
+// memory.Store per user. The service prefers that instance for reads and writes
+// so that the API and the worker observe the same state; opening a second store
+// on the same directory silently diverges under the JSON backend, which has no
+// cross-instance sync.
+type sharedUserMemoryStore interface {
+	SharedUserMemoryStore(tenantID, userID string) *memory.Store
+}
+
+// userMemoryStoreForWrite returns the store to record a change into, plus a
+// release function that must be called when the change is done.
+//
+// Releasing has two distinct obligations. A store this call opened is closed,
+// and Store.Stop flushes it. A shared store must not be closed, but it still
+// has to be flushed: its persistLoop debounces writes by 5s, so without an
+// explicit flush a preference would be readable in-process yet lost to a crash
+// in that window, which is the durability the API contract promises.
+func (s *Service) userMemoryStoreForWrite(p Principal) (*memory.Store, func(), error) {
+	if s != nil {
+		if owner, ok := s.executor.(sharedUserMemoryStore); ok {
+			if store := owner.SharedUserMemoryStore(p.TenantID, p.UserID); store != nil {
+				return store, func() { _ = store.Flush() }, nil
+			}
+		}
+	}
+	store, err := s.openUserMemoryStore(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, store.Stop, nil
 }
 
 func findMutableMemoryEntry(store *memory.Store, id, ownerID string) (memory.Entry, bool) {

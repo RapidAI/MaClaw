@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en" id="html-root">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClaw Binding Manager</title>
+  <style>
+    :root{--bg:#f0f5ff;--panel:#fff;--text:#1a2b42;--muted:#6b7f99;--primary:#2c6fca;--ok:#1f8f6a;--danger:#bf5648;--warn:#b98219;--line:rgba(37,84,140,.15);--radius:14px;--shadow:0 12px 32px rgba(37,84,140,.1)}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;background:linear-gradient(180deg,#eef5ff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;padding:24px}
+    .container{width:min(520px,100%);background:var(--panel);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}
+    .header{padding:28px 28px 20px;background:linear-gradient(135deg,#d4e4f7 0%,#a8c8e8 100%);text-align:center}
+    .header h1{font-size:24px;color:#123456;margin-bottom:4px}.header p{color:rgba(18,52,86,.7);font-size:14px}
+    .tabs{display:flex;border-bottom:1px solid var(--line)}
+    .tabs button{flex:1;padding:14px 0;background:none;border:none;font:inherit;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;transition:all .2s}
+    .tabs button.active{color:var(--primary);border-bottom-color:var(--primary)}
+    .tabs button:hover{color:var(--primary);background:rgba(44,111,202,.04)}
+    .panel{display:none;padding:24px}.panel.active{display:block}
+    label{display:block;margin-bottom:6px;font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.03em}
+    input{width:100%;height:44px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);font:inherit;background:#fff;color:var(--text);transition:border-color .2s,box-shadow .2s}
+    input:focus{outline:none;border-color:rgba(44,111,202,.5);box-shadow:0 0 0 3px rgba(44,111,202,.1)}
+    .field{margin-bottom:16px}
+    .btn{width:100%;height:44px;border:none;border-radius:var(--radius);font:inherit;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .15s}
+    .btn:hover{transform:translateY(-1px)}.btn:active{transform:translateY(0)}
+    .btn-primary{background:linear-gradient(135deg,#2c6fca,#558fd7);color:#fff;box-shadow:0 8px 20px rgba(44,111,202,.25)}
+    .btn-danger{background:#fff1ee;color:var(--danger);border:1px solid rgba(199,90,74,.2)}
+    .btn-secondary{background:#eef3fb;color:#234f87}
+    .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    .result{margin-top:16px;padding:16px;border-radius:var(--radius);font-size:13px;line-height:1.7;word-break:break-all}
+    .result.success{background:rgba(31,143,106,.08);border:1px solid rgba(31,143,106,.2);color:var(--ok)}
+    .result.error{background:rgba(199,90,74,.08);border:1px solid rgba(199,90,74,.2);color:var(--danger)}
+    .result.info{background:rgba(44,111,202,.06);border:1px solid rgba(44,111,202,.15);color:var(--primary)}
+    .result.warn{background:rgba(185,130,25,.06);border:1px solid rgba(185,130,25,.2);color:var(--warn)}
+    .code-row{display:flex;gap:10px;align-items:flex-end}
+    .code-row .field{flex:1;margin-bottom:0}
+    .code-row .btn{width:auto;min-width:110px;flex-shrink:0;height:44px;font-size:13px}
+    .channel-select{display:flex;gap:8px;margin-bottom:16px}
+    .channel-select button{flex:1;padding:10px;border-radius:10px;border:1px solid var(--line);background:#fff;font:inherit;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;transition:all .2s}
+    .channel-select button.active{background:rgba(44,111,202,.08);border-color:rgba(44,111,202,.3);color:var(--primary)}
+    .hidden{display:none!important}
+    .info-grid{display:grid;gap:8px}.info-row{display:flex;gap:8px}.info-label{min-width:80px;color:var(--muted);font-size:12px;font-weight:700}.info-value{font-size:13px}
+    .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700}
+    .badge-ok{background:rgba(31,143,106,.12);color:var(--ok)}.badge-warn{background:rgba(185,130,25,.12);color:var(--warn)}
+    .warn-box{padding:14px 16px;border-radius:var(--radius);background:rgba(185,130,25,.06);border:1px dashed rgba(185,130,25,.3);color:var(--warn);font-size:13px;line-height:1.6;margin-bottom:16px}
+    body.embed{min-height:auto;padding:0;background:#fff;align-items:flex-start}
+    body.embed .container{border-radius:0;box-shadow:none;width:100%}
+    body.embed .header{padding:14px 20px 10px}
+    body.embed .header h1{font-size:18px}
+    body.embed .header p{font-size:12px}
+    body.embed .tabs button{padding:10px 0;font-size:13px}
+    body.embed .panel{padding:16px 20px}
+    body.embed .field{margin-bottom:10px}
+    body.embed label{margin-bottom:4px;font-size:11px}
+    body.embed input{height:36px;padding:0 10px;font-size:13px;border-radius:10px}
+    body.embed .btn{height:36px;font-size:13px;border-radius:10px}
+    body.embed .code-row .btn{min-width:90px;height:36px;font-size:12px}
+    body.embed .result{margin-top:10px;padding:10px 12px;font-size:12px;border-radius:10px}
+    body.embed .channel-select{gap:6px;margin-bottom:10px}
+    body.embed .channel-select button{padding:7px;font-size:12px;border-radius:8px}
+    body.embed .warn-box{padding:10px 12px;font-size:12px;margin-bottom:10px;border-radius:10px}
+    body.embed .info-label{font-size:11px}
+    body.embed .info-value{font-size:12px}
+    body{background:linear-gradient(180deg,#fafbfc 0%,#f3f5f8 100%);color:#2f3542}.container{border:1px solid #e2e6ee;border-radius:16px;box-shadow:0 18px 42px rgba(35,41,55,.08)}.header{background:linear-gradient(180deg,#fff 0%,#f7f9fc 100%);border-bottom:1px solid #e6e9f0;text-align:left}.header h1{display:flex;align-items:center;gap:10px;position:relative;color:#252b36;font-size:22px}.header h1::before{content:"";width:28px;height:28px;border-radius:9px;background:#f3f5f8;border:1px solid #e2e6ee;box-shadow:inset 0 1px 0 rgba(255,255,255,.9)}.header h1::after{content:"";position:absolute;left:7px;top:50%;width:15px;height:15px;transform:translateY(-50%);background:#747b88;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 6 6v5c0 4 2.5 7.5 6 9.5 3.5-2 6-5.5 6-9.5V6l-6-3Z'/%3E%3Cpath d='m9.5 12 1.7 1.7 3.3-3.4'/%3E%3C/svg%3E") center/15px 15px no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 6 6v5c0 4 2.5 7.5 6 9.5 3.5-2 6-5.5 6-9.5V6l-6-3Z'/%3E%3Cpath d='m9.5 12 1.7 1.7 3.3-3.4'/%3E%3C/svg%3E") center/15px 15px no-repeat}.header p{color:#707784}.tabs{background:#fff;border-bottom-color:#e6e9f0}.tabs button{gap:6px;color:#717886}.tabs button::before{content:"";display:inline-block;width:7px;height:7px;border-radius:999px;background:#a3a9b5;margin-right:7px;vertical-align:middle}.tabs button.active{color:#303744;border-bottom-color:#f06a7b;background:#fbfcfe}.tabs button.active::before{background:#2563eb}.tabs button:hover{color:#303744;background:#f7f9fc}.panel{background:#fff}label{color:#727986}input{border-color:#dfe4ec;color:#303744;background:#fff;border-radius:10px}input:focus{border-color:#aab3c2;box-shadow:0 0 0 3px rgba(116,123,136,.12)}.btn{border-radius:10px;box-shadow:none}.btn-primary{background:linear-gradient(135deg,#f06a7b,#e55468);box-shadow:0 10px 22px rgba(239,106,124,.18)}.btn-secondary{background:#f8fafc;color:#394150;border:1px solid #dfe4ec}.btn-danger{background:#fff5f5;color:#c44e4e;border-color:#f1c6c6}.result{border-radius:10px}.result.info{background:#f7f9fc;border-color:#dfe4ec;color:#596170}.channel-select button{border-color:#dfe4ec;color:#68717f;background:#fff}.channel-select button.active{background:#fff0f2;border-color:#f3cfd5;color:#d95466}.warn-box{background:#fff8ed;border-color:#ead2a6;color:#9a6a18}.badge{border-radius:999px}body.embed{background:#fff}body.embed .container{border:0;border-radius:0;box-shadow:none}
+  
+    /* Softer text hierarchy */
+    body{color:#4b5563}.header h1,.info-value{color:#4b5563}.header p,label,.tabs button,.channel-select button,.info-label{color:#8a93a0}.tabs button.active,.tabs button:hover{color:#596170}.btn-secondary{color:#596170}.result.info{color:#68717f}.header h1::after{background:#8a93a0}
+    /* Softer text hierarchy */
+    body{color:#59636f}.header h1,.info-value{color:#5b6470}.header p,label,.tabs button,.channel-select button,.info-label{color:#9aa3ad}.tabs button.active,.tabs button:hover{color:#68717d}.btn-secondary{color:#68717d}.result.info{color:#7b8490}.header h1::after{background:#9aa3ad}
+    /* Softer text hierarchy */
+    body{color:#626c78}.header h1,.info-value{color:#66707c}.header p,label,.tabs button,.channel-select button,.info-label{color:#a5adb6}.tabs button.active,.tabs button:hover{color:#707a86}.btn-secondary{color:#707a86}.result.info{color:#858f9b}.header h1::after{background:#a5adb6}
+    /* Professional density polish */
+    h1,.tabs button,label,.btn{font-weight:650;letter-spacing:0}.header h1{line-height:1.24}.container{box-shadow:0 14px 34px rgba(35,41,55,.055)}.header{background:linear-gradient(180deg,#fff 0%,#fafbfc 100%)}.panel{padding-top:22px}.tabs button{font-size:13px}.btn-primary{box-shadow:0 8px 18px rgba(239,106,124,.14)}input,.channel-select button{border-color:#e5e9f0}.result,.warn-box{border-style:solid}.header h1::before{background:#fafbfc;border-color:#e8ebf1}.header h1::after{opacity:.92}
+    /* Softer text hierarchy */
+    body{color:#59636f}.header h1,.info-value{color:#5b6470}.header p,label,.tabs button,.channel-select button,.info-label{color:#667386}.tabs button.active,.tabs button:hover{color:#68717d}.btn-secondary{color:#68717d}.result.info{color:#7b8490}.header h1::after{background:#667386}</style>
+  <link rel="stylesheet" href="/bind/professional.css">
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1 id="pageTitle">MaClaw Binding Manager</h1>
+    <p id="pageDesc"></p>
+  </div>
+  <div class="tabs" role="tablist" aria-label="Binding workflows">
+    <button type="button" role="tab" data-tab="bind" id="tabButton-bind" class="active" aria-selected="true" aria-controls="tab-bind" data-i18n="tabBind">Bind Device</button>
+    <button type="button" role="tab" data-tab="query" id="tabButton-query" tabindex="-1" aria-selected="false" aria-controls="tab-query" data-i18n="tabQuery">Query Binding</button>
+    <button type="button" role="tab" data-tab="unbind" id="tabButton-unbind" tabindex="-1" aria-selected="false" aria-controls="tab-unbind" data-i18n="tabUnbind">Unbind Device</button>
+  </div>
+
+  <div id="tab-bind" class="panel active" role="tabpanel" aria-labelledby="tabButton-bind">
+    <div class="field"><label for="bindEmail" data-i18n="emailLabel">Email</label><input id="bindEmail" type="email" placeholder="your@email.com"></div>
+    <div id="bindCodeField" class="field"><label for="bindCode" data-i18n="inviteCodeLabel">Invitation Code</label><input id="bindCode" type="text"></div>
+    <button type="button" class="btn btn-primary" id="btnBind" data-i18n="bindAction">Bind</button>
+    <div id="bindResult" class="result hidden" role="status" aria-live="polite"></div>
+  </div>
+
+  <div id="tab-query" class="panel" role="tabpanel" aria-labelledby="tabButton-query">
+    <div class="field"><label for="queryEmail" data-i18n="emailLabel">Email</label><input id="queryEmail" type="email" placeholder="your@email.com"></div>
+    <button type="button" class="btn btn-secondary" id="btnQuery" data-i18n="queryAction">Query</button>
+    <div id="queryResult" class="result hidden" role="status" aria-live="polite"></div>
+  </div>
+
+  <div id="tab-unbind" class="panel" role="tabpanel" aria-labelledby="tabButton-unbind">
+    <div id="unbindWarning" class="warn-box hidden"></div>
+    <div class="field"><label for="unbindEmail" data-i18n="emailLabel">Email</label><input id="unbindEmail" type="email" placeholder="your@email.com"></div>
+    <label data-i18n="sendCodeChannel">Verification Channel</label>
+    <div class="channel-select" role="radiogroup" aria-label="Verification channel">
+      <button type="button" role="radio" aria-checked="true" class="active" data-channel="email" data-i18n="channelEmail">Email</button>
+      <button type="button" role="radio" aria-checked="false" tabindex="-1" data-channel="feishu" data-i18n="channelFeishu">Feishu</button>
+      <button type="button" role="radio" aria-checked="false" tabindex="-1" data-channel="both" data-i18n="channelBoth">Both</button>
+    </div>
+    <div class="code-row">
+      <div class="field"><label for="unbindCode" data-i18n="verifyCodeLabel">Verification Code</label><input id="unbindCode" type="text" maxlength="6" inputmode="numeric" pattern="[0-9]*"></div>
+      <button type="button" id="sendCodeBtn" class="btn btn-secondary" data-i18n="sendCode">Send Code</button>
+    </div>
+    <div style="height:16px"></div>
+    <button type="button" class="btn btn-danger" id="btnUnbind" data-i18n="unbindConfirm">Confirm Unbind</button>
+    <div id="unbindResult" class="result hidden" role="status" aria-live="polite"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  var LANG = (navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
+
+  var I18N = {
+    title: { zh: '绑定管理', en: 'Binding Manager' },
+    pageTitle: { zh: 'MaClaw 绑定管理', en: 'MaClaw Binding Manager' },
+    pageDesc: { zh: '绑定、查询或解除您的设备绑定。', en: 'Bind, query, or remove your device binding.' },
+    tabBind: { zh: '绑定设备', en: 'Bind Device' },
+    tabQuery: { zh: '查询绑定', en: 'Query Binding' },
+    tabUnbind: { zh: '解除绑定', en: 'Unbind Device' },
+    emailLabel: { zh: '邮箱', en: 'Email' },
+    inviteCodeLabel: { zh: '邀请码', en: 'Invitation Code' },
+    inviteCodePlaceholder: { zh: '请输入邀请码', en: 'Enter invitation code' },
+    bindAction: { zh: '绑定', en: 'Bind' },
+    queryAction: { zh: '查询', en: 'Query' },
+    sendCodeChannel: { zh: '验证码发送渠道', en: 'Verification Channel' },
+    channelEmail: { zh: '邮箱', en: 'Email' },
+    channelFeishu: { zh: '飞书', en: 'Feishu' },
+    channelBoth: { zh: '邮箱 + 飞书', en: 'Both' },
+    verifyCodeLabel: { zh: '验证码', en: 'Verification Code' },
+    verifyCodePlaceholder: { zh: '6 位验证码', en: '6-digit code' },
+    sendCode: { zh: '发送验证码', en: 'Send Code' },
+    unbindConfirm: { zh: '确认解除绑定', en: 'Confirm Unbind' },
+    unbindWarning: { zh: '解绑将删除所有设备绑定和 IM 绑定。', en: 'Unbinding will remove all device bindings and IM bindings (Feishu/QQ, etc.).' },
+    unbindWarningInvite: { zh: '原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。', en: 'The original invitation code will become invalid. You will need a new invitation code to bind again.' },
+    pleaseEnterEmail: { zh: '请输入邮箱。', en: 'Please enter your email.' },
+    pleaseEnterEmailAndCode: { zh: '请输入邮箱和验证码。', en: 'Please enter your email and verification code.' },
+    bindSuccess: { zh: '绑定成功', en: 'Bind successful' },
+    pendingApproval: { zh: '已提交，等待管理员审核。', en: 'Submitted. Waiting for administrator approval.' },
+    manualBindingRequired: { zh: '需要管理员手动绑定，请联系管理员。', en: 'Manual administrator binding is required. Please contact the administrator.' },
+    bindFailed: { zh: '绑定失败', en: 'Bind failed' },
+    queryNoBinding: { zh: '该邮箱尚未绑定。', en: 'This email is not bound yet.' },
+    networkError: { zh: '网络错误', en: 'Network error' },
+    statusLabel: { zh: '状态', en: 'Status' },
+    boundBadge: { zh: '已绑定', en: 'Bound' },
+    userStatusLabel: { zh: '用户状态', en: 'User Status' },
+    createdAtLabel: { zh: '创建时间', en: 'Created At' },
+    deviceIdLabel: { zh: '设备 ID', en: 'Device ID' },
+    codeSent: { zh: '验证码已发送至：{channels}', en: 'Verification code sent to: {channels}' },
+    sendFailed: { zh: '发送失败', en: 'Send failed' },
+    confirmUnbind: { zh: '确定要解除 {email} 的所有绑定吗？\n\n将会：\n- 删除所有设备绑定\n- 删除飞书/QQ 等 IM 绑定', en: 'Are you sure you want to remove all bindings for {email}?\n\nThis will:\n- Remove all device bindings\n- Remove IM bindings such as Feishu/QQ' },
+    confirmUnbindInvite: { zh: '\n- 原邀请码将失效\n\n解绑后需要获取新的邀请码才能重新绑定。', en: '\n- The original invitation code will be invalidated\n\nYou will need a new invitation code to bind again.' },
+    unbindSuccess: { zh: '解绑成功，已移除 {count} 个设备。', en: 'Unbind successful. Removed {count} device(s).' },
+    codesDeleted: { zh: '，并移除 {count} 个邀请码', en: ', and removed {count} invitation code(s)' },
+    needNewInvite: { zh: '重新绑定需要新的邀请码。', en: 'A new invitation code is required to bind again.' },
+    unbindFailed: { zh: '解绑失败', en: 'Unbind failed' }
+  };
+
+  function t(key, vars) {
+    var text = (I18N[key] && I18N[key][LANG]) || key;
+    return String(text).replace(/\{(\w+)\}/g, function(_, name) {
+      return vars && vars[name] != null ? vars[name] : '';
+    });
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function applyI18n() {
+    document.title = 'MaClaw ' + t('title');
+    document.getElementById('pageTitle').textContent = t('pageTitle');
+    document.getElementById('pageDesc').textContent = t('pageDesc');
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.getElementById('bindCode').placeholder = t('inviteCodePlaceholder');
+    document.getElementById('unbindCode').placeholder = t('verifyCodePlaceholder');
+  }
+
+  if (new URLSearchParams(window.location.search).get('embed') === '1') {
+    document.body.classList.add('embed');
+  }
+
+  var selectedChannel = 'email';
+  var countdownTimer = null;
+  var invCodeRequired = false;
+  var apiBase = window.location.origin;
+
+  applyI18n();
+
+  fetch(apiBase + '/api/bind/config').then(function(r) { return r.json(); }).then(function(cfg) {
+    invCodeRequired = !!cfg.invitation_code_required;
+    if (!invCodeRequired) {
+      var f = document.getElementById('bindCodeField');
+      if (f) f.classList.add('hidden');
+    }
+    var warn = document.getElementById('unbindWarning');
+    var msg = esc(t('unbindWarning'));
+    if (invCodeRequired) msg += '<br>' + esc(t('unbindWarningInvite'));
+    warn.innerHTML = msg;
+    warn.classList.remove('hidden');
+  }).catch(function() {});
+
+  function selectTab(btn) {
+    var name = btn.dataset.tab;
+    document.querySelectorAll('.tabs [data-tab]').forEach(function(b) {
+      var active = b.dataset.tab === name;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+      b.tabIndex = active ? 0 : -1;
+    });
+    document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+    document.getElementById('tab-' + name).classList.add('active');
+  }
+
+  document.querySelector('.tabs').addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-tab]');
+    if (!btn) return;
+    selectTab(btn);
+  });
+
+  document.querySelector('.tabs').addEventListener('keydown', function(e) {
+    var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (keys.indexOf(e.key) === -1) return;
+    var tabs = Array.prototype.slice.call(this.querySelectorAll('[data-tab]'));
+    var index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    e.preventDefault();
+    var next = index;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    else next = (index + (e.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length;
+    tabs[next].focus();
+    selectTab(tabs[next]);
+  });
+
+  function selectChannel(btn) {
+    selectedChannel = btn.dataset.channel;
+    document.querySelectorAll('.channel-select [data-channel]').forEach(function(b) {
+      var active = b.dataset.channel === selectedChannel;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-checked', active ? 'true' : 'false');
+      b.tabIndex = active ? 0 : -1;
+    });
+  }
+
+  document.querySelector('.channel-select').addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-channel]');
+    if (!btn) return;
+    selectChannel(btn);
+  });
+
+  document.querySelector('.channel-select').addEventListener('keydown', function(e) {
+    var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (keys.indexOf(e.key) === -1) return;
+    var buttons = Array.prototype.slice.call(this.querySelectorAll('[data-channel]'));
+    var index = buttons.indexOf(document.activeElement);
+    if (index < 0) return;
+    e.preventDefault();
+    var next = index;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = buttons.length - 1;
+    else next = (index + (e.key === 'ArrowLeft' ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+    selectChannel(buttons[next]);
+  });
+
+  function showResult(id, html, type) {
+    var el = document.getElementById(id);
+    el.className = 'result ' + type;
+    el.innerHTML = html;
+  }
+
+  async function api(path, body) {
+    var resp = await fetch(apiBase + path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    return resp.json();
+  }
+
+  document.getElementById('btnBind').addEventListener('click', async function() {
+    var email = document.getElementById('bindEmail').value.trim();
+    var code = document.getElementById('bindCode').value.trim();
+    if (!email) return showResult('bindResult', esc(t('pleaseEnterEmail')), 'error');
+
+    try {
+      var data = await api('/api/enroll/start', {
+        email: email, invitation_code: code,
+        machine_name: 'WebBind', platform: 'web'
+      });
+      if (data.status === 'approved' || data.status === 'already_enrolled') {
+        var h = '<strong>' + esc(t('bindSuccess')) + '</strong><br>';
+        if (data.email) h += esc(t('emailLabel')) + ': ' + esc(data.email) + '<br>';
+        if (data.sn) h += 'SN: ' + esc(data.sn) + '<br>';
+        if (data.machine_id) h += esc(t('deviceIdLabel')) + ': ' + esc(data.machine_id) + '<br>';
+        showResult('bindResult', h, 'success');
+      } else if (data.status === 'pending_approval') {
+        showResult('bindResult', esc(t('pendingApproval')), 'info');
+      } else if (data.status === 'manual_binding_required') {
+        showResult('bindResult', esc(t('manualBindingRequired')), 'error');
+      } else {
+        showResult('bindResult', esc(data.message || data.code || t('bindFailed')), 'error');
+      }
+    } catch (e) {
+      showResult('bindResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
+    }
+  });
+
+  document.getElementById('btnQuery').addEventListener('click', async function() {
+    var email = document.getElementById('queryEmail').value.trim();
+    if (!email) return showResult('queryResult', esc(t('pleaseEnterEmail')), 'error');
+
+    try {
+      var data = await api('/api/bind/query', { email: email });
+      if (data.bound) {
+        var h = '<div class="info-grid">';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('statusLabel')) + '</span><span class="info-value"><span class="badge badge-ok">' + esc(t('boundBadge')) + '</span></span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('emailLabel')) + '</span><span class="info-value">' + esc(data.email) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">SN</span><span class="info-value">' + esc(data.sn) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('userStatusLabel')) + '</span><span class="info-value">' + esc(data.status) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('createdAtLabel')) + '</span><span class="info-value">' + esc(new Date(data.created_at).toLocaleString(LANG === 'zh' ? 'zh-CN' : 'en-US')) + '</span></div>';
+        h += '</div>';
+        showResult('queryResult', h, 'info');
+      } else {
+        showResult('queryResult', esc(t('queryNoBinding')), 'info');
+      }
+    } catch (e) {
+      showResult('queryResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
+    }
+  });
+
+  document.getElementById('sendCodeBtn').addEventListener('click', async function() {
+    var email = document.getElementById('unbindEmail').value.trim();
+    if (!email) return showResult('unbindResult', esc(t('pleaseEnterEmail')), 'error');
+
+    var btn = this;
+    btn.disabled = true;
+    var sec = 60;
+    btn.textContent = sec + 's';
+    countdownTimer = setInterval(function() {
+      sec--;
+      btn.textContent = sec + 's';
+      if (sec <= 0) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        btn.disabled = false;
+        btn.textContent = t('sendCode');
+      }
+    }, 1000);
+
+    try {
+      var data = await api('/api/bind/send-code', { email: email, channel: selectedChannel });
+      if (data.ok) {
+        showResult('unbindResult', esc(t('codeSent', { channels: (data.sent_via || []).join(', ') })), 'success');
+      } else {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        btn.disabled = false;
+        btn.textContent = t('sendCode');
+        showResult('unbindResult', esc(data.message || t('sendFailed')), 'error');
+      }
+    } catch (e) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      btn.disabled = false;
+      btn.textContent = t('sendCode');
+      showResult('unbindResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
+    }
+  });
+
+  document.getElementById('btnUnbind').addEventListener('click', async function() {
+    var email = document.getElementById('unbindEmail').value.trim();
+    var code = document.getElementById('unbindCode').value.trim();
+    if (!email || !code) return showResult('unbindResult', esc(t('pleaseEnterEmailAndCode')), 'error');
+
+    var confirmMsg = t('confirmUnbind', { email: email });
+    if (invCodeRequired) confirmMsg += t('confirmUnbindInvite');
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      var data = await api('/api/bind/unbind', { email: email, code: code });
+      if (data.ok) {
+        var msg = esc(t('unbindSuccess', { count: String(data.deleted_machines) }));
+        if (data.codes_deleted > 0) msg += esc(t('codesDeleted', { count: String(data.codes_deleted) }));
+        if (invCodeRequired) msg += '<br><br>' + esc(t('needNewInvite'));
+        showResult('unbindResult', msg, 'success');
+      } else {
+        showResult('unbindResult', esc(data.message || t('unbindFailed')), 'error');
+      }
+    } catch (e) {
+      showResult('unbindResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
+    }
+  });
+})();
+</script>
+</body>
+</html>

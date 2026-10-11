@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClaw 商店</title>
+  <link rel="stylesheet" href="/card_store/professional.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/card_store" data-card-store-home-link aria-label="MaClaw Store">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M5.5 9.5h13l-1 9a2 2 0 0 1-2 1.8h-7a2 2 0 0 1-2-1.8l-1-9Z"/>
+            <path d="M8.5 9.5V7a3.5 3.5 0 0 1 7 0v2" fill="none"/>
+            <path d="M4.4 9.5 6 4.7h12l1.6 4.8" fill="none"/>
+          </svg>
+        </span>
+        <span><strong data-i18n="brandName">MaClaw 商店</strong><small data-i18n="brandSubtitle">购买服务兑换卡</small></span>
+      </a>
+      <nav class="top-actions" aria-label="Store links">
+        <div class="lang-switch" role="group" aria-label="Language">
+          <button id="langZh" type="button" data-lang="zh" aria-pressed="true">中</button>
+          <button id="langEn" type="button" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <span id="tenantChip" class="tenant-chip" hidden></span>
+        <button id="accountBtn" class="account-chip" type="button" hidden></button>
+        <a class="ghost" href="/get-credits" data-credits-center-link data-i18n="creditsCenter">额度中心</a>
+        <button id="reloadBtn" type="button" data-i18n="reload">刷新</button>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow" data-i18n="eyebrowStore">Service Card Store</p>
+        <h1 data-i18n="heroTitle">购买服务兑换卡</h1>
+        <p class="lead" data-i18n="heroLead">选择日卡、周卡、月卡、季卡、年卡，或购买 1 万 / 5 万点纯点卡。填写注册邮箱后创建支付订单，支付完成后页面会显示服务兑换码并发送到邮箱。</p>
+      </div>
+      <div class="hero-card" aria-hidden="true">
+        <svg viewBox="0 0 360 220" role="img">
+          <defs>
+            <linearGradient id="heroCardGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#102a43"/><stop offset=".56" stop-color="#1f5f99"/><stop offset="1" stop-color="#0b7768"/></linearGradient>
+            <pattern id="heroCircuit" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M0 16h12M20 16h12M16 0v12M16 20v12" stroke="rgba(255,255,255,.18)" stroke-width="1.4" fill="none"/><circle cx="16" cy="16" r="2" fill="rgba(255,255,255,.38)"/></pattern>
+          </defs>
+          <rect x="18" y="24" width="324" height="172" rx="18" fill="url(#heroCardGradient)"/>
+          <rect x="18" y="24" width="324" height="172" rx="18" fill="url(#heroCircuit)"/>
+          <path d="M48 66h88M48 92h154M48 148h68" stroke="#fff" stroke-width="10" stroke-linecap="round" opacity=".92"/>
+          <path d="M250 58a38 38 0 1 1-1 0M250 76v40M230 96h40" stroke="#fff" stroke-width="9" stroke-linecap="round" fill="none" opacity=".86"/>
+        </svg>
+      </div>
+    </section>
+
+    <section class="status-band">
+      <div><strong id="storeState" data-i18n="loading">加载中...</strong><span data-i18n="priceConfigured">所有价格由后台「在线商店」配置。</span></div>
+      <div><strong data-i18n="paymentTitle">支付后续</strong><span data-i18n="paymentDesc">支付通知验签成功后，系统自动生成服务兑换码。</span></div>
+      <div><strong data-i18n="recoveryTitleShort">邮箱找回</strong><span data-i18n="recoveryDescShort">忘记兑换码时可用购买邮箱重新发送。</span></div>
+    </section>
+
+    <section class="section-head">
+      <div><p class="eyebrow" data-i18n="catalogEyebrow">Catalog</p><h2 data-i18n="catalogTitle">可购买卡种</h2></div>
+      <p data-i18n="catalogDesc">服务卡覆盖固定周期，点卡用于补充 credits。</p>
+    </section>
+    <section id="products" class="products" aria-live="polite"></section>
+
+    <section class="recovery-panel">
+      <div><p class="eyebrow" data-i18n="recoveryEyebrow">Recovery</p><h2 data-i18n="recoveryTitle">找回服务兑换码</h2><p data-i18n="recoveryDesc">输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。</p></div>
+      <form id="recoverForm" class="recover-form">
+        <div class="recover-email-field">
+          <label for="recoverEmail" data-i18n="recoverEmailLabel">购买邮箱</label>
+          <input id="recoverEmail" type="email" data-i18n-placeholder="recoverEmailPlaceholder" placeholder="name@example.com" autocomplete="email" required>
+        </div>
+        <div class="captcha-field">
+          <label for="recoverCaptchaInput" data-i18n="captchaLabel">图形验证码</label>
+          <div class="captcha-row">
+            <canvas id="recoverCaptchaCanvas" width="112" height="42" aria-label="图形验证码"></canvas>
+            <input id="recoverCaptchaInput" type="text" inputmode="numeric" autocomplete="off" maxlength="3" data-i18n-placeholder="captchaPlaceholder" placeholder="输入结果" required>
+            <button id="refreshCaptchaBtn" class="captcha-refresh" type="button" data-i18n="captchaRefresh">换一张</button>
+          </div>
+        </div>
+        <button id="recoverSubmitBtn" type="submit" data-i18n="recoverButton">发送找回邮件</button>
+      </form>
+      <div id="recoverMsg" class="msg" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script>
+    const I18N = {
+      zh: {
+        title: 'MaClaw 商店', brandName: 'MaClaw 商店', brandSubtitle: '购买服务兑换卡', tenantLabel: '租户', tenantNotSet: '未指定', creditsCenter: '额度中心', reload: '刷新',
+        eyebrowStore: 'Service Card Store', heroTitle: '购买服务兑换卡', heroLead: '选择日卡、周卡、月卡、季卡、年卡，或购买 1 万 / 5 万点纯点卡。填写注册账户后创建支付订单，支付完成后页面会显示服务兑换码；邮箱账户会收到邮件，手机账户可自动充值。',
+        loading: '加载中...', storeEnabled: '商店已启用', storeDisabled: '商店未启用', loadFailed: '商品加载失败', priceConfigured: '所有价格由后台「在线商店」配置。',
+        paymentTitle: '支付后续', paymentDesc: '支付通知验签成功后，系统自动生成服务兑换码。', recoveryTitleShort: '邮箱找回', recoveryDescShort: '忘记兑换码时可用购买邮箱重新发送。',
+        catalogEyebrow: 'Catalog', catalogTitle: '可购买卡种', catalogDesc: '服务卡覆盖固定周期，点卡用于补充 credits。',
+        serviceCard: '服务兑换卡', creditsCard: '纯点卡', periodLimitLabel: '周期限制', noPeriodLimit: '无周期限制', usageScenarioLabel: '适用场景', buy: '购买', registeredEmail: '注册账户', secondaryEmail: '第二邮箱（可选）', validForDays: '天有效', validForDay: '天有效', accountNotSet: '未设置账户', accountHint: '购买账户', changeEmail: '更换账户', emailDialogTitle: '确认购买账户', emailDialogDesc: '可填写注册邮箱或 phone:手机号。邮箱账户会收到兑换码邮件；手机账户支付后自动充值，兑换码会保留在页面。', continueBuy: '继续购买', cancel: '取消', returnOrderTitle: '支付返回', returnOrderLoading: '正在确认支付结果...',
+        recoveryEyebrow: 'Recovery', recoveryTitle: '找回服务兑换码', recoveryDesc: '输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。', recoverEmailLabel: '购买邮箱', recoverEmailPlaceholder: 'name@example.com', captchaLabel: '图形验证码', captchaPlaceholder: '输入结果', captchaRefresh: '换一题', captchaInvalid: '请填写正确的计算结果', recoverButton: '发送找回邮件',
+        enterEmail: '请填写注册账户（邮箱或 phone:手机号）', enterRecoverEmail: '请填写有效的购买邮箱', invalidSecondEmail: '请填写有效的第二邮箱，或留空', createOrder: '正在创建订单...', orderCreated: '订单已创建，支付完成后此处会显示兑换码', openPayment: '打开支付页面', paymentLinkHint: '支付链接', createFailed: '创建订单失败', waitingNotify: '等待支付通知中... 订单号 ', manualWaiting: '已提醒店主，请等待核对到账。订单号 ', manualRejected: '订单已驳回', payCode: '付款备注', payAmount: '付款金额', payChannel: '付款方式', payee: '收款人', payQR: '付款码', productLabel: '商品', payDone: '我已扫码支付完成', payDoneSending: '正在通知店主...', payDoneSent: '已通知店主', payDoneWarning: '重要：扫码付款后必须点击“支付完成”按钮，否则店主不会收到确认邮件，订单可能无法及时处理。', payDoneFirst: '请扫码付款后点击“支付完成”，店主才会收到确认邮件。',
+        serviceCode: '服务兑换码', paidSent: '支付成功，兑换码已发送到邮箱', paidGenerated: '支付成功，兑换码已生成', autoRedeemed: '支付成功，已自动充值到注册账户', autoRedeemFailed: '支付成功，但自动充值未完成，请使用兑换码手动兑换。', issueFailed: '支付已确认，但服务码生成失败，请联系管理员处理。', notifyTimeout: '还没有收到支付通知，可稍后刷新或使用邮箱找回',
+        resultSuccessTitle: '支付成功', resultPendingTitle: '正在确认支付结果...', resultSuccessLead: '订单已完成，服务兑换码已生成。', resultAutoRedeemedLead: '已自动充值到注册账户，兑换码作为备用凭证保留。', resultPendingLead: '正在读取订单状态，确认后会在这里显示兑换码。', resultBackupCode: '备用服务兑换码', copyCode: '复制兑换码', copied: '已复制', viewCredits: '查看 Credits', continueShopping: '继续购买', orderNumber: '订单号', paidAccount: '充值账号', productLabelShort: '商品', paymentAmount: '支付金额', mailState: '邮件状态', autoRedeemState: '自动充值', done: '已完成', notDone: '未完成', continueShoppingTitle: '继续购买其他卡种',
+        recoverSending: '正在发送找回邮件...', recoverSent: '已发送找回邮件，请查收邮箱', recoverNone: '没有找到已支付的兑换码', recoverFailed: '发送失败', emptyProducts: '暂无可售商品',
+        productNames: { service_day: '日卡', service_week: '周卡', service_month: '月卡', service_quarter: '季卡', service_year: '年卡', credits_10000: '纯点卡 1 万点', credits_50000: '纯点卡 5 万点', service_test_10: '测试商品 1 credit' },
+        productScenarios: { service_day: '适用于体验用户。', service_week: '适用于体验用户。', service_month: '适用于轻度使用用户。', service_quarter: '适用于轻度使用用户。', service_year: '适用于中度使用用户。', credits_10000: '适用于重度使用用户；用完即续，可持续使用。', credits_50000: '适用于重度使用用户；用完即续，可持续使用。' },
+        productDescriptions: { service_test_10: '仅用于充值流程测试。' }
+      },
+      en: {
+        title: 'MaClaw Store', brandName: 'MaClaw Store', brandSubtitle: 'Buy service exchange cards', tenantLabel: 'Tenant', tenantNotSet: 'Not set', creditsCenter: 'Credits Center', reload: 'Refresh',
+        eyebrowStore: 'Service Card Store', heroTitle: 'Buy service exchange cards', heroLead: 'Choose day, week, month, quarter, or year service cards, or buy 10k / 50k credits cards. Enter your registered account to create a payment order. After payment, the service code appears here; email accounts receive email, and phone accounts can be credited automatically.',
+        loading: 'Loading...', storeEnabled: 'Store enabled', storeDisabled: 'Store disabled', loadFailed: 'Products failed to load', priceConfigured: 'All prices are configured in Admin > Online Store.',
+        paymentTitle: 'After payment', paymentDesc: 'After a verified payment notification, the system creates a service exchange code automatically.', recoveryTitleShort: 'Email recovery', recoveryDescShort: 'Use the purchase email to resend forgotten service codes.',
+        catalogEyebrow: 'Catalog', catalogTitle: 'Available cards', catalogDesc: 'Service cards cover fixed periods. Credits cards add credits.',
+        serviceCard: 'Service card', creditsCard: 'Credits card', periodLimitLabel: 'Period limits', noPeriodLimit: 'No period limits', usageScenarioLabel: 'Best for', registeredEmail: 'Registered account', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid', accountNotSet: 'Account not set', accountHint: 'Purchase account', changeEmail: 'Change account', emailDialogTitle: 'Confirm purchase account', emailDialogDesc: 'Use a registered email or phone:number. Email accounts receive the code by email; phone accounts are credited automatically after payment, with the code kept on this page.', continueBuy: 'Continue', cancel: 'Cancel', returnOrderTitle: 'Payment return', returnOrderLoading: 'Confirming payment result...',
+        recoveryEyebrow: 'Recovery', recoveryTitle: 'Recover service code', recoveryDesc: 'Enter the registered email or second email used for purchase. Paid order codes will be resent to that inbox.', recoverEmailLabel: 'Purchase email', recoverEmailPlaceholder: 'name@example.com', captchaLabel: 'Captcha', captchaPlaceholder: 'Answer', captchaRefresh: 'New', captchaInvalid: 'Enter the correct result', recoverButton: 'Send recovery email',
+        enterEmail: 'Enter a registered account (email or phone:number)', enterRecoverEmail: 'Enter a valid purchase email', invalidSecondEmail: 'Enter a valid second email, or leave it empty.', createOrder: 'Creating order...', orderCreated: 'Order created. The service code will appear here after payment.', openPayment: 'Open payment page', paymentLinkHint: 'Payment link', createFailed: 'Order creation failed', waitingNotify: 'Waiting for payment notification... Order ', manualWaiting: 'Store owner has been notified. Waiting for payment confirmation. Order ', manualRejected: 'Order rejected', payCode: 'Payment remark', payAmount: 'Amount', payChannel: 'Payment method', payee: 'Payee', payQR: 'Payment QR', productLabel: 'Product', payDone: 'I have paid', payDoneSending: 'Notifying store owner...', payDoneSent: 'Store owner notified', payDoneWarning: 'Important: after scanning and paying, click "I have paid". Otherwise the store owner will not receive the confirmation email and the order may not be handled in time.', payDoneFirst: 'Scan and pay, then click "I have paid" so the store owner receives the confirmation email.',
+        serviceCode: 'Service code', paidSent: 'Payment successful. Code sent by email.', paidGenerated: 'Payment successful. Code generated.', autoRedeemed: 'Payment successful. Credits were added to the registered account.', autoRedeemFailed: 'Payment successful, but auto credit did not complete. Redeem the code manually.', issueFailed: 'Payment confirmed, but service code issuance failed. Please contact an administrator.', notifyTimeout: 'Payment notification not received yet. Refresh later or recover by email.',
+        resultSuccessTitle: 'Payment successful', resultPendingTitle: 'Confirming payment result...', resultSuccessLead: 'The order is complete and the service code has been issued.', resultAutoRedeemedLead: 'Credits were added to the registered account. The service code remains as a backup receipt.', resultPendingLead: 'Reading order status. The service code will appear here after confirmation.', resultBackupCode: 'Backup service code', copyCode: 'Copy code', copied: 'Copied', viewCredits: 'View Credits', continueShopping: 'Continue shopping', orderNumber: 'Order', paidAccount: 'Account', productLabelShort: 'Product', paymentAmount: 'Amount', mailState: 'Email', autoRedeemState: 'Auto credit', done: 'Done', notDone: 'Not done', continueShoppingTitle: 'Continue shopping',
+        recoverSending: 'Sending recovery email...', recoverSent: 'Recovery email sent. Please check your inbox.', recoverNone: 'No paid service codes found.', recoverFailed: 'Send failed', emptyProducts: 'No products available',
+        productNames: { service_day: 'Day card', service_week: 'Week card', service_month: 'Month card', service_quarter: 'Quarter card', service_year: 'Year card', credits_10000: 'Credits card 10,000', credits_50000: 'Credits card 50,000', service_test_10: 'Test product 1 credit' },
+        productScenarios: { service_day: 'Best for trial users.', service_week: 'Best for trial users.', service_month: 'Best for light users.', service_quarter: 'Best for light users.', service_year: 'Best for moderate users.', credits_10000: 'Best for heavy users. Renew after use for continuous access.', credits_50000: 'Best for heavy users. Renew after use for continuous access.' },
+        productDescriptions: { service_test_10: 'For recharge flow testing only.' }
+      }
+    };
+    I18N.zh.alipayVerifyPending = '支付宝返回已收到，正在等待异步支付通知确认...';
+    I18N.en.alipayVerifyPending = 'Alipay return received. Waiting for async payment confirmation...';
+    const state = document.getElementById('storeState');
+    const productsRoot = document.getElementById('products');
+    const urlParams = new URLSearchParams(location.search);
+    let lang = normalizeLang(urlParams.get('lang') || localStorage.getItem('card_store_lang') || navigator.language || 'zh');
+    let lastProductsData = null;
+    let checkoutResultBody = null;
+    let checkoutResultPaid = false;
+    let productAlignQueued = false;
+    let tenantId = urlParams.get('tenant_id') || localStorage.getItem('card_store_tenant_id') || '';
+    let registeredEmail = normalizeBuyerIdentity(urlParams.get('email') || urlParams.get('account') || urlParams.get('mobile') || localStorage.getItem('card_store_email') || '');
+    if (registeredEmail && registeredEmail.indexOf('phone:') !== 0 && /^\d{6,}$/.test(registeredEmail)) {
+      registeredEmail = 'phone:' + registeredEmail;
+    }
+    let secondaryEmail = normalizeEmail(localStorage.getItem('card_store_secondary_email') || '');
+    let recoverCaptchaCode = '';
+    if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail);
+    const productTone = { service_day: ['#12355b', '#256d85', '#5aa6a6'], service_week: ['#114e4b', '#247c91', '#93b27a'], service_month: ['#1f3b57', '#357aa3', '#7e9fb5'], service_quarter: ['#213047', '#8d5f4a', '#bd6f72'], service_year: ['#102a43', '#1f5f99', '#26a69a'], credits_10000: ['#1d4f66', '#2f8f9d', '#8cc7b5'], credits_50000: ['#243b6b', '#526fa7', '#b7a66a'], service_test_10: ['#334155', '#64748b', '#a3a3a3'] };
+    function normalizeLang(value) { return String(value || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'zh'; }
+    function t(key) { return I18N[lang][key] || I18N.zh[key] || key; }
+    function normalizeEmail(value) { return String(value || '').trim().toLowerCase(); }
+    function normalizeBuyerIdentity(value) {
+      const normalized = normalizeEmail(value);
+      if (normalized.indexOf('phone:') !== 0) return normalized;
+      const digits = normalized.slice(6).replace(/\D/g, '');
+      return digits ? 'phone:' + digits : '';
+    }
+    function isValidEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value)); }
+    function isValidBuyerIdentity(value) {
+      const normalized = normalizeBuyerIdentity(value);
+      return isValidEmail(normalized) || (normalized.indexOf('phone:') === 0 && normalized.slice(6).length >= 6);
+    }
+    function money(v) { return '¥' + Number(v || 0).toFixed(2); }
+    function label(product) { return (I18N[lang].productNames || {})[product.id] || product.label || product.id; }
+    function productDescription(product) { return (I18N[lang].productDescriptions || {})[product.id] || product.description || ''; }
+    function productScenario(product) { return (I18N[lang].productScenarios || {})[product.id] || ''; }
+    function isTestProduct(product) { return String(product && product.id || '') === 'service_test_10'; }
+    function isCredits(product) { return product.kind === 'credits' || String(product.id || '').indexOf('credits_') === 0 || isTestProduct(product); }
+    function cardArtTitle(product) { return ({ service_day: 'DAY PASS', service_week: 'WEEK PASS', service_month: 'MONTH', service_quarter: 'QUARTER', service_year: 'YEAR PASS', service_test_10: 'TEST CARD' })[product.id] || (isCredits(product) ? 'CREDITS' : 'SERVICE'); }
+    function esc(v) { return String(v == null ? '' : v).replace(/[&<>\"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s])); }
+    function svgId(v) { return String(v || 'card').replace(/[^a-zA-Z0-9_-]/g, '-'); }
+    function scopedURL(path) { const qs = new URLSearchParams(); if (tenantId) qs.set('tenant_id', tenantId); if (registeredEmail) qs.set('email', registeredEmail); const query = qs.toString(); return path + (query ? '?' + query : ''); }
+    function cardStoreURL() { return scopedURL('/card_store'); }
+    function creditsCenterURL() { return scopedURL('/get-credits'); }
+    function updateTenantScopedLinks() { document.querySelectorAll('[data-card-store-home-link]').forEach(link => { link.setAttribute('href', cardStoreURL()); }); document.querySelectorAll('[data-credits-center-link]').forEach(link => { link.setAttribute('href', creditsCenterURL()); }); }
+    function updateTenantChip() { const chip = document.getElementById('tenantChip'); if (!chip) return; chip.hidden = false; const value = tenantId || t('tenantNotSet'); chip.textContent = t('tenantLabel') + ': ' + value; chip.title = chip.textContent; chip.classList.toggle('is-empty', !tenantId); }
+    function updateAccountChip() { const btn = document.getElementById('accountBtn'); if (!btn) return; btn.hidden = false; btn.textContent = registeredEmail || t('accountNotSet'); btn.title = registeredEmail ? (t('accountHint') + ': ' + registeredEmail + ' · ' + t('changeEmail')) : t('accountNotSet'); btn.classList.toggle('is-empty', !registeredEmail); }
+    function setBuyerEmails(email, second) { registeredEmail = normalizeBuyerIdentity(email); secondaryEmail = normalizeEmail(second); if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail); if (secondaryEmail) localStorage.setItem('card_store_secondary_email', secondaryEmail); else localStorage.removeItem('card_store_secondary_email'); updateAccountChip(); updateTenantScopedLinks(); }
+    function setTenantId(value) { const next = String(value || '').trim(); if (!next) { tenantId = ''; localStorage.removeItem('card_store_tenant_id'); updateTenantScopedLinks(); updateTenantChip(); return; } tenantId = next; localStorage.setItem('card_store_tenant_id', tenantId); updateTenantScopedLinks(); updateTenantChip(); }
+    function cleanCardStoreURL() { const qs = new URLSearchParams(window.location.search || ''); const current = qs.get('tenant_id') || tenantId; const email = normalizeBuyerIdentity(qs.get('email') || registeredEmail); qs.delete('token'); if (current) qs.set('tenant_id', current); if (email) qs.set('email', email); const query = qs.toString(); return window.location.pathname + (query ? '?' + query : ''); }
+    function formatDuration(product) {
+      if (isTestProduct(product)) return Number(product.credits || 0).toLocaleString() + ' credit';
+      const days = Number(product.duration_days || 0);
+      if (!days) return Number(product.credits || 0).toLocaleString() + ' credits';
+      return Number(product.credits || 0).toLocaleString() + ' credits · ' + (lang === 'en' ? days + ' ' + (days === 1 ? t('validForDay') : t('validForDays')) : days + ' ' + t('validForDays'));
+    }
+    function fallbackPeriodLimits(product) {
+      if (isCredits(product)) return {};
+      const days = Number(product.duration_days || 0);
+      if (days >= 365) return { five_hour: 2400, daily: 4800, weekly: 9600, monthly: 40000 };
+      if (days >= 91) return { five_hour: 1200, daily: 2400, weekly: 4800, monthly: 10000 };
+      if (days >= 30) return { five_hour: 600, daily: 1200, weekly: 2400 };
+      if (days >= 7) return { five_hour: 300, daily: 600 };
+      if (days > 0) return { five_hour: 150 };
+      return {};
+    }
+    function periodLimitValue(limits, keys) {
+      for (const key of keys) {
+        const value = Number(limits && limits[key] || 0);
+        if (value > 0) return value;
+      }
+      return 0;
+    }
+    function hasPeriodLimits(limits) {
+      return ['five_hour', 'fiveHour', 'fivehour', 'daily', 'weekly', 'monthly'].some(key => Number(limits && limits[key] || 0) > 0);
+    }
+    function periodLimitParts(product) {
+      const rawLimits = product.period_limits || {};
+      const limits = hasPeriodLimits(rawLimits) ? rawLimits : fallbackPeriodLimits(product);
+      const specs = [
+        { keys: ['five_hour', 'fiveHour', 'fivehour'], zh: '5小时', en: '5h' },
+        { keys: ['daily'], zh: '日', en: 'day' },
+        { keys: ['weekly'], zh: '周', en: 'week' },
+        { keys: ['monthly'], zh: '月', en: 'month' }
+      ];
+      const parts = specs.map(spec => {
+        const value = periodLimitValue(limits, spec.keys);
+        if (value <= 0) return null;
+        return { label: lang === 'en' ? spec.en : spec.zh, value: Number(value).toLocaleString() + ' credits' };
+      }).filter(Boolean);
+      return parts;
+    }
+    function periodLimitTags(product) {
+      const parts = periodLimitParts(product);
+      if (!parts.length) return '<span class="period-limit-tag period-limit-tag--empty">' + esc(t('noPeriodLimit')) + '</span>';
+      return parts.map(part => {
+        const text = part.label + ': ' + part.value;
+        return '<span class="period-limit-tag" title="' + esc(text) + '" aria-label="' + esc(text) + '"><b>' + esc(part.label) + '</b><em>' + esc(part.value) + '</em></span>';
+      }).join('');
+    }
+    function productMeta(product) {
+      if (isTestProduct(product)) return '';
+      const scenario = productScenario(product);
+      const limitSection = isCredits(product) ? '' : '<section class="product-meta-section product-meta-section--limit"><h4>' + esc(t('periodLimitLabel')) + '</h4><div class="period-limit-tags">' + periodLimitTags(product) + '</div></section>';
+      const scenarioSection = scenario ? '<section class="product-meta-section product-meta-section--scenario"><h4>' + esc(t('usageScenarioLabel')) + '</h4><p>' + esc(scenario) + '</p></section>' : '';
+      if (!limitSection && !scenarioSection) return '';
+      return '<div class="product-meta">' + limitSection + scenarioSection + '</div>';
+    }
+    function alignProductSectionRows(cards, selector) {
+      const rows = [];
+      cards.forEach(card => {
+        const section = card.querySelector(selector);
+        if (!section) return;
+        const top = Math.round(card.offsetTop);
+        let row = rows.find(item => Math.abs(item.top - top) < 8);
+        if (!row) {
+          row = { top, sections: [] };
+          rows.push(row);
+        }
+        row.sections.push(section);
+      });
+      rows.forEach(row => {
+        const height = Math.max(...row.sections.map(section => Math.ceil(section.getBoundingClientRect().height)));
+        row.sections.forEach(section => { section.style.minHeight = height + 'px'; });
+      });
+    }
+    function alignProductSectionTops(cards, selector) {
+      const rows = [];
+      cards.forEach(card => {
+        const section = card.querySelector(selector);
+        if (!section) return;
+        const top = Math.round(card.offsetTop);
+        let row = rows.find(item => Math.abs(item.top - top) < 8);
+        if (!row) {
+          row = { top, sections: [] };
+          rows.push(row);
+        }
+        row.sections.push({ node: section, offset: section.offsetTop });
+      });
+      rows.forEach(row => {
+        const target = Math.max(...row.sections.map(section => section.offset));
+        row.sections.forEach(section => {
+          const shift = target - section.offset;
+          if (shift > 0) section.node.style.marginTop = shift + 'px';
+        });
+      });
+    }
+    function alignProductRows() {
+      productAlignQueued = false;
+      const cards = Array.from(productsRoot.querySelectorAll('.product'));
+      cards.forEach(card => {
+        const limit = card.querySelector('.product-meta-section--limit');
+        if (limit) limit.style.minHeight = '';
+        const scenario = card.querySelector('.product-meta-section--scenario');
+        if (scenario) {
+          scenario.style.minHeight = '';
+          scenario.style.marginTop = '';
+        }
+      });
+      if (window.innerWidth <= 980) return;
+      alignProductSectionRows(cards, '.product-meta-section--limit');
+      alignProductSectionTops(cards, '.product-meta-section--scenario');
+      alignProductSectionRows(cards, '.product-meta-section--scenario');
+    }
+    function queueProductAlignment() {
+      if (productAlignQueued) return;
+      productAlignQueued = true;
+      requestAnimationFrame(alignProductRows);
+    }
+    function applyI18n() {
+      document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+      document.title = t('title');
+      document.querySelectorAll('[data-i18n]').forEach(node => { node.textContent = t(node.dataset.i18n); });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach(node => { node.setAttribute('placeholder', t(node.dataset.i18nPlaceholder)); });
+      const captchaCanvas = document.getElementById('recoverCaptchaCanvas');
+      if (captchaCanvas) captchaCanvas.setAttribute('aria-label', t('captchaLabel'));
+      document.querySelectorAll('[data-lang]').forEach(node => {
+        const active = node.dataset.lang === lang;
+        node.classList.toggle('active', active);
+        node.setAttribute('aria-pressed', String(active));
+      });
+      localStorage.setItem('card_store_lang', lang);
+      updateTenantChip();
+      updateAccountChip();
+      if (lastProductsData) render(lastProductsData);
+      if (checkoutResultBody) showCheckoutResult(checkoutResultBody, checkoutResultPaid, { preserveScroll: true });
+    }
+    function newCaptchaChallenge() {
+      const left = Math.floor(Math.random() * 18) + 2;
+      const right = Math.floor(Math.random() * 9) + 1;
+      const useSubtract = left > right + 5 && Math.random() > 0.55;
+      return useSubtract
+        ? { text: left + ' - ' + right + ' = ?', answer: String(left - right) }
+        : { text: left + ' + ' + right + ' = ?', answer: String(left + right) };
+    }
+    function drawRecoverCaptcha() {
+      const challenge = newCaptchaChallenge();
+      recoverCaptchaCode = challenge.answer;
+      const canvas = document.getElementById('recoverCaptchaCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      gradient.addColorStop(0, '#eff6ff');
+      gradient.addColorStop(1, '#ecfdf5');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < 26; i++) {
+        ctx.fillStyle = i % 2 ? 'rgba(37,99,235,.16)' : 'rgba(15,143,104,.16)';
+        ctx.beginPath();
+        ctx.arc(Math.random() * canvas.width, Math.random() * canvas.height, Math.random() * 2.2 + .8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.save();
+      ctx.translate(12, 28 + (Math.random() * 4 - 2));
+      ctx.rotate((Math.random() * 4 - 2) * Math.PI / 180);
+      ctx.fillStyle = '#1f4fbf';
+      ctx.font = '900 22px Segoe UI, Arial, sans-serif';
+      ctx.fillText(challenge.text, 0, 0);
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(24,34,49,.22)';
+      ctx.lineWidth = 1.4;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(Math.random() * 18, Math.random() * canvas.height);
+        ctx.bezierCurveTo(36, Math.random() * canvas.height, 74, Math.random() * canvas.height, 112, Math.random() * canvas.height);
+        ctx.stroke();
+      }
+    }
+    function svgCard(product) {
+      const tones = productTone[product.id] || ['#12355b', '#256d85', '#5aa6a6'];
+      const safeId = svgId(product.id);
+      const title = cardArtTitle(product);
+      const chip = isCredits(product) ? 'PTS' : String(product.duration_days || 0) + 'D';
+      const credits = Number(product.credits || 0).toLocaleString();
+      return '<svg class="service-art" viewBox="0 0 320 190" role="img" aria-label="' + esc(label(product)) + ' card art">'
+        + '<defs><linearGradient id="g-' + safeId + '" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="' + tones[0] + '"/><stop offset=".52" stop-color="' + tones[1] + '"/><stop offset="1" stop-color="' + tones[2] + '"/></linearGradient><radialGradient id="glow-' + safeId + '" cx="75%" cy="20%" r="70%"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset=".38" stop-color="#fff" stop-opacity=".16"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><filter id="soft-' + safeId + '" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>'
+        + '<rect x="0" y="0" width="320" height="190" fill="url(#g-' + safeId + ')"/><rect x="0" y="0" width="320" height="190" fill="url(#glow-' + safeId + ')"/><path d="M33 145C80 105 114 167 160 125S235 64 292 86" fill="none" stroke="#fff" stroke-width="32" stroke-opacity=".08" stroke-linecap="round"/><path d="M30 54h58l20 18h54l18-18h74M54 132h44l18-18h62l24 24h62" fill="none" stroke="#fff" stroke-width="1.5" stroke-opacity=".32" stroke-linecap="round" stroke-linejoin="round"/><g fill="#fff" fill-opacity=".82"><circle cx="30" cy="54" r="3"/><circle cx="108" cy="72" r="3"/><circle cx="180" cy="54" r="3"/><circle cx="254" cy="54" r="3"/><circle cx="54" cy="132" r="3"/><circle cx="116" cy="114" r="3"/><circle cx="202" cy="138" r="3"/><circle cx="264" cy="138" r="3"/></g>'
+        + '<g transform="translate(218 38)"><circle cx="32" cy="32" r="40" fill="#fff" fill-opacity=".12"/><circle cx="32" cy="32" r="23" fill="none" stroke="#fff" stroke-opacity=".62" stroke-width="2"/><ellipse cx="32" cy="32" rx="48" ry="16" fill="none" stroke="#fff" stroke-opacity=".36" stroke-width="1.4" transform="rotate(-22 32 32)"/><ellipse cx="32" cy="32" rx="48" ry="16" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width="1.4" transform="rotate(24 32 32)"/><circle cx="62" cy="20" r="4" fill="#fff"/><text x="32" y="38" text-anchor="middle" fill="#fff" font-size="16" font-weight="850" font-family="Segoe UI,Arial">' + chip + '</text></g>'
+        + '<g transform="translate(30 34)"><rect width="64" height="42" rx="12" fill="#fff" fill-opacity=".18" stroke="#fff" stroke-opacity=".42"/><path d="M13 15h38M13 27h22" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity=".88"/><circle cx="52" cy="29" r="6" fill="#fff" fill-opacity=".28"/></g><text x="30" y="94" fill="rgba(255,255,255,.72)" font-size="10" font-weight="850" letter-spacing="2" font-family="Segoe UI,Arial">AI SERVICE CARD</text><text x="30" y="119" fill="#fff" font-size="27" font-weight="850" font-family="Segoe UI,Arial">' + title + '</text><text x="30" y="144" fill="rgba(255,255,255,.82)" font-size="15" font-weight="750" font-family="Segoe UI,Arial">' + credits + ' credits</text><path d="M30 160h112" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".7"/><path d="M30 160h56" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".95"/><circle cx="284" cy="146" r="18" fill="#fff" fill-opacity=".16" filter="url(#soft-' + safeId + ')"/><circle cx="284" cy="146" r="7" fill="#fff" fill-opacity=".7"/></svg>';
+    }
+    function paymentChannelIcon(id) {
+      const value = String(id || '').toLowerCase();
+      if (value.indexOf('alipay') >= 0) return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M8 10h8M12 7v8M8.5 17c2.8-.4 5.3-1.8 7-4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      if (value.indexOf('wechat') >= 0) return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.2C5.9 6.2 3 8.5 3 11.3c0 1.6.9 3 2.4 3.9l-.5 1.9 2.2-1.1c.7.2 1.5.4 2.4.4 3.6 0 6.5-2.3 6.5-5.1S13.1 6.2 9.5 6.2Z"/><path d="M14.6 10.2c3.1 0 5.4 2 5.4 4.3 0 1.2-.7 2.4-1.8 3.1l.4 1.6-1.8-.9c-.7.2-1.4.3-2.2.3-3.1 0-5.4-1.9-5.4-4.2s2.3-4.2 5.4-4.2Z"/><circle cx="7.3" cy="10.5" r=".8" fill="#fff"/><circle cx="11.7" cy="10.5" r=".8" fill="#fff"/></svg>';
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="3"/><path d="M7 10h10M7 14h6" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>';
+    }
+    function paymentMethodSelect(channels, productID) {
+      if (!channels || channels.length < 2) return '';
+      const name = 'pay-method-' + svgId(productID || 'product');
+      const options = channels.map((ch, index) => {
+        const id = String(ch.id || '');
+        const tone = id.toLowerCase().indexOf('wechat') >= 0 ? 'wechat' : (id.toLowerCase().indexOf('alipay') >= 0 ? 'alipay' : 'generic');
+        return '<label class="pay-option pay-option--' + tone + (index === 0 ? ' is-selected' : '') + '"><input class="pay-method" type="radio" name="' + esc(name) + '" value="' + esc(id) + '"' + (index === 0 ? ' checked' : '') + '><span class="pay-option__icon">' + paymentChannelIcon(id) + '</span><span>' + esc(ch.label || ch.id) + '</span></label>';
+      }).join('');
+      return '<fieldset class="pay-method-picker"><legend>' + t('payChannel') + '</legend><div>' + options + '</div></fieldset>';
+    }
+    function updatePaymentOptionUI(scope) {
+      (scope || document).querySelectorAll('.pay-method-picker').forEach(picker => {
+        picker.querySelectorAll('.pay-option').forEach(option => {
+          const input = option.querySelector('.pay-method');
+          option.classList.toggle('is-selected', !!(input && input.checked));
+        });
+      });
+    }
+    function isManualPaymentMethod(value) { return String(value || '').indexOf('manual:') === 0 || value === 'personal_semimanual'; }
+    function render(data) {
+      lastProductsData = data;
+      productsRoot.innerHTML = '';
+      state.textContent = data.enabled ? t('storeEnabled') : t('storeDisabled');
+      if (data.tenant_id) setTenantId(data.tenant_id); else updateTenantScopedLinks();
+      (data.products || []).forEach(product => {
+        const card = document.createElement('article');
+        card.className = 'product';
+        const descText = productDescription(product);
+        const desc = descText ? '<p class="product-desc">' + esc(descText) + '</p>' : '';
+        const channelSelect = paymentMethodSelect(data.payment_channels || [], product.id);
+        const payBlock = channelSelect ? '<div class="product-payment">' + channelSelect + '</div>' : '';
+        card.innerHTML = svgCard(product) + '<div class="product-body"><div class="product-content"><span class="pill">' + (isCredits(product) ? t('creditsCard') : t('serviceCard')) + '</span><h3>' + esc(label(product)) + '</h3><p>' + esc(formatDuration(product)) + '</p>' + desc + productMeta(product) + '</div>' + payBlock + '<div class="buy-row"><div class="price">' + money(product.price) + '</div><button type="button">' + t('buy') + '</button></div><div class="code-box" hidden></div><div class="msg" aria-live="polite"></div></div>';
+        const btn = card.querySelector('button');
+        const msg = card.querySelector('.msg');
+        const codeBox = card.querySelector('.code-box');
+        card.querySelectorAll('.pay-method').forEach(input => input.addEventListener('change', () => updatePaymentOptionUI(card)));
+        updatePaymentOptionUI(card);
+        btn.disabled = !data.enabled || Number(product.price || 0) <= 0;
+        btn.addEventListener('click', async () => {
+          const selectedMethod = (card.querySelector('.pay-method:checked') && card.querySelector('.pay-method:checked').value) || data.payment_mode || '';
+          const buyer = await ensureBuyerEmail();
+          if (!buyer) { msg.textContent = t('enterEmail'); return; }
+          const email = buyer.email;
+          const orderSecondaryEmail = buyer.secondaryEmail;
+          const payWindow = isManualPaymentMethod(selectedMethod) ? null : window.open('', '_blank');
+          if (payWindow) payWindow.opener = null;
+          btn.disabled = true;
+          msg.textContent = t('createOrder');
+          let keepButtonDisabled = false;
+          try {
+            const payload = { product_id: product.id, email, secondary_email: orderSecondaryEmail, tenant_id: tenantId };
+            if (selectedMethod) payload.payment_method = selectedMethod;
+            const res = await fetch('/api/card-store/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.message || t('createFailed'));
+            setBuyerEmails(email, orderSecondaryEmail);
+            if (body.tenant_id) setTenantId(body.tenant_id);
+            msg.textContent = t('orderCreated');
+            if (body.status === 'paid' && body.code) {
+              keepButtonDisabled = true;
+              if (payWindow) payWindow.close();
+              showPaidOrder(body, msg, codeBox);
+              return;
+            }
+            if (body.payment_mode === 'personal_semimanual') {
+              keepButtonDisabled = true;
+              if (payWindow) payWindow.close();
+              showManualPayment(body, msg, codeBox, email);
+              return;
+            }
+            if (body.pay_url) showPaymentLink(body.pay_url, codeBox);
+            if (body.pay_url) keepButtonDisabled = true;
+            if (body.pay_url && payWindow) payWindow.location.href = body.pay_url;
+            else if (body.pay_url) window.open(body.pay_url, '_blank', 'noopener');
+            else if (payWindow) payWindow.close();
+            pollOrder(body.order_no, body.tenant_id || tenantId, email, msg, codeBox);
+          } catch (err) {
+            if (payWindow) payWindow.close();
+            msg.textContent = err.message || t('createFailed');
+          } finally {
+            btn.disabled = keepButtonDisabled;
+          }
+        });
+        productsRoot.appendChild(card);
+      });
+      if (!productsRoot.children.length) productsRoot.innerHTML = '<div class="empty">' + t('emptyProducts') + '</div>';
+      queueProductAlignment();
+    }
+    function openBuyerEmailDialog() {
+      return new Promise(resolve => {
+        closeBuyerEmailDialog();
+        const modal = document.createElement('div');
+        modal.className = 'buyer-email-modal';
+        modal.innerHTML = '<form class="buyer-email-modal__panel" role="dialog" aria-modal="true" aria-labelledby="buyerEmailTitle"><button type="button" class="buyer-email-modal__close" aria-label="Close" data-close-buyer-email>&times;</button><h3 id="buyerEmailTitle">' + esc(t('emailDialogTitle')) + '</h3><p>' + esc(t('emailDialogDesc')) + '</p><label>' + esc(t('registeredEmail')) + '<input type="text" name="email" value="' + esc(registeredEmail) + '" placeholder="name@example.com / phone:13800138000" autocomplete="username" required></label><label>' + esc(t('secondaryEmail')) + '<input type="email" name="secondary_email" value="' + esc(secondaryEmail) + '" placeholder="backup@example.com" autocomplete="email"></label><div class="buyer-email-modal__actions"><button type="button" class="buyer-email-modal__cancel" data-close-buyer-email>' + esc(t('cancel')) + '</button><button type="submit">' + esc(t('continueBuy')) + '</button></div><div class="buyer-email-modal__status msg" aria-live="polite"></div></form>';
+        document.body.appendChild(modal);
+        const form = modal.querySelector('form');
+        const emailInput = modal.querySelector('input[name="email"]');
+        const secondInput = modal.querySelector('input[name="secondary_email"]');
+        const status = modal.querySelector('.buyer-email-modal__status');
+        const done = value => { closeBuyerEmailDialog(); resolve(value); };
+        modal.querySelectorAll('[data-close-buyer-email]').forEach(btn => btn.addEventListener('click', () => done(null)));
+        modal.addEventListener('click', event => { if (event.target === modal) done(null); });
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          const email = normalizeBuyerIdentity(emailInput.value);
+          const second = normalizeEmail(secondInput.value);
+          if (!email || !isValidBuyerIdentity(email)) { status.textContent = t('enterEmail'); emailInput.focus(); return; }
+          if (second && !secondInput.checkValidity()) { status.textContent = t('invalidSecondEmail'); secondInput.focus(); return; }
+          setBuyerEmails(email, second);
+          done({ email, secondaryEmail: second });
+        });
+        emailInput.focus();
+      });
+    }
+    function closeBuyerEmailDialog() { const modal = document.querySelector('.buyer-email-modal'); if (modal) modal.remove(); }
+    async function ensureBuyerEmail() {
+      if (registeredEmail && isValidBuyerIdentity(registeredEmail)) return { email: registeredEmail, secondaryEmail };
+      return openBuyerEmailDialog();
+    }
+    function paidOrderMessage(body) {
+      return body.auto_redeemed ? t('autoRedeemed') : (body.auto_redeem_error ? t('autoRedeemFailed') : (body.mail_status === 'sent' ? t('paidSent') : t('paidGenerated')));
+    }
+    function showPaidOrder(body, msg, codeBox) {
+      if (codeBox) {
+        codeBox.hidden = false;
+        codeBox.innerHTML = '<span>' + t('serviceCode') + '</span><strong>' + esc(body.code) + '</strong>';
+      }
+      if (msg) msg.textContent = paidOrderMessage(body);
+      if (body && body.order_no) showCheckoutResult(body, true);
+    }
+    function setCheckoutResultMode(active) {
+      document.body.classList.toggle('checkout-result-mode', !!active);
+      document.querySelectorAll('.hero,.status-band').forEach(node => { node.hidden = !!active; });
+      const head = document.querySelector('.section-head');
+      if (head) {
+        head.classList.toggle('section-head--continue', !!active);
+        const title = head.querySelector('h2');
+        if (title && active) title.textContent = t('continueShoppingTitle');
+        else if (title) title.textContent = t('catalogTitle');
+      }
+    }
+    function ensureCheckoutResultPanel() {
+      let panel = document.getElementById('checkoutResultPanel');
+      if (panel) return panel;
+      panel = document.createElement('section');
+      panel.id = 'checkoutResultPanel';
+      panel.className = 'checkout-result-panel';
+      panel.hidden = true;
+      panel.innerHTML = '<div class="checkout-result-card"><div class="checkout-result-main"><div class="success-mark" aria-hidden="true">OK</div><p class="eyebrow" data-result-eyebrow>' + esc(t('returnOrderTitle')) + '</p><h1 data-result-title>' + esc(t('resultPendingTitle')) + '</h1><p class="result-lead" data-result-lead>' + esc(t('resultPendingLead')) + '</p><div class="result-actions"><a class="result-primary" data-credits-center-link href="' + esc(creditsCenterURL()) + '">' + esc(t('viewCredits')) + '</a><button type="button" data-continue-shopping>' + esc(t('continueShopping')) + '</button></div><div class="msg" data-result-msg aria-live="polite"></div></div><div class="result-side"><div class="result-code-box" data-result-code-box hidden><span data-result-code-label>' + esc(t('serviceCode')) + '</span><strong data-result-code></strong><button type="button" data-copy-code>' + esc(t('copyCode')) + '</button></div><dl class="result-details" data-result-details></dl></div></div>';
+      document.querySelector('.topbar').insertAdjacentElement('afterend', panel);
+      const continueButton = panel.querySelector('[data-continue-shopping]');
+      if (continueButton) continueButton.addEventListener('click', () => {
+        checkoutResultBody = null;
+        checkoutResultPaid = false;
+        setCheckoutResultMode(false);
+        panel.hidden = true;
+        const head = document.querySelector('.section-head');
+        if (head) head.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      const copyButton = panel.querySelector('[data-copy-code]');
+      if (copyButton) copyButton.addEventListener('click', async () => {
+        const code = panel.querySelector('[data-result-code]').textContent || '';
+        if (!code) return;
+        try { await navigator.clipboard.writeText(code); copyButton.textContent = t('copied'); }
+        catch (_) { copyButton.textContent = t('copyCode'); }
+        setTimeout(() => { copyButton.textContent = t('copyCode'); }, 1600);
+      });
+      return panel;
+    }
+    function resultDetail(labelText, value) {
+      if (value === undefined || value === null || String(value).trim() === '') return '';
+      return '<dt>' + esc(labelText) + '</dt><dd>' + esc(value) + '</dd>';
+    }
+    function showCheckoutResult(body, paid, options) {
+      checkoutResultBody = Object.assign({}, body || {});
+      checkoutResultPaid = !!paid;
+      options = options || {};
+      const panel = ensureCheckoutResultPanel();
+      panel.hidden = false;
+      setCheckoutResultMode(true);
+      updateTenantScopedLinks();
+      const isPaid = !!(paid && body && body.code);
+      const mark = panel.querySelector('.success-mark');
+      if (mark) {
+        mark.textContent = isPaid ? 'OK' : '…';
+        mark.classList.toggle('success-mark--pending', !isPaid);
+      }
+      panel.querySelector('[data-result-title]').textContent = isPaid ? t('resultSuccessTitle') : t('resultPendingTitle');
+      panel.querySelector('[data-result-lead]').textContent = isPaid ? (body.auto_redeemed ? t('resultAutoRedeemedLead') : t('resultSuccessLead')) : t('resultPendingLead');
+      const msg = panel.querySelector('[data-result-msg]');
+      msg.textContent = isPaid ? paidOrderMessage(body) : (body && body.message ? body.message : t('returnOrderLoading'));
+      const codeBox = panel.querySelector('[data-result-code-box]');
+      const codeNode = panel.querySelector('[data-result-code]');
+      const codeLabel = panel.querySelector('[data-result-code-label]');
+      if (isPaid) {
+        codeBox.hidden = false;
+        codeLabel.textContent = body.auto_redeemed ? t('resultBackupCode') : t('serviceCode');
+        codeNode.textContent = body.code || '';
+      } else {
+        codeBox.hidden = true;
+        codeNode.textContent = '';
+      }
+      const details = panel.querySelector('[data-result-details]');
+      details.innerHTML = resultDetail(t('orderNumber'), body.order_no) + resultDetail(t('productLabelShort'), body.product_label || body.product_id) + resultDetail(t('paymentAmount'), body.amount ? money(body.amount) : '') + resultDetail(t('paidAccount'), body.email || registeredEmail) + (isPaid ? resultDetail(t('mailState'), body.mail_status || '-') + resultDetail(t('autoRedeemState'), body.auto_redeemed ? t('done') : (body.auto_redeem_error ? body.auto_redeem_error : t('notDone'))) : '');
+      if (!options.preserveScroll) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function showPaymentLink(payURL, codeBox) {
+      codeBox.hidden = false;
+      codeBox.innerHTML = '<span>' + t('paymentLinkHint') + '</span><a class="payment-link" href="' + esc(payURL) + '" target="_blank" rel="noopener">' + t('openPayment') + '</a>';
+    }
+    function showManualPayment(body, msg, codeBox, email) {
+      codeBox.hidden = true;
+      codeBox.innerHTML = '';
+      openManualPaymentDialog(body, email, msg, codeBox);
+      msg.textContent = body.pay_instruction || t('payDoneFirst');
+    }
+    function closeManualPaymentDialog() {
+      const modal = document.querySelector('.payment-modal');
+      if (modal) modal.remove();
+      document.removeEventListener('keydown', handleManualPaymentKeydown);
+    }
+    function handleManualPaymentKeydown(event) {
+      if (event.key === 'Escape') closeManualPaymentDialog();
+    }
+    function openManualPaymentDialog(body, email, msg, codeBox) {
+      closeManualPaymentDialog();
+      const modal = document.createElement('div');
+      modal.className = 'payment-modal';
+      modal.innerHTML = '<div class="payment-modal__panel" role="dialog" aria-modal="true" aria-labelledby="manualPaymentTitle"><button type="button" class="payment-modal__close" aria-label="Close" data-close-payment>&times;</button><h3 id="manualPaymentTitle">' + esc(t('payQR')) + '</h3><div class="payment-modal__warning">' + esc(t('payDoneWarning')) + '</div><div class="payment-modal__grid"><span>' + t('productLabel') + '</span><strong>' + esc(body.product_label || body.product_id || '-') + '</strong><span>' + t('payChannel') + '</span><strong>' + esc(body.pay_channel_label || body.pay_channel || '-') + '</strong><span>' + t('payAmount') + '</span><strong class="payment-modal__amount">' + money(body.amount) + '</strong><span>' + t('payCode') + '</span><strong>' + esc(body.pay_code || '-') + '</strong>' + (body.payee ? '<span>' + t('payee') + '</span><strong>' + esc(body.payee) + '</strong>' : '') + '</div>' + (body.pay_qr_url ? '<img class="payment-modal__qr" alt="' + esc(t('payQR')) + '" src="' + esc(body.pay_qr_url) + '">' : '') + '<button type="button" class="payment-modal__done" data-manual-paid>' + esc(t('payDone')) + '</button><div class="payment-modal__status msg" data-payment-status></div></div>';
+      document.body.appendChild(modal);
+      const close = modal.querySelector('[data-close-payment]');
+      const paid = modal.querySelector('[data-manual-paid]');
+      const status = modal.querySelector('[data-payment-status]');
+      if (close) close.addEventListener('click', closeManualPaymentDialog);
+      modal.addEventListener('click', event => { if (event.target === modal) closeManualPaymentDialog(); });
+      if (paid) paid.addEventListener('click', () => notifyPaymentOpened(body, email, msg, codeBox, paid, status));
+      document.addEventListener('keydown', handleManualPaymentKeydown);
+      if (paid) paid.focus();
+    }
+    async function notifyPaymentOpened(body, email, msg, codeBox, button, statusEl) {
+      if (body.payment_opened_notified) return;
+      body.payment_opened_notified = 'pending';
+      if (button) { button.disabled = true; button.textContent = t('payDoneSending'); button.style.cursor = 'wait'; }
+      if (statusEl) statusEl.textContent = t('payDoneSending');
+      try {
+        const res = await fetch('/api/card-store/orders/' + encodeURIComponent(body.order_no) + '/payment-opened', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, tenant_id: body.tenant_id || tenantId }) });
+        const next = await res.json().catch(() => ({}));
+        if (res.ok && next.reminder_mail_status === 'failed') { body.payment_opened_notified = false; if (button) { button.disabled = false; button.textContent = t('payDone'); button.style.cursor = 'pointer'; } msg.textContent = next.reminder_mail_error || next.message || msg.textContent; if (statusEl) statusEl.textContent = msg.textContent; return; }
+        if (res.ok) { body.payment_opened_notified = true; if (button) { button.disabled = false; button.textContent = t('payDoneSent'); button.style.cursor = 'pointer'; button.onclick = closeManualPaymentDialog; } msg.textContent = t('manualWaiting') + body.order_no; if (statusEl) statusEl.textContent = msg.textContent; pollOrder(body.order_no, body.tenant_id || tenantId, email, msg, codeBox); }
+        else { body.payment_opened_notified = false; if (button) { button.disabled = false; button.textContent = t('payDone'); button.style.cursor = 'pointer'; } msg.textContent = next.message || msg.textContent; if (statusEl) statusEl.textContent = msg.textContent; }
+      } catch (_) { body.payment_opened_notified = false; if (button) { button.disabled = false; button.textContent = t('payDone'); button.style.cursor = 'pointer'; } if (statusEl) statusEl.textContent = msg.textContent; }
+    }
+    async function pollOrder(orderNo, currentTenantId, email, msg, codeBox) {
+      for (let i = 0; i < 90; i++) {
+        await new Promise(resolve => setTimeout(resolve, i < 10 ? 3000 : 5000));
+        const qs = new URLSearchParams({ email });
+        if (currentTenantId) qs.set('tenant_id', currentTenantId);
+        const res = await fetch('/api/card-store/orders/' + encodeURIComponent(orderNo) + '?' + qs.toString());
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body.status === 'paid' && body.code) {
+          closeManualPaymentDialog();
+          showPaidOrder(body, msg, codeBox);
+          return;
+        }
+        if (res.ok && body.status === 'issue_failed') {
+          closeManualPaymentDialog();
+          msg.textContent = body.message ? t('issueFailed') + ' ' + body.message : t('issueFailed');
+          return;
+        }
+        if (res.ok && body.status === 'personal_rejected') {
+          closeManualPaymentDialog();
+          msg.textContent = body.review_note ? t('manualRejected') + ': ' + body.review_note : t('manualRejected');
+          return;
+        }
+        if (res.ok && body.status === 'personal_opened') { msg.textContent = t('manualWaiting') + orderNo; continue; }
+        if (res.ok && body.status === 'personal_created') { msg.textContent = t('orderCreated'); continue; }
+        if (res.ok) msg.textContent = t('waitingNotify') + orderNo;
+      }
+      msg.textContent = t('notifyTimeout');
+    }
+    async function resumeReturnedOrder() {
+      const orderNo = String(urlParams.get('order_no') || '').trim();
+      if (!orderNo) return;
+      const email = registeredEmail || normalizeBuyerIdentity(urlParams.get('email') || '');
+      if (!email) return;
+      showCheckoutResult({ order_no: orderNo, email, message: urlParams.get('payment_return') === 'alipay_verify_pending' ? t('alipayVerifyPending') : t('returnOrderLoading') }, false);
+      const panel = ensureCheckoutResultPanel();
+      const msg = panel.querySelector('[data-result-msg]');
+      try {
+        const qs = new URLSearchParams({ email });
+        if (tenantId) qs.set('tenant_id', tenantId);
+        const res = await fetch('/api/card-store/orders/' + encodeURIComponent(orderNo) + '?' + qs.toString());
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body.status === 'paid' && body.code) {
+          showCheckoutResult(body, true);
+          return;
+        }
+      } catch (_) {}
+      pollOrder(orderNo, tenantId, email, msg, null);
+    }
+    async function loadProducts() {
+      state.textContent = t('loading');
+      try {
+        const qs = tenantId ? '?tenant_id=' + encodeURIComponent(tenantId) : '';
+        const res = await fetch('/api/card-store/products' + qs);
+        render(await res.json());
+      } catch (_) {
+        state.textContent = t('loadFailed');
+      }
+    }
+    async function loadMe() {
+      const hash = (window.location.hash || '').replace(/^#/, '');
+      const hashToken = new URLSearchParams(hash).get('token') || '';
+      const queryToken = new URLSearchParams(window.location.search || '').get('token') || '';
+      const token = hashToken || queryToken || localStorage.getItem('maclaw-get-credits-token') || localStorage.getItem('viewer_token') || localStorage.getItem('maclaw_viewer_token') || '';
+      if (hashToken || queryToken) { localStorage.setItem('maclaw-get-credits-token', token); if (window.history && window.history.replaceState) window.history.replaceState(null, document.title, cleanCardStoreURL()); }
+      if (!token) return;
+      try {
+        const res = await fetch('/api/card-store/me', { headers: { Authorization: 'Bearer ' + token } });
+        const body = await res.json();
+        if (body.authenticated && body.email) {
+          setBuyerEmails(body.email, secondaryEmail);
+          if (body.tenant_id) setTenantId(body.tenant_id);
+          if (window.history && window.history.replaceState) window.history.replaceState(null, document.title, cleanCardStoreURL());
+        }
+      } catch (_) {}
+    }
+    document.getElementById('recoverForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const msg = document.getElementById('recoverMsg');
+      const emailInput = document.getElementById('recoverEmail');
+      const submitBtn = document.getElementById('recoverSubmitBtn');
+      const email = emailInput.value.trim().toLowerCase();
+      const captchaInput = document.getElementById('recoverCaptchaInput');
+      const captcha = String(captchaInput.value || '').trim();
+      if (!email || !emailInput.checkValidity()) { msg.textContent = t('enterRecoverEmail'); emailInput.focus(); return; }
+      if (!captcha || captcha !== recoverCaptchaCode) { msg.textContent = t('captchaInvalid'); captchaInput.focus(); drawRecoverCaptcha(); captchaInput.value = ''; return; }
+      msg.textContent = t('recoverSending');
+      submitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/card-store/recover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, tenant_id: tenantId }) });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          let message = body.message || t('recoverFailed');
+          if (body.code === 'CARD_STORE_RECOVER_RATE_LIMITED') {
+            message = body.scope === 'email'
+              ? (lang === 'en' ? 'This email has reached today\'s recovery limit.' : '该邮箱今日找回次数已达上限。')
+              : (lang === 'en' ? 'Too many recovery requests from this IP today.' : '该 IP 今日找回次数已达上限。');
+          }
+          throw new Error(message);
+        }
+        msg.textContent = body.count ? t('recoverSent') : t('recoverNone');
+        drawRecoverCaptcha();
+        captchaInput.value = '';
+      } catch (err) { msg.textContent = err.message || t('recoverFailed'); drawRecoverCaptcha(); captchaInput.value = ''; }
+      finally { submitBtn.disabled = false; }
+    });
+    document.getElementById('refreshCaptchaBtn').addEventListener('click', () => { drawRecoverCaptcha(); document.getElementById('recoverCaptchaInput').value = ''; });
+    document.getElementById('recoverCaptchaInput').addEventListener('input', event => { event.target.value = String(event.target.value || '').replace(/\D/g, ''); });
+    document.querySelectorAll('[data-lang]').forEach(button => {
+      button.addEventListener('click', () => {
+        lang = normalizeLang(button.dataset.lang);
+        applyI18n();
+      });
+    });
+    document.getElementById('accountBtn').addEventListener('click', () => { void openBuyerEmailDialog(); });
+    document.getElementById('reloadBtn').addEventListener('click', loadProducts);
+    window.addEventListener('resize', queueProductAlignment);
+    window.addEventListener('load', queueProductAlignment);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueProductAlignment).catch(() => {});
+    applyI18n();
+    drawRecoverCaptcha();
+    updateTenantChip();
+    updateAccountChip();
+    updateTenantScopedLinks();
+    loadMe().finally(async () => { await loadProducts(); await resumeReturnedOrder(); });
+  </script>
+</body>
+</html>

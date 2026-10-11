@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -14,11 +15,26 @@ import (
 
 func EnforceConfig(cfg corelib.AppConfig, name string, args map[string]interface{}) (bool, string) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	if IsDeveloperMode(cfg) && isSkillInstallTool(name, args) {
-		return true, ""
-	}
-	if ok, reason := enforceSkillSourcePolicy(cfg.SkillSourcesAllowed, name, args); !ok {
-		return false, reason
+	// Developer mode exempts a skill install from the *source allowlist* — that
+	// is the whole point of the mode, and SkillSourcesAllowed is a local
+	// convenience list rather than a network boundary.
+	//
+	// It deliberately does not return early. This used to `return true, ""`
+	// here, which also skipped every rule below it, so a skill install became
+	// the one tool that ignored network_level: with the level set to "none" —
+	// the org-wide shutdown — `search_and_install_skill` and
+	// `manage_skill action=install` still reached clawhub/github, while
+	// web_fetch was correctly refused. Restricting where skills come from and
+	// whether the process may touch the network are different questions, and
+	// the exemption is only ever meant to answer the first one. This matters
+	// beyond a local toggle because SecurityPolicyMode is Hub-managed
+	// (guardrail_mode accepts "developer"), so relaxing skill sources from the
+	// Hub used to silently lift the network policy for those tools too.
+	developerSkillInstall := IsDeveloperMode(cfg) && isSkillInstallTool(name, args)
+	if !developerSkillInstall {
+		if ok, reason := enforceSkillSourcePolicy(cfg.SkillSourcesAllowed, name, args); !ok {
+			return false, reason
+		}
 	}
 	if !cfg.HubSecurityCentralized {
 		return true, ""
@@ -115,38 +131,150 @@ func PreserveHubManagedSecurityConfig(current corelib.AppConfig, next *corelib.A
 	next.SkillSourcesAllowed = append([]string(nil), current.SkillSourcesAllowed...)
 }
 
+// NormalizeNetworkLevel canonicalizes a network level string and reports
+// whether it names a level this client understands. It is the single
+// definition of the legal set: the execution gate and the config ingest path
+// both resolve levels through it, so the two cannot drift apart.
+//
+// An empty value means "not configured" and normalizes to "full", which is the
+// product default (AppConfig documents it, and the load path backfills it).
+func NormalizeNetworkLevel(raw string) (string, bool) {
+	level := strings.ToLower(strings.TrimSpace(raw))
+	switch level {
+	case "":
+		// "not configured" is the documented default, not a missing policy.
+		return "full", true
+	case "full", "none", "intranet", "allowlist":
+		return level, true
+	default:
+		return "", false
+	}
+}
+
+// KnownNetworkLevels lists the accepted network levels, for validation errors
+// and for callers that need to tell a typo from a real policy.
+func KnownNetworkLevels() []string {
+	return []string{"full", "none", "intranet", "allowlist"}
+}
+
 func isImageOutboundTool(name string) bool {
 	return name == "screenshot" || strings.Contains(name, "screenshot")
 }
 
 func enforceNetworkLevel(level string, allowlist []string, name string, args map[string]interface{}) (bool, string) {
-	if level == "" || level == "full" {
+	rawLevel := level
+	level, known := NormalizeNetworkLevel(level)
+	if level == "full" {
 		return true, ""
 	}
-	if !isNetworkTool(name) && !skillInstallNeedsNetwork(name, args) && !toolArgsContainNetworkEndpoint(args) && !toolArgsContainHost(args) && !bashCommandLooksNetworked(name, args) {
+	// Both walks cover the whole argument tree and the payload can be large —
+	// a document body, a script — so they are scanned once and reused below.
+	hasEndpoint := toolArgsContainNetworkEndpoint(args) || toolArgsContainHost(args)
+	networkedCommand := bashCommandLooksNetworked(name, args)
+
+	// Handoff is settled in one place. Its two halves used to sit on opposite
+	// sides of the level checks and read as two unrelated rules, which is how
+	// "local file" and "URL the user asked for" ended up with the same answer
+	// for different reasons.
+	if isUserVisibleHandoffTool(name) {
+		// A local path or application is a local action that merely shares a
+		// name with a network-capable tool. Scoping it by network policy
+		// blocked `open /path/to/report.pdf` under every restricted level,
+		// which no network policy ever intended to do.
+		if !hasEndpoint {
+			return true, ""
+		}
+		// A URL target is where the user is being sent, not what the agent
+		// fetches, so a domain scope does not apply to it. Only a policy that
+		// disables networking outright closes it. An unrecognized level is
+		// not such a policy, so it falls in with the permissive side here
+		// rather than pretending to be an organization-wide shutdown.
+		if level != "none" {
+			return true, ""
+		}
+		return false, "network access is disabled by Hub security policy"
+	}
+	if !isNetworkTool(name) && !skillInstallNeedsNetwork(name, args) && !hasEndpoint && !networkedCommand {
 		return true, ""
+	}
+	// Past this point the call does reach the network, so the level applies.
+	//
+	// An unrecognized level is refused here rather than at the top of the
+	// function: a typo, or a value written by a newer Hub, used to fall
+	// through every branch and reach the "no restriction" ending below,
+	// silently granting full network access. Refusing it only at the point
+	// where a network call is actually being judged keeps a malformed policy
+	// from bricking local tools too — the same scoping level "none" itself
+	// has, since "none" denies network calls while leaving read_file and
+	// friends alone.
+	//
+	// This has to live at the execution gate, not at config ingest, because
+	// effectiveHubSecurityConfig hands the Hub's live cache straight to
+	// EnforceConfig without passing through persistHubSecurityPolicy.
+	if !known {
+		return false, fmt.Sprintf("network access is denied: Hub security policy sets network_level to the unrecognized value %q (valid levels: %s)", strings.TrimSpace(rawLevel), strings.Join(KnownNetworkLevels(), ", "))
 	}
 	if level == "none" {
 		return false, "network access is disabled by Hub security policy"
 	}
 	if level == "intranet" || level == "allowlist" {
-		if toolArgsAreAllowedByNetworkPolicy(level, allowlist, args) && !bashCommandLooksNetworked(name, args) {
+		if toolArgsAreAllowedByNetworkPolicy(level, allowlist, args) && !networkedCommand {
 			return true, ""
+		}
+		if level == "allowlist" && len(allowlist) == 0 {
+			// An allowlist with no entry blocks every domain, which is
+			// indistinguishable from level "none" at execution time but reads
+			// as a domain decision. Say so, or the operator cannot tell
+			// "that domain is not allowed" from "no domain was ever allowed".
+			return false, "allowlist network access is restricted by Hub security policy: the policy enables allowlist mode but lists no allowed domain"
 		}
 		return false, fmt.Sprintf("%s network access is restricted by Hub security policy", level)
 	}
 	return true, ""
 }
 
+// isNetworkTool reports whether a tool performs network I/O inside the agent.
+// It lists the silent channels only. User-visible handoff tools are absent on
+// purpose: `open` reaches a URL through the operating system handler, which is
+// the opposite of a silent request, and enforceNetworkLevel settles it in its
+// own branch before this list is consulted. Leaving it here would have kept
+// saying the opposite of what the code does, for the next reader to trust.
 func isNetworkTool(name string) bool {
 	switch name {
-	case "web_search", "web_fetch", "download_file", "knowledge_save_url", "open", "search_and_install_skill", "ssh":
+	case "web_search", "web_fetch", "download_file", "knowledge_save_url", "search_and_install_skill", "ssh":
 		return true
 	case "manage_skill":
 		return false
 	default:
 		return strings.HasPrefix(name, "browser") || strings.Contains(name, "web_")
 	}
+}
+
+// isUserVisibleHandoffTool reports tools that hand their target to the user's
+// own system handler instead of performing the I/O inside the agent.
+//
+// The network scope exists to bound *silent* egress: a request the agent makes
+// on its own, whose payload flows back into the model context. A handoff tool
+// is not that. The destination opens in the user's own browser or editor, the
+// user sees it happen, and no response body is fetched back into the agent.
+//
+// Lower risk, not zero risk, and the difference is worth stating plainly: an
+// agent can still encode context into a URL query and have the browser open it
+// — ToolOpen starts the handler with no prompt — so a handoff stays a one-way,
+// URL-sized outbound channel. It is accepted here because the alternative,
+// enumerating every domain a user might legitimately be pointed at, is exactly
+// what broke this, and because the exposure is bounded by what fits in a URL
+// while web_fetch moves whole response bodies silently in both directions.
+// Level "none" still closes it: an organization that says no network means it.
+//
+// Before 2026-10-11 `open` was gated like web_fetch, so allowlist mode
+// rejected it for every target, including local file paths. Meanwhile the
+// in-product browser — whose snapshot really does feed page content back to
+// the model — kept working because it is dispatched through a host path that
+// never reaches this gate. The gate was inversely correlated with the risk it
+// exists to bound.
+func isUserVisibleHandoffTool(name string) bool {
+	return name == "open"
 }
 
 func enforceSkillSourcePolicy(allowedSources []string, name string, args map[string]interface{}) (bool, string) {
@@ -328,29 +456,25 @@ func toolArgsContainNetworkEndpoint(args map[string]interface{}) bool {
 }
 
 func valueContainsNetworkEndpoint(value interface{}, key string) bool {
-	switch v := value.(type) {
-	case map[string]interface{}:
-		for k, item := range v {
-			if valueContainsNetworkEndpoint(item, k) {
-				return true
+	found := false
+	walkContainer(value, func(item interface{}, itemKey string) {
+		if found {
+			return
+		}
+		if s, ok := item.(string); ok {
+			// The key used for the leaf is whichever enclosing key named it; a
+			// bare value reached without one carries the caller's key so a top
+			// level string argument keeps its own argument name.
+			probeKey := itemKey
+			if probeKey == "" {
+				probeKey = key
+			}
+			if stringArgLooksNetworkEndpoint(probeKey, s) {
+				found = true
 			}
 		}
-	case []interface{}:
-		for _, item := range v {
-			if valueContainsNetworkEndpoint(item, key) {
-				return true
-			}
-		}
-	case []string:
-		for _, item := range v {
-			if valueContainsNetworkEndpoint(item, key) {
-				return true
-			}
-		}
-	case string:
-		return stringArgLooksNetworkEndpoint(key, v)
-	}
-	return false
+	})
+	return found
 }
 
 func stringArgLooksNetworkEndpoint(key, value string) bool {
@@ -424,30 +548,84 @@ func toolArgsAreAllowedByNetworkPolicy(level string, allowlist []string, args ma
 	return true
 }
 
-func urlsFromAny(value interface{}) []string {
+// walkContainer yields every leaf together with the argument key it was found
+// under, descending through maps and slices of ANY element type.
+//
+// The previous callers enumerated static slice types ([]interface{},
+// []string). That silently decided security by Go static type: a hostile URL
+// nested in []map[string]interface{} was invisible to the scanner while the
+// identical payload in []interface{} was caught -- verified by probe, the two
+// forms returned opposite verdicts under network_level=none for the same
+// intent. Nothing guaranteed which form reaches the gate; it depended on how a
+// caller happened to build its arguments rather than on JSON decoding.
+// Reflecting over every container removes the distinction, so the verdict
+// depends on the payload alone.
+//
+// key is the nearest enclosing map key. It is propagated into nested slices
+// because endpoint meaning attaches to the argument name, and a value reached
+// through a slice still belongs to that argument.
+func walkContainer(value interface{}, visit func(value interface{}, key string)) {
+	walkContainerDepth(value, visit, "", 0)
+}
+
+// walkContainerDepth bounds recursion so a self-referential structure cannot
+// exhaust the stack inside a security gate. Real tool arguments nest a handful
+// of levels, and anything deeper is malformed rather than meaningful.
+func walkContainerDepth(value interface{}, visit func(interface{}, string), key string, depth int) {
+	const maxDepth = 32
+	if value == nil || depth > maxDepth {
+		return
+	}
+	visit(value, key)
 	switch v := value.(type) {
 	case map[string]interface{}:
-		var urls []string
-		for _, item := range v {
-			urls = append(urls, urlsFromAny(item)...)
+		for k, item := range v {
+			walkContainerDepth(item, visit, k, depth+1)
 		}
-		return urls
 	case []interface{}:
-		var urls []string
 		for _, item := range v {
-			urls = append(urls, urlsFromAny(item)...)
+			walkContainerDepth(item, visit, key, depth+1)
 		}
-		return urls
-	case []string:
-		var urls []string
-		for _, item := range v {
-			urls = append(urls, urlsFromString(item)...)
+	default:
+		rv := reflect.ValueOf(value)
+		switch rv.Kind() {
+		case reflect.Map:
+			if !rv.Type().Key().Comparable() {
+				return
+			}
+			iter := rv.MapRange()
+			for iter.Next() {
+				nextKey := key
+				if k, ok := iter.Key().Interface().(string); ok {
+					nextKey = k
+				}
+				walkContainerDepth(iter.Value().Interface(), visit, nextKey, depth+1)
+			}
+		case reflect.Slice, reflect.Array:
+			// A non-interface element is still readable through Interface();
+			// anything genuinely unreadable would panic rather than hide data,
+			// and no tool argument path produces such a value.
+			for i := 0; i < rv.Len(); i++ {
+				walkContainerDepth(rv.Index(i).Interface(), visit, key, depth+1)
+			}
 		}
-		return urls
+	}
+}
+
+func urlsFromAny(value interface{}) []string {
+	switch v := value.(type) {
 	case string:
 		return urlsFromString(v)
 	}
-	return nil
+	// Any container shape is walked reflectively so a nested URL can never
+	// escape the scan by arriving in an unlisted slice/map type.
+	var urls []string
+	walkContainer(value, func(item interface{}, key string) {
+		if s, ok := item.(string); ok {
+			urls = append(urls, urlsFromString(s)...)
+		}
+	})
+	return urls
 }
 
 var embeddedHTTPURLRe = regexp.MustCompile(`https?://[^\s"'<>\\]+`)
@@ -469,35 +647,51 @@ func looksHTTPURL(value string) bool {
 }
 
 func hostsFromAny(value interface{}) []string {
-	switch v := value.(type) {
-	case map[string]interface{}:
-		var hosts []string
-		for key, item := range v {
-			if isHostArgKey(key) {
-				switch host := item.(type) {
-				case string:
-					if strings.TrimSpace(host) != "" {
-						hosts = append(hosts, host)
-					}
-				case []string:
-					for _, h := range host {
-						if strings.TrimSpace(h) != "" {
-							hosts = append(hosts, h)
-						}
-					}
+	// Every container shape is walked reflectively so a host carrying key can
+	// never escape the scan by arriving in an unlisted slice/map type. The
+	// key-based predicate is preserved: only values parked under a host-like
+	// name count, which is what keeps this distinct from the URL scanner.
+	var hosts []string
+	walkContainer(value, func(item interface{}, key string) {
+		switch typed := item.(type) {
+		case map[string]interface{}:
+			collectHostArgValues(typed, &hosts)
+		case map[string]string:
+			for k, val := range typed {
+				if isHostArgKey(k) && strings.TrimSpace(val) != "" {
+					hosts = append(hosts, val)
 				}
 			}
-			hosts = append(hosts, hostsFromAny(item)...)
 		}
-		return hosts
-	case []interface{}:
-		var hosts []string
-		for _, item := range v {
-			hosts = append(hosts, hostsFromAny(item)...)
+	})
+	return hosts
+}
+
+// collectHostArgValues appends values of host-carrying keys found in one map.
+func collectHostArgValues(in map[string]interface{}, hosts *[]string) {
+	for key, item := range in {
+		if !isHostArgKey(key) {
+			continue
 		}
-		return hosts
+		switch host := item.(type) {
+		case string:
+			if strings.TrimSpace(host) != "" {
+				*hosts = append(*hosts, host)
+			}
+		case []string:
+			for _, h := range host {
+				if strings.TrimSpace(h) != "" {
+					*hosts = append(*hosts, h)
+				}
+			}
+		case []interface{}:
+			for _, h := range host {
+				if s, ok := h.(string); ok && strings.TrimSpace(s) != "" {
+					*hosts = append(*hosts, s)
+				}
+			}
+		}
 	}
-	return nil
 }
 
 func isHostArgKey(key string) bool {

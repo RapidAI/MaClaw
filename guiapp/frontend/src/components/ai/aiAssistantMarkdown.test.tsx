@@ -1845,6 +1845,51 @@ describe("renderMessage user attachment chips", () => {
         expect(screen.getByLabelText("paste_1.png").textContent).toBe("");
         resolvePreview("data:image/png;base64,HOSTTHUMB");
     });
+
+    it("falls back to the type badge when the resolved thumbnail bytes cannot decode", async () => {
+        attachmentPreviewDataURLMock.mockResolvedValueOnce("data:image/png;base64,NOTREALLYAPNG");
+        render(<div>{renderMessage({
+            id: "broken-image",
+            role: "user",
+            content: "看看这张图",
+            attachments: [imageAttachment],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        const thumbnail = await screen.findByTestId("attachment-image-thumbnail");
+        fireEvent.error((thumbnail.querySelector("img") as HTMLImageElement));
+
+        const badge = screen.getByLabelText("paste_1.png");
+        expect(badge.textContent).toBe("PNG");
+        expect(screen.queryByTestId("attachment-image-thumbnail")).toBeNull();
+    });
+
+    it("hides the file-picker prompt block and still previews the image it carried", async () => {
+        const marker = "[用户选择的本地文件路径]";
+        const instruction = "For image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes.";
+        const outgoing = `看看这张图\n\n${marker}\nD:\\tmp\\paste_1.png\n${instruction}`;
+        render(<div>{renderMessage({
+            id: "injected-first-turn",
+            role: "user",
+            content: outgoing,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        const bubble = screen.getByTestId("assistant-chat-user-bubble-injected-first-turn");
+        expect(bubble.textContent).toContain("看看这张图");
+        expect(bubble.textContent).not.toContain(marker);
+        expect(bubble.textContent).not.toContain("Analyze attached images first");
+        expect(bubble.textContent).not.toContain("D:\\tmp\\paste_1.png");
+
+        const thumbnail = await screen.findByTestId("attachment-image-thumbnail");
+        expect((thumbnail.querySelector("img") as HTMLImageElement).getAttribute("src")).toBe("data:image/png;base64,HOSTTHUMB");
+        expect(attachmentPreviewDataURLMock).toHaveBeenCalledWith("D:\\tmp\\paste_1.png");
+
+        fireEvent.click(thumbnail);
+        await waitFor(() => {
+            expect(screen.getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,HOSTFULL");
+        });
+    });
 });
 
 describe("renderMessage assistant display guard", () => {

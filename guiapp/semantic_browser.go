@@ -86,8 +86,11 @@ func semanticTrustedBrowserDefinition() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
-			"name":        semanticTrustedBrowserAdapter,
-			"description": "Perform one host-observed browser action. Cookies and login state cannot be injected.",
+			"name": semanticTrustedBrowserAdapter,
+			// The actions are named here because the enum alone does not say
+			// which of them needs a url, and a model that guesses "open" from
+			// an unlabelled string wastes the turn on a rejection (2026-10-10).
+			"description": "Perform one host-observed browser action: navigate to url, or snapshot the current page. Cookies and login state cannot be injected.",
 			"parameters":  semanticTrustedBrowserInvocationSchema(),
 		},
 	}
@@ -97,7 +100,13 @@ func semanticTrustedBrowserInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action": map[string]interface{}{"type": "string"},
+			// The enum is what stops the model inventing an action name. As a
+			// bare string it had nothing to go on and guessed -- "open" was the
+			// guess that became trusted_browser_action_rejected on 2026-10-10 --
+			// and no rejection code ever told it which name would have worked.
+			// The canonicalizer does not read enum, so this is documentation for
+			// the model and the check in ArgsAllowed stays the boundary.
+			"action": map[string]interface{}{"type": "string", "enum": tool.BrowserControlActions()},
 			"url":    map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{"action"},
@@ -129,12 +138,14 @@ func semanticTrustedBrowserArgsAllowed(args map[string]interface{}) (action, url
 	if !hasAction {
 		return "", "", fmt.Errorf("trusted_browser_action_required")
 	}
-	switch action {
-	case "navigate", "snapshot":
-	default:
-		return "", "", fmt.Errorf("trusted_browser_action_rejected")
+	// Re-checked against the enum the model was shown, because a boundary that
+	// only exists in a rendered document is not a boundary. The set is the
+	// shared browser contract, not a host copy: two copies of "which action
+	// names are allowed" would drift, and drift here is the incident returning.
+	if !tool.BrowserControlActionAllowed(action) {
+		return "", "", fmt.Errorf("trusted_browser_action_rejected (%s)", tool.BrowserControlActionHint())
 	}
-	if action == "navigate" && url == "" {
+	if tool.BrowserControlNeedsURL(action) && url == "" {
 		return "", "", fmt.Errorf("trusted_browser_url_required")
 	}
 	if strings.Contains(strings.ToLower(url), "cookie") || strings.Contains(action, "cookie") {
@@ -163,8 +174,11 @@ func trustedBrowserLostSessionError(action string, err error) error {
 	// Whether the request left at all is the browser package's fact, not a
 	// property of the message: the command that timed out on the wire and the
 	// connection that was already gone beforehand read almost alike.
+	// Which action can leave an effect behind is the contract's fact, not this
+	// layer's: a host that named it separately would keep answering for the old
+	// action set the moment a new one is added.
 	if browser.IsOutcomeUnobserved(err) {
-		if action == "navigate" {
+		if tool.BrowserControlLeavesAnEffect(action) {
 			return fmt.Errorf("trusted_browser_outcome_unobserved")
 		}
 		return fmt.Errorf("trusted_browser_session_disconnected")
@@ -212,13 +226,14 @@ func (h *IMMessageHandler) ensureTrustedBrowserSession(principalID string) (*bro
 		}
 		return started, nil
 	}
-	if _, err := browser.ConnectUserChrome(); err == nil {
-		started, err := browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModeConnectUser)
-		if err == nil && started != nil {
-			return started, nil
-		}
+	// SessionModeConnectUser resolves its own ConnectUserChrome probe and
+	// never launches a browser, so a failure here means "no attachable user
+	// runtime" and the managed persistent launch is the one remaining path.
+	started, err := browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModeConnectUser)
+	if err == nil && started != nil {
+		return started, nil
 	}
-	started, err := browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModePersistent)
+	started, err = browser.StartAgentSessionForOwner(principalID, "", browser.BrowserPolicy{}, true, browser.SessionModePersistent)
 	if err != nil || started == nil {
 		return nil, fmt.Errorf("trusted_browser_session_unavailable")
 	}
@@ -296,7 +311,9 @@ func (h *IMMessageHandler) controlTrustedBrowser(principalID, action, url string
 		}
 		return text, nil
 	default:
-		return "", fmt.Errorf("trusted_browser_action_rejected")
+		// Unreachable while ArgsAllowed gates the same set, but if the two
+		// ever drift the message must still tell the model the real names.
+		return "", fmt.Errorf("trusted_browser_action_rejected (%s)", tool.BrowserControlActionHint())
 	}
 }
 

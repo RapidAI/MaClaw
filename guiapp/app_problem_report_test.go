@@ -99,8 +99,8 @@ func TestAIAssistantAttachmentPreviewDataURLCreatesCompactThumbnail(t *testing.T
 	if err != nil {
 		t.Fatalf("decode thumbnail: %v", err)
 	}
-	if got := thumbnail.Bounds(); got.Dx() != 96 || got.Dy() != 24 {
-		t.Fatalf("thumbnail bounds = %v, want 96x24", got)
+	if got := thumbnail.Bounds(); got.Dx() != 320 || got.Dy() != 80 {
+		t.Fatalf("thumbnail bounds = %v, want 320x80", got)
 	}
 }
 

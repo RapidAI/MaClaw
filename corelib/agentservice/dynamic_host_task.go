@@ -31,7 +31,10 @@ func reviewedHostTaskInvocationSchema() map[string]interface{} {
 			"title":       map[string]interface{}{"type": "string"},
 			"description": map[string]interface{}{"type": "string"},
 			"id":          map[string]interface{}{"type": "string"},
-			"status":      map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so the check in the update
+			// path stays the boundary and this is documentation for the model.
+			"status":      map[string]interface{}{"type": "string", "enum": task.StatusOptions()},
 			"note":        map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{},
@@ -70,15 +73,12 @@ func reviewedHostTaskDispatch(title, description, id, status, note string) (stri
 	return "list", true
 }
 
+// reviewedHostTaskStatus maps what the model sent to the lifecycle value. The
+// vocabulary lives with the type in the task package: this host and the GUI
+// surface both serve task.track, and a set owned by either one alone would
+// drift.
 func reviewedHostTaskStatus(raw string) (task.Status, bool) {
-	switch task.Status(strings.ToLower(strings.TrimSpace(raw))) {
-	case task.StatusPending, task.StatusInProgress, task.StatusCompleted, task.StatusFailed, task.StatusBlocked:
-		return task.Status(strings.ToLower(strings.TrimSpace(raw))), true
-	case "":
-		return "", true
-	default:
-		return "", false
-	}
+	return task.StatusCanonical(raw)
 }
 
 // ProjectReviewedHostTaskProvider projects the host-owned local todo list.
@@ -207,7 +207,7 @@ func (c *coreAgentCallbacks) TrackReviewedHostTask(ctx context.Context, principa
 	}
 	parsedStatus, statusOK := reviewedHostTaskStatus(status)
 	if !statusOK {
-		return "", fmt.Errorf("host_task_status_rejected")
+		return "", fmt.Errorf("host_task_status_rejected (%s)", task.StatusHint())
 	}
 	if ctx == nil {
 		ctx = context.Background()

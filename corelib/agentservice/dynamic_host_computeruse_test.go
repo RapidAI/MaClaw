@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,58 @@ func TestProjectReviewedHostComputerUseRejectsTargetFields(t *testing.T) {
 	for _, key := range []string{"x", "y", "ref", "channel", "destination", "session_id"} {
 		if _, ok := props[key]; ok {
 			t.Fatalf("cu schema leaked %s", key)
+		}
+	}
+}
+
+// TestReviewedHostComputerUseActionEnumMatchesWhatTheHostPerforms closes the
+// desktop half of the same hole the browser adapter had: the action was a bare
+// string, so the model had to guess the verb. No invented desktop name has
+// reached production yet, so this is being closed before the guess rather than
+// after. The set comes from the shared contract, so this host cannot drift from
+// the GUI surface serving the same capability.
+func TestReviewedHostComputerUseActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
+	schema := reviewedHostComputerUseInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("computer-use schema has no properties: %#v", schema)
+	}
+	action, ok := properties["action"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("computer-use schema has no action property: %#v", properties)
+	}
+	enum, ok := action["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("action must publish a non-empty enum, got %#v", action["enum"])
+	}
+	for _, name := range enum {
+		if !coretool.ComputerControlActionAllowed(name) {
+			t.Fatalf("schema advertises action %q but the execution check refuses it", name)
+		}
+	}
+	for _, name := range coretool.ComputerControlActions() {
+		advertised := false
+		for _, candidate := range enum {
+			if candidate == name {
+				advertised = true
+				break
+			}
+		}
+		if !advertised {
+			t.Fatalf("execution check accepts action %q but the schema never shows it", name)
+		}
+	}
+	for _, guessed := range []string{"open", "screenshot", "press"} {
+		_, err := reviewedHostComputerUseArgsAllowed(map[string]interface{}{"action": guessed})
+		if err == nil || !strings.Contains(err.Error(), "host_computer_use_action_rejected") {
+			t.Fatalf("action %q = %v, want host_computer_use_action_rejected", guessed, err)
+		}
+		// The refusal must name the real vocabulary so the first failure can
+		// redirect the turn instead of ending it.
+		for _, valid := range coretool.ComputerControlActions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention the valid name %q", guessed, err, valid)
+			}
 		}
 	}
 }

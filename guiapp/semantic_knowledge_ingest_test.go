@@ -163,6 +163,16 @@ func TestKnowledgeIngestExclusiveSourceRejectionKeepsGrant(t *testing.T) {
 
 func TestIMSemanticKnowledgeIngestScopesStoreToPrincipal(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	// The file-import leg opens the app memory store lazily (import pipeline),
+	// and an open SQLite handle makes the TempDir cleanup fail on Windows.
+	defer func() {
+		app.memoryStoreMu.Lock()
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+			app.memoryStore = nil
+		}
+		app.memoryStoreMu.Unlock()
+	}()
 	if err := os.MkdirAll(filepath.Dir(app.knowledgeDBPath()), 0o755); err != nil {
 		t.Fatal(err)
 	}

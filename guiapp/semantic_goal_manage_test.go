@@ -152,3 +152,53 @@ func TestIMSemanticGoalIsolatesByPrincipalWithoutLastUserFallback(t *testing.T) 
 		t.Fatal("pause must fail closed")
 	}
 }
+
+// TestTrustedGoalStatusVocabulary pins the vocabulary at this host: the schema
+// advertises only the lifecycle names, the aliases still reach them, and an
+// invented status is refused by the real administer path with a refusal that
+// names the canonical set. The vocabulary lives with the type in the goal
+// package, so this host cannot drift from the agent-service surface.
+func TestTrustedGoalStatusVocabulary(t *testing.T) {
+	schema := semanticTrustedGoalInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("goal schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("goal schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("status must publish a non-empty enum, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := semanticTrustedGoalStatus(name)
+		if !ok || canonical != goal.Status(name) {
+			t.Fatalf("schema advertises status %q, but the parser maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for sent, want := range map[string]goal.Status{"completed": goal.StatusComplete, "fail": goal.StatusFailed} {
+		canonical, ok := semanticTrustedGoalStatus(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	h := &IMMessageHandler{goalStore: goal.NewStore(t.TempDir())}
+	// Through a real prior goal, an invented status must be refused with the
+	// canonical vocabulary named, so the first failure can redirect the turn.
+	if _, err := h.administerTrustedGoal("user-1", "ship the slice", "", ""); err != nil {
+		t.Fatalf("seed goal create=%v", err)
+	}
+	for _, invented := range []string{"paused", "budget_limited", "done"} {
+		_, err := h.administerTrustedGoal("user-1", "", invented, "")
+		if err == nil || !strings.Contains(err.Error(), "trusted_goal_status_rejected") {
+			t.Fatalf("status %q = %v, want trusted_goal_status_rejected", invented, err)
+		}
+		for _, valid := range goal.StatusOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}

@@ -94,6 +94,10 @@ func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID 
 	}
 	cancel()
 	completed := s.now()
+	// Whatever was queued for this run will never be consumed now. Reaping
+	// reports each item once so the caller can tell the person it did not
+	// apply, instead of leaving their input unaccounted for.
+	s.reapRunSupplements(run.ID)
 	run.Status = RunStatusCancelled
 	run.Error = "run cancelled"
 	run.CompletedAt = &completed
@@ -133,6 +137,10 @@ func (s *Service) failPanickedRun(p Principal, instanceID, runID, reason string)
 	if cancel, ok := s.takeRunCancel(runID); ok && cancel != nil {
 		cancel()
 	}
+	// A crashed run still owes the person a report for whatever it queued but
+	// never consumed. This is the only path that observes a panic, so the reap
+	// cannot live only on the normal completion path.
+	s.reapRunSupplements(runID)
 	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
 	if err != nil {
 		return nil, err

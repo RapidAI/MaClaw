@@ -146,3 +146,68 @@ func TestIMSemanticSchedulePersistsWithoutDelivery(t *testing.T) {
 		t.Fatal("invalid hour must fail closed")
 	}
 }
+
+// TestTrustedScheduleStatusVocabulary pins the alias shape at this host: the
+// schema advertises only canonical names, while the runtime also accepts their
+// aliases and the empty-is-unset reading. Both come from the shared schedule
+// contract, so this host cannot drift from the agent-service surface serving
+// the same capability.
+func TestTrustedScheduleStatusVocabulary(t *testing.T) {
+	schema := semanticTrustedScheduleInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schedule schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schedule schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("status must publish a non-empty enum, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := semanticTrustedScheduleStatus(name)
+		if !ok || canonical != name {
+			t.Fatalf("schema advertises status %q, but the runtime maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for sent, want := range map[string]string{"pause": "paused", "resume": "active", "PAUSED": "paused"} {
+		canonical, ok := semanticTrustedScheduleStatus(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	if _, ok := semanticTrustedScheduleStatus(""); !ok {
+		t.Fatal("empty status must stay accepted-as-unset")
+	}
+	// An invented status stays refused, and the refusal names the canonical
+	// vocabulary so the first failure can redirect the turn instead of ending it.
+	for _, invented := range []string{"disabled", "enabled", "off"} {
+		_, err := administerScheduleStatusProbe(t, invented)
+		if err == nil || !strings.Contains(err.Error(), "trusted_schedule_status_rejected") {
+			t.Fatalf("status %q = %v, want trusted_schedule_status_rejected", invented, err)
+		}
+		for _, valid := range tool.ScheduleStatusOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}
+
+// administerScheduleStatusProbe drives one invented status through the real
+// administer path. A host with a backing manager reaches the status check the
+// same way an update turn does: presence decides update, and the earlier name
+// and range gates accept an id-plus-status record.
+func administerScheduleStatusProbe(t *testing.T, status string) (string, error) {
+	t.Helper()
+	h := &IMMessageHandler{}
+	mgr, createErr := scheduler.NewManager(filepath.Join(t.TempDir(), "schedules.json"))
+	if createErr != nil {
+		return "", createErr
+	}
+	defer mgr.Stop()
+	h.SetScheduledTaskManager(mgr)
+	return h.administerTrustedSchedule("user-1", semanticTrustedScheduleArgs{ID: "task-1", Status: status})
+}

@@ -588,6 +588,8 @@ export function FileCompanionImportKnowledge(arg1:string):Promise<knowledge.Dire
 
 export function FileCompanionUploadCloud(arg1:string):Promise<main.MobileDocumentDraftSummary>;
 
+export function FileCompanionExportPDF(arg1:string,arg2:string):Promise<string>;
+
 export function FileCompanionReplaceOffice(arg1:string,arg2:string):Promise<void>;
 
 export function ClearFileCompanionChat(arg1:string):Promise<void>;
@@ -2245,7 +2247,17 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
-export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number}}>;
+export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number}}>;
+
+export function EvaluateDesktopTaskSupplement(arg1:string,arg2:string,arg3:string):Promise<{is_supplement:boolean,reason?:string,instruction?:string}>;
+
+export function AppendDesktopBotSupplement(arg1:string,arg2:string,arg3:string):Promise<{accepted:boolean,run_id?:string,stage:string,message:string,supplement_id?:string,candidates?:Array<string>}>;
+
+export function GetDesktopBotSupplements(arg1:string,arg2:string):Promise<Array<{id:string,state:string,content?:string}>>;
+
+export function GetActiveDesktopRuns(arg1:string):Promise<Array<{bot_id:string,run_id:string,request_id:string,session_key:string,task_text:string,phase:string,started_at:string,waiting_for_user:boolean}>>;
+
+export function PersistDesktopBotPreference(arg1:string,arg2:string):Promise<void>;
 
 export function ArmDesktopBotSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:number,arg8:number):Promise<string>;
 
@@ -2262,6 +2274,10 @@ export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,tit
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function DeleteDesktopBot(arg1:string):Promise<void>;
+
+export function GetDesktopBotLLM():Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string }>;
+
+export function SaveDesktopBotLLM(arg1:{ mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }):Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string }>;
 
 export function SendMessageForTab(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
@@ -2722,3 +2738,5 @@ export function SaveBotSecret(arg1:string,arg2:string):Promise<void>;
 export function RecallBotSecret(arg1:string):Promise<boolean>;
 
 export function FillBotSecret(arg1:string,arg2:string):Promise<void>;
+
+export function FileCompanionFigureDataURL(arg1:string):Promise<string>;

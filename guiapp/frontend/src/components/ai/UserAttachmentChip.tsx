@@ -39,6 +39,21 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
         return () => { active = false; };
     }, [attachment.filePath, attachment.isImage]);
 
+    // An attached picture is user content, not metadata: the transcript shows a
+    // readable preview (click zooms to the full image) instead of a file badge.
+    // Non-images keep the compact type badge below.
+    const previewStyle: React.CSSProperties = {
+        display: "inline-flex",
+        maxWidth: "100%",
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "hidden",
+        flexShrink: 0,
+        borderRadius: 8,
+        border: `1px solid ${theme.codeBlockBorder}`,
+        background: "transparent",
+    };
+
     const chipStyle: React.CSSProperties = {
         display: "inline-flex",
         width: 30,
@@ -64,8 +79,12 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
                 fileName={attachment.fileName}
                 lang={lang}
                 theme={theme}
-                frameStyle={chipStyle}
+                frameStyle={previewStyle}
+                imageStyle={{ width: "auto", height: "auto", maxHeight: "140px", maxWidth: "100%", objectFit: "contain", display: "block" }}
                 title={attachment.filePath}
+                // Resolved bytes can still fail to decode in the <img>; fall
+                // back to the type badge instead of a broken-image glyph.
+                onImageError={() => { setThumbnail(""); setPreviewFailed(true); }}
             />
         );
     }

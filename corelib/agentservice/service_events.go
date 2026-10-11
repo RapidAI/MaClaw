@@ -331,6 +331,40 @@ func (s *Service) saveRunCompletionWithEvents(message Message, run Run, events [
 	return false, s.saveRunCompletion(message, run)
 }
 
+// saveRunTerminal persists a terminal run and its event. A non-nil message
+// means the run produced output before it ended, so the message is committed
+// with the run rather than discarded with the rest of the failed turn; a nil
+// message keeps the terminal-only path.
+//
+// It exists because the two terminal branches in PostMessage differ only in
+// status wording, and duplicating the commit-or-fallback dance in both is how
+// the partial message would get persisted in one branch and lost in the other.
+func (s *Service) saveRunTerminal(run Run, event RunEvent, message *Message) {
+	if s == nil || s.store == nil {
+		return
+	}
+	committed := false
+	if message != nil {
+		var terminalErr error
+		committed, terminalErr = s.saveRunCompletionWithEvents(*message, run, []RunEvent{event})
+		if terminalErr != nil {
+			committed = false
+		}
+	} else {
+		var terminalErr error
+		committed, terminalErr = s.saveRunTerminalWithEvents(run, []RunEvent{event})
+		if terminalErr != nil {
+			committed = false
+		}
+	}
+	if !committed {
+		// The store could not take the run and event together. Write the run so
+		// the terminal status is not lost, then emit for in-flight listeners.
+		_ = s.store.SaveRun(run)
+		s.emitRunEvent(run, event.Type, event.Payload)
+	}
+}
+
 // saveRunTerminalWithEvents covers terminal runs without an assistant
 // message (failure/cancellation). A transaction-capable store owns the
 // terminal event; legacy stores retain the established sequential fallback.

@@ -13,9 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -889,12 +887,7 @@ func (w commandMeetingMinutes) Summarize(ctx context.Context, title, purpose, tr
 	return runMeetingWorkerCommand(ctx, w.command, map[string]string{"title": title, "purpose": purpose, "transcript": transcript}, "minutes")
 }
 func runMeetingWorkerCommand(ctx context.Context, command string, input map[string]string, resultKey string) (string, error) {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
-	}
+	cmd := newMeetingWorkerCommand(ctx, command)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return "", err

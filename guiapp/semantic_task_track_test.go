@@ -179,3 +179,49 @@ func TestSemanticTaskFieldPresenceStillFailsClosed(t *testing.T) {
 		t.Fatal("title plus id must fail closed")
 	}
 }
+
+// TestTrustedTaskStatusVocabulary pins the vocabulary at this host: the schema
+// advertises exactly the lifecycle set, case and padding fold to the same
+// names, and the refusal names the canonical set. The vocabulary lives with
+// the type in the task package, so this host cannot drift from the
+// agent-service surface serving task.track.
+func TestTrustedTaskStatusVocabulary(t *testing.T) {
+	schema := semanticTrustedTaskInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("task schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("task schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) != 5 {
+		t.Fatalf("status must advertise the reviewed set, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := semanticTrustedTaskStatus(name)
+		if !ok || canonical != task.Status(name) {
+			t.Fatalf("schema advertises status %q, but the parser maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for _, invented := range []string{"active", "open", "done"} {
+		_, err := administerTaskStatusProbe(invented)
+		if err == nil || !strings.Contains(err.Error(), "trusted_task_status_rejected") {
+			t.Fatalf("status %q = %v, want trusted_task_status_rejected", invented, err)
+		}
+		for _, valid := range task.StatusOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}
+
+// administerTaskStatusProbe drives one invented status through the real
+// administer path: an update-shaped record (an id plus a status) passes the
+// presence gates and reaches the status check.
+func administerTaskStatusProbe(status string) (string, error) {
+	h := &IMMessageHandler{}
+	return h.administerTrustedTask("user-1", "", "", "task-1", status, "")
+}

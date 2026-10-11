@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MaClaw Hub 第三方硬件接入协议：配对、能力协商、消息、媒体与会议录音。">
+  <title>MaClaw 第三方硬件接入协议</title>
+  <link rel="stylesheet" href="/connector/professional.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#top" aria-label="MaClaw connector documentation">
+    <span class="brand-mark" aria-hidden="true">M</span>
+    <span><strong>MaClaw Connector</strong><small data-i18n="headerSubtitle">第三方硬件接入协议</small></span>
+  </a>
+  <div class="toolbar" aria-label="Language">
+    <button class="lang-btn active" data-lang="zh" type="button" aria-pressed="true">中文</button>
+    <button class="lang-btn" data-lang="en" type="button" aria-pressed="false">English</button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="lang-panel active" data-lang-panel="zh">
+    <div class="hero">
+      <p class="version">协议版本 1.1 · 以当前 ESP32-S3 客户端为准</p>
+      <h1>把第三方硬件接入 MaClaw Hub</h1>
+      <p class="lead">设备通过一次性配对码取得持久 Bearer Token，声明自身输入、输出与硬件能力，随后使用 HTTPS JSON、游标长轮询和逐消息 ACK 与 MaClaw 交换文本、语音、设备配置及会议录音。</p>
+      <div class="facts" aria-label="协议摘要">
+        <span><strong>入口</strong> <code>https://&lt;hub&gt;</code></span>
+        <span><strong>消息 API</strong> <code>/api/im-gateway/v1</code></span>
+        <span><strong>配对 API</strong> <code>/api/device-gateway/v1</code></span>
+        <span><strong>传输</strong> HTTPS + JSON</span>
+      </div>
+      <aside class="scope-note"><strong>适用范围</strong>本页描述 Hub 上公开的硬件设备协议。MaClaw GUI 在 <code>127.0.0.1:18777</code> 提供的本机第三方软件网关与此协议共享消息结构，但不包含本页的 Hub 配对、硬件能力和会议录音扩展。</aside>
+    </div>
+
+    <nav class="toc" aria-label="文档目录">
+      <strong>本页内容</strong>
+      <a href="#zh-flow">接入流程</a><a href="#zh-pair">配对</a><a href="#zh-handshake">能力协商</a>
+      <a href="#zh-message">消息与媒体</a><a href="#zh-poll">轮询与 ACK</a><a href="#zh-meeting">会议录音</a>
+      <a href="#zh-runtime">运行约定</a><a href="#zh-errors">错误处理</a>
+    </nav>
+
+    <section id="zh-flow" class="doc-section">
+      <h2>1. 接入流程</h2>
+      <ol class="flow-list">
+        <li><span>1</span><div><strong>生成配对码</strong><p>在 MaClaw GUI 的“设置 / 消息接入 / 第三方接入 / 硬件配置”中生成 6 位配对码。配对码有效期 30 分钟且只可消费一次。</p></div></li>
+        <li><span>2</span><div><strong>换取设备凭证</strong><p>设备以稳定的 <code>clientId</code> 调用 <code>POST /pair</code>，成功后安全保存 <code>gatewayToken</code>，并立即删除本地配对码。</p></div></li>
+        <li><span>3</span><div><strong>能力协商</strong><p>每次启动调用 <code>POST /handshake</code>，提交新的 <code>bootSessionId</code> 和真实能力。只有冷启动才更换 <code>bootSessionId</code>；普通刷新沿用它。</p></div></li>
+        <li><span>4</span><div><strong>收发消息</strong><p>输入通过 <code>POST /incoming</code> 提交；输出由唯一的 <code>GET /outgoing</code> 长轮询读取，处理完成后调用 <code>POST /ack</code>。</p></div></li>
+        <li><span>5</span><div><strong>保存恢复状态</strong><p>持久化 Token 与会议上传进度；游标是否落盘取决于客户端能否同时持久化去重状态。当前 ESP32 仅在 RAM 中维护游标，重启后从 0 重新轮询，并依靠 Hub 的 ACK 状态跳过已确认消息。</p></div></li>
+      </ol>
+    </section>
+
+    <section id="zh-pair" class="doc-section">
+      <h2>2. 配对与认证</h2>
+      <h3>POST /api/device-gateway/v1/pair</h3>
+      <pre><code>Content-Type: application/json
+
+{
+  "clientId": "esp32s3-pet-001",
+  "pairCode": "123456"
+}</code></pre>
+      <p><code>pairCode</code> 是规范字段；服务端仍兼容旧固件的 <code>code</code>，新接入不要继续使用别名。成功返回 <code>201 Created</code>：</p>
+      <pre><code>{
+  "ok": true,
+  "gatewayToken": "&lt;64-character device token&gt;",
+  "clientId": "esp32s3-pet-001"
+}</code></pre>
+      <p>同一 <code>clientId</code> 再次配对会撤销旧 Token 并清空旧的设备出站队列。除健康检查、配对以及带 <code>mediaToken</code> 的媒体 URL 外，后续请求必须携带：</p>
+      <pre><code>Authorization: Bearer &lt;gatewayToken&gt;</code></pre>
+      <aside class="warning"><strong>不要擦除被拒绝的 Token</strong>当握手返回 <code>401</code> 或 <code>403</code> 时，进入重新配对流程，但保留旧 Token 供诊断。网络错误、<code>408</code>、<code>429</code> 和 <code>5xx</code> 属于可重试故障，不应触发配对恢复。</aside>
+      <details>
+        <summary>可选：语音配对端点</summary>
+        <div class="details-body">
+          <p><code>POST /api/device-gateway/v1/pair/voice</code> 接收不超过 512 KiB 的短 WAV，使用 <code>X-MaClaw-Client-ID</code> 指定设备。服务端从语音中识别恰好 6 位数字并返回与普通配对相同的 <code>201</code> 响应。该端点按来源和设备限流，ASR 未配置时返回 <code>503</code>。</p>
+          <pre><code>Content-Type: audio/wav
+X-MaClaw-Client-ID: esp32s3-pet-001
+
+&lt;raw WAV bytes&gt;</code></pre>
+        </div>
+      </details>
+    </section>
+
+    <section id="zh-handshake" class="doc-section">
+      <h2>3. 启动握手与能力协商</h2>
+      <h3>POST /api/im-gateway/v1/handshake</h3>
+      <p>当前 ESP32-S3 的真实声明如下。结构化硬件能力放在 <code>clientCapabilities</code>；服务端也兼容旧客户端把同一结构放进 <code>capabilities</code>，但新接入应使用规范字段。</p>
+      <pre><code>{
+  "clientId": "esp32s3-pet-001",
+  "clientName": "ESP32-S3 Pet",
+  "bootSessionId": "9f1c...32-hex-characters",
+  "protocolVersion": "1.1",
+  "clientCapabilities": {
+    "input": {
+      "modalities": ["text", "audio"],
+      "audio": {"mimeTypes": ["audio/wav"], "sampleRates": [16000], "channels": 1}
+    },
+    "output": {
+      "modalities": ["text", "audio"],
+      "preferred": ["audio", "text"],
+      "combinations": [["text"], ["audio", "text"]],
+      "text": {"maxChars": 240, "markdown": false, "locale": "zh-CN"},
+      "audio": {
+        "mimeTypes": ["audio/wav"], "sampleRates": [16000], "channels": 1,
+        "playback": true, "deliveryModes": ["url"], "maxDownloadBytes": 98304
+      }
+    },
+    "features": {
+      "petStates": true, "petAnimation": false, "petAsset": false,
+      "ambientDisplay": true, "meetingRecorder": true, "volumeControl": true
+    }
+  },
+  "tools": [
+    {"name":"alarm_create","risk":"low","inputSchema":{"type":"object","properties":{"triggerAtEpochMs":{"type":"integer"},"label":{"type":"string","maxLength":48}},"required":["triggerAtEpochMs"]}},
+    {"name":"alarm_clear_all","risk":"medium","inputSchema":{"type":"object","properties":{}}},
+    {"name":"alarm_clear","risk":"medium","inputSchema":{"type":"object","properties":{"index":{"type":"integer","minimum":1}},"required":["index"]}},
+    {"name":"alarm_list","risk":"low","inputSchema":{"type":"object","properties":{}}}
+  ]
+}</code></pre>
+      <p>只声明设备确实支持的能力。完成过能力协商后，Hub 会拒绝未声明的输入，并过滤、截断或转换不适合该设备的输出。未声明输出能力的旧客户端按文本客户端处理。</p>
+      <pre><code>{
+  "ok": true,
+  "mode": "maclaw",
+  "protocolVersion": "1.1",
+  "channelId": "thirdparty:esp32s3-pet-001",
+  "serverTime": 1781028000000,
+  "poll": {"timeoutSec": 30, "maxTimeoutSec": 30, "maxBatchSize": 20, "maxLimit": 20},
+  "limits": {"maxBodyBytes": 1048576, "maxMediaBytes": 10485760},
+  "capabilitiesAccepted": {"input": {}, "output": {}, "features": {}},
+  "pet": {"skin": "clawmate", "motionEnabled": true},
+  "ambient": {"weather": {"summary": "晴", "temperatureC": 27, "location": "上海"}, "expiresAt": 1781035200000},
+  "meetingRecording": {
+    "basePath": "/api/device-gateway/v1/meeting-recordings",
+    "chunkSize": 1048576,
+    "contentTypes": ["audio/wav"],
+    "modes": {"keep": true, "transcript": true, "minutes": true}
+  }
+}</code></pre>
+      <p><code>meetingRecording</code> 仅在 Hub 启用了该能力时出现；<code>transcript</code> 和 <code>minutes</code> 只会在相应工作器可用时为 <code>true</code>。客户端必须以响应为准，不要硬编码可用模式。</p>
+      <h3>设备端工具</h3>
+      <p>顶层 <code>tools</code> 是本次握手注册的设备工具目录，Hub 会把它附加到该设备后续提交的消息。当前 ESP32 注册 <code>alarm_create</code>、<code>alarm_clear_all</code>、<code>alarm_clear</code> 和 <code>alarm_list</code>；最多 16 个闹钟与最近 8 个修改状态的工具调用结果写入 NVS。结果缓存是固定轮换槽，包含成功和确定性失败，不是永久调用历史；只读的 <code>alarm_list</code> 不进入缓存，可安全重执行。刷新握手会替换目录；不再支持的工具必须从数组移除。</p>
+      <p>Hub/GUI 可在普通出站队列投递 <code>tool_call</code>。设备只执行自己注册并实现的名称，使用 <code>toolCall.idempotencyKey</code> 去重；缺省时回退到 <code>toolCall.id</code>。通用协议允许标识符最多 128 个字符，但当前 ESP32 的 64 字节持久化结果槽要求修改状态的调用使用最多 63 个 ASCII 字符的幂等键；超限或非 ASCII 键会在执行前以 <code>invalid_arguments</code> 拒绝。执行完成后调用 <code>POST /api/im-gateway/v1/tool-result</code>，只有结果提交成功后才 ACK 原 <code>tool_call</code> 消息。</p>
+      <pre><code>{"id":"hub_out_...","type":"tool_call","conversationId":"default","toolCall":{"id":"call-1","name":"alarm_create","arguments":{"triggerAtEpochMs":1781031600000,"label":"喝水"},"idempotencyKey":"call-1"}}</code></pre>
+      <pre><code>POST /api/im-gateway/v1/tool-result
+{"clientId":"esp32s3-pet-001","resultId":"call-1","toolCallId":"call-1","conversationId":"default","status":"success","idempotencyKey":"call-1","result":{"count":1}}</code></pre>
+      <p><code>status</code> 规范值为 <code>success</code>、<code>error</code>、<code>rejected</code>、<code>cancelled</code> 或 <code>timeout</code>；服务端也会把 <code>succeeded/failed</code> 等兼容值归一化。工具结果当前作为异步输入继续送入 Agent，<code>200 accepted=true</code> 仅表示 Hub 已接收。</p>
+    </section>
+
+    <section id="zh-message" class="doc-section">
+      <h2>4. 输入消息与服务端媒体</h2>
+      <h3>文本：POST /api/im-gateway/v1/incoming</h3>
+      <pre><code>{
+  "clientId": "esp32s3-pet-001",
+  "eventId": "text-1781028000000",
+  "messageId": "text-1781028000000",
+  "conversationId": "default",
+  "user": {"id": "local-user", "displayName": "ESP32-S3 user"},
+  "message": {"id": "text-1781028000000", "type": "text", "text": "/cancel"}
+}</code></pre>
+      <p>成功返回 <code>200</code>。设备应把 <code>maclawMessageId</code> 或 <code>messageId</code> 保存为本次交互的回复关联键；若旧服务端未回显，两者都为空时可回退到原 <code>eventId</code>。</p>
+      <pre><code>{"ok": true, "accepted": true, "messageId": "text-1781028000000", "duplicate": false}</code></pre>
+
+      <h3>语音：准备 URL → PUT → 引用媒体 ID</h3>
+      <pre><code>POST /api/im-gateway/v1/media/upload-url
+
+{
+  "clientId": "esp32s3-pet-001",
+  "type": "voice",
+  "fileName": "voice.wav",
+  "mimeType": "audio/wav",
+  "sizeBytes": 48236
+}</code></pre>
+      <pre><code>{
+  "ok": true,
+  "media": {"id": "server-media-id", "type": "voice", "mimeType": "audio/wav", "sizeBytes": 48236},
+  "upload": {"method": "PUT", "url": "https://&lt;hub&gt;/api/im-gateway/v1/media/server-media-id/upload?mediaToken=...", "contentType": "audio/wav", "maxBytes": 10485760},
+  "download": {"url": "https://&lt;hub&gt;/api/im-gateway/v1/media/server-media-id?mediaToken=..."},
+  "expiresAt": 1781114400000
+}</code></pre>
+      <p>对 <code>upload.url</code> 发送原始字节。URL 自带 <code>mediaToken</code>，无需 Bearer Token，也不要自行拼接或修改。若准备时提交了非零 <code>sizeBytes</code>，PUT 的实际字节数必须完全相等。Hub 当前单个设备媒体上限为 10 MiB，媒体对象约 24 小时后回收。</p>
+      <pre><code>PUT &lt;upload.url&gt;
+Content-Type: audio/wav
+
+&lt;raw WAV bytes&gt;</code></pre>
+      <pre><code>{
+  "clientId": "esp32s3-pet-001",
+  "eventId": "voice-1781028000000",
+  "messageId": "voice-1781028000000",
+  "conversationId": "default",
+  "user": {"id": "local-user", "displayName": "ESP32-S3 user"},
+  "message": {
+    "id": "voice-1781028000000", "type": "voice", "mimeType": "audio/wav",
+    "attachments": [{"id": "server-media-id", "type": "voice", "mimeType": "audio/wav"}]
+  }
+}</code></pre>
+      <aside class="info"><strong>ESP32 实现的边界</strong>Hub 硬件网关的 <code>/incoming</code> 只解析已上传的 <code>attachments[].id</code>。不要在硬件消息里内联 base64，也不要提交任意外部 URL 让 Hub 抓取。当前 ESP32 只上传 16 kHz、单声道、PCM WAV。</aside>
+    </section>
+
+    <section id="zh-poll" class="doc-section">
+      <h2>5. 出站轮询、关联与 ACK</h2>
+      <h3>GET /api/im-gateway/v1/outgoing</h3>
+      <pre><code>GET /api/im-gateway/v1/outgoing?clientId=esp32s3-pet-001&amp;cursor=0&amp;limit=16&amp;timeout=5</code></pre>
+      <ul>
+        <li>同一设备只能运行一个出站读取器。当前 ESP32 在前台命令期间使用 2 秒长轮询，空闲时使用 5 秒。</li>
+        <li><code>limit</code> 范围 1–20，默认 20；<code>timeout</code> 范围 0–30 秒，默认 0。超范围值会被夹紧。</li>
+        <li><code>nextCursor</code> 是该页最后一条消息的游标。仅在整页都已处理或确认可安全去重后持久化；若某条可重试媒体尚未成功播放，继续使用旧游标以便重新取得该页。</li>
+      </ul>
+      <pre><code>{
+  "ok": true,
+  "messages": [{
+    "id": "hub_out_1781028005123_12", "seq": 12,
+    "conversationId": "default", "replyTo": "voice-1781028000000",
+    "type": "text", "text": "上海今天晴，27℃。",
+    "metadata": {"acp_turn": "final"}
+  }],
+  "nextCursor": "12",
+  "hasMore": false
+}</code></pre>
+      <p>回复关联按以下优先级读取：<code>replyTo</code>、<code>replyToMessageId</code>、<code>source_message_id</code>、<code>sourceMessageId</code>、<code>sourceMessageID</code>，并兼容这些字段位于 <code>metadata</code> 或 <code>extra</code> 中。<code>progress: true</code> 或 <code>metadata.acp_turn</code> 为 <code>progress/working</code> 表示中间进度；<code>final/complete/completed</code> 表示终态。</p>
+      <p>当前设备应支持的出站类型包括 <code>text</code>、<code>error</code>、<code>audio/voice</code>、<code>ambient</code>、<code>pet_state</code>、<code>hardware_config</code>、<code>meeting_result</code> 和单步 <code>tool_call</code>。通用协议还能表示 <code>tool_plan</code>/<code>tool_cancel</code>，但当前 ESP32 不执行这两类消息，服务端不要向它投递。当前 ESP32 仍兼容内联 <code>data/file_data</code>，但握手只声明 URL 投递；新服务端应返回以 <code>/api/im-gateway/v1/media/</code> 开头的同源相对 URL。响应体达到或超过 96 KiB 会被拒绝。</p>
+
+      <h3>POST /api/im-gateway/v1/ack</h3>
+      <pre><code>{
+  "clientId": "esp32s3-pet-001",
+  "messageIds": ["hub_out_1781028005123_12"],
+  "status": "delivered"
+}</code></pre>
+      <p><code>status</code> 规范值为 <code>delivered</code>、<code>read</code> 或 <code>failed</code>；省略或无法识别的值会归一化为 <code>delivered</code>，因此新客户端不要依赖自定义状态。一次最多确认 100 个非空消息 ID。文本、配置和已成功播放的音频回报 <code>delivered</code>；格式错误、超出能力或不可恢复的音频回报 <code>failed</code>；暂时的下载、内存、I2S 或设备忙错误不 ACK，留到下一轮重试。ACK 成功返回 <code>{"ok":true}</code>。</p>
+    </section>
+
+    <section id="zh-meeting" class="doc-section">
+      <h2>6. 可恢复会议录音</h2>
+      <p>仅当握手响应包含 <code>meetingRecording</code> 时启用。客户端使用响应给出的 <code>basePath</code> 和 <code>chunkSize</code>，而不是把下面的默认值写死。</p>
+      <table>
+        <thead><tr><th>步骤</th><th>请求</th><th>成功状态</th></tr></thead>
+        <tbody>
+          <tr><td>创建</td><td><code>POST {basePath}</code></td><td><code>201</code></td></tr>
+          <tr><td>分片</td><td><code>PUT {basePath}/{id}/chunks/{index}</code></td><td><code>204</code></td></tr>
+          <tr><td>完成</td><td><code>POST {basePath}/{id}/complete</code></td><td><code>200</code></td></tr>
+          <tr><td>处理</td><td><code>POST {basePath}/{id}/process</code></td><td><code>202</code>（或已进入目标状态时 <code>200</code>）</td></tr>
+          <tr><td>状态</td><td><code>GET {basePath}/{id}</code></td><td><code>200</code></td></tr>
+        </tbody>
+      </table>
+      <pre><code>POST /api/device-gateway/v1/meeting-recordings
+{"title":"硬件会议录音","purpose":"","conversation_id":"default","content_type":"audio/wav"}</code></pre>
+      <pre><code>PUT /api/device-gateway/v1/meeting-recordings/{recording_id}/chunks/0
+Content-Type: application/octet-stream
+X-Chunk-SHA256: &lt;sha256 of this chunk&gt;
+
+&lt;1 to 1048576 raw bytes&gt;</code></pre>
+      <pre><code>POST /api/device-gateway/v1/meeting-recordings/{recording_id}/complete
+{"chunks":3,"sha256":"&lt;sha256 of complete WAV&gt;","duration_sec":82.125}
+
+POST /api/device-gateway/v1/meeting-recordings/{recording_id}/process
+{"mode":"minutes"}</code></pre>
+      <p>分片从 0 连续编号，每片 1 字节至 1 MiB，且必须带 SHA-256；相同序号可用相同内容安全重试。完成请求会按顺序合并并校验整文件。Hub 总配额为 512 MiB；16 kHz 单声道 S16LE WAV 的最长声明时长约为 16,777 秒（约 4 小时 39 分）。录音状态默认保留 30 天。<code>mode</code> 只能选择握手中为真的 <code>keep</code>、<code>transcript</code> 或 <code>minutes</code>。</p>
+      <aside class="info"><strong>断点恢复</strong>设备应在每个成功分片后持久化 <code>recording_id</code>、下一个分片序号和阶段。重启后先 GET 状态：<code>uploading</code> 继续分片，<code>uploaded/failed</code> 继续处理，<code>processing/ready</code> 不再重复提交。终态结果会作为 <code>meeting_result</code> 进入普通出站队列。</aside>
+    </section>
+
+    <section id="zh-runtime" class="doc-section">
+      <h2>7. 运行与安全约定</h2>
+      <div class="contract-grid">
+        <article><h3>稳定身份</h3><p><code>clientId</code> 对一个物理设备保持稳定；Token 与会议恢复信息写入持久存储。当前 ESP32 的出站游标仅驻留 RAM，冷启动后从 0 恢复轮询；<code>bootSessionId</code> 每次冷启动随机生成，最长 96 字符。</p></article>
+        <article><h3>单一 HTTP 调度</h3><p>资源受限设备应串行化普通 HTTP 请求，避免轮询、语音上传和 ACK 争用 TLS 内存。前台操作可缩短长轮询，但不要启动第二个读取器。</p></article>
+        <article><h3>最小能力</h3><p>按真实屏幕、扬声器、麦克风、编解码器和内存上限声明能力。Hub 会据此把大音频转为 URL、截断文本，并过滤无法处理的类型。</p></article>
+        <article><h3>媒体安全</h3><p>只访问 Hub 返回的同源媒体 URL。当前 ESP32 还会限制音频路径必须以 <code>/api/im-gateway/v1/media/</code> 开头，拒绝任意外部下载地址。</p></article>
+      </div>
+      <h3>建议的重试策略</h3>
+      <p>配对与握手使用 2 秒起步、最大 60 秒的指数退避；普通轮询失败后至少等待 3 秒。<code>/incoming</code> 返回 <code>200</code> 且 <code>accepted=true</code> 后不得重发。只有在未收到明确成功响应、且业务能接受“至少一次”处理语义时，才以有限次数退避重试，并为同一业务动作复用相同的 <code>eventId</code>/<code>messageId</code>。当前 ESP32 的语音提交最多尝试 3 次。</p>
+      <aside class="warning"><strong><code>/incoming</code> 不是持久幂等接口</strong>Hub IM 核心当前按 <code>messageId</code> 提供约 10 秒的进程内尽力去重；该记录不会持久化，Hub 重启或超过窗口后重发仍可能再次处理。设备网关响应中的 <code>duplicate</code> 当前通常为 <code>false</code>，不能作为持久幂等证明。请避免无界重试。</aside>
+    </section>
+
+    <section id="zh-errors" class="doc-section">
+      <h2>8. 错误处理</h2>
+      <pre><code>{
+  "ok": false,
+  "error": {"code": "unauthorized", "message": "missing or invalid bearer token"}
+}</code></pre>
+      <table>
+        <thead><tr><th>HTTP</th><th>含义</th><th>客户端动作</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td>JSON、字段、能力、媒体或分片无效</td><td>修正请求；不要原样热循环重试。</td></tr>
+          <tr><td>401 / 403</td><td>配对码或设备凭证无效、clientId 不匹配</td><td>停止受保护请求并进入配对恢复。</td></tr>
+          <tr><td>404</td><td>媒体或会议对象不存在</td><td>媒体重新准备；会议对象重新创建。</td></tr>
+          <tr><td>409</td><td>上传/处理阶段冲突</td><td>GET 当前状态后从服务端状态恢复。</td></tr>
+          <tr><td>429</td><td>请求过快</td><td>遵守 <code>Retry-After</code> 并指数退避。</td></tr>
+          <tr><td>503</td><td>GUI 中继、ASR 或处理能力不可用</td><td>保留本地数据，稍后重试或选择可用模式。</td></tr>
+          <tr><td>5xx</td><td>Hub 临时故障</td><td>按端点决定是否重试；<code>/incoming</code> 仅在可接受至少一次语义时复用原 ID 并有限重试。</td></tr>
+        </tbody>
+      </table>
+      <p class="source-note">协议依据：<code>iot-agentos/main/main.c</code>、<code>hub/internal/im/device_gateway.go</code>、<code>hub/internal/httpapi/hardware_meeting_recordings.go</code>。</p>
+    </section>
+  </section>
+
+  <section class="lang-panel" data-lang-panel="en">
+    <div class="hero">
+      <p class="version">MaClaw Third-Party Hardware Protocol · Protocol 1.1 · aligned with the current ESP32-S3 client</p>
+      <h1>Connect third-party hardware to MaClaw Hub</h1>
+      <p class="lead">A device exchanges a one-time pairing code for a durable bearer token, declares its actual input, output, and hardware capabilities, then uses HTTPS JSON, cursor long polling, and per-message acknowledgements for text, audio, configuration, and resumable meeting recordings.</p>
+      <div class="facts" aria-label="Protocol summary">
+        <span><strong>Origin</strong> <code>https://&lt;hub&gt;</code></span>
+        <span><strong>Messaging</strong> <code>/api/im-gateway/v1</code></span>
+        <span><strong>Pairing</strong> <code>/api/device-gateway/v1</code></span>
+        <span><strong>Transport</strong> HTTPS + JSON</span>
+      </div>
+      <aside class="scope-note"><strong>Scope</strong>This page specifies the public Hub hardware protocol. The loopback third-party software gateway exposed by MaClaw GUI at <code>127.0.0.1:18777</code> shares the core message shape, but does not use the Hub pairing, device capability, or meeting-recording extensions described here.</aside>
+    </div>
+
+    <nav class="toc" aria-label="Contents">
+      <strong>On this page</strong>
+      <a href="#en-flow">Flow</a><a href="#en-pair">Pairing</a><a href="#en-handshake">Capabilities</a>
+      <a href="#en-message">Messages &amp; media</a><a href="#en-poll">Polling &amp; ACK</a><a href="#en-meeting">Meetings</a>
+      <a href="#en-runtime">Runtime contract</a><a href="#en-errors">Errors</a>
+    </nav>
+
+    <section id="en-flow" class="doc-section">
+      <h2>1. Integration flow</h2>
+      <ol class="flow-list">
+        <li><span>1</span><div><strong>Create a pairing code</strong><p>In MaClaw GUI, open Settings / Message Access / Third-party Access / Hardware configuration. Generate a six-digit code. It expires after 30 minutes and can be consumed once.</p></div></li>
+        <li><span>2</span><div><strong>Exchange it for credentials</strong><p>Call <code>POST /pair</code> with a stable <code>clientId</code>. Persist the returned <code>gatewayToken</code> securely and delete the local pairing code.</p></div></li>
+        <li><span>3</span><div><strong>Negotiate capabilities</strong><p>On every startup, call <code>POST /handshake</code> with a fresh <code>bootSessionId</code> and honest capabilities. Keep the same boot ID for ordinary handshake refreshes.</p></div></li>
+        <li><span>4</span><div><strong>Exchange messages</strong><p>Submit input with <code>POST /incoming</code>. Run exactly one <code>GET /outgoing</code> reader and acknowledge handled messages with <code>POST /ack</code>.</p></div></li>
+        <li><span>5</span><div><strong>Store recovery state</strong><p>Persist the token and meeting-upload progress. Persist a cursor only if the client also has durable deduplication state. The current ESP32 keeps its cursor in RAM, restarts from zero after reboot, and relies on Hub ACK state to skip acknowledged messages.</p></div></li>
+      </ol>
+    </section>
+
+    <section id="en-pair" class="doc-section">
+      <h2>2. Pairing and authentication</h2>
+      <h3>POST /api/device-gateway/v1/pair</h3>
+      <pre><code>{"clientId":"esp32s3-pet-001","pairCode":"123456"}</code></pre>
+      <p><code>pairCode</code> is canonical. The server accepts legacy <code>code</code> only for already-flashed firmware. Success returns <code>201 Created</code>:</p>
+      <pre><code>{"ok":true,"gatewayToken":"&lt;64-character device token&gt;","clientId":"esp32s3-pet-001"}</code></pre>
+      <p>Pairing the same <code>clientId</code> again revokes its previous token and clears the stale device queue. Except for health, pairing, and URLs protected by <code>mediaToken</code>, send:</p>
+      <pre><code>Authorization: Bearer &lt;gatewayToken&gt;</code></pre>
+      <aside class="warning"><strong>Do not erase a rejected token</strong>A handshake <code>401</code> or <code>403</code> should enter pairing recovery while retaining the old token for diagnosis. Network errors, <code>408</code>, <code>429</code>, and <code>5xx</code> are retryable and must not trigger re-pairing.</aside>
+      <details><summary>Optional voice pairing</summary><div class="details-body"><p><code>POST /api/device-gateway/v1/pair/voice</code> accepts a short WAV of at most 512 KiB and requires <code>X-MaClaw-Client-ID</code>. The server extracts exactly six spoken digits. It is rate-limited and returns <code>503</code> when ASR is unavailable.</p><pre><code>Content-Type: audio/wav
+X-MaClaw-Client-ID: esp32s3-pet-001
+
+&lt;raw WAV bytes&gt;</code></pre></div></details>
+    </section>
+
+    <section id="en-handshake" class="doc-section">
+      <h2>3. Startup handshake and capability negotiation</h2>
+      <h3>POST /api/im-gateway/v1/handshake</h3>
+      <p>Use the canonical <code>clientCapabilities</code> field. Servers still accept the same structured object in legacy <code>capabilities</code>, but new integrations should not use that alias.</p>
+      <pre><code>{
+  "clientId": "esp32s3-pet-001", "clientName": "ESP32-S3 Pet",
+  "bootSessionId": "9f1c...32-hex-characters", "protocolVersion": "1.1",
+  "clientCapabilities": {
+    "input": {"modalities":["text","audio"],"audio":{"mimeTypes":["audio/wav"],"sampleRates":[16000],"channels":1}},
+    "output": {
+      "modalities":["text","audio"],"preferred":["audio","text"],
+      "combinations":[["text"],["audio","text"]],
+      "text":{"maxChars":240,"markdown":false,"locale":"en"},
+      "audio":{"mimeTypes":["audio/wav"],"sampleRates":[16000],"channels":1,"playback":true,"deliveryModes":["url"],"maxDownloadBytes":98304}
+    },
+    "features":{"petStates":true,"petAnimation":false,"petAsset":false,"ambientDisplay":true,"meetingRecorder":true,"volumeControl":true}
+  },
+  "tools":[
+    {"name":"alarm_create","risk":"low","inputSchema":{"type":"object","properties":{"triggerAtEpochMs":{"type":"integer"},"label":{"type":"string","maxLength":48}},"required":["triggerAtEpochMs"]}},
+    {"name":"alarm_clear_all","risk":"medium","inputSchema":{"type":"object","properties":{}}},
+    {"name":"alarm_clear","risk":"medium","inputSchema":{"type":"object","properties":{"index":{"type":"integer","minimum":1}},"required":["index"]}},
+    {"name":"alarm_list","risk":"low","inputSchema":{"type":"object","properties":{}}}
+  ]
+}</code></pre>
+      <p>Declare only features the device can actually handle. After negotiation, Hub rejects undeclared inputs and filters, truncates, or converts outputs to the accepted contract. A legacy client with no output declaration becomes text-only.</p>
+      <pre><code>{
+  "ok":true,"mode":"maclaw","protocolVersion":"1.1",
+  "channelId":"thirdparty:esp32s3-pet-001","serverTime":1781028000000,
+  "poll":{"timeoutSec":30,"maxTimeoutSec":30,"maxBatchSize":20,"maxLimit":20},
+  "limits":{"maxBodyBytes":1048576,"maxMediaBytes":10485760},
+  "capabilitiesAccepted":{"input":{},"output":{},"features":{}},
+  "meetingRecording":{"basePath":"/api/device-gateway/v1/meeting-recordings","chunkSize":1048576,"contentTypes":["audio/wav"],"modes":{"keep":true,"transcript":true,"minutes":true}}
+}</code></pre>
+      <p><code>meetingRecording</code> is omitted when unavailable. Processing modes are advertised only when their workers are configured; always follow the response.</p>
+      <h3>Client-side tools</h3>
+      <p>The top-level <code>tools</code> array is the device tool catalog for this handshake. Hub attaches it to later messages from that device. The current ESP32 registers <code>alarm_create</code>, <code>alarm_clear_all</code>, <code>alarm_clear</code>, and <code>alarm_list</code>. It persists at most 16 alarms and the eight most recent state-changing tool-call results in NVS. The result cache is a fixed rotating set of slots containing both successes and deterministic failures, not a permanent call history. Read-only <code>alarm_list</code> calls are not cached and are safe to execute again. A refreshed handshake replaces the catalog, so remove tools the device no longer supports.</p>
+      <p>Hub/GUI may deliver a <code>tool_call</code> through the normal outgoing queue. Execute only names that the device registered and implements. Deduplicate with <code>toolCall.idempotencyKey</code>, falling back to <code>toolCall.id</code>. The general protocol permits identifiers up to 128 characters, but the current ESP32 uses 64-byte persistent result slots and requires state-changing calls to use an idempotency key of at most 63 ASCII characters; longer or non-ASCII keys are rejected as <code>invalid_arguments</code> before execution. After execution, call <code>POST /api/im-gateway/v1/tool-result</code>; ACK the original <code>tool_call</code> only after that result submission succeeds.</p>
+      <pre><code>{"id":"hub_out_...","type":"tool_call","conversationId":"default","toolCall":{"id":"call-1","name":"alarm_create","arguments":{"triggerAtEpochMs":1781031600000,"label":"Hydrate"},"idempotencyKey":"call-1"}}</code></pre>
+      <pre><code>POST /api/im-gateway/v1/tool-result
+{"clientId":"esp32s3-pet-001","resultId":"call-1","toolCallId":"call-1","conversationId":"default","status":"success","idempotencyKey":"call-1","result":{"count":1}}</code></pre>
+      <p>Canonical <code>status</code> values are <code>success</code>, <code>error</code>, <code>rejected</code>, <code>cancelled</code>, and <code>timeout</code>; the server also normalizes compatibility spellings such as <code>succeeded/failed</code>. A tool result is forwarded asynchronously as new Agent input, so <code>200 accepted=true</code> only confirms Hub acceptance.</p>
+    </section>
+
+    <section id="en-message" class="doc-section">
+      <h2>4. Incoming messages and server media</h2>
+      <h3>Text: POST /api/im-gateway/v1/incoming</h3>
+      <pre><code>{
+  "clientId":"esp32s3-pet-001","eventId":"text-1781028000000","messageId":"text-1781028000000",
+  "conversationId":"default","user":{"id":"local-user","displayName":"ESP32-S3 user"},
+  "message":{"id":"text-1781028000000","type":"text","text":"/cancel"}
+}</code></pre>
+      <p>On <code>200</code>, keep <code>maclawMessageId</code> or <code>messageId</code> as the reply correlation key. If an older server echoes neither, fall back to the submitted <code>eventId</code>.</p>
+
+      <h3>Audio: prepare URL → PUT → reference media ID</h3>
+      <pre><code>POST /api/im-gateway/v1/media/upload-url
+{"clientId":"esp32s3-pet-001","type":"voice","fileName":"voice.wav","mimeType":"audio/wav","sizeBytes":48236}</code></pre>
+      <pre><code>{
+  "ok":true,"media":{"id":"server-media-id","type":"voice","mimeType":"audio/wav","sizeBytes":48236},
+  "upload":{"method":"PUT","url":"https://&lt;hub&gt;/api/im-gateway/v1/media/server-media-id/upload?mediaToken=...","contentType":"audio/wav","maxBytes":10485760},
+  "download":{"url":"https://&lt;hub&gt;/api/im-gateway/v1/media/server-media-id?mediaToken=..."},"expiresAt":1781114400000
+}</code></pre>
+      <p>PUT raw bytes to <code>upload.url</code>. The URL carries its own <code>mediaToken</code>; do not construct or modify it. When non-zero <code>sizeBytes</code> was declared, the uploaded byte count must match exactly. Hub currently permits 10 MiB per device-media object and prunes objects after about 24 hours.</p>
+      <pre><code>{
+  "clientId":"esp32s3-pet-001","eventId":"voice-1781028000000","messageId":"voice-1781028000000","conversationId":"default",
+  "user":{"id":"local-user","displayName":"ESP32-S3 user"},
+  "message":{"id":"voice-1781028000000","type":"voice","mimeType":"audio/wav","attachments":[{"id":"server-media-id","type":"voice","mimeType":"audio/wav"}]}
+}</code></pre>
+      <aside class="info"><strong>ESP32 boundary</strong>The Hub hardware gateway resolves uploaded <code>attachments[].id</code>. Do not inline base64 in hardware messages or ask Hub to fetch an arbitrary external URL. The current ESP32 uploads only 16 kHz mono PCM WAV.</aside>
+    </section>
+
+    <section id="en-poll" class="doc-section">
+      <h2>5. Outgoing polling, correlation, and ACK</h2>
+      <pre><code>GET /api/im-gateway/v1/outgoing?clientId=esp32s3-pet-001&amp;cursor=0&amp;limit=16&amp;timeout=5</code></pre>
+      <ul>
+        <li>Run one outgoing reader per device. The current ESP32 uses a 2-second poll during a foreground command and 5 seconds while idle.</li>
+        <li><code>limit</code> is clamped to 1–20; <code>timeout</code> is clamped to 0–30 seconds.</li>
+        <li><code>nextCursor</code> identifies the last message in the page. Persist it only after the entire page is handled or can be safely deduplicated; keep using the old cursor while retryable media remains unplayed.</li>
+      </ul>
+      <pre><code>{"ok":true,"messages":[{"id":"hub_out_1781028005123_12","seq":12,"conversationId":"default","replyTo":"voice-1781028000000","type":"text","text":"It is sunny and 27°C.","metadata":{"acp_turn":"final"}}],"nextCursor":"12","hasMore":false}</code></pre>
+      <p>Resolve correlation in this order: <code>replyTo</code>, <code>replyToMessageId</code>, <code>source_message_id</code>, <code>sourceMessageId</code>, <code>sourceMessageID</code>, including those fields inside <code>metadata</code> or <code>extra</code>. <code>progress: true</code> or <code>metadata.acp_turn=progress/working</code> is intermediate; <code>final/complete/completed</code> is terminal.</p>
+      <p>Current device output types include <code>text</code>, <code>error</code>, <code>audio/voice</code>, <code>ambient</code>, <code>pet_state</code>, <code>hardware_config</code>, <code>meeting_result</code>, and single-step <code>tool_call</code>. The generic protocol can also represent <code>tool_plan</code>/<code>tool_cancel</code>, but the current ESP32 does not execute those message types; servers must not send them to this client. The current ESP32 remains compatible with inline <code>data/file_data</code>, but advertises URL-only delivery; new servers should return a same-origin relative URL beginning with <code>/api/im-gateway/v1/media/</code>. Response bodies at or above 96 KiB are rejected.</p>
+      <h3>POST /api/im-gateway/v1/ack</h3>
+      <pre><code>{"clientId":"esp32s3-pet-001","messageIds":["hub_out_1781028005123_12"],"status":"delivered"}</code></pre>
+      <p>Canonical statuses are <code>delivered</code>, <code>read</code>, and <code>failed</code>. Missing or unrecognized values normalize to <code>delivered</code>, so new clients must not rely on custom statuses. A request may acknowledge at most 100 non-empty message IDs. ACK text, configuration, and successfully played audio as delivered. ACK permanent format/capability/playback errors as failed. Do not ACK transient download, allocation, I2S, or busy failures; leave them for the next poll.</p>
+    </section>
+
+    <section id="en-meeting" class="doc-section">
+      <h2>6. Resumable meeting recordings</h2>
+      <p>Enable this flow only when the handshake includes <code>meetingRecording</code>. Use its returned <code>basePath</code> and <code>chunkSize</code>.</p>
+      <table><thead><tr><th>Step</th><th>Request</th><th>Success</th></tr></thead><tbody>
+        <tr><td>Create</td><td><code>POST {basePath}</code></td><td><code>201</code></td></tr>
+        <tr><td>Chunk</td><td><code>PUT {basePath}/{id}/chunks/{index}</code></td><td><code>204</code></td></tr>
+        <tr><td>Complete</td><td><code>POST {basePath}/{id}/complete</code></td><td><code>200</code></td></tr>
+        <tr><td>Process</td><td><code>POST {basePath}/{id}/process</code></td><td><code>202</code></td></tr>
+        <tr><td>Status</td><td><code>GET {basePath}/{id}</code></td><td><code>200</code></td></tr>
+      </tbody></table>
+      <pre><code>POST /api/device-gateway/v1/meeting-recordings
+{"title":"Hardware meeting","purpose":"","conversation_id":"default","content_type":"audio/wav"}
+
+PUT /api/device-gateway/v1/meeting-recordings/{recording_id}/chunks/0
+X-Chunk-SHA256: &lt;sha256 of this chunk&gt;
+
+POST /api/device-gateway/v1/meeting-recordings/{recording_id}/complete
+{"chunks":3,"sha256":"&lt;sha256 of complete WAV&gt;","duration_sec":82.125}
+
+POST /api/device-gateway/v1/meeting-recordings/{recording_id}/process
+{"mode":"minutes"}</code></pre>
+      <p>Chunks are contiguous from zero, between 1 byte and 1 MiB, and require SHA-256; retrying the same index with the same bytes is safe. Hub verifies the assembled file and has a 512 MiB recording quota. For 16 kHz mono S16LE WAV, the maximum declared duration is about 16,777 seconds (4 h 39 min). Recording state is retained for 30 days by default. Choose only an advertised <code>keep</code>, <code>transcript</code>, or <code>minutes</code> mode.</p>
+      <aside class="info"><strong>Resume contract</strong>Persist <code>recording_id</code>, next chunk, and phase after every successful chunk. On restart, GET status: continue chunks for <code>uploading</code>, continue processing for <code>uploaded/failed</code>, and do not resubmit for <code>processing/ready</code>. Terminal results arrive as <code>meeting_result</code> through the normal outgoing queue.</aside>
+    </section>
+
+    <section id="en-runtime" class="doc-section">
+      <h2>7. Runtime and security contract</h2>
+      <div class="contract-grid">
+        <article><h3>Stable identity</h3><p>Keep <code>clientId</code> stable per physical device. Persist the token and meeting recovery state. The current ESP32 keeps its outgoing cursor in RAM and resumes from zero after a cold start. Generate a cold-start <code>bootSessionId</code> of no more than 96 characters.</p></article>
+        <article><h3>One HTTP scheduler</h3><p>Resource-limited devices should serialize regular HTTP work so polling, audio uploads, and ACKs do not compete for TLS memory. Shorten the foreground poll instead of adding a reader.</p></article>
+        <article><h3>Minimum honest capability</h3><p>Describe the real display, speaker, microphone, codecs, and memory limits. Hub uses this contract to convert large audio to URLs, truncate text, and filter unsupported output.</p></article>
+        <article><h3>Media safety</h3><p>Use only Hub-returned, same-origin media URLs. The current ESP32 additionally requires audio paths to start with <code>/api/im-gateway/v1/media/</code>.</p></article>
+      </div>
+      <h3>Recommended retries</h3>
+      <p>Use exponential backoff from 2 seconds up to 60 seconds for pairing and handshake. Wait at least 3 seconds after poll failures. Never resend an <code>/incoming</code> request after receiving <code>200</code> with <code>accepted=true</code>. Only when no definite success response arrived and the business action tolerates at-least-once processing, retry a bounded number of times with backoff and reuse the same <code>eventId</code>/<code>messageId</code>. The current ESP32 makes at most three voice-submission attempts.</p>
+      <aside class="warning"><strong><code>/incoming</code> is not durably idempotent</strong>The Hub IM core currently performs best-effort, in-memory deduplication by <code>messageId</code> for about 10 seconds. That state is not persisted; a resend after the window or a Hub restart may be processed again. The device-gateway response currently reports <code>duplicate</code> as <code>false</code> in normal operation, so it is not proof of durable idempotency. Avoid unbounded retries.</aside>
+    </section>
+
+    <section id="en-errors" class="doc-section">
+      <h2>8. Error handling</h2>
+      <pre><code>{"ok":false,"error":{"code":"unauthorized","message":"missing or invalid bearer token"}}</code></pre>
+      <table><thead><tr><th>HTTP</th><th>Meaning</th><th>Action</th></tr></thead><tbody>
+        <tr><td>400</td><td>Invalid JSON, field, capability, media, or chunk</td><td>Fix the request; do not hot-loop it unchanged.</td></tr>
+        <tr><td>401 / 403</td><td>Invalid code/credential or client mismatch</td><td>Stop protected calls and enter pairing recovery.</td></tr>
+        <tr><td>404</td><td>Missing media or meeting object</td><td>Prepare media again or create a new recording.</td></tr>
+        <tr><td>409</td><td>Upload or processing phase conflict</td><td>GET status and resume from server state.</td></tr>
+        <tr><td>429</td><td>Rate limited</td><td>Honor <code>Retry-After</code> and back off.</td></tr>
+        <tr><td>503</td><td>GUI relay, ASR, or processor unavailable</td><td>Keep local data and retry later or choose an available mode.</td></tr>
+        <tr><td>5xx</td><td>Temporary Hub failure</td><td>Retry according to the endpoint; for <code>/incoming</code>, reuse the original IDs and retry only when at-least-once semantics are acceptable.</td></tr>
+      </tbody></table>
+      <p class="source-note">Contract sources: <code>iot-agentos/main/main.c</code>, <code>hub/internal/im/device_gateway.go</code>, and <code>hub/internal/httpapi/hardware_meeting_recordings.go</code>.</p>
+    </section>
+  </section>
+</main>
+
+<button class="back-to-top" type="button" aria-label="Back to top" title="Back to top">↑</button>
+<script src="/connector/connector.js" defer></script>
+</body>
+</html>

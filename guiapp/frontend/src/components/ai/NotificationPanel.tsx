@@ -383,7 +383,10 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
         const measure = () => {
             // Do not fall back to offsetParent: the title bar is position:relative
             // and only 38px tall, which makes available space look empty.
-            const clip = root.closest("[data-testid='ai-panel-root']");
+            // Prefer the nearest ancestor that actually clips (the panel body has
+            // overflow:hidden); the panel root is only the outer bound.
+            const clip = root.closest("[data-testid='ai-panel-body']")
+                ?? root.closest("[data-testid='ai-panel-root']");
             const clipBottom = clip instanceof HTMLElement
                 ? clip.getBoundingClientRect().bottom
                 : window.innerHeight;
@@ -393,7 +396,8 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
         };
 
         measure();
-        const clip = root.closest("[data-testid='ai-panel-root']");
+        const clip = root.closest("[data-testid='ai-panel-body']")
+            ?? root.closest("[data-testid='ai-panel-root']");
         const observer = typeof ResizeObserver === "function" && clip instanceof HTMLElement
             ? new ResizeObserver(measure)
             : null;

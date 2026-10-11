@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +170,70 @@ func TestReviewedHostBrowserIsAbsentWithoutDriver(t *testing.T) {
 	empty := (&coreAgentCallbacks{principal: Principal{TenantID: "t", UserID: "u"}}).reviewedHostOwnedServices()
 	if empty.Browser != nil {
 		t.Fatal("browser without hook must stay unpublished")
+	}
+}
+
+// TestReviewedHostBrowserActionEnumMatchesWhatTheHostPerforms pins the same
+// defect the GUI surface hit on 2026-10-10: the action was an unlabelled
+// string, so a model guessed "open" and was refused without ever learning the
+// name that would have worked. The enum is documentation the canonicalizer
+// ignores, so this holds it against the execution check -- every advertised
+// name must be accepted, and a guessed one must still be refused.
+func TestReviewedHostBrowserActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
+	schema := reviewedHostBrowserInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("browser schema has no properties: %#v", schema)
+	}
+	action, ok := properties["action"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("browser schema has no action property: %#v", properties)
+	}
+	enum, ok := action["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("action must publish a non-empty enum, got %#v", action["enum"])
+	}
+	// The set and the url pairing both come from the shared contract, so this
+	// host cannot drift from the GUI surface serving the same capability.
+	for _, name := range enum {
+		if !coretool.BrowserControlActionAllowed(name) {
+			t.Fatalf("schema advertises action %q but the execution check refuses it", name)
+		}
+	}
+	for _, name := range coretool.BrowserControlActions() {
+		advertised := false
+		for _, candidate := range enum {
+			if candidate == name {
+				advertised = true
+				break
+			}
+		}
+		if !advertised {
+			t.Fatalf("execution check accepts action %q but the schema never shows it", name)
+		}
+	}
+	for _, guessed := range []string{"open", "goto", "visit"} {
+		args := map[string]interface{}{"action": guessed, "url": "https://example.com"}
+		_, _, err := reviewedHostBrowserArgsAllowed(args)
+		if err == nil || !strings.Contains(err.Error(), "host_browser_action_rejected") {
+			t.Fatalf("action %q = %v, want host_browser_action_rejected", guessed, err)
+		}
+		// The refusal must name the real vocabulary so the first failure can
+		// redirect the turn instead of ending it.
+		for _, valid := range coretool.BrowserControlActions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention the valid name %q", guessed, err, valid)
+			}
+		}
+	}
+	for _, name := range enum {
+		if !coretool.BrowserControlNeedsURL(name) {
+			continue
+		}
+		if _, _, err := reviewedHostBrowserArgsAllowed(map[string]interface{}{"action": name}); err == nil ||
+			!strings.Contains(err.Error(), "host_browser_url_required") {
+			t.Fatalf("%s without url = %v, want host_browser_url_required", name, err)
+		}
 	}
 }
 

@@ -365,6 +365,28 @@ SHA256：
 
 重启 maclawsrv 和 hub 会丢掉当时还在进行的对话。把原来的桌面请求再发一次后，Hub 会打开这同一个容器。这次配置探测只证明接口认这把钥匙，还没有替用户完成百度截图。
 
+#### desktopd 二进制刷新（2026-10-11 22:14 CST）
+
+工作区 `corelib/tool` 与 `corelib` 有未提交改动，desktopd 依赖这两个包，所以按本节重编并替换二进制。没有跑 `deploy_desktopd.cmd`，没有重建镜像，没有 `docker cp` supervisor，没有改 nginx、单元文件和 `.env`。
+
+本机编译（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`，用当前工作区 commit `beeb2e8e-dirty`，不只编译 HEAD）：
+
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o desktopd ./desktopd/cmd/desktopd
+```
+
+| 项 | 值 |
+| --- | --- |
+| 旧 desktopd | SHA256 `7a0da1d961b6a3357198e7952a4273b9660b9c59b018dc5020ad54d54266fb69`（2026-10-10 13:08 那份），MainPID 1440 |
+| 新 desktopd | SHA256 `3fae509c69673180dfd93be30381837bfa3b4db9dfd8ac87b504a141f62baf8e`，MainPID 5452 |
+| 备份 | `/data/soft/maclaw_desktopd/bin/desktopd.bak-corelib-20261011`（不要覆盖） |
+| 启动日志 | 22:14:15 `desktopd listening on 127.0.0.1:18081`、`[desktopd-proxy] forward proxy listening on 172.17.0.1:18083`、`idle reaper enabled max_idle=24h0m0s`、`image maclaw-gui:2 is present; not pulling` |
+| 验证 | `/v1/health` 带 `DESKTOPD_TOKEN` 返回 200 `{"ok":true}`，不带仍是 401；四个 `maclaw-desktop-*` 容器的 ID 与状态发布前后一致（都是 Exited），没有启动或停止任何容器 |
+
+回滚是把这份备份拷回原名，`chmod 755`，再 `systemctl restart maclaw-desktopd.service`。
+
+同一次检查里看到两件事：这台机的出网代理在 19:00 有一条到上游 `dockerd.maclaw.top` 的 CONNECT 超时（`hm.baidu.com:443` … `i/o timeout`）；`maclawsrv.maclaw.top` 上的 desktopd 还是 2026-10-07 21:59 的二进制。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

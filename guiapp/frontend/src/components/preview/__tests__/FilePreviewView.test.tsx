@@ -29,6 +29,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
         if (String(path).endsWith('.docx')) {
             return { kind: 'docx', preview_url: '/maclaw-preview/v1/file?t=cccccccccccccccccccccccccccccccc' };
         }
+        if (String(path).endsWith('.xlsx')) {
+            return { kind: 'xlsx', preview_url: '/maclaw-preview/v1/file?t=dddddddddddddddddddddddddddddddd', content: 'plain' };
+        }
         if (String(path).includes('missing.html')) {
             throw new Error('文件不存在');
         }
@@ -53,6 +56,8 @@ describe('filePreviewUsesSpecialRenderer', () => {
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.pptx' })).toBe(false);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.docx', absPath: 'D:/a.docx' })).toBe(true);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.docx' })).toBe(false);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'a.xlsx', absPath: 'D:/a.xlsx' })).toBe(true);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'a.xlsx' })).toBe(true);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.md' })).toBe(true);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.html' })).toBe(false);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'icon.svg' })).toBe(false);
@@ -83,6 +88,52 @@ describe('FilePreviewView', () => {
         expect(queryByTestId('office-preview-panel')).toBeNull();
         expect(fetchMock).toHaveBeenCalled();
         vi.unstubAllGlobals();
+    });
+
+    it('renders a workbook in the grid layout instead of a text extract', async () => {
+        const fetchMock = vi.fn(async () => ({
+            ok: true,
+            arrayBuffer: async () => new ArrayBuffer(8),
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+        const { getByTestId, queryByTestId } = render(
+            <FilePreviewView
+                file={{ fileName: 'sheet.xlsx', absPath: 'D:/docs/sheet.xlsx' }}
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        await waitFor(() => expect(getByTestId('xlsx-preview-panel')).toBeTruthy());
+        expect(queryByTestId('office-preview-panel')).toBeNull();
+        expect(fetchMock).toHaveBeenCalled();
+        vi.unstubAllGlobals();
+    });
+
+    it('yields a workbook without a local original to the parent extract view', () => {
+        const { getByTestId } = render(
+            <FilePreviewView
+                file={{ fileName: 'sheet.xlsx', content: '提取文本' }}
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            >
+                <div data-testid="extract-child">提取文本</div>
+            </FilePreviewView>,
+        );
+        expect(getByTestId('extract-child')).toBeTruthy();
+        expect(getByTestId('extract-child').textContent).toContain('提取文本');
+    });
+
+    it('renders a workbook without a local original as the office extract', () => {
+        const { getByTestId, queryByTestId } = render(
+            <FilePreviewView
+                file={{ fileName: 'sheet.xlsx', content: '发放明细表 提取行' }}
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        expect(getByTestId('office-preview-panel')).toBeTruthy();
+        expect(getByTestId('office-preview-panel').textContent).toContain('发放明细表');
+        expect(queryByTestId('xlsx-preview-panel')).toBeNull();
     });
 
     it('scales a wide Word page down to the preview pane and keeps the left edge', () => {

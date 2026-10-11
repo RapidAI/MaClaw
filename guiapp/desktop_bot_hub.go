@@ -12,8 +12,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -41,10 +43,13 @@ type DesktopBotFile struct {
 }
 
 type desktopBotRelayResult struct {
-	Text               string
-	NovncURL           string
-	UserControl        bool
-	AttentionReason    string
+	Text            string
+	NovncURL        string
+	UserControl     bool
+	AttentionReason string
+	// WaitingForUser means the run reached its terminal state because the worker
+	// asked this person something, rather than because the work finished.
+	WaitingForUser     bool
 	AskUserInputType   string
 	AskUserSecretName  string
 	AskUserQuestion    string
@@ -199,7 +204,409 @@ func (a *App) DeleteDesktopBot(botID string) error {
 	return a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), nil, nil, 30*time.Second)
 }
 
+// DesktopBotLLM is the model setting every bot of this user runs on. Mode is
+// "custom" when they picked a provider, and "default" when their bots follow
+// whatever the service resolves: the Hub route billed to this user, or the
+// provider an administrator selected.
+//
+// The provider key stays on the server. This struct carries enough to describe
+// the selection to the person who made it, and nothing that would put a
+// credential into the frontend bundle or the chat transcript.
+type DesktopBotLLM struct {
+	Mode    string `json:"mode"`
+	Name    string `json:"name,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Model   string `json:"model,omitempty"`
+	KeySet  bool   `json:"key_set"`
+	Warning string `json:"warning,omitempty"`
+}
+
+// DesktopBotLLMInput is one save of that setting. A blank Mode, or "default",
+// drops the stored provider and restores the configured default. A blank Key
+// keeps the key already stored for this provider.
+type DesktopBotLLMInput struct {
+	Mode     string `json:"mode"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Key      string `json:"key"`
+	Model    string `json:"model"`
+	Protocol string `json:"protocol"`
+	WireAPI  string `json:"wire_api"`
+}
+
+// GetDesktopBotLLM reads the model setting this user's bots run on.
+func (a *App) GetDesktopBotLLM() (*DesktopBotLLM, error) {
+	var out DesktopBotLLM
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/llm", nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "default"
+	}
+	return &out, nil
+}
+
+// SaveDesktopBotLLM applies a provider to every bot of this user and returns
+// the setting as stored. A non-empty Warning means the choice was kept but not
+// written to all of them yet; the bots pick it up on their next run.
+func (a *App) SaveDesktopBotLLM(in DesktopBotLLMInput) (*DesktopBotLLM, error) {
+	var out DesktopBotLLM
+	if err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/llm", in, &out, 30*time.Second); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "default"
+	}
+	return &out, nil
+}
+
+// ActiveDesktopRun is one cloud-desktop turn this client has in flight.
+//
+// Identity reaches the run, not the bot. A bot can have several runs live at
+// once: neither the service ingress nor this client serialises turns, so a
+// table keyed only by bot id would let a later registration overwrite an
+// earlier one and let that earlier turn's unregister clear the wrong entry.
+// Every lookup and every removal therefore names bot and run together.
+type ActiveDesktopRun struct {
+	BotID      string    `json:"bot_id"`
+	RunID      string    `json:"run_id"`
+	RequestID  string    `json:"request_id"`
+	SessionKey string    `json:"session_key"`
+	TaskText   string    `json:"task_text"`
+	Phase      string    `json:"phase"`
+	StartedAt  time.Time `json:"started_at"`
+	// WaitingForUser means the run reached its terminal state because the
+	// worker asked this person something. Outwardly it looks like a paused
+	// task, but the run is over: the answer arrives as the next turn and is
+	// rebuilt from session state. Input aimed at it must not be treated as a
+	// supplement to something still running.
+	WaitingForUser bool `json:"waiting_for_user"`
+}
+
+// desktopRunSeparator joins bot and run into one map key. It cannot occur in
+// either identifier, so the parts stay recoverable and no run can impersonate
+// another by containing the delimiter.
+const desktopRunSeparator = "\x00"
+
+var (
+	activeDesktopRunsMu sync.Mutex
+	activeDesktopRuns   = make(map[string]*ActiveDesktopRun)
+)
+
+func desktopRunKey(botID, runID string) string {
+	return strings.TrimSpace(botID) + desktopRunSeparator + strings.TrimSpace(runID)
+}
+
+// registerActiveDesktopRun records a turn that has been sent and accepted.
+func (a *App) registerActiveDesktopRun(botID, requestID, sessionKey, text, phase string) *ActiveDesktopRun {
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	// Before Hub answers with a run id the request id is the only handle we
+	// have, so it stands in until setActiveDesktopRunID replaces it. It is
+	// unique per send, which keeps concurrent turns apart in the meantime.
+	run := &ActiveDesktopRun{
+		BotID:      botID,
+		RunID:      "",
+		RequestID:  requestID,
+		SessionKey: sessionKey,
+		TaskText:   text,
+		Phase:      phase,
+		StartedAt:  time.Now(),
+	}
+	activeDesktopRuns[desktopRunKey(botID, requestID)] = run
+	return run
+}
+
+// setActiveDesktopRunID swaps the request-id placeholder for the real run id
+// once the admit response names it. Until then the entry stays reachable by
+// request id and invisible to run-keyed lookups.
+func (a *App) setActiveDesktopRunID(botID, requestID, runID string) {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	if botID == "" || runID == "" {
+		return
+	}
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	placeholder := desktopRunKey(botID, requestID)
+	run, exists := activeDesktopRuns[placeholder]
+	if !exists || run == nil {
+		return
+	}
+	delete(activeDesktopRuns, placeholder)
+	run.RunID = runID
+	activeDesktopRuns[desktopRunKey(botID, runID)] = run
+}
+
+func unregisterActiveDesktopRun(botID, requestID, runID string) {
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	keys := []string{desktopRunKey(botID, runID)}
+	if strings.TrimSpace(requestID) != "" {
+		keys = append(keys, desktopRunKey(botID, requestID))
+	}
+	for _, key := range keys {
+		if key == desktopRunSeparator {
+			continue
+		}
+		delete(activeDesktopRuns, key)
+	}
+}
+
+// GetActiveDesktopRuns lists every cloud-desktop turn still believed to be
+// running, newest first.
+//
+// Entries whose run id has not arrived yet are left out: they carry no
+// delivery address, and offering one as a supplement target would either fail
+// opaquely server-side or invite guessing, both of which the fail-safe rule
+// (§3.1f 保守) forbids. They become visible the moment setActiveDesktopRunID
+// re-keys them.
+//
+// More than one is normal. Callers that cannot tell which run a message is
+// about must ask the person rather than pick one: routing their words into the
+// wrong run cannot be undone once they are part of that run's context.
+func (a *App) GetActiveDesktopRuns(botID string) []*ActiveDesktopRun {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil
+	}
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	out := make([]*ActiveDesktopRun, 0, len(activeDesktopRuns))
+	for key, run := range activeDesktopRuns {
+		prefix := botID + desktopRunSeparator
+		if !strings.HasPrefix(key, prefix) || run == nil {
+			continue
+		}
+		if strings.TrimSpace(run.RunID) == "" {
+			continue
+		}
+		copied := *run
+		out = append(out, &copied)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+	return out
+}
+
+// DesktopBotSupplementReceipt tells the caller what became of one message it
+// offered as supplementary input. Stage never claims more than happened: until
+// the loop reports consumption we say queued, and when no run could take it we
+// say so plainly.
+type DesktopBotSupplementReceipt struct {
+	Accepted     bool     `json:"accepted"`
+	RunID        string   `json:"run_id,omitempty"`
+	Stage        string   `json:"stage"` // queued | no_active_run | waiting_for_user | ambiguous
+	Message      string   `json:"message"`
+	SupplementID string   `json:"supplement_id,omitempty"`
+	Candidates   []string `json:"candidates,omitempty"`
+}
+
+const (
+	desktopBotSupplementQueued         = "queued"
+	desktopBotSupplementNoActiveRun    = "no_active_run"
+	desktopBotSupplementWaitingForUser = "waiting_for_user"
+	desktopBotSupplementAmbiguous      = "ambiguous"
+)
+
+// AppendDesktopBotSupplement offers one message to a cloud-desktop turn that is
+// still running, naming the run explicitly.
+//
+// Routing is never guessed from the bot alone. When the message names no run
+// and more than one is live, the caller gets candidates back and must ask the
+// person which turn they meant: delivering words into the wrong run is not
+// recoverable once they are in its context.
+func (a *App) AppendDesktopBotSupplement(botID, runID, supplement string) (*DesktopBotSupplementReceipt, error) {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	supplement = strings.TrimSpace(supplement)
+	if botID == "" || supplement == "" {
+		return nil, fmt.Errorf("bot id and supplement are required")
+	}
+	// Defense in depth for the §3.1f kill switch: the classifier already
+	// short-circuits, so a direct call here means someone bypassed it. Saying
+	// the channel is closed keeps the caller from learning a run id from this
+	// path while the feature is off.
+	if desktopSupplementDisabled() {
+		botlog.Write(botID, "gui.supplement_classified", nil, "stage", desktopBotSupplementNoActiveRun, "disabled", "true")
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementNoActiveRun, Message: "补充通道已关闭，这条会作为新任务发送。"}, nil
+	}
+	runs := a.GetActiveDesktopRuns(botID)
+	if len(runs) == 0 {
+		botlog.Write(botID, "gui.supplement_classified", nil, "stage", desktopBotSupplementNoActiveRun)
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementNoActiveRun, Message: "当前没有正在执行的任务，这条会作为新任务发送。"}, nil
+	}
+	var target *ActiveDesktopRun
+	if runID != "" {
+		for _, run := range runs {
+			if run.RunID == runID {
+				target = run
+				break
+			}
+		}
+	} else if len(runs) == 1 {
+		target = runs[0]
+	} else {
+		candidates := make([]string, 0, len(runs))
+		for _, run := range runs {
+			candidates = append(candidates, run.RunID)
+		}
+		botlog.Write(botID, "gui.supplement_classified", nil, "stage", desktopBotSupplementAmbiguous, "candidates", strconv.Itoa(len(candidates)))
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementAmbiguous, Candidates: candidates, Message: "你有多个任务正在执行，请说明这条是补充给哪一个。"}, nil
+	}
+	if target == nil {
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementNoActiveRun, Message: "那个任务已经结束了，这条会作为新任务发送。"}, nil
+	}
+	// A run that stopped to ask a question is finished, not paused. Its answer
+	// must travel as the next ordinary turn, which already knows how to rebuild
+	// the question from session state; routing it here would drop it.
+	if target.WaitingForUser {
+		botlog.Write(botID, "gui.supplement_classified", nil, "stage", desktopBotSupplementWaitingForUser, "run", target.RunID)
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementWaitingForUser, RunID: target.RunID, Message: "这条会作为对正在等待的回答发送。"}, nil
+	}
+	sent, err := a.postDesktopBotSupplement(botID, target.RunID, supplement)
+	if err != nil {
+		return nil, err
+	}
+	botlog.Write(botID, "gui.supplement_dispatched", nil, "run", target.RunID, "supplement", sent.SupplementID)
+	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: "已收到，会在当前任务的下一步生效。"}, nil
+}
+
+// PersistDesktopBotPreference writes a preference to the user's instance on the
+// server.
+//
+// The copy matters: desktop work is carried out over there, so that is where a
+// preference has to live for later tasks to honour it. The local store still
+// holds preferences too, because the foreground reading of a message reads
+// them here, but it cannot reach the worker.
+//
+// A single hyphen withdraws. Withdrawal has to travel to the server as well:
+// clearing only the local copy would leave the worker honouring a preference
+// the person has just taken back, with nothing on screen to explain why.
+func (a *App) PersistDesktopBotPreference(botID, content string) error {
+	botID = strings.TrimSpace(botID)
+	content = strings.TrimSpace(content)
+	if botID == "" || content == "" {
+		return fmt.Errorf("bot id and preference are required")
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/preference"
+	method := http.MethodPost
+	if content == "-" {
+		method = http.MethodDelete
+	}
+	if err := a.desktopBotCall(context.Background(), method, path, map[string]string{"content": content}, nil, 20*time.Second); err != nil {
+		botlog.Write(botID, "gui.preference_failed", err, "stage", "withdraw", "text_len", strconv.Itoa(len(content)))
+		return err
+	}
+	botlog.Write(botID, "gui.preference_saved", nil, "text_len", strconv.Itoa(len(content)))
+	return nil
+}
+
+// markDesktopRunWaitingForUser records that the run finished because the worker
+// asked a question. The entry stays listed until the turn returns so the UI can
+// still describe it, but it no longer accepts supplementary input.
+func (a *App) markDesktopRunWaitingForUser(botID, requestID string) {
+	botID = strings.TrimSpace(botID)
+	requestID = strings.TrimSpace(requestID)
+	if botID == "" {
+		return
+	}
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	for key, run := range activeDesktopRuns {
+		if run == nil {
+			continue
+		}
+		if strings.HasPrefix(key, botID+desktopRunSeparator) && run.RequestID == requestID {
+			run.WaitingForUser = true
+			return
+		}
+	}
+}
+
+// postDesktopBotSupplement forwards one supplement to Hub for the named run.
+func (a *App) postDesktopBotSupplement(botID, runID, supplement string) (*desktopRunSupplementAck, error) {
+	var out desktopRunSupplementAck
+	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/runs/" + url.PathEscape(strings.TrimSpace(runID)) + "/supplement"
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, map[string]string{"content": supplement}, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type desktopRunSupplementAck struct {
+	SupplementID string `json:"supplement_id"`
+	Accepted     bool   `json:"accepted"`
+	State        string `json:"state"`
+	Detail       string `json:"detail"`
+}
+
+// DesktopSupplementState is one supplement's terminal state as the server
+// recorded it. Content carries the original words only so the UI can offer
+// them again when the run ended before they were used; it must never reach a
+// log or a durable store from here.
+type DesktopSupplementState struct {
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Content string `json:"content,omitempty"`
+}
+
+// GetDesktopBotSupplements reports the final state of the supplements recorded
+// for one run. This is the pull half of invariant I4: the push arrives on the
+// run's terminal event, but a UI that loads afterwards has no event to catch,
+// so it asks instead. A run whose supplements never existed answers an empty
+// list, not an error.
+func (a *App) GetDesktopBotSupplements(botID, runID string) ([]DesktopSupplementState, error) {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	if botID == "" || runID == "" {
+		return nil, fmt.Errorf("bot id and run id are required")
+	}
+	var out struct {
+		Items []DesktopSupplementState `json:"items"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/runs/" + url.PathEscape(runID) + "/supplements"
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, path, nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+// reportDesktopSupplementState pushes one finished run's supplement outcomes
+// to the UI. Best effort: if the report fails the receipts stay at their last
+// known state rather than inventing one, and the pull binding can still be
+// asked later. Only items with a final state are sent — a queued item in a
+// finished run is already impossible server-side.
+func (a *App) reportDesktopSupplementState(botID, sessionKey, runID string) {
+	items, err := a.GetDesktopBotSupplements(botID, runID)
+	if err != nil {
+		botlog.Write(botID, "gui.supplement_state_failed", err, "run", runID)
+		return
+	}
+	final := make([]DesktopSupplementState, 0, len(items))
+	for _, item := range items {
+		if item.State != "queued" {
+			final = append(final, item)
+		}
+	}
+	if len(final) == 0 {
+		return
+	}
+	a.emitEvent("desktop-bot-supplement-state", map[string]any{
+		"bot_id":      botID,
+		"session_key": sessionKey,
+		"run_id":      runID,
+		"items":       final,
+	})
+}
+
 func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase string) {
+	run := a.registerActiveDesktopRun(botID, requestID, sessionKey, text, phase)
+	// The run id has to be read inside the closure. A bare defer would freeze
+	// the value it had when armed, which is the empty placeholder, because Hub
+	// only names the run later; the entry would then be re-keyed under the real
+	// id and never removed, and every finished run would go on being offered as
+	// a supplement target.
+	defer func() { unregisterActiveDesktopRun(botID, requestID, run.RunID) }()
 	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -207,8 +614,9 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	if desktopBotRelayOverride == nil {
 		go a.publishDesktopBotView(ctx, requestID, sessionKey, botID)
 	}
-	result, err := a.relayDesktopBot(ctx, botID, text, phase)
+	result, err := a.relayDesktopBot(ctx, botID, text, phase, requestID)
 	resp := &IMAgentResponse{RequestID: requestID, SessionKey: sessionKey, EventScopeID: sessionKey}
+	waiting := false
 	if err != nil {
 		resp.Error = err.Error()
 		if novnc, ok := a.desktopTimeoutHandoff(botID, err); ok {
@@ -243,6 +651,13 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		resp.AskUserSecretName = strings.TrimSpace(result.AskUserSecretName)
 		resp.AskUserQuestion = strings.TrimSpace(result.AskUserQuestion)
 		resp.AskUserOptionsJSON = strings.TrimSpace(result.AskUserOptionsJSON)
+		if result.WaitingForUser || resp.AskUserQuestion != "" || resp.AskUserSecretName != "" {
+			// The run ended to ask this person something. Mark it so a reply is
+			// routed back as the next turn instead of being offered to a run
+			// that can no longer consume it.
+			a.markDesktopRunWaitingForUser(botID, requestID)
+			waiting = true
+		}
 		if result.UserControl || resp.DesktopAttentionReason != "" {
 			resp.DesktopHandoffURL = result.NovncURL
 		}
@@ -251,6 +666,15 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		desktopBotResultSink(resp)
 	}
 	a.emitAIAssistantResponse(requestID, resp)
+	// The run is terminal now, so the server has already reaped its supplements
+	// and their states are final. A turn that ended to ask a question is not:
+	// its answer travels as the next ordinary turn, and the queued items may
+	// still be consumed by it. Everything else reports here so a receipt the
+	// person saw as queued can still turn into applied or missed (invariant
+	// I4) without anyone polling.
+	if run.RunID != "" && !waiting {
+		a.reportDesktopSupplementState(botID, sessionKey, run.RunID)
+	}
 	botlog.Write(botID, "gui.relay_end", err,
 		"request_id", requestID,
 		"phase", phase,
@@ -267,7 +691,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	)
 }
 
-func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase string) (desktopBotRelayResult, error) {
+func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID string) (desktopBotRelayResult, error) {
 	if desktopBotRelayOverride != nil {
 		return desktopBotRelayOverride(ctx, botID, text, phase)
 	}
@@ -303,6 +727,9 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase string) (d
 			"http", strconv.Itoa(status),
 			"phase", phase,
 		)
+		// The turn only becomes addressable once Hub names its run. Before this
+		// line nothing can route supplementary input to it.
+		a.setActiveDesktopRunID(botID, requestID, out.RunID)
 		return a.waitDesktopBotRun(ctx, botID, out.RunID)
 	}
 	botlog.Write(botID, "gui.admit", nil,
