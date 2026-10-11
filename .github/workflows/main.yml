@@ -2741,6 +2741,26 @@ jobs:
             sleep 2
           done
 
+          # The update manifest is not in RELEASE_ONLY_ASSETS (that list is
+          # the mirror allowlist); the softprops action used to upload it as
+          # part of release-assets/*. Upload it explicitly so
+          # releases/latest/download/<manifest> resolves.
+          manifest_path="${RELEASE_ASSETS_DIR}/${MANIFEST_NAME}"
+          if [ -f "$manifest_path" ]; then
+            manifest_id=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --jq ".[] | select(.name == \"${MANIFEST_NAME}\") | .id" 2>/dev/null)
+            if [ -n "$manifest_id" ]; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${manifest_id}" > /dev/null
+            fi
+            curl --fail --silent --show-error \
+                 --header "Authorization: Bearer ${GH_TOKEN}" \
+                 --header "Content-Type: application/octet-stream" \
+                 --data-binary "@${manifest_path}" \
+                 "${upload_url}${MANIFEST_NAME}" > /dev/null
+            echo "uploaded ${MANIFEST_NAME} ($(stat -c%s "$manifest_path") bytes)"
+          else
+            echo "manifest missing: $manifest_path" >&2; exit 1
+          fi
+
       - name: Verify GitHub update manifest is published
         # MaClaw GUI reads this exact stable endpoint before falling back to
         # R2. Validate the published Release asset, rather than merely the
