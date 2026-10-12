@@ -625,3 +625,40 @@ A/B 数据（同一张真实会话 flowchart，同一个 fit-content 气泡）�
 - ⭐ **`parseFloat` 对非数字后缀宽容是尺寸解析的经典坑**：`parseFloat("100%")=100`、`parseFloat("12px")=12`。凡"读尺寸"的代码，先整值校验 `/^[0-9.]+$/` 再 parseFloat，把单位化值显式交给 fallback。
 - 排除嫌疑要落到证据：临时元素泄漏看 render 源码的 catch/成功路径清理调用；重渲染风暴看 theme 常量身份。两处都不改代码——**不为理论情况写防御**。
 - 同文件双 WIP 切分流程：备份混合文件 → `checkout` 回 HEAD → 只重放自己的编辑 → 提交 → 回填备份。比 stash 更稳，因为不受 stash 栈序影响。
+
+## 13. 第十四轮：配图的用户可见文案未走 i18n；%%{init}%% 主题注入取证（2026-10-12）
+
+### 13.1 实锤修复：面向读者的文案硬编码英文
+
+`AssistantMermaidDiagram` 已接收 `lang` 且四个缩放 label 走了 `localizeText`，但其余 5 处一律英文：`Rendering diagram…`、`aria-label="Mermaid diagram"`、`The Mermaid code block is empty.`、超长/超预算拒绝文案。`WorkflowDocPreview` 的 `MermaidBlock` 连 `lang` 都没收（父链路 `renderMarkdown(md, theme)` 不透传），4 条文案同样裸英文。
+
+修复：
+- 组件内部 5 处全部 `localizeText(lang, …)`（en / zh-Hans / zh-Hant 三档，与其他 AI 面板文案一致）。
+- `WorkflowDocPreview`：`MermaidBlock`、`renderMarkdown` 增 `lang` 参数并补齐调用链，同时把 `lang` 补进 `useMemo` 依赖数组（否则切语言后文档体不刷新）。
+- **错误文案在「展示时」解析，不在「抛错时」解析**：初版把 `setError(localizeText(...))` 写进 catch，语言切换后旧译文会残留到下次重渲染（而失败态恰恰是阻止重渲染的那个 state）。改为 state 只存 `{kind, message}` 技术原文，渲染时按当前 lang 取词。
+
+### 13.2 取证结论（未改代码，待产品拍板）：`%%{init}%%` 可覆盖单图主题，但不跨图持久
+
+真浏览器探针（Playwright + 仓库 mermaid 11.14）以 App 实际配置（`securityLevel: strict` + 每张图前 `initialize`）测得：
+
+| 场景 | 结果 |
+|---|---|
+| `%%{init:{"securityLevel":"loose","theme":"dark"}}%%` | **降级失败**：`onclick` / `callback` / `javascript:` href 全部被剥离——安全等级不会被模型输出撬动 |
+| `%%{init:{"themeVariables":{...}}}%%` 注入配色 | **对当前这张图生效**（注入色进入 `<style>`，应用 themeVariables 被覆盖） |
+| 同一注入是否污染下一张图 | **否**：下一次 `initialize` 重置；即使不重 initialize 也不残留 |
+
+即：这是一条「DEGRADE」而非「fail-open」——模型误输出或恶意构造的一段图会画成与应用主题不一致的配色（注入暗色底会造成浅色 UI 下不可读），但**不动摇安全边界、不跨图传播**。当前零测试覆盖，最终决定是否加「剥除/忽略 init 指令」的闸门需产品拍板。
+
+### 13.3 验证
+
+- 新增 `assistantDiagramCopy.test.tsx`（6 用例）：三档语言本地化；Mermaid 自身报错在技术细节前保留原文（翻译它等于藏掉"我哪里写错了"的唯一线索）；语言切换时不残留译文；预算拒绝文案含 750 / 1,500。
+- 语义变异验证：把 localizeText 换成恒返回英文 → 2 用例变红；还原后全绿。
+- 回归 66/66 通过（含 WorkflowDocPreview.markdownInk、zoom、exportSize、MessageContentRenderer、mermaidTaughtForms），`tsc --noEmit` 除他人 WIP 文件外干净。
+
+### 13.4 方法论沉淀
+
+- ⭐ **组件已经收了 `lang` 不等于它真的国际化了**：审计方法是 grep 组件内所有面向读者的字符串字面量，逐条追问"它有 `localizeText` 包裹吗"。label 一批受控、其余裸奔是这类改动的典型残留形态。
+- ⭐ **翻译后的文案不能存进 state**：`setError(localizeText(lang, ...))` 会把"出生时的语言"烤进状态，而失败态本身就是阻止重渲染的原因 → 永不过期。正确形态：state 存技术原文/故障种类，**渲染时才取词**。判定口诀：**状态存事实，展示层负责措辞**。
+- ⭐ **`useMemo` 依赖数组漏 `lang` 是 i18n 改造的标准次生 bug**：新增语言参数时，同一提交里必须同步检查所有被该参数影响的计算缓存依赖。
+- ⭐ **判断注入类风险先看它是降级还是 fail-open**：`%%{init}%%` 能改配色（可见性降级）但撬不动 `securityLevel`（安全边界）——两者处置优先级完全不同。用真浏览器探针按这两类分别取证，别用"能不能注入"一句话概括。
+- **探针度量必须先验证自己有效**：本轮第一版探针的正则全没匹配上（`style tag len: 0`），差点据此得出"无泄漏"的错误结论；改成逐项结构计数（`<style>` 出现次数、注入色/应用色的有无）后才拿到可信数据。**读数为零时先怀疑探针，别急于下结论。**

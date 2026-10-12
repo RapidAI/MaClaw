@@ -134,9 +134,9 @@ function sanitizeMermaidCode(raw: string): string {
 }
 
 /** Renders a mermaid diagram from source code. */
-function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme }) {
+function MermaidBlock({ code, theme, lang }: { code: string; theme: DocPreviewTheme; lang?: string }) {
     const [svg, setSvg] = useState<string>("");
-    const [error, setError] = useState<string>("");
+    const [failure, setFailure] = useState<{ kind: "render" | "load"; message: string } | null>(null);
     // Hidden workspace div that Mermaid uses during rendering. By providing this
     // as the third argument to render(), Mermaid creates its temp <div id="d{id}">
     // inside our container instead of document.body.
@@ -159,7 +159,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
         const sanitized = sanitizeMermaidCode(code);
         // Do not leave a prior parse error or stale SVG visible while a new
         // document/theme render is in flight.
-        setError("");
+        setFailure(null);
         setSvg("");
         getMermaid().then(async (m) => {
             if (cancelled) return;
@@ -175,20 +175,23 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
                 if (!cancelled && rendered) setSvg(rendered);
             } catch (e: any) {
                 if (!cancelled) {
-                    setError(e?.message || "Mermaid render error");
+                    setFailure({ kind: "render", message: String(e?.message || "") });
                     if (containerRef.current) {
                         containerRef.current.innerHTML = "";
                     }
                 }
             }
         }).catch((e) => {
-            if (!cancelled) setError(e?.message || "Failed to load mermaid");
+            if (!cancelled) setFailure({ kind: "load", message: String(e?.message || "") });
         });
         return () => { cancelled = true; };
     }, [code, theme]);
 
     let content: React.ReactNode;
-    if (error) {
+    if (failure) {
+        // Resolved here, not at throw time: the UI language can change while the
+        // same failure is on screen, and a translated string baked into state
+        // would keep answering in the language it was born with.
         content = (
             <pre style={{
                 background: theme.codeBlockBg,
@@ -199,7 +202,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
                 fontSize: "12px",
                 color: theme.textMuted,
             }}>
-                <div style={{ marginBottom: "4px", color: theme.textMuted }}>WARN Mermaid render failed: {error}</div>
+                <div style={{ marginBottom: "4px", color: theme.textMuted }}>{localizeText(lang, "WARN Mermaid render failed: ", "警告：Mermaid 渲染失败：", "警告：Mermaid 渲染失敗：")}{failure.message || localizeText(lang, failure.kind === "load" ? "Failed to load Mermaid" : "Mermaid render error", failure.kind === "load" ? "Mermaid 加载失败" : "Mermaid 渲染错误", failure.kind === "load" ? "Mermaid 載入失敗" : "Mermaid 渲染錯誤")}</div>
                 <code style={{ color: theme.codeText }}>{code}</code>
             </pre>
         );
@@ -213,7 +216,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
     } else {
         content = (
             <div style={{ margin: "8px 0", padding: "12px", color: theme.textMuted, fontSize: "12px" }}>
-                Rendering diagram...
+                {localizeText(lang, "Rendering diagram…", "正在渲染图表…", "正在渲染圖表…")}
             </div>
         );
     }
@@ -1124,7 +1127,7 @@ function renderDocTable(tableLines: string[], key: string, theme: DocPreviewThem
     );
 }
 
-function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
+function renderMarkdown(md: string, theme: DocPreviewTheme, lang?: string): React.ReactNode[] {
     const lines = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
     const nodes: React.ReactNode[] = [];
     let i = 0;
@@ -1150,7 +1153,7 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
         if (codeLang.toLowerCase() === "mermaid") {
             const mermaidCode = codeLines.join("\n");
             nodes.push(
-                <MermaidBlock key={`mermaid-${nodes.length}`} code={mermaidCode} theme={theme} />
+                <MermaidBlock key={`mermaid-${nodes.length}`} code={mermaidCode} theme={theme} lang={lang} />
             );
             codeLines = [];
             codeLang = "";
@@ -1495,8 +1498,8 @@ export function WorkflowDocPreview({
     // actual document or active scheme rather than every progress update.
     const proseTheme = useMemo(() => withMarkdownProseTheme(theme), [theme]);
     const renderedContent = useMemo(
-        () => content ? renderMarkdown(content, proseTheme) : null,
-        [content, proseTheme],
+        () => content ? renderMarkdown(content, proseTheme, lang) : null,
+        [content, proseTheme, lang],
     );
     const gateResult = gateResults.get(activePhaseID);
     const gateItems = Array.isArray(gateResult?.items) ? gateResult.items : [];

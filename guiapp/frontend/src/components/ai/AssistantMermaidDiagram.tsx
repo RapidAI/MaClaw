@@ -264,13 +264,28 @@ export function exceedsMermaidRenderBudget(source: string): boolean {
     return edgeCount > MAX_MERMAID_EDGE_COUNT;
 }
 
-function getMermaidFallbackMessage(error: string): string {
-    if (error.startsWith("The Mermaid") || error.startsWith("Unable to render this Mermaid diagram.")) return error;
-    return `Unable to render this Mermaid diagram. ${error}`;
+/** Why a diagram was refused before Mermaid ever saw it. Exported for copy tests. */
+export function mermaidBudgetMessage(lang?: string): string {
+    return localizeText(
+        lang,
+        `The Mermaid diagram exceeds the ${MAX_MERMAID_NODE_COUNT} node or ${MAX_MERMAID_EDGE_COUNT.toLocaleString()} edge rendering limit.`,
+        `Mermaid 图表超过 ${MAX_MERMAID_NODE_COUNT} 节点或 ${MAX_MERMAID_EDGE_COUNT.toLocaleString()} 连线的渲染上限。`,
+        `Mermaid 圖表超過 ${MAX_MERMAID_NODE_COUNT} 節點或 ${MAX_MERMAID_EDGE_COUNT.toLocaleString()} 連線的渲染上限。`,
+    );
 }
 
-function errorMessage(reason: unknown): string {
-    return reason instanceof Error && reason.message ? reason.message : "Unable to render this Mermaid diagram.";
+export function getMermaidFallbackMessage(error: string, lang?: string): string {
+    if (error.startsWith("The Mermaid") || error.startsWith("Unable to render this Mermaid diagram.")) return error;
+    const unable = localizeText(lang, "Unable to render this Mermaid diagram.", "无法渲染此 Mermaid 图表。", "無法渲染此 Mermaid 圖表。");
+    // A Mermaid-reported syntax detail stays verbatim behind the localised lead
+    // sentence: translating it would hide the exact complaint from the reader.
+    return `${unable} ${error}`;
+}
+
+export function errorMessage(reason: unknown, lang?: string): string {
+    return reason instanceof Error && reason.message
+        ? reason.message
+        : localizeText(lang, "Unable to render this Mermaid diagram.", "无法渲染此 Mermaid 图表。", "無法渲染此 Mermaid 圖表。");
 }
 
 async function renderDiagram(
@@ -320,6 +335,8 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
     const zoomOutLabel = localizeText(lang, "Zoom out", "缩小图表", "縮小圖表");
     const zoomInLabel = localizeText(lang, "Zoom in", "放大图表", "放大圖表");
     const zoomResetLabel = localizeText(lang, "Reset diagram size", "重置图表大小", "重設圖表大小");
+    const renderingLabel = localizeText(lang, "Rendering diagram…", "正在渲染图表…", "正在渲染圖表…");
+    const diagramLabel = localizeText(lang, "Mermaid diagram", "Mermaid 图表", "Mermaid 圖表");
 
     React.useEffect(() => {
         let cancelled = false;
@@ -330,15 +347,20 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
         setZoom(DEFAULT_MERMAID_ZOOM);
         const source = sanitizeMermaidCode(code).trim();
         if (!source) {
-            setError("The Mermaid code block is empty.");
+            setError(localizeText(lang, "The Mermaid code block is empty.", "Mermaid 代码块为空。", "Mermaid 程式碼區塊為空。"));
             return () => { cancelled = true; };
         }
         if (source.length > MAX_MERMAID_SOURCE_LENGTH) {
-            setError(`The Mermaid source exceeds the ${MAX_MERMAID_SOURCE_LENGTH.toLocaleString()} character rendering limit.`);
+            setError(localizeText(
+                lang,
+                `The Mermaid source exceeds the ${MAX_MERMAID_SOURCE_LENGTH.toLocaleString()} character rendering limit.`,
+                `Mermaid 源码超过 ${MAX_MERMAID_SOURCE_LENGTH.toLocaleString()} 字符渲染上限。`,
+                `Mermaid 原始碼超過 ${MAX_MERMAID_SOURCE_LENGTH.toLocaleString()} 字元渲染上限。`,
+            ));
             return () => { cancelled = true; };
         }
         if (exceedsMermaidRenderBudget(source)) {
-            setError(`The Mermaid diagram exceeds the ${MAX_MERMAID_NODE_COUNT} node or ${MAX_MERMAID_EDGE_COUNT.toLocaleString()} edge rendering limit.`);
+            setError(mermaidBudgetMessage(lang));
             return () => { cancelled = true; };
         }
         void getMermaid().then(async (mermaid) => {
@@ -353,7 +375,7 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
             if (!cancelled && rendered) setSvg(rendered);
         }).catch((reason: unknown) => {
             if (!cancelled) {
-                setError(errorMessage(reason));
+                setError(errorMessage(reason, lang));
                 if (workspaceRef.current) workspaceRef.current.innerHTML = "";
             }
         });
@@ -396,20 +418,20 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
                     <div
                         data-testid="assistant-mermaid-diagram"
                         role="img"
-                        aria-label="Mermaid diagram"
+                        aria-label={diagramLabel}
                         style={{ maxWidth: "100%", overflow: "auto", contain: "content", color: theme.text }}
                         dangerouslySetInnerHTML={{ __html: zoomedSvg }}
                     />
                 </div>
             ) : error ? (
                 <div data-testid="assistant-mermaid-fallback" style={chatCodeWellStyle(theme)}>
-                    <div role="status" style={{ margin: 0, padding: "8px 12px 0", color: theme.text, fontSize: "12px", lineHeight: 1.4, whiteSpace: "normal", overflowWrap: "anywhere" }}>{getMermaidFallbackMessage(error)}</div>
+                    <div role="status" style={{ margin: 0, padding: "8px 12px 0", color: theme.text, fontSize: "12px", lineHeight: 1.4, whiteSpace: "normal", overflowWrap: "anywhere" }}>{getMermaidFallbackMessage(error, lang)}</div>
                     <pre style={codeFenceScrollUnderLangStyle}>
                         <code style={codeFenceInnerStyle}>{code}</code>
                     </pre>
                 </div>
             ) : (
-                <div data-testid="assistant-mermaid-loading" style={{ margin: "8px 0", padding: "10px 12px", color: theme.textMuted, fontSize: "0.9em" }}>Rendering diagram…</div>
+                <div data-testid="assistant-mermaid-loading" style={{ margin: "8px 0", padding: "10px 12px", color: theme.textMuted, fontSize: "0.9em" }}>{renderingLabel}</div>
             )}
         </>
     );
