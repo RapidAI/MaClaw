@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -42,6 +43,33 @@ type SystemPromptConfig struct {
 	// nobody can render. Opt in per surface; a missing declaration means "no
 	// diagrams", never "maybe".
 	DiagramRenderingSupported bool
+}
+
+// DiagramRenderingEnvKey is the operator kill switch for the visualization
+// block. Set to off/0/false/no to stop asking for ```mermaid fences everywhere,
+// without rebuilding or rolling back.
+//
+// DiagramRenderingSupported decides per REPLY SURFACE and is the right long-term
+// control, but it cannot help when the model itself starts emitting fences that
+// fail to parse across the board (for example after a provider model swap).
+// Then every GUI reply degrades into raw source and the only escape for an
+// operator would be a rollback. This keeps that escape available at runtime.
+const DiagramRenderingEnvKey = "MACLAW_DIAGRAM_RENDERING"
+
+// EnableDiagramRendering reports whether the visualization block should be
+// written for this prompt. It is the single decision point used by every
+// injection site so the two independent reasons it can be off — an unsupported
+// reply surface, or an operator kill switch — cannot get out of sync.
+func EnableDiagramRendering(cfg SystemPromptConfig) bool {
+	if !cfg.DiagramRenderingSupported {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(DiagramRenderingEnvKey))) {
+	case "0", "off", "false", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // SystemPromptDeps holds the dependencies needed to build the system prompt.

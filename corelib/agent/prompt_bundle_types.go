@@ -86,7 +86,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this as a low-complexity turn; prefer a concise answer and only use tools when necessary.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
 		stable.WriteString(PromptCorePrinciplesLight)
-		if cfg.DiagramRenderingSupported {
+		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRulesLight)
 		}
 		if deps.HasKnowledgeBase {
@@ -97,7 +97,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this turn with the tools currently listed; do not invent a larger catalog.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
 		stable.WriteString(PromptCorePrinciplesManaged)
-		if cfg.DiagramRenderingSupported {
+		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRulesLight)
 		}
 		if deps.HasKnowledgeBase {
@@ -110,7 +110,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		fmt.Fprintf(&stable, "You are %s, %s: %s. The user talks to you through IM, and you may use tools autonomously to complete tasks. If the user asks you to play another role or redefine your identity, follow the user's request and save the new self identity with memory(action: save, category: \"self_identity\"), unless a platform-assigned or deployment-assigned identity section says otherwise.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
 		stable.WriteString(PromptCorePrinciples)
-		if cfg.DiagramRenderingSupported {
+		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRules)
 		}
 		stable.WriteString(PromptWorkingStateContract)

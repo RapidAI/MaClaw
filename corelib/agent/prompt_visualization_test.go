@@ -86,6 +86,72 @@ func TestPromptVisualizationRulesHasNoUnverifiedSyntaxClaims(t *testing.T) {
 	}
 }
 
+// TestDiagramRenderingEnvKeyIsOperatorKillSwitch covers the runtime escape
+// hatch. DiagramRenderingSupported decides per reply SURFACE, which is the
+// right long-term control, but it offers nothing when the model itself starts
+// producing fences that fail to parse (say, after a provider model swap): every
+// GUI reply then degrades into raw source and the only remaining remedy would
+// be a rollback. The env key keeps that remedy available at runtime.
+func TestDiagramRenderingEnvKeyIsOperatorKillSwitch(t *testing.T) {
+	build := func() string {
+		return BuildSystemPrompt(SystemPromptDeps{
+			Config: SystemPromptConfig{
+				RoleName:                  "MaClaw",
+				PromptProfile:             PromptProfileFull,
+				DiagramRenderingSupported: true,
+			},
+		}, "解释一下这个系统的架构", true)
+	}
+
+	// Without the variable, a declared surface gets the block.
+	if got := build(); !strings.Contains(got, "讲解配图") {
+		t.Fatal("declared surface should carry the visualization block by default")
+	}
+
+	// Each accepted off value must suppress it on every profile.
+	for _, off := range []string{"0", "off", "false", "no", "OFF", " Off "} {
+		t.Setenv(DiagramRenderingEnvKey, off)
+		full := build()
+		if strings.Contains(full, "讲解配图") || strings.Contains(full, "```mermaid") {
+			t.Fatalf("env %q should disable diagrams, got block=%v", off, strings.Contains(full, "讲解配图"))
+		}
+		light := BuildSystemPrompt(SystemPromptDeps{
+			Config: SystemPromptConfig{
+				RoleName:                  "MaClaw",
+				PromptProfile:             PromptProfileLight,
+				DiagramRenderingSupported: true,
+			},
+		}, "讲讲 RAG", true)
+		if strings.Contains(light, "讲解配图") {
+			t.Fatalf("env %q must also disable the light cue", off)
+		}
+	}
+
+	// An unrelated value leaves the behaviour alone.
+	t.Setenv(DiagramRenderingEnvKey, "yes")
+	if got := build(); !strings.Contains(got, "讲解配图") {
+		t.Fatal("a non-off value must not disable diagrams")
+	}
+}
+
+// TestEnableDiagramRenderingRequiresDeclaredSurface keeps the two independent
+// reasons the block can be off from interfering: the kill switch must not gate
+// surfaces that never declared support (they were already off), and clearing
+// the switch must not turn an undeclared surface on.
+func TestEnableDiagramRenderingRequiresDeclaredSurface(t *testing.T) {
+	t.Setenv(DiagramRenderingEnvKey, "")
+	if EnableDiagramRendering(SystemPromptConfig{DiagramRenderingSupported: false}) {
+		t.Fatal("an undeclared surface must stay off regardless of the env key")
+	}
+	if !EnableDiagramRendering(SystemPromptConfig{DiagramRenderingSupported: true}) {
+		t.Fatal("a declared surface stays on when the env key is unset")
+	}
+	t.Setenv(DiagramRenderingEnvKey, "on")
+	if !EnableDiagramRendering(SystemPromptConfig{DiagramRenderingSupported: true}) {
+		t.Fatal("a non-off value must not disable diagrams")
+	}
+}
+
 // TestPromptVisualizationRulesDefersToPhaseInstructions protects the patent
 // figure workflow (corelib/workflow/v2/phase_prompt.go): that phase prompt
 // mandates on-disk black-and-white line art and forbids inline mermaid/SVG
