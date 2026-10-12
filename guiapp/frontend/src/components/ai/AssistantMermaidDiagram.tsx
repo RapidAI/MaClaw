@@ -426,9 +426,27 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
  * Returns null when the diagram cannot be drawn; the caller then keeps the
  * source text, which is what the reader would have seen anyway.
  */
-export async function renderMermaidFenceToPNGDataURL(code: string, theme: Theme): Promise<string | null> {
-    const source = code.trim();
+/**
+ * Screen-equivalent source preparation for PDF export, or null when the export
+ * should keep the fence's source text instead of a picture.
+ *
+ * The on-screen pipeline sanitises model casing and enforces the render budget
+ * before Mermaid sees the source. Export must answer for the same fence the
+ * reader saw on screen; skipping either step would silently diverge — a
+ * lower-cased "sequencediagram" renders on screen yet fails detection in the
+ * export path, degrading the PDF to a source-code block for a diagram the user
+ * already saw drawn.
+ */
+export function prepareMermaidExportSource(code: string): string | null {
+    const source = sanitizeMermaidCode(code).trim();
     if (!source || source.length > MAX_MERMAID_SOURCE_LENGTH) return null;
+    if (exceedsMermaidRenderBudget(source)) return null;
+    return source;
+}
+
+export async function renderMermaidFenceToPNGDataURL(code: string, theme: Theme): Promise<string | null> {
+    const source = prepareMermaidExportSource(code);
+    if (!source) return null;
     try {
         const mermaid = await getMermaid();
         exportDiagramSeq += 1;
@@ -471,14 +489,19 @@ async function mermaidSvgToPNGDataURL(svg: string): Promise<string | null> {
     return canvas.toDataURL("image/png");
 }
 
-// The rendered SVG states its size in width/height, or in viewBox when the
-// width is a percentage. Both are read so a diagram is never scaled to zero.
-function mermaidSvgSize(svg: string): { width: number; height: number } | null {
+// The rendered SVG states its size in width/height attributes, or — when the
+// width is a percentage, which is mermaid's `useMaxWidth` default — in viewBox.
+// Both are read so a diagram is never scaled to zero.
+export function mermaidSvgSize(svg: string): { width: number; height: number } | null {
     const root = svg.match(/^<svg\b[^>]*>/);
     if (!root) return null;
     const attr = (name: string): number => {
         const match = root[0].match(new RegExp(`${name}="([^"]+)"`));
-        if (!match) return 0;
+        // Only a bare number is a pixel size. Mermaid writes `width="100%"` and
+        // parseFloat("100%") is 100 — accepting that would read a 100px diagram
+        // where none exists and short-circuit the viewBox fallback below, which
+        // is what actually carries the true aspect ratio.
+        if (!match || !/^[0-9.]+$/.test(match[1].trim())) return 0;
         const value = parseFloat(match[1]);
         return Number.isFinite(value) && value > 0 ? value : 0;
     };

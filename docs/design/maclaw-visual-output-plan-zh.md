@@ -602,3 +602,26 @@ A/B 数据（同一张真实会话 flowchart，同一个 fit-content 气泡）�
 - ⭐⭐ **`width:100%` 的 svg 不能直接放进 `width:fit-content` 容器**：百分比宽度循环解析 → 塌缩到替换元素默认 300px。这是"图很小"类 bug 的标准成因；修法是把宽度落成显式 px（或给容器固定宽度）。
 - **真浏览器 A/B 探针是布局类 bug 的唯一可信证据**：jsdom 无布局引擎，纯靠读代码推理会先撞上零尺寸容器这个"看起来像"的假根因。先证伪假根因、再换方向，靠的正是探针。
 - **判断"用户在跑什么版本"是排查第一步**：dist mtime（15:47）早于当日全部修复——两条现场截图（报错框、小图）分别对应两个已修问题，一行重建即可收敛，不需要新代码。
+
+## 12. 第十三轮：PDF 导出管线与屏幕管线脱节（2026-10-12）
+
+### 12.1 审查焦点
+
+渲染器运行时生命周期：错误路径资源清理、流式重渲染成本、导出路径与屏幕路径的一致性。前两个疑点经证据排除（mermaid 11.14 render 成功/失败路径均调用 `removeTempElements()`，无临时元素泄漏；`lightTheme`/`darkTheme` 是模块级常量，effect 依赖 theme 不引发流式重渲染风暴）。
+
+### 12.2 两个实锤缺陷（均在 `renderMermaidFenceToPNGDataURL` 链路）
+
+1. **导出源码绕过 sanitize + 渲染预算**：屏幕管线先 `sanitizeMermaidCode` 再查 750 节点/1500 边预算；导出路径只 `code.trim()`。同一小写 `sequencediagram` 屏幕上能画、PDF 里静默降级为源码块；超预算大图屏幕被拦、导出冻住 UI 线程。修法：抽出 `prepareMermaidExportSource`（sanitize + 长度 + 预算，null=保留源码文本），导出与屏幕同管线。
+2. **`mermaidSvgSize` 把 `width="100%"` 读成 100px**：mermaid `useMaxWidth` 默认输出 `width="100%"`（flowchart/sequence 均证实，无数值高度属性），`parseFloat("100%")===100` 为 truthy，短路了 viewBox 兜底 → 导出画布 100×viewBoxHeight，纵向拉伸失真。修法：属性值必须整体匹配 `/^[0-9.]+$/` 才算像素，百分比轴交给 viewBox。
+
+### 12.3 验证
+
+- 新增 `AssistantMermaidDiagram.exportSize.test.tsx`（7 用例）：真实 mermaid 11.14 根标签形态（`width="100%"` + max-width style + viewBox）必须取 viewBox 尺寸；数值属性优先；单侧百分比由 viewBox 补；全百分比/无尺寸/零 viewBox → null；导出管线对 `sequencediagram` 归一化、超预算拒绝。
+- 双变异验证：还原 parseFloat 短路 + 摘掉 sanitize，4 用例变红；还原后全绿。34/34 相关用例通过。
+
+### 12.4 方法论沉淀
+
+- ⭐ **同一 fence 的屏幕呈现与 PDF 导出必须同一条源码管线**：两条管线各自"看起来合理"时，分歧点（大小写、预算）会在用户已看到正确渲染之后静默降级。判定标准：任何进入 mermaid 的源码变换函数，屏幕与导出必须共用同一实现，不允许各自内联。
+- ⭐ **`parseFloat` 对非数字后缀宽容是尺寸解析的经典坑**：`parseFloat("100%")=100`、`parseFloat("12px")=12`。凡"读尺寸"的代码，先整值校验 `/^[0-9.]+$/` 再 parseFloat，把单位化值显式交给 fallback。
+- 排除嫌疑要落到证据：临时元素泄漏看 render 源码的 catch/成功路径清理调用；重渲染风暴看 theme 常量身份。两处都不改代码——**不为理论情况写防御**。
+- 同文件双 WIP 切分流程：备份混合文件 → `checkout` 回 HEAD → 只重放自己的编辑 → 提交 → 回填备份。比 stash 更稳，因为不受 stash 栈序影响。
