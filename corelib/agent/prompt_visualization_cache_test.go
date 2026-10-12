@@ -54,6 +54,58 @@ func TestBuildPromptBundle_DiagramBlockStaysInStableSegment(t *testing.T) {
 	}
 }
 
+// TestBuildPromptBundle_DiagramFlagStableAcrossEveryProfile extends the same
+// guarantee to every profile that can carry the block. Diagram support is a
+// property of the reply SURFACE, not of the message, so once a conversation
+// starts with a given surface each profile must keep one key turn after turn.
+// (Profiles themselves legitimately differ from each other — that is not
+// fragmentation; a key that changed between turns of the same profile would be.)
+func TestBuildPromptBundle_DiagramFlagStableAcrossEveryProfile(t *testing.T) {
+	// Mix odd and even lengths deliberately. A set of same-parity (or otherwise
+	// uniform) messages would silently absorb any per-message variation in the
+	// block and make this guard vacuous.
+	messages := []string{
+		"解释架构",
+		"讲讲 RAG 的原理到底是什么",
+		"帮我看看这个函数",
+		"梳理审批流程，并画出状态流转图，再说明关键路径和异常情况怎么处理。",
+		"为什么？",
+	}
+	profiles := []struct {
+		name    string
+		profile PromptProfile
+		managed bool
+	}{
+		{name: "full", profile: PromptProfileFull},
+		{name: "light", profile: PromptProfileLight},
+		{name: "managed", profile: PromptProfileFull, managed: true},
+	}
+	for _, p := range profiles {
+		seen := make(map[string]bool)
+		var sample PromptBundle
+		for _, msg := range messages {
+			sample = BuildPromptBundle(SystemPromptDeps{
+				Config: SystemPromptConfig{
+					RoleName:                  "MaClaw",
+					IsProMode:                 true,
+					PromptProfile:             p.profile,
+					ManagedSemantic:           p.managed,
+					DiagramRenderingSupported: true,
+				},
+			}, msg, true)
+			seen[sample.StableCacheKey()] = true
+		}
+		if len(seen) != 1 {
+			t.Fatalf("%s profile: diagram-supported turns produced %d distinct cache keys (want 1); a per-turn key silently disables prompt caching", p.name, len(seen))
+		}
+		// Sanity: the profile must actually carry the block. A profile with no
+		// diagram text would be trivially "stable" and prove nothing.
+		if !strings.Contains(sample.StableSystemPrompt, "讲解配图") {
+			t.Fatalf("%s profile should carry the visualization block, otherwise this test is vacuous", p.name)
+		}
+	}
+}
+
 // TestBuildPromptBundle_DiagramBlockSizeBudget records the cost of the feature
 // so a future expansion has to be a conscious decision. The full block is the
 // expensive one; the light cue is tiny because that segment has a byte cap.
