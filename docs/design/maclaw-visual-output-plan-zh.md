@@ -574,3 +574,31 @@ expect(meta.textContent).not.toContain(':22')
 - ⭐ **同一截图里两处文本的差分是最强现场证据**：错误框显示的是**管线改写后**喂给 mermaid 的文本，源码回显显示的是**原始输入**。两者不一致时，中间必有一层在说谎。
 - ⭐ **既有测试只覆盖了无害子集**：旧用例只测 `Graph→graph`（碰巧无害的路径），全绿照样带毒。sanitize 白名单的**每一项**都应有对应的 detector 可接受性断言。
 - **工作区有他人 WIP 时，失败先做"隔离运行"归因**：本轮 `assistantDiagramEndToEnd` 的 TDZ 失败（`aiAssistantMarkdown.tsx` 他人未完成改动：参数 `lang` 被 845 行 `const lang` 同名遮蔽）在 stash 掉自己的改动后依然失败，与本次修复无关，不并入提交。
+
+## 11. 第十二轮：图能渲染但"非常小"——真浏览器 A/B 复现（2026-10-12）
+
+### 11.1 现象与取证
+
+用户截图：flowchart 渲染成功但只有几十像素宽。用户运行的 App 是 15:47 构建的 dist（不含当日任何修复）。
+
+### 11.2 根因（Playwright + 真实 mermaid 11.14 A/B 复现）
+
+15:47 dist 里的组件是旧版：**把 mermaid 原始 svg（`width="100%"` + `style="max-width: 594.56px"`）原样塞进 `dangerouslySetInnerHTML`**，而执行视图的助手气泡是 `width: fit-content!important`（`assistant-chat-ai-bubble-*`）。**百分比宽度在 fit-content 祖先里循环解析，svg 塌缩到替换元素默认固有宽度 300px**，再按 viewBox 比例缩放 → 图形内容只有一半大小。
+
+A/B 数据（同一张真实会话 flowchart，同一个 fit-content 气泡）：
+- 旧版行为（原始 svg 直插）：`299.98 × 399.23`
+- 新版行为（`scaleMermaidSvg` 1.25×）：`743.19 × 989.09`
+
+对照实验同时排除了一个假嫌疑：`.amd-measure-host` 是 `width:0;height:0` 零尺寸容器，但对 flowchart-v2 的测量**无影响**（mermaid 用自身内容测宽，不读容器宽度）——零尺寸假设被探针证伪后放弃。
+
+### 11.3 结论
+
+- **HEAD 代码已天然修复**：现版 `scaleMermaidSvg` 会把 `width="100%"` 改写成显式 px（逐类型验证 7 种：flowchart/sequence/mindmap/pie/er/state/timeline 全部输出 px，无百分比残留），显式宽度能在 fit-content 气泡里正常解析。
+- **用户侧解法 = 重新构建前端/App**（dist 15:47 落后于 HEAD，两个问题——sequenceDiagram 报错与小图——都随重建消失）。
+- 遗留观察项：`scaleMermaidSvg` 在 naturalWidth 不可得时 fallback 输出 `${factor*100}%`（理论上仍会塌缩）。13 种实测类型都会给出 max-width px 或数值宽度，该分支目前不可达，**不为理论情况改代码**，留观察。
+
+### 11.4 方法论沉淀
+
+- ⭐⭐ **`width:100%` 的 svg 不能直接放进 `width:fit-content` 容器**：百分比宽度循环解析 → 塌缩到替换元素默认 300px。这是"图很小"类 bug 的标准成因；修法是把宽度落成显式 px（或给容器固定宽度）。
+- **真浏览器 A/B 探针是布局类 bug 的唯一可信证据**：jsdom 无布局引擎，纯靠读代码推理会先撞上零尺寸容器这个"看起来像"的假根因。先证伪假根因、再换方向，靠的正是探针。
+- **判断"用户在跑什么版本"是排查第一步**：dist mtime（15:47）早于当日全部修复——两条现场截图（报错框、小图）分别对应两个已修问题，一行重建即可收敛，不需要新代码。
