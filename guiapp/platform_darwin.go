@@ -213,7 +213,13 @@ func (a *App) CheckEnvironment(force bool) {
 		a.log(a.tr("Checking Node.js..."))
 		nodePath, err := exec.LookPath("node")
 		if err != nil {
-			for _, p := range commonPaths {
+			// Finder/Dock launches inherit launchd's stripped PATH, so the
+			// Homebrew prefixes are probed explicitly before installing.
+			for _, p := range []string{
+				"/opt/homebrew/bin",
+				"/usr/local/bin",
+				filepath.Join(localBinDir, "node"),
+			} {
 				fullPath := filepath.Join(p, "node")
 				if _, err := os.Stat(fullPath); err == nil {
 					nodePath = fullPath
