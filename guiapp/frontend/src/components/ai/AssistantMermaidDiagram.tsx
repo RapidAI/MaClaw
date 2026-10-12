@@ -52,25 +52,43 @@ export function scaleMermaidSvg(svg: string, zoom: number): string {
     const rootMatch = svg.match(/^<svg\b[^>]*>/);
     if (!rootMatch) return svg;
     const root = rootMatch[0];
-    const naturalWidth = Number.parseFloat(
-        root.match(/max-width:\s*([0-9.]+)px/i)?.[1] ?? root.match(/\swidth="([0-9.]+)"/)?.[1] ?? "",
-    );
-    const width = Number.isFinite(naturalWidth) && naturalWidth > 0
+
+    // Mermaid's size lives in one of two shapes, and the height can sit in the
+    // inline style instead of an attribute depending on the diagram type. Read
+    // every plausible source before rewriting so the aspect ratio survives.
+    const styleText = root.match(/style="([^"]*)"/)?.[1] ?? "";
+    const styleMaxWidth = Number.parseFloat(styleText.match(/max-width:\s*([0-9.]+)px/i)?.[1] ?? "");
+    const styleHeight = Number.parseFloat(styleText.match(/height:\s*([0-9.]+)px/i)?.[1] ?? "");
+    const attrWidth = Number.parseFloat(root.match(/\swidth="([0-9.]+)"/)?.[1] ?? "");
+    const attrHeight = Number.parseFloat(root.match(/\sheight="([0-9.]+)"/)?.[1] ?? "");
+    const naturalWidth = Number.isFinite(styleMaxWidth) && styleMaxWidth > 0 ? styleMaxWidth
+        : Number.isFinite(attrWidth) && attrWidth > 0 ? attrWidth : 0;
+    const naturalHeight = Number.isFinite(attrHeight) && attrHeight > 0 ? attrHeight
+        : Number.isFinite(styleHeight) && styleHeight > 0 ? styleHeight : 0;
+
+    const width = naturalWidth > 0
         ? `${round2(naturalWidth * factor)}px`
         : `${Math.round(factor * 100)}%`;
     let next = root.replace(/\swidth="[^"]*"/, ` width="${width}"`);
     if (next === root) next = root.replace(/^<svg\b/, `<svg width="${width}"`);
-    const naturalHeight = Number.parseFloat(next.match(/\sheight="([0-9.]+)"/)?.[1] ?? "");
-    if (Number.isFinite(naturalHeight) && naturalHeight > 0) {
-        next = next.replace(/\sheight="[^"]*"/, ` height="${round2(naturalHeight * factor)}"`);
+
+    if (naturalHeight > 0) {
+        const scaledHeight = ` height="${round2(naturalHeight * factor)}"`;
+        if (/\sheight="[^"]*"/.test(next)) {
+            next = next.replace(/\sheight="[^"]*"/, scaledHeight);
+        } else {
+            next = next.replace(/^<svg\b/, `<svg${scaledHeight}`);
+        }
     }
-    // The cap lives in the inline style; leaving it in place would clamp the
-    // enlarged width straight back down.
+
+    // Mermaid may pin width/height in the inline style (max-width cap, or an
+    // explicit height). Those would fight the attributes we just wrote, so drop
+    // every sizing prop and let the attributes + viewBox aspect ratio win.
     next = next.replace(/style="([^"]*)"/, (_match, style: string) => {
         const kept = String(style)
             .split(";")
             .map((part) => part.trim())
-            .filter((part) => part && !/^max-width\s*:/i.test(part));
+            .filter((part) => part && !/^(?:max-)?(?:width|height)\s*:/i.test(part));
         return `style="${kept.join("; ")}"`;
     });
     return next + svg.slice(root.length);
@@ -179,13 +197,50 @@ function getMermaidTheme(theme: Theme) {
     };
 }
 
+/**
+ * Canonical diagram-type keywords, keyed by lower-case alias.
+ *
+ * Mermaid's diagram-type detectors are case-SENSITIVE regular expressions
+ * (mermaid 11.14.0 registers `/^\s*sequenceDiagram/`, `/^\s*erDiagram/`,
+ * `/^\s*gitGraph/`, `/^\s*quadrantChart/`, … — verified in
+ * node_modules/mermaid/dist/mermaid.core.mjs) even though several diagram
+ * grammars themselves accept lower-case keywords. Blindly lower-casing the
+ * declaration therefore passes every parse-level check yet fails at detection
+ * time with "No diagram type detected matching given configuration for text:
+ * sequencediagram …". Each alias maps to the exact keyword its detector
+ * expects.
+ */
+const MERMAID_DIAGRAM_TYPE_KEYWORDS: Record<string, string> = {
+    graph: "graph",
+    flowchart: "flowchart",
+    sequencediagram: "sequenceDiagram",
+    statediagram: "stateDiagram",
+    "statediagram-v2": "stateDiagram-v2",
+    classdiagram: "classDiagram",
+    erdiagram: "erDiagram",
+    gantt: "gantt",
+    pie: "pie",
+    gitgraph: "gitGraph",
+    journey: "journey",
+    mindmap: "mindmap",
+    timeline: "timeline",
+    quadrantchart: "quadrantChart",
+    "sankey-beta": "sankey-beta",
+    "xychart-beta": "xychart-beta",
+};
+
+/** Map any accepted casing of a Mermaid diagram type to its canonical keyword. */
+export function canonicalMermaidDiagramKeyword(alias: string): string {
+    return MERMAID_DIAGRAM_TYPE_KEYWORDS[alias.toLowerCase()] ?? alias;
+}
+
 /** Repair harmless casing errors commonly emitted by language models. */
 export function sanitizeMermaidCode(raw: string): string {
     const diagramType = /^(\s*)(Graph|Flowchart|SequenceDiagram|StateDiagram|StateDiagram-v2|ClassDiagram|ErDiagram|Gantt|Pie|Gitgraph|Journey|Mindmap|Timeline|Quadrantchart|Sankey-beta|Xychart-beta)\b/i;
     const keyword = /^(\s*)(Subgraph|ClassDef|Style|Click|Note|Loop|Alt|Else|Opt|Par|Critical|Break|Rect|Activate|Deactivate|Direction)\b/i;
     return raw.split("\n").map((line) => {
         const diagramMatch = line.match(diagramType);
-        if (diagramMatch) return `${diagramMatch[1]}${diagramMatch[2].toLowerCase()}${line.slice(diagramMatch[0].length)}`;
+        if (diagramMatch) return `${diagramMatch[1]}${canonicalMermaidDiagramKeyword(diagramMatch[2])}${line.slice(diagramMatch[0].length)}`;
         if (/^(\s*)End\s*$/.test(line)) return line.replace(/End/i, "end");
         const keywordMatch = line.match(keyword);
         if (!keywordMatch) return line;
@@ -270,6 +325,9 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
         let cancelled = false;
         setSvg("");
         setError("");
+        // A new diagram replaces the old one; keep the previous reader's zoom
+        // from silently carrying onto a different picture.
+        setZoom(DEFAULT_MERMAID_ZOOM);
         const source = sanitizeMermaidCode(code).trim();
         if (!source) {
             setError("The Mermaid code block is empty.");
@@ -355,4 +413,102 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
             )}
         </>
     );
+}
+
+/**
+ * Render one Mermaid fence to a PNG data URL.
+ *
+ * A PDF built by the Go renderer cannot run JavaScript, so a diagram has to
+ * arrive as pixels. Rendering it here — where it already renders for the
+ * screen — keeps one answer to "what does this diagram look like" instead of
+ * teaching the document layer a second one.
+ *
+ * Returns null when the diagram cannot be drawn; the caller then keeps the
+ * source text, which is what the reader would have seen anyway.
+ */
+export async function renderMermaidFenceToPNGDataURL(code: string, theme: Theme): Promise<string | null> {
+    const source = code.trim();
+    if (!source || source.length > MAX_MERMAID_SOURCE_LENGTH) return null;
+    try {
+        const mermaid = await getMermaid();
+        exportDiagramSeq += 1;
+        const svg = await renderDiagram(
+            mermaid,
+            `mermaid-export-${exportDiagramSeq}`,
+            source,
+            null,
+            theme,
+            () => false,
+        );
+        if (!svg) return null;
+        return await mermaidSvgToPNGDataURL(svg);
+    } catch {
+        return null;
+    }
+}
+
+let exportDiagramSeq = 0;
+
+// A printed page is white, and print wants more than screen resolution.
+const MERMAID_EXPORT_SCALE = 2;
+const MERMAID_EXPORT_MAX_EDGE = 2600;
+
+async function mermaidSvgToPNGDataURL(svg: string): Promise<string | null> {
+    const size = mermaidSvgSize(svg);
+    if (!size) return null;
+    const scale = Math.min(MERMAID_EXPORT_SCALE, MERMAID_EXPORT_MAX_EDGE / Math.max(size.width, size.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(size.width * scale));
+    canvas.height = Math.max(1, Math.round(size.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    const image = await loadSvgAsImage(svg);
+    // Filled first: the SVG itself is transparent, and a transparent diagram
+    // in a PDF renders as whatever the viewer puts behind it.
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+}
+
+// The rendered SVG states its size in width/height, or in viewBox when the
+// width is a percentage. Both are read so a diagram is never scaled to zero.
+function mermaidSvgSize(svg: string): { width: number; height: number } | null {
+    const root = svg.match(/^<svg\b[^>]*>/);
+    if (!root) return null;
+    const attr = (name: string): number => {
+        const match = root[0].match(new RegExp(`${name}="([^"]+)"`));
+        if (!match) return 0;
+        const value = parseFloat(match[1]);
+        return Number.isFinite(value) && value > 0 ? value : 0;
+    };
+    let width = attr("width");
+    let height = attr("height");
+    if (!width || !height) {
+        const viewBox = root[0].match(/viewBox="([^"]+)"/);
+        const parts = viewBox ? viewBox[1].trim().split(/[\s,]+/).map(Number) : [];
+        if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+            width = width || parts[2];
+            height = height || parts[3];
+        }
+    }
+    if (!width || !height) return null;
+    return { width, height };
+}
+
+function loadSvgAsImage(svg: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+        const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const image = new Image();
+        image.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve(image);
+        };
+        image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error("svg could not be decoded"));
+        };
+        image.src = url;
+    });
 }

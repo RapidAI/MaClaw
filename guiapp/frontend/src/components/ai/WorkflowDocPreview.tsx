@@ -4,6 +4,7 @@ import { normalizeWorkflowPhaseID, FALLBACK_NON_DOCUMENT_PHASE_IDS } from "./wor
 import { localizeText, normalizeLang } from "../../i18n";
 import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 import { withMarkdownProseTheme } from "./markdownPreviewInk";
+import { canonicalMermaidDiagramKeyword } from "./AssistantMermaidDiagram";
 
 // ── Mermaid (local npm package, no network required) ──
 
@@ -84,11 +85,16 @@ async function renderMermaid(
 
 /**
  * Auto-fix common Mermaid syntax issues produced by LLMs.
- * Mermaid keywords are case-sensitive and must be lowercase.
- * LLMs frequently produce "Subgraph", "End", "Graph TD", etc.
+ *
+ * Diagram-type keywords are NOT lower-cased blindly: Mermaid's diagram-type
+ * detectors are case-sensitive regexes (see MERMAID_DIAGRAM_TYPE_KEYWORDS in
+ * AssistantMermaidDiagram.tsx — `sequenceDiagram`/`erDiagram`/`gitGraph`/…
+ * must keep their camel case or detection fails at render time). Only the
+ * flowchart body keywords (subgraph/end/click/…), whose grammars accept lower
+ * case, are normalised here.
  */
 function sanitizeMermaidCode(raw: string): string {
-    // Diagram type declarations that must be lowercase (line start)
+    // Diagram type declarations (line start) → canonical detector keyword
     const diagramTypeRe = /^(\s*)(Graph|Flowchart|SequenceDiagram|StateDiagram|StateDiagram-v2|ClassDiagram|ErDiagram|Gantt|Pie|Gitgraph|Journey|Mindmap|Timeline|Quadrantchart|Sankey-beta|Xychart-beta)\b/i;
     // Keywords that appear at line start and must be lowercase
     const keywordRe = /^(\s*)(Subgraph|ClassDef|Style|Click|Note|Loop|Alt|Else|Opt|Par|Critical|Break|Rect|Activate|Deactivate|Direction)\b/i;
@@ -98,13 +104,13 @@ function sanitizeMermaidCode(raw: string): string {
     return raw
         .split("\n")
         .map((line) => {
-            // Diagram type declaration: "Graph TB" → "graph TB"
+            // Diagram type declaration: "Graph TB" → "graph TB",
+            // "SequenceDiagram" → "sequenceDiagram" (camel case preserved)
             const dtMatch = line.match(diagramTypeRe);
             if (dtMatch) {
-                const kw = dtMatch[2];
-                const lower = kw.toLowerCase();
-                if (kw !== lower) {
-                    return line.replace(dtMatch[2], lower);
+                const canonical = canonicalMermaidDiagramKeyword(dtMatch[2]);
+                if (dtMatch[2] !== canonical) {
+                    return line.replace(dtMatch[2], canonical);
                 }
                 return line;
             }

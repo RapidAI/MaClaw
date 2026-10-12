@@ -545,3 +545,32 @@ expect(meta.textContent).not.toContain(':22')
 - ⭐ **两类证据不可互相替代**：构造性测试证明"代码没写错"，一次真实会话证明"模型会照做"——后者还能从 `reasoning_content` 看到模型如何解读提示词，这是任何测试都给不了的。**但最终"未能产出图"的根因往往需要用户侧截图/复现**：本次我在语法、预算、截断三处排查都干净，真实剩下的差异面要靠现场证据才能收窄。
 - **警惕 `strings.Contains(被测常量, 该常量里的子串)`**：这类断言本质是在复述源码，改措辞就翻红却不保护任何行为。应改为验证结构位置（如出现在哪类行上、箭头前后关系）或直接验证下游行为。
 - ⭐⭐ **变异要分两级，只做第一级会放过假守卫**：① 删掉被测内容 → 变红，这只证明测试连着代码，几乎任何断言都做得到；② **保留关键词但反转语义** → 必须仍然变红。第 ② 级才证明断言的是**含义**而非**字面量**。第六轮靠它揪出了一个只验证词还存在的装饰性守卫。
+
+## 10. 第十一轮：渲染失败根因收口（2026-10-12，真实截图取证）
+
+### 10.1 证据链
+
+用户提供真实运行截图（架构图会话，sequenceDiagram 渲染失败），错误框文案：
+
+> Unable to render this Mermaid diagram. **No diagram type detected matching given configuration for text: sequencediagram participant U as 浏览器 …**
+
+同一截图里，错误框文本是小写 `sequencediagram`，而下方回显的原始源码是标准 `sequenceDiagram` —— **同一截图两种大小写**，只有渲染管线自己在中间改写过才能解释。`AssistantMermaidDiagram` 恰好在 render 前调用 `sanitizeMermaidCode`，后者把 diagram 类型关键字 `toLowerCase()`。
+
+### 10.2 根因（mermaid 11.14.0 源码级 + 行为级双证据）
+
+- **源码级**：mermaid 的 diagram 类型 detector 全部是大小写敏感正则（`dist/mermaid.core.mjs`：`detector12 = … /^\s*sequenceDiagram/.test(txt)`；仅 `ishikawa`/`wardley-beta` 带 `i` 标志）。`detectType` 全部不匹配即抛 `UnknownDiagramError: No diagram type detected matching given configuration for text: …`。
+- **行为级**：用仓库实际安装的 mermaid 跑 `mermaid.parse`：`sequenceDiagram` → OK（diagramType=sequence）；`sequencediagram` → 失败，错误文案与截图逐字相同；`erdiagram` 同样失败。
+- **清单对照**：`sanitizeMermaidCode` 会破坏 7 个类型——SequenceDiagram / StateDiagram(-v2) / ClassDiagram / ErDiagram / Gitgraph（需 `gitGraph`）/ Quadrantchart（需 `quadrantChart`）；Graph/Flowchart/Pie/Gantt/Mindmap/Timeline/Journey/Sankey-beta/Xychart-beta 全小写碰巧无害。
+
+### 10.3 修复
+
+- `MERMAID_DIAGRAM_TYPE_KEYWORDS`：别名（lower-case key）→ detector 期望的精确关键字；`canonicalMermaidDiagramKeyword()` 导出。
+- `AssistantMermaidDiagram.sanitizeMermaidCode` 与 `WorkflowDocPreview.sanitizeMermaidCode`（第二份同源拷贝）统一改走 canonical 映射，不再盲转小写。
+- 回归测试：① camelCase 类型原样保留 + 全大写输入归一；② 把 sanitize 清单逐项映射后与**从 mermaid 11.14.0 dist 提取的 detector 正则表**比对，全部必须可被 detector 接受（表随注释注明来源，mermaid 升级时同步）。
+
+### 10.4 方法论沉淀
+
+- ⭐⭐ **"修大小写"类 sanitize 必须对齐 detector 表，不能对齐 parser**：mermaid 的 parser 语法层（jison lexer `/^(?:sequenceDiagram\b)/i`）大小写不敏感，但 **detection 在 parse 之前**，用的是敏感正则。语法层"能过"是这类 bug 最强的掩护。
+- ⭐ **同一截图里两处文本的差分是最强现场证据**：错误框显示的是**管线改写后**喂给 mermaid 的文本，源码回显显示的是**原始输入**。两者不一致时，中间必有一层在说谎。
+- ⭐ **既有测试只覆盖了无害子集**：旧用例只测 `Graph→graph`（碰巧无害的路径），全绿照样带毒。sanitize 白名单的**每一项**都应有对应的 detector 可接受性断言。
+- **工作区有他人 WIP 时，失败先做"隔离运行"归因**：本轮 `assistantDiagramEndToEnd` 的 TDZ 失败（`aiAssistantMarkdown.tsx` 他人未完成改动：参数 `lang` 被 845 行 `const lang` 同名遮蔽）在 stash 掉自己的改动后依然失败，与本次修复无关，不并入提交。
