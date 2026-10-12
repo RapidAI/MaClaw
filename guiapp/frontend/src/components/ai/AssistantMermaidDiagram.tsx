@@ -8,6 +8,33 @@ let mermaidModulePromise: Promise<any> | null = null;
 // Mermaid stores its configuration globally. Serialising initialise + render
 // keeps diagrams in different chat messages from borrowing each other's theme.
 let renderQueue: Promise<void> = Promise.resolve();
+// Mermaid keeps its configuration in module scope and already serialises its own
+// work behind an internal execution queue (verified in the browser: racing two
+// initialise+render pairs does not let either borrow the other's theme). This
+// chain is therefore belt-and-braces, not the thing standing between us and
+// cross-contamination - which matters, because a queue nobody can escape costs
+// more than it saves: every diagram in the session shares it, so one render that
+// never settles would otherwise park every later diagram behind it forever.
+const MERMAID_QUEUE_STALL_MS = 10_000;
+
+/**
+ * Run `work` once the previous diagram has finished, or after the stall cap,
+ * whichever comes first. Whichever route fires first owns the work - waiting on
+ * it twice would render one diagram twice for nothing.
+ */
+function runWhenQueued(work: () => Promise<void>): void {
+    const previous = renderQueue;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let claimed = false;
+    const claim = () => {
+        if (claimed) return;
+        claimed = true;
+        if (timer) clearTimeout(timer);
+        void work();
+    };
+    renderQueue = previous.catch(() => undefined).then(() => { claim(); }).catch(() => undefined);
+    timer = setTimeout(claim, MERMAID_QUEUE_STALL_MS);
+}
 const MAX_MERMAID_SOURCE_LENGTH = 50_000;
 const MAX_MERMAID_NODE_COUNT = 750;
 const MAX_MERMAID_EDGE_COUNT = 1_500;
@@ -303,7 +330,7 @@ async function renderDiagram(
         rejectResult = reject;
     });
 
-    renderQueue = renderQueue.catch(() => undefined).then(async () => {
+    runWhenQueued(async () => {
         if (cancelled()) {
             resolveResult(null);
             return;
@@ -380,7 +407,10 @@ export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; t
             }
         });
         return () => { cancelled = true; };
-    }, [code, theme]);
+        // lang participates because the refusals above are localised strings built
+        // inside this effect: a language switch must re-run it, or the reader keeps
+        // reading a rejection in a language they already left.
+    }, [code, theme, lang]);
 
     return (
         <>
