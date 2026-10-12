@@ -20,6 +20,7 @@ const importKnowledge = vi.fn();
 const uploadCloud = vi.fn();
 const ready = vi.fn();
 const choose = vi.fn();
+const openArxiv = vi.fn();
 const replaceOffice = vi.fn();
 const clearChat = vi.fn();
 const quit = vi.fn();
@@ -28,6 +29,7 @@ const openResult = vi.fn();
 const saveResult = vi.fn();
 const figureDataURL = vi.fn();
 const exportPdf = vi.fn();
+const exportChatPdf = vi.fn();
 const clipboardWrite = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -41,10 +43,12 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ClearFileCompanionChat: (...args: unknown[]) => clearChat(...args),
     FileCompanionUIReady: (...args: unknown[]) => ready(...args),
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
+    FileCompanionOpenArxiv: (...args: unknown[]) => openArxiv(...args),
     OpenFileOrShowInFolder: (...args: unknown[]) => openResult(...args),
     ExportTaskResultFile: (...args: unknown[]) => saveResult(...args),
     FileCompanionFigureDataURL: (...args: unknown[]) => figureDataURL(...args),
     FileCompanionExportPDF: (...args: unknown[]) => exportPdf(...args),
+    FileCompanionExportChatPDF: (...args: unknown[]) => exportChatPdf(...args),
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -62,6 +66,12 @@ function renderWindow(options?: { askOnOpen?: boolean }) {
             <FileCompanionWindow askOnOpen={options?.askOnOpen ?? false} />
         </ToastProvider>,
     );
+}
+
+// 打开 is a menu now: the 打开文件 row is what reaches the system dialog.
+function pickLocalFile() {
+    fireEvent.click(screen.getByTestId("file-companion-choose"));
+    fireEvent.click(screen.getByTestId("file-companion-open-local"));
 }
 
 vi.mock("../ai/PptxPreviewPanel", () => ({
@@ -108,6 +118,8 @@ beforeEach(() => {
     uploadCloud.mockReset();
     ready.mockReset();
     choose.mockReset();
+    openArxiv.mockReset();
+    openArxiv.mockResolvedValue("C:/papers/2510.16079.pdf");
     replaceOffice.mockReset();
     clearChat.mockReset();
     quit.mockReset();
@@ -116,6 +128,9 @@ beforeEach(() => {
     saveResult.mockReset();
     figureDataURL.mockReset();
     exportPdf.mockReset();
+    exportPdf.mockResolvedValue("");
+    exportChatPdf.mockReset();
+    exportChatPdf.mockResolvedValue("");
     clipboardWrite.mockReset();
     clipboardWrite.mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText: clipboardWrite } });
@@ -357,10 +372,188 @@ describe("FileCompanionWindow", () => {
             await Promise.resolve();
         });
         expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
-        expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开文件");
+        expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开");
         choose.mockClear();
         runtime.emit("file-companion:show", null);
         await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+    });
+
+    it("opens a menu with a local-file row and an arXiv row", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        const menu = screen.getByTestId("file-companion-open-menu");
+        expect(menu).toBeTruthy();
+        expect(screen.getByTestId("file-companion-open-local").textContent).toContain("打开文件");
+        const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
+        expect(input.placeholder).toBe("Arxiv ID 或 URL");
+        // Nothing typed yet: 确定 has nothing to fetch.
+        expect((screen.getByTestId("file-companion-arxiv-go") as HTMLButtonElement).disabled).toBe(true);
+        // The bar clips its row; the menu has to un-clip it or it is cut off.
+        expect(screen.getByTestId("file-companion-titlebar").className).toContain("file-companion-titlebar--menu-open");
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        expect(screen.getByTestId("file-companion-titlebar").className).not.toContain("file-companion-titlebar--menu-open");
+    });
+
+    it("本地文件 opens the system dialog and closes the menu", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        choose.mockClear();
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        fireEvent.click(screen.getByTestId("file-companion-open-local"));
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+    });
+
+    it("downloads an arXiv paper and opens it as a tab", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: false, readOnly: true }));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), {
+            target: { value: "https://arxiv.org/abs/2510.16079v2" },
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await waitFor(() => expect(openArxiv).toHaveBeenCalledWith("https://arxiv.org/abs/2510.16079v2"));
+        await screen.findByTestId("file-companion-tab-2510.16079.pdf");
+        expect(open).toHaveBeenCalledWith("C:/papers/2510.16079.pdf");
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+    });
+
+    it("keeps the menu open and shows the reason when the download fails", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        openArxiv.mockRejectedValueOnce(new Error("下载失败：找不到这篇论文（404）"));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "2510.99999" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("404");
+        });
+        expect(screen.getByTestId("file-companion-arxiv-hint").dataset.state).toBe("error");
+        // The panel stays so the ID can be corrected, and no tab was created.
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect((screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement).value).toBe("2510.99999");
+        expect(open).not.toHaveBeenCalled();
+    });
+
+    // Closing the panel mid-flight would drop the failure into an unmounted
+    // panel: the user would see the spinner stop and nothing else.
+    it("pins the menu open during a download so the outcome stays visible", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        let release: (path: string) => void = () => undefined;
+        openArxiv.mockReturnValueOnce(new Promise<string>((resolve) => { release = resolve; }));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input"));
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "2510.16079" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-arxiv-go").textContent).toBe("下载中…"));
+        fireEvent.keyDown(document, { key: "Escape" });
+        fireEvent.mouseDown(document.body);
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        release("");
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("没有拿到文件路径");
+        });
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+    });
+
+    // Closing with Escape must hand keyboard focus back to the trigger;
+    // dropping it to <body> would restart the tab order at the document top.
+    // An outside click must NOT do the same, or it would steal focus from
+    // wherever the user just clicked.
+    it("returns keyboard focus to the trigger on Escape but not on an outside click", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        const trigger = screen.getByTestId("file-companion-choose");
+        fireEvent.click(trigger);
+        expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input"));
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        expect(document.activeElement).toBe(trigger);
+
+        fireEvent.click(trigger);
+        fireEvent.mouseDown(document.body);
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        expect(document.activeElement).not.toBe(trigger);
+    });
+
+    // The same drop-to-<body> defect reaches the success path: Enter submits
+    // from the input, the download takes tens of seconds, and the panel then
+    // unmounts the very element holding focus. openPath's focus flag only
+    // activates the new tab, it does not move DOM focus.
+    it("returns keyboard focus to the trigger after a successful arXiv open", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: false, readOnly: true }));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        const trigger = screen.getByTestId("file-companion-choose");
+        fireEvent.click(trigger);
+        const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
+        expect(document.activeElement).toBe(input);
+        fireEvent.change(input, { target: { value: "2510.16079" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await screen.findByTestId("file-companion-tab-2510.16079.pdf");
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        expect(document.activeElement).toBe(trigger);
+    });
+
+    // A download lasts long enough for the user to click into the document.
+    // Closing the panel must not yank focus back to the trigger then.
+    it("leaves focus where the user moved it during a download", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: false, readOnly: true }));
+        let release: (path: string) => void = () => undefined;
+        openArxiv.mockReturnValueOnce(new Promise<string>((resolve) => { release = resolve; }));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "2510.16079" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-arxiv-go").textContent).toBe("下载中…"));
+        // The user gives up waiting and clicks into the document.
+        const elsewhere = screen.getByTestId("file-companion-close") as HTMLButtonElement;
+        elsewhere.focus();
+        expect(document.activeElement).toBe(elsewhere);
+        release("C:/papers/2510.16079.pdf");
+        await screen.findByTestId("file-companion-tab-2510.16079.pdf");
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        // Focus stays where the user put it; it must not be yanked to the trigger.
+        expect(document.activeElement).toBe(elsewhere);
+    });
+
+    // Enter on an empty box must say so: a silent no-op looks like a broken
+    // button, which is the same class of bug as a swallowed download failure.
+    it("explains an empty arXiv box instead of ignoring Enter", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        fireEvent.keyDown(screen.getByTestId("file-companion-arxiv-input"), { key: "Enter" });
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("请填写");
+        });
+        expect(openArxiv).not.toHaveBeenCalled();
     });
 
     it("shows an already open file without asking again", async () => {
@@ -378,7 +571,7 @@ describe("FileCompanionWindow", () => {
         const strip = screen.getByTestId("file-companion-titlebar-files");
         const openTab = screen.getByTestId("file-companion-choose");
         const bar = screen.getByTestId("file-companion-titlebar");
-        expect(openTab.parentElement).toBe(bar);
+        expect(openTab.closest("[data-testid='file-companion-titlebar']")).toBe(bar);
         expect(strip.compareDocumentPosition(openTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(openTab.closest("[role='tablist']")).toBeNull();
         expect(strip.contains(openTab)).toBe(false);
@@ -439,7 +632,7 @@ describe("FileCompanionWindow", () => {
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("beta");
         const files = screen.getByTestId("file-companion-titlebar-files");
         const chooseButton = screen.getByTestId("file-companion-choose");
-        expect(chooseButton.parentElement).toBe(screen.getByTestId("file-companion-titlebar"));
+        expect(chooseButton.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
         expect(files.compareDocumentPosition(chooseButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(files.contains(chooseButton)).toBe(false);
         expect(screen.getByTestId("file-companion-tab-a.md").parentElement).toBe(screen.getByTestId("file-companion-titlebar-tabs"));
@@ -458,7 +651,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
         await screen.findByTestId("file-companion-empty");
         choose.mockResolvedValue(["C:/notes/a.md", "C:/notes/b.md"]);
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        pickLocalFile();
         await waitFor(() => expect(open).toHaveBeenCalled());
         expect(open.mock.calls.map((call) => call[0])).toEqual(["C:/notes/a.md"]);
         await act(async () => {
@@ -511,7 +704,7 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-empty");
         await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
         choose.mockResolvedValue(["C:/notes/a.md"]);
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        pickLocalFile();
         await screen.findByTestId("file-companion-tab-a.md");
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
     });
@@ -523,11 +716,11 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-tab-a.md");
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        pickLocalFile();
         await screen.findByTestId("file-companion-tab-c.md");
         const strip = screen.getByTestId("file-companion-titlebar-files");
         const chooseButton = screen.getByTestId("file-companion-choose");
-        expect(chooseButton.parentElement).toBe(screen.getByTestId("file-companion-titlebar"));
+        expect(chooseButton.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
         expect(strip.compareDocumentPosition(chooseButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("gamma");
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
@@ -541,7 +734,7 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        pickLocalFile();
         await waitFor(() => {
             expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("gamma");
         });
@@ -635,7 +828,7 @@ describe("FileCompanionWindow", () => {
         expect(close.querySelector("svg.file-companion-tool-icon")?.getAttribute("aria-hidden")).toBe("true");
         expect(close.getAttribute("title")).toBe("隐藏窗口，已打开的文件会保留");
         expect(close.parentElement).toBe(bar);
-        expect(choose.parentElement).toBe(bar);
+        expect(choose.closest("[data-testid='file-companion-titlebar']")).toBe(bar);
         expect(screen.getByTestId("file-companion-titlebar-files").compareDocumentPosition(choose) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         const gap = screen.getByTestId("file-companion-titlebar-gap");
         expect(gap.parentElement).toBe(bar);
@@ -660,8 +853,8 @@ describe("FileCompanionWindow", () => {
         const choose = screen.getByTestId("file-companion-choose");
         const exportBox = screen.getByTestId("file-companion-export");
         const files = screen.getByTestId("file-companion-titlebar-files");
-        expect(choose.textContent).toBe("打开文件");
-        expect(choose.parentElement).toBe(screen.getByTestId("file-companion-titlebar"));
+        expect(choose.textContent).toBe("打开");
+        expect(choose.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
         expect(files.compareDocumentPosition(choose) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(files.contains(choose)).toBe(false);
         expect(exportBox.parentElement).toBe(screen.getByTestId("file-companion-titlebar"));
@@ -2126,6 +2319,282 @@ describe("FileCompanionWindow", () => {
         expect(pdf.getAttribute("data-state")).toBe("idle");
     });
 
+    // The bytes travel with the text. A path alone would point at a file the
+    // reading side cannot open, which is exactly what "export the picture"
+    // must not become.
+    it("carries a reply's figures into the transcript as images", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        figureDataURL.mockResolvedValue("data:image/png;base64,AAAA");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "展示图 8.1" },
+                {
+                    role: "assistant",
+                    text: "图中给出结果。",
+                    figures: [{ label: "图 8.1", caption: "结果", path: "C:/papers/fig.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("图中给出结果。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "展示图 8.1" },
+            { role: "assistant", content: "图中给出结果。\n\n![](data:image/png;base64,AAAA)" },
+        ]));
+        expect(figureDataURL).toHaveBeenCalledWith("C:/papers/fig.png");
+    });
+
+    // A long session must export whole. This pins the turn list against any
+    // future change that stops walking it early (a `return` where a `continue`
+    // belongs behaves identically while the streaming reply is last, so the
+    // difference only shows up as missing history).
+    it("keeps every earlier turn when the newest reply is still writing", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "第一个问题" },
+                { role: "assistant", text: "第一个回答。" },
+                { role: "user", text: "第二个问题" },
+                { role: "assistant", text: "第二个回答。" },
+                { role: "user", text: "第三个问题" },
+                { role: "assistant", text: "半句正在写的答案" },
+            ],
+        }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByText("第一个回答。");
+        // The window is inside a turn: nothing has settled.
+        let release: () => void = () => undefined;
+        send.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "追加提问" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        act(() => {
+            runtime.emit("ai-assistant-token", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "刚到的半句",
+                request_id: "req-live",
+            }));
+        });
+        await screen.findByText("刚到的半句");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "第一个问题" },
+            { role: "assistant", content: "第一个回答。" },
+            { role: "user", content: "第二个问题" },
+            { role: "assistant", content: "第二个回答。" },
+            { role: "user", content: "第三个问题" },
+            { role: "assistant", content: "半句正在写的答案" },
+            { role: "user", content: "追加提问" },
+        ]));
+        await act(async () => { release(); await Promise.resolve(); });
+    });
+
+    it("exports the conversation even when a figure cannot be fetched", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        figureDataURL.mockRejectedValue(new Error("图片不可用"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "解释如下。",
+                    figures: [{ label: "图", caption: "", path: "C:/papers/gone.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("解释如下。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        // One unreachable picture must not cost the reader the whole answer.
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "解释如下。" },
+        ]));
+    });
+
+    // An export in flight has to look like one. The flight set already stops a
+    // second request reaching the backend; without the button also going
+    // disabled, the reader sees a control that answers nothing, which reads as
+    // broken rather than busy.
+    it("shows an in-flight export instead of a button that answers nothing", async () => {
+        exportChatPdf.mockImplementation(() => new Promise<string>((resolve) => {
+            setTimeout(() => resolve("C:/out/a-伴读对话.pdf"), 150);
+        }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "展示图 8.1" },
+                {
+                    role: "assistant",
+                    text: "图中给出结果。",
+                    figures: [{ label: "图 8.1", caption: "结果", path: "C:/papers/fig.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("图中给出结果。");
+
+        const before = screen.getByTestId("file-companion-export-chat");
+        expect(before.hasAttribute("disabled")).toBe(false);
+        fireEvent.click(before);
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").getAttribute("aria-busy")).toBe("true"));
+
+        const busy = screen.getByTestId("file-companion-export-chat");
+        expect(busy.hasAttribute("disabled")).toBe(true);
+        expect(busy.textContent).toBe("正在导出…");
+        // A second click must not reach the backend either way.
+        fireEvent.click(busy);
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+    });
+
+    // Busy is per file, so opening another document while one export runs must
+    // offer that file's own export — and the export already under way has to
+    // stay bound to the document it started from, not the one now on screen.
+    //
+    // What this pins is the observable outcome (the right document's path and
+    // content reach the backend), not the mechanism: replacing activeTab.path
+    // with an equivalent lookup leaves it passing, so treat it as a guard
+    // against the wiring changing, not against every way it could.
+    it("keeps a running export bound to its own file when tabs change", async () => {
+        exportChatPdf.mockImplementation(() => new Promise<string>((resolve) => {
+            setTimeout(() => resolve("C:/out/a-伴读对话.pdf"), 150);
+        }));
+        // Distinct content per file, so an export that picked up the wrong
+        // document is caught in what it wrote, not only in which path it sent.
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "user", text: path === "C:/notes/a.md" ? "AAA 的问题" : "BBB 的问题" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat")).toBeTruthy());
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").getAttribute("aria-busy")).toBe("true"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        // The other file is free to export; its button is not the busy one.
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").getAttribute("aria-busy")).toBe("false"));
+
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        const [sentPath, sentTurns] = exportChatPdf.mock.calls[0] as [string, { role: string; content: string }[]];
+        expect(sentPath).toBe("C:/notes/a.md");
+        expect(sentTurns[0].content).toBe("AAA 的问题");
+    });
+
+    it("exports the whole conversation, questions included", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "这段讲了什么？" },
+                { role: "assistant", text: "## 要点\n\n第一点最重要。" },
+                { role: "user", text: "第二点呢？" },
+                { role: "assistant", text: "第二点讲的是边界。" },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("要点");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        // Both sides travel together: an answer alone cannot be read on its own.
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "这段讲了什么？" },
+            { role: "assistant", content: "## 要点\n\n第一点最重要。" },
+            { role: "user", content: "第二点呢？" },
+            { role: "assistant", content: "第二点讲的是边界。" },
+        ]));
+        await screen.findByText("已导出 PDF");
+    });
+
+    // A token that arrives after the request settles is a finished answer as
+    // far as the window is concerned — its copy control is already showing.
+    // The half-written case is the request that has not settled yet, which is
+    // what this exercises.
+    it("leaves a still-writing answer out of the transcript", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { messages: [] }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-chat-empty");
+        // Held open rather than resolved, so the window stays inside the turn.
+        let release: () => void = () => undefined;
+        send.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "第二点呢？" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        act(() => {
+            runtime.emit("ai-assistant-token", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "半句答案",
+                request_id: "req-live",
+            }));
+        });
+        await screen.findByText("半句答案");
+        // The window agrees this answer is unfinished: it offers no controls.
+        expect(screen.queryAllByTestId(/^file-companion-copy-/)).toHaveLength(0);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "第二点呢？" },
+        ]));
+        await act(async () => { release(); await Promise.resolve(); });
+    });
+
+    it("keeps the export button idle over an empty conversation", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { messages: [] }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-chat-empty");
+
+        const button = screen.getByTestId("file-companion-export-chat");
+        expect(button.hasAttribute("disabled")).toBe(true);
+        fireEvent.click(button);
+        expect(exportChatPdf).not.toHaveBeenCalled();
+    });
+
+    it("reports a failed conversation export instead of claiming success", async () => {
+        exportChatPdf.mockRejectedValue(new Error("磁盘已满"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await screen.findByText("磁盘已满");
+        expect(screen.queryByText("已导出 PDF")).toBeNull();
+        // The button must become usable again, or one full disk ends exporting.
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").textContent).toBe("导出"));
+    });
+
+    it("stays quiet when the conversation export dialog is cancelled", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText("已导出 PDF")).toBeNull();
+    });
+
     it("offers no answer controls while the reply is still streaming", async () => {
         let release: () => void = () => undefined;
         send.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
@@ -2182,3 +2651,4 @@ describe("FileCompanionWindow", () => {
         expect(send).toHaveBeenCalledTimes(2);
     });
 });
+

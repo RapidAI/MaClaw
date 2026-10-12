@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1495,23 +1497,321 @@ func withSlimDocumentRead(registry *tool.CapabilityRegistry, needs []tool.Capabi
 }
 
 // semanticNeedsWithDynamicLookupForProviders attaches the open read-only
-// family's optional need when a dynamic provider actually serves it. One
-// provider is enough — the planner picks the best quality — so two installed
-// MCP servers do not multiply needs.
+// family's optional need when a USABLE dynamic provider actually serves it.
+// One provider is enough — the planner picks the best quality — so two
+// installed MCP servers do not multiply needs.
+//
+// It deliberately shares providerProvisionList with the graft below: both need
+// "installed and this planner can select it". Before sharing, this looked at
+// every published provision including ones whose observation had failed, so a
+// down-only server still put the need on the plan — the planner would then
+// select nothing and record an unmet row whose reason ("not ready") pointed at
+// a capability the turn never actually wanted.
 func semanticNeedsWithDynamicLookupForProviders(needs []tool.CapabilityNeed, providers []tool.ProviderSpec) []tool.CapabilityNeed {
 	for _, need := range needs {
 		if need.Capability == agentservice.CapabilityInformationLookup {
 			return needs
 		}
 	}
-	for _, provider := range providers {
-		for _, provision := range provider.Provides {
-			if provision.Capability == agentservice.CapabilityInformationLookup {
-				return append(needs, agentservice.AmbientDynamicLookupNeed())
-			}
+	for _, provision := range providerProvisionList(providers) {
+		if provision == agentservice.CapabilityInformationLookup {
+			return append(needs, agentservice.AmbientDynamicLookupNeed())
 		}
 	}
 	return needs
+}
+
+// semanticNeedsWithContractOnlyGraft gives a required need that only a user
+// installed implementation can serve a second chance through installed and
+// already published provider, instead of failing the turn.
+//
+// The problem it solves: an intent may demand a capability the host never owns
+// and that only a reviewed MCP tool can provide. When nothing is installed, the
+// turn ends in no_feasible_provider before the model is called once — which is
+// indistinguishable, from the outside, from "no such ability exists". Shipping
+// that for a family whose entire purpose is to be served by whichever backend
+// the site installed makes the product unusable on any MCP the reviewers did
+// not happen to pre-approve by name.
+//
+// What makes this safe rather than a blanket fallback:
+//
+//  1. Only a reviewed contract-only capability qualifies. These have no host
+//     attach site on any instance, so the need cannot be re-satisfied at all
+//     without an installed provider.
+//  2. Only when that capability genuinely has no *ready* provider in this
+//     turn's own finished provider list. This is what would have rejected the
+//     turn. "Ready" excludes a tool whose latest observation finished negative:
+//     a down tool must not suppress the graft, because the graft's whole job is
+//     to reach whatever installed implementation can still answer.
+//  3. Only to information.lookup — the reviewed family whose entire meaning is
+//     "call whatever tool was installed", published per observed tool under
+//     TrustTierUnreviewed and an effect envelope narrowed from that tool's own
+//     vendor annotations.
+//  4. Never over an explicit user pin. If the user named an implementation and
+//     it cannot serve them, substituting another is a different answer than the
+//     one they asked for.
+//
+// The added need is Required:false, and the original unservable need is relaxed
+// to optional in the same pass. Installing nothing still fails cleanly and
+// observably (the graft target must itself be installed), and a real reviewed
+// provider keeps its higher quality rank and never reaches this path at all.
+// A required need that no installed tool can serve still fails the turn — this
+// routes around a missing *reviewed binding*, never around missing capability.
+func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers []tool.ProviderSpec, pins []tool.ProviderPin, registry *tool.CapabilityRegistry) []tool.CapabilityNeed {
+	if len(needs) == 0 || len(providers) == 0 {
+		return needs
+	}
+	usable := providerProvisionList(providers)
+	if len(usable) == 0 {
+		return needs
+	}
+	// The graft target must itself be installed and ready, or adding the need
+	// just moves the failure one step later with a worse explanation. "Ready"
+	// here is what the planner will accept, so this is also the honest answer
+	// to "can this turn call anything installed right now".
+	var graftTargetPublished bool
+	for _, provision := range usable {
+		if provision == agentservice.CapabilityInformationLookup {
+			graftTargetPublished = true
+			break
+		}
+	}
+	if !graftTargetPublished {
+		return needs
+	}
+	// The effect each installed lookup tool can actually carry. Relaxing an
+	// obligation is only honest when the replacement can perform it: a required
+	// write served only by read-only tools would otherwise let the turn proceed
+	// and silently not write — the user is told nothing, and for a system of
+	// record (a timesheet) the missing write is invisible. Reads are the
+	// incident this fixes; a write with no capable backend still fails closed.
+	var lookupEffects [][]tool.EffectClass
+	for _, provider := range providers {
+		if !provider.Ready {
+			continue
+		}
+		for _, provision := range provider.Provides {
+			if provision.Capability == agentservice.CapabilityInformationLookup {
+				lookupEffects = append(lookupEffects, provider.Effects)
+				break
+			}
+		}
+	}
+	out := append([]tool.CapabilityNeed(nil), needs...)
+	// Deterministic per-capability iteration: map iteration order varies, and
+	// the graft ID must be stable across runs or plans stop being reproducible.
+	needsByCapability := map[tool.CapabilityID][]int{}
+	for index := range out {
+		need := out[index]
+		if !need.Required {
+			continue
+		}
+		if !agentservice.IsReviewedContractOnlyCapability(need.Capability) {
+			continue
+		}
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			continue
+		}
+		if _, pinned := tool.PinForCapability(pins, need.Capability); pinned {
+			continue
+		}
+		if providerExistsForCapability(providers, need.Capability) {
+			continue
+		}
+		// The replacement must be able to do the job the need describes. An
+		// unreadable descriptor means we cannot prove that, and proving it is
+		// the whole license for relaxing the obligation, so stay closed.
+		descriptor, declared := registry.Lookup(need.Capability)
+		if !declared || !anyProviderCarriesEffects(lookupEffects, descriptor.Effects) {
+			continue
+		}
+		needsByCapability[need.Capability] = append(needsByCapability[need.Capability], index)
+	}
+	capabilities := make([]tool.CapabilityID, 0, len(needsByCapability))
+	for capability := range needsByCapability {
+		capabilities = append(capabilities, capability)
+	}
+	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i] < capabilities[j] })
+	var changed bool
+	for _, capability := range capabilities {
+		indices := needsByCapability[capability]
+		for position, index := range indices {
+			need := out[index]
+			// One graft per CAPABILITY, not per need. Two required needs for the
+			// same capability (a read plus a later update, or a repeat sibling)
+			// must not each mint a fallback, and they certainly must not mint
+			// the same ID twice: the planner rejects duplicate need ids outright
+			// (semantic_planner.go "duplicate capability need id"), which would
+			// turn a rescuable turn into a hard planning error.
+			//
+			// The obligation is downgraded, not merely supplemented. A graft that
+			// only APPENDED a need left the original Required need in the plan,
+			// the planner recorded it as Unmet (need.Required is what routes a
+			// missing provider into Unmet rather than Omitted), and the turn was
+			// refused exactly as before — the fallback was decoration. Relaxing
+			// the original is what makes the substitution real: this capability
+			// provably has no reviewed provider on this host, so keeping it
+			// obligatory can only ever reproduce the failure the graft exists to
+			// prevent.
+			out[index].Required = false
+			changed = true
+			if position > 0 {
+				// The first graft already gives this capability a path to an
+				// installed implementation. A second buys nothing and costs a
+				// selection slot.
+				continue
+			}
+			graft := agentservice.AmbientDynamicLookupNeed()
+			graft.ID = "need:~installed-fallback:" + string(capability)
+			graft.EvidenceIDs = append(append([]string(nil), need.EvidenceIDs...), "installed_fallback:"+string(capability))
+			out = append(out, graft)
+			changed = true
+		}
+	}
+	if !changed {
+		return needs
+	}
+	return out
+}
+
+// anyProviderCarriesEffects reports whether some installed lookup tool can
+// perform every effect the need's capability requires.
+//
+// EffectsWithinCeiling(effects, ceiling) asks "is every member of effects
+// allowed by ceiling", so passing the need's effects as `effects` and a
+// provider's as `ceiling` answers exactly "can this provider do this job":
+// a read-only need is carried by a read-only tool, and an external-effect need
+// is carried only by a tool whose own annotations admitted an external effect.
+// An empty provider effect set allows nothing, which is the correct reading of
+// "this tool declared no capability to act".
+func anyProviderCarriesEffects(providerEffects [][]tool.EffectClass, needEffects []tool.EffectClass) bool {
+	for _, effects := range providerEffects {
+		if tool.EffectsWithinCeiling(needEffects, effects) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerProvisionList flattens the capabilities this turn's published,
+// usable providers declare. It excludes a provider whose latest observation
+// finished negative (RuntimeBlocked projects to Ready=false): a down or
+// quarantined tool is precisely the case the graft exists to route around, so
+// counting it here would make "something was installed that serves this" true
+// on a provider the planner is forbidden to select. Keeping one definition of
+// "usable" is also what stops the graft and the pruning below from disagreeing.
+func providerProvisionList(providers []tool.ProviderSpec) []tool.CapabilityID {
+	var out []tool.CapabilityID
+	for _, provider := range providers {
+		if !provider.Ready {
+			continue
+		}
+		for _, provision := range provider.Provides {
+			out = append(out, provision.Capability)
+		}
+	}
+	return out
+}
+
+// providerExistsForCapability reports whether any published, ready provider of
+// this turn can serve capability. It deliberately matches need.Capability only
+// and ignores qualifiers: the reviewed work-log contracts declare no qualifiers,
+// so a qualifier-sensitive test here would report "not served" for the one
+// binding that is installed for it and graft over it on every turn.
+func providerExistsForCapability(providers []tool.ProviderSpec, capability tool.CapabilityID) bool {
+	for _, provision := range providerProvisionList(providers) {
+		if provision == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// logSemanticUnmetWithInventory records the installed side of an unserved-need
+// refusal, so "nothing can serve this" and "the MCP that can serve this is
+// installed and healthy but nothing asked for it" are distinguishable in logs.
+//
+// It reads only already-published contract entries, so it can never widen a
+// surface: it is observation of what the turn could have used, nothing more.
+func logSemanticUnmetWithInventory(unmet []tool.UnmetNeed, inventory semanticDynamicInventory) {
+	unserved := make([]string, 0, len(unmet))
+	for _, item := range unmet {
+		if item.ReasonCode == "no_feasible_provider" || agentservice.IsReviewedContractOnlyCapability(tool.CapabilityID(needCapabilityFromUnmetID(item.NeedID))) {
+			unserved = append(unserved, item.NeedID+"="+item.ReasonCode)
+		}
+	}
+	if len(unserved) == 0 {
+		return
+	}
+	servers := make(map[string]int, len(inventory.mcpEntries))
+	for _, entry := range inventory.mcpEntries {
+		servers[strings.TrimSpace(entry.ServerID)]++
+	}
+	names := make([]string, 0, len(servers))
+	for serverID, tools := range servers {
+		if serverID == "" {
+			continue
+		}
+		names = append(names, serverID+"("+strconv.Itoa(tools)+")")
+	}
+	sort.Strings(names)
+	// A set both dedupes and sorts deterministically, so two identical failures
+	// produce byte-identical log lines and are greppable by either half.
+	servingSet := make(map[string]bool, len(inventory.mcpEntries))
+	for _, entry := range inventory.mcpEntries {
+		for _, provision := range entry.Contract.Provisions {
+			if agentservice.IsReviewedContractOnlyCapability(provision.Capability) {
+				servingSet[string(provision.Capability)] = true
+			}
+		}
+	}
+	serving := make([]string, 0, len(servingSet))
+	for capability := range servingSet {
+		serving = append(serving, capability)
+	}
+	sort.Strings(serving)
+	log.Printf("[semantic-routing] unserved needs unmet=%v installed_mcp=%v contract_only_published=%v",
+		unserved, names, serving)
+}
+
+// needCapabilityFromUnmetID recovers the capability from a need id of the form
+// "need:<capability>:<hash>". It is only used for logging, so an unexpected
+// shape degrades to an empty string rather than failing the turn.
+func needCapabilityFromUnmetID(needID string) string {
+	trimmed := strings.TrimPrefix(strings.TrimSpace(needID), "need:")
+	if trimmed == "" {
+		return ""
+	}
+	if cut := strings.Index(trimmed, ":"); cut > 0 {
+		return trimmed[:cut]
+	}
+	return trimmed
+}
+
+// semanticPermitsDynamicLookup combines the two genuinely different reasons to
+// withhold the open MCP family, and nothing else.
+//
+//  1. Outcome shape — intent.CallerWantsDynamicLookup: some results cannot be
+//     produced by "call some vendor tool" at all. Encoded by what makes them
+//     unsafe, not by listing every label that happens to work today.
+//  2. Session continuity — a petition re-plan or a slim 继续 keeps the surface
+//     the parent already had. Growing a vendor grant there reframes the turn
+//     rather than extending it. This is about *this message continuing another*,
+//     so it is the caller's own state, not a property of the intent label.
+//
+// Warehouse companions (WantsAmbientRetrieval) are a separate decision owned by
+// the host and are deliberately not consulted here.
+// slimOffice is passed in rather than recomputed: the caller already derived it
+// from this turn's classification and text, and a second evaluation could drift
+// from it and silently disagree about whether this is a continuing turn.
+func semanticPermitsDynamicLookup(ctx context.Context, primary intent.IntentLabel, slimOffice bool) bool {
+	if semanticPetitionExpansion(ctx) {
+		return false
+	}
+	if slimOffice {
+		return false
+	}
+	return intent.CallerWantsDynamicLookup(primary)
 }
 
 func withoutAmbientRetrievalNeeds(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
@@ -2578,14 +2878,16 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		provider.ParameterAuthorization = authorization
 		providers = append(providers, provider)
 	}
-	// The open read-only family is demanded only when a published provider can
-	// answer it. The need is optional, so without a provider this is a no-op
-	// rather than a new unmet row on every managed turn. It stays off a
-	// petition expansion (the strict-superset validator admits only the
-	// petitioned label's own templates and parent families), off a slim office
-	// turn (a short 继续 must not grow a vendor grant), and off the closed
-	// lookup labels the reviewed ambient list already excludes.
-	if !semanticPetitionExpansion(requestCtx) && !slimOffice && intent.WantsAmbientRetrieval(planning.Primary) {
+	// The open family is demanded whenever a published provider can answer it,
+	// subject only to the outcome-shape rule above. The need is optional, so
+	// with no installed dynamic provider this is a no-op rather than a new
+	// unmet row on every managed turn.
+	//
+	// Label enumeration is intentionally not how this is decided: routing to an
+	// already-installed, already-published MCP must not depend on someone
+	// remembering to add its intent label to an allowlist. See
+	// intent.CallerWantsDynamicLookup for what the rule does encode.
+	if semanticPermitsDynamicLookup(requestCtx, planning.Primary, slimOffice) {
 		needs = semanticNeedsWithDynamicLookupForProviders(needs, dynamicCatalog.Providers)
 	}
 	defsByName["semantic_read_trusted_document"] = semanticTrustedDocumentReadDefinition()
@@ -3122,6 +3424,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// the observation goes bad. The pin narrows selection to what the user
 	// named and nothing else.
 	providerPins := semanticProviderPins(userText, providers, dynamicInventory.mcpEntries)
+	// A required need the user installed an MCP to serve must not be answered
+	// by killing the turn. See semanticNeedsWithContractOnlyGraft. It needs the
+	// finished provider list and therefore runs here; it changes the needs the
+	// planner sees, so it must run before Plan.
+	needs = semanticNeedsWithContractOnlyGraft(needs, providers, providerPins, registry)
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
 		RootTaskID: rootTaskID, SessionID: sessionID, TurnID: turnID, ChannelScope: semanticChannelScope(channel), Snapshot: snapshot, Needs: needs, Facts: facts, Constraints: policyConstraints,
 		Pins:   providerPins,
@@ -3145,6 +3452,16 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// show "当前能力目录未覆盖这项请求" when render and deliver merely exceeded
 	// the selection cap.
 	if len(plan.Unmet) > 0 && !(len(plan.Selections) > 0 && semanticUnmetOnlyBudget(plan.Unmet)) {
+		// Record what WAS installed at the moment a need went unserved.
+		//
+		// A no_feasible_provider row says "no provider was selectable", which is
+		// true and nearly useless on its own: it is identical whether nothing is
+		// installed at all, or whether the one MCP the user installed is sitting
+		// there healthy with a published contract that no need ever named. Those
+		// two situations have completely different fixes, and without the
+		// installed side here the difference is unobservable from logs — which is
+		// what made this class of failure take hours to find.
+		logSemanticUnmetWithInventory(plan.Unmet, dynamicInventory)
 		if pinned := semanticUnmetPinnedProvider(plan.Unmet); pinned {
 			// The turn named the implementation. Saying the capability is
 			// uncovered would blame the catalog for a decision the pin made on

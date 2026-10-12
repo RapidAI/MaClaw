@@ -54,13 +54,32 @@ const (
 	// right move; refuse instead of thrashing.
 	fileCompanionPDFReadCapBytes = 200 << 20
 	// Page render bounds. 140 DPI is crisp enough for a diagram and small
-	// enough to keep the PNG in the figure budget. One rasterization gets this
-	// long before it is given up: on a loaded machine the first PyMuPDF call
-	// alone can run past half a minute.
-	fileCompanionRenderMinDPI = 72
-	fileCompanionRenderMaxDPI = 220
-	fileCompanionRenderBudget = 45 * time.Second
+	// enough to keep the PNG in the figure budget. fileCompanionRenderBudget is
+	// the hard ceiling on the whole fallback chain (PyMuPDF, then poppler,
+	// then mutool) and the only thing that caps a runaway; it is sized to
+	// cover one slow PyMuPDF import plus a full fallback pass. Each single
+	// engine attempt gets its own independent fileCompanionRenderAttemptBudget
+	// window via renderAttemptContext — never a slice of the remaining chain
+	// budget — so a cold PyMuPDF import cannot shrink the poppler/mutool
+	// fallback's window to zero (the failure mode this whole repair targets).
+	fileCompanionRenderMinDPI        = 72
+	fileCompanionRenderMaxDPI        = 220
+	fileCompanionRenderBudget        = 60 * time.Second
+	fileCompanionRenderAttemptBudget = 30 * time.Second
+	// Told to the model when no raster engine exists at all, so the user gets
+	// an actionable fix instead of a dead end.
+	fileCompanionRenderInstallHint = "可以建议用户安装任一渲染引擎后重启应用：" +
+		"macOS 上 brew install poppler 或 brew install mupdf（或 pip install pymupdf），" +
+		"Linux 上用系统包管理器安装 poppler-utils 或 mupdf-tools，" +
+		"Windows 上安装 Poppler for Windows 或 pip install pymupdf。"
 )
+
+// errNoRasterEngine is returned by fileCompanionRenderPDFPagePNG when the
+// device has none of the four engines, so the caller can grade the failure
+// without re-probing paperRasterEngines() — a second probe risks reading a
+// state the first call already resolved and just adds lock contention on a
+// path that already ran the probe.
+var errNoRasterEngine = errors.New("no pdf raster engine available")
 
 func fileCompanionToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
@@ -341,7 +360,10 @@ func (a *App) fileCompanionToolRenderPage(userID, canonical string, args map[str
 		defer cancel()
 		if err := fileCompanionRenderPDFPagePNG(ctx, canonical, outPNG, page, dpi); err != nil {
 			logFileCompanion("tool render failed user=%s page=%d: %v", userID, page, err)
-			return fmt.Sprintf("第 %d 页渲染失败，这台设备没有可用的 PDF 渲染组件。", page), false
+			if errors.Is(err, errNoRasterEngine) {
+				return fmt.Sprintf("第 %d 页渲染失败：这台设备没有可用的 PDF 渲染组件（没有带 pymupdf 的 Python，也没有 pdftocairo/pdftoppm/mutool）。"+fileCompanionRenderInstallHint, page), false
+			}
+			return fmt.Sprintf("第 %d 页渲染失败（%v）。可能是渲染超时或该页内容异常，可降低 dpi 重试，或先用 pdf_read_pages 读取该页文字。", page, err), false
 		}
 	}
 	info, err := os.Stat(outPNG)
@@ -563,25 +585,100 @@ pix = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0), alpha=False
 pix.save(out_path)
 `
 
+// popplerRasterArgs builds the argv shared by pdftocairo and pdftoppm. Both
+// accept the same -png/-f/-l/-r family and both understand -singlefile:
+// without it they append the page number to the output (base-7.png), with it
+// the file lands at exactly base.png where the caller looks for it.
+func popplerRasterArgs(source, base string, page, dpi int) []string {
+	return []string{"-png", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-r", strconv.Itoa(dpi), "-singlefile", source, base}
+}
+
+// mutoolRasterArgs builds argv for mupdf's mutool draw. mutool has no
+// -f/-l/-singlefile family: the page is a positional argument and -o names
+// the output exactly when a single page is drawn.
+func mutoolRasterArgs(source, outPNG string, page, dpi int) []string {
+	return []string{"draw", "-o", outPNG, "-r", strconv.Itoa(dpi), source, strconv.Itoa(page)}
+}
+
 // fileCompanionRenderPDFPagePNG rasterizes one page with whatever engine the
-// device has: PyMuPDF first, then the poppler tools the paper pipeline uses.
-// It is the same fallback chain the paper interpretation relies on.
+// device has: PyMuPDF first, then the poppler CLIs the paper pipeline uses,
+// then mupdf's mutool. It is the same fallback chain the paper
+// interpretation relies on.
+//
+// Each attempt gets its own slice of the caller's budget: a cold PyMuPDF
+// import alone can burn tens of seconds, and the poppler fallback — which
+// renders a page in about two — must still get a fair shot after it. Sharing
+// one deadline across the chain starved the fallback on exactly the loaded
+// machines that needed it.
 func fileCompanionRenderPDFPagePNG(ctx context.Context, source, outPNG string, page, dpi int) error {
+	// Drop any prior output first so a success below means this run produced
+	// it. Without this, a stale file from an earlier render would be mistaken
+	// for a fresh result when every engine fails this time — the model would
+	// then present a drawing from a different document.
+	_ = os.Remove(outPNG)
 	engine := paperRasterEngines()
+	var lastErr error
 	if engine.python != "" {
-		if err := fileCompanionRenderPagePyMuPDF(ctx, engine.python, source, outPNG, page, dpi); err == nil {
+		pyCtx, pyCancel := renderAttemptContext(ctx)
+		lastErr = fileCompanionRenderPagePyMuPDF(pyCtx, engine.python, source, outPNG, page, dpi)
+		pyCancel()
+		if lastErr == nil {
 			return nil
 		}
 	}
-	tool := engine.cairo
-	if tool == "" {
-		tool = engine.ppm
-	}
-	if tool == "" {
-		return errors.New("no pdf raster engine available")
-	}
 	base := strings.TrimSuffix(outPNG, ".png")
-	cmd := exec.CommandContext(ctx, tool, "-png", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-r", strconv.Itoa(dpi), "-singlefile", source, base)
+	poppler := popplerRasterArgs(source, base, page, dpi)
+	for _, tool := range []string{engine.cairo, engine.ppm} {
+		if tool == "" {
+			continue
+		}
+		if lastErr = fileCompanionRenderPageCLI(ctx, tool, poppler, outPNG); lastErr == nil {
+			return nil
+		}
+	}
+	if engine.mutool != "" {
+		if lastErr = fileCompanionRenderPageCLI(ctx, engine.mutool, mutoolRasterArgs(source, outPNG, page, dpi), outPNG); lastErr == nil {
+			return nil
+		}
+	}
+	if engine.empty() {
+		return errNoRasterEngine
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no pdf raster engine produced output")
+	}
+	return lastErr
+}
+
+// renderAttemptContext returns an attempt-scoped context that expires after
+// fileCompanionRenderAttemptBudget, and is cancelled the moment parent is
+// done. Each engine attempt uses this instead of deriving its window from the
+// shared chain context: deriving would give a later engine only the slice of
+// the chain budget the earlier engines had already burned, starving poppler
+// or mutool to zero on exactly the loaded machines that need the fallback.
+// The parent still cancels the attempt on request abort, and the chain's hard
+// outer budget still applies because the parent carries that deadline.
+func renderAttemptContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), fileCompanionRenderAttemptBudget)
+	if parent != nil {
+		go func() {
+			select {
+			case <-parent.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
+}
+
+// fileCompanionRenderPageCLI runs one external rasterizer with its own
+// attempt budget, then verifies the expected output actually landed — a tool
+// can exit zero and still write nothing (bad page range, unwritable path).
+func fileCompanionRenderPageCLI(parent context.Context, tool string, args []string, outPNG string) error {
+	toolCtx, toolCancel := renderAttemptContext(parent)
+	defer toolCancel()
+	cmd := exec.CommandContext(toolCtx, tool, args...)
 	hideCommandWindow(cmd)
 	if err := cmd.Run(); err != nil {
 		return err
@@ -611,6 +708,13 @@ func fileCompanionRenderPagePyMuPDF(ctx context.Context, python, source, outPNG 
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("pymupdf render failed: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	// pymupdf can exit zero and still write nothing on a malformed page; the
+	// CLI engines already verify their output, so match them here — a missing
+	// file is a real failure that must fall through to the poppler/mutool
+	// fallback rather than be mistaken for a fresh render.
+	if _, err := os.Stat(outPNG); err != nil {
+		return fmt.Errorf("pymupdf produced no output at %s: %w", outPNG, err)
 	}
 	return nil
 }

@@ -3,9 +3,12 @@ package agentservice
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -351,5 +354,225 @@ func TestMCPContractResolverIsExplicitControlPlaneBoundary(t *testing.T) {
 	contract, ok = missing.ResolveMCPDynamicContract(context.Background(), Principal{}, "server", "tool")
 	if ok || contract.declared() {
 		t.Fatalf("missing resolver must not synthesize a contract: %#v ok=%v", contract, ok)
+	}
+}
+
+// TestMCPToolBridge_CallTool_StartsLocalServerOnDemand covers the second copy
+// of the "installed is not runnable" defect. The GUI's LocalMCPManager learned
+// to start a shared process on demand; this bridge — the transport MaClawSrv
+// uses — still answered "not running" for a server that no sync had started.
+// AutoStart is false on purpose: it governs background startup, and the point
+// of the fix is that a call must not depend on it.
+func TestMCPToolBridge_CallTool_StartsLocalServerOnDemand(t *testing.T) {
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	_ = store.SaveTenant(Tenant{ID: "t1", Name: "test"})
+	_ = store.SaveUser(User{TenantID: "t1", ID: "u1", Name: "user1"})
+	cfg := UserConfig{
+		TenantID: "t1",
+		UserID:   "u1",
+		AppConfig: corelib.AppConfig{
+			LocalMCPServers: []corelib.LocalMCPServerEntry{{
+				ID:        "mcp_local_ondemand",
+				Name:      "on-demand",
+				Command:   "nonexistent-command-for-test",
+				AutoStart: false,
+			}},
+		},
+	}
+	if err := store.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	bridge := NewMCPToolBridge(svc)
+	p := Principal{TenantID: "t1", UserID: "u1"}
+	_, callErr := bridge.CallTool(context.Background(), p, "mcp_local_ondemand", "ping", nil)
+	if callErr == nil {
+		t.Fatalf("CallTool() succeeded; want the start failure to surface")
+	}
+	if strings.Contains(callErr.Error(), "not running") {
+		t.Fatalf("CallTool() error = %v; want a start attempt, not a bare not-running refusal", callErr)
+	}
+	// A failed start must not leave a half-initialized client registered, or
+	// the next call would reuse a process whose discovery never completed.
+	rt := runtimeForService(svc).user(composite("t1", "u1"))
+	if client := rt.localClient("mcp_local_ondemand"); client != nil {
+		t.Fatalf("a failed start left a client registered; the next call would reuse a half-initialized process")
+	}
+}
+
+// TestMCPToolBridge_CallTool_RejectsUntrustedSpawnTarget guards the on-demand
+// start path against bypassing the spawn gate. validateLocalMCPSpawnTarget
+// used to run only in StartMCPServer, so the new call-triggered start could
+// spawn a binary sitting in an untrusted directory (os.TempDir is always
+// untrusted, which is what makes this fixture deterministic).
+func TestMCPToolBridge_CallTool_RejectsUntrustedSpawnTarget(t *testing.T) {
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	_ = store.SaveTenant(Tenant{ID: "t1", Name: "test"})
+	_ = store.SaveUser(User{TenantID: "t1", ID: "u1", Name: "user1"})
+	cfg := UserConfig{
+		TenantID: "t1",
+		UserID:   "u1",
+		AppConfig: corelib.AppConfig{
+			LocalMCPServers: []corelib.LocalMCPServerEntry{{
+				ID:      "mcp_local_untrusted",
+				Name:    "untrusted",
+				Command: filepath.Join(os.TempDir(), "evil-mcp-server"),
+			}},
+		},
+	}
+	if err := store.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	bridge := NewMCPToolBridge(svc)
+	p := Principal{TenantID: "t1", UserID: "u1"}
+	_, callErr := bridge.CallTool(context.Background(), p, "mcp_local_untrusted", "ping", nil)
+	if callErr == nil {
+		t.Fatalf("CallTool() succeeded; want the untrusted binary to be rejected")
+	}
+	if !strings.Contains(callErr.Error(), "rejected") {
+		t.Fatalf("CallTool() error = %v, want it to name the rejection", callErr)
+	}
+	// Nothing may have been spawned.
+	rt := runtimeForService(svc).user(composite("t1", "u1"))
+	if client := rt.localClient("mcp_local_untrusted"); client != nil {
+		t.Fatalf("a rejected spawn left a client registered")
+	}
+}
+
+// TestMCPToolBridge_CallTool_SurvivesCanceledCallerContext pins the lifetime
+// contract of the on-demand start. startLocal hands its context to
+// exec.CommandContext, so passing the caller's context would tree-kill the
+// server the moment the request returns. A canceled caller must still leave a
+// running server behind — the process belongs to the runtime, not the request.
+func TestMCPToolBridge_CallTool_SurvivesCanceledCallerContext(t *testing.T) {
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	_ = store.SaveTenant(Tenant{ID: "t1", Name: "test"})
+	_ = store.SaveUser(User{TenantID: "t1", ID: "u1", Name: "user1"})
+	// Use a command that resolves on PATH so the spawn attempt itself is
+	// meaningful: an unresolvable name would fail in validateLocalMCPSpawnTarget
+	// before ever reaching exec.CommandContext, proving nothing about contexts.
+	// "go" is present wherever this package's tests run, and it exits nonzero
+	// quickly on a bogus subcommand, so Start succeeds and DiscoverTools fails —
+	// either way the start path was entered.
+	cfg := UserConfig{
+		TenantID: "t1",
+		UserID:   "u1",
+		AppConfig: corelib.AppConfig{
+			LocalMCPServers: []corelib.LocalMCPServerEntry{{
+				ID:      "mcp_local_detached",
+				Name:    "detached",
+				Command: "go",
+				Args:    []string{"not-a-real-go-subcommand"},
+			}},
+		},
+	}
+	if err := store.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	// If the caller's context reached exec.CommandContext, the already-canceled
+	// parent would kill the child instantly and Start would report the
+	// cancellation. With WithoutCancel the start proceeds and fails for its own
+	// reason (discovery against a non-MCP process), never "context canceled".
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	bridge := NewMCPToolBridge(svc)
+	p := Principal{TenantID: "t1", UserID: "u1"}
+	_, callErr := bridge.CallTool(ctx, p, "mcp_local_detached", "ping", nil)
+	if callErr == nil {
+		t.Fatalf("CallTool() succeeded; want the start/discovery failure")
+	}
+	if strings.Contains(callErr.Error(), "canceled") {
+		t.Fatalf("CallTool() error = %v; the canceled caller context leaked into the spawn", callErr)
+	}
+	if !strings.Contains(callErr.Error(), "start local MCP server") {
+		t.Fatalf("CallTool() error = %v, want the error to name the start attempt", callErr)
+	}
+}
+
+// TestServiceCloseStopsDetachedLocalMCPProcesses pins the ownership contract
+// that the detached start depends on. Because the call-triggered start spawns
+// under WithoutCancel, the child outlives its request — so if nothing stopped
+// it, every server ever started would survive the host. This asserts that
+// Service.Close reaps them and leaves the runtime empty.
+func TestServiceCloseStopsDetachedLocalMCPProcesses(t *testing.T) {
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	_ = store.SaveTenant(Tenant{ID: "t1", Name: "test"})
+	_ = store.SaveUser(User{TenantID: "t1", ID: "u1", Name: "user1"})
+	// A real long-lived process: with a detached context this would otherwise
+	// outlive the test binary entirely.
+	cfg := UserConfig{
+		TenantID: "t1",
+		UserID:   "u1",
+		AppConfig: corelib.AppConfig{
+			LocalMCPServers: []corelib.LocalMCPServerEntry{{
+				ID:      "mcp_local_lingering",
+				Name:    "lingering",
+				Command: "go",
+				Args:    []string{"version"},
+			}},
+		},
+	}
+	if err := store.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	bridge := NewMCPToolBridge(svc)
+	p := Principal{TenantID: "t1", UserID: "u1"}
+	// The call itself fails (`go version` is not an MCP server) but that is not
+	// what this test is about: it exercises the start path at least once.
+	_, _ = bridge.CallTool(context.Background(), p, "mcp_local_lingering", "ping", nil)
+
+	runtime := runtimeForService(svc).user(composite("t1", "u1"))
+	// Guarantee a non-empty runtime before Close. Without this precondition the
+	// assertions below would also hold for a runtime that simply never started
+	// anything, which is exactly the false pass this test must not allow.
+	runtime.mu.Lock()
+	if _, exists := runtime.local["mcp_local_lingering"]; !exists {
+		runtime.local["mcp_local_lingering"] = newLocalMCPClient(cfg.AppConfig.LocalMCPServers[0])
+	}
+	seeded := runtime.local["mcp_local_lingering"]
+	runtime.mu.Unlock()
+
+	if err := svc.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	runtime.mu.Lock()
+	remaining := len(runtime.local)
+	runtime.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("runtime.local after Close() has %d entries; want 0 — detached MCP processes must be reaped", remaining)
+	}
+	if seeded.IsRunning() {
+		t.Fatalf("the local MCP client is still running after Close()")
 	}
 }

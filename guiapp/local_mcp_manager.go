@@ -406,8 +406,10 @@ func (m *LocalMCPManager) CallToolForOwner(ownerID, serverID, toolName string, a
 		return "", fmt.Errorf("external coding-session tool %q is disabled", toolName)
 	}
 	ownerID = strings.TrimSpace(ownerID)
-	if m.registry != nil && m.registry.app != nil && m.registry.app.mcpRuntimeSyncPending(serverID) {
-		return "", fmt.Errorf("local MCP runtime for %q is not ready; runtime synchronization requires reconciliation", strings.TrimSpace(serverID))
+	if m.registry != nil && m.registry.app != nil {
+		if blocked, reason := m.registry.app.mcpRuntimeSyncGate(serverID); blocked {
+			return "", fmt.Errorf("local MCP runtime for %q is not ready: %s", strings.TrimSpace(serverID), reason)
+		}
 	}
 	defer func() {
 		if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
@@ -425,10 +427,120 @@ func (m *LocalMCPManager) CallToolForOwner(ownerID, serverID, toolName string, a
 	client, ok := m.clients[serverID]
 	m.mu.RUnlock()
 
-	if !ok {
-		return "", fmt.Errorf("local MCP server %s not running", serverID)
+	// A registered client whose process exited stays in the map — watchProcess
+	// only clears the running flag — so checking presence alone would answer
+	// "client not running" forever after a crash. Treat a dead handle as no
+	// live process and let the start path replace it.
+	if !ok || !client.IsRunning() {
+		// No live process. The owner-scoped path has always started on
+		// demand; the shared path used to answer "not running" instead, which
+		// made a freshly installed — or crashed — local MCP uncallable until
+		// some sync happened to restart it. Start it here with the same
+		// durable readiness bookkeeping so installation alone is enough.
+		started, startErr := m.startSharedClient(serverID)
+		if startErr != nil {
+			return "", startErr
+		}
+		client = started
 	}
 	return client.CallTool(toolName, args)
+}
+
+// startSharedClient starts the background/shared process for a server that has
+// no live client yet. It mirrors clientForOwner's start, discovery and durable
+// readiness bookkeeping, but records the process under the shared map so a
+// caller without an owner ID reuses one process instead of forking a private
+// one per call.
+//
+// Two guards are deliberate and must not be removed:
+//   - a disabled server is refused here, not just at sync time;
+//   - the durable runtime gate is consulted before spawning, so a
+//     needs_review or backoff-blocked managed server cannot be started by a
+//     caller that slipped past the call gate.
+func (m *LocalMCPManager) startSharedClient(serverID string) (*LocalMCPClient, error) {
+	serverID = strings.TrimSpace(serverID)
+	startedAt := time.Now()
+	entry, ok := m.localServerEntry(serverID)
+	if !ok {
+		return nil, fmt.Errorf("local MCP server %s not configured", serverID)
+	}
+	if entry.Disabled {
+		return nil, fmt.Errorf("local MCP server %s disabled", serverID)
+	}
+	if !mcpRuntimeSyncAllowsAutomaticStartForManager(m, entry) {
+		return nil, fmt.Errorf("local MCP runtime for %s is not ready; runtime synchronization requires reconciliation", serverID)
+	}
+	m.mu.RLock()
+	existing, exists := m.clients[serverID]
+	m.mu.RUnlock()
+	if exists && existing.IsRunning() {
+		return existing, nil
+	}
+
+	startLock := m.startLockForKey(serverID)
+	startLock.Lock()
+	defer startLock.Unlock()
+
+	// Re-check under the start lock: a concurrent sync or owner start may have
+	// produced a live process while this caller waited for the lock.
+	m.mu.RLock()
+	existing, exists = m.clients[serverID]
+	m.mu.RUnlock()
+	if exists && existing.IsRunning() {
+		return existing, nil
+	}
+	// The durable verdict can also have moved while this caller waited — a
+	// background probe may have failed in between. Re-run the spawn gate now
+	// that the lock is held so a needs_review or backoff verdict cannot be
+	// overtaken by a start that was queued behind it.
+	if !mcpRuntimeSyncAllowsAutomaticStartForManager(m, entry) {
+		return nil, fmt.Errorf("local MCP runtime for %s is not ready; runtime synchronization requires reconciliation", serverID)
+	}
+	if exists {
+		// A dead client is still registered. Drop it before starting a
+		// replacement so the map cannot hold two entries for one server and
+		// the stale handle is not returned to a later caller.
+		m.mu.Lock()
+		if cur, curOK := m.clients[serverID]; curOK && cur == existing {
+			delete(m.clients, serverID)
+		}
+		m.mu.Unlock()
+	}
+
+	client := NewLocalMCPClient(entry)
+	if err := client.Start(m.ctx); err != nil {
+		startErr := fmt.Errorf("start local MCP %s: %w", serverID, err)
+		if stateErr := m.recordRuntimeSyncFailure(serverID, "stdio", startErr); stateErr != nil {
+			return nil, fmt.Errorf("%v; persist runtime sync state: %w", startErr, stateErr)
+		}
+		return nil, startErr
+	}
+	if _, err := client.DiscoverTools(); err != nil {
+		client.Stop()
+		discoverErr := fmt.Errorf("discover local MCP %s: %w", serverID, err)
+		if stateErr := m.recordRuntimeSyncFailure(serverID, "stdio", discoverErr); stateErr != nil {
+			return nil, fmt.Errorf("%v; persist runtime sync state: %w", discoverErr, stateErr)
+		}
+		return nil, discoverErr
+	}
+	m.mu.Lock()
+	m.clients[serverID] = client
+	m.mu.Unlock()
+	if err := m.recordRuntimeSyncReady(serverID); err != nil {
+		// The process is up but its readiness evidence could not be persisted.
+		// Stop it and fail closed so callers cannot use an untracked runtime;
+		// the durable fence stays fail-closed exactly as in clientForOwner.
+		m.mu.Lock()
+		if cur, curOK := m.clients[serverID]; curOK && cur == client {
+			delete(m.clients, serverID)
+		}
+		m.mu.Unlock()
+		client.Stop()
+		return nil, fmt.Errorf("persist runtime readiness for %s: %w", serverID, err)
+	}
+	log.Printf("[LocalMCP] started shared client server=%s elapsed=%s", serverID, time.Since(startedAt).Round(time.Millisecond))
+	m.publishReviewedServerTools(serverID, client.GetTools())
+	return client, nil
 }
 
 func (m *LocalMCPManager) clientForOwner(serverID, ownerID string) (*LocalMCPClient, error) {
@@ -468,6 +580,15 @@ func (m *LocalMCPManager) clientForOwner(serverID, ownerID string) (*LocalMCPCli
 		}
 	}
 	m.mu.RUnlock()
+
+	// Defense in depth, mirroring SyncFromConfig and startSharedClient: the
+	// caller's gate ran before it queued on this lock, so re-run the spawn gate
+	// now that the lock is held. A managed server that reached needs_review or
+	// entered retry backoff while this start waited must not be spawned by the
+	// owner path either.
+	if !mcpRuntimeSyncAllowsAutomaticStartForManager(m, entry) {
+		return nil, fmt.Errorf("local MCP runtime for %s is not ready; runtime synchronization requires reconciliation", serverID)
+	}
 
 	client := NewLocalMCPClient(entry)
 	start := time.Now()

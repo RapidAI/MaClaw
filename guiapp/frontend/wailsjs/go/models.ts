@@ -7711,6 +7711,21 @@ export namespace knowledge {
 
 export namespace main {
 
+	export class CompanionChatTurn {
+	    role: string;
+	    content: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CompanionChatTurn(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.role = source["role"];
+	        this.content = source["content"];
+	    }
+	}
+
 	export class TokenBankShareModelInput {
 	    model: string;
 	    available: boolean;

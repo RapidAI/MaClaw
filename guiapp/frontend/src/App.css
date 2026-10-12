@@ -27767,6 +27767,15 @@ input.cwshare-url {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  /* The 打开 menu is positioned against the bar rather than the button that
+     opens it: anchored to a button, the panel sat off-centre and a narrow
+     window clipped it against the window edge. */
+  position: relative;
+}
+/* The bar clips its own row, which would also clip the 打开 menu. Names stay
+   clipped by .file-companion-titlebar-files while the menu is open. */
+.file-companion-titlebar--menu-open {
+  overflow: visible;
 }
 .file-companion-titlebar .mc-header-brand {
   margin-right: 12px;
@@ -27897,11 +27906,137 @@ input.cwshare-url {
   opacity: 0.35;
   cursor: default;
 }
-.file-companion-titlebar > .file-companion-tab--open {
+/* 打开 is a menu button, not a tab: it keeps the tab look but never competes
+   with the filename row for the scrollable width. */
+.file-companion-titlebar .file-companion-tab--open {
   flex: 0 0 auto;
   max-width: none;
   min-width: max-content;
   padding: 0 12px;
+}
+.file-companion-titlebar .file-companion-tab--open:focus-visible {
+  outline: 2px solid var(--theme-focus, var(--theme-primary));
+  outline-offset: 2px;
+}
+.file-companion-open {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.file-companion-open-caret {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.file-companion-open-caret svg {
+  display: block;
+  width: 9px;
+  height: 6px;
+}
+.file-companion-open-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  /* Centred on the window: left/right both pinned with an auto margin keeps the
+     panel in the middle without a transform, which would create a containing
+     block for anything inside it. */
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  max-width: calc(100% - 16px);
+  z-index: 30;
+  box-sizing: border-box;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 10px;
+  background: var(--theme-surface, #ffffff);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+.file-companion-open-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+}
+.file-companion-open-item:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-open-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* Keyboard focus must stay visible inside the menu (WCAG 2.4.7): the panel is
+   opened by keyboard as often as by mouse. */
+.file-companion-open-item:focus-visible,
+.file-companion-open-go:focus-visible {
+  outline: 2px solid var(--theme-focus, var(--theme-primary));
+  outline-offset: 2px;
+}
+.file-companion-open-input:focus-visible {
+  outline: 2px solid var(--theme-focus, var(--theme-primary));
+  outline-offset: 1px;
+  border-color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-open-sep {
+  height: 1px;
+  background: var(--theme-border, #d9e1ec);
+}
+.file-companion-open-row {
+  display: flex;
+  gap: 6px;
+}
+.file-companion-open-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text, #1e293b);
+  font: 400 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+}
+.file-companion-open-input:disabled {
+  opacity: 0.6;
+}
+.file-companion-open-go {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-primary, #2f6fbc);
+  border-radius: 8px;
+  background: var(--theme-primary, #2f6fbc);
+  color: #ffffff;
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-companion-open-go:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-open-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--theme-text-muted, #64748b);
+}
+.file-companion-open-hint[data-state="error"] {
+  color: var(--theme-danger, #c43d34);
 }
 .file-companion-tab-close {
   flex: 0 0 auto;

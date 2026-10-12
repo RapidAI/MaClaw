@@ -115,16 +115,80 @@ func openLookupEffectsForTool(tool ObservedMCPTool) []coretool.EffectClass {
 	return []coretool.EffectClass{coretool.EffectExternalEffect}
 }
 
-// reviewedContractOnlyCapabilities names the capability constants that have no
-// host attach site and are servable only through a published MCP/Skill
-// contract. It is the reviewed answer to "where can this capability come
-// from" for the families the host does not own, so a wiring test can assert
-// both halves: the family is contract-only, and a reviewed binding still
-// provisions it.
-var reviewedContractOnlyCapabilities = []string{
-	"CapabilityInformationLookup",
-	"CapabilityRecordReadWorklog",
-	"CapabilityRecordUpdateWorklog",
+// reviewedContractOnlyCapabilities names the capabilities that have no host
+// attach site and are servable only through a published MCP/Skill contract.
+// It is the reviewed answer to "where can this capability come from" for the
+// families the host does not own, so a wiring test can assert both halves:
+// the family is contract-only, and a reviewed binding still provisions it.
+//
+// It is also the graft's authority for "this need can only ever be answered by
+// something a user installed". A family listed here has no host implementation
+// on any instance, so failing it closed can never be a deployment question —
+// it is always "nothing is installed that serves this".
+//
+// It is DERIVED from ReviewedContractOnlyCapabilityIDs: there is exactly one
+// place to add a contract-only family. A drift between the two would fail
+// silently — either a family that can never be grafted (the exact "installed
+// but unusable" bug this file's graft fixes), or one that can never be wired.
+// See contractOnlyCapabilityIdentifiers for how names map onto IDs, and
+// TestContractOnlyListsShareOneSourceOfTruth, which fails on any mismatch.
+var reviewedContractOnlyCapabilities = contractOnlyCapabilityIdentifiers()
+
+// contractOnlyCapability binds a capability ID to the Go constant name the
+// wiring test greps for. Both live on one row so they cannot drift apart.
+type contractOnlyCapability struct {
+	id   coretool.CapabilityID
+	name string
+}
+
+// contractOnlyCapabilities is the single source of truth for the contract-only
+// families. Adding one is a single edit here; both consumers below derive from
+// this slice, so there is no second literal to forget.
+//
+// An earlier version kept the IDs in ReviewedContractOnlyCapabilityIDs and the
+// names in a separate slice, and the struct's `id` field was never read — so the
+// two lists could in fact drift while the comment claimed they could not. A
+// comment is not a mechanism.
+var contractOnlyCapabilities = []contractOnlyCapability{
+	{CapabilityInformationLookup, "CapabilityInformationLookup"},
+	{CapabilityRecordReadWorklog, "CapabilityRecordReadWorklog"},
+	{CapabilityRecordUpdateWorklog, "CapabilityRecordUpdateWorklog"},
+}
+
+// ReviewedContractOnlyCapabilityIDs lists the contract-only capability IDs, in
+// declaration order. The graft consumes this form.
+func ReviewedContractOnlyCapabilityIDs() []coretool.CapabilityID {
+	out := make([]coretool.CapabilityID, 0, len(contractOnlyCapabilities))
+	for _, entry := range contractOnlyCapabilities {
+		out = append(out, entry.id)
+	}
+	return out
+}
+
+// contractOnlyCapabilityIdentifiers lists the Go constant names, in the same
+// order. The wiring test reads names out of source text, which is why strings
+// exist at all; nothing in the runtime path should consume them.
+func contractOnlyCapabilityIdentifiers() []string {
+	out := make([]string, 0, len(contractOnlyCapabilities))
+	for _, entry := range contractOnlyCapabilities {
+		out = append(out, entry.name)
+	}
+	return out
+}
+
+// IsReviewedContractOnlyCapability reports whether capability has no host
+// attach site and can be served only by a published dynamic contract.
+//
+// It walks the table directly rather than the ID accessor: this runs per need
+// and per provision while planning, and the accessor allocates a fresh slice
+// each call.
+func IsReviewedContractOnlyCapability(capability coretool.CapabilityID) bool {
+	for _, entry := range contractOnlyCapabilities {
+		if entry.id == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // ReviewedMCPWebSearchPrimeGlobalKey is the stable marketplace identity of

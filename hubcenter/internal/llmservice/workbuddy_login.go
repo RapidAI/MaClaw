@@ -2,8 +2,6 @@ package llmservice
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -445,10 +443,25 @@ func clearWorkBuddySecrets(provider *llmpool.ProviderConfig) {
 	provider.WorkBuddyDomain = ""
 }
 
+// normalizeWorkBuddyAuthKind applies the account-login rule to a WorkBuddy row:
+// the edition must be one of the two, and the stored login session id never
+// survives a save.
+func normalizeWorkBuddyAuthKind(provider *llmpool.ProviderConfig) {
+	provider.WorkBuddySessionID = ""
+	edition := strings.TrimSpace(provider.WorkBuddyEdition)
+	if edition != workbuddy.EditionChina && edition != workbuddy.EditionGlobal {
+		provider.AuthKind = ""
+		clearWorkBuddySecrets(provider)
+	}
+}
+
 func mergeWorkBuddyAuth(existing, incoming llmpool.ProviderConfig) llmpool.ProviderConfig {
 	switch strings.TrimSpace(incoming.AuthKind) {
 	case llmpool.ProviderAuthAPIKey:
-		incoming.AuthKind = ""
+		// Keep the marker: mergeVendorAuth runs next and must not resurrect a
+		// vendor account the admin just converted to a plain key. The stored
+		// value normalizes to "" anyway.
+		incoming.AuthKind = llmpool.ProviderAuthAPIKey
 		clearWorkBuddySecrets(&incoming)
 		return incoming
 	case llmpool.ProviderAuthWorkBuddy:
@@ -489,27 +502,6 @@ func mergeWorkBuddyAuth(existing, incoming llmpool.ProviderConfig) llmpool.Provi
 	}
 }
 
-func normalizeProviderAuth(provider *llmpool.ProviderConfig) {
-	if provider == nil {
-		return
-	}
-	provider.WorkBuddySessionID = ""
-	kind := strings.TrimSpace(provider.AuthKind)
-	if kind == llmpool.ProviderAuthAPIKey || (kind != "" && kind != llmpool.ProviderAuthWorkBuddy) {
-		provider.AuthKind = ""
-		clearWorkBuddySecrets(provider)
-		return
-	}
-	if kind != llmpool.ProviderAuthWorkBuddy {
-		clearWorkBuddySecrets(provider)
-		provider.AuthKind = ""
-	}
-}
-
 func newWorkBuddySessionID() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(raw[:]), nil
+	return newLoginSessionID()
 }

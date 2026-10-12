@@ -724,3 +724,158 @@ func TestProbeRemoteMCPCancelDoesNotConsumeDurableBudget(t *testing.T) {
 		t.Fatalf("canceled probe recorded in-memory health: %+v", app.mcpRegistry.health[entry.ID])
 	}
 }
+
+// newRuntimeSyncGateApp builds an App backed by an isolated Maclaw base dir so
+// the gate tests cannot observe or mutate another instance's state file.
+func newRuntimeSyncGateApp(t *testing.T) *App {
+	t.Helper()
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: base}
+	return app
+}
+
+func TestMCPRuntimeSyncGateAllowsFirstCallWithoutDurableState(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	if blocked, reason := app.mcpRuntimeSyncGate("never-probed"); blocked {
+		t.Fatalf("first call blocked = true (%s); a managed server with no durable state must be allowed to establish it", reason)
+	}
+}
+
+func TestMCPRuntimeSyncGateAllowsPendingWithRemainingBudget(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{
+		ID: "pending-budget", Name: "pending", EndpointURL: "http://127.0.0.1:1/mcp",
+		Source: corelib.MCPSourceMarket, Capability: &corelib.MCPServerCapabilityRef{CapabilityID: "cap"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"pending-budget": {ServerID: "pending-budget", Status: "pending", Attempts: 1, UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, reason := app.mcpRuntimeSyncGate("pending-budget")
+	if blocked {
+		t.Fatalf("pending with remaining budget blocked = true (%s); the call itself is the probe that records the outcome", reason)
+	}
+}
+
+func TestMCPRuntimeSyncGateBlocksNeedsReview(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"terminal": {ServerID: "terminal", Status: "needs_review", Attempts: 3, UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, reason := app.mcpRuntimeSyncGate("terminal")
+	if !blocked {
+		t.Fatalf("needs_review blocked = false; terminal operator state must stay blocked")
+	}
+	if !strings.Contains(reason, "review") {
+		t.Fatalf("needs_review reason = %q, want it to name the review state", reason)
+	}
+}
+
+func TestMCPRuntimeSyncGateBlocksExhaustedPending(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"exhausted": {ServerID: "exhausted", Status: "pending", Attempts: 3, UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := app.mcpRuntimeSyncGate("exhausted"); !blocked {
+		t.Fatalf("pending at the attempt budget blocked = false; a runtime that never comes up must not be retried forever")
+	}
+}
+
+func TestMCPRuntimeSyncGateBlocksRetryBackoff(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"backoff": {
+			ServerID: "backoff", Status: "pending", Attempts: 1,
+			NextRetryAt: time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339),
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, reason := app.mcpRuntimeSyncGate("backoff")
+	if !blocked {
+		t.Fatalf("pending inside retry backoff blocked = false; the cooldown must survive the relaxed gate")
+	}
+	if !strings.Contains(reason, "backoff") {
+		t.Fatalf("backoff reason = %q, want it to name the backoff", reason)
+	}
+}
+
+func TestMCPRuntimeSyncGateBlocksWhenPersistenceFailed(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	mcpRuntimeSyncStateMu.Lock()
+	mcpRuntimeSyncPersistenceFailures[mcpRuntimeSyncPersistenceKey("unwritten")] = true
+	mcpRuntimeSyncStateMu.Unlock()
+	t.Cleanup(func() {
+		mcpRuntimeSyncStateMu.Lock()
+		delete(mcpRuntimeSyncPersistenceFailures, mcpRuntimeSyncPersistenceKey("unwritten"))
+		mcpRuntimeSyncStateMu.Unlock()
+	})
+	if blocked, _ := app.mcpRuntimeSyncGate("unwritten"); !blocked {
+		t.Fatalf("a failed durable write must keep the gate closed even when the file still says ready")
+	}
+}
+
+func TestMCPRuntimeSyncGateAllowsReady(t *testing.T) {
+	app := newRuntimeSyncGateApp(t)
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"proven": {ServerID: "proven", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := app.mcpRuntimeSyncGate("proven"); blocked {
+		t.Fatalf("ready blocked = true")
+	}
+}
+
+func managedEntry(id string) *corelib.MCPServerEntry {
+	return &corelib.MCPServerEntry{
+		ID: id, Name: id, EndpointURL: "http://127.0.0.1:1/mcp",
+		Source: corelib.MCPSourceMarket, Capability: &corelib.MCPServerCapabilityRef{CapabilityID: "cap"},
+	}
+}
+
+// TestMCPRuntimeSyncShouldRecordReady pins the write-suppression rule for the
+// remote success path: marking ready must be entry-driven (no config load on a
+// hot path), must never create a marker for an unmanaged server, and must skip
+// the state-file write once the durable marker already says ready.
+func TestMCPRuntimeSyncShouldRecordReady(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: base}
+
+	if app.mcpRuntimeSyncShouldRecordReady(nil) {
+		t.Fatalf("nil entry reported true; want false")
+	}
+	manual := &corelib.MCPServerEntry{ID: "manual", EndpointURL: "http://127.0.0.1:1/mcp"}
+	if app.mcpRuntimeSyncShouldRecordReady(manual) {
+		t.Fatalf("unmanaged entry reported true; a manual server must not gain a durable marker")
+	}
+	if !app.mcpRuntimeSyncShouldRecordReady(managedEntry("fresh")) {
+		t.Fatalf("managed entry with no durable state reported false; the first call is the probe that establishes it")
+	}
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"probing": {ServerID: "probing", Status: "pending", Attempts: 1, UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+		"proven":  {ServerID: "proven", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !app.mcpRuntimeSyncShouldRecordReady(managedEntry("probing")) {
+		t.Fatalf("pending managed entry reported false; a successful call must converge it to ready")
+	}
+	if app.mcpRuntimeSyncShouldRecordReady(managedEntry("proven")) {
+		t.Fatalf("already-ready managed entry reported true; that would rewrite the state file on every call")
+	}
+}

@@ -322,10 +322,14 @@ var latexFunctionReplacer = strings.NewReplacer(
 )
 
 func markdownToHTML(md string) string {
-	return markdownToHTMLMode(md, false)
+	return markdownToHTMLWithScratch(nil, md, false)
 }
 
-func markdownToHTMLMode(md string, colorful bool) string {
+// markdownToHTMLWithScratch renders Markdown for one render. scratch carries
+// that render's home for decoded data-URL images, and may be nil for callers
+// that have none (in-package HTML assertions), where a data-URL image then
+// resolves to nothing rather than being written somewhere unmanaged.
+func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool) string {
 	lines := strings.Split(md, "\n")
 	var sb strings.Builder
 	listType := ""
@@ -381,7 +385,7 @@ func markdownToHTMLMode(md string, colorful bool) string {
 			sb.WriteString(fmt.Sprintf(`<p style="font-size:%s; color:%s"><b>%s</b></p>`, size, color, renderInlineHTMLMode(strings.TrimPrefix(trimmed, prefix), colorful)))
 			continue
 		}
-		if imageHTML, ok := markdownImageToHTML(trimmed, colorful); ok {
+		if imageHTML, ok := markdownImageToHTML(scratch, trimmed, colorful); ok {
 			if listType != "" {
 				closeList()
 			}
@@ -513,14 +517,14 @@ func markdownToHTMLMode(md string, colorful bool) string {
 	return sb.String()
 }
 
-func markdownImageToHTML(line string, colorful bool) (string, bool) {
+func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool) (string, bool) {
 	matches := markdownImageRe.FindStringSubmatch(strings.TrimSpace(line))
 	if len(matches) != 3 {
 		return "", false
 	}
 	alt := strings.TrimSpace(matches[1])
 	rawPath := strings.TrimSpace(matches[2])
-	imagePath, ok := resolveMarkdownImagePath(rawPath)
+	imagePath, ok := resolveMarkdownImagePath(scratch, rawPath)
 	captionColor := "#666"
 	if colorful {
 		captionColor = "#0f766e"
@@ -541,37 +545,95 @@ func markdownImageToHTML(line string, colorful bool) (string, bool) {
 
 // fittedMarkdownImageSize keeps a chart inside the area above the footer on
 // both A4 and B5. Width stays at most 480pt. Height stays at most 600pt.
+//
+// Results are cached per render: pagination measures each candidate split,
+// so a 12-image document used to decode the same files over 100 times. File
+// identity is part of the cache key (see imageSizeCacheKey), so a file that
+// changes between renders is re-read instead of served stale.
 func fittedMarkdownImageSize(path string) (int, int) {
+	cached := decodeMarkdownImageSizeWithCache(path, globalMarkdownImageSizeCache)
+	return cached.w, cached.h
+}
+
+// markdownImageSize is the fitted size of one image, in points.
+type markdownImageSize struct {
+	w, h int
+}
+
+// globalMarkdownImageSizeCache is shared by the render helpers that call
+// fittedMarkdownImageSize directly without a per-render map. It is keyed by
+// file identity (see imageSizeCacheKey) so a replaced file invalidates itself.
+var globalMarkdownImageSizeCache = newMarkdownImageSizeCache()
+
+// decodeMarkdownImageSizeWithCache reads image dimensions through the given
+// cache, falling back to the maximum chart size when the file cannot be read
+// or decoded.
+func decodeMarkdownImageSizeWithCache(path string, cache *markdownImageSizeCache) markdownImageSize {
 	const maxW = 480.0
 	const maxH = 600.0
+	fallback := markdownImageSize{w: int(maxW), h: int(maxH)}
+
+	key, ok := imageSizeCacheKey(path)
+	if !ok {
+		return fallback
+	}
+	if got, ok := cache.get(key); ok {
+		return got
+	}
+
+	got := fallback
+	if cfg, ok := decodeImageSize(path); ok {
+		w := maxW
+		h := float64(cfg.height) * w / float64(cfg.width)
+		if h > maxH {
+			h = maxH
+			w = float64(cfg.width) * h / float64(cfg.height)
+		}
+		if w < 1 {
+			w = 1
+		}
+		if h < 1 {
+			h = 1
+		}
+		got = markdownImageSize{w: int(w + 0.5), h: int(h + 0.5)}
+	}
+	cache.put(key, got)
+	return got
+}
+
+// imageSize is the natural pixel size of an image file.
+type imageSize struct {
+	width, height int
+}
+
+func decodeImageSize(path string) (imageSize, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return int(maxW), int(maxH)
+		return imageSize{}, false
 	}
 	defer f.Close()
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return int(maxW), int(maxH)
+		return imageSize{}, false
 	}
-	w := maxW
-	h := float64(cfg.Height) * w / float64(cfg.Width)
-	if h > maxH {
-		h = maxH
-		w = float64(cfg.Width) * h / float64(cfg.Height)
-	}
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
-	}
-	return int(w + 0.5), int(h + 0.5)
+	return imageSize{width: cfg.Width, height: cfg.Height}, true
 }
 
-func resolveMarkdownImagePath(rawPath string) (string, bool) {
+// resolveMarkdownImagePath turns one Markdown target into a file the renderer
+// can open. scratch supplies the render-scoped directory for images that
+// arrive as bytes; without it, only real filesystem paths can resolve.
+func resolveMarkdownImagePath(scratch *dataURLScratch, rawPath string) (string, bool) {
 	path := strings.TrimSpace(rawPath)
 	if path == "" || isRemoteURL(path) {
 		return "", false
+	}
+	// A data URL carries the image itself. Decoding it to a file lets every
+	// later stage — measuring, embedding — stay exactly as it is for a path.
+	if isDataURLImage(path) {
+		if scratch == nil {
+			return "", false
+		}
+		return scratch.resolve(path)
 	}
 	if strings.HasPrefix(strings.ToLower(path), "file://") {
 		path = strings.TrimPrefix(path, "file://")

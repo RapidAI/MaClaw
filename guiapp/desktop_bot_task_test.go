@@ -428,24 +428,38 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 		}
 	})
 
-	t.Run("stops when an http error uses the unreachable sentence", func(t *testing.T) {
+	t.Run("retries a gateway 502 and then reports the text", func(t *testing.T) {
+		// A 502 is the proxy in front of Hub failing to answer. The run is
+		// still driving the desktop, so the read is tried again. A turn that
+		// had been running for forty minutes used to die on exactly this.
 		var calls int
 		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
 			calls++
 			if method == http.MethodPost {
-				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run_http", "status": "running"})
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run_502", "status": "running"})
 				return http.StatusAccepted, nil
 			}
-			return http.StatusBadGateway, fmt.Errorf("MaClawSrv 不可达")
+			switch calls {
+			case 2, 3, 4:
+				return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+			default:
+				fillDesktopBotDest(t, dest, map[string]any{"text": "页面已打开", "status": "succeeded"})
+				return http.StatusOK, nil
+			}
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
-		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "")
-		if err == nil || !strings.Contains(err.Error(), "不可达") || calls != 2 {
-			t.Fatalf("err=%v calls=%d", err, calls)
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Text != "页面已打开" || calls != 5 {
+			t.Fatalf("text=%q calls=%d", got.Text, calls)
 		}
 	})
 
 	t.Run("stops on a real hub error", func(t *testing.T) {
+		// A 404 is an answer: the server looked and the run is not there.
+		// Only that ends the turn, never a status the server did not mean.
 		var calls int
 		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
 			calls++
@@ -453,11 +467,11 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run_err", "status": "running"})
 				return http.StatusAccepted, nil
 			}
-			return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+			return http.StatusNotFound, fmt.Errorf("bot not found")
 		}
 		t.Cleanup(func() { desktopBotExchangeOverride = nil })
 		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "")
-		if err == nil || !strings.Contains(err.Error(), "unavailable") || calls != 2 {
+		if err == nil || !strings.Contains(err.Error(), "bot not found") || calls != 2 {
 			t.Fatalf("err=%v calls=%d", err, calls)
 		}
 	})
@@ -480,6 +494,140 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "plan", "")
 		if err != nil || got.Text != "做完了" || calls != 3 {
 			t.Fatalf("text=%q err=%v calls=%d", got.Text, err, calls)
+		}
+	})
+
+	t.Run("resends a lost admission answer with the same key", func(t *testing.T) {
+		// Hub answered 502 but named the key it received, which proves it
+		// forwards the key to MaClawSrv. The same key is sent again: a
+		// repeated key replays the run instead of starting a second one.
+		var bodies []string
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, body any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			raw, _ := json.Marshal(body)
+			bodies = append(bodies, string(raw))
+			if method == http.MethodPost {
+				if len(bodies) == 1 {
+					fillDesktopBotDest(t, dest, map[string]any{"client_message_id": "turn-1"})
+					return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+				}
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run_retry", "status": "running", "client_message_id": "turn-1"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "做完了", "status": "succeeded"})
+			return http.StatusOK, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "turn-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Text != "做完了" || len(bodies) != 3 {
+			t.Fatalf("text=%q sends=%d", got.Text, len(bodies))
+		}
+		if !strings.Contains(bodies[0], `"client_message_id":"turn-1"`) || bodies[0] != bodies[1] {
+			t.Fatalf("resend changed the turn: %s vs %s", bodies[0], bodies[1])
+		}
+	})
+
+	t.Run("does not resend an admission the hub never keyed", func(t *testing.T) {
+		// A 502 with no key echo may be a Hub that drops the key. Resending
+		// against that Hub could start the work twice, so the failure stands
+		// until one answer proves the echo.
+		var calls int
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method == http.MethodPost {
+				return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "做完了"})
+			return http.StatusOK, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "turn-2")
+		if err == nil || !strings.Contains(err.Error(), "unavailable") || calls != 1 {
+			t.Fatalf("err=%v calls=%d", err, calls)
+		}
+	})
+
+	t.Run("does not treat an empty echo as proof of a callerless turn", func(t *testing.T) {
+		// A scheduled occurrence has no caller behind it and sends no key.
+		// Hub mints a fresh key per call and the failure carries no echo, so
+		// "no key" matched "no key" would look proven — and every resend
+		// would start a new run instead of replaying one. The absence of a
+		// key must never count as the round-trip that licenses a retry.
+		var calls int
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method == http.MethodPost {
+				return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "做完了"})
+			return http.StatusOK, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "到期任务", "execute", "")
+		if err == nil || !strings.Contains(err.Error(), "unavailable") || calls != 1 {
+			t.Fatalf("err=%v calls=%d", err, calls)
+		}
+	})
+
+	t.Run("does not resend a rejected admission", func(t *testing.T) {
+		// A 400 is an answer the server meant. Sending it again only
+		// repeats the rejection.
+		var calls int
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"client_message_id": "turn-3"})
+				return http.StatusBadRequest, fmt.Errorf("invalid bot settings")
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "做完了"})
+			return http.StatusOK, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "turn-3")
+		if err == nil || !strings.Contains(err.Error(), "invalid bot settings") || calls != 1 {
+			t.Fatalf("err=%v calls=%d", err, calls)
+		}
+	})
+
+	t.Run("does not reuse a key echo from a different hub", func(t *testing.T) {
+		// Two different Hubs answer within one session, which happens after
+		// a redeploy or a rollback. The first echoes the key; the second is
+		// an older build that drops it. Permission to resend must come from
+		// the answer in hand, never from what an earlier Hub did — otherwise
+		// a retry against the old Hub starts the work a second time.
+		var calls int
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method != http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"text": "做完了"})
+				return http.StatusOK, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"client_message_id": "turn-echo"})
+			return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		// First turn: this Hub proves the echo but still fails.
+		if _, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "turn-echo"); err == nil {
+			t.Fatal("expected the 502 to stand")
+		}
+		callsAfterFirst := calls
+
+		// Same process, different Hub behind it: no echo this time.
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method != http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"text": "做完了"})
+				return http.StatusOK, nil
+			}
+			return http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator")
+		}
+		if _, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "turn-new"); err == nil {
+			t.Fatal("expected the 502 to stand")
+		}
+		if sent := calls - callsAfterFirst; sent != 1 {
+			t.Fatalf("retried %d times against a hub that dropped the key", sent)
 		}
 	})
 
@@ -514,10 +662,88 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 	})
+
+	t.Run("hands every run read a context the turn can cancel", func(t *testing.T) {
+		// The read used to hang off context.Background, so cancelling the
+		// turn could not cut a poll short — abandoning a bot talking to a
+		// slow Hub kept reading it for the full read window. The context
+		// reaching each GET must be the turn's own, not a fresh root.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// The snapshot has to be taken the instant the turn is cancelled.
+		// Reading it afterwards is useless: by then the cancellation has
+		// propagated on its own and even a context rooted at Background
+		// looks cancelled.
+		reached := false
+		desktopBotExchangeOverride = func(callCtx context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			if method == http.MethodGet {
+				cancel()
+				reached = callCtx.Err() != nil
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"run_id": "run_ctx", "status": "running"})
+			return http.StatusAccepted, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		if _, err := (&App{}).relayDesktopBot(ctx, "bot_1", "打开", "execute", ""); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err=%v", err)
+		}
+		if !reached {
+			t.Fatal("the run read had its own context, so cancelling the turn cannot cut it short")
+		}
+	})
 }
 
 func TestWatchDesktopBotRequiresABotID(t *testing.T) {
 	if _, err := (&App{}).WatchDesktopBot(" ", 0); err == nil {
 		t.Fatal("empty bot id should be rejected")
+	}
+}
+
+func TestDesktopBotPollAgainKeepsARunThroughAProxyBlink(t *testing.T) {
+	// The run lives on MaClawSrv. A read that never got an answer cannot
+	// have changed it, so nothing but a rejection the server meant ends the
+	// turn.
+	cases := []struct {
+		name   string
+		status int
+		err    error
+		again  bool
+	}{
+		{"dropped connection", 0, fmt.Errorf("MaClawSrv 不可达"), true},
+		{"deadline", 0, context.DeadlineExceeded, true},
+		{"gateway 502", http.StatusBadGateway, fmt.Errorf("bot service is unavailable, contact the administrator"), true},
+		{"unavailable 503", http.StatusServiceUnavailable, fmt.Errorf("MaClawSrv 不可达"), true},
+		{"gateway timeout 504", http.StatusGatewayTimeout, fmt.Errorf("MaClawSrv 不可达"), true},
+		{"not found 404", http.StatusNotFound, fmt.Errorf("bot not found"), false},
+		{"bad request 400", http.StatusBadRequest, fmt.Errorf("invalid bot settings"), false},
+		{"no error", http.StatusOK, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := desktopBotPollAgain(tc.status, tc.err); got != tc.again {
+				t.Fatalf("desktopBotPollAgain(%d, %v) = %v, want %v", tc.status, tc.err, got, tc.again)
+			}
+		})
+	}
+}
+
+func TestDesktopBotPollStretchCapsAndResets(t *testing.T) {
+	previous := desktopBotPollInterval
+	desktopBotPollInterval = time.Second
+	t.Cleanup(func() { desktopBotPollInterval = previous })
+	if got := desktopBotPollStretch(0); got != time.Second {
+		t.Fatalf("first failure wait = %s", got)
+	}
+	if got := desktopBotPollStretch(2); got != 4*time.Second {
+		t.Fatalf("third failure wait = %s", got)
+	}
+	if got := desktopBotPollStretch(50); got != desktopBotPollStretchMax {
+		t.Fatalf("capped wait = %s, want %s", got, desktopBotPollStretchMax)
+	}
+	// A read that answers resets the count, so a slow run never pays it.
+	if got := desktopBotPollStretch(0); got != time.Second {
+		t.Fatalf("reset wait = %s", got)
 	}
 }

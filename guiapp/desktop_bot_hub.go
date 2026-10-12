@@ -709,15 +709,64 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Accepted           bool              `json:"accepted"`
 		RunID              string            `json:"run_id"`
 		Status             string            `json:"status"`
+		// ClientMessageID is Hub's echo of the per-turn key. It arrives on
+		// success and on failure; either one proves this Hub forwards the
+		// key, which is the only condition under which a lost admission
+		// answer may be sent again.
+		ClientMessageID string `json:"client_message_id"`
 	}
-	body := map[string]string{"content": text}
+	body := map[string]any{"content": text, "client_message_id": requestID}
 	if phase = strings.TrimSpace(phase); phase != "" {
 		body["phase"] = phase
 	}
+	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/messages"
 	// Prefer returns as soon as the run exists. An older Hub ignores it and
 	// still writes the reply on this same call, so the wait stays 30 minutes
 	// for that case only. A 202 is not the result.
-	status, err := a.desktopBotExchange(ctx, http.MethodPost, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID))+"/messages", body, &out, 30*time.Minute, map[string]string{"Prefer": "respond-async"})
+	//
+	// admitBudget caps every attempt together. Each attempt may itself wait
+	// 30 minutes — the long allowance exists because an older Hub holds the
+	// request for the whole run — so without a ceiling three tries could keep
+	// this bot busy for an hour and a half with nothing to show. Losing the
+	// whole budget is answered with the last failure.
+	admitCtx, cancelAdmit := context.WithTimeout(ctx, desktopBotAdmitBudget)
+	defer cancelAdmit()
+	var status int
+	var err error
+	for attempt := 1; attempt <= desktopBotAdmitAttempts; attempt++ {
+		out.ClientMessageID = ""
+		status, err = a.desktopBotExchange(admitCtx, http.MethodPost, path, body, &out, 30*time.Minute, map[string]string{"Prefer": "respond-async"})
+		// Whether this answer proved the key round-tripped. It belongs to
+		// this attempt only, never to the session: the Hub answering now is
+		// the one whose behavior matters, and a later Hub can be an older
+		// build that drops the key. Remembering "some Hub once echoed" would
+		// license a resend against a Hub that replays nothing, which is how
+		// a retry becomes a second run.
+		//
+		// An empty reply can never prove anything. A caller with no key of
+		// its own — a scheduled occurrence — must not be treated as echoed:
+		// Hub mints a fresh one per call, so every resend would be a new
+		// run rather than a replay of the first.
+		echoed := strings.TrimSpace(requestID) != "" &&
+			strings.TrimSpace(out.ClientMessageID) == strings.TrimSpace(requestID)
+		if err == nil {
+			break
+		}
+		if attempt == desktopBotAdmitAttempts || !echoed || !desktopBotAdmitAgain(status, err) {
+			return desktopBotRelayResult{}, err
+		}
+		botlog.Write(botID, "gui.admit_retry", err,
+			"http", strconv.Itoa(status),
+			"attempt", strconv.Itoa(attempt),
+		)
+		wait := time.NewTimer(desktopBotAdmitRetryWait(attempt))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return desktopBotRelayResult{}, ctx.Err()
+		case <-wait.C:
+		}
+	}
 	if err != nil {
 		return desktopBotRelayResult{}, err
 	}
@@ -739,6 +788,43 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		"text_len", strconv.Itoa(len(strings.TrimSpace(out.Text))),
 	)
 	return a.desktopRelayFromWire(out.Text, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files)
+}
+
+// desktopBotAdmitAttempts is how many times one admission is tried. The
+// first answer that is lost — a 502 from the proxy in front of Hub, a
+// deadline — costs one more send of the same key, never a second run.
+const desktopBotAdmitAttempts = 3
+
+// desktopBotAdmitBudget bounds all admission attempts together. One attempt
+// carries a 30 minute read because an older Hub may answer only when the run
+// ends, so the attempts are not simply additive and still need a ceiling.
+const desktopBotAdmitBudget = 45 * time.Minute
+
+// desktopBotAdmitRetryWait is the gap before the next admission try. The
+// person is waiting on a bubble, so the first wait is short; the second is
+// long enough for a restarting Hub to come back.
+func desktopBotAdmitRetryWait(attempt int) time.Duration {
+	if attempt <= 1 {
+		return time.Second
+	}
+	return 3 * time.Second
+}
+
+// desktopBotAdmitAgain reports whether a failed admission is worth another
+// send of the same key. The same rule as a run read: nothing the server
+// decided ends the turn, and a proxy that never answered leaves the turn
+// unstarted. A 4xx is an answer — bad input, a disabled bot — and resending
+// it would only repeat the rejection.
+func desktopBotAdmitAgain(status int, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch status {
+	case 0, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // desktopBotPollInterval is the gap between short reads of an admitted run.
@@ -764,8 +850,9 @@ func (a *App) desktopRelayFromWire(text, novnc, attention, askType, askName, ask
 }
 
 // waitDesktopBotRun reads the admitted run until it finishes. Each read is
-// short. A dropped read is tried again and does not cancel the run. An HTTP
-// status ends this turn.
+// short. A read that never got an answer — a dropped connection, a deadline,
+// or a 5xx from the proxy in front of Hub — is tried again and does not
+// cancel the run. Only an answer the server actually made ends this turn.
 func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (desktopBotRelayResult, error) {
 	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/runs/" + url.PathEscape(strings.TrimSpace(runID))
 	polls := 0
@@ -780,6 +867,10 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 		}
 		botlog.WriteOnce(botID, "gui.run_poll", err, kv...)
 	}
+	// readsFailed counts reads that never got an answer. The gap stretches
+	// with it and resets on any answered read, so a Hub outage costs a
+	// bounded read rate instead of a turn.
+	readsFailed := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			botlog.Write(botID, "gui.run_poll", err, "run", runID, "polls", strconv.Itoa(polls))
@@ -799,7 +890,11 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			Accepted           bool              `json:"accepted"`
 			Status             string            `json:"status"`
 		}
-		callCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// Derived from ctx, not Background: this read must be interruptible
+		// when the turn is abandoned. A Background parent leaves each poll
+		// holding a full 20s that no cancel can cut short, so abandoning a
+		// bot that is talking to a slow Hub keeps reading it anyway.
+		callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		status, err := a.desktopBotExchange(callCtx, http.MethodGet, path, nil, &out, 20*time.Second, nil)
 		cancel()
 		polls++
@@ -811,10 +906,11 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 					"retry", "yes",
 					"polls", strconv.Itoa(polls),
 				)
-				if sleepErr := sleepDesktopBotPoll(ctx, desktopBotPollInterval); sleepErr != nil {
+				if sleepErr := sleepDesktopBotPoll(ctx, desktopBotPollStretch(readsFailed)); sleepErr != nil {
 					botlog.Write(botID, "gui.run_poll", sleepErr, "run", runID, "polls", strconv.Itoa(polls))
 					return desktopBotRelayResult{}, sleepErr
 				}
+				readsFailed++
 				continue
 			}
 			botlog.Write(botID, "gui.run_poll", err,
@@ -825,6 +921,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			)
 			return desktopBotRelayResult{}, err
 		}
+		readsFailed = 0
 		if status == http.StatusAccepted || out.Status == "running" || (out.Accepted && strings.TrimSpace(out.Text) == "") {
 			state := strings.TrimSpace(out.Status)
 			if state == "" {
@@ -857,18 +954,60 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 	}
 }
 
-// desktopBotPollAgain retries when the read produced no HTTP status.
-// Status 0 is a dropped connection or a deadline. Any status the server
-// sent, including an empty 502 that becomes "不可达", ends the turn.
+// desktopBotPollAgain reports whether a failed read of an admitted run is
+// worth another try. The run itself lives on MaClawSrv and a read that never
+// got an answer cannot have changed it, so only a rejection the server
+// actually made ends the turn:
+//
+//   - status 0 is a dropped connection or a deadline: nothing was decided.
+//   - 502/503/504 are the proxy in front of Hub, or Hub itself, failing to
+//     answer. The run keeps driving the desktop either way. A single nginx
+//     hiccup used to end a turn that had already been running for forty
+//     minutes, which is how a run read 2347 times and still lost its reply.
+//   - anything else — a 4xx, or a 2xx carrying a finished run — is an
+//     answer, and answering ends the turn.
 func desktopBotPollAgain(status int, err error) bool {
-	if err == nil || status != 0 {
+	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	switch status {
+	case 0:
+		// No status at all: the read never reached a server that could
+		// reject it. DeadlineExceeded counts because the attempt spent its
+		// own allowance, not the run's.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return true
+		}
+		text := err.Error()
+		return strings.Contains(text, "不可达") || strings.Contains(text, "没有在时限内")
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
+	default:
+		return false
 	}
-	text := err.Error()
-	return strings.Contains(text, "不可达") || strings.Contains(text, "没有在时限内")
+}
+
+// desktopBotPollStretchMax caps how long one failing read waits before the
+// next one. A Hub outage must not be answered with one read per second
+// forever, and the cap matches the hub-side watcher's ceiling so the two
+// pollers of the same run stay in the same register.
+const desktopBotPollStretchMax = 8 * time.Second
+
+// desktopBotPollStretch doubles the gap after each failed read, from the
+// base interval up to the cap. A read that succeeds resets the count, so a
+// run that is merely slow to finish never pays for it.
+func desktopBotPollStretch(failures int) time.Duration {
+	wait := desktopBotPollInterval
+	if wait <= 0 {
+		wait = time.Second
+	}
+	for i := 0; i < failures && wait < desktopBotPollStretchMax; i++ {
+		wait *= 2
+	}
+	if wait > desktopBotPollStretchMax {
+		wait = desktopBotPollStretchMax
+	}
+	return wait
 }
 
 func sleepDesktopBotPoll(ctx context.Context, wait time.Duration) error {
@@ -1433,6 +1572,15 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		callErr := fmt.Errorf("MaClawSrv 不可达")
 		if strings.TrimSpace(failure.Message) != "" {
 			callErr = fmt.Errorf("%s", strings.TrimSpace(failure.Message))
+		}
+		// The failure body is still decoded into dest when it carries the
+		// per-turn key echo. Hub names the key it received even on a 502,
+		// and that echo is the only proof this Hub forwards the key to
+		// MaClawSrv — the one condition under which the caller may send the
+		// same turn again. Decoding an error body into a read destination is
+		// harmless: the fields do not overlap.
+		if dest != nil {
+			_ = json.Unmarshal(payload, dest)
 		}
 		a.logDesktopBotCall(botID, method, path, botlog.Host(hubURL), resp.StatusCode, time.Since(started), fmt.Errorf("%w body=%s", callErr, string(payload)))
 		return resp.StatusCode, callErr

@@ -127,6 +127,21 @@ type localMCPInventorySnapshot struct {
 
 var globalMCPRuntimes sync.Map
 
+// mcpRuntimeForService reports the MCP runtime already associated with s
+// without creating one. Closing a Service that never used MCP must not leave
+// an entry behind, because nothing ever deletes entries from globalMCPRuntimes.
+func mcpRuntimeForService(s *Service) (*mcpServiceRuntime, bool) {
+	if s == nil {
+		return nil, false
+	}
+	v, ok := globalMCPRuntimes.Load(s)
+	if !ok {
+		return nil, false
+	}
+	rt, _ := v.(*mcpServiceRuntime)
+	return rt, rt != nil
+}
+
 func runtimeForService(s *Service) *mcpServiceRuntime {
 	if s == nil {
 		return &mcpServiceRuntime{users: map[string]*userMCPRuntime{}}
@@ -1083,6 +1098,46 @@ func (rt *userMCPRuntime) localClient(serverID string) *localMCPClient {
 func (rt *userMCPRuntime) isLocalRunning(serverID string) bool {
 	client := rt.localClient(serverID)
 	return client != nil && client.IsRunning()
+}
+
+// stopAllLocal stops every local MCP child process this runtime started and
+// drops them from the map so no later caller can reuse a dead handle.
+//
+// This exists because local clients are owned by the runtime, not by the call
+// that created them: startLocal spawns under a context derived from the caller,
+// and a call-triggered start must leave the process running after the request
+// returns (see MCPToolBridge.CallTool). Nothing else would ever stop them —
+// Service.Close now uses this as the process-lifecycle counterpart to closing
+// the store handles.
+func (rt *mcpServiceRuntime) stopAllLocal() {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	users := make([]*userMCPRuntime, 0, len(rt.users))
+	for _, user := range rt.users {
+		users = append(users, user)
+	}
+	rt.mu.Unlock()
+	for _, user := range users {
+		user.stopAllLocal()
+	}
+}
+
+func (rt *userMCPRuntime) stopAllLocal() {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	var clients []*localMCPClient
+	for id, client := range rt.local {
+		clients = append(clients, client)
+		delete(rt.local, id)
+	}
+	rt.mu.Unlock()
+	for _, client := range clients {
+		client.Stop()
+	}
 }
 
 func (rt *userMCPRuntime) stopLocal(serverID string) {

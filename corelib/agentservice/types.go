@@ -967,6 +967,14 @@ type PostMessageInput struct {
 	Attachments        []agent.MessageAttachment `json:"attachments,omitempty"`
 	Metadata           map[string]string         `json:"metadata,omitempty"`
 	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
+	// ClientMessageID is the caller's per-turn idempotency key, accepted at
+	// the same JSON position as SendMessageInput.ClientMessageID. Both message
+	// endpoints must name this field identically: a caller that posts the key
+	// top-level to this input used to have it dropped by the decoder, so a
+	// retried turn started a second run while believing itself protected.
+	// Service folds it into metadata["client_message_id"], which is the one
+	// position the idempotency gate reads.
+	ClientMessageID string `json:"client_message_id,omitempty"`
 	// ContinuationHandle is an opaque server-issued task selector from a prior
 	// response. It is not a RootTaskID and cannot select a task on its own:
 	// Service consumes and validates it against the authenticated principal,

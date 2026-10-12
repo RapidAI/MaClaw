@@ -385,7 +385,23 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o desktopd ./de
 
 回滚是把这份备份拷回原名，`chmod 755`，再 `systemctl restart maclaw-desktopd.service`。
 
-同一次检查里看到两件事：这台机的出网代理在 19:00 有一条到上游 `dockerd.maclaw.top` 的 CONNECT 超时（`hm.baidu.com:443` … `i/o timeout`）；`maclawsrv.maclaw.top` 上的 desktopd 还是 2026-10-07 21:59 的二进制。
+同一次操作也把这份二进制刷到了 `maclawsrv.maclaw.top`（2026-10-12 14:11 CST，那台机是 UTC 时钟）。这台机运行我的 papers 那台用的出网代理 `*:18082`，所以替换时会短暂断开已建立的 CONNECT 隧道。
+
+步骤与上面相同：没有重建镜像，没有改单元文件和 `.env`。
+
+| 项 | 值 |
+| --- | --- |
+| 旧 desktopd | SHA256 `a5bf071b3ccad3390d96cf7ea0143869bf917c9c056a0f22e69fdcb796d4c625`（2026-10-07 21:59 那份），MainPID 2744953 |
+| 新 desktopd | SHA256 `3fae509c69673180dfd93be30381837bfa3b4db9dfd8ac87b504a141f62baf8e`，MainPID 3818958 |
+| 备份 | `/data/soft/maclaw_desktopd/bin/desktopd.bak-corelib-20261011`（不要覆盖） |
+| 验证 | `/v1/health` 带 `DESKTOPD_TOKEN` 返回 200 `{"ok":true}`；两个 `maclaw-desktop-*` 容器 ID 与状态前后一致（都是 Exited）；本机走 TLS 代理访问 google 返回 204 |
+
+出网链路发布后复测正常（证书 CN `*.maclaw.top`，Let's Encrypt `YE1`，有效期至 2026-12-17；本机用 `127.0.0.1` 测要加 `--proxy-insecure`，SAN 不含 IP）：
+
+- mypapers → `dockerd.maclaw.top:18082` → google：204，connect 0.25s / total 0.95s
+- mypapers 本机桥接 `172.17.0.1:18083` → google：204 / 百度：200
+
+发布前 19:00 那条 `hm.baidu.com:443` 的 CONNECT `i/o timeout` 是瞬时抖动，不是这次替换引入的：重启前后各出现过一次，按现在的延时复测都是通过。
 
 ## 5. Hub 配置
 

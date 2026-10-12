@@ -15,9 +15,12 @@ import (
 )
 
 // Generator renders Markdown documents into mobile-friendly PDFs.
+//
+// A Generator is stateless once built and safe to share and reuse: everything
+// mutable during rendering lives in per-render objects (see measurer).
 type Generator struct {
-	fontRegular string
-	fontBold    string
+	fontRegularData []byte
+	fontBoldData    []byte
 }
 
 type pdfPageLayout struct {
@@ -32,37 +35,98 @@ type pdfPageLayout struct {
 }
 
 var detectSystemFontsOnce sync.Once
-var detectedRegularFont string
-var detectedBoldFont string
+var detectedRegularFontData []byte
+var detectedBoldFontData []byte
+var detectedFontFailure string
 
-// New creates a document generator using detected system fonts.
+// New creates a document generator using detected system fonts. A candidate
+// counts only if it parses into embeddable TrueType data (.ttc collections
+// are reduced to their first font, CFF-outline fonts are rejected) and, when
+// any candidate does, covers Chinese glyphs — so the PDF never comes back
+// full of empty boxes.
 func New() *Generator {
 	regular, bold := detectSystemFonts()
-	return &Generator{fontRegular: regular, fontBold: bold}
+	return &Generator{fontRegularData: regular, fontBoldData: bold}
 }
 
 // HasFont reports whether a usable font was found.
 func (g *Generator) HasFont() bool {
-	return g.fontRegular != ""
+	return len(g.fontRegularData) > 0
 }
 
-func detectSystemFonts() (regular, bold string) {
+// noFontError explains why no font is usable. Naming the last rejection
+// reason matters: "font not found" is misleading when the system fonts exist
+// but no candidate can be embedded (e.g. CFF-only collections).
+func noFontError() error {
+	if detectedFontFailure == "" {
+		return fmt.Errorf("未找到可用的中文字体，无法生成 PDF")
+	}
+	return fmt.Errorf("未找到可嵌入 PDF 的中文字体，无法生成 PDF（最后一个候选不可用原因: %s）", detectedFontFailure)
+}
+
+func detectSystemFonts() (regular, bold []byte) {
 	detectSystemFontsOnce.Do(func() {
-		candidates := fontCandidates()
-		for _, c := range candidates {
-			if _, err := os.Stat(c.regular); err == nil {
-				detectedRegularFont = c.regular
-				detectedBoldFont = c.bold
-				if detectedBoldFont == "" {
-					detectedBoldFont = detectedRegularFont
-				} else if _, err := os.Stat(detectedBoldFont); err != nil {
-					detectedBoldFont = detectedRegularFont
-				}
-				return
+		detectedRegularFontData, detectedBoldFontData, detectedFontFailure =
+			loadFontCandidates(fontCandidates())
+	})
+	return detectedRegularFontData, detectedBoldFontData
+}
+
+// loadFontCandidates picks the first candidate that parses into embeddable
+// TrueType data. Existence is not enough: on macOS and Linux the system CJK
+// faces live in .ttc collections and some (PingFang) are CFF-only, so an
+// unusable candidate must fall through to the next one instead of failing
+// the export.
+// loadFontCandidates returns the first usable candidate. The rejection reason
+// is returned rather than stashed in a package global so that the function is
+// pure: callers can test it without resetting process-wide state.
+func loadFontCandidates(candidates []fontCandidate) (regular, bold []byte, failure string) {
+	// First pass demands CJK coverage so a Chinese document never ends up as
+	// empty boxes; the second pass accepts any embeddable font so that
+	// Latin-only systems can still export English documents.
+	if regular, bold, failure := firstEmbeddableFont(candidates, true); len(regular) > 0 {
+		return regular, bold, failure
+	}
+	regular, bold, _ = firstEmbeddableFont(candidates, false)
+	return regular, bold, recordFailure("", nil)
+}
+
+// firstEmbeddableFont walks candidates until one loads and, when requireCJK,
+// covers Chinese glyphs. failure reports the last rejection so diagnostics can
+// name it.
+func firstEmbeddableFont(candidates []fontCandidate, requireCJK bool) (regular, bold []byte, failure string) {
+	for _, c := range candidates {
+		regularData, err := loadFontFile(c.regular)
+		if err != nil {
+			failure = recordFailure(c.regular, err)
+			continue
+		}
+		if requireCJK {
+			if err := fontCoversCJK(regularData); err != nil {
+				failure = recordFailure(c.regular, err)
+				continue
 			}
 		}
-	})
-	return detectedRegularFont, detectedBoldFont
+		if c.bold == "" || c.bold == c.regular {
+			return regularData, regularData, failure
+		}
+		if boldData, err := loadFontFile(c.bold); err == nil {
+			return regularData, boldData, failure
+		}
+		log.Printf("[DocGen] 粗体候选字体 %s 不可用，使用常规体: %v", c.bold, err)
+		return regularData, regularData, failure
+	}
+	return nil, nil, failure
+}
+
+// recordFailure logs why a candidate was skipped and formats it for the
+// user-facing no-font error.
+func recordFailure(path string, err error) string {
+	if err == nil {
+		return ""
+	}
+	log.Printf("[DocGen] 跳过候选字体 %s: %v", path, err)
+	return fmt.Sprintf("%s (%v)", path, err)
 }
 
 type fontCandidate struct {
@@ -71,7 +135,11 @@ type fontCandidate struct {
 }
 
 func fontCandidates() []fontCandidate {
-	switch runtime.GOOS {
+	return fontCandidatesFor(runtime.GOOS)
+}
+
+func fontCandidatesFor(goos string) []fontCandidate {
+	switch goos {
 	case "windows":
 		winFonts := os.Getenv("WINDIR") + `\Fonts`
 		return []fontCandidate{
@@ -81,9 +149,15 @@ func fontCandidates() []fontCandidate {
 			{filepath.Join(winFonts, "msyh.ttc"), filepath.Join(winFonts, "msyhbd.ttc")},
 		}
 	case "darwin":
+		// macOS system CJK fonts ship almost exclusively as .ttc
+		// collections. PingFang is CFF-outline and cannot be embedded, so
+		// it is deliberately absent — detection validates candidates by
+		// parsing, and unusable ones fall through automatically.
 		return []fontCandidate{
 			{"/System/Library/Fonts/STHeiti Light.ttc", "/System/Library/Fonts/STHeiti Medium.ttc"},
-			{"/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/PingFang.ttc"},
+			{"/System/Library/Fonts/Supplemental/Songti.ttc", "/System/Library/Fonts/Supplemental/Songti.ttc"},
+			{"/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"},
+			{"/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"},
 			{"/Library/Fonts/Arial Unicode.ttf", "/Library/Fonts/Arial Unicode.ttf"},
 		}
 	default:
@@ -98,7 +172,10 @@ func fontCandidates() []fontCandidate {
 // Generate renders a PDF and returns its bytes.
 func (g *Generator) Generate(spec Spec) ([]byte, error) {
 	if !g.HasFont() {
-		return nil, fmt.Errorf("未找到可用的中文字体，无法生成 PDF")
+		return nil, noFontError()
+	}
+	if err := ValidateContent(spec.Content); err != nil {
+		return nil, err
 	}
 
 	spec.Content = stripDuplicateLeadingHeading(spec)
@@ -110,12 +187,8 @@ func (g *Generator) Generate(spec Spec) ([]byte, error) {
 
 	pdf := gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *layout.pageSize})
-	if err := pdf.AddTTFFont("regular", g.fontRegular); err != nil {
-		return nil, fmt.Errorf("加载常规字体失败: %w", err)
-	}
-	if err := pdf.AddTTFFontWithOption("bold", g.fontBold, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
-		log.Printf("[DocGen] 粗体字体加载失败，使用常规体: %v", err)
-		_ = pdf.AddTTFFont("bold", g.fontRegular)
+	if err := g.addFonts(&pdf); err != nil {
+		return nil, err
 	}
 
 	pdf.AddPage()
@@ -164,7 +237,7 @@ func (g *Generator) GenerateAndEncode(spec Spec) (string, string, error) {
 func GenerateToFile(spec Spec, outputPath string) (string, error) {
 	gen := New()
 	if !gen.HasFont() {
-		return "", fmt.Errorf("未找到可用的中文字体，无法生成 PDF")
+		return "", noFontError()
 	}
 	data, err := gen.Generate(spec)
 	if err != nil {
@@ -405,6 +478,20 @@ func resolvePDFPageLayout(paperSize string) (pdfPageLayout, error) {
 	}, nil
 }
 
+// addFonts registers the detected regular/bold font data with the document.
+func (g *Generator) addFonts(pdf *gopdf.GoPdf) error {
+	if err := pdf.AddTTFFontData("regular", g.fontRegularData); err != nil {
+		return fmt.Errorf("加载常规字体失败: %w", err)
+	}
+	if err := pdf.AddTTFFontDataWithOption("bold", g.fontBoldData, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
+		log.Printf("[DocGen] 粗体字体加载失败，使用常规体: %v", err)
+		if err := pdf.AddTTFFontData("bold", g.fontRegularData); err != nil {
+			return fmt.Errorf("加载常规字体失败: %w", err)
+		}
+	}
+	return nil
+}
+
 func defaultHTMLBoxOption() gopdf.HTMLBoxOption {
 	return gopdf.HTMLBoxOption{
 		DefaultFontFamily: "regular",
@@ -415,17 +502,40 @@ func defaultHTMLBoxOption() gopdf.HTMLBoxOption {
 	}
 }
 
-func (g *Generator) newMeasurementPDF(layout pdfPageLayout) (*gopdf.GoPdf, error) {
+// measurer lays markdown out in a tall box to learn the vertical space it
+// needs.
+//
+// One measurer serves the whole pagination pass, reusing a single GoPdf:
+// parsing a CJK font costs ~12ms and the pager measures dozens of candidate
+// splits, so building a fresh document per measurement dominated Generate's
+// runtime (~130x slower, see TestMeasurementReuseKeepsHeightsStable). Heights
+// stay correct because layout depends only on font metrics and box width, not
+// on what the document drew before.
+//
+// A measurer belongs to one pagination pass and must not be shared between
+// concurrent renders: it holds a mutable document.
+type measurer struct {
+	pdf *gopdf.GoPdf
+	// Holds the images decoded from data URLs during this render. Owned here
+	// so that measuring and drawing share one set of files, and so callers can
+	// drop the whole directory when the render ends.
+	scratch *dataURLScratch
+}
+
+// markdownToHTML renders this measurer's Markdown through its own scratch.
+func (m *measurer) markdownToHTML(markdown string, colorful bool) string {
+	return markdownToHTMLWithScratch(m.scratch, markdown, colorful)
+}
+
+// newMeasurer builds the measurement document once the page size is known.
+func (g *Generator) newMeasurer(layout pdfPageLayout) (*measurer, error) {
 	pdf := &gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *layout.pageSize})
-	if err := pdf.AddTTFFont("regular", g.fontRegular); err != nil {
-		return nil, fmt.Errorf("加载常规字体失败: %w", err)
-	}
-	if err := pdf.AddTTFFontWithOption("bold", g.fontBold, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
-		_ = pdf.AddTTFFont("bold", g.fontRegular)
+	if err := g.addFonts(pdf); err != nil {
+		return nil, err
 	}
 	pdf.AddPage()
-	return pdf, nil
+	return &measurer{pdf: pdf, scratch: newDataURLScratch()}, nil
 }
 
 // markdownMeasureBoxH is only for measuring. InsertHTMLBox drops an image that
@@ -435,19 +545,24 @@ func (g *Generator) newMeasurementPDF(layout pdfPageLayout) (*gopdf.GoPdf, error
 // caller compares that height with the space above the footer.
 const markdownMeasureBoxH = 1e6
 
-func (g *Generator) measureMarkdownHeight(layout pdfPageLayout, currentY float64, markdown string, colorful bool) (float64, error) {
-	pdf, err := g.newMeasurementPDF(layout)
-	if err != nil {
-		return 0, err
-	}
-	endY, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, markdownMeasureBoxH, markdownToHTMLMode(markdown, colorful), defaultHTMLBoxOption())
+func (m *measurer) measureMarkdownHeight(layout pdfPageLayout, currentY float64, markdown string, colorful bool) (float64, error) {
+	endY, err := m.pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, markdownMeasureBoxH, m.markdownToHTML(markdown, colorful), defaultHTMLBoxOption())
 	if err != nil {
 		return 0, err
 	}
 	return endY - currentY, nil
 }
 
-func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, blocks []string, colorful bool) (int, error) {
+func (m *measurer) markdownFits(layout pdfPageLayout, currentY float64, markdown string, remainH float64, colorful bool) (bool, error) {
+	height, err := m.measureMarkdownHeight(layout, currentY, markdown, colorful)
+	if err != nil {
+		return false, err
+	}
+	return height <= remainH, nil
+}
+
+// fitBlockPrefix binary-searches how many leading blocks fit above the footer.
+func (m *measurer) fitBlockPrefix(layout pdfPageLayout, currentY float64, blocks []string, colorful bool) (int, error) {
 	if len(blocks) == 0 {
 		return 0, nil
 	}
@@ -460,7 +575,7 @@ func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, block
 	for low <= high {
 		mid := (low + high) / 2
 		candidate := strings.Join(blocks[:mid], "\n\n")
-		fits, err := g.markdownFits(layout, currentY, candidate, remainH, colorful)
+		fits, err := m.markdownFits(layout, currentY, candidate, remainH, colorful)
 		if err != nil {
 			return 0, err
 		}
@@ -474,7 +589,7 @@ func (g *Generator) fitBlockPrefix(layout pdfPageLayout, currentY float64, block
 	return best, nil
 }
 
-func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, baseBlocks, parts []string, colorful bool) (int, error) {
+func (m *measurer) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, baseBlocks, parts []string, colorful bool) (int, error) {
 	if len(parts) == 0 {
 		return 0, nil
 	}
@@ -489,7 +604,7 @@ func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, b
 		candidateParts := append([]string{}, baseBlocks...)
 		candidateParts = append(candidateParts, strings.Join(parts[:mid], "\n"))
 		candidate := strings.Join(candidateParts, "\n\n")
-		fits, err := g.markdownFits(layout, currentY, candidate, remainH, colorful)
+		fits, err := m.markdownFits(layout, currentY, candidate, remainH, colorful)
 		if err != nil {
 			return 0, err
 		}
@@ -503,26 +618,23 @@ func (g *Generator) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, b
 	return best, nil
 }
 
-// markdownFits reports whether markdown stays above the footer. The height
-// comes from a tall measurement box, so a chart InsertHTMLBox would have
-// dropped on the page is still counted.
-func (g *Generator) markdownFits(layout pdfPageLayout, currentY float64, markdown string, remainH float64, colorful bool) (bool, error) {
-	height, err := g.measureMarkdownHeight(layout, currentY, markdown, colorful)
-	if err != nil {
-		return false, err
-	}
-	return height <= remainH, nil
-}
-
 func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, firstPageY float64, spec Spec) error {
 	blocks := splitMarkdownBlocks(spec.Content)
 	if len(blocks) == 0 {
 		addFooter(pdf, layout, spec)
 		return nil
 	}
+	m, err := g.newMeasurer(layout)
+	if err != nil {
+		return err
+	}
+	// Every figure decoded from a data URL lands in a temporary directory for
+	// this render. Deferring the cleanup covers every return path below,
+	// including the ones that bail out on a measurement error.
+	defer m.scratch.cleanup()
 	currentY := firstPageY
 	for len(blocks) > 0 {
-		fitCount, err := g.fitBlockPrefix(layout, currentY, blocks, spec.Colorful)
+		fitCount, err := m.fitBlockPrefix(layout, currentY, blocks, spec.Colorful)
 		if err != nil {
 			return err
 		}
@@ -531,7 +643,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 		if fitCount < len(blocks) {
 			nextParts := splitMarkdownBlockForFilling(blocks[fitCount])
 			if len(nextParts) > 1 {
-				extraCount, err := g.fitBlockPartPrefix(layout, currentY, pageBlocks, nextParts, spec.Colorful)
+				extraCount, err := m.fitBlockPartPrefix(layout, currentY, pageBlocks, nextParts, spec.Colorful)
 				if err != nil {
 					return err
 				}
@@ -559,7 +671,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			if len(subBlocks) == 0 {
 				return fmt.Errorf("正文块过大，无法分页渲染")
 			}
-			fitCount, err = g.fitBlockPartPrefix(layout, currentY, nil, subBlocks, spec.Colorful)
+			fitCount, err = m.fitBlockPartPrefix(layout, currentY, nil, subBlocks, spec.Colorful)
 			if err != nil {
 				return err
 			}
@@ -574,7 +686,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			}
 		}
 		pageMarkdown := strings.Join(pageBlocks, "\n\n")
-		if _, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, layout.pageH, markdownToHTMLMode(pageMarkdown, spec.Colorful), defaultHTMLBoxOption()); err != nil {
+		if _, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, layout.pageH, m.markdownToHTML(pageMarkdown, spec.Colorful), defaultHTMLBoxOption()); err != nil {
 			return err
 		}
 		addFooter(pdf, layout, spec)

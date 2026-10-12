@@ -1147,6 +1147,10 @@ export function FileCompanionOpen(arg1) {
   return window['go']['main']['App']['FileCompanionOpen'](arg1);
 }
 
+export function FileCompanionOpenArxiv(arg1) {
+  return window['go']['main']['App']['FileCompanionOpenArxiv'](arg1);
+}
+
 export function FileCompanionSaveText(arg1, arg2, arg3) {
   return window['go']['main']['App']['FileCompanionSaveText'](arg1, arg2, arg3);
 }
@@ -1165,6 +1169,10 @@ export function FileCompanionUploadCloud(arg1) {
 
 export function FileCompanionExportPDF(arg1, arg2) {
   return window['go']['main']['App']['FileCompanionExportPDF'](arg1, arg2);
+}
+
+export function FileCompanionExportChatPDF(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportChatPDF'](arg1, arg2);
 }
 
 export function FileCompanionReplaceOffice(arg1, arg2) {

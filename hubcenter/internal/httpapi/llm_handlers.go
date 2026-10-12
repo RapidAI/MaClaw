@@ -20,6 +20,7 @@ import (
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
 	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
@@ -59,6 +60,42 @@ func queryTimezone(r *http.Request) string {
 		return ""
 	}
 	return timezone
+}
+
+// sameAuthKind reports whether two auth kinds name the same account family.
+// A blank kind on the incoming side means the caller is not touching the
+// login, so the stored kind is the one that must match.
+func sameAuthKind(existingKind, incomingKind string) bool {
+	existingKind = strings.TrimSpace(existingKind)
+	incomingKind = strings.TrimSpace(incomingKind)
+	if incomingKind == "" {
+		incomingKind = existingKind
+	}
+	return existingKind == incomingKind
+}
+
+// forgetVendorLogin drops the in-memory logins a saved provider consumed. A
+// session whose credential was never applied stays pending: the admin may
+// still be holding its browser tab open.
+func forgetVendorLogin(svc *llmservice.Service, sessionIDs ...string) {
+	if svc == nil {
+		return
+	}
+	if len(sessionIDs) == 0 {
+		return
+	}
+	workBuddyID := strings.TrimSpace(sessionIDs[0])
+	if workBuddyID != "" {
+		svc.ForgetWorkBuddyLogin(workBuddyID)
+	}
+	for _, id := range sessionIDs[1:] {
+		if id == "" {
+			continue
+		}
+		svc.ForgetQoderLogin(id)
+		svc.ForgetTraeLogin(id)
+		svc.ForgetLobsterAILogin(id)
+	}
 }
 
 func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
@@ -104,6 +141,20 @@ func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
 			safe[i].WorkBuddyEnterpriseID = ""
 			safe[i].WorkBuddyDomain = ""
 			safe[i].WorkBuddySessionID = ""
+			safe[i].QoderRefreshToken = ""
+			safe[i].QoderUserID = ""
+			safe[i].QoderMachineID = ""
+			safe[i].QoderSessionID = ""
+			safe[i].TraeRefreshToken = ""
+			safe[i].TraeUserID = ""
+			safe[i].TraeMachineID = ""
+			safe[i].TraeDeviceID = ""
+			safe[i].TraeSessionID = ""
+			safe[i].LobsterAIRefreshToken = ""
+			safe[i].LobsterAIUserID = ""
+			safe[i].LobsterAISessionUUID = ""
+			safe[i].LobsterAIFirstKeyfrom = ""
+			safe[i].LobsterAISessionID = ""
 		}
 		sort.SliceStable(safe, func(i, j int) bool {
 			si := llmpool.EffectiveProviderSequence(safe[i].Sequence)
@@ -148,7 +199,22 @@ func adminAddLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.APIURL = strings.TrimSpace(provider.APIURL)
 		sessionID := strings.TrimSpace(provider.WorkBuddySessionID)
+		qoderSessionID := strings.TrimSpace(provider.QoderSessionID)
+		traeSessionID := strings.TrimSpace(provider.TraeSessionID)
+		lobsterAISessionID := strings.TrimSpace(provider.LobsterAISessionID)
 		if err := svc.ApplyWorkBuddyLogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyQoderLogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyTraeLogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyLobsterAILogin(&provider, true); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -163,9 +229,7 @@ func adminAddLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if sessionID != "" {
-			svc.ForgetWorkBuddyLogin(sessionID)
-		}
+		forgetVendorLogin(svc, sessionID, qoderSessionID, traeSessionID, lobsterAISessionID)
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
@@ -184,7 +248,22 @@ func adminUpdateLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 		}
 		provider.ID = id
 		sessionID := strings.TrimSpace(provider.WorkBuddySessionID)
+		qoderSessionID := strings.TrimSpace(provider.QoderSessionID)
+		traeSessionID := strings.TrimSpace(provider.TraeSessionID)
+		lobsterAISessionID := strings.TrimSpace(provider.LobsterAISessionID)
 		if err := svc.ApplyWorkBuddyLogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyQoderLogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyTraeLogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyLobsterAILogin(&provider, false); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -194,7 +273,10 @@ func adminUpdateLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
-			if existing != nil {
+			// Only the same auth kind may borrow the stored access token. A row
+			// switched to another vendor has a token for that vendor's upstream,
+			// and reusing it would fail every request against the new one.
+			if existing != nil && sameAuthKind(existing.AuthKind, provider.AuthKind) {
 				provider.APIKey = existing.APIKey
 			}
 		}
@@ -202,9 +284,7 @@ func adminUpdateLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			writeLLMProviderError(w, err)
 			return
 		}
-		if sessionID != "" {
-			svc.ForgetWorkBuddyLogin(sessionID)
-		}
+		forgetVendorLogin(svc, sessionID, qoderSessionID, traeSessionID, lobsterAISessionID)
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
@@ -486,6 +566,18 @@ func adminTestLLMProviderChat(svc *llmservice.Service, proxyCfg *llmservice.Prox
 				wb.TimeoutSec = cfg.TimeoutSec
 				cfg = wb
 			}
+			if qd, ok := llmservice.QoderMaclawConfig(existing, cfg.Model); ok {
+				qd.TimeoutSec = cfg.TimeoutSec
+				cfg = qd
+			}
+			if tr, ok := llmservice.TraeMaclawConfig(existing, cfg.Model); ok {
+				tr.TimeoutSec = cfg.TimeoutSec
+				cfg = tr
+			}
+			if lb, ok := llmservice.LobsterAIMaclawConfig(existing, cfg.Model); ok {
+				lb.TimeoutSec = cfg.TimeoutSec
+				cfg = lb
+			}
 		}
 		// An availability test must use the provider's production timeout. Slower
 		// reasoning providers can legitimately take more than 15 seconds before
@@ -548,6 +640,18 @@ func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, pro
 		wb.TimeoutSec = cfg.TimeoutSec
 		cfg = wb
 	}
+	if qd, ok := llmservice.QoderMaclawConfig(existing, model); ok {
+		qd.TimeoutSec = cfg.TimeoutSec
+		cfg = qd
+	}
+	if tr, ok := llmservice.TraeMaclawConfig(existing, model); ok {
+		tr.TimeoutSec = cfg.TimeoutSec
+		cfg = tr
+	}
+	if lb, ok := llmservice.LobsterAIMaclawConfig(existing, model); ok {
+		lb.TimeoutSec = cfg.TimeoutSec
+		cfg = lb
+	}
 	testCtx, cancel := context.WithTimeout(ctx, llmProviderTestTimeout(cfg))
 	defer cancel()
 	_, errMsg, latencyMs, _ = runLLMProviderChatTest(testCtx, cfg)
@@ -569,6 +673,19 @@ func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig
 	client := corelib.NewLLMEndpointHTTPClient(cfg)
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
+	}
+	// The vendor wrappers must be the same ones the chat forward path uses:
+	// Qoder signs with the provider's uid, and Trae stamps the device pair the
+	// refresh token was minted against. The bare wrappers fall back to a
+	// desktop credential store a server process does not have.
+	if llmservice.QoderMaclawConfigFromConfig(cfg) {
+		client = llmservice.QoderHTTPClient(client, cfg)
+	}
+	if llmservice.TraeMaclawConfigFromConfig(cfg) {
+		client = llmservice.TraeHTTPClient(client, cfg)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
 	}
 	resp, err := client.Do(httpReq)
 	latencyMs = time.Since(start).Milliseconds()

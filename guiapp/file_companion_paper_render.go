@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,12 +112,58 @@ type paperRasterEngine struct {
 	python string
 	cairo  string
 	ppm    string
+	mutool string
+}
+
+// empty reports whether no raster engine exists at all — the only case where
+// "install one" is the right advice, as opposed to a real render failure.
+func (e paperRasterEngine) empty() bool {
+	return e.python == "" && e.cairo == "" && e.ppm == "" && e.mutool == ""
 }
 
 var (
-	paperRasterOnce   sync.Once
-	paperRasterCached paperRasterEngine
+	paperRasterMu       sync.Mutex
+	paperRasterCached   paperRasterEngine
+	paperRasterProbedAt time.Time
 )
+
+// paperRasterNegativeTTL bounds how long an empty engine slot is trusted. A
+// user who installs pymupdf or poppler while the app runs must not need a
+// restart for the companion to find it.
+const paperRasterNegativeTTL = 5 * time.Minute
+
+// paperRasterEngines probes once and caches per field: a slot that came back
+// with a path is trusted forever (a binary does not move under a running
+// app), while empty slots are re-probed after paperRasterNegativeTTL. The
+// per-field granularity is the point — a machine that has poppler but no
+// pymupdf must keep re-checking for pymupdf after the user installs it,
+// instead of freezing at "poppler is good enough" forever.
+func paperRasterEngines() paperRasterEngine {
+	paperRasterMu.Lock()
+	defer paperRasterMu.Unlock()
+	cached := paperRasterCached
+	if cached.python != "" && cached.cairo != "" && cached.ppm != "" && cached.mutool != "" {
+		return cached
+	}
+	if !paperRasterProbedAt.IsZero() && time.Since(paperRasterProbedAt) < paperRasterNegativeTTL {
+		return cached
+	}
+	paperRasterProbedAt = time.Now()
+	if cached.python == "" {
+		cached.python = paperFindPyMuPDF()
+	}
+	if cached.cairo == "" {
+		cached.cairo = paperFindPDFTool("pdftocairo")
+	}
+	if cached.ppm == "" {
+		cached.ppm = paperFindPDFTool("pdftoppm")
+	}
+	if cached.mutool == "" {
+		cached.mutool = paperFindPDFTool("mutool")
+	}
+	paperRasterCached = cached
+	return cached
+}
 
 func fileCompanionRasterizePaperFigures(source, destDir, sessionID string) []string {
 	source = strings.TrimSpace(source)
@@ -234,36 +281,156 @@ func safeExtractPaperPageText(data []byte, page int) (text string, err error) {
 	return gopdf2.ExtractPageText(data, page)
 }
 
-func paperRasterEngines() paperRasterEngine {
-	paperRasterOnce.Do(func() {
-		paperRasterCached.python = paperFindPyMuPDF()
-		paperRasterCached.cairo = paperFindPDFTool("pdftocairo")
-		paperRasterCached.ppm = paperFindPDFTool("pdftoppm")
-	})
-	return paperRasterCached
+// paperPythonCandidates lists the Pythons worth probing for pymupdf, in order.
+// goos is a parameter so the darwin list is assertable from a Windows test;
+// home is the user's home directory ("" in tests) and only contributes the
+// per-user installs — pyenv shims and versioned environments, which live
+// under it and nowhere else.
+func paperPythonCandidates(goos, home string) []string {
+	candidates := []string{"python", "python3"}
+	switch goos {
+	case "darwin":
+		// A GUI app launched from Finder inherits launchd's stripped PATH
+		// (/usr/bin:/bin:/usr/sbin:/sbin), so LookPath never sees the
+		// Homebrew, conda or user-installed Pythons that actually carry
+		// pymupdf. Probe those absolute locations directly.
+		candidates = append(candidates,
+			"/opt/homebrew/bin/python3",
+			"/usr/local/bin/python3",
+			"/usr/bin/python3",
+			"/opt/homebrew/Caskroom/miniconda/base/bin/python3",
+			"/opt/homebrew/Caskroom/anaconda/base/bin/python3",
+			"/opt/homebrew/anaconda3/bin/python3",
+			"/opt/homebrew/miniconda3/bin/python3",
+			"/opt/anaconda3/bin/python3",
+			"/opt/miniconda3/bin/python3",
+			"/usr/local/anaconda3/bin/python3",
+			"/usr/local/miniconda3/bin/python3",
+			// python.org framework builds and pyenv version dirs are globs;
+			// paperFindPyMuPDF expands them.
+			"/Library/Frameworks/Python.framework/Versions/*/bin/python3",
+		)
+		if home != "" {
+			candidates = append(candidates,
+				filepath.ToSlash(filepath.Join(home, ".pyenv", "shims", "python3")),
+				filepath.ToSlash(filepath.Join(home, ".pyenv", "versions", "*", "bin", "python3")),
+				filepath.ToSlash(filepath.Join(home, ".local", "bin", "python3")),
+			)
+		}
+	case "linux":
+		// Desktop-launched apps can miss /usr/local/bin in PATH too.
+		candidates = append(candidates,
+			"/usr/local/bin/python3",
+			"/usr/bin/python3",
+		)
+		if home != "" {
+			candidates = append(candidates,
+				filepath.ToSlash(filepath.Join(home, ".pyenv", "shims", "python3")),
+				filepath.ToSlash(filepath.Join(home, ".pyenv", "versions", "*", "bin", "python3")),
+			)
+		}
+	}
+	return candidates
 }
 
+// paperPDFToolCandidates lists the absolute locations a poppler CLI may live
+// when it is not on this process's PATH. The paths are POSIX literals joined
+// with "/" — not filepath.Join, which would emit separators of the host OS.
+// goos is a parameter so tests can assert the darwin list from any platform.
+func paperPDFToolCandidates(goos, name string) []string {
+	switch goos {
+	case "darwin":
+		candidates := []string{
+			"/opt/homebrew/bin/" + name,
+			"/opt/homebrew/opt/poppler/bin/" + name,
+			"/usr/local/bin/" + name,
+		}
+		if name == "mutool" {
+			// mupdf lives in its own keg, not under the poppler one; the
+			// /opt/homebrew/bin symlink covers the normal install, this
+			// covers a keg-only one.
+			candidates = append(candidates, "/opt/homebrew/opt/mupdf/bin/"+name)
+		}
+		return candidates
+	case "linux":
+		return []string{
+			"/usr/local/bin/" + name,
+			"/usr/bin/" + name,
+		}
+	}
+	return nil
+}
+
+// paperPyMuPDFProbeBudget bounds the whole pymupdf search. Each candidate
+// gets its own short timeout below; the search as a whole must not hold a
+// turn hostage on a machine with many slow-starting Pythons — the probe runs
+// outside the render budget, so without a cap it can double the worst case.
+const paperPyMuPDFProbeBudget = 20 * time.Second
+
 func paperFindPyMuPDF() string {
-	for _, name := range []string{"python", "python3"} {
-		path, err := exec.LookPath(name)
-		if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), paperPyMuPDFProbeBudget)
+	defer cancel()
+	home, _ := os.UserHomeDir()
+	seen := map[string]bool{}
+	for _, name := range paperPythonCandidates(runtime.GOOS, home) {
+		if ctx.Err() != nil {
+			return ""
+		}
+		// Versioned installs (pyenv, python.org framework) arrive as globs;
+		// expand them into the concrete interpreters they currently name.
+		if strings.ContainsAny(name, "*?[") {
+			matches, _ := filepath.Glob(name)
+			for _, match := range matches {
+				if info, err := os.Stat(match); err != nil || info.IsDir() {
+					continue
+				}
+				if probePyMuPDF(ctx, match, seen) {
+					return match
+				}
+			}
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		cmd := exec.CommandContext(ctx, path, "-c", "import pymupdf")
-		hideCommandWindow(cmd)
-		err = cmd.Run()
-		cancel()
-		if err == nil {
-			return path
+		if filepath.IsAbs(name) {
+			if _, err := os.Stat(name); err != nil {
+				continue
+			}
+		} else {
+			path, err := exec.LookPath(name)
+			if err != nil {
+				continue
+			}
+			name = path
+		}
+		if probePyMuPDF(ctx, name, seen) {
+			return name
 		}
 	}
 	return ""
 }
 
+// probePyMuPDF asks one interpreter whether pymupdf imports. seen dedups the
+// candidates that resolve to the same binary (a LookPath hit and an absolute
+// path usually do).
+func probePyMuPDF(ctx context.Context, python string, seen map[string]bool) bool {
+	if seen[python] {
+		return false
+	}
+	seen[python] = true
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, python, "-c", "import pymupdf")
+	hideCommandWindow(cmd)
+	return cmd.Run() == nil
+}
+
 func paperFindPDFTool(name string) string {
 	if path, err := exec.LookPath(name); err == nil {
 		return path
+	}
+	for _, path := range paperPDFToolCandidates(runtime.GOOS, name) {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
 	}
 	var found []string
 	for _, pattern := range []string{
@@ -284,32 +451,70 @@ func paperRenderFigurePages(source, dir string, pages []int, sessionID string) [
 	// Matches the companion's own page render: on a loaded machine a first
 	// PyMuPDF call (importing the module, warming the page tree) takes well
 	// past half a minute, and a timeout here degrades the answer to extracted
-	// images rather than failing.
+	// images rather than failing. Each engine tries the whole page set in
+	// turn, but only fills the pages the earlier engine left blank — a
+	// partial PyMuPDF run must not be redone, and a page it skipped must not
+	// be dropped. Each attempt gets its own slice of the caller's budget so
+	// the poppler/mutool fallbacks still run after a starving PyMuPDF attempt.
 	ctx, cancel := context.WithTimeout(context.Background(), fileCompanionRenderBudget)
 	defer cancel()
-	engine := paperRasterEngines()
-	var pyErr error
-	if engine.python != "" {
-		pyErr = paperRenderPyMuPDF(ctx, engine.python, source, dir, pages)
-		if pyErr == nil {
-			return paperFigurePNGLines(dir, pages)
-		}
-		logFileCompanion("paper figures failed session=%s", sessionID)
-	}
-	tool := engine.cairo
-	if tool == "" {
-		tool = engine.ppm
-	}
-	if tool == "" {
-		return nil
-	}
 	if len(pages) > paperFigureMaxCount {
 		pages = pages[:paperFigureMaxCount]
 	}
-	if err := paperRenderCairoPages(ctx, tool, source, dir, pages); err != nil {
-		logFileCompanion("paper figures failed session=%s", sessionID)
+	engine := paperRasterEngines()
+	if engine.python != "" {
+		pyCtx, pyCancel := renderAttemptContext(ctx)
+		err := paperRenderPyMuPDF(pyCtx, engine.python, source, dir, pages)
+		pyCancel()
+		if err != nil {
+			logFileCompanion("paper figures pymupdf attempt failed session=%s: %v", sessionID, err)
+		}
+	}
+	poppler := engine.cairo
+	if poppler == "" {
+		poppler = engine.ppm
+	}
+	if poppler != "" {
+		if missing := paperMissingFigurePages(dir, pages); len(missing) > 0 {
+			// One independent window for the whole poppler pass, not a slice
+			// of what PyMuPDF left — see renderAttemptContext.
+			popplerCtx, popplerCancel := renderAttemptContext(ctx)
+			err := paperRenderPopplerPages(popplerCtx, poppler, source, dir, missing)
+			popplerCancel()
+			if err != nil {
+				logFileCompanion("paper figures poppler attempt failed session=%s: %v", sessionID, err)
+			}
+		}
+	}
+	// mutool is the rarest engine: only render the pages the earlier engines
+	// did not land (a partial run must not be redone, and a skipped page must
+	// not be dropped).
+	if engine.mutool != "" {
+		if missing := paperMissingFigurePages(dir, pages); len(missing) > 0 {
+			mCtx, mCancel := renderAttemptContext(ctx)
+			err := paperRenderMutoolPages(mCtx, engine.mutool, source, dir, missing)
+			mCancel()
+			if err != nil {
+				logFileCompanion("paper figures mutool attempt failed session=%s: %v", sessionID, err)
+			}
+		}
 	}
 	return paperFigurePNGLines(dir, pages)
+}
+
+// paperMissingFigurePages returns the pages whose raster output is not yet on
+// disk (or is suspiciously small), so a fallback engine fills exactly and
+// only the gaps the first engine left.
+func paperMissingFigurePages(dir string, pages []int) []int {
+	var missing []int
+	for _, page := range pages {
+		path := filepath.Join(dir, fmt.Sprintf("p%d-1.png", page))
+		info, err := os.Stat(path)
+		if err != nil || info.Size() <= paperFigureMinBytes {
+			missing = append(missing, page)
+		}
+	}
+	return missing
 }
 
 func paperRenderPyMuPDF(ctx context.Context, python, source, dir string, pages []int) error {
@@ -336,11 +541,34 @@ func paperRenderPyMuPDF(ctx context.Context, python, source, dir string, pages [
 	return err
 }
 
-func paperRenderCairoPages(ctx context.Context, tool, source, dir string, pages []int) error {
+// paperFigureCLIDPI is the raster resolution the CLI engines use for figure
+// pages. The pymupdf script embeds its own (130) and stays independent.
+const paperFigureCLIDPI = 110
+
+// paperRenderPopplerPages renders one PNG per page with pdftocairo or
+// pdftoppm — both take the same flags, see popplerRasterArgs.
+func paperRenderPopplerPages(ctx context.Context, tool, source, dir string, pages []int) error {
 	var failed error
 	for _, page := range pages {
 		base := filepath.Join(dir, fmt.Sprintf("p%d-1", page))
-		cmd := exec.CommandContext(ctx, tool, "-png", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-r", "110", "-singlefile", source, base)
+		args := popplerRasterArgs(source, base, page, paperFigureCLIDPI)
+		cmd := exec.CommandContext(ctx, tool, args...)
+		hideCommandWindow(cmd)
+		if err := cmd.Run(); err != nil && failed == nil {
+			failed = err
+		}
+	}
+	return failed
+}
+
+// paperRenderMutoolPages renders the same p<page>-1.png layout with mupdf's
+// mutool, whose output is named exactly by -o for a single page.
+func paperRenderMutoolPages(ctx context.Context, tool, source, dir string, pages []int) error {
+	var failed error
+	for _, page := range pages {
+		out := filepath.Join(dir, fmt.Sprintf("p%d-1.png", page))
+		args := mutoolRasterArgs(source, out, page, paperFigureCLIDPI)
+		cmd := exec.CommandContext(ctx, tool, args...)
 		hideCommandWindow(cmd)
 		if err := cmd.Run(); err != nil && failed == nil {
 			failed = err

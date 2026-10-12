@@ -457,6 +457,7 @@ func mergeRepublishedTokenBankMember(existing, fresh llmpool.ProviderConfig, sha
 	merged.ArrayIndependent = false
 	clearWorkBuddySecrets(&merged)
 	merged.WorkBuddySessionID = ""
+	clearVendorSecrets(&merged)
 	if sharePaused {
 		merged.Paused = true
 	}

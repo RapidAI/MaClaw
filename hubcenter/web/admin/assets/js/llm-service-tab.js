@@ -28,12 +28,15 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldID: 'Provider ID', fieldName: 'Name', fieldURL: 'API URL', fieldKey: 'API Key',
       fieldAuth: 'Authentication', authAPIKey: 'API Key',
       authWorkBuddyChina: 'WorkBuddy China', authWorkBuddyGlobal: 'WorkBuddy International',
-      workBuddyLogin: 'Sign in and list models', workBuddyWaiting: 'Waiting for the browser sign-in to finish...',
-      workBuddyReady: 'Select the models to connect.', workBuddyNeedLogin: 'Sign in to WorkBuddy before saving.',
-      workBuddyNeedModel: 'Select at least one model.', workBuddyFailed: 'WorkBuddy sign-in failed',
-      workBuddyHint: 'After sign-in, choose models and save. This account becomes a provider. Expose the models from a service group.',
-      workBuddyOpen: 'If the login page did not open, use this link.',
-      workBuddyCatalogWarn: 'The live catalog was unavailable. Showing the built-in model list.',
+      authQoderChina: 'Qoder China', authQoderGlobal: 'Qoder International',
+      authTraeChina: 'Trae China', authTraeGlobal: 'Trae International',
+      authLobsterAI: 'LobsterAI',
+      vendorLogin: 'Sign in and list models', vendorWaiting: 'Waiting for the browser sign-in to finish...',
+      vendorReady: 'Select the models to connect.', vendorNeedLogin: 'Sign in to this vendor before saving.',
+      vendorNeedModel: 'Select at least one model.', vendorFailed: 'Sign-in failed',
+      vendorHint: 'After sign-in, choose models and save. This account becomes a provider. Expose the models from a service group.',
+      vendorOpen: 'If the login page did not open, use this link.',
+      vendorCatalogWarn: 'The live catalog was unavailable. Showing the built-in model list.',
       fieldProtocol: 'Protocol', fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
       fieldPriority: 'Priority', fieldConcurrency: 'Max Concurrency', fieldTimeout: 'Timeout (sec)',
       fieldSequence: 'Sequence', sequenceHint: 'Lower numbers are tried first. 0 means unset.',
@@ -238,12 +241,15 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldID: '\u670d\u52a1\u5546 ID', fieldName: '\u540d\u79f0', fieldURL: 'API \u5730\u5740', fieldKey: 'API \u5bc6\u94a5',
       fieldAuth: '\u8ba4\u8bc1\u65b9\u5f0f', authAPIKey: 'API \u5bc6\u94a5',
       authWorkBuddyChina: 'WorkBuddy \u56fd\u5185\u7248', authWorkBuddyGlobal: 'WorkBuddy \u56fd\u9645\u7248',
-      workBuddyLogin: '\u767b\u5f55\u5e76\u5217\u51fa\u6a21\u578b', workBuddyWaiting: '\u6b63\u5728\u7b49\u5f85\u6d4f\u89c8\u5668\u5b8c\u6210\u767b\u5f55...',
-      workBuddyReady: '\u8bf7\u52fe\u9009\u8981\u63a5\u5165\u7684\u6a21\u578b\u3002', workBuddyNeedLogin: '\u4fdd\u5b58\u524d\u8bf7\u5148\u5b8c\u6210 WorkBuddy \u767b\u5f55\u3002',
-      workBuddyNeedModel: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u6a21\u578b\u3002', workBuddyFailed: 'WorkBuddy \u767b\u5f55\u5931\u8d25',
-      workBuddyHint: '\u767b\u5f55\u540e\u52fe\u9009\u6a21\u578b\u5e76\u4fdd\u5b58\uff0c\u5373\u4ee5\u6b64\u8d26\u53f7\u63a5\u5165\u670d\u52a1\u5546\u3002\u4e4b\u540e\u5728\u6a21\u578b\u670d\u52a1\u7ec4\u4e2d\u66b4\u9732\u8fd9\u4e9b\u6a21\u578b\u3002',
-      workBuddyOpen: '\u5982\u679c\u767b\u5f55\u9875\u6ca1\u6709\u6253\u5f00\uff0c\u8bf7\u4f7f\u7528\u6b64\u94fe\u63a5\u3002',
-      workBuddyCatalogWarn: '\u5b9e\u65f6\u6a21\u578b\u76ee\u5f55\u6682\u4e0d\u53ef\u7528\uff0c\u5df2\u663e\u793a\u5185\u7f6e\u6a21\u578b\u5217\u8868\u3002',
+      authQoderChina: 'Qoder \u56fd\u5185\u7248', authQoderGlobal: 'Qoder \u56fd\u9645\u7248',
+      authTraeChina: 'Trae \u56fd\u5185\u7248', authTraeGlobal: 'Trae \u56fd\u9645\u7248',
+      authLobsterAI: 'LobsterAI',
+      vendorLogin: '\u767b\u5f55\u5e76\u5217\u51fa\u6a21\u578b', vendorWaiting: '\u6b63\u5728\u7b49\u5f85\u6d4f\u89c8\u5668\u5b8c\u6210\u767b\u5f55...',
+      vendorReady: '\u8bf7\u52fe\u9009\u8981\u63a5\u5165\u7684\u6a21\u578b\u3002', vendorNeedLogin: '\u4fdd\u5b58\u524d\u8bf7\u5148\u5b8c\u6210\u767b\u5f55\u3002',
+      vendorNeedModel: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u6a21\u578b\u3002', vendorFailed: '\u767b\u5f55\u5931\u8d25',
+      vendorHint: '\u767b\u5f55\u540e\u52fe\u9009\u6a21\u578b\u5e76\u4fdd\u5b58\uff0c\u5373\u4ee5\u6b64\u8d26\u53f7\u63a5\u5165\u670d\u52a1\u5546\u3002\u4e4b\u540e\u5728\u6a21\u578b\u670d\u52a1\u7ec4\u4e2d\u66b4\u9732\u8fd9\u4e9b\u6a21\u578b\u3002',
+      vendorOpen: '\u5982\u679c\u767b\u5f55\u9875\u6ca1\u6709\u6253\u5f00\uff0c\u8bf7\u4f7f\u7528\u6b64\u94fe\u63a5\u3002',
+      vendorCatalogWarn: '\u5b9e\u65f6\u6a21\u578b\u76ee\u5f55\u6682\u4e0d\u53ef\u7528\uff0c\u5df2\u663e\u793a\u5185\u7f6e\u6a21\u578b\u5217\u8868\u3002',
       fieldProtocol: '\u534f\u8bae', fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
       fieldPriority: '\u4f18\u5148\u7ea7', fieldConcurrency: '\u6700\u5927\u5e76\u53d1', fieldTimeout: '\u8d85\u65f6\uff08\u79d2\uff09',
       fieldSequence: '\u5e8f\u5217', sequenceHint: '\u6570\u5b57\u8d8a\u5c0f\u8d8a\u5148\u8bd5\u30020 \u8868\u793a\u672a\u8bbe\u3002',
@@ -469,9 +475,17 @@ if (typeof I18N_ZH !== 'undefined') {
   var workBuddyModels = [];
   var workBuddyPollTimer = 0;
   var workBuddyPollGen = 0;
-  var workBuddyEditions = {
-    china: { id: 'workbuddy-cn', name: 'WorkBuddy \u56fd\u5185\u7248', url: 'https://copilot.tencent.com/v2' },
-    global: { id: 'workbuddy-global', name: 'WorkBuddy \u56fd\u9645\u7248', url: 'https://www.workbuddy.ai/v2' }
+  // Account-login vendors. WorkBuddy keeps its own option values ("china" /
+  // "global") for backward compatibility, so its edition is the select value
+  // itself; every other vendor prefixes the edition with the vendor slug.
+  var vendorLoginAuths = {
+    china: { kind: 'workbuddy', slug: 'workbuddy', edition: 'china', id: 'workbuddy-cn', name: 'WorkBuddy \u56fd\u5185\u7248', url: 'https://copilot.tencent.com/v2', labelKey: 'authWorkBuddyChina' },
+    global: { kind: 'workbuddy', slug: 'workbuddy', edition: 'global', id: 'workbuddy-global', name: 'WorkBuddy \u56fd\u9645\u7248', url: 'https://www.workbuddy.ai/v2', labelKey: 'authWorkBuddyGlobal' },
+    'qoder-china': { kind: 'qoder', slug: 'qoder', edition: 'china', id: 'qoder-cn', name: 'Qoder \u56fd\u5185\u7248', url: 'https://api2-v2.qoder.sh/model/v1', labelKey: 'authQoderChina' },
+    'qoder-global': { kind: 'qoder', slug: 'qoder', edition: 'global', id: 'qoder-global', name: 'Qoder \u56fd\u9645\u7248', url: 'https://api2-v2.qoder.sh/model/v1', labelKey: 'authQoderGlobal' },
+    'trae-china': { kind: 'trae', slug: 'trae', edition: 'china', id: 'trae-cn', name: 'Trae \u56fd\u5185\u7248', url: 'https://trae-api-cn.mchost.guru', labelKey: 'authTraeChina' },
+    'trae-global': { kind: 'trae', slug: 'trae', edition: 'global', id: 'trae-global', name: 'Trae \u56fd\u9645\u7248', url: 'https://coresg-normal.trae.ai', labelKey: 'authTraeGlobal' },
+    lobsterai: { kind: 'lobsterai', slug: 'lobsterai', edition: '', id: 'lobsterai', name: 'LobsterAI', url: 'https://lobsterai-server.youdao.com', labelKey: 'authLobsterAI' }
   };
   var providerAccessMode = 'all';
   var providerAccessSelected = {};
@@ -2614,24 +2628,32 @@ if (typeof I18N_ZH !== 'undefined') {
     return true;
   };
   function providerWorkBuddyBadge(p) {
-    if (!p || p.auth_kind !== 'workbuddy') return '';
-    var label = p.workbuddy_edition === 'china' ? t('authWorkBuddyChina') : (p.workbuddy_edition === 'global' ? t('authWorkBuddyGlobal') : 'WorkBuddy');
+    var auth = providerAuthValue(p);
+    if (!auth) return '';
+    var preset = vendorLoginAuths[auth];
+    var label = preset ? t(preset.labelKey) : auth;
     return '<span class="badge">' + esc(label) + '</span>';
   }
+  // providerAuthValue maps a stored provider back to an auth select value.
+  // WorkBuddy rows predate the vendor-prefixed scheme, so theirs is the bare
+  // edition; the newer vendors read as "<slug>-<edition>".
   function providerAuthValue(p) {
-    if (p && p.auth_kind === 'workbuddy' && (p.workbuddy_edition === 'china' || p.workbuddy_edition === 'global')) return p.workbuddy_edition;
-    return '';
+    if (!p || !p.auth_kind) return '';
+    if (p.auth_kind === 'workbuddy') return p.workbuddy_edition === 'china' || p.workbuddy_edition === 'global' ? p.workbuddy_edition : '';
+    var edition = p.auth_kind === 'qoder' ? p.qoder_edition : (p.auth_kind === 'trae' ? p.trae_edition : '');
+    var key = edition ? p.auth_kind + '-' + edition : p.auth_kind;
+    return vendorLoginAuths[key] ? key : '';
   }
   function providerAuthField(p) {
     var selected = providerAuthValue(p);
-    return '<div><label for="llmPrvAuth">' + esc(t('fieldAuth')) + '</label><select id="llmPrvAuth" onchange="onProviderAuthChange()">'
-      + '<option value=""' + (selected === '' ? ' selected' : '') + '>' + esc(t('authAPIKey')) + '</option>'
-      + '<option value="china"' + (selected === 'china' ? ' selected' : '') + '>' + esc(t('authWorkBuddyChina')) + '</option>'
-      + '<option value="global"' + (selected === 'global' ? ' selected' : '') + '>' + esc(t('authWorkBuddyGlobal')) + '</option>'
-      + '</select></div>'
+    var options = ['', 'china', 'global', 'qoder-china', 'qoder-global', 'trae-china', 'trae-global', 'lobsterai'].map(function(value) {
+      var label = value === '' ? t('authAPIKey') : t(vendorLoginAuths[value].labelKey);
+      return '<option value="' + value + '"' + (selected === value ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+    return '<div><label for="llmPrvAuth">' + esc(t('fieldAuth')) + '</label><select id="llmPrvAuth" onchange="onProviderAuthChange()">' + options + '</select></div>'
       + '<div id="llmPrvWorkBuddy" class="grid-span-all" hidden>'
-      + '<div class="hint">' + esc(t('workBuddyHint')) + '</div>'
-      + '<div class="provider-model-tools"><button class="btn-ghost provider-probe-btn" type="button" id="llmPrvWorkBuddyLogin" onclick="startWorkBuddyLogin()">' + esc(t('workBuddyLogin')) + '</button></div>'
+      + '<div class="hint">' + esc(t('vendorHint')) + '</div>'
+      + '<div class="provider-model-tools"><button class="btn-ghost provider-probe-btn" type="button" id="llmPrvWorkBuddyLogin" onclick="startWorkBuddyLogin()">' + esc(t('vendorLogin')) + '</button></div>'
       + '<div id="llmPrvWorkBuddyStatus" class="provider-probe-status"></div>'
       + '<div id="llmPrvWorkBuddyChoices" class="provider-model-results"></div></div>';
   }
@@ -2643,28 +2665,30 @@ if (typeof I18N_ZH !== 'undefined') {
     }
   }
   window.onProviderAuthChange = function(keepIdentity) {
-    var edition = val('llmPrvAuth');
+    var authValue = val('llmPrvAuth');
+    var preset = vendorLoginAuths[authValue];
     var panel = document.getElementById('llmPrvWorkBuddy');
     var key = document.getElementById('llmPrvKey');
     var url = document.getElementById('llmPrvURL');
     var probe = document.querySelector('#llmPrvModels') && document.querySelector('#llmPrvModels').parentNode.querySelector('.provider-probe-btn');
-    var workbuddy = edition === 'china' || edition === 'global';
-    if (panel) panel.hidden = !workbuddy;
-    if (key && key.parentNode) key.parentNode.hidden = workbuddy;
-    if (probe) probe.hidden = workbuddy;
-    if (url) url.readOnly = workbuddy;
-    if (!workbuddy) {
+    if (panel) panel.hidden = !preset;
+    if (key && key.parentNode) key.parentNode.hidden = !!preset;
+    if (probe) probe.hidden = !!preset;
+    if (url) url.readOnly = !!preset;
+    if (!preset) {
       stopWorkBuddyLoginPoll();
       return;
     }
-    var preset = workBuddyEditions[edition];
-    if (!preset) return;
     var idEl = document.getElementById('llmPrvID');
     var nameEl = document.getElementById('llmPrvName');
+    // The other edition of the same vendor is the only identity this switch
+    // may overwrite: a hand-typed id is the admin's own and stays put.
+    var other = Object.keys(vendorLoginAuths).filter(function(v) {
+      return v !== authValue && vendorLoginAuths[v].kind === preset.kind;
+    }).map(function(v) { return vendorLoginAuths[v]; })[0];
     if (!keepIdentity) {
-      var other = edition === 'china' ? workBuddyEditions.global : workBuddyEditions.china;
-      if (idEl && (!idEl.value || idEl.value === other.id)) idEl.value = preset.id;
-      if (nameEl && (!nameEl.value || nameEl.value === other.name)) nameEl.value = preset.name;
+      if (idEl && (!idEl.value || (other && idEl.value === other.id))) idEl.value = preset.id;
+      if (nameEl && (!nameEl.value || (other && nameEl.value === other.name))) nameEl.value = preset.name;
     } else {
       if (idEl && !idEl.value) idEl.value = preset.id;
       if (nameEl && !nameEl.value) nameEl.value = preset.name;
@@ -2693,62 +2717,63 @@ if (typeof I18N_ZH !== 'undefined') {
     renderWorkBuddyModelChoices();
   };
   window.startWorkBuddyLogin = async function() {
-    var edition = val('llmPrvAuth');
-    if (edition !== 'china' && edition !== 'global') return;
+    var preset = vendorLoginAuths[val('llmPrvAuth')];
+    if (!preset) return;
     var status = document.getElementById('llmPrvWorkBuddyStatus');
     var button = document.getElementById('llmPrvWorkBuddyLogin');
     stopWorkBuddyLoginPoll();
     var gen = workBuddyPollGen;
     if (workBuddySessionID) {
-      api('/api/admin/llm/providers/workbuddy/login/' + encodeURIComponent(workBuddySessionID), { method: 'DELETE' }).catch(function(){});
+      api('/api/admin/llm/providers/' + preset.slug + '/login/' + encodeURIComponent(workBuddySessionID), { method: 'DELETE' }).catch(function(){});
       workBuddySessionID = '';
     }
     workBuddyModels = [];
     renderWorkBuddyModelChoices();
-    if (status) status.textContent = t('workBuddyWaiting');
+    if (status) status.textContent = t('vendorWaiting');
     if (button) button.disabled = true;
     try {
-      var started = await api('/api/admin/llm/providers/workbuddy/login', { method: 'POST', body: JSON.stringify({ edition: edition }) });
+      var body = JSON.stringify(preset.edition ? { edition: preset.edition } : {});
+      var started = await api('/api/admin/llm/providers/' + preset.slug + '/login', { method: 'POST', body: body });
       if (gen !== workBuddyPollGen) return;
       workBuddySessionID = started.session_id || '';
       if (started.auth_url) {
         var popup = window.open(started.auth_url, '_blank', 'noopener');
-        if (!popup && status) status.innerHTML = esc(t('workBuddyWaiting')) + ' <a href="' + esc(started.auth_url) + '" target="_blank" rel="noopener">' + esc(t('workBuddyOpen')) + '</a>';
+        if (!popup && status) status.innerHTML = esc(t('vendorWaiting')) + ' <a href="' + esc(started.auth_url) + '" target="_blank" rel="noopener">' + esc(t('vendorOpen')) + '</a>';
       }
-      pollWorkBuddyLogin(gen);
+      pollWorkBuddyLogin(gen, preset.slug);
     } catch (e) {
-      if (status) status.textContent = t('workBuddyFailed') + ': ' + e.message;
+      if (status) status.textContent = t('vendorFailed') + ': ' + e.message;
       if (button) button.disabled = false;
     }
   };
-  function pollWorkBuddyLogin(gen) {
+  function pollWorkBuddyLogin(gen, slug) {
     if (gen !== workBuddyPollGen || !workBuddySessionID) return;
     workBuddyPollTimer = setTimeout(async function() {
       if (gen !== workBuddyPollGen) return;
       var status = document.getElementById('llmPrvWorkBuddyStatus');
       var button = document.getElementById('llmPrvWorkBuddyLogin');
       try {
-        var data = await api('/api/admin/llm/providers/workbuddy/login/' + encodeURIComponent(workBuddySessionID));
+        var data = await api('/api/admin/llm/providers/' + slug + '/login/' + encodeURIComponent(workBuddySessionID));
         if (gen !== workBuddyPollGen) return;
         if (data.status === 'ready') {
           workBuddyModels = data.models || [];
           renderWorkBuddyModelChoices();
-          var note = t('workBuddyReady');
-          if (data.catalog_warning) note += ' ' + t('workBuddyCatalogWarn');
+          var note = t('vendorReady');
+          if (data.catalog_warning) note += ' ' + t('vendorCatalogWarn');
           if (status) status.textContent = note;
           if (button) button.disabled = false;
           return;
         }
         if (data.status === 'error') {
-          if (status) status.textContent = t('workBuddyFailed') + (data.error ? ': ' + data.error : '');
+          if (status) status.textContent = t('vendorFailed') + (data.error ? ': ' + data.error : '');
           if (button) button.disabled = false;
           workBuddySessionID = '';
           return;
         }
-        pollWorkBuddyLogin(gen);
+        pollWorkBuddyLogin(gen, slug);
       } catch (e) {
         if (gen !== workBuddyPollGen) return;
-        if (status) status.textContent = t('workBuddyFailed') + ': ' + e.message;
+        if (status) status.textContent = t('vendorFailed') + ': ' + e.message;
         if (button) button.disabled = false;
       }
     }, 1500);
@@ -2893,18 +2918,20 @@ if (typeof I18N_ZH !== 'undefined') {
     } else {
       payload.allowed_node_ids = [];
     }
-    var edition = val('llmPrvAuth');
-    if (edition === 'china' || edition === 'global') {
-      payload.auth_kind = 'workbuddy';
-      payload.workbuddy_edition = edition;
-      if (workBuddySessionID) payload.workbuddy_session_id = workBuddySessionID;
-      else if (!editID) { toast(t('workBuddyNeedLogin'), 'error'); return; }
-      if (!payload.models.length) { toast(t('workBuddyNeedModel'), 'error'); return; }
+    var preset = vendorLoginAuths[val('llmPrvAuth')];
+    if (preset) {
+      payload.auth_kind = preset.kind;
+      if (preset.kind === 'workbuddy') payload.workbuddy_edition = preset.edition;
+      else if (preset.kind === 'qoder') payload.qoder_edition = preset.edition;
+      else if (preset.kind === 'trae') payload.trae_edition = preset.edition;
+      if (workBuddySessionID) payload[preset.kind + '_session_id'] = workBuddySessionID;
+      else if (!editID) { toast(t('vendorNeedLogin'), 'error'); return; }
+      if (!payload.models.length) { toast(t('vendorNeedModel'), 'error'); return; }
     } else {
       payload.auth_kind = 'api_key';
     }
     var key = val('llmPrvKey');
-    if (key && payload.auth_kind !== 'workbuddy') payload.api_key = key;
+    if (key && !preset) payload.api_key = key;
     if (arrayID) {
       var chosenArray = providerArrayByID(arrayID);
       payload.array_id = chosenArray ? chosenArray.id : arrayID;

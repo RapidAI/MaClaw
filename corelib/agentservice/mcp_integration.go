@@ -387,6 +387,42 @@ func (b *MCPToolBridge) CallTool(ctx context.Context, p Principal, serverID, too
 		if srv.ID == serverID && !srv.Disabled {
 			client := runtime.localClient(serverID)
 			if client == nil || !client.IsRunning() {
+				// The shared runtime only holds processes that a sync, a
+				// readiness pass or an earlier call started, so a freshly
+				// installed server used to answer "not running" here. Start on
+				// demand instead — the same correction the GUI's
+				// LocalMCPManager made. startLocal is idempotent, so a racing
+				// caller that already produced a live process is a no-op.
+				//
+				// The spawn guard is repeated here rather than left to
+				// StartMCPServer: this call is not preceded by that path, and
+				// validateLocalMCPSpawnTarget covers drift between
+				// registration and now (2026-09-08 review, /tmp/evil symlink).
+				if err := validateLocalMCPSpawnTarget(srv.Command); err != nil {
+					return "", fmt.Errorf("local MCP binary rejected: %w", err)
+				}
+				// Detach the child process from the caller's cancellation.
+				// startLocal hands ctx to exec.CommandContext, so a
+				// request-scoped ctx would tree-kill the server as soon as the
+				// request returns or is canceled — the GUI avoids this by
+				// spawning under LocalMCPManager's lifetime context.
+				// WithoutCancel keeps request-derived values (tracing) while
+				// dropping cancellation, matching hubcenter's ha_wrappers
+				// usage. The resulting process is owned by the runtime rather
+				// than by this request, and is stopped by runtime.stopLocal
+				// when the server is stopped/deleted, or by
+				// Service.Close -> stopAllLocal at host shutdown.
+				if err := runtime.startLocal(context.WithoutCancel(ctx), srv); err != nil {
+					// startLocal leaves a started-but-undiscovered client in the
+					// map when discovery fails. Drop it so the next call retries
+					// from a clean state instead of reusing a half-initialized
+					// process.
+					runtime.stopLocal(serverID)
+					return "", fmt.Errorf("start local MCP server %q: %w", serverID, err)
+				}
+				client = runtime.localClient(serverID)
+			}
+			if client == nil || !client.IsRunning() {
 				return "", fmt.Errorf("local MCP server %q is not running", serverID)
 			}
 			return b.callLocalTool(client, toolName, arguments)

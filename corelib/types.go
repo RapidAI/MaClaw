@@ -1057,6 +1057,21 @@ type MaclawLLMConfig struct {
 	// the refresh token was minted against. Empty = claims-derived fallback.
 	TraeMachineID string `json:"-"`
 	TraeDeviceID  string `json:"-"`
+	// TraeUserID and TraeRefreshToken are the SOLO account id and the rotating
+	// refresh token the token family was minted against.
+	TraeUserID       string `json:"-"`
+	TraeRefreshToken string `json:"-"`
+
+	// QoderMachineID is the device id the browser approval was bound to, and
+	// QoderUserID is the account id the signed /algo wire signs as.
+	QoderMachineID string `json:"-"`
+	QoderUserID    string `json:"-"`
+
+	// LobsterAISessionUUID and LobsterAIFirstKeyfrom identify the desktop
+	// session the token family was minted against; the refresh replays them.
+	LobsterAISessionUUID  string `json:"-"`
+	LobsterAIFirstKeyfrom string `json:"-"`
+	LobsterAIUserID       string `json:"-"`
 
 	// EnablePromptCache hints to the LLM client that the system prompt is
 	// stable across iterations and should be marked for provider-side caching.

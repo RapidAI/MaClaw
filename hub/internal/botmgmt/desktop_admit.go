@@ -2,6 +2,7 @@ package botmgmt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -162,9 +163,76 @@ func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 			delete(s.desktopAdmits, id)
 		}
 	}
+	// Adopting is a claim, not an upsert. One run gets one watcher, because
+	// that watcher settles it — it hands back the keyboard, clears the hold,
+	// and closes the desktop open. Two watchers for the same run run that
+	// whole sequence twice, and whichever finishes second is settling a run
+	// that is already done. A second caller adopts nothing; it reads the
+	// entry the first one claimed.
+	claimed := false
+	if _, exists := s.desktopAdmits[key]; !exists {
+		s.desktopAdmits[key] = state
+		claimed = true
+	}
+	s.mu.Unlock()
+	if !claimed {
+		return
+	}
+	go s.watchAdmittedDesktopRun(job, state)
+}
+
+// settleAdmittedDesktopRun records a run that had already finished when this
+// Hub was asked about it, once. It exists because settling has side effects
+// that do not repeat cleanly — the keyboard goes back, the hold clears, the
+// desktop open closes — and a client polls for the reply more than once.
+//
+// The first caller settles and keeps the reply; every later read of the same
+// run answers that same reply instead of settling again. settle runs outside
+// the lock because it reaches into desktop bookkeeping that takes s.mu itself.
+func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string, settle func() (Reply, error)) (Reply, bool, error) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		reply, err := settle()
+		return reply, true, err
+	}
+	key := desktopAdmitKey(tenantID, userID, botID, runID)
+	s.mu.Lock()
+	if s.desktopAdmits == nil {
+		s.desktopAdmits = map[string]*desktopAdmitState{}
+	}
+	if existing, ok := s.desktopAdmits[key]; ok {
+		s.mu.Unlock()
+		existing.mu.Lock()
+		defer existing.mu.Unlock()
+		if !existing.done {
+			// Another caller is still settling it. Answer that it is not
+			// finished yet rather than guessing at a second settlement.
+			return Reply{}, false, nil
+		}
+		return existing.reply, true, existing.err
+	}
+	state := &desktopAdmitState{}
 	s.desktopAdmits[key] = state
 	s.mu.Unlock()
-	go s.watchAdmittedDesktopRun(job, state)
+
+	reply, err := settle()
+	state.mu.Lock()
+	state.reply = reply
+	state.err = err
+	state.done = true
+	state.finished = time.Now()
+	state.mu.Unlock()
+	if err != nil {
+		// Keeping the claim after a failed settle would answer every later
+		// read with "still going" forever and strand the run for good, which
+		// is the same dead end this whole fallback removes. Drop the claim
+		// so the next poll can try again; settling did not take effect.
+		s.mu.Lock()
+		if current, ok := s.desktopAdmits[key]; ok && current == state {
+			delete(s.desktopAdmits, key)
+		}
+		s.mu.Unlock()
+	}
+	return reply, true, err
 }
 
 func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desktopAdmitState) {
@@ -575,6 +643,13 @@ type SupplementResult struct {
 
 // DesktopRunResult is the reply for a run AdmitDesktopMessage already accepted.
 // done is false while that run is still going. A missing run is not found.
+//
+// The admit ledger is in memory, so a Hub that restarted mid-run has no
+// entry for work MaClawSrv is still driving. Rather than answer "bot not
+// found" — which stranded the reply of a run that was very much alive — the
+// miss asks MaClawSrv directly: a finished run is settled from its recorded
+// result, a running one is adopted back into the ledger and watched, and
+// only a run MaClawSrv does not know either is not found.
 func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID, runID string) (Reply, bool, error) {
 	if s == nil {
 		return Reply{}, false, ErrSettingsUnavailable
@@ -588,11 +663,15 @@ func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID,
 		return Reply{}, false, ErrNotFound
 	}
 	botID = rec.Bots[index].ID
+	instanceID := strings.TrimSpace(rec.Bots[index].InstanceID)
 	s.mu.Lock()
 	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
 	s.mu.Unlock()
 	if state == nil {
-		return Reply{}, false, ErrNotFound
+		if instanceID == "" {
+			return Reply{}, false, ErrNotFound
+		}
+		return s.readmitDesktopRun(ctx, tenantID, userID, botID, instanceID, runID)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -600,4 +679,101 @@ func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID,
 		return Reply{}, false, nil
 	}
 	return state.reply, true, state.err
+}
+
+// readmitDesktopRun answers one run the admit ledger no longer holds, from
+// MaClawSrv itself. A finished run settles from its recorded result; a
+// running one is adopted back so the watcher this Hub does have finishes
+// it. An unreachable MaClawSrv is reported as the error it is — the run may
+// still be going, and the caller's poll already treats that as "ask again".
+func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID, instanceID, runID string) (Reply, bool, error) {
+	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, instanceID, runID)
+	if err != nil {
+		if errors.Is(err, ErrSrvNotFound) {
+			return Reply{}, false, ErrNotFound
+		}
+		// MaClawSrv could not be asked, so nothing was learned about the run.
+		// A Hub that restarted has no ledger entry for work that may still be
+		// driving the desktop, and the only evidence is absent — not negative.
+		// Reporting the transport failure here would end the caller's poll and
+		// strand that run the same way the 404 did, so this Hub answers "still
+		// running" and lets the next poll look again. The caller's own read
+		// budget is what ends a run nobody can verify, not a fabricated reply.
+		traceBot(botID, "run_readmit_unverified", err,
+			"instance", instanceID,
+			"run", runID,
+		)
+		return Reply{}, false, nil
+	}
+	if !desktopRunTerminal(view.Status) {
+		novnc, _, watchErr := s.DesktopWatch(ctx, tenantID, userID, botID)
+		if watchErr != nil {
+			novnc = ""
+		}
+		s.followAdmittedDesktopRun(admittedDesktopFollow{
+			TenantID:   tenantID,
+			UserID:     userID,
+			BotID:      botID,
+			InstanceID: instanceID,
+			Novnc:      novnc,
+			RunID:      runID,
+			Started:    time.Now(),
+		})
+		traceBot(botID, "run_readmit", nil,
+			"instance", instanceID,
+			"run", runID,
+			"status", view.Status,
+		)
+		return Reply{}, false, nil
+	}
+	novnc, _, watchErr := s.DesktopWatch(ctx, tenantID, userID, botID)
+	if watchErr != nil {
+		novnc = ""
+	}
+	body := desktopCommandBody{
+		Text:        view.Message.Content,
+		Error:       view.Error,
+		Handoff:     view.DesktopHandoff,
+		Attention:   view.AttentionReason,
+		Metadata:    view.Message.Metadata,
+		Attachments: view.Message.Attachments,
+	}
+	if view.Status == "failed" || view.Status == "cancelled" {
+		if strings.TrimSpace(view.Error) != "" {
+			body.CallErr = fmt.Errorf("%s", strings.TrimSpace(view.Error))
+		} else if strings.TrimSpace(body.Text) == "" && !body.Handoff {
+			body.CallErr = fmt.Errorf("run %s ended as %s without a result", runID, view.Status)
+		}
+	}
+	// Settling is claimed, not repeated. The caller polls again whenever the
+	// answer was lost, and the desktop bookkeeping inside settle does not
+	// survive being run twice.
+	reply, settled, settleErr := s.settleAdmittedDesktopRun(tenantID, userID, botID, runID, func() (Reply, error) {
+		return s.settleDesktopCommand(tenantID, userID, botID, instanceID, novnc, false, body)
+	})
+	traceBot(botID, "run_readmit", settleErr,
+		"instance", instanceID,
+		"run", runID,
+		"status", view.Status,
+		"settled", traceYes(settled),
+		"text_len", fmt.Sprintf("%d", len(reply.Text)),
+	)
+	return reply, settled, settleErr
+}
+
+// readDesktopRunFromSrv reads one run straight from MaClawSrv, the way the
+// watcher does, for a run this Hub never admitted.
+func (s *Service) readDesktopRunFromSrv(ctx context.Context, tenantID, userID, instanceID, runID string) (desktopRunView, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	if err != nil {
+		return desktopRunView{}, err
+	}
+	var view desktopRunView
+	path := "/api/v1/instances/" + url.PathEscape(instanceID) + "/runs/" + url.PathEscape(runID)
+	if err := s.authAsOwner(ctx, tenantID, userID, &fresh, &token, http.MethodGet, path, nil, &view); err != nil {
+		return desktopRunView{}, err
+	}
+	return view, nil
 }

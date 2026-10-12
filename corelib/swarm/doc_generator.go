@@ -3,15 +3,8 @@ package swarm
 import (
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/docgen"
-)
-
-const (
-	maxPDFContentBytes        = 180 * 1024
-	maxPDFParagraphBytes      = 48 * 1024
-	maxSuspiciousBase64RunLen = 8192
 )
 
 // SwarmDocGenerator 生成移动端友好的 PDF 文档，用于通过 IM 发送给用户审阅。
@@ -76,70 +69,14 @@ func GenerateToFileWithOptions(content, title, docTypeStr, outputPath string, op
 	return docgen.GenerateToFile(spec, outputPath)
 }
 
+// ValidatePDFContent guards content handed to the PDF generator.
+//
+// The rules themselves live in docgen (docgen.ValidateContent) so every caller
+// of that package is covered: keeping them here left the desktop companion
+// export, which calls docgen.GenerateToFile directly, entirely unbounded. This
+// wrapper exists so existing swarm callers keep working unchanged.
 func ValidatePDFContent(content string) error {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return fmt.Errorf("缺少 content 参数（Markdown 格式的文档内容）")
-	}
-	if len(content) > maxPDFContentBytes {
-		return fmt.Errorf("PDF 内容过长（%d 字节），请缩短后再生成", len(content))
-	}
-	if strings.Contains(content, "[file_base64|") {
-		return fmt.Errorf("PDF 内容疑似包含文件载荷，请先整理正文再生成")
-	}
-	if longestSuspiciousBase64Run(content) >= maxSuspiciousBase64RunLen {
-		return fmt.Errorf("PDF 内容疑似包含超长 base64 或二进制载荷，请先整理正文再生成")
-	}
-	for _, block := range splitMarkdownParagraphs(content) {
-		if len(block) > maxPDFParagraphBytes {
-			return fmt.Errorf("PDF 中存在过长段落（%d 字节），请拆分后再生成", len(block))
-		}
-	}
-	return nil
-}
-
-func splitMarkdownParagraphs(content string) []string {
-	normalized := strings.ReplaceAll(content, "\r\n", "\n")
-	parts := strings.Split(normalized, "\n\n")
-	blocks := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			blocks = append(blocks, trimmed)
-		}
-	}
-	return blocks
-}
-
-func longestSuspiciousBase64Run(content string) int {
-	maxRun, run := 0, 0
-	for _, r := range content {
-		if isBase64Rune(r) {
-			run++
-			if run > maxRun {
-				maxRun = run
-			}
-			continue
-		}
-		run = 0
-	}
-	return maxRun
-}
-
-func isBase64Rune(r rune) bool {
-	if r >= 'A' && r <= 'Z' {
-		return true
-	}
-	if r >= 'a' && r <= 'z' {
-		return true
-	}
-	if r >= '0' && r <= '9' {
-		return true
-	}
-	if r == '+' || r == '/' || r == '=' {
-		return true
-	}
-	return !unicode.IsSpace(r) && false
+	return docgen.ValidateContent(content)
 }
 
 func specForDocType(docType DocType, projectName, content string, opts GeneratePDFOptions) docgen.Spec {

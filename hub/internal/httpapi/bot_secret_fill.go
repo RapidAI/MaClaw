@@ -29,7 +29,7 @@ func PostBotSecretFillHandler(svc *botmgmt.Service, identity botAuthenticator) h
 		}
 		code, err := svc.FillBotSecret(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Name, in.Value)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		if code != "" {

@@ -1840,9 +1840,24 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	client = proxyStreamingHTTPClient(client, cfg)
 	var decorateWorkBuddy func(*http.Request)
 	client, provider, decorateWorkBuddy = prepareWorkBuddyStream(ctx, client, provider, upstreamModel)
+	var decorateQoder func(*http.Request)
+	client, provider, decorateQoder = prepareQoderStream(ctx, client, provider, upstreamModel)
+	var decorateTrae func(*http.Request)
+	client, provider, decorateTrae = prepareTraeStream(ctx, client, provider, upstreamModel)
+	var decorateLobsterAI func(*http.Request)
+	client, provider, decorateLobsterAI = prepareLobsterAIStream(ctx, client, provider, upstreamModel)
 	endpointURL := provider.APIURL
 	if wb, ok := workBuddyMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(wb.URL) != "" {
 		endpointURL = wb.URL
+	}
+	if qd, ok := qoderMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(qd.URL) != "" {
+		endpointURL = qd.URL
+	}
+	if tr, ok := traeMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(tr.URL) != "" {
+		endpointURL = tr.URL
+	}
+	if lb, ok := lobsterAIMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(lb.URL) != "" {
+		endpointURL = lb.URL
 	}
 	endpoint := corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(endpointURL, cfg.UserAgent()))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
@@ -1861,6 +1876,15 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	corelib.ApplyOpenCodeSessionHeader(httpReq, cfg)
 	if decorateWorkBuddy != nil {
 		decorateWorkBuddy(httpReq)
+	}
+	if decorateQoder != nil {
+		decorateQoder(httpReq)
+	}
+	if decorateTrae != nil {
+		decorateTrae(httpReq)
+	}
+	if decorateLobsterAI != nil {
+		decorateLobsterAI(httpReq)
 	}
 
 	resp, err := client.Do(httpReq)
@@ -4073,6 +4097,15 @@ func forwardToProviderAttempts(ctx context.Context, client *http.Client, provide
 		return nil, err
 	}
 	if resp, handled, err := tryForwardWorkBuddy(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
+		return resp, err
+	}
+	if resp, handled, err := tryForwardQoder(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
+		return resp, err
+	}
+	if resp, handled, err := tryForwardTrae(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
+		return resp, err
+	}
+	if resp, handled, err := tryForwardLobsterAI(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
 		return resp, err
 	}
 	endpointProvider := corelib.LLMEndpointProvider{

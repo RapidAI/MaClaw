@@ -427,6 +427,18 @@ function wireField(entry: DesktopProviderWire, lower: string, upper: string): st
     return typeof raw === 'string' ? raw : '';
 }
 
+function wireStringList(entry: DesktopProviderWire, lower: string, upper: string): string[] {
+    if (!entry) return [];
+    const raw = entry[lower] ?? entry[upper];
+    if (!Array.isArray(raw)) return [];
+    return raw.map(item => (typeof item === 'string' ? item.trim() : '')).filter(item => item !== '');
+}
+
+function wireBool(entry: DesktopProviderWire, lower: string, upper: string): boolean {
+    if (!entry) return false;
+    return entry[lower] === true || entry[upper] === true;
+}
+
 // Only providers carrying a key can actually serve the bot; offering the rest
 // would push into MaClawSrv a route that cannot call anything. Names the hub
 // reserves, or that duplicate one of the account's own providers, are left for
@@ -440,6 +452,9 @@ function usableDesktopLLMProviders(entries: DesktopProviderWire[]): BotLLMProvid
             model: wireField(entry, 'model', 'Model').trim(),
             protocol: wireField(entry, 'protocol', 'Protocol').trim(),
             wireAPI: wireField(entry, 'wire_api', 'WireAPI').trim(),
+            models: wireStringList(entry, 'models', 'Models'),
+            agentType: wireField(entry, 'agent_type', 'AgentType').trim(),
+            isHubService: wireBool(entry, 'is_hub_service', 'IsHubService'),
         }))
         .filter(item => item.name !== '' && item.key !== '');
 }
@@ -535,9 +550,9 @@ function copy(lang: string) {
             llmUseProvider: 'Pick a provider from this computer',
             llmProviderLabel: 'Provider',
             llmModelLabel: 'Model',
-            llmModelPlaceholder: 'Model name, e.g. gpt-4o-mini',
+            llmModelLoading: 'Loading the model list…',
+            llmModelEmpty: 'This provider has no models to pick from yet.',
             llmNoProviders: 'No provider on this computer has a key yet. Add one under Settings → Providers first.',
-            llmModelRequired: 'Fill in the model name.',
         };
     }
     if (lang === 'zh-Hant') {
@@ -630,9 +645,9 @@ function copy(lang: string) {
             llmUseProvider: '從這台電腦的服務商裡挑一個',
             llmProviderLabel: '服務商',
             llmModelLabel: '模型',
-            llmModelPlaceholder: '模型名，例如 gpt-4o-mini',
+            llmModelLoading: '正在取得模型清單…',
+            llmModelEmpty: '這個服務商暫時沒有可選模型。',
             llmNoProviders: '這台電腦還沒有填好 key 的服務商。先到設定 → 服務商新增一個。',
-            llmModelRequired: '請填模型名。',
         };
     }
     return {
@@ -724,9 +739,9 @@ function copy(lang: string) {
         llmUseProvider: '从这台电脑的服务商里挑一个',
         llmProviderLabel: '服务商',
         llmModelLabel: '模型',
-        llmModelPlaceholder: '模型名，例如 gpt-4o-mini',
+        llmModelLoading: '正在获取模型列表…',
+        llmModelEmpty: '这个服务商暂时没有可选模型。',
         llmNoProviders: '这台电脑还没有填好 key 的服务商。先到设置 → 服务商添加一个。',
-        llmModelRequired: '请填模型名。',
     };
 }
 
@@ -3751,9 +3766,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         useProvider: text.llmUseProvider,
                         providerLabel: text.llmProviderLabel,
                         modelLabel: text.llmModelLabel,
-                        modelPlaceholder: text.llmModelPlaceholder,
+                        modelLoading: text.llmModelLoading,
+                        modelEmpty: text.llmModelEmpty,
                         noProviders: text.llmNoProviders,
-                        modelRequired: text.llmModelRequired,
                         save: text.save,
                         cancel: text.cancel,
                         close: text.close,

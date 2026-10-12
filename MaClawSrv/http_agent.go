@@ -456,15 +456,17 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	// Both inputs name this field client_message_id at the same JSON position.
+	// Checking only metadata here used to let a top-level body value pass the
+	// header comparison without being seen: header B against body top-level A
+	// matched nothing, and B overwrote A. Compare the resolved value, which
+	// Service folds from the same two spellings.
 	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
-		if in.Metadata != nil && strings.TrimSpace(in.Metadata["client_message_id"]) != "" && strings.TrimSpace(in.Metadata["client_message_id"]) != key {
+		if declared := strings.TrimSpace(in.ClientMessageID); declared != "" && declared != key {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key does not match client_message_id"})
 			return
 		}
-		if in.Metadata == nil {
-			in.Metadata = map[string]string{}
-		}
-		in.Metadata["client_message_id"] = key
+		in.ClientMessageID = key
 	}
 	if isReservedCodingRuntimeMetadata(in.Metadata) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "coding runtime metadata must be created by an explicit workflow runtime endpoint"})

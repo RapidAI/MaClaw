@@ -112,7 +112,7 @@ func ListBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 		}
 		bots, err := svc.BotsForUser(r.Context(), principal.TenantID, principal.UserID)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": bots})
@@ -139,7 +139,7 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 		}
 		bot, err := svc.CreateBotForUser(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusCreated, bot)
@@ -166,7 +166,7 @@ func PatchBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.H
 		}
 		bot, err := svc.UpdateBotForUser(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Name, in.Description)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, bot)
@@ -184,7 +184,7 @@ func DeleteBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 			return
 		}
 		if err := svc.DeleteBotForUser(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id")); err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -202,33 +202,46 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			return
 		}
 		var in struct {
-			Content string `json:"content"`
-			Phase   string `json:"phase"`
+			Content         string `json:"content"`
+			Phase           string `json:"phase"`
+			ClientMessageID string `json:"client_message_id"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botMessageBodyLimit)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
 			return
 		}
+		// One key per turn. The header form wins when both are present and
+		// disagree, matching MaClawSrv's own rule, so a client that carries
+		// the key in either place gets the same turn.
+		clientMessageID := strings.TrimSpace(in.ClientMessageID)
+		if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
+			if clientMessageID != "" && clientMessageID != key {
+				writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "Idempotency-Key does not match client_message_id")
+				return
+			}
+			clientMessageID = key
+		}
 		if wantsAsyncBotReply(r) {
-			admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase)
+			admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID)
 			if err != nil {
-				writeBotUserError(w, r, principal, err)
+				writeBotUserError(w, r, principal, err, clientMessageID)
 				return
 			}
 			if admission.Accepted && !admission.Settled {
 				writeJSON(w, http.StatusAccepted, map[string]any{
-					"accepted": true,
-					"run_id":   admission.RunID,
-					"status":   "running",
+					"accepted":          true,
+					"run_id":            admission.RunID,
+					"status":            "running",
+					"client_message_id": admission.ClientMessageID,
 				})
 				return
 			}
 			writeJSON(w, http.StatusOK, admission.Reply)
 			return
 		}
-		reply, err := svc.PostMessagePhase(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase)
+		reply, err := svc.PostMessagePhase(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, clientMessageID)
 			return
 		}
 		writeJSON(w, http.StatusOK, reply)
@@ -272,7 +285,7 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 		}
 		reply, done, err := svc.DesktopRunResult(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID"))
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		if !done {
@@ -307,7 +320,7 @@ func PostBotPreferenceHandler(svc *botmgmt.Service, identity botAuthenticator) h
 			return
 		}
 		if err := svc.SaveBotPreference(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id")), in.Content); err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
@@ -328,7 +341,7 @@ func DeleteBotPreferenceHandler(svc *botmgmt.Service, identity botAuthenticator)
 			return
 		}
 		if err := svc.WithdrawBotPreference(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id"))); err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "withdrawn"})
@@ -358,7 +371,7 @@ func PostBotRunSupplementHandler(svc *botmgmt.Service, identity botAuthenticator
 		runID := strings.TrimSpace(r.PathValue("runID"))
 		result, err := svc.SupplementDesktopRun(r.Context(), principal.TenantID, principal.UserID, botID, runID, in.Content)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -386,7 +399,7 @@ func GetBotRunSupplementsHandler(svc *botmgmt.Service, identity botAuthenticator
 		}
 		items, err := svc.DesktopRunSupplements(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("runID")))
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -409,7 +422,7 @@ func PostBotRunCancelHandler(svc *botmgmt.Service, identity botAuthenticator) ht
 		botID := strings.TrimSpace(r.PathValue("id"))
 		runID := strings.TrimSpace(r.PathValue("runID"))
 		if err := svc.CancelDesktopRun(r.Context(), principal.TenantID, principal.UserID, botID, runID); err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "run_id": runID})
@@ -430,7 +443,7 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 		botID := r.PathValue("id")
 		novnc, userControl, err := svc.DesktopWatch(r.Context(), principal.TenantID, principal.UserID, botID)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -462,7 +475,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 		ctx := botmgmt.WithDesktopWatchEpoch(r.Context(), epoch)
 		if release {
 			if err := svc.ReleaseUserDesktopView(ctx, principal.TenantID, principal.UserID, botID); err != nil {
-				writeBotUserError(w, r, principal, err)
+				writeBotUserError(w, r, principal, err, "")
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"released": true})
@@ -470,7 +483,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 		}
 		novnc, userControl, err := svc.HoldDesktopView(ctx, principal.TenantID, principal.UserID, botID)
 		if err != nil {
-			writeBotUserError(w, r, principal, err)
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{

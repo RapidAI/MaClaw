@@ -100,8 +100,8 @@ type ProviderConfig struct {
 	// on update otherwise keeps the current array.
 	ArrayIndependent bool `json:"array_independent,omitempty"`
 	// AuthKind selects how HubCenter obtains upstream credentials.
-	// Empty and "api_key" mean a static API key. "workbuddy" means a
-	// WorkBuddy or CodeBuddy account login.
+	// Empty and "api_key" mean a static API key. "workbuddy", "qoder", "trae"
+	// and "lobsterai" mean an account login of that vendor.
 	AuthKind string `json:"auth_kind,omitempty"`
 	// WorkBuddyEdition is "china" or "global" when AuthKind is workbuddy.
 	WorkBuddyEdition string `json:"workbuddy_edition,omitempty"`
@@ -116,6 +116,53 @@ type ProviderConfig struct {
 	// It names an in-memory login whose credential and model catalog fill
 	// the fields above. It is never stored.
 	WorkBuddySessionID string `json:"workbuddy_session_id,omitempty"`
+	// QoderEdition is "china" or "global" when AuthKind is qoder. Both editions
+	// share one OpenAI chat front, so the edition decides the signing gateway.
+	QoderEdition string `json:"qoder_edition,omitempty"`
+	// QoderRefreshToken renews APIKey. It is persisted and redacted from admin
+	// reads, the same way as APIKey. Both Qoder tokens rotate on refresh.
+	QoderRefreshToken string `json:"qoder_refresh_token,omitempty"`
+	QoderExpiresAt    int64  `json:"qoder_expires_at,omitempty"`
+	// QoderMachineID is the device id the browser approval was bound to. It is
+	// informational upstream but must stay stable across refreshes.
+	QoderMachineID string `json:"qoder_machine_id,omitempty"`
+	// QoderUserID is the account id the signed /algo wire signs as.
+	QoderUserID string `json:"qoder_user_id,omitempty"`
+	// QoderSessionID is accepted on create or update and then discarded. It
+	// names an in-memory login whose credential and model catalog fill the
+	// fields above. It is never stored.
+	QoderSessionID string `json:"qoder_session_id,omitempty"`
+	// TraeEdition is "china" or "global" when AuthKind is trae.
+	TraeEdition string `json:"trae_edition,omitempty"`
+	// TraeRefreshToken renews APIKey. It is persisted and redacted from admin
+	// reads, the same way as APIKey. The token rotates on refresh.
+	TraeRefreshToken string `json:"trae_refresh_token,omitempty"`
+	TraeExpiresAt    int64  `json:"trae_expires_at,omitempty"`
+	// TraeMachineID and TraeDeviceID are the login-page device pair the refresh
+	// token was minted against. Chat requests must carry exactly that pair.
+	TraeMachineID string `json:"trae_machine_id,omitempty"`
+	TraeDeviceID  string `json:"trae_device_id,omitempty"`
+	// TraeUserID is the SOLO account id behind the access token.
+	TraeUserID string `json:"trae_user_id,omitempty"`
+	// TraeSessionID is accepted on create or update and then discarded. It
+	// names an in-memory login whose credential and model catalog fill the
+	// fields above. It is never stored.
+	TraeSessionID string `json:"trae_session_id,omitempty"`
+	// LobsterAISessionUUID identifies the desktop session the token family was
+	// minted against; the refresh endpoint requires it.
+	LobsterAISessionUUID string `json:"lobsterai_session_uuid,omitempty"`
+	// LobsterAIRefreshToken renews APIKey. It is persisted and redacted from
+	// admin reads, the same way as APIKey. The token rotates on refresh.
+	LobsterAIRefreshToken string `json:"lobsterai_refresh_token,omitempty"`
+	LobsterAIExpiresAt    int64  `json:"lobsterai_expires_at,omitempty"`
+	// LobsterAIFirstKeyfrom is the epoch-millis string kept lifetime-long
+	// upstream. It must be replayed on every refresh.
+	LobsterAIFirstKeyfrom string `json:"lobsterai_first_keyfrom,omitempty"`
+	// LobsterAIUserID is the account id behind the access token.
+	LobsterAIUserID string `json:"lobsterai_user_id,omitempty"`
+	// LobsterAISessionID is accepted on create or update and then discarded,
+	// like the other vendors' login session fields.
+	LobsterAISessionID string `json:"lobsterai_session_id,omitempty"`
 }
 
 // TokenBankAudience is one hub and/or tenant allowed to call a private share.
@@ -130,6 +177,12 @@ const (
 	ProviderAuthAPIKey = "api_key"
 	// ProviderAuthWorkBuddy is a WorkBuddy domestic or international account.
 	ProviderAuthWorkBuddy = "workbuddy"
+	// ProviderAuthQoder is a Qoder domestic or international device login.
+	ProviderAuthQoder = "qoder"
+	// ProviderAuthTrae is a Trae domestic or international browser login.
+	ProviderAuthTrae = "trae"
+	// ProviderAuthLobsterAI is a LobsterAI account login.
+	ProviderAuthLobsterAI = "lobsterai"
 )
 
 // ProviderArray is one logical provider. A model service group routes to the

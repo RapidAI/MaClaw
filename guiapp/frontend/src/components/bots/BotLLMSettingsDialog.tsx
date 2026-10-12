@@ -1,5 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { buildSidebarModelOptions } from '../../utils/sidebarModelOptions';
+import { FetchProviderModels } from '../../../wailsjs/go/main/App';
 
 // One entry the owner can pick for their bots. Key is carried here because the
 // bot needs it to call the provider; it never reaches the dialog's markup, only
@@ -11,6 +13,10 @@ export type BotLLMProviderOption = {
     model: string;
     protocol: string;
     wireAPI: string;
+    /** Model IDs discovered earlier and cached on the provider, when any. */
+    models: string[];
+    agentType: string;
+    isHubService: boolean;
 };
 
 export type BotLLMSettingsSubmit = {
@@ -27,9 +33,9 @@ export type BotLLMSettingsDialogLabels = {
     useProvider: string;
     providerLabel: string;
     modelLabel: string;
-    modelPlaceholder: string;
+    modelLoading: string;
+    modelEmpty: string;
     noProviders: string;
-    modelRequired: string;
     save: string;
     cancel: string;
     close: string;
@@ -75,7 +81,38 @@ export function BotLLMSettingsDialog({
         if (initialName.trim() !== '') return initialName;
         return usable[0]?.name ?? '';
     });
-    const [model, setModel] = useState(() => initialModel.trim());
+
+    // The saved model stays visible for its own provider even when the provider
+    // default moved on; for a different provider the default leads instead.
+    function optionsForProvider(provider: BotLLMProviderOption | undefined, fetched: string[]): string[] {
+        return buildSidebarModelOptions({
+            configuredModel: (provider?.name === initialName ? initialModel.trim() : '') || provider?.model.trim() || '',
+            cachedModels: provider?.models ?? [],
+            fetchedModels: fetched,
+        });
+    }
+
+    // Only a reachable service with a key can answer with a model list; a hub
+    // route is served by the service itself, not by a public models endpoint.
+    function willFetchModels(provider: BotLLMProviderOption | undefined): provider is BotLLMProviderOption {
+        return provider != null && !provider.isHubService && provider.url.trim() !== '' && provider.key.trim() !== '';
+    }
+
+    // A value outside the list would render as a blank select, and saving it
+    // would hand the bot a model nobody can see. Re-pointing at the first
+    // option keeps what is shown and what is saved the same thing.
+    function seedModelFor(provider: BotLLMProviderOption | undefined, current: string): string {
+        const options = optionsForProvider(provider, []);
+        return options.includes(current) ? current : (options[0] ?? '');
+    }
+
+    const firstProvider = usable.find(item => item.name === initialName) ?? usable[0];
+    // Seeding the state from the same list keeps the first frame correct — and
+    // keeps it from flashing "no models" before the list loads.
+    const [model, setModel] = useState(() => seedModelFor(firstProvider, initialModel.trim()));
+    const [modelOptions, setModelOptions] = useState<string[]>(() => optionsForProvider(firstProvider, []));
+    const [modelsLoading, setModelsLoading] = useState(() => willFetchModels(firstProvider));
+    const modelsSeq = useRef(0);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const previousFocusRef = useRef<HTMLElement | null>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
@@ -104,21 +141,56 @@ export function BotLLMSettingsDialog({
     // own option list: a saved provider can lose its key after the fact.
     const selected = usable.find(item => item.name === name) ?? usable[0];
     const canSave = !saving && (mode === 'default' || (selected != null && model.trim() !== ''));
+    const selectedProviderName = selected?.name ?? '';
+
+    // A value outside the list would render as a blank select, and saving it
+    // would hand the bot a model nobody can see. Re-pointing at the first
+    // option keeps what is shown and what is saved the same thing.
+    const applyModelOptions = (next: string[]) => {
+        setModelOptions(next);
+        setModel(prev => (next.includes(prev) ? prev : (next[0] ?? '')));
+    };
+
+    // The dropdown lists the provider's cached models first, then refreshes
+    // from the service. Fetching is best-effort: on failure the cached list
+    // (or at least the provider default) is still selectable.
+    useEffect(() => {
+        const provider = usable.find(item => item.name === selectedProviderName);
+        const seq = ++modelsSeq.current;
+        applyModelOptions(optionsForProvider(provider, []));
+        if (!willFetchModels(provider)) {
+            setModelsLoading(false);
+            return;
+        }
+        setModelsLoading(true);
+        FetchProviderModels(provider.url, provider.key, provider.protocol || 'openai', provider.agentType || 'openclaw')
+            .then(items => {
+                if (seq !== modelsSeq.current) return;
+                const fetched = (Array.isArray(items) ? items : [])
+                    .map(item => String(item?.id ?? item?.name ?? '').trim())
+                    .filter(item => item !== '');
+                applyModelOptions(optionsForProvider(provider, fetched));
+            })
+            .catch(() => {
+                // Keep the seeded options; the service may not expose a list.
+            })
+            .finally(() => {
+                if (seq === modelsSeq.current) setModelsLoading(false);
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedProviderName]);
 
     const pickProvider = (nextName: string) => {
         setName(nextName);
-        const next = providers.find(item => item.name === nextName);
-        // Fill from the provider so the common case needs no typing. A model the
-        // user already typed for a different provider is not carried over.
-        setModel(next?.model.trim() ?? '');
+        // Re-point the model at the new provider's own list in the same commit,
+        // so the two selects never disagree for a frame. A model the user
+        // picked for a different provider is not carried over — unless the new
+        // provider lists the very same id, in which case it stays valid.
+        setModel(seedModelFor(providers.find(item => item.name === nextName), model));
     };
 
-    // Turning on "pick a provider" seeds the model from the provider too, so the
-    // option is never half-open: it either shows a usable model or says it needs
-    // one, rather than waiting for a click nobody knows to make.
     const chooseMode = (next: 'default' | 'custom') => {
         setMode(next);
-        if (next === 'custom' && model.trim() === '') setModel(selected?.model.trim() ?? '');
     };
 
     const submit = () => {
@@ -240,19 +312,20 @@ export function BotLLMSettingsDialog({
                         {usable.length > 0 ? (
                             <div className="bot-llm-dialog__field">
                                 <label className="form-label bot-llm-dialog__label" htmlFor={modelId}>{labels.modelLabel}</label>
-                                <input
+                                <select
                                     id={modelId}
-                                    className="form-input bot-llm-dialog__input"
-                                    type="text"
+                                    className="form-input bot-llm-dialog__select"
                                     value={model}
-                                    placeholder={labels.modelPlaceholder}
-                                    disabled={saving || mode !== 'custom'}
+                                    disabled={saving || mode !== 'custom' || modelOptions.length === 0}
                                     data-testid="bot-llm-model"
                                     onChange={event => setModel(event.target.value)}
-                                    autoComplete="off"
-                                    spellCheck={false}
-                                />
-                                {selected && model.trim() === '' ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelRequired}</p> : null}
+                                >
+                                    {modelOptions.map(item => (
+                                        <option key={item} value={item}>{item}</option>
+                                    ))}
+                                </select>
+                                {modelsLoading ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelLoading}</p> : null}
+                                {!modelsLoading && modelOptions.length === 0 ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelEmpty}</p> : null}
                             </div>
                         ) : null}
                     </div>

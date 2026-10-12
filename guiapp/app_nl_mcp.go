@@ -808,6 +808,23 @@ func (r *MCPRegistry) ensureSessionContextMode(ctx context.Context, target *core
 	return nil
 }
 
+// recordRemoteRuntimeSyncFailure is the remote-transport counterpart of the
+// local manager's recordRuntimeSyncFailure. It keeps the same reservation:
+// durable runtime blockers belong to marketplace-managed deployments only, so
+// a manually added remote server cannot create global state-file side effects.
+// A nil target or a non-managed entry is a no-op rather than an error.
+func (r *MCPRegistry) recordRemoteRuntimeSyncFailure(serverID string, target *corelib.MCPServerEntry, cause error) {
+	if r == nil || r.app == nil || target == nil {
+		return
+	}
+	if target.Source != corelib.MCPSourceMarket || target.Capability == nil {
+		return
+	}
+	if err := r.app.recordMCPRuntimeSyncFailure(serverID, "http", "", cause); err != nil {
+		log.Printf("[MCPRegistry] persist runtime sync failure for %s: %v", serverID, err)
+	}
+}
+
 // CallTool calls a tool on the specified MCP Server with a 30-second timeout.
 func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interface{}) (string, error) {
 	return r.CallToolForOwner("", serverID, toolName, args)
@@ -821,8 +838,10 @@ func (r *MCPRegistry) CallToolForOwner(ownerID, serverID, toolName string, args 
 		return "", fmt.Errorf("external coding-session tool %q is disabled", toolName)
 	}
 	ownerID = strings.TrimSpace(ownerID)
-	if r.app != nil && r.app.mcpRuntimeSyncPending(serverID) {
-		return "", fmt.Errorf("MCP runtime for %q is not ready; runtime synchronization requires reconciliation", strings.TrimSpace(serverID))
+	if r.app != nil {
+		if blocked, reason := r.app.mcpRuntimeSyncGate(serverID); blocked {
+			return "", fmt.Errorf("MCP runtime for %q is not ready: %s", strings.TrimSpace(serverID), reason)
+		}
 	}
 	defer func() {
 		if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
@@ -840,7 +859,13 @@ func (r *MCPRegistry) CallToolForOwner(ownerID, serverID, toolName string, args 
 
 	// Ensure MCP session is established (Streamable HTTP handshake).
 	if err := r.ensureSession(target, ownerID); err != nil {
-		return "", fmt.Errorf("MCP session init failed: %w", err)
+		sessionErr := fmt.Errorf("MCP session init failed: %w", err)
+		// The call gate now admits a managed server whose durable state is
+		// still pending, so the call itself is the probe and its failure must
+		// count. Without this record a permanently broken remote runtime would
+		// be retried on every call and never escalate to needs_review.
+		r.recordRemoteRuntimeSyncFailure(serverID, target, sessionErr)
+		return "", sessionErr
 	}
 
 	reqBody := map[string]interface{}{
@@ -866,11 +891,31 @@ func (r *MCPRegistry) CallToolForOwner(ownerID, serverID, toolName string, args 
 		}
 		if err != nil {
 			r.recordFailure(serverID)
+			// The call gate now admits a managed server whose durable state is
+			// still pending, so the call itself is the probe and its failure
+			// must count. Session init is not the only way a remote runtime
+			// breaks: once a session is cached, a dead endpoint fails here
+			// instead, and without this record such a server would be retried
+			// on every call and never escalate to needs_review.
+			r.recordRemoteRuntimeSyncFailure(serverID, target, err)
 			return "", err
 		}
 	}
 
 	r.recordSuccess(serverID)
+	// A completed round trip is direct readiness evidence, stronger than a
+	// tools/list probe: the session is live and the server answered. Persist it
+	// so a managed server that is only ever called (never health-checked)
+	// converges to ready and stops being hidden from the inventory gates.
+	// The helper is entry-driven and skips the write once the durable marker
+	// already says ready, so the hot path pays no extra file write.
+	if r.app != nil && r.app.mcpRuntimeSyncShouldRecordReady(target) {
+		if err := r.app.markMCPRuntimeSyncReady(serverID); err != nil {
+			// The call itself succeeded, so failing it here would be wrong.
+			// Log and let the fail-closed persistence fence block the next one.
+			log.Printf("[MCPRegistry] persist runtime readiness for %s: %v", serverID, err)
+		}
+	}
 	return string(parsed), nil
 }
 

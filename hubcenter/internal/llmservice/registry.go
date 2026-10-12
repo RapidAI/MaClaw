@@ -72,6 +72,12 @@ type Service struct {
 	adminKeyMu      sync.Mutex
 	workBuddyMu     sync.Mutex
 	workBuddyLogins map[string]*workBuddyLogin
+	qoderMu         sync.Mutex
+	qoderLogins     map[string]*qoderLogin
+	traeMu          sync.Mutex
+	traeLogins      map[string]*traeLogin
+	lobsterAIMu     sync.Mutex
+	lobsterAILogins map[string]*lobsterAILogin
 }
 
 const registryCacheTTL = 30 * time.Second
@@ -88,6 +94,7 @@ func (s *Service) lockRegistryWrite() func() {
 func NewService(system store.SystemSettingsRepository) *Service {
 	svc := &Service{system: system}
 	svc.registerWorkBuddyPersister()
+	svc.registerVendorPersisters()
 	return svc
 }
 
@@ -876,7 +883,7 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	if incoming.MaxOutputTokensPerRequest == 0 {
 		incoming.MaxOutputTokensPerRequest = existing.MaxOutputTokensPerRequest
 	}
-	return mergeWorkBuddyAuth(existing, incoming)
+	return mergeVendorAuth(existing, mergeWorkBuddyAuth(existing, incoming))
 }
 
 // UpdateProvider updates an existing provider in the registry.

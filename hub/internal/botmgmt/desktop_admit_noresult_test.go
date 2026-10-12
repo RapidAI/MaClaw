@@ -62,7 +62,7 @@ func TestAdmittedEmptyRunDoesNotBlameTheServer(t *testing.T) {
 	svc.admitPollInterval = 10 * time.Millisecond
 	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	svc.Desktop = desk
-	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute"); err != nil {
+	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute", ""); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)

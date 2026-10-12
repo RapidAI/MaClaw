@@ -423,8 +423,7 @@
     color: var(--theme-text-secondary, #475467);
 }
 
-.bot-llm-dialog__select,
-.bot-llm-dialog__input {
+.bot-llm-dialog__select {
     min-height: 38px;
     padding: 8px 12px;
     border-radius: 8px;

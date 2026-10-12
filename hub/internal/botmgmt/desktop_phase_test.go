@@ -66,7 +66,7 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	ctx := context.Background()
 
-	reply, err := svc.PostMessagePhase(ctx, "tenant-a", "alice", "bot_alice", "先看首页", "plan")
+	reply, err := svc.PostMessagePhase(ctx, "tenant-a", "alice", "bot_alice", "先看首页", "plan", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 		t.Fatal("plan stored an attention reason")
 	}
 
-	paid, err := svc.PostMessagePhase(ctx, "tenant-a", "alice", "bot_alice", "按这个安排执行", "execute")
+	paid, err := svc.PostMessagePhase(ctx, "tenant-a", "alice", "bot_alice", "按这个安排执行", "execute", "")
 	if err != nil {
 		t.Fatal(err)
 	}

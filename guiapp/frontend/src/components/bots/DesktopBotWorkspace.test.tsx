@@ -40,6 +40,7 @@ const saveBotLLM = vi.hoisted(() => vi.fn(async (input?: BotLLMIn): Promise<BotL
     key_set: !!input?.key,
 })));
 const listProviders = vi.hoisted(() => vi.fn(async (): Promise<{ providers: Array<Record<string, unknown>>; current: string }> => ({ providers: [], current: '' })));
+const fetchProviderModels = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<Array<{ id?: string; name?: string }>> => []));
 const persistPreference = vi.hoisted(() => vi.fn(async (_botId?: string, _persona?: string) => undefined));
 const listActiveRuns = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<Array<Record<string, unknown>>> => []));
 const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; instruction?: string } | null> => null));
@@ -72,6 +73,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetDesktopBotLLM: () => getBotLLM(),
     SaveDesktopBotLLM: (input: BotLLMIn) => saveBotLLM(input),
     GetMaclawLLMProviders: () => listProviders(),
+    FetchProviderModels: (...args: unknown[]) => fetchProviderModels(...(args as [string, string, string, string])),
     PersistDesktopBotPreference: (botId: string, persona: string) => persistPreference(botId, persona),
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
@@ -176,6 +178,8 @@ beforeEach(() => {
     }));
     listProviders.mockReset();
     listProviders.mockResolvedValue({ providers: [], current: '' });
+    fetchProviderModels.mockReset();
+    fetchProviderModels.mockResolvedValue([]);
     responseListeners.list = [];
     responseListeners.byEvent = {};
     setBotWindowForeground(false);
@@ -3589,6 +3593,117 @@ describe('DesktopBotWorkspace', () => {
             wire_api: '',
         }));
         await waitFor(() => expect(screen.queryByTestId('bot-llm-dialog')).toBeNull());
+    });
+
+    // The model is picked, not typed: the dropdown is seeded from the provider's
+    // cached models and refreshed from the service, and the saved model stays
+    // selectable even when the provider default has since moved on.
+    it('offers the provider models as a dropdown, saved model included', async () => {
+        getBotLLM.mockResolvedValue({ mode: 'custom', name: 'Qwen', model: 'qwen-turbo', key_set: true });
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [{
+                name: 'Qwen',
+                url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                key: 'sk-qwen',
+                model: 'qwen-max',
+                protocol: 'openai',
+                models: ['qwen-plus'],
+            }],
+        });
+        fetchProviderModels.mockResolvedValue([{ id: 'qwen3-max' }, { id: 'qwen-plus' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        expect(model.tagName).toBe('SELECT');
+        // Saved model first, then the live catalog, cached models merged in.
+        await waitFor(() => expect(Array.from(model.options).map(o => o.value)).toEqual(['qwen-turbo', 'qwen3-max', 'qwen-plus']));
+        fireEvent.change(model, { target: { value: 'qwen3-max' } });
+        fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'custom', model: 'qwen3-max' })));
+    });
+
+    // The dropdown must never flash "no models" while the service is still
+    // answering: the first frame is seeded from the provider itself, with the
+    // loading hint standing in until the live catalog lands.
+    it('seeds the dropdown and says it is loading before the service answers', async () => {
+        fetchProviderModels.mockReturnValue(new Promise(() => { /* never settles */ }));
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [{
+                name: 'Qwen',
+                url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                key: 'sk-qwen',
+                model: 'qwen-max',
+                protocol: 'openai',
+                models: ['qwen-plus'],
+            }],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        expect(Array.from(model.options).map(o => o.value)).toEqual(['qwen-max', 'qwen-plus']);
+        expect(model).toHaveProperty('value', 'qwen-max');
+        expect(within(dialog).getByText('正在获取模型列表…')).toBeTruthy();
+        expect(within(dialog).queryByText('这个服务商暂时没有可选模型。')).toBeNull();
+    });
+
+    // Switching provider re-points the model at the new provider's own list in
+    // the same commit: the two selects never disagree, and a model picked for
+    // the previous provider is not carried over.
+    it('re-points the model at the new provider instead of carrying the old pick', async () => {
+        fetchProviderModels.mockResolvedValue([]);
+        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [
+                { name: 'Qwen', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-qwen', model: 'qwen-max', protocol: 'openai' },
+                { name: 'DeepSeek', url: 'https://api.deepseek.com/v1', key: 'sk-ds', model: 'deepseek-chat', protocol: 'openai' },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
+        const provider = within(dialog).getByTestId('bot-llm-provider') as HTMLSelectElement;
+        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        expect(model).toHaveProperty('value', 'qwen-max');
+        fireEvent.change(provider, { target: { value: 'DeepSeek' } });
+        expect(model).toHaveProperty('value', 'deepseek-chat');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'custom', name: 'DeepSeek', model: 'deepseek-chat' })));
+    });
+
+    // A provider with no model anywhere still lets the owner save: the list
+    // shows the reason instead of a blank box that fails validation.
+    it('says so when the provider exposes no models to pick', async () => {        listProviders.mockResolvedValue({
+            current: 'Qwen',
+            providers: [{ name: 'Qwen', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-qwen', model: '', protocol: 'openai' }],
+        });
+        fetchProviderModels.mockResolvedValue([]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
+        expect(await within(dialog).findByText('这个服务商暂时没有可选模型。')).toBeTruthy();
+        expect(within(dialog).getByTestId('bot-llm-save')).toHaveProperty('disabled', true);
+    });
+
+    // Hub-resolved providers are served by the service, not by a public models
+    // endpoint; their saved model stays selectable without a fetch.
+    it('keeps the saved hub model selectable without calling the models endpoint', async () => {
+        getBotLLM.mockResolvedValue({ mode: 'custom', name: 'Hub 线路', model: 'hub-alias-1', key_set: true });
+        listProviders.mockResolvedValue({
+            current: 'Hub 线路',
+            providers: [{ name: 'Hub 线路', url: 'https://hub.example/v1', key: 'hub-key', model: 'hub-alias-1', protocol: 'openai', is_hub_service: true }],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
+        const dialog = await screen.findByTestId('bot-llm-dialog');
+        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        await waitFor(() => expect(Array.from(model.options).map(o => o.value)).toEqual(['hub-alias-1']));
+        expect(fetchProviderModels).not.toHaveBeenCalled();
     });
 
     // What "默认" restores is whatever the service resolves this owner right now,

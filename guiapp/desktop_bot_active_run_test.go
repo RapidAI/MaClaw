@@ -93,18 +93,23 @@ func TestConcurrentTurnsKeepTheirOwnEntries(t *testing.T) {
 }
 
 // TestPendingTurnIsNotOfferedAsTarget keeps a run that Hub has not named yet
-// out of supplement routing. It has no run id, so nothing could be sent to it.
+// out of supplement routing. It has no run id, so nothing could be sent to it,
+// and offering it would either fail opaquely or invite guessing which turn the
+// words were meant for.
 func TestPendingTurnIsNotOfferedAsTarget(t *testing.T) {
 	resetActiveDesktopRuns(t)
 	a := &App{}
 
 	a.registerActiveDesktopRun("bot-1", "req-1", "session-1", "任务", "execute")
-	runs := a.GetActiveDesktopRuns("bot-1")
-	if len(runs) != 1 {
-		t.Fatalf("expected the pending turn to be listed for the UI, got %d", len(runs))
+	if runs := a.GetActiveDesktopRuns("bot-1"); len(runs) != 0 {
+		t.Fatalf("a turn with no run id was offered as a target: %+v", runs)
 	}
-	if runs[0].RunID != "" {
-		t.Fatalf("a pending turn should report no run id, got %q", runs[0].RunID)
+
+	// It appears the moment the run is named, so nothing is lost by hiding it.
+	a.setActiveDesktopRunID("bot-1", "req-1", "run-1")
+	runs := a.GetActiveDesktopRuns("bot-1")
+	if len(runs) != 1 || runs[0].RunID != "run-1" {
+		t.Fatalf("a named turn must be offered, got %+v", runs)
 	}
 }
 

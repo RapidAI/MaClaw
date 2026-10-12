@@ -502,52 +502,116 @@ func responseBodyLimit(path string) int64 {
 	return 1 << 20
 }
 
+// botmgmtIdempotentAttempts is how many times one read-only call to
+// MaClawSrv is tried. The admit pipeline reads the instance and mints a
+// bearer before it sends anything; a proxy blink on one of those reads used
+// to fail a command that had not been sent yet.
+const botmgmtIdempotentAttempts = 3
+
+// botmgmtIdempotentRetryWait is the gap before the next try of a read-only
+// call. Short, because the caller is a person waiting for a desktop.
+const botmgmtIdempotentRetryWait = 200 * time.Millisecond
+
+// botmgmtCallWorthRetry reports whether one MaClawSrv call failed without
+// MaClawSrv deciding anything: a transport error, or a 5xx from a proxy in
+// front of it. Both leave the requested state unchanged, which is what makes
+// another try safe for a read.
+func botmgmtCallWorthRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *upstream.StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Status >= 500
+	}
+	return true
+}
+
+// botmgmtCallIsIdempotent reports whether one call may be repeated without
+// changing what MaClawSrv does. Reads always may. The one POST that may is
+// the token exchange: it mints a bearer and has no other effect, so a second
+// exchange after a lost answer costs one unused token.
+func botmgmtCallIsIdempotent(method, path string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return true
+	case http.MethodPost:
+		return strings.TrimSpace(path) == "/api/v1/auth/token"
+	default:
+		return false
+	}
+}
+
 func (s *Service) call(ctx context.Context, rec record, bearer, adminSecret, method, path string, body any, dest any) error {
-	var reader io.Reader
+	var raw []byte
 	if body != nil {
-		raw, err := json.Marshal(body)
+		encoded, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(raw)
+		raw = encoded
 	}
-	req, err := http.NewRequestWithContext(ctx, method, rec.BaseURL+path, reader)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrSrv, err.Error())
+	attempts := 1
+	if botmgmtCallIsIdempotent(method, path) {
+		attempts = botmgmtIdempotentAttempts
 	}
-	if strings.TrimSpace(bearer) != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
-	}
-	if strings.TrimSpace(adminSecret) != "" {
-		req.Header.Set("X-MaClaw-Admin-Secret", adminSecret)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if ctx != nil {
-		if prefer, _ := ctx.Value(asyncPreferKey{}).(bool); prefer {
-			req.Header.Set("Prefer", "respond-async")
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		var reader io.Reader
+		if raw != nil {
+			reader = bytes.NewReader(raw)
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, method, rec.BaseURL+path, reader)
+		if reqErr != nil {
+			return fmt.Errorf("%w: %s", ErrSrv, reqErr.Error())
+		}
+		if strings.TrimSpace(bearer) != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if strings.TrimSpace(adminSecret) != "" {
+			req.Header.Set("X-MaClaw-Admin-Secret", adminSecret)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if ctx != nil {
+			if prefer, _ := ctx.Value(asyncPreferKey{}).(bool); prefer {
+				req.Header.Set("Prefer", "respond-async")
+			}
+		}
+		var resp *http.Response
+		resp, err = s.httpClient(path).Do(req)
+		if err != nil {
+			err = fmt.Errorf("%w: %s", ErrSrv, err.Error())
+		} else {
+			payload, _ := io.ReadAll(io.LimitReader(resp.Body, responseBodyLimit(path)))
+			resp.Body.Close()
+			switch {
+			case resp.StatusCode == http.StatusNotFound:
+				err = ErrSrvNotFound
+			case resp.StatusCode < 200 || resp.StatusCode >= 300:
+				err = upstream.NewStatusError(ErrSrv, resp.StatusCode, payload)
+			case dest == nil || len(bytes.TrimSpace(payload)) == 0:
+				err = nil
+			default:
+				err = json.Unmarshal(payload, dest)
+				if err != nil {
+					err = fmt.Errorf("%w: %s", ErrSrv, err.Error())
+				}
+			}
+		}
+		if err == nil || !botmgmtCallWorthRetry(err) || attempt == attempts {
+			return err
+		}
+		wait := time.NewTimer(botmgmtIdempotentRetryWait * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return err
+		case <-wait.C:
 		}
 	}
-	resp, err := s.httpClient(path).Do(req)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrSrv, err.Error())
-	}
-	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, responseBodyLimit(path)))
-	if resp.StatusCode == http.StatusNotFound {
-		return ErrSrvNotFound
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return upstream.NewStatusError(ErrSrv, resp.StatusCode, payload)
-	}
-	if dest == nil || len(bytes.TrimSpace(payload)) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(payload, dest); err != nil {
-		return fmt.Errorf("%w: %s", ErrSrv, err.Error())
-	}
-	return nil
+	return err
 }
 
 func (s *Service) client() *http.Client {

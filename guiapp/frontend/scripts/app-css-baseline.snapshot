@@ -849,6 +849,13 @@
     max-width: 55ch;
 }
 
+.problem-report-dialog__collection-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
 .problem-report-dialog__version {
     display: flex;
     align-items: center;
@@ -1070,6 +1077,7 @@
     }
 
     .problem-report-dialog__collection {
+        flex-wrap: wrap;
         align-items: flex-start;
     }
 
@@ -24280,13 +24288,22 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:var(--theme-surface); border-bottom:1px solid var(--theme-border); user-select:none; cursor:default; }
 .mc-task-execution-header[data-window-drag] { --wails-draggable: drag; }
 .mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--mc-chrome-ink, var(--theme-text-primary)); }
-.mc-task-execution-header span { color:var(--mc-accent, #2f6fbc); font-size:13px; }
+.mc-task-execution-header span:not(:where([data-notification-tree] span)) { color:var(--mc-accent, #2f6fbc); font-size:13px; }
 .mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
-.mc-task-execution-actions button { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
+.mc-task-execution-actions button:not(:where([data-notification-tree] button)) { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
 .mc-task-execution-actions .task-skill-pause-btn { display:inline-flex; align-items:center; gap:6px; }
 .mc-task-execution-header .task-skill-pause-label { color: var(--theme-danger); }
 .mc-task-execution-actions .task-skill-pause-btn:disabled { cursor: progress; opacity: 0.72; }
 .mc-task-execution-actions .task-skill-pause-btn:disabled .aiti-recording-dot { animation: none; }
+/* Notification bell in the task header (mirrors the welcome-view title-bar
+   bell; .ai-titlebar-tool chrome applies here too). The dropdown panel is
+   position:absolute top:100%, so the header must be its containing block.
+   The bell, its dropdown panel and the urgent toast all render inside the
+   [data-notification-tree] slot below; the header's bare span/button
+   descendant rules exclude that subtree so the notification chrome wins. */
+.mc-task-execution-header { position: relative; }
+.mc-task-notification-slot { display: inline-flex; align-items: center; flex-shrink: 0; }
+.mc-task-notification-slot .atbn-anchor { display: inline-flex; }
 .mc-task-execution-window-controls {
   display: inline-flex;
   align-items: center;
@@ -24385,7 +24402,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution-status--failed i,
 .mc-task-execution-status--cancelled i { background: var(--theme-danger); box-shadow: 0 0 0 3px rgba(224,90,90,.12); }
 .mc-task-execution-meta { color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title,.mc-task-execution-title-row > .mc-task-execution-title{font-size:16px}}
+@media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button:not(:where([data-notification-tree] button)){padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title,.mc-task-execution-title-row > .mc-task-execution-title{font-size:16px}}
 
 /* Workbench task pane: New Task is its own action. Knowledge sits in the open
    stretch before the divider; theme and cloud stay in the later cluster. */
@@ -25133,7 +25150,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-task-execution-status--failed,
 #App[data-ai-theme='dark'] .mc-task-execution-status--cancelled { background: color-mix(in srgb, var(--theme-danger) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-danger) 48%, var(--theme-border)) !important; color: var(--theme-danger) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-meta { color: var(--theme-text-muted) !important; }
-#App[data-ai-theme='dark'] .mc-task-execution-actions button { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; color: var(--theme-text-secondary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-actions button:not(:where([data-notification-tree] button)) { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; color: var(--theme-text-secondary) !important; }
 #App[data-ai-theme='dark'] .mc-task-tab-switcher > summary { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; color: var(--theme-text-secondary) !important; }
 #App[data-ai-theme='dark'] .mc-task-tab-switcher__popover { background: var(--theme-surface) !important; border-color: var(--theme-border) !important; }
 #App[data-ai-theme='dark'] .mc-task-tab-switcher__item { color: var(--theme-text-secondary); }
@@ -27750,6 +27767,15 @@ input.cwshare-url {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  /* The 打开 menu is positioned against the bar rather than the button that
+     opens it: anchored to a button, the panel sat off-centre and a narrow
+     window clipped it against the window edge. */
+  position: relative;
+}
+/* The bar clips its own row, which would also clip the 打开 menu. Names stay
+   clipped by .file-companion-titlebar-files while the menu is open. */
+.file-companion-titlebar--menu-open {
+  overflow: visible;
 }
 .file-companion-titlebar .mc-header-brand {
   margin-right: 12px;
@@ -27880,11 +27906,137 @@ input.cwshare-url {
   opacity: 0.35;
   cursor: default;
 }
-.file-companion-titlebar > .file-companion-tab--open {
+/* 打开 is a menu button, not a tab: it keeps the tab look but never competes
+   with the filename row for the scrollable width. */
+.file-companion-titlebar .file-companion-tab--open {
   flex: 0 0 auto;
   max-width: none;
   min-width: max-content;
   padding: 0 12px;
+}
+.file-companion-titlebar .file-companion-tab--open:focus-visible {
+  outline: 2px solid var(--theme-focus, var(--theme-primary));
+  outline-offset: 2px;
+}
+.file-companion-open {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.file-companion-open-caret {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.file-companion-open-caret svg {
+  display: block;
+  width: 9px;
+  height: 6px;
+}
+.file-companion-open-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  /* Centred on the window: left/right both pinned with an auto margin keeps the
+     panel in the middle without a transform, which would create a containing
+     block for anything inside it. */
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  max-width: calc(100% - 16px);
+  z-index: 30;
+  box-sizing: border-box;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 10px;
+  background: var(--theme-surface, #ffffff);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+.file-companion-open-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+}
+.file-companion-open-item:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, var(--theme-border, #d9e1ec));
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-open-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* Keyboard focus must stay visible inside the menu (WCAG 2.4.7): the panel is
+   opened by keyboard as often as by mouse. */
+.file-companion-open-item:focus-visible,
+.file-companion-open-go:focus-visible {
+  outline: 2px solid var(--theme-focus, var(--theme-primary));
+  outline-offset: 2px;
+}
+.file-companion-open-input:focus-visible {
+  outline: 2px solid var(--theme-focus, var(--theme-primary));
+  outline-offset: 1px;
+  border-color: var(--theme-primary, #2f6fbc);
+}
+.file-companion-open-sep {
+  height: 1px;
+  background: var(--theme-border, #d9e1ec);
+}
+.file-companion-open-row {
+  display: flex;
+  gap: 6px;
+}
+.file-companion-open-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d9e1ec);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text, #1e293b);
+  font: 400 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+}
+.file-companion-open-input:disabled {
+  opacity: 0.6;
+}
+.file-companion-open-go {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-primary, #2f6fbc);
+  border-radius: 8px;
+  background: var(--theme-primary, #2f6fbc);
+  color: #ffffff;
+  font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-companion-open-go:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-open-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--theme-text-muted, #64748b);
+}
+.file-companion-open-hint[data-state="error"] {
+  color: var(--theme-danger, #c43d34);
 }
 .file-companion-tab-close {
   flex: 0 0 auto;
@@ -27982,6 +28134,50 @@ input.cwshare-url {
   min-width: 0;
   min-height: 0;
   background: #f8fafc;
+}
+
+/* Per-answer copy/export controls. A flow row above the reply keeps them out
+   of the text: an overlaying corner cluster clipped the first line whenever a
+   long answer had to wrap in the narrow companion pane. */
+.file-companion-bubble-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: 0 -2px 2px 0;
+}
+.file-companion-bubble-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.file-companion-bubble-action:hover:not(:disabled),
+.file-companion-bubble-action:focus-visible {
+  opacity: 1;
+  background: #eef2f7;
+  color: #2563eb;
+  outline: none;
+}
+.file-companion-bubble-action:disabled {
+  cursor: default;
+}
+.file-companion-bubble-action[data-state='ok'] {
+  opacity: 1;
+  color: #16a34a;
+}
+.file-companion-bubble-action[data-state='err'] {
+  opacity: 1;
+  color: #dc2626;
 }
 
 /* ── Code preview: change-focused diff view ────────────────────────────────
@@ -30209,13 +30405,13 @@ input.cwshare-url {
   border-color: var(--mc-line-subtle) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-execution-actions button:not(.task-window-btn),
+#App .mc-task-execution-actions button:not(.task-window-btn):not(:where([data-notification-tree] button)),
 #App .mc-task-more-menu > summary {
   background: var(--mc-surface) !important;
   border-color: var(--mc-line) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-execution-actions button:not(.task-window-btn):hover:not(:disabled),
+#App .mc-task-execution-actions button:not(.task-window-btn):not(:where([data-notification-tree] button)):hover:not(:disabled),
 #App .mc-task-more-menu > summary:hover {
   background: color-mix(in srgb, var(--mc-accent) 7%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-line)) !important;

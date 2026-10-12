@@ -21,6 +21,46 @@ import (
 )
 
 func (a *App) platformStartup() {
+	normalizeDarwinProcessPath(filepath.Join(privateToolsDirForApp(a), "bin"))
+}
+
+// normalizeDarwinProcessPath makes the standard binary locations visible to
+// every exec.LookPath in this process. A GUI app launched from Finder or the
+// Dock inherits launchd's stripped PATH (/usr/bin:/bin:/usr/sbin:/sbin), so
+// Homebrew and user-installed tools stay invisible. CheckEnvironment expands
+// PATH too, but only on runs where it does real work — once pause_env_check
+// is set it returns before reaching that code, which left steady-state
+// launches with a stripped PATH and broke every LookPath-based probe (the
+// companion's PDF renderer among them). Runs at startup, before anything can
+// exec a tool; idempotent, so the second platformStartup call is a no-op.
+func normalizeDarwinProcessPath(prependDirs ...string) {
+	extras := append([]string{}, prependDirs...)
+	extras = append(extras,
+		"/usr/local/bin",
+		"/opt/homebrew/bin",
+		"/usr/bin",
+		"/bin",
+		"/usr/sbin",
+		"/sbin",
+	)
+	// Drop anything not absolute: an unready GetDataDir can yield a relative
+	// fragment (e.g. "tools/bin"), and a relative PATH entry makes every
+	// exec search the process's current directory — exactly what this is
+	// meant to prevent.
+	kept := extras[:0]
+	for _, dir := range extras {
+		if strings.HasPrefix(dir, "/") {
+			kept = append(kept, dir)
+		}
+	}
+	extras = kept
+	current := os.Getenv("PATH")
+	merged, changed := appendMissingPathEntries(current, extras...)
+	if !changed {
+		return
+	}
+	os.Setenv("PATH", merged)
+	bootLog("darwin process PATH normalized: %s", os.Getenv("PATH"))
 }
 
 // IsNativeRoundedCorners returns true on macOS — macOS natively rounds all
@@ -159,22 +199,12 @@ func (a *App) CheckEnvironment(force bool) {
 		localNodeDir := privateToolsDirForApp(a)
 		localBinDir := filepath.Join(localNodeDir, "bin")
 
-		// 1. Setup PATH
-		var envPath = os.Getenv("PATH")
-		commonPaths := []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
-		commonPaths = append([]string{localBinDir}, commonPaths...)
-
-		newPathParts := strings.Split(envPath, ":")
-		pathChanged := false
-		for _, p := range commonPaths {
-			if !contains(newPathParts, p) {
-				newPathParts = append([]string{p}, newPathParts...)
-				pathChanged = true
-			}
-		}
-
-		if pathChanged {
-			envPath = strings.Join(newPathParts, ":")
+		// 1. Setup PATH — uses the same merge helper as the startup
+		// normalization so the two never drift into different ordering
+		// rules.
+		envPath, changed := appendMissingPathEntries(os.Getenv("PATH"),
+			localBinDir, "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+		if changed {
 			os.Setenv("PATH", envPath)
 			a.log(a.tr("Updated PATH: ") + envPath)
 		}
@@ -626,15 +656,6 @@ func installerExtensionAllowed(path string) bool {
 
 // pathCaseInsensitive reports whether installer paths compare case-insensitively.
 func pathCaseInsensitive() bool { return true }
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
 
 func createVersionCmd(path string) *exec.Cmd {
 	return exec.Command(path, "--version")

@@ -1108,3 +1108,163 @@ func containsStringTest(values []string, want string) bool {
 	}
 	return false
 }
+
+// TestMCPRegistryCallToolManagedPendingMarksReadyOnSuccess covers the second
+// half of the relaxed gate on the remote path. The gate admits a managed
+// server whose durable state is still pending, so a successful call is the
+// probe that must persist readiness. Without it a server that is only ever
+// called — never health-checked — stays pending forever and stays hidden from
+// the inventory gates, which is "installed but not runnable" by another name.
+func TestMCPRegistryCallToolManagedPendingMarksReadyOnSuccess(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		result := map[string]any{}
+		switch req.Method {
+		case "initialize":
+		case "tools/call":
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "pong"}}}
+		default:
+			result = map[string]any{"tools": []any{}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: base}
+	defer app.closeSemanticInvocationStore()
+	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{
+		ID: "managed-call-ready", Name: "Managed call ready", EndpointURL: server.URL,
+		Source: corelib.MCPSourceMarket, Capability: &corelib.MCPServerCapabilityRef{CapabilityID: "cap"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	app.mcpRegistry = NewMCPRegistry(app)
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"managed-call-ready": {
+			ServerID: "managed-call-ready", Status: "pending", Attempts: 1,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := app.mcpRegistry.CallTool("managed-call-ready", "ping", nil)
+	if err != nil {
+		t.Fatalf("CallTool() on a pending managed server error = %v; the first call is the probe", err)
+	}
+	if !strings.Contains(out, "pong") {
+		t.Fatalf("CallTool() result = %q, want the tool payload", out)
+	}
+	state, ok := loadMCPRuntimeSyncState("managed-call-ready")
+	if !ok || state.Status != "ready" || state.Attempts != 0 {
+		t.Fatalf("state after a successful call = %+v ok=%v; want ready with attempts reset", state, ok)
+	}
+}
+
+// TestMCPRegistryCallToolManagedCountsRoundTripFailure pins the other half: a
+// failure that happens after the session handshake — the shape a cached session
+// with a dead endpoint produces — must count toward the attempt budget. Before
+// this was wired only session-init failures were recorded, so a server that
+// answered initialize once and then broke forever was retried on every call and
+// never escalated to needs_review.
+func TestMCPRegistryCallToolManagedCountsRoundTripFailure(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "initialize" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+			return
+		}
+		http.Error(w, "endpoint gone", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: base}
+	defer app.closeSemanticInvocationStore()
+	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{
+		ID: "managed-call-fail", Name: "Managed call fail", EndpointURL: server.URL,
+		Source: corelib.MCPSourceMarket, Capability: &corelib.MCPServerCapabilityRef{CapabilityID: "cap"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	app.mcpRegistry = NewMCPRegistry(app)
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"managed-call-fail": {
+			ServerID: "managed-call-fail", Status: "pending", Attempts: 1,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.mcpRegistry.CallTool("managed-call-fail", "ping", nil); err == nil {
+		t.Fatalf("CallTool() against a 500 endpoint succeeded; want failure")
+	}
+	state, ok := loadMCPRuntimeSyncState("managed-call-fail")
+	if !ok || state.Attempts != 2 {
+		t.Fatalf("state after a round-trip failure = %+v ok=%v; want attempts=2", state, ok)
+	}
+	// The recorded cause must be classified as a failed round trip rather than a
+	// failed handshake: that is what distinguishes this fix from the
+	// pre-existing session-init recorder, which would classify a handshake
+	// failure as "runtime initialize failed". summarizeMCPRuntimeSyncError maps
+	// any HTTP-status error to this class, including the 500 here.
+	if state.LastError != "runtime HTTP request failed" {
+		t.Fatalf("LastError = %q, want the round-trip class; an initialized failure would classify differently", state.LastError)
+	}
+
+	// A second immediate call is inside the retry backoff the first failure
+	// just recorded, so the gate must refuse it without reaching the endpoint.
+	// This is the behavioral proof that the round-trip record feeds the gate:
+	// before the fix nothing was recorded here, so the state stayed at one
+	// attempt with no cooldown and every call walked straight into the dead
+	// endpoint without ever escalating.
+	_, err := app.mcpRegistry.CallTool("managed-call-fail", "ping", nil)
+	if err == nil || !strings.Contains(err.Error(), "backoff") {
+		t.Fatalf("immediate retry = %v, want a backoff refusal", err)
+	}
+	state, ok = loadMCPRuntimeSyncState("managed-call-fail")
+	if !ok || state.Attempts != 2 || state.Status != "pending" {
+		t.Fatalf("state after a backoff-blocked retry = %+v ok=%v; want attempts untouched", state, ok)
+	}
+
+	// Let the backoff elapse and spend the last attempt. Three failures escalate
+	// to the terminal review state rather than being retried forever.
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"managed-call-fail": {
+			ServerID: "managed-call-fail", Status: "pending", Attempts: 2,
+			NextRetryAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, callErr := app.mcpRegistry.CallTool("managed-call-fail", "ping", nil); callErr == nil {
+		t.Fatalf("CallTool() after the backoff elapsed succeeded; want failure")
+	}
+	state, ok = loadMCPRuntimeSyncState("managed-call-fail")
+	if !ok || state.Status != "needs_review" || state.Attempts != mcpRuntimeSyncMaxAttempts {
+		t.Fatalf("state after exhausting the budget = %+v ok=%v; want needs_review", state, ok)
+	}
+	_, err = app.mcpRegistry.CallTool("managed-call-fail", "ping", nil)
+	if err == nil || !strings.Contains(err.Error(), "review") {
+		t.Fatalf("CallTool() after needs_review = %v, want a review refusal", err)
+	}
+}

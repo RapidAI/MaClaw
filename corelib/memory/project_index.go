@@ -190,6 +190,10 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 	if e.ID != "" && !rec.seenIDs[e.ID] {
 		rec.seenIDs[e.ID] = true
 		rec.EntryCount++
+		// A new entry is a change even when its timestamp does not advance the
+		// project's last activity: two saves in the same clock tick are
+		// ordinary, and the host still has to hear about the second one.
+		changed = true
 	}
 
 	// Update last activity.

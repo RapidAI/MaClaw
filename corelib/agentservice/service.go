@@ -439,6 +439,21 @@ func (s *Service) Close() error {
 		}
 		s.activeRequests.Wait()
 
+		// Local MCP child processes are long-lived and owned by the runtime,
+		// not by the request that started them (startLocal deliberately uses a
+		// context detached from the caller's cancellation). Without this step,
+		// every server that was ever left running would survive the host,
+		// including the AutoStart=true servers EnsureReady brought up before
+		// this was introduced. Stop them before the executor so no tool
+		// callback can race a torn-down process during shutdown.
+		//
+		// Load-only on purpose: looking this up must not create an entry for
+		// every Service that closes without ever touching MCP, because nothing
+		// ever deletes them from the map.
+		if rt, ok := mcpRuntimeForService(s); ok {
+			rt.stopAllLocal()
+		}
+
 		// The executor owns process-scoped runtime resources (memory stores,
 		// schedulers, SSH sessions). Keep this optional for lightweight test
 		// executors and backwards-compatible embedders.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -59,7 +60,12 @@ func writeBotError(w http.ResponseWriter, err error) {
 // on "save the admin secret", so those collapse into one unavailable message.
 // The real cause goes to the hub log instead: without it a 502 here is
 // undiagnosable because nothing else records the underlying error.
-func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.MachinePrincipal, err error) {
+//
+// clientMessageID is echoed back on every failure. The echo is what lets the
+// client tell a hub that received this turn's key from one that never saw
+// the request: only the former may be asked again, because MaClawSrv answers
+// a repeated key with the run it already started.
+func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.MachinePrincipal, err error, clientMessageID string) {
 	log.Printf("[hub-bot] user bot request failed method=%s path=%s tenant=%q user=%q err=%v",
 		r.Method, r.URL.Path, principalTenant(principal), principalUser(principal), err)
 	if r != nil {
@@ -68,23 +74,30 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 			"path", r.URL.Path,
 			"tenant", principalTenant(principal),
 			"user", principalUser(principal),
+			"client_message_id", clientMessageID,
 		)
 	}
+	status, code, message := http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator"
 	switch {
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable),
 		errors.Is(err, botmgmt.ErrNotConfigured),
 		errors.Is(err, botmgmt.ErrSrv),
 		errors.Is(err, botmgmt.ErrSrvNotFound):
-		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator")
+		// 502: the turn may or may not have reached MaClawSrv.
 	case errors.Is(err, botmgmt.ErrNotFound):
-		writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "bot not found")
+		status, code, message = http.StatusNotFound, "BOT_NOT_FOUND", "bot not found"
 	case errors.Is(err, botmgmt.ErrInvalidInput):
-		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+		status, code, message = http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings"
 	case errors.Is(err, botmgmt.ErrDisabled):
-		writeError(w, http.StatusForbidden, "BOT_DISABLED", botmgmt.DisabledMessage)
+		status, code, message = http.StatusForbidden, "BOT_DISABLED", botmgmt.DisabledMessage
 	default:
-		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator")
+		// 502: unknown, treat as unreachable.
 	}
+	fields := map[string]any{}
+	if strings.TrimSpace(clientMessageID) != "" {
+		fields["client_message_id"] = clientMessageID
+	}
+	writeErrorWithFields(w, status, code, message, fields)
 }
 
 // GetBotSettingsAdminHandler GET /api/admin/bots/settings

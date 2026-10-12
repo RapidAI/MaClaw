@@ -637,3 +637,164 @@ func TestLocalMCPHelperProcess(t *testing.T) {
 
 	os.Exit(0)
 }
+
+// newOnDemandManager wires an App + manager against an isolated home dir so
+// the on-demand start tests cannot observe another instance's config or state.
+func newOnDemandManager(t *testing.T, entries []corelib.LocalMCPServerEntry) (*App, *LocalMCPManager) {
+	t.Helper()
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = entries
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	registry := NewMCPRegistry(app)
+	// markMCPRuntimeSyncReady consults mcpRuntimeSyncRequired, which returns
+	// false when the App has no registry attached. Production wiring always
+	// sets it, so the fixture must too or readiness never gets recorded.
+	app.mcpRegistry = registry
+	manager := NewLocalMCPManager(registry)
+	t.Cleanup(manager.StopAll)
+	return app, manager
+}
+
+// TestLocalMCPManagerCallToolStartsSharedServerOnDemand covers the core of
+// "installed is runnable": no sync has run, no shared process exists, yet a
+// call must start one instead of answering "not running".
+func TestLocalMCPManagerCallToolStartsSharedServerOnDemand(t *testing.T) {
+	_, manager := newOnDemandManager(t, []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("on-demand", false, false)})
+
+	if _, err := manager.CallTool("on-demand", "ping", map[string]interface{}{}); err != nil {
+		t.Fatalf("CallTool() on a never-synced server error = %v", err)
+	}
+	if !manager.IsRunning("on-demand") {
+		t.Fatalf("shared client was not registered after the on-demand start")
+	}
+	// A second call must reuse the live process rather than fork another one.
+	if _, err := manager.CallTool("on-demand", "ping", nil); err != nil {
+		t.Fatalf("second CallTool() error = %v", err)
+	}
+}
+
+// TestLocalMCPManagerCallToolRestartsCrashedServer covers the second way an
+// installed server becomes uncallable: watchProcess only clears the running
+// flag, so a crashed process stays registered in the shared map and would
+// answer "client not running" forever. A call must replace the dead handle.
+func TestLocalMCPManagerCallToolRestartsCrashedServer(t *testing.T) {
+	_, manager := newOnDemandManager(t, []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("crashed", false, false)})
+
+	// First call starts the shared process.
+	if _, err := manager.CallTool("crashed", "ping", nil); err != nil {
+		t.Fatalf("first CallTool() error = %v", err)
+	}
+	manager.mu.RLock()
+	first := manager.clients["crashed"]
+	manager.mu.RUnlock()
+	if first == nil {
+		t.Fatalf("shared client was not registered")
+	}
+
+	// Simulate a crash the way the runtime reports it: the process is gone and
+	// the running flag is cleared, but the handle is still in the map.
+	first.stateMu.Lock()
+	first.running = false
+	first.stateMu.Unlock()
+
+	if _, err := manager.CallTool("crashed", "ping", nil); err != nil {
+		t.Fatalf("CallTool() after crash error = %v; the dead handle must be replaced", err)
+	}
+	manager.mu.RLock()
+	second := manager.clients["crashed"]
+	manager.mu.RUnlock()
+	if second == first {
+		t.Fatalf("the dead client handle was reused instead of replaced")
+	}
+	if !second.IsRunning() {
+		t.Fatalf("replacement client is not running")
+	}
+}
+
+// TestLocalMCPManagerCallToolRefusesDisabledServerOnDemand keeps the disabled
+// flag authoritative even on the new on-demand path.
+func TestLocalMCPManagerCallToolRefusesDisabledServerOnDemand(t *testing.T) {
+	entry := newHelperLocalMCPServerEntry("disabled-on-demand", false, false)
+	entry.Disabled = true
+	_, manager := newOnDemandManager(t, []corelib.LocalMCPServerEntry{entry})
+
+	if _, err := manager.CallTool("disabled-on-demand", "ping", nil); err == nil {
+		t.Fatalf("CallTool() on a disabled server succeeded; want refusal")
+	}
+	if manager.IsRunning("disabled-on-demand") {
+		t.Fatalf("disabled server was started on demand")
+	}
+}
+
+// TestLocalMCPManagerCallToolAdmitsManagedPendingServer is the behavioral half
+// of the relaxed gate: a marketplace-managed server with a pending state and
+// remaining budget is callable, and its successful start records ready.
+func TestLocalMCPManagerCallToolAdmitsManagedPendingServer(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	entry := newHelperLocalMCPServerEntry("managed-pending", false, false)
+	entry.Source = corelib.MCPSourceMarket
+	entry.Capability = &corelib.MCPServerCapabilityRef{CapabilityID: "cap"}
+	_, manager := newOnDemandManager(t, []corelib.LocalMCPServerEntry{entry})
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"managed-pending": {
+			ServerID: "managed-pending", Status: "pending", Attempts: 1,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.CallTool("managed-pending", "ping", nil); err != nil {
+		t.Fatalf("CallTool() on a pending managed server error = %v; the first call is the probe", err)
+	}
+	state, ok := loadMCPRuntimeSyncState("managed-pending")
+	if !ok || state.Status != "ready" {
+		t.Fatalf("successful on-demand start did not record readiness: %+v ok=%v", state, ok)
+	}
+}
+
+// TestLocalMCPManagerCallToolRefusesManagedNeedsReview guards the terminal
+// state against the same relaxation.
+func TestLocalMCPManagerCallToolRefusesManagedNeedsReview(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	entry := newHelperLocalMCPServerEntry("managed-terminal", false, false)
+	entry.Source = corelib.MCPSourceMarket
+	entry.Capability = &corelib.MCPServerCapabilityRef{CapabilityID: "cap"}
+	_, manager := newOnDemandManager(t, []corelib.LocalMCPServerEntry{entry})
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"managed-terminal": {
+			ServerID: "managed-terminal", Status: "needs_review", Attempts: 3,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := manager.CallTool("managed-terminal", "ping", nil)
+	if err == nil {
+		t.Fatalf("CallTool() on a needs_review server succeeded; terminal state must stay blocked")
+	}
+	if !strings.Contains(err.Error(), "review") {
+		t.Fatalf("error = %v, want it to name the review state", err)
+	}
+	if manager.IsRunning("managed-terminal") {
+		t.Fatalf("needs_review server was started on demand")
+	}
+}

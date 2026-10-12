@@ -428,7 +428,7 @@ func (p *Pool) stopOnServer(ctx context.Context, server Server, tenantID, userID
 		"tenant_id": store.NormalizeTenantID(tenantID),
 		"user_id":   strings.TrimSpace(userID),
 	}
-	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/stop", body, &out); err != nil {
+	if err := p.callIdempotent(ctx, server, http.MethodPost, "/v1/desktops/stop", body, &out); err != nil {
 		return Desktop{}, err
 	}
 	return Desktop{UserID: userID, ServerID: server.ID, ServerName: server.Name, Container: out.Container, Status: out.Status}, nil
@@ -470,7 +470,10 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 		"cpus":      server.CPUs,
 		"shm_size":  server.ShmSize,
 	}
-	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/session", body, &out); err != nil {
+	// The session call is create-or-get for this (tenant, user): a service
+	// that never answered, or answered 5xx, is tried again rather than
+	// failing a command that has not opened a desktop yet.
+	if err := p.callIdempotent(ctx, server, http.MethodPost, "/v1/desktops/session", body, &out); err != nil {
 		return DesktopSession{}, err
 	}
 	if !strings.HasPrefix(out.CDP, "http://") && !strings.HasPrefix(out.CDP, "https://") {
@@ -762,6 +765,58 @@ func (p *Pool) departmentChain(ctx context.Context, userID string) []string {
 
 func (p *Pool) call(ctx context.Context, server Server, method, path string, body any, dest any) error {
 	return p.callClient(ctx, p.client(), server, method, path, body, dest)
+}
+
+// desktopIdempotentAttempts is how many times one create-or-read call to the
+// Docker service is tried. The session call is create-or-get for one
+// (tenant, user) and the stop call is idempotent, so answering an overloaded
+// service with one more try cannot double a desktop. Commands that act on
+// the desktop (app, open) deliberately do not come through here.
+const desktopIdempotentAttempts = 3
+
+// desktopIdempotentRetryWait is the gap before the next try of an
+// create-or-read call. Short, because the caller is a person waiting for a
+// desktop and the failure being retried is a proxy or service blink.
+const desktopIdempotentRetryWait = 250 * time.Millisecond
+
+// callIdempotent sends one create-or-read call and tries it again when the
+// service never answered or answered 5xx. A status the service actually
+// chose — 4xx — is returned at once: retrying a rejection is how a
+// misconfigured server turns into a slow one.
+func (p *Pool) callIdempotent(ctx context.Context, server Server, method, path string, body any, dest any) error {
+	var err error
+	for attempt := 1; attempt <= desktopIdempotentAttempts; attempt++ {
+		err = p.call(ctx, server, method, path, body, dest)
+		if err == nil || !desktopPoolCallWorthRetry(err) {
+			return err
+		}
+		if attempt == desktopIdempotentAttempts {
+			return err
+		}
+		wait := time.NewTimer(desktopIdempotentRetryWait * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return err
+		case <-wait.C:
+		}
+	}
+	return err
+}
+
+// desktopPoolCallWorthRetry reports whether one Docker-service call failed
+// without the service deciding anything: a transport error, or a 5xx from a
+// proxy in front of it. Both leave the requested state unchanged, which is
+// what makes another try safe for the create-or-read calls.
+func desktopPoolCallWorthRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *upstream.StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Status >= 500
+	}
+	return true
 }
 
 func (p *Pool) callClient(ctx context.Context, client *http.Client, server Server, method, path string, body any, dest any) error {

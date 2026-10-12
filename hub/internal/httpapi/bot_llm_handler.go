@@ -67,5 +67,5 @@ func writeBotLLMError(w http.ResponseWriter, r *http.Request, principal *auth.Ma
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_LLM", err.Error())
 		return
 	}
-	writeBotUserError(w, r, principal, err)
+	writeBotUserError(w, r, principal, err, "")
 }

@@ -30,11 +30,11 @@ func TestPaperImageMovesIntactWhenThePageIsShort(t *testing.T) {
 		PaperSize:  "A4",
 		FooterHint: "由 MaClaw 伴读生成。网上核对的地址标有（可能），不是论文原文。",
 	}
-	pdf, err := gen.newMeasurementPDF(layout)
+	m, err := gen.newMeasurer(layout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	endY, err := pdf.InsertHTMLBox(layout.marginX, layout.marginY, layout.contentW, 120, buildTitleHTML(spec), gopdf.HTMLBoxOption{
+	endY, err := m.pdf.InsertHTMLBox(layout.marginX, layout.marginY, layout.contentW, 120, buildTitleHTML(spec), gopdf.HTMLBoxOption{
 		DefaultFontFamily: "regular",
 		DefaultFontSize:   11,
 		BoldFontFamily:    "bold",
@@ -60,7 +60,7 @@ func TestPaperImageMovesIntactWhenThePageIsShort(t *testing.T) {
 	placed := false
 	for i := 0; i < 80; i++ {
 		trial := body.String() + "## 主要原理图及说明\n\n"
-		height, err := gen.measureMarkdownHeight(layout, startY, strings.TrimSpace(trial), true)
+		height, err := m.measureMarkdownHeight(layout, startY, strings.TrimSpace(trial), true)
 		if err != nil {
 			t.Fatal(err)
 		}

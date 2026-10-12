@@ -239,9 +239,22 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	// so HTTP, IM and GUI callers share the same atomic behavior. Synchronous
 	// calls retain the keyed lock through execution; asynchronous admission
 	// releases it once the durable run exists so retries can replay immediately.
-	clientMessageID := ""
-	if in.Metadata != nil {
+	//
+	// Both spellings are read here, for every caller of this entry point: the
+	// top-level field and metadata["client_message_id"]. Transport used to
+	// accept only one of the two depending on which endpoint it came in on,
+	// and a key posted to the position that endpoint ignored vanished without
+	// an error — the turn looked replay-protected and was not. Folding here
+	// leaves one gate with one source of truth.
+	clientMessageID := strings.TrimSpace(in.ClientMessageID)
+	if clientMessageID == "" && in.Metadata != nil {
 		clientMessageID = strings.TrimSpace(in.Metadata["client_message_id"])
+	}
+	if clientMessageID != "" {
+		if in.Metadata == nil {
+			in.Metadata = map[string]string{}
+		}
+		in.Metadata["client_message_id"] = clientMessageID
 	}
 	var releaseIdempotency func()
 	if clientMessageID != "" {

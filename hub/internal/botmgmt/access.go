@@ -349,24 +349,28 @@ func replyImages(attachments []replyAttachment) []ReplyImage {
 // this user has no run left. A transport failure here also stops it, because
 // MaClawSrv never saw the command.
 func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, content string) (Reply, error) {
-	return s.PostMessagePhase(ctx, tenantID, userID, botID, content, "")
+	return s.PostMessagePhase(ctx, tenantID, userID, botID, content, "", "")
 }
 
 // BotAdmission is one desktop command MaClawSrv has accepted.
 // Settled means the reply is already in Reply. Otherwise RunID keeps
 // running after this call returns, and DesktopRunResult reports it later.
+// ClientMessageID is the per-turn key this admission travelled under; the
+// caller echoes it back so a retry of a lost answer stays idempotent.
 type BotAdmission struct {
-	Accepted bool
-	Settled  bool
-	RunID    string
-	Reply    Reply
+	Accepted        bool
+	Settled         bool
+	RunID           string
+	Reply           Reply
+	ClientMessageID string
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
 // leaves the body as content plus the session key, so an older client keeps
 // working. plan and execute travel as message metadata bot_phase.
-func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID, content, phase string) (Reply, error) {
-	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, false)
+// clientMessageID is the caller's per-turn key; see deliverDesktopMessage.
+func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID string) (Reply, error) {
+	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, false)
 	return admission.Reply, err
 }
 
@@ -374,15 +378,28 @@ func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID,
 // has a run. The desktop stays occupied until that run finishes. The reply
 // is read later with DesktopRunResult. A server that still answers in this
 // call returns Settled with the reply.
-func (s *Service) AdmitDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase string) (BotAdmission, error) {
-	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, true)
+//
+// clientMessageID names this one turn. MaClawSrv replays the run a key
+// already started instead of starting a second one, so a caller whose
+// admission answer was lost can send the same key again without doubling
+// the work.
+func (s *Service) AdmitDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID string) (BotAdmission, error) {
+	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, true)
 }
 
-func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase string, admit bool) (BotAdmission, error) {
+func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID string, admit bool) (BotAdmission, error) {
 	content = strings.TrimSpace(content)
 	phase = strings.TrimSpace(phase)
 	if content == "" {
 		return BotAdmission{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
+	}
+	// One key per turn, whether the caller named it or not. The key is what
+	// lets a lost admission answer be asked again: MaClawSrv answers a
+	// repeated key with the run that key already started.
+	if turnKey := strings.TrimSpace(clientMessageID); turnKey != "" {
+		clientMessageID = turnKey
+	} else {
+		clientMessageID = fmt.Sprintf("bot-turn-%d", time.Now().UnixNano())
 	}
 	pipelineStarted := time.Now()
 	rec, err := s.loadForUser(ctx, tenantID, userID)
@@ -500,6 +517,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"content":            content,
 		"client_session_key": rec.Bots[index].ID,
 		"metadata":           messageMeta,
+		// The per-turn key travels in the body, where MaClawSrv reads it as
+		// client_message_id. A repeated key replays the run it already
+		// started, so the admit retry in the caller — and the 401 re-send
+		// below — cannot start the work twice.
+		"client_message_id": clientMessageID,
 	}
 	step = time.Now()
 	postCtx := ctx
@@ -553,7 +575,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			"phase", phase,
 			"dur_ms", traceMS(time.Since(pipelineStarted)),
 		)
-		return BotAdmission{Accepted: true, RunID: payload.Run.ID}, nil
+		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID}, nil
 	}
 	reply, settleErr := s.settleDesktopCommand(tenantID, userID, botID, instanceID, novnc, opened, desktopCommandBody{
 		CallErr:     callErr,
@@ -577,7 +599,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"ask", traceYes(reply.AskUserQuestion != "" || reply.AskUserSecretName != ""),
 		"dur_ms", traceMS(time.Since(pipelineStarted)),
 	)
-	return BotAdmission{Settled: true, Reply: reply}, nil
+	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID}, nil
 }
 
 // desktopCommandBody is the MaClawSrv message result, whether it arrived on

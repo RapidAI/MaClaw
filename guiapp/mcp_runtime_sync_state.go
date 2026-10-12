@@ -151,6 +151,86 @@ func (a *App) mcpRuntimeSyncPending(serverID string) bool {
 	return true
 }
 
+// mcpRuntimeSyncGate is the three-state execution gate that replaced the
+// boolean pending check on the two tool-call paths (local stdio and remote
+// HTTP). It exists so an installed MCP is runnable the moment it is called,
+// without weakening the state machine that guards a broken one:
+//
+//   - needs_review stays blocked: it is a terminal operator state and only a
+//     new configuration revision or RetryMCPRuntimeSync(id, true) may re-arm
+//     it. Nothing here bypasses that.
+//   - an exhausted pending budget stays blocked, so a server that never comes
+//     up cannot be retried indefinitely.
+//   - a pending server that still has attempts left is allowed through, and a
+//     missing durable state is treated as the first-probe window rather than
+//     a verdict. The call itself is the probe: a failed call counts through
+//     recordMCPRuntimeSyncFailure and escalates to needs_review on the same
+//     budget as before, so allowing the call is not an exemption.
+//
+// The listing and discovery gates still use mcpRuntimeSyncPending; this
+// function deliberately only governs whether a call may be attempted.
+func (a *App) mcpRuntimeSyncGate(serverID string) (bool, string) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return true, "MCP runtime identity is required"
+	}
+	mcpRuntimeSyncStateMu.Lock()
+	persistenceFailed := mcpRuntimeSyncPersistenceFailures[mcpRuntimeSyncPersistenceKey(serverID)]
+	mcpRuntimeSyncStateMu.Unlock()
+	if persistenceFailed {
+		return true, "runtime synchronization state could not be persisted"
+	}
+	state, ok := loadMCPRuntimeSyncState(serverID)
+	if !ok {
+		// No durable state yet. A managed deployment that has never been
+		// probed is allowed to establish it on its first call rather than
+		// being refused on the strength of configuration alone.
+		return false, ""
+	}
+	switch state.Status {
+	case "ready":
+		return false, ""
+	case "needs_review":
+		return true, "runtime synchronization needs review; retry requires explicit confirmation"
+	}
+	if state.Attempts >= mcpRuntimeSyncMaxAttempts {
+		return true, "runtime synchronization attempts are exhausted"
+	}
+	if strings.TrimSpace(state.NextRetryAt) != "" {
+		if next, err := time.Parse(time.RFC3339, state.NextRetryAt); err == nil && time.Now().Before(next) {
+			return true, "runtime synchronization is in retry backoff"
+		}
+	}
+	return false, ""
+}
+
+// mcpRuntimeSyncShouldRecordReady reports whether a just-succeeded call is new
+// readiness evidence worth persisting. It exists so the remote call path can
+// converge a managed server to ready without paying a state-file write on
+// every call, and without re-reading the user config the way
+// mcpRuntimeSyncRequired does:
+//
+//   - the caller already holds the resolved entry, so the managed test is a
+//     field comparison rather than a config load;
+//   - unmanaged entries never gain a marker, matching markMCPRuntimeSyncReady's
+//     own zero-side-effect rule for them;
+//   - an entry whose durable state is already ready is skipped, which is the
+//     common case on a warm runtime.
+//
+// It deliberately reports true for a missing state: that is the
+// never-been-probed window the gate admits, and the call is the probe that
+// establishes it.
+func (a *App) mcpRuntimeSyncShouldRecordReady(entry *corelib.MCPServerEntry) bool {
+	if a == nil || entry == nil {
+		return false
+	}
+	if entry.Source != corelib.MCPSourceMarket || entry.Capability == nil {
+		return false
+	}
+	state, ok := loadMCPRuntimeSyncState(strings.TrimSpace(entry.ID))
+	return !ok || state.Status != "ready"
+}
+
 // mcpRuntimeSyncShouldRetry reports whether a previously failed runtime probe
 // is due for another bounded attempt. needs_review is terminal until an
 // operator changes the configuration; it must not be retried by an install

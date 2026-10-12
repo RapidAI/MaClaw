@@ -580,6 +580,8 @@ export function FileCompanionUIReady():Promise<Array<string>>;
 
 export function FileCompanionOpen(arg1:string):Promise<Record<string, any>>;
 
+export function FileCompanionOpenArxiv(arg1:string):Promise<string>;
+
 export function FileCompanionSaveText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
 export function FileCompanionAppendText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
@@ -589,6 +591,8 @@ export function FileCompanionImportKnowledge(arg1:string):Promise<knowledge.Dire
 export function FileCompanionUploadCloud(arg1:string):Promise<main.MobileDocumentDraftSummary>;
 
 export function FileCompanionExportPDF(arg1:string,arg2:string):Promise<string>;
+
+export function FileCompanionExportChatPDF(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
 
 export function FileCompanionReplaceOffice(arg1:string,arg2:string):Promise<void>;
 

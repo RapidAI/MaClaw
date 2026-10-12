@@ -86,7 +86,7 @@ func TestAdmittedDesktopRunFinishesAfterTheCallerReturns(t *testing.T) {
 			svc.Desktop = desk
 
 			started := time.Now()
-			admission, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "按这个安排执行", "execute")
+			admission, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "按这个安排执行", "execute", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestAdmittedDesktopFailureSettlesWhenTheRunFails(t *testing.T) {
 	svc.admitPollInterval = 10 * time.Millisecond
 	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	svc.Desktop = desk
-	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute"); err != nil {
+	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute", ""); err != nil {
 		t.Fatal(err)
 	}
 	if desk.stop != 0 {

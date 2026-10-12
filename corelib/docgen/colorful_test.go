@@ -6,7 +6,7 @@ import (
 )
 
 func TestColorfulPaperHTMLPaintsHeadingsLinksAndMark(t *testing.T) {
-	html := markdownToHTMLMode("## 方法原理\n\n## 数据集\n\nhttps://example.com/cifar（可能）", true)
+	html := markdownToHTMLWithScratch(nil, "## 方法原理\n\n## 数据集\n\nhttps://example.com/cifar（可能）", true)
 	if !strings.Contains(html, `color:#1d4ed8`) || !strings.Contains(html, `color:#0f766e`) {
 		t.Fatalf("heading colors: %s", html)
 	}
@@ -30,7 +30,7 @@ func TestColorfulPaperHTMLPaintsHeadingsLinksAndMark(t *testing.T) {
 
 func TestColorfulPaperLiftsFormulasAndColorsSections(t *testing.T) {
 	md := "## 方法原理\n\n执行流程为： z_j = Sel_τ(q_j, S) → x_j = Asm_τ(z_j, q_j)。后面继续。\n\n图片不是图题。\n\n$$z_j = q_j$$\n\n## 方法本质\n\n使用 CNN 提取空间特征。\n\n图 1： Leakage regimes\n\nmemory_ehr 保持 q_j\n"
-	html := markdownToHTMLMode(md, true)
+	html := markdownToHTMLWithScratch(nil, md, true)
 	if !strings.Contains(html, `text-align:center; font-size:12pt; color:#6d28d9`) || !strings.Contains(html, "Sel<sub>τ</sub>") || !strings.Contains(html, "q<sub>j</sub>") {
 		t.Fatalf("formula: %s", html)
 	}
@@ -55,7 +55,7 @@ func TestColorfulPaperLiftsFormulasAndColorsSections(t *testing.T) {
 	if strings.Contains(html, "memory_<sub>") || strings.Contains(html, "memory<sub>") || !strings.Contains(html, "memory_ehr") {
 		t.Fatalf("identifier subscript: %s", html)
 	}
-	linked := markdownToHTMLMode("## 数据集\n\nhttps://example.com/cifar_10（可能）", true)
+	linked := markdownToHTMLWithScratch(nil, "## 数据集\n\nhttps://example.com/cifar_10（可能）", true)
 	if !strings.Contains(linked, `href="https://example.com/cifar_10"`) || strings.Contains(linked, "cifar<sub>") || strings.Contains(linked, "cifar_<sub>") {
 		t.Fatalf("url subscript: %s", linked)
 	}
@@ -66,7 +66,7 @@ func TestColorfulPaperLiftsFormulasAndColorsSections(t *testing.T) {
 	if !strings.Contains(plain, "q_j") || !strings.Contains(plain, "Sel_τ") {
 		t.Fatalf("default text: %s", plain)
 	}
-	math := markdownToHTMLMode("$$Sel_{\\tau}(q_j) = x_1$$\n\nsoftmax_i 保持 memory_ehr", true)
+	math := markdownToHTMLWithScratch(nil, "$$Sel_{\\tau}(q_j) = x_1$$\n\nsoftmax_i 保持 memory_ehr", true)
 	if !strings.Contains(math, "Sel<sub>τ</sub>") || !strings.Contains(math, "q<sub>j</sub>") || !strings.Contains(math, "x<sub>1</sub>") {
 		t.Fatalf("display math subscript: %s", math)
 	}
@@ -76,7 +76,7 @@ func TestColorfulPaperLiftsFormulasAndColorsSections(t *testing.T) {
 }
 
 func TestColorfulPaperReadsLatexCommandsInProse(t *testing.T) {
-	html := markdownToHTMLMode("## 方法原理\n\n执行流程为： z_j = Sel_{\\tau}(q_j) \\to x_1 = y_2。后面继续。", true)
+	html := markdownToHTMLWithScratch(nil, "## 方法原理\n\n执行流程为： z_j = Sel_{\\tau}(q_j) \\to x_1 = y_2。后面继续。", true)
 	if !strings.Contains(html, `text-align:center; font-size:12pt; color:#6d28d9`) || !strings.Contains(html, "Sel<sub>τ</sub>") || !strings.Contains(html, "→") || !strings.Contains(html, "x<sub>1</sub>") {
 		t.Fatalf("latex prose: %s", html)
 	}
@@ -86,22 +86,22 @@ func TestColorfulPaperReadsLatexCommandsInProse(t *testing.T) {
 	if !strings.Contains(html, `color:#1e40af">执行流程为：</p>`) || !strings.Contains(html, `color:#1e40af">后面继续。</p>`) {
 		t.Fatalf("prose color: %s", html)
 	}
-	brace := markdownToHTMLMode("## 方法原理\n\n更新为 y = W_{\\theta}(x_{t})。", true)
+	brace := markdownToHTMLWithScratch(nil, "## 方法原理\n\n更新为 y = W_{\\theta}(x_{t})。", true)
 	if !strings.Contains(brace, `color:#6d28d9`) || !strings.Contains(brace, "W<sub>θ</sub>") || !strings.Contains(brace, "x<sub>t</sub>") {
 		t.Fatalf("brace formula: %s", brace)
 	}
 	if !strings.Contains(brace, `color:#1e40af">更新为</p>`) {
 		t.Fatalf("brace prose: %s", brace)
 	}
-	arrow := markdownToHTMLMode("## 方法原理\n\n方向为 a_i \\leftarrow b_j = c_k。上界 d_i \\top e_j = f_k。", true)
+	arrow := markdownToHTMLWithScratch(nil, "## 方法原理\n\n方向为 a_i \\leftarrow b_j = c_k。上界 d_i \\top e_j = f_k。", true)
 	if !strings.Contains(arrow, "←") || !strings.Contains(arrow, "⊤") || strings.Contains(arrow, "≤ft") || strings.Contains(arrow, "→p") {
 		t.Fatalf("prefix command: %s", arrow)
 	}
-	grouped := markdownToHTMLMode("## 方法原理\n\n分组 z_j = \\left(a_i + b_j\\right)。", true)
+	grouped := markdownToHTMLWithScratch(nil, "## 方法原理\n\n分组 z_j = \\left(a_i + b_j\\right)。", true)
 	if !strings.Contains(grouped, "a<sub>i</sub>") || strings.Contains(grouped, "≤ft") || strings.Contains(grouped, `\left`) {
 		t.Fatalf("delimiter: %s", grouped)
 	}
-	kept := markdownToHTMLMode("## 方法原理\n\n代码 `\\tau` 保持原样。", true)
+	kept := markdownToHTMLWithScratch(nil, "## 方法原理\n\n代码 `\\tau` 保持原样。", true)
 	if !strings.Contains(kept, `\tau`) || strings.Contains(kept, "τ") {
 		t.Fatalf("code span: %s", kept)
 	}
