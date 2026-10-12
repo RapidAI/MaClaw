@@ -103,6 +103,52 @@ const PromptCorePrinciplesLight = `
 - truncated=true 是宿主按预算截断，不是解析失败：禁止对用户说「无法提取」；用列表里的 office/read_document 续读，或基于前缀与文尾标记作答。
 `
 
+// PromptVisualizationRules teaches the model to explain structure and
+// process with a rendered diagram instead of prose or ASCII art. Mermaid is
+// the only inline syntax the clients render; raw SVG/HTML source would show
+// up as unreadable code. The trailing deference clause keeps this rule from
+// contradicting more specific phase instructions (for example the patent
+// figure workflow that mandates on-disk, black-and-white line art and
+// forbids inline source).
+const PromptVisualizationRules = `
+## 讲解配图（默认执行）
+用户要求解释、讲解、梳理、对比某个系统、架构、模块、流程、状态机或数据结构时，除文字说明外默认再输出一个 ` + "```mermaid" + ` 代码块把结构画出来。客户端界面会把这个代码块渲染成图，所以图形必须用 mermaid 语法表达。
+禁止用 ASCII 图、缩进列表或纯文字堆砌代替图形；也不要内联 SVG/HTML 源码——客户端不渲染它们，只会显示成一堆代码。
+只有当问题一句话就能说清（名词释义、单一数值、简单是非）时才省略配图。
+
+图型选择（按讲解对象选，不要一律用 flowchart）：
+- 系统/模块分层、调用关系、依赖 → flowchart，分层用 subgraph
+- 多角色按时间交互、协议握手、RPC 与消息时序 → sequenceDiagram
+- 数据库表结构、实体关系 → erDiagram（约束：实体名必须是不含空格的 ASCII 标识符，如 CUSTOMER；中文等表头写在属性块内逐行声明；关系标签可本地化；别名写法无法解析，不要写 实体名["中文名"]）
+- 状态机、生命周期、审批流转 → stateDiagram-v2
+- 项目排期、里程碑 → gantt
+- 概念层级、知识梳理 → mindmap（中文与引号标签都可用，如 "分支一"）
+- 架构蓝图 / C4 → C4Context 或 C4Container（architecture-beta 语法较新，也可用）
+- 占比分布 → pie
+
+出图纪律：
+- 单张图控制在 5 个左右节点以内；对象更复杂就拆成多张小图分步讲，每张配一句“这张图在看什么”。
+- 循环过程（事件循环、代谢循环等）画成带编号的线性步骤，不要画成环——环读不出顺序。
+- 节点标签用用户的语言，简洁到能一眼读完；边标签只写关键条件。
+- 图是讲解的一部分，不是装饰：画完必须用文字点出图里的关键路径或结论。
+- 概念层级、知识梳理 → mindmap（中文与引号标签都可用，如 "分支一"）
+- 语法相关：上面每个图型后括号里的写法都是实测可行的，照抄即可，不要自创标点组合；拿不准就用最简单的无嵌套节点文字。这些约束与语言无关，中文标签同样适用。
+- 若当前工作流或阶段指令对图形输出另有规定（例如要求落盘成文件、要求黑白线条图、禁止内联源码），以那条更具体的指令为准。
+`
+
+// PromptVisualizationRulesLight is the trimmed variant for low-complexity
+// and grant-bound turns. Budget is everything here: the GUI light prompt has
+// a hard byte cap (see TestBuildLightIMSystemPromptStaysSmall), so this keeps
+// only the parts that prevent a *failed* diagram — the trigger, the fence
+// syntax that the client actually renders, the size cap that keeps <=5 nodes
+// legible, and deference to phase instructions — and drops the per-type
+// routing table. Explanations classify as light very often (verified with
+// PromptProfileFromUserText), so dropping this entirely loses the main use case.
+const PromptVisualizationRulesLight = `
+## 讲解配图
+讲解系统/流程时输出 ` + "```mermaid" + ` 代码块（≤5 节点）；禁用 ASCII 图与内联 SVG/HTML。阶段指令另有规定时以该指令为准。
+`
+
 // PromptKnowledgeBaseRules is the knowledge base section included when
 // HasKnowledgeBase is true. Shared by GUI and TUI.
 const PromptKnowledgeBaseRules = `

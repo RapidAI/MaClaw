@@ -944,9 +944,18 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 	// Light bundle includes the shared Chinese output-format fence (~1.5KB), a
 	// short GUI capability fence, and the ~0.5KB governed-tool grant fence
 	// (semanticGrantPromptFence). Keep a hard cap so full-agent sections
-	// cannot creep in; measured size is ~2.9KB.
-	if len(prompt) > 3200 {
-		t.Fatalf("light prompt len = %d, want <= 3200", len(prompt))
+	// cannot creep in; measured size was ~2.9KB.
+	//
+	// 2026-10-12: measured baseline before any diagram cue was 3162 bytes —
+	// the light bundle has grown close to this cap on its own. The budget now
+	// reserves room for PromptVisualizationRulesLight (129 bytes, the compact
+	// mermaid cue): explanations classify as light very often, so that cue is
+	// the difference between a rendered diagram and none. The +500 headroom
+	// covers the cue plus drift; the full-agent section blacklist below is the
+	// real guard against creeping bulk, so this number stays a tripwire rather
+	// than a precision target.
+	if len(prompt) > 3700 {
+		t.Fatalf("light prompt len = %d, want <= 3700", len(prompt))
 	}
 	for _, blocked := range []string{"Group Discussion", "CodingSubAgent", "compress_context"} {
 		if containsText(prompt, blocked) {

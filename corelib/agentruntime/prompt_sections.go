@@ -25,6 +25,12 @@ type LightPromptRequest struct {
 	ClientTools         []agent.ClientToolDefinition
 	ClientID            string
 	AssistantBinding    *agent.AssistantBinding
+
+	// DiagramRenderingSupported mirrors agent.SystemPromptConfig's flag: true
+	// only when this host's reply surface renders ```mermaid fences as
+	// diagrams. Default false keeps the visualization cue out of light prompts
+	// on plain-text / code-fence-only hosts.
+	DiagramRenderingSupported bool
 }
 
 // BuildLightPrompt builds the shared low-complexity prompt used by every host.
@@ -41,9 +47,10 @@ func BuildLightPrompt(request LightPromptRequest) string {
 	}
 	prompt := agent.BuildSystemPrompt(agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
-			RoleName:        roleName,
-			RoleDescription: roleDescription,
-			PromptProfile:   agent.PromptProfileLight,
+			RoleName:                  roleName,
+			RoleDescription:           roleDescription,
+			PromptProfile:             agent.PromptProfileLight,
+			DiagramRenderingSupported: request.DiagramRenderingSupported,
 		},
 	}, request.UserText, true)
 

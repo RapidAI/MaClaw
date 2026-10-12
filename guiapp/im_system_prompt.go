@@ -186,6 +186,9 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile, carri
 		ClientCapabilities:  msg.ClientCapabilities,
 		ClientTools:         msg.ClientTools,
 		AssistantBinding:    msg.AssistantBinding,
+		// Same surface rule as the full-profile deps above: only turns whose
+		// reply lands in the desktop markdown pipeline can draw the fence.
+		DiagramRenderingSupported: replyRendersDiagrams(msg.UserID),
 	}))
 	if lookupContinuationProfile(profile) {
 		prompt += lookupContinuationToolPrompt(carried, primary)
@@ -327,6 +330,9 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			SuppressCodingGateRules: suppressV2CodingRules,
 			PromptProfile:           promptProfile,
 			ManagedSemantic:         loopContextIsSemanticManaged(loopCtx),
+			// Only turns whose reply lands in the desktop markdown pipeline
+			// can draw a mermaid fence; see replyRendersDiagrams.
+			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx)),
 		},
 		MemoryStore:       h.memoryStore,
 		MemoryOwnerID:     promptUserID,
@@ -494,6 +500,69 @@ func desktopWorkflowDocOverride() string {
 // per-template PhasePrompt changes.
 func imWorkflowDocDeliveryRule() string {
 	return agentruntime.IMWorkflowDocumentDeliveryPrompt()
+}
+
+// replyRendersDiagrams reports whether this turn's reply lands in a surface
+// that draws ```mermaid fences into diagrams.
+//
+// Only the desktop GUI markdown pipeline does (aiAssistantMarkdown ->
+// AssistantMermaidDiagram). Two turn shapes ride the same IM prompt builder
+// but are delivered elsewhere, so asking them for a diagram would only produce
+// unreadable raw syntax:
+//
+//   - scheduled tasks: the result is delivered to the task's own channel
+//     (a Lansenger bot / group in the multi-profile path), not to a chat pane.
+//   - the Lansenger group bridge: replies go out over the IM bus.
+//
+// Everything else on this builder is a desktop surface (assistant tab, project
+// tab, file companion, digital employee, ACP session), which does render.
+//
+// Failure mode matters: an unknown owner must mean "no diagrams", not "maybe".
+// Several IM builders default their owner to desktopUserID, so callers should
+// pass an owner resolved via diagramSurfaceOwnerID.
+// An empty owner means the surface could not be determined, so no diagrams:
+// guessing "desktop" here is what originally leaked the cue to scheduled tasks
+// and Lansenger groups.
+func replyRendersDiagrams(promptUserID string) bool {
+	if strings.TrimSpace(promptUserID) == "" {
+		return false
+	}
+	if isScheduledTaskConversationOwner(promptUserID) {
+		return false
+	}
+	return !isLansengerGroupConversationUserID(promptUserID)
+}
+
+// diagramSurfaceOwnerID resolves the owner to classify for diagram rendering.
+//
+// It reuses promptRuntimeUserID's resolution but rejects its desktop fallback:
+// that fallback is reasonable for sections describing local tool behaviour,
+// yet wrong for deciding where a reply is delivered — it would relabel an
+// externally delivered turn as "desktop" and ask it for diagrams nobody can
+// draw. In production the loop context carries the real owner
+// (runtime_context.go sets PolicyOwnerID / WorkflowOwnerID from msg.UserID),
+// so this only differs when that context is absent.
+//
+// Returns "" when no honest owner is available; replyRendersDiagrams then
+// treats the turn conservatively rather than assuming a desktop surface.
+func diagramSurfaceOwnerID(h *IMMessageHandler, loopCtx *LoopContext) string {
+	if loopCtx != nil {
+		if ownerID := strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID); ownerID != "" {
+			return ownerID
+		}
+		if ownerID := strings.TrimSpace(loopCtx.Runtime.WorkflowOwnerID); ownerID != "" {
+			return ownerID
+		}
+		if userID := strings.TrimSpace(loopCtx.UserID); userID != "" {
+			return userID
+		}
+	}
+	if h != nil {
+		if ownerID, explicitRuntime := h.currentRuntimePolicyOwnerState(); explicitRuntime {
+			return ownerID
+		}
+	}
+	return ""
 }
 
 // workflowDocDeliverySection is the channel document-delivery contract.

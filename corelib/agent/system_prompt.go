@@ -32,6 +32,16 @@ type SystemPromptConfig struct {
 	// the phase prompt provides all necessary instructions and the confirmation
 	// gate rules conflict with phase-specific output constraints.
 	SuppressCodingGateRules bool
+
+	// DiagramRenderingSupported marks reply surfaces that actually draw
+	// ```mermaid fences as diagrams (the GUI markdown pipeline renders them
+	// via AssistantMermaidDiagram). Default false, deliberately: hosts whose
+	// replies land in a plain-text or code-fence-only channel — terminal TUI,
+	// third-party IM platforms, bot chat bodies that render fences as <pre> —
+	// must NOT be told to emit diagrams, or the model dumps raw mermaid source
+	// nobody can render. Opt in per surface; a missing declaration means "no
+	// diagrams", never "maybe".
+	DiagramRenderingSupported bool
 }
 
 // SystemPromptDeps holds the dependencies needed to build the system prompt.
