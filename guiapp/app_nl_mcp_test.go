@@ -622,10 +622,21 @@ func TestUnregisterLocalMCPClearsRuntimeState(t *testing.T) {
 }
 
 func TestMCPRegistryWarmServerToolsTimesOutWithoutBlocking(t *testing.T) {
+	// A slow but valid tools/list response: the background warm must finish
+	// cleanly (missing tools would be a health failure under the hardened
+	// validateMCPToolsListResult contract, not a completed warm).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{}})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"tools": []map[string]any{
+					{"name": "noop", "description": "noop"},
+				},
+			},
+		})
 	}))
 	defer server.Close()
 

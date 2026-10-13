@@ -3,6 +3,10 @@
 desktopd 在一台安装了 Docker 的主机上为每个 `tenant+user` 运行一个独立的 Chromium
 桌面容器。Hub 的 desktoppool 和 MaClawSrv 通过 HTTP `/v1/*` API 调用它。
 
+完整的 `maclaw-gui:2` 使用与运维手册(镜像能力、架构、Linux 部署脚本、Hub 配置、迁移、
+截图 API、冒烟、回滚、已知问题)见 [docs/desktop-gui-v2.md](../docs/desktop-gui-v2.md)。
+主机辅助脚本在 [`scripts/`](scripts/),配置示例在 [`deploy/`](deploy/)。
+
 ## 部署
 
 从仓库根目录:
@@ -12,6 +16,9 @@ build_thirdapp.cmd        # 或按需编译 desktopd 与打包 image/desktop_sup
 # remote_deploy.sh 由 deploy_desktopd.cmd 调起,负责:安装二进制、首次生成
 # DESKTOPD_TOKEN、写入 .env、构建带 supervisor 的镜像、注册 systemd 服务。
 ```
+
+Linux/macOS 上用 `deploy/linux/rollout_desktop_gui2.sh`(编译、打包、断点续传上传、
+备份、部署 desktopd/Hub/MaClawSrv、验证、回滚),见 [docs/desktop-gui-v2.md](../docs/desktop-gui-v2.md#4-部署)。
 
 必需环境变量(ds systemd 读 `.env`):
 
@@ -31,8 +38,16 @@ build_thirdapp.cmd        # 或按需编译 desktopd 与打包 image/desktop_sup
 | `DESKTOPD_UPSTREAM_PROXY_APPLY` | `1` 时写 dockerd 的 systemd drop-in 并重启 docker；只影响构建参数与桌面容器时不需要设置 |
 | `DESKTOPD_UPSTREAM_PROXY_NO_PROXY` | 覆盖默认 no-proxy 列表 |
 | `DESKTOPD_DESKTOP_PROXY_URL` | 消费端：注入桌面容器的代理 URL（`http://<网桥网关>:<端口>`，如 `http://172.17.0.1:18083`）；desktopd 据此在本机网桥地址上开免鉴权监听 |
+| `DESKTOPD_IMAGE_SOURCE` | 本机缺少 `maclaw-gui:2` 时拉取的公开镜像,默认 `ghcr.io/rapidai/maclaw-gui:2`;可写 `@sha256:` digest;`off` 关闭。已有的本地镜像从不被拉取覆盖 |
+| `DESKTOPD_IMAGE_PULL_TIMEOUT` | 上面那次拉取的超时,默认 `30m` |
+
+全部变量的示例见 [`deploy/desktopd.env.example`](deploy/desktopd.env.example)。
 
 ## 桌面镜像 maclaw-gui:2
+
+公开预构建镜像:`docker pull ghcr.io/rapidai/maclaw-gui:2`(匿名可拉,另有 `2-<短sha>` 和 `@sha256:` 固定版本,
+见 [docs/desktop-gui-v2.md](../docs/desktop-gui-v2.md#公开镜像快速开始))。desktopd 发现本机没有 `maclaw-gui:2`
+时会自动拉取它、做契约检查并打成本地 tag(`DESKTOPD_IMAGE_SOURCE=off` 关闭)。
 
 默认镜像是 `maclaw-gui:2`(`desktopd/image/Dockerfile.v2`):Debian 12 + XFCE
 完整桌面(面板、Thunar、终端、Mousepad)、Chromium、fcitx5 拼音、Noto CJK 字体、
@@ -58,7 +73,8 @@ tag、检查镜像契约(supervisor、Xvfb、x11vnc、websockify、xdotool、chr
 XFCE、import、noVNC)后才打上 `maclaw-gui:2`,构建失败不会覆盖现有镜像;
 在腾讯云上(元数据服务可达)自动使用腾讯镜像源。可用 `DESKTOPD_BASE_IMAGE`、
 `DESKTOPD_APT_MIRROR`(`none` = deb.debian.org)、`DESKTOPD_SKIP_IMAGE_BUILD=1`
-覆盖。旧的 `image/Dockerfile` 只用于 `maclaw-gui:1`,不要把它的构建结果标成 `:2`。
+覆盖;`DESKTOPD_IMAGE_FROM=pull`(拉公开镜像,检查后打 tag)或 `auto`(先拉,失败再构建)可以不在主机上构建,
+默认仍是 `build`。旧的 `image/Dockerfile` 只用于 `maclaw-gui:1`,不要把它的构建结果标成 `:2`。
 
 `hub.mypapers.top` 上已经在跑的桌面不要用这个脚本做日常二进制更新。脚本会重写
 systemd 单元、默认构建镜像，并把 supervisor 拷进每个 `maclaw-desktop-*` 容器。
@@ -254,7 +270,9 @@ Hub 侧配置(管理页"桌面服务"标签页或 `POST /api/admin/desktop-servi
 - `systemctl status maclaw-desktopd`;手动起:`systemctl restart maclaw-desktopd`。
 - token 不生效:先确认 `.env` 的 `DESKTOPD_TOKEN` 与 Hub 配置一致;面板
   删除 key 会立即生效。
-- 首次建容器慢:镜像不存在时 desktopd 会 `docker pull`,可能超过调用方 2 分钟
-  超时;`maclaw-gui:2` 是本地构建的镜像,先在主机上构建好(见上)。
+- 首次建容器慢:本机没有 `maclaw-gui:2` 时 desktopd 从 `DESKTOPD_IMAGE_SOURCE` 拉取(启动时已在后台开始),
+  可能超过调用方 2 分钟超时,此时返回 “still being pulled”,拉完后重试即可;管理面板“镜像来源”显示进度/失败原因。
+  拉不下来(大陆主机访问 ghcr 慢)就在主机上构建(见上)或设 `DESKTOPD_IMAGE_SOURCE=off`。
+  日志:`image maclaw-gui:2 is missing; pulling ...`、`ready from ...`、`failed after ...`。
 - 迁移日志:`desktopd: recreating ... (image changed from maclaw-gui:1 to maclaw-gui:2)`、
   `... keeping it as ...:prev`,在 `desktopd.err.log`(log 包写 stderr)。

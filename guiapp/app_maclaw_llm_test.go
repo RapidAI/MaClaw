@@ -3313,8 +3313,11 @@ func TestMaclawLLMProfileUntestedModelTextFailureDoesNotPersistVision(t *testing
 	if result.SupportsVision || result.VisionProbeStatus == string(visionProbeSupported) || result.VisionProbeStatus == string(visionProbeUnsupported) {
 		t.Fatalf("failed text test recorded a vision result: %#v", result)
 	}
-	if posts.Load() != 1 {
-		t.Fatalf("posts = %d, want 1 (text test only)", posts.Load())
+	if posts := posts.Load(); posts != 1 && posts != 2 {
+		// The text probe is the only request whose outcome this path guards;
+		// the vision probe now runs beside it and its result is dropped when
+		// the text probe fails, so 1 or 2 posts are both consistent.
+		t.Fatalf("posts = %d, want 1 (text test; concurrent vision probe may be dropped)", posts)
 	}
 	provider := app.GetMaclawLLMProviders().Providers[0]
 	if containsStringFold(provider.VisionModels, "gpt-5-mini") || containsStringFold(provider.VisionTestedModels, "gpt-5-mini") {
