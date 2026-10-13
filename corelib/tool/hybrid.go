@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,11 +104,56 @@ func modelFingerprint(modelPath string) string {
 	return fmt.Sprintf("%d_%d", fi.ModTime().UnixNano(), fi.Size())
 }
 
+// toolEmbeddingCacheModelID keys the disk cache on the embedder actually in
+// use. Embedders that report a ModelID (Gemma, Qwen3: model name + dim +
+// prompt recipe) use it, so a Qwen3-only install (no Gemma GGUF on disk) can
+// restore its cache and a Gemma<->Qwen3 switch never mixes vectors. Others
+// fall back to the legacy Gemma model-file fingerprint.
+func toolEmbeddingCacheModelID(emb embedding.Embedder) string {
+	if m, ok := emb.(interface{ ModelID() string }); ok && m != nil {
+		if id := strings.TrimSpace(m.ModelID()); id != "" {
+			if r := toolDocRole(emb); r != embedding.RoleNone {
+				id += "|tooldoc-role=classification"
+			}
+			return "embedder:" + id
+		}
+	}
+	return modelFingerprint(embedding.DefaultModelPath())
+}
+
+// ToolDocRoleEnv: "none" rolls tool-description embedding back to plain
+// Embed() for Qwen3 (default: RoleClassification, see toolDocRole).
+const ToolDocRoleEnv = "MACLAW_TOOL_DOC_ROLE"
+
+// toolDocRole is the role Track A embeds tool descriptions with. For Qwen3
+// the query side already reuses the intent L2 RoleClassification vector;
+// embedding the descriptions with the same instruct (symmetric) lifted the
+// Qwen3 Track A R@20 from 0.901 to 0.935 (alpha 0.6) on old 262, 0.840 to
+// 0.893 on the independent 644, with the config chosen on tool_eval train 668
+// only (replacement audit, REPORT §20). Gemma keeps plain Embed(): on the
+// same dev set its best doc role was none.
+func toolDocRole(emb embedding.Embedder) embedding.Role {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(ToolDocRoleEnv)), "none") {
+		return embedding.RoleNone
+	}
+	if embedding.EmbedderFamily(emb) == embedding.FamilyQwen3 {
+		return embedding.RoleClassification
+	}
+	return embedding.RoleNone
+}
+
+// embedDoc embeds one tool description with toolDocRole.
+func (c *ToolEmbeddingCache) embedDoc(text string) ([]float32, error) {
+	if r := toolDocRole(c.embedder); r != embedding.RoleNone {
+		return embedding.EmbedAs(c.embedder, text, r)
+	}
+	return c.embedder.Embed(text)
+}
+
 // NewToolEmbeddingCache creates a new ToolEmbeddingCache and attempts to
 // restore previously persisted embeddings from disk.
 func NewToolEmbeddingCache(emb embedding.Embedder) *ToolEmbeddingCache {
-	modelPath := embedding.DefaultModelPath()
-	mid := modelFingerprint(modelPath)
+	mid := toolEmbeddingCacheModelID(emb)
 
 	c := &ToolEmbeddingCache{
 		embedder: emb,
@@ -363,7 +409,7 @@ func (c *ToolEmbeddingCache) Get(text string) ([]float32, error) {
 	}
 	c.mu.RUnlock()
 
-	vec, err := c.embedder.Embed(text)
+	vec, err := c.embedDoc(text)
 	if err != nil {
 		return nil, err
 	}
@@ -413,6 +459,7 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 
 	// Try concurrent path if embedder supports it and there are multiple items.
 	ce, hasConcurrent := c.embedder.(ConcurrentEmbedder)
+	hasConcurrent = hasConcurrent && toolDocRole(c.embedder) == embedding.RoleNone
 	log.Printf("[ToolEmbeddingCache] GetBatch: total=%d cached=%d missing=%d hasConcurrent=%v", len(texts), len(texts)-len(missing), len(missing), hasConcurrent)
 	if hasConcurrent && len(missing) > 1 {
 		type embedResult struct {
@@ -469,7 +516,7 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 	// Sequential fallback.
 	computed := false
 	for _, m := range missing {
-		vec, err := c.embedder.Embed(m.text)
+		vec, err := c.embedDoc(m.text)
 		if err != nil {
 			result[m.toolID] = nil
 			continue
@@ -544,8 +591,11 @@ func (c *QueryEmbeddingCache) Get(query string) ([]float32, error) {
 	}
 	c.mu.Unlock()
 
-	// Compute embedding outside the lock to avoid blocking other callers.
-	vec, err := c.embedder.Embed(query)
+	// Prefer RoleClassification so Track A shares the intent L2/L3 query
+	// space (and PutQuery of the L2 vector is a cache hit). Tool descriptions
+	// stay on Embed() (RoleNone); measured Qwen3 Track A used this asymmetric
+	// protocol (ZZ_QROLE=classification).
+	vec, err := embedding.EmbedAs(c.embedder, query, embedding.RoleClassification)
 	if err != nil {
 		return nil, err
 	}
@@ -621,14 +671,29 @@ func (h *HybridRetriever) FuseScores(
 	bm25Scores map[string]float64,
 	toolTexts map[string]string,
 ) map[string]float64 {
+	return h.FuseScoresWithQueryVec(query, nil, bm25Scores, toolTexts)
+}
+
+// FuseScoresWithQueryVec is FuseScores with an optional precomputed query
+// vector (intent L2 RoleClassification). A non-empty queryVec is used as-is
+// and also seeded into the query cache; nil falls back to Put/Get.
+func (h *HybridRetriever) FuseScoresWithQueryVec(
+	query string,
+	queryVec []float32,
+	bm25Scores map[string]float64,
+	toolTexts map[string]string,
+) map[string]float64 {
 	if embedding.IsNoop(h.embedder) {
 		return bm25Scores
 	}
-
-	// Get query embedding.
-	queryVec, err := h.queryCache.Get(query)
-	if err != nil || queryVec == nil {
-		return bm25Scores
+	if len(queryVec) == 0 {
+		var err error
+		queryVec, err = h.queryCache.Get(query)
+		if err != nil || queryVec == nil {
+			return bm25Scores
+		}
+	} else {
+		h.PutQuery(query, queryVec)
 	}
 
 	// Get tool embeddings in batch.
@@ -696,4 +761,36 @@ func normalizeRetrievalScores(scores map[string]float64) map[string]float64 {
 		result[k] = s / maxVal
 	}
 	return result
+}
+
+// PutQuery seeds the query cache with a precomputed vector (e.g. the intent
+// L2 RoleClassification vector). FuseScores then reuses it instead of calling
+// Embed again. The vector is copied.
+func (h *HybridRetriever) PutQuery(query string, vec []float32) {
+	if h == nil || h.queryCache == nil || strings.TrimSpace(query) == "" || len(vec) == 0 {
+		return
+	}
+	h.queryCache.Put(query, append([]float32(nil), vec...))
+}
+
+// Put stores a precomputed embedding for query (copied). Used to hand the
+// intent L2 classification vector to Track A without a second forward pass.
+func (c *QueryEmbeddingCache) Put(query string, vec []float32) {
+	if c == nil || query == "" || len(vec) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.items[query]; ok {
+		c.order.Remove(elem)
+		delete(c.items, query)
+	}
+	if len(c.items) >= c.maxSize {
+		if front := c.order.Front(); front != nil {
+			evicted := c.order.Remove(front).(*queryEntry)
+			delete(c.items, evicted.query)
+		}
+	}
+	entry := &queryEntry{vec: append([]float32(nil), vec...), createdAt: time.Now(), query: query}
+	c.items[query] = c.order.PushBack(entry)
 }

@@ -91,6 +91,7 @@ type OfficialClassHeadSample struct {
 	At         time.Time `json:"at"`
 	Preview    string    `json:"preview,omitempty"`
 	Embedding  []float32 `json:"embedding,omitempty"`
+	EmbedModel string    `json:"embed_model,omitempty"` // family of Embedding ("" = legacy gemma)
 	GroupID    string    `json:"group_id,omitempty"`
 	RuleClass  string    `json:"rule_class,omitempty"`
 	RuleSource string    `json:"rule_source,omitempty"`
@@ -345,7 +346,18 @@ func officialHeadEmbedderAvailable() bool {
 	if officialHeadEmbedderFn != nil {
 		return true
 	}
-	return embedding.SharedGemmaReady()
+	return embedding.SharedEmbedderReady()
+}
+
+// officialHeadEmbedFamily is the family of the embedder
+// embedOfficialHeadPreview uses ("" when a test hook is installed or unknown).
+func officialHeadEmbedFamily() string { return officialHeadEmbedFamilyFn() }
+
+var officialHeadEmbedFamilyFn = func() string {
+	if officialHeadEmbedderFn != nil {
+		return ""
+	}
+	return embedding.EmbedderFamily(embedding.SharedEmbedder())
 }
 
 func embedOfficialHeadPreview(preview string) ([]float32, error) {
@@ -356,7 +368,7 @@ func embedOfficialHeadPreview(preview string) ([]float32, error) {
 	if officialHeadEmbedderFn != nil {
 		return officialHeadEmbedderFn(preview)
 	}
-	emb := embedding.SharedGemma256()
+	emb := embedding.SharedEmbedder()
 	if embedding.IsNoop(emb) {
 		return nil, errors.New("embedding model not ready")
 	}
@@ -520,7 +532,8 @@ func (s *Service) HeadRuntimeForGroup(groupID, userID string) *llmpool.HeadRunti
 		UserID: strings.TrimSpace(userID),
 		Head:   head,
 		Predict: func(preview string) llmpool.HeadPrediction {
-			if head == nil || !head.Ready() {
+			if head == nil || !head.Ready() || !llmpool.HeadEmbedCompatible(head, officialHeadEmbedFamily()) {
+				// Head trained on another embedder's vectors: rules only.
 				return llmpool.HeadPrediction{Class: llmpool.WorkloadFallbackBalanced}
 			}
 			vec, err := embedOfficialHeadPreview(preview)
@@ -755,6 +768,7 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 		return errors.New(data.LastTrainError)
 	}
 	labeled := make([]llmpool.LabeledEmbedding, 0, len(data.Samples))
+	fam := officialHeadEmbedFamily()
 	for i := range data.Samples {
 		sample := &data.Samples[i]
 		label := llmpool.NormalizeWorkloadClass(sample.GoldClass)
@@ -762,7 +776,7 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 			continue
 		}
 		vec := sample.Embedding
-		if len(vec) < llmpool.HeadDim {
+		if !llmpool.SampleEmbeddingReusable(sample.EmbedModel, len(vec), fam) {
 			got, err := embedOfficialHeadPreview(sample.Preview)
 			if err != nil {
 				data.LastTrainError = err.Error()
@@ -770,6 +784,7 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 				return err
 			}
 			sample.Embedding = got
+			sample.EmbedModel = fam
 			vec = got
 		}
 		labeled = append(labeled, llmpool.LabeledEmbedding{Embedding: vec, Label: label})
@@ -786,6 +801,7 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return err
 	}
+	head.EmbedModel = fam
 	rotateOfficialHead(data, &head, llmpool.HeadSourceTrain)
 	data.LastTrainAt = head.TrainedAt
 	data.LastTrainError = ""
@@ -1190,6 +1206,9 @@ func (s *Service) ScoreOfficialClassHeadFor(ctx context.Context, groupID, slot s
 	preview, err := llmpool.ScoreRequestPreview(body)
 	if err != nil {
 		return llmpool.ClassHeadScoreReport{}, err
+	}
+	if fam := officialHeadEmbedFamily(); !llmpool.HeadEmbedCompatible(head, fam) {
+		return llmpool.ClassHeadScoreReport{}, errors.New("head was trained on " + head.EmbedFamily() + " vectors but the embedder is " + fam + "; retrain the head")
 	}
 	vec, err := embedOfficialHeadPreview(preview)
 	if err != nil {

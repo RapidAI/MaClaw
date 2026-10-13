@@ -84,7 +84,8 @@ func mobileResetKnowledgePurgeStateForTest() {
 
 // mobileInitKnowledgeStore opens a process-level knowledge DB under the mobile
 // agent data root and attaches it to the shared CoreAgentExecutor (same pattern
-// as MaClawSrv). Embedding uses Gemma when model file is present, else FTS-only.
+// as MaClawSrv). Embedding uses the single shipped model (Qwen3-Embedding-0.6B;
+// the only local model) when present, else FTS-only.
 func mobileInitKnowledgeStore(dataRoot string, exec *agentservice.CoreAgentExecutor) {
 	if exec == nil {
 		return
@@ -136,9 +137,13 @@ func mobileKnowledgeEmbedder() (embedding.Embedder, string) {
 	if modelPath == "" {
 		modelPath = embedding.DefaultModelPath()
 	}
-	emb := embedding.NewDefaultEmbedder(modelPath)
-	if embedding.IsNoop(emb) {
-		return emb, "fts"
+	// MACLAW_EMBEDDING_MODEL_PATH may name the Qwen3 file itself or a file in
+	// the models directory (the factory resolves Qwen3 next to it).
+	res, err := embedding.LoadPreferredEmbedder(modelPath, embedding.PreferredOptions{})
+	if err != nil || embedding.IsNoop(res.Embedder) {
+		log.Printf("[mobile-knowledge] local embedder unavailable, FTS-only: %v %v", err, res.QwenErr)
+		return embedding.NewNoopEmbedder(), "fts"
 	}
-	return emb, "vector+fts"
+	log.Printf("[mobile-knowledge] embedder: %s", res)
+	return res.Embedder, "vector+fts"
 }

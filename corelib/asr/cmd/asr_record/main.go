@@ -1,14 +1,15 @@
 // asr_record — 真人录音 + ASR 测试
 //
 // 模拟用户按下录音键：使用 Windows winmm.dll 录制麦克风音频，
-// 录完后直接送入 Moonshine ASR 转写。
+// 录完后直接送入 SenseVoice ASR（asr.Manager，与应用相同）转写。
 //
 // 用法:
-//   go run .              — 默认录 5 秒（自动选设备）
-//   go run . 3            — 录 3 秒
-//   go run . 5 output.wav — 录 5 秒并保存 WAV 文件
-//   go run . --list       — 列出音频输入设备
-//   go run . --dev 1 5    — 使用设备 1 录 5 秒
+//
+//	go run .              — 默认录 5 秒（自动选设备）
+//	go run . 3            — 录 3 秒
+//	go run . 5 output.wav — 录 5 秒并保存 WAV 文件
+//	go run . --list       — 列出音频输入设备
+//	go run . --dev 1 5    — 使用设备 1 录 5 秒
 package main
 
 import (
@@ -26,17 +27,17 @@ import (
 )
 
 var (
-	winmm                     = syscall.NewLazyDLL("winmm.dll")
-	waveInOpen                = winmm.NewProc("waveInOpen")
-	waveInPrepareHeader       = winmm.NewProc("waveInPrepareHeader")
-	waveInAddBuffer           = winmm.NewProc("waveInAddBuffer")
-	waveInStart               = winmm.NewProc("waveInStart")
-	waveInStop                = winmm.NewProc("waveInStop")
-	waveInReset               = winmm.NewProc("waveInReset")
-	waveInClose               = winmm.NewProc("waveInClose")
-	waveInUnprepareHeader     = winmm.NewProc("waveInUnprepareHeader")
-	waveInGetNumDevs          = winmm.NewProc("waveInGetNumDevs")
-	waveInGetDevCapsW         = winmm.NewProc("waveInGetDevCapsW")
+	winmm                 = syscall.NewLazyDLL("winmm.dll")
+	waveInOpen            = winmm.NewProc("waveInOpen")
+	waveInPrepareHeader   = winmm.NewProc("waveInPrepareHeader")
+	waveInAddBuffer       = winmm.NewProc("waveInAddBuffer")
+	waveInStart           = winmm.NewProc("waveInStart")
+	waveInStop            = winmm.NewProc("waveInStop")
+	waveInReset           = winmm.NewProc("waveInReset")
+	waveInClose           = winmm.NewProc("waveInClose")
+	waveInUnprepareHeader = winmm.NewProc("waveInUnprepareHeader")
+	waveInGetNumDevs      = winmm.NewProc("waveInGetNumDevs")
+	waveInGetDevCapsW     = winmm.NewProc("waveInGetDevCapsW")
 )
 
 const (
@@ -186,12 +187,8 @@ func main() {
 
 	// Transcribe
 	fmt.Print("\nTranscribing... ")
-	model, err := asr.NewMoonshine(modelPath)
-	if err != nil {
-		fmt.Printf("model load error: %v\n", err)
-		os.Exit(1)
-	}
-	defer model.Close()
+	model := asr.NewManager(modelPath)
+	defer model.Unload()
 
 	start := time.Now()
 	text, err := model.Transcribe(samples)
@@ -328,7 +325,7 @@ func writeWAV(path string, pcmData []byte) {
 
 func findModel() string {
 	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".maclaw", "models", "moonshine-base-zh.gguf")
+	p := filepath.Join(home, ".maclaw", "models", asr.DefaultModelFilename)
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}

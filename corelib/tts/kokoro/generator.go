@@ -50,6 +50,12 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 			return nil, err
 		}
 		addInplace32(x, xSource)
+		if sum, ok, err := m.gpuResBlocks(x, inC, frames, s, i); err != nil {
+			return nil, err
+		} else if ok {
+			x = sum
+			continue
+		}
 		var sum []float32
 		for j := 0; j < 3; j++ {
 			blockIdx := i*3 + j

@@ -532,6 +532,9 @@ func RMSNormRoPESeq(x, weight, cosTable, sinTable []float32, seq, nHeads, headDi
 }
 
 func RMSNorm(out, x, weight []float32, eps float32) {
+	if rmsNormAsm(out, x, weight, eps) {
+		return
+	}
 	n := len(x)
 	ss := vek32.Dot(x, x) // sum of squares via SIMD dot product
 	scale := 1.0 / float32(math.Sqrt(float64(ss/float32(n)+eps)))

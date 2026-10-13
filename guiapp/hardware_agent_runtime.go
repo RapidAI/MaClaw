@@ -175,8 +175,8 @@ func (a *App) newHardwareIntentClassifier() *intent.UnifiedIntentClassifier {
 	}
 	return intent.New(intent.Config{
 		Embedder:       emb,
-		LLMFunc:        a.buildUICLLMFunc(),
-		LLMContextFunc: a.buildUICLLMContextFunc(),
+		LLMFunc:        a.intentL3Func(),
+		LLMContextFunc: a.intentL3ContextFunc(),
 		LLMTimeout:     30 * time.Second,
 		// 宁慢勿乱 (2026-09-18): match the desktop classifier — a short tree
 		// deadline degrades slow-hub turns into guessed surfaces.

@@ -59,22 +59,22 @@ func TestKokoroMandarinJQXUmlautFinals(t *testing.T) {
 	}
 }
 
-func TestPinyinToPhonemesJQXUmlautFinals(t *testing.T) {
+func TestSplitPinyinJQXUmlautFinals(t *testing.T) {
 	tests := []struct {
 		pinyin string
 		want   []string
 	}{
-		{pinyin: "quan2", want: []string{"q", "van"}},
-		{pinyin: "xuan3", want: []string{"x", "van"}},
-		{pinyin: "jue2", want: []string{"j", "ve"}},
-		{pinyin: "qu4", want: []string{"q", "v"}},
+		{pinyin: "quan", want: []string{"q", "van"}},
+		{pinyin: "xuan", want: []string{"x", "van"}},
+		{pinyin: "jue", want: []string{"j", "ve"}},
+		{pinyin: "qu", want: []string{"q", "v"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.pinyin, func(t *testing.T) {
-			got, _ := pinyinToPhonemes(tt.pinyin)
-			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
-				t.Fatalf("pinyinToPhonemes(%q) = %v, want %v", tt.pinyin, got, tt.want)
+			ini, fin := splitPinyin(tt.pinyin)
+			if got := []string{ini, fin}; strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("splitPinyin(%q) = %v, want %v", tt.pinyin, got, tt.want)
 			}
 		})
 	}

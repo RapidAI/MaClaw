@@ -333,6 +333,9 @@ type Router struct {
 	reranker           Reranker                        // nil when reranking is disabled
 	intentClassifier   *IntentClassifier               // hybrid intent classifier (Layer 1+2+3)
 	unifiedClassifier  *intent.UnifiedIntentClassifier // UIC replaces conditionalKeepRules when non-nil
+	toolHead           *ToolHead                       // first-party OvR head (Qwen3); nil = off
+	toolHeadTheta      float64                         // injection threshold (0 → head.Theta or 0.3)
+	toolHeadTopK       int                             // injection k (0 → head.TopKDefault or 5)
 	lastRecommendation RoutingRecommendation
 	legacyRouteCalls   atomic.Uint64
 	// searchTextExtra folds host-owned retrieval tokens (for example persisted
@@ -761,6 +764,58 @@ func (r *Router) HybridActive() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.hybrid != nil
+}
+
+// SetToolHead installs a first-party OvR tool head for candidate injection
+// (intent scope ∪ head top-k ∪ Track A). The head must match the live
+// embedder (CheckEmbedderOf); a mismatch is refused and leaves the previous
+// head unchanged. Pass nil to disable. theta/k ≤ 0 use the head's defaults
+// (file theta/top_k, else 0.3/5).
+func (r *Router) SetToolHead(h *ToolHead, emb embedding.Embedder, theta float64, k int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h == nil {
+		r.toolHead = nil
+		return nil
+	}
+	if emb != nil && !embedding.IsNoop(emb) {
+		if err := h.CheckEmbedderOf(emb); err != nil {
+			return err
+		}
+	}
+	r.toolHead = h
+	r.toolHeadTheta = theta
+	r.toolHeadTopK = k
+	return nil
+}
+
+// ToolHead returns the installed first-party tool head, if any.
+func (r *Router) ToolHead() *ToolHead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.toolHead
+}
+
+func (r *Router) toolHeadInjectParams() (h *ToolHead, theta float64, k int) {
+	h = r.toolHead
+	if h == nil {
+		return nil, 0, 0
+	}
+	theta = r.toolHeadTheta
+	if theta <= 0 {
+		theta = h.Theta
+	}
+	if theta <= 0 {
+		theta = 0.3
+	}
+	k = r.toolHeadTopK
+	if k <= 0 {
+		k = h.TopKDefault
+	}
+	if k <= 0 {
+		k = 5
+	}
+	return h, theta, k
 }
 
 // SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
@@ -1525,6 +1580,18 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 			skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
 		}
 
+		// First-party tool head: inject top-k (p≥θ) into condKeep using the
+		// same RoleClassification query vector intent L2/L3 already computed
+		// (uicResult.QueryVec). No extra embed; fail-closed on dim mismatch.
+		if h, theta, k := r.toolHeadInjectParams(); h != nil && len(uicResult.QueryVec) > 0 {
+			if probs, err := h.Predict(uicResult.QueryVec); err == nil {
+				for _, s := range h.TopK(probs, k, theta) {
+					if uicToolNameActivatable(s.Tool) {
+						condKeep[s.Tool] = true
+					}
+				}
+			}
+		}
 		uicKnowledgeWrite := !opts.SkipUnifiedClassifier && uicResult.Primary == intent.LabelKnowledgeWrite
 		for _, toolName := range classificationConditionalToolNames(uicResult) {
 			if !uicToolNameActivatable(toolName) {
@@ -1783,9 +1850,15 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	userTokens := bm25.Tokenize(userMessage)
 	scores := r.bm25Index.ScoreWithTokens(queryTokens)
 
-	// Fuse with vector scores when hybrid retrieval is active.
+	// Fuse with vector scores when hybrid retrieval is active. Prefer the
+	// intent L2 RoleClassification vector when the turn already has one
+	// (same space as the tool head; saves a second embed).
 	if r.hybrid != nil {
-		scores = r.hybrid.FuseScores(searchQuery, scores, embeddingTexts)
+		if len(uicResult.QueryVec) > 0 {
+			scores = r.hybrid.FuseScoresWithQueryVec(searchQuery, uicResult.QueryVec, scores, embeddingTexts)
+		} else {
+			scores = r.hybrid.FuseScores(searchQuery, scores, embeddingTexts)
+		}
 
 		// Debug log top-5 tools with fused scores.
 		type debugEntry struct {

@@ -89,7 +89,6 @@ git ls-files 总数        = 12,628
 | `Ins-maclaw/` | 27 | 安装包工程 |
 | `ThirdAPIDemo/` | 18 | 第三方 API 示例 |
 | `mcps/` | 10 | MCP 示例 |
-| `paper-review/` | 9 | 论文评审 |
 | `testdata/` | 8 | 根级测试资产 |
 | `srvdemo/` | 8 | 服务 demo |
 | `tools/`（部分） | 8 | 仅 `windowsresgen` 已检出 |

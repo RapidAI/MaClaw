@@ -277,14 +277,16 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 
 	// Build document strings for scoring.
 	docs := make([]string, len(candidates))
+	embedDocs := make([]string, len(candidates))
 	for i, cand := range candidates {
 		docs[i] = cand.doc
+		embedDocs[i] = codingQwen3EmbedDoc(cand.name, strings.TrimPrefix(cand.doc, cand.name))
 	}
 
 	// Three-signal scoring via shared infrastructure for legacy callers. Scope
 	// callers returned above from the exact admission projection.
 	emb := getSubAgentEmbedder(c.subagent.handler)
-	scored := scoreAndSelectTopK(taskForScore, docs, emb, maxK, threshold)
+	scored := scoreAndSelectTopKWithEmbedDocs(taskForScore, docs, embedDocs, emb, maxK, threshold)
 
 	// Every injected skill must have earned its slot. A learned skill's
 	// description is the raw request of the session it was distilled from, so
@@ -801,7 +803,7 @@ func truncateLogText(text string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
-// getSubAgentEmbedder retrieves the local Gemma embedding model from the host
+// getSubAgentEmbedder retrieves the shared local embedding model from the host
 // handler's interrupt handler. Returns nil if embedder is unavailable or noop.
 func getSubAgentEmbedder(handler *IMMessageHandler) embedding.Embedder {
 	if handler == nil || handler.interruptHandler == nil {

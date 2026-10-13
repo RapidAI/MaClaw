@@ -620,6 +620,23 @@ func lookupArtifactCompanionRequiresTree(companion labelScore) bool {
 // Caching is handled one level up: UnifiedIntentClassifier memoizes results
 // per message (full Classify cache and the ClassifyEmbeddingOnly cache).
 func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool) {
+	result, confident, _ := classifyByEmbeddingVec(embedder, anchors, text)
+	return result, confident
+}
+
+// classifyByEmbeddingVec is classifyByEmbedding that also returns the query
+// vector it computed (nil on the anchor-identity shortcut or an embed error),
+// so ClassifyContext can hand it to a local Layer 3 (see query_embedding.go).
+func classifyByEmbeddingVec(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool, []float32) {
+	result, confident, vec, _ := classifyByEmbeddingVecScores(embedder, anchors, text)
+	return result, confident, vec
+}
+
+// classifyByEmbeddingVecScores is classifyByEmbeddingVec that also returns the
+// raw (uncalibrated) per-label max anchor cosine computed in the same pass, for
+// local heads trained with L2 anchor features (LocalHead.AnchorFeatureLabels).
+// nil on the anchor-identity shortcut or an embed error.
+func classifyByEmbeddingVecScores(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool, []float32, map[string]float64) {
 	// An utterance that is one of a label's own exemplars is that label.
 	// Cosine can still crown a different host: "删除刚才的 markdown 文件"
 	// differs from the file_delete exemplar only by spaces, and production
@@ -630,34 +647,32 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			Confidence: 1,
 			Layer:      2,
 			Reason:     "embedding anchor identity: " + string(label),
-		}, true
+		}, true, nil, nil
 	}
 
 	// 1. Get query embedding.
-	queryVec, err := embedder.Embed(text)
+	queryVec, err := embedIntentQuery(embedder, text)
 	if err != nil || queryVec == nil {
-		return ClassificationResult{}, false
+		return ClassificationResult{}, false, nil, nil
 	}
 
-	// 2. Compute max cosine similarity for each anchor set.
+	// 2. Compute max cosine similarity for each anchor set, mapped onto the
+	// raw-text scale the thresholds below were calibrated on.
+	cal := intentScoreCalibrationFor(embedder)
 	scores := make([]labelScore, 0, len(anchors))
 
+	raw := make(map[string]float64, len(anchors))
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
+		maxSim, rawMax, ok := maxAnchorScoreRaw(queryVec, anchor, cal)
+		if !ok {
 			continue // anchor not yet warmed up
 		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
-		}
+		raw[string(anchor.Label)] = rawMax
 		scores = append(scores, labelScore{label: anchor.Label, score: maxSim})
 	}
 
 	if len(scores) == 0 {
-		return ClassificationResult{}, false
+		return ClassificationResult{}, false, nil, nil
 	}
 
 	// 3. Find top-1 and top-2 categories, plus the strongest declared
@@ -730,15 +745,15 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			result.Secondary = nil
 			clearArtifactRunnerUp(&result)
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), visual=%s (%.3f), gap=%.3f", lookup.label, lookup.score, composite.label, composite.score, visual.label, visual.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		result.Secondary = []IntentLabel{composite.label}
 		if top1.score >= EmbeddingCompositePrimaryMinScore {
 			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
-			return result, true
+			return result, true, queryVec, raw
 		}
 		result.Reason = fmt.Sprintf("embedding semantic composite requires tree: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
-		return result, false
+		return result, false, queryVec, raw
 	}
 
 	// A document-generation candidate without a declared lookup companion
@@ -747,7 +762,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	// be acquired.
 	if top1.label == LabelDocumentGenerate {
 		result.Reason = fmt.Sprintf("embedding document generation requires tree: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-		return result, false
+		return result, false, queryVec, raw
 	}
 
 	// A chart can lead by a wide or a narrow margin while the user still
@@ -763,7 +778,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			result.Confidence = live.score
 			result.Secondary = []IntentLabel{LabelDocumentGenerate}
 			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", live.label, live.score, pdf.label, pdf.score, gap)
-			return result, true
+			return result, true, queryVec, raw
 		}
 		fallback := live
 		if fallback.score < EmbeddingLookupMinScore {
@@ -776,7 +791,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			clearArtifactRunnerUp(&result)
 		}
 		result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", result.Primary, result.Confidence, LabelDocumentGenerate, pdf.score, gap)
-		return result, false
+		return result, false, queryVec, raw
 	}
 
 	if top1.score >= EmbeddingConfidentMinScore && gap >= EmbeddingConfidentMinGap {
@@ -787,7 +802,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			if local, ok := competingLocalHostLabel(scores, EmbeddingCompositeSecondaryMinScore); ok {
 				result.Secondary = []IntentLabel{local.label}
 				result.Reason = fmt.Sprintf("embedding remote host requires tree: top=%s (%.3f), local=%s (%.3f), gap=%.3f", top1.label, top1.score, local.label, local.score, gap)
-				return result, false
+				return result, false, queryVec, raw
 			}
 		}
 		// A confident lookup with a material declared artifact half is a
@@ -797,7 +812,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		if isLookupIntentLabel(top1.label) && lookupArtifactCompanionRequiresTree(declaredCompanion) {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		// Mirror guard for a confident office/deck request whose companion is a
 		// lookup ("网上找几张照片做成生日PPT").  The deck half is settled, but
@@ -811,13 +826,13 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		if isLookupIntentLabel(top1.label) {
 			clearArtifactRunnerUp(&result)
 		}
 		result.Reason = fmt.Sprintf("embedding: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-		return result, true
+		return result, true, queryVec, raw
 	}
 
 	// Read-only lookup: a slightly weaker live_data/search hit is still a
@@ -830,7 +845,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		if composite.label != "" && composite.score >= EmbeddingLookupCompositeFloor {
 			result.Secondary = []IntentLabel{composite.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		// A declared-but-not-locally-verified composite half (search +
 		// document_generate / live_data_visual) must escalate too: the
@@ -842,11 +857,11 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		if lookupArtifactCompanionRequiresTree(declaredCompanion) {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		clearArtifactRunnerUp(&result)
 		result.Reason = fmt.Sprintf("embedding lookup: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-		return result, true
+		return result, true, queryVec, raw
 	}
 
 	// Ambiguous — escalate to Layer 3. Keep a declared lookup companion of an
@@ -863,8 +878,12 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		result.RunnerUp = ""
 		result.RunnerUpScore = 0
 	}
+	if len(result.Secondary) == 1 && top1.label == LabelOffice {
+		result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
+		return result, false, queryVec, raw
+	}
 	result.Reason = fmt.Sprintf("embedding ambiguous: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-	return result, false
+	return result, false, queryVec, raw
 }
 
 // warmupAnchors pre-computes embeddings for all anchor texts using the
@@ -878,13 +897,23 @@ func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]inten
 	if embedder == nil || embedding.IsNoop(embedder) {
 		return nil, fmt.Errorf("embedding unavailable for anchor warmup")
 	}
+	cacheDir, cacheKey := intentAnchorCacheDir(), ""
+	if cacheDir != "" {
+		cacheKey = intentAnchorCacheKey(embedder, anchors)
+		if cacheKey != "" {
+			if warmed, ok := loadIntentAnchorCache(cacheDir, cacheKey, embedder, anchors); ok {
+				log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels, disk cache)", len(warmed))
+				return warmed, nil
+			}
+		}
+	}
 	warmed := make([]intentAnchor, len(anchors))
 	for i, anchor := range anchors {
 		warmed[i] = intentAnchor{Label: anchor.Label, Texts: append([]string(nil), anchor.Texts...)}
 		if len(anchor.Texts) == 0 {
 			continue
 		}
-		vecs, err := embedder.EmbedBatch(anchor.Texts)
+		vecs, err := embedIntentAnchors(embedder, anchor.Texts)
 		if err != nil {
 			log.Printf("[UnifiedIntentClassifier] warmup failed for %s: %v", anchor.Label, err)
 			return nil, fmt.Errorf("warm %s anchors: %w", anchor.Label, err)
@@ -898,6 +927,9 @@ func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]inten
 			}
 		}
 		warmed[i].Vecs = vecs
+	}
+	if cacheDir != "" && cacheKey != "" {
+		saveIntentAnchorCache(cacheDir, cacheKey, embedder, warmed)
 	}
 	log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels)", len(warmed))
 	return warmed, nil

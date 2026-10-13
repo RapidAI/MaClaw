@@ -55,6 +55,10 @@ func (t *traceWriter) close() {
 // DumpForwardTrace runs the reference forward pass for tokenIDs and writes all
 // intermediate activations to path.
 func (g *GemmaEmbedder) DumpForwardTrace(tokenIDs []int, path string) error {
+	if !g.inflight.acquire() {
+		return ErrEmbedderClosed
+	}
+	defer g.inflight.release()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 

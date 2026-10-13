@@ -57,12 +57,48 @@ const (
 	//
 	// Tied to embedding.DefaultEmbeddingDim instead of written as a literal so
 	// the server cannot drift from the production width. It must also stay in
-	// sync with the dim handed to NewGemmaEmbedder below: it is part of the
+	// sync with the width the loaded model reports: it is part of the
 	// vector space identity reported by ModelID, so a mismatch would let the
 	// knowledge store believe it is reading one space while the manager writes
 	// another. TestSrvAIEmbeddingDimMatchesProductionWidth pins both.
 	srvAIEmbeddingDim = embedding.DefaultEmbeddingDim
 )
+
+// Single shipped embedding model: the server follows the desktop app onto
+// Qwen3-Embedding-0.6B (full 1024 width, Qwen3 instruct prompts); there is no
+// other local model. The filename, width and prompt recipe all feed the
+// adapter's ModelID, so a store written by the retired EmbeddingGemma model is
+// re-embedded once instead of mixing spaces.
+func srvEmbedFamily() string {
+	return embedding.FamilyQwen3
+}
+
+func srvEmbeddingModelFilename() string {
+	return embedding.Qwen3ModelFilename
+}
+
+func srvEmbeddingDim() int {
+	return embedding.Qwen3EmbeddingDim
+}
+
+// srvVerifyEmbeddingModel checks a downloaded Qwen3 file against the release
+// manifest (size + sha256). Swappable in tests that download fake bytes.
+var srvVerifyEmbeddingModel = func(path string) error {
+	return embedding.VerifyModelFile(path, embedding.Qwen3ModelSpec)
+}
+
+// srvLoadEmbedder loads the model at path (swappable in tests). Qwen3 goes
+// through the hardened factory (low-memory guard, failure backoff, panic-safe).
+var srvLoadEmbedder = func(path string) (embedding.Embedder, error) {
+	res, err := embedding.LoadPreferredEmbedder(path, embedding.PreferredOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if embedding.IsNoop(res.Embedder) {
+		return nil, fmt.Errorf("%w: %v", errSrvAIModelNotReady, res.QwenErr)
+	}
+	return res.Embedder, nil
+}
 
 var errSrvAIModelUnknown = errors.New("unknown ai model")
 var errSrvAIModelNotReady = errors.New("ai model is not ready")
@@ -428,8 +464,8 @@ func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAI
 	switch model {
 	case srvAIModelEmbedding:
 		status.Enabled = true
-		status.Filename = embedding.DefaultModelFilename
-		status.Exists, status.SizeBytes = modelFileReady(m.modelPath(embedding.DefaultModelFilename))
+		status.Filename = srvEmbeddingModelFilename()
+		status.Exists, status.SizeBytes = modelFileReady(m.modelPath(status.Filename))
 	case srvAIModelASR:
 		status.Enabled = true
 		status.Filename = srvASRModelFilename
@@ -569,7 +605,19 @@ func (m *srvAIModelManager) doneChannel() <-chan struct{} {
 func (m *srvAIModelManager) download(model string, cfg corelib.AppConfig, done <-chan struct{}) error {
 	switch model {
 	case srvAIModelEmbedding:
-		return m.downloadWithFallback(embedding.DefaultModelFilename, embedding.DefaultModelDownloadURL, cfg, done)
+		if err := m.downloadWithFallback(embedding.Qwen3ModelFilename, embedding.Qwen3ModelSpec.URLs[0], cfg, done); err != nil {
+			return err
+		}
+		// sha256 + size against the release manifest; a bad file is removed
+		// so the next attempt re-downloads instead of loading garbage.
+		path := m.modelPath(embedding.Qwen3ModelFilename)
+		if err := srvVerifyEmbeddingModel(path); err != nil {
+			if os.Getenv("MACLAW_EMBEDDING_MODEL_PATH") == "" {
+				_ = os.Remove(path)
+			}
+			return fmt.Errorf("verify %s: %w", embedding.Qwen3ModelFilename, err)
+		}
+		return nil
 	case srvAIModelASR:
 		return m.downloadWithFallback(srvASRModelFilename, srvASRModelDefaultURL, cfg, done)
 	case srvAIModelTTS:
@@ -617,7 +665,7 @@ func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cf
 }
 
 func (m *srvAIModelManager) modelPath(filename string) string {
-	if filename == embedding.DefaultModelFilename {
+	if filename == srvEmbeddingModelFilename() {
 		if custom := strings.TrimSpace(os.Getenv("MACLAW_EMBEDDING_MODEL_PATH")); custom != "" {
 			return custom
 		}
@@ -735,7 +783,7 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 	if len(cleaned) == 0 {
 		return [][]float32{}, nil
 	}
-	modelPath := m.modelPath(embedding.DefaultModelFilename)
+	modelPath := m.modelPath(srvEmbeddingModelFilename())
 	if exists, _ := modelFileReady(modelPath); !exists {
 		return nil, fmt.Errorf("%w: embedding model is missing", errSrvAIModelNotReady)
 	}
@@ -754,7 +802,7 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 		m.mu.Lock()
 	}
 	if m.embeddingMgr == nil {
-		mgr, err := embedding.NewGemmaEmbedder(modelPath, srvAIEmbeddingDim)
+		mgr, err := srvLoadEmbedder(modelPath)
 		if err != nil {
 			m.mu.Unlock()
 			return nil, err
@@ -896,7 +944,7 @@ func (a srvAIModelEmbedderAdapter) EmbedBatch(texts []string) ([][]float32, erro
 	return vectors, err
 }
 
-func (srvAIModelEmbedderAdapter) Dim() int { return srvAIEmbeddingDim }
+func (srvAIModelEmbedderAdapter) Dim() int { return srvEmbeddingDim() }
 func (srvAIModelEmbedderAdapter) Close()   {}
 
 // EmbedWithRole and EmbedBatchWithRole make the adapter satisfy
@@ -906,19 +954,20 @@ func (srvAIModelEmbedderAdapter) Close()   {}
 // space than the desktop app — the prompt feature would be silently
 // half-applied.
 func (a srvAIModelEmbedderAdapter) EmbedWithRole(text string, role embedding.Role) ([]float32, error) {
-	return a.Embed(embedding.ApplyPrompt(text, role))
+	return a.Embed(embedding.ApplyFamilyPrompt(srvEmbedFamily(), text, role))
 }
 
 func (a srvAIModelEmbedderAdapter) EmbedBatchWithRole(texts []string, role embedding.Role) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	if !embedding.NeedsPrompt(role) {
+	fam := srvEmbedFamily()
+	if !embedding.FamilyNeedsPrompt(fam, role) {
 		return a.EmbedBatch(texts)
 	}
 	prompted := make([]string, len(texts))
 	for i, text := range texts {
-		prompted[i] = embedding.ApplyPrompt(text, role)
+		prompted[i] = embedding.ApplyFamilyPrompt(fam, text, role)
 	}
 	return a.EmbedBatch(prompted)
 }
@@ -937,13 +986,13 @@ func (a srvAIModelEmbedderAdapter) EmbedBatchWithRole(texts []string, role embed
 // re-embed. modelPath is a pure lookup, and SpaceRecipe covers the prompt
 // regime.
 func (a srvAIModelEmbedderAdapter) ModelID() string {
-	name := embedding.DefaultModelFilename
+	name := srvEmbeddingModelFilename()
 	if a.manager != nil {
-		if base := filepath.Base(a.manager.modelPath(embedding.DefaultModelFilename)); base != "" && base != "." && base != string(filepath.Separator) {
+		if base := filepath.Base(a.manager.modelPath(name)); base != "" && base != "." && base != string(filepath.Separator) {
 			name = base
 		}
 	}
-	return fmt.Sprintf("%s:%d:%s", name, a.Dim(), embedding.SpaceRecipe())
+	return fmt.Sprintf("%s:%d:%s", name, a.Dim(), embedding.FamilySpaceRecipe(srvEmbedFamily()))
 }
 
 func (m *srvAIModelManager) ttsVoiceDir() string {

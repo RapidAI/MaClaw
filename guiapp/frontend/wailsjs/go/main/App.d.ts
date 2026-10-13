@@ -465,6 +465,8 @@ export function ForceDeleteCloudWorkspace(arg1:string):Promise<void>;
 
 export function DeleteComputerUseLogArtifact(arg1:string):Promise<Record<string, any>>;
 
+export function DeleteEmbeddingModel():Promise<void>;
+
 export function DeleteExpert(arg1:string):Promise<void>;
 
 export function DeleteLansengerBot(arg1:string):Promise<void>;

@@ -35,6 +35,9 @@ type ClassificationHead struct {
 	Bias      []float64   `json:"bias"`
 	Tau       float64     `json:"tau"`
 	TrainedAt string      `json:"trained_at,omitempty"`
+	// EmbedModel is the embedding family the head was trained on ("qwen3",
+	// "gemma"); "" = legacy (gemma). See head_embed.go.
+	EmbedModel string `json:"embed_model,omitempty"`
 }
 
 // HeadPrediction is one softmax result over FrozenWorkloadClasses.

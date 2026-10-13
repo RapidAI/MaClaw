@@ -34,6 +34,14 @@ type scoredCandidate struct {
 //
 // Returns indices and scores of selected candidates, sorted descending.
 func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Embedder, maxResults int, threshold float64) []scoredCandidate {
+	return scoreAndSelectTopKWithEmbedDocs(taskDescription, docs, nil, emb, maxResults, threshold)
+}
+
+// scoreAndSelectTopKWithEmbedDocs is scoreAndSelectTopK with an optional
+// structured document text per candidate for the embedding signal only
+// (embedDocs[i] for docs[i]; nil or a length mismatch means docs). BM25 and
+// bigram always score docs. Only the instructed Qwen3 policy uses embedDocs.
+func scoreAndSelectTopKWithEmbedDocs(taskDescription string, docs, embedDocs []string, emb embedding.Embedder, maxResults int, threshold float64) []scoredCandidate {
 	if len(docs) == 0 || len(taskDescription) == 0 {
 		return nil
 	}
@@ -47,12 +55,18 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 	// Signal 3: Embedding vectors (optional)
 	var queryEmbed []float32
 	var docEmbeddings map[int][]float32
+	pol := codingEmbeddingPolicyFor(emb)
+	embBaseline := pol.baseline
 	if emb != nil && !embedding.IsNoop(emb) {
-		if vec, err := emb.Embed(taskDescription); err == nil && len(vec) > 0 {
+		if vec, err := embedCodingQuery(emb, taskDescription); err == nil && len(vec) > 0 {
 			queryEmbed = vec
 		}
 		if queryEmbed != nil {
-			if vectors, err := emb.EmbedBatch(docs); err == nil && len(vectors) == len(docs) {
+			docTexts := docs
+			if pol.instructed && len(embedDocs) == len(docs) {
+				docTexts = embedDocs
+			}
+			if vectors, err := emb.EmbedBatch(docTexts); err == nil && len(vectors) == len(docs) {
 				docEmbeddings = make(map[int][]float32, len(docs))
 				for i, vec := range vectors {
 					if len(vec) > 0 {
@@ -70,7 +84,7 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 
 		// BM25
 		docTokens := cskill.TokenizeSimple(doc)
-		bm25Score := cskill.BM25ScoreSimple(queryTokens, docTokens)
+		bm25Score := pol.bm25Weight * cskill.BM25ScoreSimple(queryTokens, docTokens)
 
 		// Bigram Jaccard
 		docBigrams := extractBigrams(docLower)
@@ -81,7 +95,7 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 		if queryEmbed != nil {
 			if docVec, ok := docEmbeddings[i]; ok {
 				raw := float64(cosine32(queryEmbed, docVec))
-				embScore = raw - codingSubAgentEmbeddingBaseline
+				embScore = raw - embBaseline
 				if embScore < 0 {
 					embScore = 0
 				}
@@ -116,4 +130,61 @@ func scoreAndSelectTopK(taskDescription string, docs []string, emb embedding.Emb
 	}
 
 	return results
+}
+
+// Qwen3 coding-subagent policy. Qwen3's cosine scale differs from Gemma's.
+// Round 3 (out/replace_audit/int3/coding_r3.txt): RoleQuery task + plain doc,
+// baseline 0.40. Round 4 (out/replace_audit/r4C/select_c.json), chosen on the
+// TRAIN half (n=140) of the 305-task cross-family coding-skill set only:
+// task side carries a coding-specific instruction (CT3), the embedding-side
+// document is "Tool: <name>\nDescription: <description>", baseline 0.50 and
+// BM25 weight 0.6 in the max-fusion (train cosine MRR 0.940 -> 0.956,
+// calibrated F1 0.673 -> 0.731; flat for BM25 weight 0.4-0.7). Gemma and
+// Qwen3 without prompt support are unchanged.
+const (
+	codingSubAgentEmbeddingBaselineQwen3      = 0.50
+	codingSubAgentEmbeddingBaselineQwen3Plain = 0.48
+	codingSubAgentBM25WeightQwen3             = 0.6
+	codingSubAgentQwen3TaskInstruction        = "Given a programming task description, retrieve descriptions of the tools a developer would use for it"
+)
+
+type codingEmbedPolicy struct {
+	instructed bool    // Qwen3 with prompt support: instructed task + structured docs
+	baseline   float64 // cosine baseline subtracted before fusion
+	bm25Weight float64 // BM25 multiplier in the max-fusion
+}
+
+func codingEmbeddingPolicyFor(emb embedding.Embedder) codingEmbedPolicy {
+	if emb == nil || embedding.EmbedderFamily(emb) != embedding.FamilyQwen3 {
+		return codingEmbedPolicy{baseline: codingSubAgentEmbeddingBaseline, bm25Weight: 1}
+	}
+	if _, ok := emb.(embedding.RoleEmbedder); ok {
+		return codingEmbedPolicy{instructed: true, baseline: codingSubAgentEmbeddingBaselineQwen3, bm25Weight: codingSubAgentBM25WeightQwen3}
+	}
+	return codingEmbedPolicy{baseline: codingSubAgentEmbeddingBaselineQwen3Plain, bm25Weight: 1}
+}
+
+// codingEmbeddingPolicy returns whether the task side is instructed and the
+// matching cosine baseline for emb.
+func codingEmbeddingPolicy(emb embedding.Embedder) (instructed bool, baseline float64) {
+	p := codingEmbeddingPolicyFor(emb)
+	return p.instructed, p.baseline
+}
+
+// codingEmbeddingBaseline returns the cosine baseline for emb.
+func codingEmbeddingBaseline(emb embedding.Embedder) float64 {
+	return codingEmbeddingPolicyFor(emb).baseline
+}
+
+// codingQwen3EmbedDoc is the structured embedding-side document text.
+func codingQwen3EmbedDoc(name, description string) string {
+	return "Tool: " + strings.TrimSpace(name) + "\nDescription: " + strings.TrimSpace(description)
+}
+
+// embedCodingQuery embeds the task side (documents stay plain EmbedBatch).
+func embedCodingQuery(emb embedding.Embedder, task string) ([]float32, error) {
+	if codingEmbeddingPolicyFor(emb).instructed {
+		return emb.Embed("Instruct: " + codingSubAgentQwen3TaskInstruction + "\nQuery: " + task)
+	}
+	return emb.Embed(task)
 }

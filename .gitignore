@@ -131,12 +131,8 @@ corelib/tts/testdata/pyref_*
 corelib/tts/testdata/pyweight_*
 corelib/tts/testdata/*.tar.bz2
 corelib/tts/testdata/cmudict.dict
-corelib/tts/testdata/melotts-*.gguf
 corelib/tts/testdata/espeak-ng-data/
-corelib/tts/testdata/vits-icefall-zh-aishell3/
-corelib/tts/testdata/vits-piper-zh_CN-huayan-medium/
 corelib/tts/testdata/__pycache__/
-corelib/tts/testdata/vits-piper-zh_CN-xiao_ya-medium/
 
 # Root-level binaries and temp files
 maclaw-tool.exe

@@ -5,6 +5,8 @@ import (
 	"math"
 	"os"
 	"sort"
+	"sync"
+	"time"
 )
 
 // debugNaN enables per-node non-finite output tracing (env ONNXRT_DEBUG_NAN=1).
@@ -29,6 +31,8 @@ type Graph struct {
 	matMulBT     map[string][]float32 // pre-transposed constant MatMul B operands, by value name
 	plan         *arenaPlan           // liveness/alias analysis for output arena allocation
 	ctc          *ctcTail             // detected fusable CTC head (nil when absent)
+	gpuOnce      sync.Once
+	gpu          *gpuGraph // Metal state (darwin; nil when off/unavailable)
 }
 
 // LoadGraph reads an ONNX model file, parses it, and prepares an executable
@@ -296,8 +300,21 @@ func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]
 		}
 		values[name] = t
 	}
+	gr := g.gpuStart()
+	if gr != nil {
+		defer func() {
+			if gr != nil {
+				gr.abort()
+			}
+		}()
+	}
 	for nodeIdx, nd := range g.nodes {
 		if tail != nil && tail.skip[nd] {
+			if gr != nil {
+				if err := gr.flush(); err != nil {
+					return nil, nil, fmt.Errorf("onnxrt: metal: %w", err)
+				}
+			}
 			if nd == tail.matmul {
 				d, derr := tail.decode(values[nd.Inputs[0]])
 				if derr != nil {
@@ -306,6 +323,9 @@ func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]
 				dec = d
 			}
 			rc.freeDead(nodeIdx, values)
+			if gr != nil {
+				gr.dead(nodeIdx, nd)
+			}
 			continue
 		}
 		args := make([]*Tensor, len(nd.Inputs))
@@ -323,9 +343,39 @@ func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]
 		if !ok {
 			return nil, nil, fmt.Errorf("onnxrt: node %q: unsupported op %q", nd.Name, nd.OpType)
 		}
-		outs, err := op(rc, nd, args)
+		var t0 time.Time
+		if profileOps {
+			t0 = time.Now()
+		}
+		var outs []*Tensor
+		onGPU := false
+		if gr != nil {
+			outs, onGPU, err = gr.tryOp(rc, nd, args)
+			if err == nil && !onGPU {
+				err = gr.flush()
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("onnxrt: node %q (%s): metal: %w", nd.Name, nd.OpType, err)
+			}
+			if onGPU && profileOps {
+				if err = gr.flush(); err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+		if !onGPU {
+			outs, err = op(rc, nd, args)
+		}
+		if profileOps {
+			profileAdd(nd.OpType, time.Since(t0))
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("onnxrt: node %q (%s): %w", nd.Name, nd.OpType, err)
+		}
+		if debugNaN && gr != nil {
+			if err := gr.flush(); err != nil {
+				return nil, nil, err
+			}
 		}
 		if debugNaN {
 			for i, t := range outs {
@@ -363,6 +413,10 @@ func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]
 		}
 		// Recycle arena buffers whose holding value died with this node.
 		rc.freeDead(nodeIdx, values)
+		if gr != nil {
+			gr.track(nd, outs)
+			gr.dead(nodeIdx, nd)
+		}
 	}
 	result := make(map[string]*Tensor, len(g.outputNames))
 	for _, name := range g.outputNames {
@@ -374,6 +428,13 @@ func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]
 			return nil, nil, fmt.Errorf("onnxrt: output %q not produced", name)
 		}
 		result[name] = t
+	}
+	if gr != nil {
+		err := gr.finish(result)
+		gr = nil
+		if err != nil {
+			return nil, nil, fmt.Errorf("onnxrt: metal: %w", err)
+		}
 	}
 	return result, dec, nil
 }
@@ -397,4 +458,43 @@ func (g *Graph) validateInput(name string, t *Tensor) error {
 		}
 	}
 	return nil
+}
+
+// ONNXRT_PROFILE=1 accumulates wall time per op type (diagnostics only).
+var profileOps = os.Getenv("ONNXRT_PROFILE") == "1"
+
+var (
+	profMu sync.Mutex
+	profT  = map[string]time.Duration{}
+	profN  = map[string]int{}
+)
+
+func profileAdd(op string, d time.Duration) {
+	profMu.Lock()
+	profT[op] += d
+	profN[op]++
+	profMu.Unlock()
+}
+
+// ProfileReport returns and resets the per-op-type timing (ONNXRT_PROFILE=1).
+func ProfileReport() string {
+	profMu.Lock()
+	defer profMu.Unlock()
+	type kv struct {
+		k string
+		d time.Duration
+	}
+	var l []kv
+	var tot time.Duration
+	for k, d := range profT {
+		l = append(l, kv{k, d})
+		tot += d
+	}
+	sort.Slice(l, func(i, j int) bool { return l[i].d > l[j].d })
+	s := fmt.Sprintf("total %.1fms\n", float64(tot.Microseconds())/1000)
+	for _, e := range l {
+		s += fmt.Sprintf("  %-20s %8.1fms %5.1f%% n=%d\n", e.k, float64(e.d.Microseconds())/1000, 100*float64(e.d)/float64(tot), profN[e.k])
+	}
+	profT, profN = map[string]time.Duration{}, map[string]int{}
+	return s
 }

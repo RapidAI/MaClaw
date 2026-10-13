@@ -14,7 +14,12 @@ var (
 		cpu.X86.HasAVX512VL && cpu.X86.HasAVX512BW
 	// VNNI: VPDPBUSD int8 GEMM (FFN-down A prequant × Q8 B).
 	hasAVX512VNNI = hasAVX512 && cpu.X86.HasAVX512VNNI
+	// AVX-VNNI: 256-bit VEX VPDPBUSD (Alder Lake+ / Zen 5; no AVX-512 required).
+	hasAVXVNNI = cpu.X86.HasAVXVNNI && hasAVX2andFMA
 )
 
 // HasAVX512VNNI reports whether AVX-512 VNNI int8 dot kernels are available.
 func HasAVX512VNNI() bool { return hasAVX512VNNI }
+
+// HasAVXVNNI reports whether 256-bit AVX-VNNI (VEX VPDPBUSD) is available.
+func HasAVXVNNI() bool { return hasAVXVNNI }

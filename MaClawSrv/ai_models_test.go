@@ -98,7 +98,7 @@ func TestSrvAIModelEmbedderAdapterUsesSharedBatchRuntime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("fake-embedding-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvEmbeddingModelFilename()), []byte("fake-embedding-model"), 0o644); err != nil {
 		t.Fatalf("write embedding model marker: %v", err)
 	}
 	emb := &countingSrvEmbedder{}
@@ -119,7 +119,7 @@ func TestSrvAIModelEmbedderAdapterUsesSharedBatchRuntime(t *testing.T) {
 	if emb.calls.Load() != 3 {
 		t.Fatalf("expected fake embedder to embed 3 texts inside the batch, got %d", emb.calls.Load())
 	}
-	if want := filepath.Join(dataRoot, "models", embedding.DefaultModelFilename); manager.embeddingPath != want {
+	if want := filepath.Join(dataRoot, "models", srvEmbeddingModelFilename()); manager.embeddingPath != want {
 		t.Fatalf("embeddingPath = %q, want %q", manager.embeddingPath, want)
 	}
 }
@@ -140,7 +140,7 @@ func newRoleTestAdapter(t *testing.T) (srvAIModelEmbedderAdapter, *countingSrvEm
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("fake-embedding-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvEmbeddingModelFilename()), []byte("fake-embedding-model"), 0o644); err != nil {
 		t.Fatalf("write embedding model marker: %v", err)
 	}
 	emb := &countingSrvEmbedder{}
@@ -177,10 +177,10 @@ func TestSrvAIModelEmbedderAdapterAppliesRolePrompts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EmbedWithRole(%v) failed: %v", role, err)
 		}
-		want := plain[1] + float32(len([]rune(embedding.PromptPrefix(role))))
+		want := plain[1] + float32(len([]rune(embedding.FamilyPromptPrefix(srvEmbedFamily(), role))))
 		if prompted[1] != want {
 			t.Fatalf("EmbedWithRole(%v) second component = %v, want %v (prefix %q not applied)",
-				role, prompted[1], want, embedding.PromptPrefix(role))
+				role, prompted[1], want, embedding.FamilyPromptPrefix(srvEmbedFamily(), role))
 		}
 	}
 
@@ -209,7 +209,7 @@ func TestSrvAIModelEmbedderAdapterBatchRoleAppliesPrompts(t *testing.T) {
 	if emb.batchCalls.Load() != 1 {
 		t.Fatalf("expected one shared batch inference, got %d", emb.batchCalls.Load())
 	}
-	delta := float32(len([]rune(embedding.PromptPrefix(embedding.RoleDocument))))
+	delta := float32(len([]rune(embedding.FamilyPromptPrefix(srvEmbedFamily(), embedding.RoleDocument))))
 	for i, text := range texts {
 		want := float32(len([]rune(text))) + 1 + delta
 		if vectors[i][1] != want {
@@ -248,11 +248,11 @@ func TestSrvAIModelEmbedderAdapterModelIDTracksPromptRegime(t *testing.T) {
 
 	withSrvPrompts(t, true)
 	enabled := adapter.ModelID()
-	if !strings.HasPrefix(enabled, embedding.DefaultModelFilename+":") {
-		t.Fatalf("ModelID %q does not carry the model filename %q", enabled, embedding.DefaultModelFilename)
+	if !strings.HasPrefix(enabled, srvEmbeddingModelFilename()+":") {
+		t.Fatalf("ModelID %q does not carry the model filename %q", enabled, srvEmbeddingModelFilename())
 	}
-	if !strings.HasSuffix(enabled, ":"+embedding.SpaceRecipe()) {
-		t.Fatalf("ModelID %q does not end with the prompt recipe %q", enabled, embedding.SpaceRecipe())
+	if !strings.HasSuffix(enabled, ":"+embedding.FamilySpaceRecipe(srvEmbedFamily())) {
+		t.Fatalf("ModelID %q does not end with the prompt recipe %q", enabled, embedding.FamilySpaceRecipe(srvEmbedFamily()))
 	}
 
 	withSrvPrompts(t, false)
@@ -260,8 +260,8 @@ func TestSrvAIModelEmbedderAdapterModelIDTracksPromptRegime(t *testing.T) {
 	if disabled == enabled {
 		t.Fatalf("ModelID did not change with the prompt regime: %q", disabled)
 	}
-	if !strings.HasSuffix(disabled, ":raw") {
-		t.Fatalf("ModelID with prompts disabled = %q, want a :raw suffix", disabled)
+	if !strings.Contains(disabled, ":raw") {
+		t.Fatalf("ModelID with prompts disabled = %q, want the :raw recipe", disabled)
 	}
 }
 
@@ -298,21 +298,34 @@ func TestSrvAIEmbeddingDimMatchesProductionWidth(t *testing.T) {
 		t.Fatalf("srvAIEmbeddingDim = %d, want embedding.DefaultEmbeddingDim = %d: the server and desktop app must store the same vector width",
 			srvAIEmbeddingDim, embedding.DefaultEmbeddingDim)
 	}
-	if got := (srvAIModelEmbedderAdapter{}).Dim(); got != srvAIEmbeddingDim {
-		t.Fatalf("srvAIModelEmbedderAdapter.Dim() = %d, want srvAIEmbeddingDim = %d", got, srvAIEmbeddingDim)
+	// Default (single shipped model): Qwen3 at its full width, as on the desktop.
+	t.Setenv(embedding.EmbedModelEnv, "")
+	if got := (srvAIModelEmbedderAdapter{}).Dim(); got != embedding.Qwen3EmbeddingDim {
+		t.Fatalf("Qwen3 adapter Dim() = %d, want %d", got, embedding.Qwen3EmbeddingDim)
+	}
+	if srvEmbeddingModelFilename() != embedding.Qwen3ModelFilename {
+		t.Fatalf("default embedding file = %q", srvEmbeddingModelFilename())
+	}
+	// The retired Gemma pin is ignored: still Qwen3 width and file.
+	t.Setenv(embedding.EmbedModelEnv, "gemma")
+	if got := (srvAIModelEmbedderAdapter{}).Dim(); got != embedding.Qwen3EmbeddingDim {
+		t.Fatalf("legacy gemma pin must be ignored: Dim() = %d", got)
+	}
+	if srvEmbeddingModelFilename() != embedding.Qwen3ModelFilename {
+		t.Fatalf("legacy gemma pin must be ignored: file = %q", srvEmbeddingModelFilename())
 	}
 }
 
 func TestSrvAIModelManagerEmbeddingModelPathUsesEnvOverride(t *testing.T) {
 	dataRoot := t.TempDir()
-	customPath := filepath.Join(t.TempDir(), embedding.DefaultModelFilename)
+	customPath := filepath.Join(t.TempDir(), srvEmbeddingModelFilename())
 	t.Setenv("MACLAW_EMBEDDING_MODEL_PATH", customPath)
 	if err := os.WriteFile(customPath, []byte("fake-embedding-model"), 0o644); err != nil {
 		t.Fatalf("write custom embedding model marker: %v", err)
 	}
 
 	manager := newSrvAIModelManager(dataRoot)
-	if got := manager.modelPath(embedding.DefaultModelFilename); got != customPath {
+	if got := manager.modelPath(srvEmbeddingModelFilename()); got != customPath {
 		t.Fatalf("embedding model path = %q, want env override %q", got, customPath)
 	}
 	status := manager.statusOneWithPath(srvAIModelEmbedding, corelib.AppConfig{})
@@ -333,7 +346,7 @@ func TestSrvAIModelManagerEmbeddingPathChangeDropsStaleRuntimeOnLoadFailure(t *t
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	badModelPath := filepath.Join(modelsDir, embedding.DefaultModelFilename)
+	badModelPath := filepath.Join(modelsDir, srvEmbeddingModelFilename())
 	if err := os.WriteFile(badModelPath, []byte("not-a-gguf"), 0o644); err != nil {
 		t.Fatalf("write bad embedding model: %v", err)
 	}
@@ -341,7 +354,7 @@ func TestSrvAIModelManagerEmbeddingPathChangeDropsStaleRuntimeOnLoadFailure(t *t
 	old := &closingSrvEmbedder{}
 	manager := newSrvAIModelManager(dataRoot)
 	manager.embeddingMgr = old
-	manager.embeddingPath = filepath.Join(dataRoot, "models", "old-"+embedding.DefaultModelFilename)
+	manager.embeddingPath = filepath.Join(dataRoot, "models", "old-"+srvEmbeddingModelFilename())
 
 	_, err := manager.embedBatch(context.Background(), corelib.AppConfig{}, []string{"hello"})
 	if err == nil {
@@ -426,7 +439,7 @@ func TestSrvAIModelManagerResetRuntimeClearsSharedManagers(t *testing.T) {
 	embeddingMgr := &closingSrvEmbedder{}
 	manager := newSrvAIModelManager(dataRoot)
 	manager.embeddingMgr = embeddingMgr
-	manager.embeddingPath = filepath.Join(dataRoot, "models", embedding.DefaultModelFilename)
+	manager.embeddingPath = filepath.Join(dataRoot, "models", srvEmbeddingModelFilename())
 	manager.asrMgr = &fakeSrvASRTranscriber{text: "ok"}
 	manager.ttsMgr = &fakeSrvTTSSynthesizer{wav: []byte("RIFF")}
 	manager.ttsVoice = "zm_yunxi"
@@ -494,7 +507,7 @@ func TestKnowledgeStoreUsesSharedAIModelEmbeddingRuntime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("fake-embedding-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvEmbeddingModelFilename()), []byte("fake-embedding-model"), 0o644); err != nil {
 		t.Fatalf("write embedding model marker: %v", err)
 	}
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -616,7 +629,7 @@ func TestSrvAIModelCloseCancelsActiveDownload(t *testing.T) {
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, embedding.DefaultModelFilename), []byte("ready-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, srvEmbeddingModelFilename()), []byte("ready-model"), 0o644); err != nil {
 		t.Fatalf("write ready model: %v", err)
 	}
 	if err := manager.startDownload(srvAIModelEmbedding, corelib.AppConfig{}, false); err == nil {
@@ -731,7 +744,7 @@ func TestSrvAIModelManagerRejectsEmptyModelFiles(t *testing.T) {
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	for _, filename := range []string{embedding.DefaultModelFilename, srvASRModelFilename, tts.TTSModelFilename} {
+	for _, filename := range []string{srvEmbeddingModelFilename(), srvASRModelFilename, tts.TTSModelFilename} {
 		if err := os.WriteFile(filepath.Join(modelsDir, filename), nil, 0o644); err != nil {
 			t.Fatalf("write empty model %s: %v", filename, err)
 		}
@@ -759,7 +772,7 @@ func TestSrvAIModelStatusReadySuppressesStaleDownloading(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvEmbeddingModelFilename()), []byte("model"), 0o644); err != nil {
 		t.Fatalf("write embedding model: %v", err)
 	}
 	manager := newSrvAIModelManager(dataRoot)
@@ -855,7 +868,7 @@ func TestSrvAIModelManagerUsesGlobalDownloadHubForSharedModels(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("download calls = %d, want 2: %#v", len(got), got)
 	}
-	if got[1] != "https://global.example/api/v1/models/"+embedding.DefaultModelFilename {
+	if got[1] != "https://global.example/api/v1/models/"+srvEmbeddingModelFilename() {
 		t.Fatalf("fallback URL = %q, want global hub", got[1])
 	}
 }

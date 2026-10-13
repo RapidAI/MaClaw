@@ -50,6 +50,12 @@ type Config struct {
 	// channel when embedding is also available. 0 -> DefaultFusionTreeDeadline.
 	// Never exceeds LLMTimeout when both are set.
 	FusionTreeDeadline time.Duration
+	// Shadow enables intent shadow mode (shadow.go). nil → read the
+	// MACLAW_INTENT_SHADOW* environment once; disabled by default.
+	Shadow *ShadowConfig
+	// LocalHeadProbe exposes the local intent head's top-1 for the head/L2
+	// composite override (head_hint_fix.go). Optional.
+	LocalHeadProbe LocalHeadProbeFunc
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -71,6 +77,7 @@ type UnifiedIntentClassifier struct {
 	llmContextFunc     LLMClassifyContextFunc
 	llmTimeout         time.Duration
 	fusionTreeDeadline time.Duration
+	localHeadProbe     LocalHeadProbeFunc
 
 	// Intent Tree text for Layer 3 tree reasoning (pre-built from definitions).
 	treeText string
@@ -136,6 +143,9 @@ type UnifiedIntentClassifier struct {
 	embeddingGeneration uint64
 	ready               bool         // set to true when the current anchor warmup completes
 	mu                  sync.RWMutex // protects ready, embeddingGeneration, and LLM callbacks
+
+	// shadow is the intent shadow-mode logger (nil = off, the default).
+	shadow atomic.Pointer[shadowLogger]
 }
 
 // New creates a UnifiedIntentClassifier. Starts background anchor warmup
@@ -164,6 +174,7 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		anchors:            BuildAnchorsFromDefinitions(defs),
 		llmFunc:            cfg.LLMFunc,
 		llmContextFunc:     cfg.LLMContextFunc,
+		localHeadProbe:     cfg.LocalHeadProbe,
 		llmTimeout:         timeout,
 		fusionTreeDeadline: fusionTreeDeadline,
 		treeText:           treeText,
@@ -185,6 +196,19 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		layers = append(layers, "none (semantic classifiers unavailable)")
 	}
 	log.Printf("[UnifiedIntentClassifier] available layers: %v", layers)
+
+	// Shadow mode is observation only; failing to open it never fails New.
+	shadowCfg, shadowOn := ShadowConfig{}, false
+	if cfg.Shadow != nil {
+		shadowCfg, shadowOn = *cfg.Shadow, cfg.Shadow.Enabled
+	} else {
+		shadowCfg, shadowOn = ShadowConfigFromEnv()
+	}
+	if shadowOn {
+		if err := u.EnableShadow(shadowCfg); err != nil {
+			log.Printf("[UnifiedIntentClassifier] intent shadow mode not enabled: %v", err)
+		}
+	}
 
 	// Start background anchor warmup if embedder is real.
 	if !isNoop {
@@ -349,6 +373,28 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 // belong to a replacement turn. The configured LLM timeout remains an upper
 // bound; the supplied context may only make that bound stricter.
 func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg MessageContext) ClassificationResult {
+	sh := u.shadow.Load()
+	if sh == nil {
+		return u.classifyContext(ctx, msg, nil)
+	}
+	// Shadow mode: observe the turn, then hand the final result to the
+	// shadow logger without blocking. The returned result is untouched.
+	st := &shadowTurn{}
+	result := u.classifyContext(ctx, msg, st)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[IntentShadow] recovered panic in finish: %v", r)
+			}
+		}()
+		sh.finish(st, msg.Text, result)
+	}()
+	return result
+}
+
+// classifyContext is ClassifyContext; st is non-nil only in shadow mode and
+// only records what the turn already computed.
+func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg MessageContext, st *shadowTurn) ClassificationResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -371,7 +417,13 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 	anchors := u.anchors
 	hasLLM := u.llmFunc != nil || u.llmContextFunc != nil
 	isReady := u.ready
+	headProbe := u.localHeadProbe
 	u.mu.RUnlock()
+	hintFix := headHintFixEnabled(emb)
+	// headTop* hold the local head's sub-threshold top-1 when Layer 3 was the
+	// local head and it abstained (head_hint_fix.go weak-hint veto).
+	var headTopLabel string
+	var headTopProb float64
 
 	// Determine which layers are available.
 	isNoop := embedding.IsNoop(emb)
@@ -391,12 +443,39 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 	var l2Result ClassificationResult
 	l2Ran := false
 	skipTree := false
+	// treeCtx carries the Layer 2 query vector to the Layer 3 callback so a
+	// local L3 on the same embedder need not embed the message again
+	// (IntentQueryEmbedding). Remote callbacks ignore it.
+	treeCtx := ctx
 	if canEmb {
 		var confident bool
-		l2Result, confident = classifyByEmbedding(emb, anchors, msg.Text)
+		var queryVec []float32
+		var anchorMaxCos map[string]float64
+		l2Result, confident, queryVec, anchorMaxCos = classifyByEmbeddingVecScores(emb, anchors, msg.Text)
 		l2Ran = true
+		if len(queryVec) > 0 {
+			l2Result.QueryVec = append([]float32(nil), queryVec...)
+		}
+		if st != nil {
+			st.modelID = embedderModelID(emb)
+			st.compute = embedding.EmbedderComputeMode(emb)
+			st.noteL2(emb, anchors, l2Result, confident, queryVec)
+		}
+		if len(queryVec) > 0 {
+			qe := newQueryEmbedding(emb, msg.Text, queryVec)
+			qe.AnchorMaxCos = anchorMaxCos
+			treeCtx = WithQueryEmbedding(ctx, qe)
+		}
 		if confident {
 			NormalizeDeclaredComposite(&l2Result)
+			if hintFix && headProbe != nil && isDeclaredCompositeResult(l2Result) {
+				if hl, hp, strong, ok := headProbe(treeCtx, msg.Text); ok {
+					if ov, changed := overrideCompositeByHead(l2Result, hl, hp, strong); changed {
+						log.Printf("[UnifiedIntentClassifier] %s", ov.Reason)
+						l2Result = ov
+					}
+				}
+			}
 			applyExecutionAffordances(msg.Text, &l2Result)
 			l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
 			u.cacheAndLog(cacheKey, msg.Text, &l2Result)
@@ -406,8 +485,14 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			// Policy skip is stable whether or not an LLM is configured.
 			skipTree = true
 			canTree = false
+			if st != nil {
+				st.outcome = "skipped_short_lookup"
+			}
 			log.Printf("[UnifiedIntentClassifier] Layer 2 short lookup skipped tree: text_len=%d primary=%s conf=%.2f", utf8.RuneCountInString(msg.Text), l2Result.Primary, l2Result.Confidence)
 		} else if !canTree {
+			if st != nil {
+				st.noteRemoteSkipped("not_configured")
+			}
 			// Embedding-only and unconfirmed: keep a lookup (or ≥lookup-floor
 			// office) guess as an explicit hint. Affordances and affinity would
 			// attach generate/tools and make downstream treat the guess as a
@@ -458,9 +543,19 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 		// the resend-recovery path.
 		if l2Ran && u.skipTreeForRecentEndpointFailure(cacheKeyScope(cacheKey)) {
 			treeSkippedSlowEndpoint = true
+			if st != nil {
+				st.noteRemoteSkipped("skipped_endpoint_window")
+			}
 			log.Printf("[UnifiedIntentClassifier] L3 skipped: recent tree endpoint failure within %s; using L2 fallback", treeEndpointFailureSkipWindow)
 		} else {
-			candidates, err := classifyByTreeWithTimeout(ctx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
+			var shadowT0 time.Time
+			if st != nil {
+				shadowT0 = time.Now()
+			}
+			candidates, err := classifyByTreeWithTimeout(treeCtx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
+			if st != nil {
+				st.noteRemote(ctx, candidates, err, time.Since(shadowT0))
+			}
 			if err == nil && len(candidates) > 0 {
 				// A tree verdict inside the budget is positive endpoint health
 				// evidence: lift the fast-degrade memory immediately instead of
@@ -511,12 +606,12 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				// hint keeps the turn alive and the governed surface can still
 				// expand (petition) from there.
 				if l2Ran {
-					if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(msg.Text, top.Label); contradicted {
+					if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(treeCtx, msg.Text, top.Label); contradicted {
 						log.Printf("[UnifiedIntentClassifier] tree verdict contradicted by local cross-check: text_len=%d verdict=%s(tree %.3f, local %.3f) local_leader=%s(%.3f)",
 							utf8.RuneCountInString(msg.Text), top.Label, top.Score, verdictScore, leader, leaderScore)
 						result := lookupHintOrUnknownFromL2(l2Result, false)
 						result.Reason = fmt.Sprintf("tree verdict %s(%.3f) contradicted by local leader %s(%.3f); keeping L2 hint", top.Label, top.Score, leader, leaderScore)
-						u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+						u.scheduleLateTreeVerdictWith(treeCtx, cacheKey, msg.Text)
 						u.cacheAndLog(cacheKey, msg.Text, &result)
 						return result
 					}
@@ -653,6 +748,9 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				return bestResult
 			}
 			log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v; keeping L2 lookup as hint or collapsing non-lookup", err)
+			if hl, hp, ok := LocalHeadUncertainTop(err); ok {
+				headTopLabel, headTopProb = hl, hp
+			}
 			if err := ctx.Err(); err != nil {
 				return cancelledClassificationResult(err)
 			}
@@ -685,7 +783,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			// detached read of the same payload is adopted instead of re-sent,
 			// P0-3); the fusion path below schedules the same scope again, which
 			// the claim deduplicates.
-			u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+			u.scheduleLateTreeVerdictWith(treeCtx, cacheKey, msg.Text)
 		}
 	}
 
@@ -698,6 +796,12 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 	// to unknown. Do not keep generate/coding secondaries or resolve tools.
 	if l2Ran {
 		result := lookupHintOrUnknownFromL2(l2Result, skipTree)
+		if hintFix && headTopLabel != "" {
+			if vetoed, changed := vetoL2HintByHead(result, headTopLabel, headTopProb); changed {
+				log.Printf("[UnifiedIntentClassifier] L2 hint vetoed by local head: hint=%s head=%s(%.2f)", result.Primary, headTopLabel, headTopProb)
+				result = vetoed
+			}
+		}
 		if skipTree {
 			// Policy skip is stable for this text, unlike an L3 timeout.
 			// cacheAndLog refuses all Degraded results; store the hint here,
@@ -715,7 +819,7 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			// A slow-endpoint skip deliberately does NOT schedule one: no tree
 			// request is in flight to adopt, and a speculative background
 			// re-send would add load exactly when the endpoint is struggling.
-			u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+			u.scheduleLateTreeVerdictWith(treeCtx, cacheKey, msg.Text)
 		}
 		u.cacheAndLog(cacheKey, msg.Text, &result)
 		return result
@@ -992,7 +1096,10 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 		}
 	}
 
-	result, _ := classifyByEmbedding(emb, anchors, msg.Text)
+	result, _, queryVec := classifyByEmbeddingVec(emb, anchors, msg.Text)
+	if len(queryVec) > 0 {
+		result.QueryVec = append([]float32(nil), queryVec...)
+	}
 	NormalizeDeclaredComposite(&result)
 	applyExecutionAffordances(msg.Text, &result)
 	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
@@ -1031,7 +1138,9 @@ func (u *UnifiedIntentClassifier) storeEmbOnly(key string, res *ClassificationRe
 		})
 		u.embOnlyCount.Store(1)
 	}
-	u.embOnlyCache.Store(key, res)
+	stored := *res
+	stored.QueryVec = nil
+	u.embOnlyCache.Store(key, &stored)
 }
 
 // Ready returns true when Layer 2 anchor embeddings are warmed up.
@@ -1069,6 +1178,16 @@ func (u *UnifiedIntentClassifier) SetFusionTreeDeadline(d time.Duration) {
 func (u *UnifiedIntentClassifier) SetLLMFunc(fn LLMClassifyFunc) {
 	u.mu.Lock()
 	u.llmFunc = fn
+	u.cacheEpoch.Add(1)
+	u.mu.Unlock()
+	u.InvalidateCache()
+}
+
+// SetLocalHeadProbe sets (or clears with nil) the local head probe used by
+// the head/L2 composite override (head_hint_fix.go).
+func (u *UnifiedIntentClassifier) SetLocalHeadProbe(fn LocalHeadProbeFunc) {
+	u.mu.Lock()
+	u.localHeadProbe = fn
 	u.cacheEpoch.Add(1)
 	u.mu.Unlock()
 	u.InvalidateCache()
@@ -1134,6 +1253,12 @@ func (u *UnifiedIntentClassifier) SetEmbedder(emb embedding.Embedder) {
 // DiagnoseScores returns all Layer 2 scores for debugging.
 // No side effects, no caching.
 func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]float64 {
+	return u.diagnoseScoresCtx(context.Background(), text)
+}
+
+// diagnoseScoresCtx is DiagnoseScores reusing the turn's Layer 2 query vector
+// when ctx carries a matching one (see query_embedding.go).
+func (u *UnifiedIntentClassifier) diagnoseScoresCtx(ctx context.Context, text string) map[IntentLabel]float64 {
 	scores := make(map[IntentLabel]float64)
 
 	u.mu.RLock()
@@ -1146,23 +1271,16 @@ func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]fl
 		return scores
 	}
 
-	queryVec, err := emb.Embed(text)
+	queryVec, _, err := IntentQueryEmbedding(ctx, emb, text)
 	if err != nil || queryVec == nil {
 		return scores
 	}
 
+	cal := intentScoreCalibrationFor(emb)
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
-			continue
+		if maxSim, ok := maxAnchorScore(queryVec, anchor, cal); ok {
+			scores[anchor.Label] = maxSim
 		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
-		}
-		scores[anchor.Label] = maxSim
 	}
 
 	return scores
@@ -1331,7 +1449,12 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 			log.Printf("[UnifiedIntentClassifier] cache store dropped by tombstone: text_len=%d primary=%s layer=%d",
 				len([]rune(text)), result.Primary, result.Layer)
 		} else {
-			u.cache.Store(cacheKey, result)
+			// Do not retain the Layer 2 vector in the long-lived classification
+			// cache (≈4 KB per turn). Live PreResolved still carries QueryVec
+			// for same-turn tool routing.
+			stored := *result
+			stored.QueryVec = nil
+			u.cache.Store(cacheKey, &stored)
 			u.cacheSource.Store(cacheKey, classificationProvenance(result))
 		}
 	}
@@ -1353,6 +1476,13 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 // configuration's classification even though the in-flight claim survives an
 // epoch bump.
 func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string) {
+	u.scheduleLateTreeVerdictWith(nil, cacheKey, text)
+}
+
+// scheduleLateTreeVerdictWith is scheduleLateTreeVerdict that forwards the
+// turn's Layer 2 query vector (if turnCtx carries one) to the detached tree
+// call, without inheriting turnCtx's cancellation.
+func (u *UnifiedIntentClassifier) scheduleLateTreeVerdictWith(turnCtx context.Context, cacheKey, text string) {
 	u.mu.RLock()
 	llmFn := u.llmFunc
 	llmContextFn := u.llmContextFunc
@@ -1377,7 +1507,11 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 		// POST is cancelled by foreground preemption and never caches a
 		// verdict. A nil gate (tests, non-desktop) starts immediately.
 		waitLateTreeForeground()
-		candidates, err := classifyByTreeWithTimeout(WithLateTree(context.Background()), llmContextFn, llmFn, treeText, text, timeout)
+		base := WithLateTree(context.Background())
+		if qe, ok := QueryEmbeddingFromContext(turnCtx); ok {
+			base = WithQueryEmbedding(base, qe)
+		}
+		candidates, err := classifyByTreeWithTimeout(base, llmContextFn, llmFn, treeText, text, timeout)
 		if err != nil || len(candidates) == 0 {
 			return
 		}
@@ -1396,7 +1530,7 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 		NormalizeDeclaredComposite(&result)
 		applyExecutionAffordances(text, &result)
 		result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
-		if discarded, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(text, result.Primary); discarded {
+		if discarded, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(context.Background(), text, result.Primary); discarded {
 			// A single background LLM sample must not become durable routing
 			// knowledge when the local channel both strongly supports a
 			// different label and shows no support for the verdict. Caching it
@@ -1425,8 +1559,8 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 // wide margin (2026-08-25: coding 0.95 cached over a local office 0.855
 // leader, gap 0.198; 2026-08-26: browser 0.90 served live over the same
 // leader, gap 0.180, HostRejected as no_feasible_provider).
-func (u *UnifiedIntentClassifier) verdictContradictedByLocal(text string, verdict IntentLabel) (discarded bool, leader IntentLabel, leaderScore, verdictScore float64) {
-	scores := u.DiagnoseScores(text)
+func (u *UnifiedIntentClassifier) verdictContradictedByLocal(ctx context.Context, text string, verdict IntentLabel) (discarded bool, leader IntentLabel, leaderScore, verdictScore float64) {
+	scores := u.diagnoseScoresCtx(ctx, text)
 	if len(scores) == 0 {
 		return false, "", 0, 0
 	}
@@ -1534,10 +1668,11 @@ func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelSc
 	anchors := u.anchors
 	u.mu.RUnlock()
 
-	queryVec, err := emb.Embed(text)
+	queryVec, err := embedIntentQuery(emb, text)
 	if err != nil || queryVec == nil {
 		return nil
 	}
+	cal := intentScoreCalibrationFor(emb)
 
 	type scored struct {
 		label IntentLabel
@@ -1546,17 +1681,9 @@ func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelSc
 	var scores []scored
 
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
-			continue
+		if maxSim, ok := maxAnchorScore(queryVec, anchor, cal); ok {
+			scores = append(scores, scored{anchor.Label, maxSim})
 		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
-		}
-		scores = append(scores, scored{anchor.Label, maxSim})
 	}
 
 	// Sort descending by score.

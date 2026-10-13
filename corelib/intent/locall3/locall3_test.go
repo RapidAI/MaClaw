@@ -1,0 +1,282 @@
+package locall3
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
+)
+
+type fakeEmb struct {
+	dim int
+	id  string
+}
+
+func (f fakeEmb) Embed(string) ([]float32, error) {
+	v := make([]float32, f.dim)
+	v[0] = 1
+	return v, nil
+}
+func (f fakeEmb) EmbedBatch(t []string) ([][]float32, error) {
+	out := make([][]float32, len(t))
+	for i := range t {
+		out[i], _ = f.Embed(t[i])
+	}
+	return out, nil
+}
+func (f fakeEmb) Dim() int        { return f.dim }
+func (f fakeEmb) Close()          {}
+func (f fakeEmb) ModelID() string { return f.id }
+
+// writeHead writes a linear head over dim inputs whose top-1 for the e0
+// vector is "file_ops" with p≈0.97.
+func writeHead(t *testing.T, dir, name, model string, dim int, extra map[string]any) string {
+	t.Helper()
+	labels := []string{"file_ops", "web_search", "unknown"}
+	w2 := make([][]float64, len(labels))
+	for i := range w2 {
+		w2[i] = make([]float64, dim)
+	}
+	w2[0][0] = 4
+	m := map[string]any{"labels": labels, "w2": w2, "b2": []float64{0, 0, 0},
+		"temperature": 1.0, "tau": 0.8, "tau_s": 0.99, "l2norm": true,
+		"sensitive": []string{"web_search"}, "embed_role": "classification"}
+	if model != "" {
+		m["embed_model"] = model
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	b, _ := json.Marshal(m)
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+var qwen = fakeEmb{dim: 1024, id: "Qwen3-Embedding-0.6B:1024:x:y"}
+var gemma = fakeEmb{dim: 768, id: "embeddinggemma-300m:768:x"}
+
+func remoteSpy(calls *int) intent.LLMClassifyContextFunc {
+	return func(context.Context, context.Context, string, string) (string, error) {
+		*calls++
+		return `{"top":[{"skill":"web_search","score":0.9}]}`, nil
+	}
+}
+
+func TestAttachPicksQwen3HeadAndRunsLocally(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	t.Setenv(intent.LocalTauSEnv, "")
+	dir := t.TempDir()
+	writeHead(t, dir, "head_mlp_gemmacls_GK.json", "", 768, nil)
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
+	rt := NewWithMode(dir, intent.LocalL3On)
+	h, err := rt.Attach(qwen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") || h.TauS != intent.DefaultLocalTauS {
+		t.Fatalf("head %s tau_s %.2f", h.ID, h.TauS)
+	}
+	calls := 0
+	fn := rt.ContextFunc(remoteSpy(&calls))
+	out, err := fn(context.Background(), context.Background(), "sys", "open the file")
+	if err != nil || calls != 0 || !strings.Contains(out, "file_ops") {
+		t.Fatalf("out=%s err=%v remote calls=%d", out, err, calls)
+	}
+}
+
+// Legacy heads (xf / GK / KG) are never loaded: with only those on disk
+// there is no local head (L3 stays remote) until the shipped r7 head lands,
+// and then r7 attaches.
+func TestAttachIgnoresLegacyHeads(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	dir := t.TempDir()
+	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	writeHead(t, dir, "head_mlp_qwen3go_xf.json", "qwen3", 1024, nil)
+	if h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen); err == nil || h != nil {
+		t.Fatalf("legacy head attached: h=%v err=%v", h, err)
+	}
+	writeHead(t, dir, intent.ShippedLocalHeadName, "qwen3", 1024, nil)
+	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if err != nil || !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") {
+		t.Fatalf("h=%v err=%v", h, err)
+	}
+}
+
+// The retired EmbeddingGemma heads are never auto-selected: with no Gemma
+// default head names, a (legacy) Gemma embedder gets no head even when an old
+// head_mlp_gemmacls_* file is still on disk.
+func TestRetiredGemmaHeadNotAutoSelected(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	dir := t.TempDir()
+	writeHead(t, dir, "head_mlp_gemmacls_GK.json", "", 768, nil)
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
+	if h, err := NewWithMode(dir, intent.LocalL3On).Attach(gemma); err == nil && h != nil {
+		t.Fatalf("retired Gemma head must not attach: h=%v", h.ID)
+	}
+	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if err != nil || !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") {
+		t.Fatalf("qwen3 head: h=%v err=%v", h, err)
+	}
+}
+
+func TestMismatchRefused(t *testing.T) {
+	dir := t.TempDir()
+	// Only a Gemma head available for a Qwen3 embedder.
+	g := writeHead(t, dir, "head_mlp_gemmacls_GK.json", "", 768, nil)
+	// A head that claims qwen3 but has the Gemma width.
+	bad := writeHead(t, dir, "head_wrongdim.json", "qwen3", 768, nil)
+	// A head with the right width but trained on the other family.
+	other := writeHead(t, dir, "head_other.json", "gemma", 1024, nil)
+	t.Setenv(intent.LocalHeadEnv, strings.Join([]string{g, bad, other}, ","))
+	rt := NewWithMode("", intent.LocalL3On)
+	if _, err := rt.Attach(qwen); !errors.Is(err, intent.ErrHeadMismatch) {
+		t.Fatalf("want ErrHeadMismatch, got %v", err)
+	}
+	if h, _ := rt.Active(); h != nil {
+		t.Fatal("mismatched head must not be active")
+	}
+	// on → remote stays L3; strict → never remote.
+	calls := 0
+	if _, err := rt.ContextFunc(remoteSpy(&calls))(context.Background(), nil, "", "x"); err != nil || calls != 1 {
+		t.Fatalf("on-mode should use remote: err=%v calls=%d", err, calls)
+	}
+	st := NewWithMode("", intent.LocalL3Strict)
+	st.Attach(qwen)
+	if _, err := st.ContextFunc(remoteSpy(&calls))(context.Background(), nil, "", "x"); !errors.Is(err, ErrNotReady) || calls != 1 {
+		t.Fatalf("strict: err=%v calls=%d", err, calls)
+	}
+	if st.LLMFunc(func(string, string) (string, error) { return "", nil }) != nil {
+		t.Fatal("strict mode must drop the remote LLMFunc")
+	}
+}
+
+func TestRollbackOffUsesRemote(t *testing.T) {
+	t.Setenv(intent.LocalL3Env, "0")
+	dir := t.TempDir()
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
+	rt := New(dir)
+	if rt.Mode() != intent.LocalL3Off {
+		t.Fatalf("mode %s", rt.Mode())
+	}
+	if h, err := rt.Attach(qwen); h != nil || err != nil {
+		t.Fatal("off: attach is a no-op")
+	}
+	calls := 0
+	rt.ContextFunc(remoteSpy(&calls))(context.Background(), nil, "", "x")
+	if calls != 1 {
+		t.Fatal("off must call the remote tree LLM")
+	}
+}
+
+func TestHumanCalibratedTauSKept(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	t.Setenv(intent.LocalTauSEnv, "")
+	dir := t.TempDir()
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, map[string]any{
+		"tau_s": 0.97, "calibration": map[string]any{"source": "human_labels"}})
+	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if err != nil || h.TauS != 0.97 {
+		t.Fatalf("h=%v err=%v", h, err)
+	}
+	t.Setenv(intent.LocalTauSEnv, "0.99")
+	h2, _ := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if h2.TauS != 0.99 {
+		t.Fatalf("env override: %v", h2.TauS)
+	}
+}
+
+func TestEmbedderFamily(t *testing.T) {
+	if embedding.EmbedderFamily(qwen) != embedding.FamilyQwen3 || embedding.EmbedderFamily(gemma) != embedding.FamilyGemma {
+		t.Fatal("family by ModelID")
+	}
+	if embedding.EmbedderFamily(embedding.NoopEmbedder{}) != "" {
+		t.Fatal("noop")
+	}
+}
+
+// A head written by scripts/intent_shadow_recalibrate.py (set
+// MACLAW_TEST_RECAL_HEAD) loads, is preferred as an _xf head, and keeps its
+// human-calibrated tau_s.
+func TestRecalibratedHeadFile(t *testing.T) {
+	src := os.Getenv("MACLAW_TEST_RECAL_HEAD")
+	if src == "" {
+		t.Skip("MACLAW_TEST_RECAL_HEAD not set")
+	}
+	t.Setenv(intent.LocalHeadEnv, "")
+	t.Setenv(intent.LocalTauSEnv, "")
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Tau         float64 `json:"tau"`
+		TauSv       float64 `json:"tau_s"`
+		Calibration struct{ Source string }
+	}
+	json.Unmarshal(b, &f)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, intent.ShippedLocalHeadName), b, 0o644)
+	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") || h.CalibrationSource != "human_labels" || h.TauS != f.TauSv || h.Tau != f.Tau {
+		t.Fatalf("id=%s src=%q tau=%v tau_s=%v want %v/%v", h.ID, h.CalibrationSource, h.Tau, h.TauS, f.Tau, f.TauSv)
+	}
+	t.Logf("recalibrated head %s tau=%.3f tau_s=%.3f", h.ID, h.Tau, h.TauS)
+}
+
+type fakeComputeEmb struct {
+	fakeEmb
+	mode string
+}
+
+func (f fakeComputeEmb) ComputeMode() string { return f.mode }
+
+// τ is pass-mode sensitive: the head recalibrated under the live compute
+// mode is preferred over one calibrated under another mode (explicit
+// MACLAW_INTENT_LOCAL_HEAD file list; a head dir only offers the shipped head).
+func TestHeadCalibratedForLiveComputeModePreferred(t *testing.T) {
+	dir := t.TempDir()
+	p512 := writeHead(t, dir, "head_mlp_qwen3go_xf_avx512.json", "qwen3", 1024, map[string]any{
+		"calibration": map[string]any{"source": "human_labels", "compute": "q8p:avx512:2pass"}})
+	p2 := writeHead(t, dir, "head_mlp_qwen3go_xf_avx2.json", "qwen3", 1024, map[string]any{
+		"calibration": map[string]any{"source": "human_labels", "compute": "q8p:avx2:1pass"}})
+	t.Setenv(intent.LocalHeadEnv, p512+","+p2)
+	for mode, want := range map[string]string{
+		"q8p:avx2:1pass":   "head_mlp_qwen3go_xf_avx2.json@",
+		"q8p:avx512:2pass": "head_mlp_qwen3go_xf_avx512.json@",
+		"q8p:sdot:1pass":   "head_mlp_qwen3go_xf_avx512.json@", // no match: first candidate
+	} {
+		rt := NewWithMode(dir, intent.LocalL3On)
+		h, err := rt.Attach(fakeComputeEmb{qwen, mode})
+		if err != nil || !strings.HasPrefix(h.ID, want) {
+			t.Fatalf("%s: got %v err=%v want %s", mode, h, err, want)
+		}
+		if mode == "q8p:sdot:1pass" && !strings.Contains(rt.Describe(), "WARNING") {
+			t.Fatalf("mismatched compute mode should warn: %s", rt.Describe())
+		}
+	}
+}
+
+func TestProbeFuncOffNilAndUnattachedNotOK(t *testing.T) {
+	if NewWithMode(t.TempDir(), intent.LocalL3Off).ProbeFunc() != nil {
+		t.Fatal("mode off must not install a head probe")
+	}
+	p := NewWithMode(t.TempDir(), intent.LocalL3On).ProbeFunc()
+	if p == nil {
+		t.Fatal("mode on must install a probe")
+	}
+	if _, _, _, ok := p(context.Background(), "hello"); ok {
+		t.Fatal("unattached runtime must report ok=false")
+	}
+}

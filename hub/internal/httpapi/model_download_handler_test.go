@@ -204,7 +204,7 @@ func TestPublicModelDownloadStatusHandlerHidesAdminOnlyFields(t *testing.T) {
 	if err := os.MkdirAll(logsDir, 0755); err != nil {
 		t.Fatalf("mkdir logs dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, "embeddinggemma-300M-Q8_0.gguf"), []byte("a"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, "Qwen3-Embedding-0.6B-Q8_0.gguf"), []byte("a"), 0644); err != nil {
 		t.Fatalf("write model: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(modelsDir, ".models-initialized"), []byte("1"), 0644); err != nil {

@@ -79,6 +79,9 @@ func ensureMatmulPool() {
 	})
 }
 
+// PoolWorkers is the matmul pool width.
+func PoolWorkers() int { return poolWorkers() }
+
 func poolWorkers() int {
 	ensureMatmulPool()
 	n := int(atomic.LoadInt32(&matMulMaxParallel))

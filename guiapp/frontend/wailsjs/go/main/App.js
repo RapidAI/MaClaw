@@ -915,6 +915,10 @@ export function DeleteComputerUseLogArtifact(arg1) {
   return window['go']['main']['App']['DeleteComputerUseLogArtifact'](arg1);
 }
 
+export function DeleteEmbeddingModel() {
+  return window['go']['main']['App']['DeleteEmbeddingModel']();
+}
+
 export function DeleteExpert(arg1) {
   return window['go']['main']['App']['DeleteExpert'](arg1);
 }

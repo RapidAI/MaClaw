@@ -745,7 +745,7 @@ function Write-RemoteScript {
         ': "${DEPLOY_HUB:=0}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
-        ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"',
+        ': "${HUB_MODEL_FILES:=Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r7.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"',
         ': "${HUB_CONFIG_BASENAME:=}"',
         ': "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"',
         ': "${HUB_BINARY_NAME:=maclaw-hub}"',
@@ -1788,7 +1788,7 @@ $tarExe = Require-Tool 'tar.exe'
 $sshUser = Get-EnvOrDefault 'REMOTE_USER' 'root'
 $sshPort = [int](Get-EnvOrDefault 'REMOTE_PORT' '22')
 $hubModelBaseUrl = Get-EnvOrDefault 'HUB_MODEL_BASE_URL' 'https://github.com/RapidAI/MaClaw/releases/download/Model_Release'
-$hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip'
+$hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r7.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip'
 
 $brandKey = $Brand.ToLowerInvariant()
 $brandBuildTag = ''
