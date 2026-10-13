@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -374,7 +375,7 @@ const gpuMinMACs = 4 << 20
 // gpuConv1D runs one weight-normed conv1d (groups=1) on the GPU:
 // out = conv(x) (+ residual when res != nil). w is [outC][inC*k].
 func (m *Model) gpuConv1D(out, x, res []float32, w, bias []float32, key string, inC, inT, outC, outT, k, stride, pad, dil int) (bool, error) {
-	if outC*outT*inC*k < gpuMinMACs {
+	if outC*outT*inC*k < gpuMinMACs || !gpuScopeOK(key) {
 		return false, nil
 	}
 	g := m.gpuState()
@@ -410,7 +411,7 @@ func (m *Model) gpuConv1D(out, x, res []float32, w, bias []float32, key string, 
 
 // gpuConvT1D runs a groups=1 transposed conv1d; w is [inC][outC][k].
 func (m *Model) gpuConvT1D(out, x, w, bias []float32, key string, inC, inT, outC, outT, k, stride, pad int) (bool, error) {
-	if outC*outT*inC*k/stride < gpuMinMACs {
+	if outC*outT*inC*k/stride < gpuMinMACs || !gpuScopeOK(key) {
 		return false, nil
 	}
 	g := m.gpuState()
@@ -459,4 +460,18 @@ func (m *Model) gpuConvT1D(out, x, w, bias []float32, key string, inC, inT, outC
 	}
 	copy(out, by.Float32s()[:outC*outT])
 	return true, nil
+}
+
+// gpuScopeOK limits single-op offload by weight-name substring
+// (KOKORO_METAL_SCOPE, debugging aid; empty = all). The prosody predictor
+// (F0/N) stays on the CPU by default: its outputs are integrated into the
+// harmonic source phase, so ~1e-6 conv rounding differences grow into
+// inaudible but measurable waveform drift (SNR ~30 dB vs ~75 dB without),
+// while it is only a few percent of runtime. KOKORO_METAL_PREDICTOR=1 opts in.
+func gpuScopeOK(key string) bool {
+	if strings.Contains(key, "predictor") && os.Getenv("KOKORO_METAL_PREDICTOR") != "1" {
+		return false
+	}
+	sc := os.Getenv("KOKORO_METAL_SCOPE")
+	return sc == "" || strings.Contains(key, sc)
 }
