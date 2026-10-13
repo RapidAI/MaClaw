@@ -1,5 +1,5 @@
 name: paper-review
-description: "论文深度解读 Skill — 下载论文PDF → LLM深度解读（问题/创新点/方法原理/实验分析）→ PDF图片提取 → 生成组会PPT → 生成解读音频MP3。端到端学术论文解读工具。"
+description: "论文深度解读 Skill — 下载论文PDF → LLM深度解读（问题/创新点/方法原理/实验分析）→ PDF图片提取 → 生成组会PPT。端到端学术论文解读工具。"
 triggers:
     - 论文解读
     - paper review
@@ -7,12 +7,11 @@ triggers:
     - 组会PPT
     - 研读论文
     - read this paper and make slides
-    - 解读论文并生成PPT和音频
 steps:
     # Step 0: 安装依赖
     - action: bash
       params:
-        command: pip install requests PyPDF2 python-pptx Pillow pydub edge-tts pdf2image 2>&1 | tail -5
+        command: pip install requests PyPDF2 python-pptx Pillow pdf2image 2>&1 | tail -5
         timeout: 120000
       continue_on_error: true
 
@@ -55,13 +54,6 @@ steps:
         command: python "{baseDir}/steps/generate_ppt.py" --review "{{output_dir}}/*_review.json" --images "{{output_dir}}/images" --output "{{output_dir}}"
         timeout: 300000
       continue_on_error: false
-
-    # Step 6: 生成解读音频
-    - action: bash
-      params:
-        command: python "{baseDir}/steps/generate_audio.py" --text "{{output_dir}}/*_review.md" --output "{{output_dir}}"
-        timeout: 300000
-      continue_on_error: true
 
 status: active
 platforms:

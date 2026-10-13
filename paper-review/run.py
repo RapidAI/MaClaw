@@ -63,7 +63,7 @@ class StepRunner:
         """Extract output file paths from step stdout."""
         paths = {}
         for line in stdout.split("\n"):
-            for prefix in ["PDF_PATH:", "TEXT_PATH:", "REVIEW_JSON:", "REVIEW_MD:", "PPT_PATH:", "AUDIO_PATH:", "IMAGES_DIR:"]:
+            for prefix in ["PDF_PATH:", "TEXT_PATH:", "REVIEW_JSON:", "REVIEW_MD:", "PPT_PATH:", "IMAGES_DIR:"]:
                 if prefix in line:
                     path = line.split(prefix, 1)[1].strip()
                     paths[prefix.replace(":", "").lower()] = path
@@ -156,20 +156,6 @@ class StepRunner:
                 ppt_path = ppts[0]
         results_summary.append(("Step 5: 鐢熸垚PPT", "鉁? if success and ppt_path else "鉂?, ppt_path))
 
-        # Step 6: Generate Audio
-        if md_path:
-            success, stdout = self.run_python(
-                "generate_audio.py", ["--text", md_path, "--output", self.output_dir],
-                "鐢熸垚瑙ｈ闊抽", timeout=300
-            )
-        paths = self.extract_output_paths(stdout)
-        audio_path = paths.get("audio_path", "")
-        if not audio_path:
-            audios = self.find_output_files("*_audio.mp3")
-            if audios:
-                audio_path = audios[0]
-        results_summary.append(("Step 6: 鐢熸垚闊抽", "鉁? if audio_path else "鈿狅笍", audio_path))
-
         self.print_summary(results_summary)
         return True
 
@@ -201,7 +187,6 @@ def main():
     parser = argparse.ArgumentParser(description="Paper Review 鈥?绔埌绔鏂囨繁搴﹁В璇?)
     parser.add_argument("--url", required=True, help="璁烘枃URL (arXiv/DOI/鐩存帴PDF閾炬帴)")
     parser.add_argument("--output", default=".", help="杈撳嚭鐩綍")
-    parser.add_argument("--skip-audio", action="store_true", help="璺宠繃闊抽鐢熸垚")
     parser.add_argument("--skip-images", action="store_true", help="璺宠繃鍥剧墖鎻愬彇")
     args = parser.parse_args()
 

@@ -1,6 +1,6 @@
 ---
 name: paper-review
-description: "论文深度解读 Skill — 下载论文PDF → LLM深度解读（问题/创新点/方法原理/实验分析）→ PDF图片提取 → 生成组会PPT → 生成解读音频MP3。端到端学术论文解读工具。"
+description: "论文深度解读 Skill — 下载论文PDF → LLM深度解读（问题/创新点/方法原理/实验分析）→ PDF图片提取 → 生成组会PPT。端到端学术论文解读工具。"
 license: MIT
 requires_env: OPENAI_API_KEY
 triggers:
@@ -19,7 +19,7 @@ metadata:
 
 # Paper Review — 论文深度解读工具
 
-端到端论文解读流程：下载论文 → LLM 深度解读 → 提取图片 → 生成 PPT → 生成 MP3 音频。
+端到端论文解读流程：下载论文 → LLM 深度解读 → 提取图片 → 生成 PPT。
 
 ## 架构概览
 
@@ -52,18 +52,13 @@ metadata:
 │  Step 5: 生成组会PPT (.pptx)  │  (深度解读内容 + 图片嵌入)
 └────────┬─────────────────────┘
          ▼
-┌──────────────────────────────┐
-│  Step 6: 生成解读音频 (.mp3)  │  (TTS 合成为自然语音)
-└────────┬─────────────────────┘
-         ▼
       输出文件清单
 ```
 
 ## 环境要求
 
 - Python 3.8+
-- 依赖安装：`pip install requests PyPDF2 python-pptx Pillow pydub`
-- 如使用 Edge TTS 音频：`pip install edge-tts`
+- 依赖安装：`pip install requests PyPDF2 python-pptx Pillow pdf2image`
 - (可选) pdf2image + poppler 用于图片提取
 
 ## Step 1: 下载 PDF
@@ -154,16 +149,6 @@ PPT 结构（10-15页）：
 
 输出：`{{paper_id}}_presentation.pptx`
 
-## Step 6: 生成解读音频
-
-将完整解读文本合成为 MP3 音频：
-
-```bash
-python "{baseDir}/steps/generate_audio.py" --text "{{review_md}}" --output "{{output_dir}}"
-```
-
-输出：`{{paper_id}}_audio.mp3`
-
 ## 完整运行
 
 一步到位运行所有步骤：
@@ -182,7 +167,6 @@ python "{baseDir}/run.py" --url "{{paper_url}}" --output "{{output_dir}}"
 | `{{paper_id}}_review.json` | 结构化解读数据 |
 | `images/` | 提取的论文图片素材 |
 | `{{paper_id}}_presentation.pptx` | 组会 PPT |
-| `{{paper_id}}_audio.mp3` | 解读音频 |
 
 ## 自定义配置
 
@@ -193,5 +177,4 @@ python "{baseDir}/run.py" --url "{{paper_url}}" --output "{{output_dir}}"
 | `OPENAI_BASE_URL` | API 基础 URL | 由 maclaw proxy 自动注入 |
 | `OPENAI_API_KEY` | API 密钥 | 由 maclaw proxy 自动注入 |
 | `OPENAI_MODEL` | 模型名称 | `gpt-4o-mini` |
-| `TTS_ENGINE` | TTS 引擎 (openai/edge) | `edge` |
 | `PPT_LANG` | PPT 语言 (zh/en) | `zh` |
