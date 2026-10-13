@@ -818,6 +818,44 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 			tensor.SoftmaxWeightedSum128(out[t*qStride+hOff:t*qStride+hOff+headDim], sc[:n], vBase, n, kvStride, headDim)
 		}
 	}
+	if headDim == 128 && qwen3AttnTile && tensor.AttnTile4Available() {
+		// 4-query tiles (tensor/attn_tile.go); units = (head, 4-row block).
+		nTB := (seq + 3) / 4
+		units := nHeads * nTB
+		unit := func(u int, sc []float32) {
+			b := nTB - 1 - u/nHeads // largest (latest) blocks first
+			h := u % nHeads
+			t0, t1 := b*4, min(b*4+4, seq)
+			var nk [4]int
+			for t := t0; t < t1; t++ {
+				nk[t-t0] = off + t + 1
+			}
+			kOff := (h / group) * headDim
+			hOff := h * headDim
+			tensor.AttnCausal4(out[t0*qStride+hOff:], qStride, qb[t0*qStride+hOff:], qStride,
+				kb[kOff:], vb[kOff:], kvStride, nk[:t1-t0], scale, sc)
+		}
+		need := tensor.AttnScratch4(off + seq)
+		if maxWorkers == 1 || seq < 32 {
+			sc := make([]float32, need)
+			for u := 0; u < units; u++ {
+				unit(u, sc)
+			}
+			return
+		}
+		var next atomic.Int64
+		tensor.ParallelRangesN(min(tensor.PoolWorkers(), units), func() {
+			sc := make([]float32, need)
+			for {
+				u := int(next.Add(1)) - 1
+				if u >= units {
+					return
+				}
+				unit(u, sc)
+			}
+		})
+		return
+	}
 	if maxWorkers == 1 || seq < 32 {
 		for h := 0; h < nHeads; h++ {
 			rowsT(h, 0, seq, scores)
@@ -857,6 +895,10 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 	}
 	wg.Wait()
 }
+
+// qwen3AttnTile: 4-query tiled attention where a kernel exists (arm64);
+// MACLAW_QWEN3_ATTN_TILE=0 disables.
+var qwen3AttnTile = os.Getenv("MACLAW_QWEN3_ATTN_TILE") != "0"
 
 // qwen3AttnPool: dynamic pooled attention (default on arm64; set
 // MACLAW_QWEN3_ATTN_POOL=1/0 to force).
