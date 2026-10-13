@@ -1093,6 +1093,21 @@
     border-color: color-mix(in srgb, var(--theme-danger) 32%, transparent);
 }
 
+/* Context note strip, e.g. the assistant still runs on a locally imported
+   agent that is intentionally not managed here. Same scoped-pair structure as
+   the danger colours above, so later (0,1,0) shell repaints cannot retint it. */
+.llm-config-alert--info {
+    background: var(--theme-info-bg);
+    color: var(--theme-text-secondary);
+    border-color: color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+}
+
+.settings-content .llm-config-alert--info {
+    color: var(--theme-text-secondary);
+    background: var(--theme-info-bg);
+    border-color: color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+}
+
 .llm-config-dialog-overlay {
     position: fixed;
     top: 0;

@@ -2,7 +2,7 @@ import { useCallback, useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { BotRailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, InviteGiftIcon, CheckinRailIcon } from './SidebarNavIcons';
+import { BotRailIcon, CheckinRailIcon, ConnectMenuHardwareIcon, ConnectMenuIMIcon, ConnectMenuMailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, InviteGiftIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { connectSoloActive } from '../../utils/settingsSolo';
@@ -16,18 +16,6 @@ import type { SidebarHubCheckin } from '../../types/appShell';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
-
-const ConnectMenuIMIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M5 6.5h14v9H8l-3 2.5z" />
-    </svg>
-);
-
-const ConnectMenuMailIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3.5" y="5.5" width="17" height="13" rx="1.5" /><path d="m4 7 8 6 8-6" />
-    </svg>
-);
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -53,7 +41,7 @@ type SidebarNavRailProps = {
     utilitiesLabel?: string;
     /** Current settings tab, used to highlight the library entry for the Knowledge page. */
     settingsTab?: string;
-    /** Tab that asked to hide the settings category rail. Solo IM or email highlights 接入. */
+    /** Tab that asked to hide the settings category rail. Solo IM, email or hardware highlights 连接. */
     settingsNavSoloTab?: string;
     /** Live background-task count. The rail adds in-progress bot tasks itself. */
     runningTaskCount?: number;
@@ -156,9 +144,10 @@ export const SidebarNavRail = ({
     const inviteTitle = lang === 'zh-Hans' ? '推荐好友注册' : lang === 'zh-Hant' ? '推薦好友註冊' : 'Refer friends';
     const botTitle = lang === 'zh-Hans' ? 'Bot为24小时驻守远程电脑上的数字助理。' : lang === 'zh-Hant' ? 'Bot為24小時駐守遠端電腦上的數位助理。' : 'A bot is a digital assistant stationed on the remote computer around the clock.';
     const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
-    const connectLabel = lang === 'en' ? 'Connect' : '接入';
-    const connectTitle = lang === 'en' ? 'Connect chat and email' : lang === 'zh-Hant' ? '接入即時通訊和郵箱' : '接入即时通讯和邮箱';
+    const connectLabel = lang === 'en' ? 'Connect' : lang === 'zh-Hant' ? '連接' : '连接';
+    const connectTitle = lang === 'en' ? 'Connect chat, email and hardware' : lang === 'zh-Hant' ? '連接即時通訊、郵箱和硬體' : '连接即时通讯、邮箱和硬件';
     const connectEmailLabel = lang === 'en' ? 'Email' : lang === 'zh-Hant' ? '郵箱' : '邮箱';
+    const connectHardwareLabel = lang === 'en' ? 'Hardware' : lang === 'zh-Hant' ? '硬體' : '硬件';
     const connectSolo = connectSoloActive(navTab, settingsNavSoloTab || '');
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
     const mobileDocsLabel = lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive';
@@ -227,11 +216,12 @@ export const SidebarNavRail = ({
     const connectMenuItems: SystemMenuItem[] = [
         { id: 'im', icon: <ConnectMenuIMIcon />, label: 'IM', visible: true },
         { id: 'email', icon: <ConnectMenuMailIcon />, label: connectEmailLabel, visible: true },
+        { id: 'hardware', icon: <ConnectMenuHardwareIcon />, label: connectHardwareLabel, visible: true },
     ];
     const selectConnectMenuItem = (id: string) => {
-        openSettingsTab(id === 'email' ? 'email' : 'im', { hideSettingsNav: true });
+        openSettingsTab(id === 'email' ? 'email' : id === 'hardware' ? 'hardware' : 'im', { hideSettingsNav: true });
     };
-    const connectActiveId = navTab === 'settings' && (settingsTab === 'im' || settingsTab === 'email') ? settingsTab : undefined;
+    const connectActiveId = navTab === 'settings' && (settingsTab === 'im' || settingsTab === 'email' || settingsTab === 'hardware') ? settingsTab : undefined;
     return (
         <div className="mc-nav-rail" style={{
             width: `${SIDEBAR_NAV_RAIL_WIDTH}px`,

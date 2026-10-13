@@ -7,12 +7,10 @@ import {
 } from '../settingsTabs';
 
 describe('getSettingsTabOptions', () => {
-    it('places migration after security and before system', () => {
+    it('places the system group last in the rail order', () => {
         const ids = getSettingsTabOptions('en').map((tab) => tab.id);
-        const securityIndex = ids.indexOf('security');
 
-        expect(securityIndex).toBeGreaterThanOrEqual(0);
-        expect(ids.slice(securityIndex, securityIndex + 3)).toEqual(['security', 'migration', 'system']);
+        expect(ids.slice(-5)).toEqual(['redeem', 'tokenBank', 'security', 'system', 'assetManagement']);
     });
 
     it('uses the Chinese migration label', () => {
@@ -69,6 +67,16 @@ describe('getSettingsTabOptions', () => {
         expect(getSettingsTabOptions('en').find((tab) => tab.id === 'tokenBank')?.label).toBe('Token Bank');
     });
 
+    it('keeps memory, knowledge, MIS data, and migration in Data & Memory', () => {
+        const zh = getSettingsTabOptions('zh-Hans');
+        const data = zh.filter((tab) => tab.group === 'data').map((tab) => tab.id);
+        expect(data).toEqual(['memory', 'knowledge', 'misData', 'migration']);
+
+        const migration = zh.find((tab) => tab.id === 'migration');
+        expect(migration?.label).toBe('迁出与迁入');
+        expect(migration?.groupLabel).toBe('数据与记忆');
+    });
+
     it('groups employees, IM, email, and hardware under Integrations', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const integration = zh.filter((tab) => tab.group === 'integration').map((tab) => tab.id);
@@ -92,7 +100,7 @@ describe('getSettingsTabOptions', () => {
             .map((tab) => tab.group)
             .filter((group, index, all): group is NonNullable<typeof group> => Boolean(group) && all.indexOf(group) === index);
 
-        expect(groups).toEqual(['essentials', 'ai', 'data', 'system', 'integration']);
+        expect(groups).toEqual(['essentials', 'ai', 'data', 'integration', 'system']);
     });
 });
 

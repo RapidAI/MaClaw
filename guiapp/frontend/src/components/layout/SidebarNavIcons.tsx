@@ -174,3 +174,21 @@ export function CheckinRailIcon() {
     return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M8 2.5v4"/><path d="M16 2.5v4"/><path d="M3 9.5h18"/><path d="M9 15l2.2 2.2L15.5 13"/></svg>;
 }
 
+/** 连接菜单 — 会话气泡、信封、芯片，与轨道项图标区分开。 */
+export const ConnectMenuIMIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 6.5h14v9H8l-3 2.5z" />
+    </svg>
+);
+
+export const ConnectMenuMailIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3.5" y="5.5" width="17" height="13" rx="1.5" /><path d="m4 7 8 6 8-6" />
+    </svg>
+);
+
+export const ConnectMenuHardwareIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" /><circle cx="12" cy="12" r="2" /><path d="M9.5 6.5v-3M14.5 6.5v-3M9.5 20.5v-3M14.5 20.5v-3M6.5 9.5h-3M6.5 14.5h-3M20.5 9.5h-3M20.5 14.5h-3" />
+    </svg>
+);

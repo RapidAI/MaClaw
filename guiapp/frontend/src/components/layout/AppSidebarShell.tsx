@@ -128,7 +128,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     utilitiesLabel?: string;
     /** Current settings tab, forwarded to the nav rail for the library menu highlight. */
     settingsTab?: string;
-    /** Solo settings tab. IM or email here highlights 接入 instead of 设置. */
+    /** Solo settings tab. IM, email or hardware here highlights 连接 instead of 设置. */
     settingsNavSoloTab?: string;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
     onSwitchProvider?: (providerID: string) => void;

@@ -149,9 +149,9 @@ type SidebarPrimaryNavProps = {
     connectTitle?: string;
     connectMenuOpen?: boolean;
     onToggleConnectMenu?: (target: HTMLElement) => void;
-    /** Solo IM or solo mailbox, opened from 接入. */
+    /** Solo IM, mailbox or hardware, opened from 连接. */
     connectSoloActive?: boolean;
-    /** Current settings tab, used to mark IM or 邮箱 inside the connect menu. */
+    /** Current settings tab, used to mark IM, 邮箱 or 硬件 inside the connect menu. */
     settingsTab?: string;
 };
 
@@ -336,7 +336,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
             <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={employeesActive} onClick={() => { switchTool('ai'); requestRailMiddleFocus('employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
             <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />
             <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={libraryMenuOpen || navTab === 'files' || knowledgeActive || latexTemplatesActive} current={navTab === 'files' || knowledgeActive || latexTemplatesActive} onClick={event => { if (onToggleLibraryMenu) onToggleLibraryMenu(event.currentTarget); }} title={labels.files} testId="sidebar-files-nav" menuTrigger={{ expanded: libraryMenuOpen, controls: 'library-popup-menu' }} />
-            <SemanticNavItem id="connect" label={connectLabel || (isEnglish ? 'Connect' : '接入')} icon={<ConnectRailIcon />} active={connectMenuOpen || connectSoloActive} current={connectSoloActive} onClick={event => { if (onToggleConnectMenu) onToggleConnectMenu(event.currentTarget); }} title={connectTitle || connectLabel || (isEnglish ? 'Connect' : '接入')} testId="sidebar-connect-nav" menuTrigger={{ expanded: connectMenuOpen, controls: 'connect-popup-menu' }} />
+            <SemanticNavItem id="connect" label={connectLabel || (isEnglish ? 'Connect' : isTraditional ? '連接' : '连接')} icon={<ConnectRailIcon />} active={connectMenuOpen || connectSoloActive} current={connectSoloActive} onClick={event => { if (onToggleConnectMenu) onToggleConnectMenu(event.currentTarget); }} title={connectTitle || connectLabel || (isEnglish ? 'Connect' : isTraditional ? '連接即時通訊、郵箱和硬體' : '连接即时通讯、邮箱和硬件')} testId="sidebar-connect-nav" menuTrigger={{ expanded: connectMenuOpen, controls: 'connect-popup-menu' }} />
             <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings' && !knowledgeActive && !connectSoloActive} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />
         </>
     );

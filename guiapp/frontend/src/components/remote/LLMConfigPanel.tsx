@@ -3,7 +3,7 @@ import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMac
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
-import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, probeProviderModelForShare, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isLocalImportProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, probeProviderModelForShare, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { cancelNamedProviderOAuth, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
@@ -59,6 +59,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     const [dlgProviders, setDlgProviders] = useState<LLMProvider[]>([]);
     const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null);
     const [dlgHubSelected, setDlgHubSelected] = useState(false);
+    // A locally imported current provider also produces a "nothing selected"
+    // dialog state, but that must not light up the None chip before the user
+    // picked it: the assistant is still configured with the import.
+    const [dlgNonePicked, setDlgNonePicked] = useState(false);
     const [dlgHubModel, setDlgHubModel] = useState("");
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string; retryable?: boolean } | null>(null);
@@ -376,14 +380,25 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             setDlgHubSelected(true);
         } else {
             const idx = currentName === NONE_PROVIDER ? null : snapshot.findIndex(p => p.name === currentName);
-            const shouldSelectHub = (idx === null || idx === -1) && hasHubEntitlement;
-            setDlgSelectedIdx(shouldSelectHub ? null : (idx === -1 ? null : idx));
-            setDlgHubSelected(shouldSelectHub);
+            // Locally imported agents are never listed or selected inside
+            // provider management; if one is current, the dialog opens with
+            // no selection and an info strip explains the situation.
+            const matchedImport = idx !== null && idx >= 0 && isLocalImportProvider(snapshot[idx]);
+            if (matchedImport) {
+                setDlgSelectedIdx(null);
+                setDlgHubSelected(false);
+            } else {
+                const matched = idx !== null && idx >= 0;
+                const shouldSelectHub = !matched && hasHubEntitlement;
+                setDlgSelectedIdx(shouldSelectHub ? null : (matched ? idx : null));
+                setDlgHubSelected(shouldSelectHub);
+            }
         }
         setDlgSaving(false);
         setDlgTestResult(null);
         setDlgDirty(false);
         setDlgTested(false);
+        setDlgNonePicked(false);
         setDlgHubModel("");
         setDlgOpen(true);
     }, [providers, currentName, hasHubEntitlement, providerListReady]);
@@ -566,6 +581,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
+    // True when the assistant's current provider is a locally imported agent:
+    // the dialog explains where that credential is managed instead of
+    // pretending the assistant is unconfigured.
+    const currentIsLocalImport = !!providers.find(p => p.name === currentName && isLocalImportProvider(p));
     const dlgNeedsOAuthLogin = !!dlgProvider &&
         (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
         !dlgProvider.key;
@@ -705,6 +724,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     const dlgSelectProvider = useCallback((idx: number | null) => {
         setDlgSelectedIdx(idx);
         setDlgHubSelected(false);
+        setDlgNonePicked(idx === null);
         setDlgDirty(true);
         setDlgTestResult(null);
         setDlgTested(false);
@@ -713,6 +733,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     const dlgSelectHubService = useCallback(() => {
         setDlgSelectedIdx(null);
         setDlgHubSelected(true);
+        setDlgNonePicked(false);
         setDlgDirty(false);
         setDlgTestResult(null);
         setDlgTested(false);
@@ -1088,7 +1109,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     {t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
                                 </span>
                                 <span className="llm-config-dialog__subtitle">
-                                    {t("Pick a provider, verify the connection, and keep credentials current.", "选择服务商，检测连通性并维护连接凭据。")}
+                                    {t("Pick a provider, verify the connection, and keep credentials current.", "选择服务商，检测连通性并维护连接凭据。", "選擇服務商，檢測連通性並維護連接憑據。")}
                                 </span>
                             </div>
                             <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")}>
@@ -1116,7 +1137,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         )}
                                     </button>
                                 )}
+                                {/* Locally imported agents belong to their own tools and are
+                                    never listed, testable, or editable in provider management. */}
                                 {dlgProviders.map((p, i) => {
+                                    if (isLocalImportProvider(p)) return null;
                                     const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
                                     const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : undefined;
@@ -1154,7 +1178,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 {/* Never offer a destructive-looking empty state while the saved list is unresolved. */}
                                 {providerListReady && (
                                     <button
-                                        className={"llm-config-provider-chip" + (dlgIsNone ? " is-active" : "")}
+                                        className={"llm-config-provider-chip" + (dlgIsNone && (!currentIsLocalImport || dlgNonePicked) ? " is-active" : "")}
                                         onClick={() => dlgSelectProvider(null)}
                                     >
                                         {t("None", "暂不配置")}
@@ -1163,12 +1187,17 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                             </div>
                         </div>
 
-                        {/* None warning */}
-                        {dlgIsNone && (
+                        {/* Current-selection context. A locally imported agent stays the assistant
+                            provider even though it is not selectable here. */}
+                        {dlgIsNone && (currentIsLocalImport ? (
+                            <div className="llm-config-alert llm-config-alert--info" role="status">
+                                {t(`The assistant currently uses the locally imported ${currentName}. Local imports are not managed here; pick another provider to switch.`, `助手当前使用本地导入的 ${currentName}。本地导入不在服务商管理范围内，选择其它服务商即可切换。`, `助手當前使用本地匯入的 ${currentName}。本地匯入不在服務商管理範圍內，選擇其它服務商即可切換。`)}
+                            </div>
+                        ) : (
                             <div className="llm-config-alert llm-config-alert--danger">
                                 {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
                             </div>
-                        )}
+                        ))}
 
                         {/* Hub-managed MaClaw Official details */}
                         {dlgHubSelected && hasHubEntitlement && (
@@ -1202,7 +1231,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
                                 {!dlgProvider.import_source && (
                                 <div className="llm-config-form-section">
-                                    <div className="llm-config-form-section__title">{t("Connection", "连接配置")}</div>
+                                    <div className="llm-config-form-section__title">{t("Connection", "连接配置", "連接配置")}</div>
 
                                 {/* Custom: quick-fill from known endpoints */}
                                 {dlgProvider.is_custom && (
@@ -1320,7 +1349,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 )}
 
                                 <div className="llm-config-form-section">
-                                    <div className="llm-config-form-section__title">{t("Model & Authentication", "模型与认证")}</div>
+                                    <div className="llm-config-form-section__title">{t("Model & Authentication", "模型与认证", "模型與認證")}</div>
 
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
@@ -1443,7 +1472,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
                                 {!dlgProvider.import_source && (
                                 <div className="llm-config-form-section">
-                                    <div className="llm-config-form-section__title">{t("Advanced", "高级参数")}</div>
+                                    <div className="llm-config-form-section__title">{t("Advanced", "高级参数", "高級參數")}</div>
                                     <LLMConfigProviderLimitsFields
                                         provider={dlgProvider}
                                         t={t}

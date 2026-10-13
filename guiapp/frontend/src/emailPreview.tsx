@@ -4,6 +4,7 @@
 // signatures outside the desktop shell.
 import { createRoot } from 'react-dom/client';
 import './App.css';
+import { DialogProvider } from './components/CustomDialog';
 import { EmailSettingsPanel } from './components/settings/EmailSettingsPanel';
 
 // ?theme=dark|light mirrors how the real shell puts data-ai-theme on #App; the
@@ -61,9 +62,42 @@ const known: Record<string, (...args: unknown[]) => Promise<unknown>> = {
     MailboxSignaturesList: () => Promise.resolve(JSON.parse(JSON.stringify(signatures))),
     MailboxAccountSave: (payload: unknown) => { calls.push(['MailboxAccountSave', payload]); return Promise.resolve('mb1'); },
     MailboxSignatureSave: (payload: unknown) => { calls.push(['MailboxSignatureSave', payload]); return Promise.resolve('s1'); },
-    MailboxAccountTest: (_id: unknown, side: unknown) => (side === 'inbound'
-        ? Promise.resolve('收件连接正常')
-        : Promise.reject(new Error('发件连接失败：无法连接 SMTP 服务器'))),
+    // Mutating stubs so row actions actually change the sandbox fixture set.
+    MailboxAccountDelete: (id: unknown) => {
+        const i = accounts.findIndex(a => a.id === id);
+        if (i >= 0) accounts.splice(i, 1);
+        return Promise.resolve(undefined);
+    },
+    MailboxSignatureDelete: (id: unknown) => {
+        const i = signatures.findIndex(s => s.id === id);
+        if (i >= 0) signatures.splice(i, 1);
+        return Promise.resolve(undefined);
+    },
+    MailboxAccountSetEnabled: (id: unknown, enabled: unknown) => {
+        const a = accounts.find(x => x.id === id);
+        if (a) a.enabled = Boolean(enabled);
+        return Promise.resolve(undefined);
+    },
+    MailboxAccountSetDefault: (id: unknown) => {
+        accounts.forEach(a => { a.default = a.id === id; });
+        return Promise.resolve(undefined);
+    },
+    MailboxSignatureSetDefault: (id: unknown) => {
+        signatures.forEach(s => { s.default = s.id === id; });
+        return Promise.resolve(undefined);
+    },
+    // ~1s latency so the busy-disabled row state is observable in screenshots.
+    MailboxAccountTest: (_id: unknown, side: unknown) => new Promise((resolve, reject) => {
+        window.setTimeout(() => (side === 'inbound'
+            ? resolve('收件连接正常')
+            : reject(new Error('发件连接失败：无法连接 SMTP 服务器'))), 1000);
+    }),
+    // Draft probes resolve quickly so the footer chips are easy to trigger.
+    MailboxAccountTestDraft: (spec: unknown, side: unknown) => new Promise((resolve, reject) => {
+        window.setTimeout(() => (side === 'inbound'
+            ? resolve('收件连接正常')
+            : reject(new Error('发件连接失败：无法连接 SMTP 服务器'))), 350);
+    }),
 };
 
 const appProxy = new Proxy({}, {
@@ -81,13 +115,15 @@ bridgeWindow.runtime = new Proxy({}, { get: () => () => undefined });
 (window as unknown as { __mailCalls: unknown[][] }).__mailCalls = calls;
 
 createRoot(document.getElementById('root')!).render(
-    <div id="App" {...appAttrs}>
-        <div className="main-content elegant-scrollbar app-main-content" data-nav-tab="settings">
-            <div className="settings-shell settings-shell--padded settings-shell--solo">
-                <div className="settings-shell__body">
-                    <EmailSettingsPanel lang="zh-Hans" />
+    <DialogProvider>
+        <div id="App" {...appAttrs}>
+            <div className="main-content elegant-scrollbar app-main-content" data-nav-tab="settings">
+                <div className="settings-shell settings-shell--padded settings-shell--solo">
+                    <div className="settings-shell__body">
+                        <EmailSettingsPanel lang="zh-Hans" />
+                    </div>
                 </div>
             </div>
         </div>
-    </div>,
+    </DialogProvider>,
 );

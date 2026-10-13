@@ -65,6 +65,14 @@ export function canQueryOpenAIOrganizationCosts(
 }
 
 export const NONE_PROVIDER = "__none__";
+
+/** True when a provider entry was imported from a local coding agent.
+    Imported credentials stay owned by their own agent and are managed there,
+    so provider management names them only as the assistant provider and never
+    lists them for selection, testing, or editing. */
+export function isLocalImportProvider(provider: Pick<LLMProvider, "import_source"> | null | undefined): boolean {
+    return String(provider?.import_source || "").trim() !== "";
+}
 export const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // Must match Go hubServiceProviderName.
 export const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 

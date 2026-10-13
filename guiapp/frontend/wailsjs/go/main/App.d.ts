@@ -445,6 +445,7 @@ export function MailboxAccountSetDefault(arg1:string):Promise<void>;
 export function MailboxAccountDelete(arg1:string):Promise<void>;
 
 export function MailboxAccountTest(arg1:string,arg2:string):Promise<string>;
+export function MailboxAccountTestDraft(arg1:Record<string, any>,arg2:string):Promise<string>;
 
 export function MailboxSignaturesList():Promise<Array<Record<string, any>>>;
 

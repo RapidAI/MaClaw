@@ -202,6 +202,69 @@ func (a *App) MailboxAccountTest(id, side string) (string, error) {
 	}
 }
 
+// mailboxDraftTestDTO carries the unsaved editor values for a pre-save
+// connection probe. AccountID plus UseSavedSecret lets an existing account
+// fall back to its keyring secret while the password box stays empty.
+type mailboxDraftTestDTO struct {
+	AccountID      string `json:"account_id"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	Security       string `json:"security"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	Box            string `json:"box"`
+	FromAddress    string `json:"from_address"`
+	UseSavedSecret bool   `json:"use_saved_secret"`
+}
+
+// MailboxAccountTestDraft dials with the editor's uncommitted values and
+// writes nothing to config, so a failing probe leaves no partial account.
+func (a *App) MailboxAccountTestDraft(spec mailboxDraftTestDTO, side string) (string, error) {
+	side = strings.TrimSpace(side)
+	if side != mailbox.SideInbound && side != mailbox.SideOutbound {
+		return "", errors.New("邮箱标识无效")
+	}
+	host := strings.TrimSpace(spec.Host)
+	if host == "" {
+		return "", errors.New(mailbox.MsgNoHost)
+	}
+	secret := spec.Password
+	if strings.TrimSpace(secret) == "" && spec.UseSavedSecret {
+		saved, err := a.mailboxSecret(context.Background(), mailbox.SecretRef(strings.TrimSpace(spec.AccountID), side))
+		if err != nil {
+			if errors.Is(err, mailbox.ErrKeyring) {
+				return "", errors.New(mailbox.MsgKeyringLong)
+			}
+			return "", errors.New(mailbox.MsgNoSecret)
+		}
+		secret = saved
+	}
+	if strings.TrimSpace(secret) == "" {
+		return "", errors.New(mailbox.MsgNoSecret)
+	}
+	endpoint := mailbox.Endpoint{
+		Host:        host,
+		Port:        spec.Port,
+		Security:    strings.TrimSpace(spec.Security),
+		Username:    strings.TrimSpace(spec.Username),
+		Box:         strings.TrimSpace(spec.Box),
+		FromAddress: strings.TrimSpace(spec.FromAddress),
+	}
+	account := mailbox.Account{Address: endpoint.FromAddress}
+	if side == mailbox.SideInbound {
+		account.Inbound = &endpoint
+	} else {
+		account.Outbound = &endpoint
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mailbox.SettingsProbeTimeout)
+	defer cancel()
+	dialer, _, _ := a.mailboxIO()
+	if side == mailbox.SideInbound {
+		return mailbox.TestReceive(ctx, dialer, account, secret)
+	}
+	return mailbox.TestSend(ctx, dialer, account, secret)
+}
+
 func (a *App) MailboxSignaturesList() ([]map[string]interface{}, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {

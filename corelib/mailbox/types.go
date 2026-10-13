@@ -43,6 +43,7 @@ const (
 	MsgCancelled          = "用户取消了发送"
 	MsgKeyring            = "系统密钥环不可用"
 	MsgKeyringLong        = "系统密钥环不可用，密码没有保存"
+	MsgNoHost             = "请先填写服务器主机地址"
 	MsgNoInboundUI        = "这个邮箱没有配置收件"
 	MsgNoOutboundUI       = "这个邮箱没有配置发件"
 	MsgReceiveOK          = "收件连接正常"

@@ -168,7 +168,7 @@ describe('SettingsTabsRail', () => {
         expect(groups[1].querySelector('.settings-top-tab.active')?.textContent).toBe('LLM');
     });
 
-    it('buckets integration items even when system tabs are interleaved in the source list', () => {
+    it('renders the system group after the integration group', () => {
         const { container } = render(
             <SettingsTabsRail tabs={getSettingsTabOptions('zh-Hans')} activeTab="im" onChange={vi.fn()} />,
         );
@@ -185,8 +185,8 @@ describe('SettingsTabsRail', () => {
         ]);
         const systemIndex = labeled.findIndex((group) => group.label === '系统');
         const integrationIndex = labeled.findIndex((group) => group.label === '集成与接入');
-        expect(systemIndex).toBeGreaterThanOrEqual(0);
-        expect(integrationIndex).toBeGreaterThan(systemIndex);
+        expect(integrationIndex).toBeGreaterThanOrEqual(0);
+        expect(systemIndex).toBeGreaterThan(integrationIndex);
     });
 
     it('renders tabs without a group under no group label', () => {

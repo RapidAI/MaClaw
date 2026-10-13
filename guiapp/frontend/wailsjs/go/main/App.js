@@ -891,6 +891,10 @@ export function MailboxAccountTest(arg1, arg2) {
   return window['go']['main']['App']['MailboxAccountTest'](arg1, arg2);
 }
 
+export function MailboxAccountTestDraft(arg1, arg2) {
+  return window['go']['main']['App']['MailboxAccountTestDraft'](arg1, arg2);
+}
+
 export function DecideMaclawAppApprovalInstance(arg1) {
   return window['go']['main']['App']['DecideMaclawAppApprovalInstance'](arg1);
 }

@@ -12099,6 +12099,21 @@ button.knowledge-chip:disabled {
     border-color: color-mix(in srgb, var(--theme-danger) 32%, transparent);
 }
 
+/* Context note strip, e.g. the assistant still runs on a locally imported
+   agent that is intentionally not managed here. Same scoped-pair structure as
+   the danger colours above, so later (0,1,0) shell repaints cannot retint it. */
+.llm-config-alert--info {
+    background: var(--theme-info-bg);
+    color: var(--theme-text-secondary);
+    border-color: color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+}
+
+.settings-content .llm-config-alert--info {
+    color: var(--theme-text-secondary);
+    background: var(--theme-info-bg);
+    border-color: color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+}
+
 .llm-config-dialog-overlay {
     position: fixed;
     top: 0;
@@ -19816,6 +19831,24 @@ button.tbk-pill {
     box-shadow: var(--shadow-sm);
 }
 
+.email-settings-provider {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+
+.email-settings-provider__field {
+    /* A fixed comfortable row so the provider choice reads as a form header,
+       not as one more stretched input on wide monitors. */
+    max-width: 460px;
+}
+
+.email-settings-provider__hint {
+    color: var(--theme-text-muted);
+    font-size: 0.73rem;
+    line-height: 1.5;
+}
+
 .email-settings-grid,
 .email-settings-endpoint__grid {
     display: grid;
@@ -19834,6 +19867,7 @@ button.tbk-pill {
 
 .email-settings-field {
     display: grid;
+    align-content: start;
     gap: 7px;
     min-width: 0;
     margin: 0;
@@ -19875,15 +19909,15 @@ button.tbk-pill {
     margin-left: auto;
 }
 
-.email-settings-hint {
-    color: var(--theme-text-muted);
-    font-size: 0.72rem;
-    font-weight: 500;
-    line-height: 1.4;
-}
-
 #App .email-settings-panel .email-settings-field input::placeholder {
     color: transparent;
+}
+
+/* The password boxes carry their hint in the placeholder (labels alone do not
+   say "blank keeps the saved one"), so lift the global hiding there. */
+#App .email-settings-panel .email-settings-field input[type='password']::placeholder {
+    color: var(--theme-text-muted);
+    font-weight: 500;
 }
 
 .email-settings-check {

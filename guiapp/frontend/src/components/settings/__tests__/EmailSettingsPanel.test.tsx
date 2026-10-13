@@ -12,7 +12,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     MailboxAccountSetDefault: vi.fn(),
     MailboxAccountSetEnabled: vi.fn(),
     MailboxAccountSetSecret: vi.fn(),
-    MailboxAccountTest: vi.fn(),
+    MailboxAccountTestDraft: vi.fn(),
     MailboxAccountsList: vi.fn(),
     MailboxSignatureDelete: vi.fn(),
     MailboxSignatureSave: vi.fn(),
@@ -29,7 +29,7 @@ import {
     MailboxAccountSave,
     MailboxAccountSetEnabled,
     MailboxAccountSetSecret,
-    MailboxAccountTest,
+    MailboxAccountTestDraft,
     MailboxAccountsList,
     MailboxSignatureDelete,
     MailboxSignatureSave,
@@ -142,19 +142,6 @@ describe('EmailSettingsPanel', () => {
         await waitFor(() => expect(MailboxAccountSave).toHaveBeenCalled());
         const payload = vi.mocked(MailboxAccountSave).mock.calls.at(-1)?.[0] as { id?: string };
         expect(payload.id).toBeUndefined();
-    });
-
-    it('offers a connection test only for a configured direction', async () => {
-        vi.mocked(MailboxAccountsList).mockResolvedValue([{ ...account, has_outbound: false }] as never);
-        render(<EmailSettingsPanel lang="zh-Hans" />);
-        await screen.findByText('Work');
-        expect(screen.getByRole('button', { name: '测试收件' })).toBeTruthy();
-        expect(screen.queryByRole('button', { name: '测试发件' })).toBeNull();
-        expect(screen.getByText(/收件密码/)).toBeTruthy();
-        expect(screen.queryByText(/发件密码/)).toBeNull();
-        const passwords = screen.getAllByPlaceholderText('密码或授权码，留空则不修改') as HTMLInputElement[];
-        expect(passwords[0].autocomplete).toBe('new-password');
-        expect(passwords[1].autocomplete).toBe('new-password');
     });
 
     it('retries a password against the mailbox just created when the keyring write fails', async () => {
@@ -331,17 +318,106 @@ describe('EmailSettingsPanel', () => {
         expect(MailboxAccountSave).not.toHaveBeenCalled();
     });
 
-    it('drops a connection result after the mailbox is saved again', async () => {
-        vi.mocked(MailboxAccountTest).mockResolvedValue('收件连接正常' as never);
+    it('probes the typed draft from the editor footer before saving', async () => {
+        vi.mocked(MailboxAccountsList).mockResolvedValue([{ ...account, outbound: undefined, has_outbound: false }] as never);
+        vi.mocked(MailboxAccountTestDraft).mockResolvedValue('收件连接正常' as never);
         render(<EmailSettingsPanel lang="zh-Hans" />);
         await screen.findByText('Work');
+
+        // A blank editor offers no probes; they follow the server values in.
+        expect(screen.queryByRole('button', { name: '测试收件' })).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+
+        // The fixture has no outbound servers, so only the receive probe shows.
+        expect(screen.getByRole('button', { name: '测试收件' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: '测试发件' })).toBeNull();
+        expect(screen.getByText(/收件密码/)).toBeTruthy();
+        expect(screen.queryByText(/发件密码/)).toBeNull();
+        // Both endpoint halves of the editor always exist; only the probe
+        // buttons follow the configured direction.
+        const passwords = screen.getAllByPlaceholderText('密码或授权码，留空则不修改') as HTMLInputElement[];
+        expect(passwords[0].autocomplete).toBe('new-password');
+
+        fireEvent.click(screen.getByRole('button', { name: '测试收件' }));
+        expect(await screen.findByText('收件连接正常')).toBeTruthy();
+    });
+
+    it('drops the draft probe result after the mailbox is saved again', async () => {
+        vi.mocked(MailboxAccountTestDraft).mockResolvedValue('收件连接正常' as never);
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+        fireEvent.click(screen.getByRole('button', { name: '编辑' }));
         fireEvent.click(screen.getByRole('button', { name: '测试收件' }));
         expect(await screen.findByText('收件连接正常')).toBeTruthy();
 
-        fireEvent.click(screen.getByRole('button', { name: '编辑' }));
         fireEvent.click(screen.getByRole('button', { name: '保存' }));
         await waitFor(() => expect(MailboxAccountSave).toHaveBeenCalled());
+        // The editor reset to a new mailbox; the stale probe result must go.
         await waitFor(() => expect(screen.queryByText('收件连接正常')).toBeNull());
+    });
+
+    it('autofills the protocol default port on a security change and keeps custom ports', async () => {
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+
+        const securities = screen.getAllByRole('combobox', { name: '安全' });
+        const ports = () => screen.getAllByPlaceholderText('端口') as HTMLInputElement[];
+
+        fireEvent.change(securities[0], { target: { value: 'starttls' } });
+        expect(ports()[0].value).toBe('143');
+
+        fireEvent.change(ports()[0], { target: { value: '1460' } });
+        fireEvent.change(securities[0], { target: { value: 'none' } });
+        expect(ports()[0].value).toBe('1460');
+
+        fireEvent.change(ports()[0], { target: { value: '993' } });
+        fireEvent.change(securities[0], { target: { value: 'starttls' } });
+        expect(ports()[0].value).toBe('143');
+
+        fireEvent.change(securities[1], { target: { value: 'tls' } });
+        expect(ports()[1].value).toBe('465');
+        fireEvent.change(securities[1], { target: { value: 'starttls' } });
+        expect(ports()[1].value).toBe('587');
+    });
+
+    it('fills the known provider servers and username on preset selection', async () => {
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+
+        fireEvent.change(screen.getByRole('textbox', { name: '邮箱地址' }), { target: { value: 'me@qq.com' } });
+        fireEvent.change(screen.getByRole('combobox', { name: '服务商' }), { target: { value: 'qq' } });
+
+        expect((screen.getAllByPlaceholderText('主机')[0] as HTMLInputElement).value).toBe('imap.qq.com');
+        expect((screen.getAllByPlaceholderText('端口')[0] as HTMLInputElement).value).toBe('993');
+        expect((screen.getAllByPlaceholderText('主机')[1] as HTMLInputElement).value).toBe('smtp.qq.com');
+        expect((screen.getAllByPlaceholderText('端口')[1] as HTMLInputElement).value).toBe('465');
+        expect((screen.getAllByRole('combobox', { name: '安全' })[1] as HTMLSelectElement).value).toBe('tls');
+        // Both usernames mirror the still-blank username fields from the address.
+        const usernames = screen.getAllByPlaceholderText('用户名') as HTMLInputElement[];
+        expect(usernames[0].value).toBe('me@qq.com');
+        expect(usernames[1].value).toBe('me@qq.com');
+    });
+
+    it('recognizes the saved provider when editing a matching mailbox and stays custom otherwise', async () => {
+        vi.mocked(MailboxAccountsList).mockResolvedValue([
+            {
+                ...account,
+                name: 'QQWork',
+                inbound: { host: 'imap.qq.com', port: 993, security: 'tls', username: 'w', box: 'INBOX' },
+                outbound: { host: 'smtp.qq.com', port: 465, security: 'tls', username: 'w', from_address: 'w@ex.com' },
+            },
+            account,
+        ] as never);
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+
+        fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[0]);
+        expect((screen.getByRole('combobox', { name: '服务商' }) as HTMLSelectElement).value).toBe('qq');
+
+        // Cancel, then edit the non-matching account: it must stay custom.
+        fireEvent.click(screen.getByRole('button', { name: '取消' }));
+        fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[1]);
+        expect((screen.getByRole('combobox', { name: '服务商' }) as HTMLSelectElement).value).toBe('custom');
     });
 
     it('ignores a second save while the first save is still in flight', async () => {

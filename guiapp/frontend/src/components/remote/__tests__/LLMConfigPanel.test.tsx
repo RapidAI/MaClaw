@@ -1273,7 +1273,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         await waitFor(() => expect(ImportExternalAgentsMock).toHaveBeenCalledTimes(1));
     });
 
-    it('restricts imported agent providers to model selection', async () => {
+    it('hides locally imported agents from provider management', async () => {
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 {
@@ -1290,12 +1290,56 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
         fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Codex' }));
-        expect(await screen.findByTestId('imported-agent-model-select')).toBeTruthy();
+        // The imported agent history is owned by the local CLI, so it never
+        // becomes a selectable provider chip or an editable config form.
+        expect(screen.queryByRole('button', { name: 'Codex' })).toBeNull();
+        expect(screen.queryByTestId('imported-agent-model-select')).toBeNull();
         expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
-        expect(screen.queryByPlaceholderText('https://api.openai.com/v1')).toBeNull();
-        expect(screen.queryByText('API 地址 (URL)')).toBeNull();
-        expect(screen.queryByLabelText('User-Agent')).toBeNull();
+        // The interpreter is still configured with the import, so the None
+        // chip must not light up as if the assistant were unconfigured.
+        expect(screen.queryByRole('button', { name: /none/i })?.className || '').not.toContain('is-active');
+        // The dialog explains the situation instead of claiming "unconfigured".
+        expect(await screen.findByRole('status')).toBeTruthy();
+        expect(screen.getByRole('status').textContent).toMatch(/locally imported/i);
+    });
+
+    it('keeps locally imported agents intact when Test & Save writes the list', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'Codex',
+                    url: 'https://open.bigmodel.cn/api/coding/paas/v4',
+                    key: 'hidden',
+                    model: 'glm-5.3',
+                    import_source: 'codex',
+                    models: ['glm-5.3', 'glm-4.7'],
+                    supports_vision: false,
+                },
+                {
+                    name: 'Custom1',
+                    url: '',
+                    key: '',
+                    model: '',
+                    is_custom: true,
+                    connection_test_passed: false,
+                },
+            ],
+            current: 'Codex',
+        });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'ok', supports_vision: false });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        // Hiding the imported chip must not remove it from the persisted list,
+        // and the selectable custom provider keeps its original list index.
+        fireEvent.click(await screen.findByRole('button', { name: 'Custom1' }));
+        fireEvent.change(screen.getByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalled());
+        const savedNames = TestAndSaveMaclawLLMProvidersMock.mock.calls[0][0].map((p: { name: string }) => p.name);
+        expect(savedNames).toEqual(expect.arrayContaining(['Codex', 'Custom1']));
     });
 
     it('treats OpenCode as a regular API-key provider', async () => {

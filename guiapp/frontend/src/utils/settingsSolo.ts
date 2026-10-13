@@ -1,4 +1,4 @@
-export const SOLO_SETTINGS_TABS = ['knowledge', 'im', 'email'] as const;
+export const SOLO_SETTINGS_TABS = ['knowledge', 'im', 'email', 'hardware'] as const;
 
 export type SoloSettingsTab = (typeof SOLO_SETTINGS_TABS)[number];
 
@@ -14,7 +14,7 @@ export function settingsNavIsSolo(soloTab: string, resolvedTab: string): boolean
     return soloTab !== '' && soloTab === resolvedTab;
 }
 
-/** Solo IM or solo mailbox highlights 接入. The same tabs inside full Settings do not. */
+/** Solo IM, mailbox or hardware highlights 连接. The same tabs inside full Settings do not. */
 export function connectSoloActive(navTab: string, soloTab: string): boolean {
-    return navTab === 'settings' && (soloTab === 'im' || soloTab === 'email');
+    return navTab === 'settings' && (soloTab === 'im' || soloTab === 'email' || soloTab === 'hardware');
 }

@@ -115,7 +115,10 @@ func TestMailboxAccountSaveDefaultSecretAndProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	listRaw, _ := json.Marshal(listed)
-	if strings.Contains(string(listRaw), "app-password") || strings.Contains(string(listRaw), "127.0.0.1") || strings.Contains(string(listRaw), "secret_ref") {
+	// Summary intentionally includes the servers the user saved (host, port,
+	// security, username) so settings can edit them; it must not carry a
+	// password or a secret_ref locator.
+	if strings.Contains(string(listRaw), "app-password") || strings.Contains(string(listRaw), "should-not-leak") || strings.Contains(string(listRaw), "secret_ref") {
 		t.Fatalf("list leaked: %s", listRaw)
 	}
 	if len(cfg.MailboxAccounts) != 2 || !cfg.MailboxAccounts[0].Default || cfg.MailboxAccounts[1].Default {
@@ -210,5 +213,53 @@ func TestMailboxToolHostUsesPublicOrMailboxSignature(t *testing.T) {
 	})
 	if sender.calls != 1 || !strings.Contains(card, "From h@ex.com") || strings.Contains(card, "此致") {
 		t.Fatalf("mailbox signature card=%s", card)
+	}
+}
+
+func TestMailboxAccountTestDraft(t *testing.T) {
+	app := newDatabaseProfileTestApp(t)
+	in := &mailboxInboundSpy{}
+	out := &mailboxOutboundSpy{}
+	oldDialer := mailboxProbeDialer
+	mailboxProbeDialer = mailboxSpyDialer{in: in, out: out}
+	t.Cleanup(func() { mailboxProbeDialer = oldDialer })
+	_ = installFakeMailboxKeyring(t)
+
+	text, err := app.MailboxAccountTestDraft(mailboxDraftTestDTO{
+		Host: "127.0.0.1", Security: "none", Username: "typed@ex.com", Password: "typed-secret", Box: "INBOX",
+	}, "inbound")
+	if err != nil || text != mailbox.MsgReceiveOK || in.user != "typed@ex.com" || in.secret != "typed-secret" || in.box != "INBOX" {
+		t.Fatalf("draft receive: %q %v spy=%+v", text, err, in)
+	}
+
+	text, err = app.MailboxAccountTestDraft(mailboxDraftTestDTO{
+		Host: "127.0.0.1", Security: "none", Username: "typed@ex.com", Password: "out-secret",
+	}, "outbound")
+	if err != nil || text != mailbox.MsgSendOK || out.auth != 1 || out.noop != 1 || out.quit != 1 {
+		t.Fatalf("draft send: %q %v spy=%+v", text, err, out)
+	}
+
+	if _, err := app.MailboxAccountTestDraft(mailboxDraftTestDTO{Host: "127.0.0.1"}, "inbound"); err == nil || err.Error() != mailbox.MsgNoSecret {
+		t.Fatalf("no secret: %v", err)
+	}
+
+	id, err := app.MailboxAccountSave(map[string]interface{}{
+		"name": "Work", "address": "w@ex.com",
+		"inbound": map[string]interface{}{"host": "127.0.0.1", "security": "none", "username": "w", "box": "INBOX"},
+	})
+	if err != nil || id == "" {
+		t.Fatalf("save: %v %s", err, id)
+	}
+	if err := app.MailboxAccountSetSecret(id, "inbound", "keyring-secret"); err != nil {
+		t.Fatal(err)
+	}
+	in2 := &mailboxInboundSpy{}
+	mailboxProbeDialer = mailboxSpyDialer{in: in2, out: out}
+	text, err = app.MailboxAccountTestDraft(mailboxDraftTestDTO{
+		AccountID: id, Host: "127.0.0.1", Security: "none", Username: "w", Box: "INBOX",
+		UseSavedSecret: true,
+	}, "inbound")
+	if err != nil || text != mailbox.MsgReceiveOK || in2.user != "w" || in2.secret != "keyring-secret" {
+		t.Fatalf("fallback saved secret: %q %v spy=%+v", text, err, in2)
 	}
 }
