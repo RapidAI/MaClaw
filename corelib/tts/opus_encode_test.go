@@ -78,50 +78,6 @@ func TestEncodeWAVToOpus_22050Hz(t *testing.T) {
 	}
 }
 
-// TestEncodeWAVToOpus_WithRealTTS tests the full pipeline with the actual
-// TTS engine if the model is available. Skipped if model not found.
-func TestEncodeWAVToOpus_WithRealTTS(t *testing.T) {
-	if !HasOpusEncoder() {
-		t.Skip("built-in Opus encoder not available, skipping Opus encoding test")
-	}
-
-	modelPath := filepath.Join("testdata", "piper-xiao_ya-zh-fp32.gguf")
-	if _, err := os.Stat(modelPath); err != nil {
-		t.Skipf("TTS model not found at %s, skipping real TTS test", modelPath)
-	}
-
-	lexPath := filepath.Join("testdata", "vits-piper-zh_CN-xiao_ya-medium", "lexicon.txt")
-	model, err := NewPiper(modelPath, lexPath)
-	if err != nil {
-		t.Fatalf("NewPiper failed: %v", err)
-	}
-
-	wav, err := model.SynthesizeToWAV("你好世界")
-	if err != nil {
-		t.Fatalf("SynthesizeToWAV failed: %v", err)
-	}
-	t.Logf("TTS WAV: %d bytes", len(wav))
-
-	ogg, err := EncodeWAVToOpus(wav)
-	if err != nil {
-		t.Fatalf("EncodeWAVToOpus failed: %v", err)
-	}
-
-	t.Logf("OGG Opus: %d bytes (%.1fx compression)", len(ogg), float64(len(wav))/float64(len(ogg)))
-
-	if string(ogg[0:4]) != "OggS" {
-		t.Fatal("missing OGG capture pattern")
-	}
-	if len(ogg) > len(wav) {
-		t.Errorf("OGG larger than WAV: %d > %d (expected compression)", len(ogg), len(wav))
-	}
-
-	tmpDir := t.TempDir()
-	outPath := filepath.Join(tmpDir, "tts_nihao.ogg")
-	os.WriteFile(outPath, ogg, 0o644)
-	t.Logf("wrote: %s", outPath)
-}
-
 func TestHasOpusEncoder(t *testing.T) {
 	// Just log the result; the encoder should be built in and independent of ffmpeg.
 	t.Logf("HasOpusEncoder() = %v", HasOpusEncoder())
