@@ -164,6 +164,11 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 	bias, _ := m.tensorData(prefix + ".bias")
 	outT := (inT+2*padding-dilation*(kernel-1)-1)/stride + 1
 	out := make([]float32, outC*outT)
+	if groups == 1 {
+		if ok, err := m.gpuConvNorm(out, x, nil, wv, wg, bias, prefix, inC, inT, outC, outT, kernel, stride, padding, dilation); err != nil || ok {
+			return out, err
+		}
+	}
 	if useKokoroSIMD() && groups == 1 && kernel == 1 && stride == 1 && padding == 0 && dilation == 1 && inC >= 16 && outC*inT*inC > 50000 {
 		w, err := m.cachedFloat32(prefix+".weight_norm", func() ([]float32, error) {
 			w := make([]float32, len(wv))
@@ -236,6 +241,20 @@ func (m *Model) weightNormConv1DResidual(out, x []float32, inC, inT, outC, kerne
 	if len(out) != outC*outT || len(residual) != len(out) {
 		return fmt.Errorf("kokoro: residual conv shape mismatch")
 	}
+	if groups == 1 {
+		wv, err := m.tensorData(prefix + ".weight_v")
+		if err != nil {
+			return err
+		}
+		wg, err := m.tensorData(prefix + ".weight_g")
+		if err != nil {
+			return err
+		}
+		bias, _ := m.tensorData(prefix + ".bias")
+		if ok, err := m.gpuConvNorm(out, x, residual, wv, wg, bias, prefix, inC, inT, outC, outT, kernel, stride, padding, dilation); err != nil || ok {
+			return err
+		}
+	}
 	if useKokoroSIMD() && groups == 1 && inC >= 16 && outC*outT*inC*kernel > 50000 && stride == 1 && useKokoroStridedFMA() {
 		wT, err := m.cachedFloat32(prefix+".weight_norm_transposed", func() ([]float32, error) {
 			wT := make([]float32, outC*kernel*inC)
@@ -289,6 +308,11 @@ func (m *Model) weightNormConvTranspose1D(x []float32, inC, inT, outC, kernel, s
 	}
 	outT := (inT-1)*stride - 2*padding + kernel + outputPadding
 	out := make([]float32, outC*outT)
+	if groups == 1 && outputPadding == 0 {
+		if ok, err := m.gpuConvT1D(out, x, w, bias, prefix, inC, inT, outC, outT, kernel, stride, padding); err != nil || ok {
+			return out, err
+		}
+	}
 	if useKokoroSIMD() && groups == 1 && inC >= 16 && outC*outT*inC*kernel > 50000 {
 		wT, err := m.cachedFloat32(prefix+".weight_norm_transposed", func() ([]float32, error) {
 			wT := make([]float32, kernel*outC*inC)
@@ -393,4 +417,20 @@ func upsampleNearest1D(x []float32, channels, frames, scale int) []float32 {
 		}
 	}
 	return out
+}
+
+// gpuConvNorm builds (and caches) the weight-normed conv weight and runs the
+// conv on the Metal GPU when available and large enough.
+func (m *Model) gpuConvNorm(out, x, res, wv, wg, bias []float32, prefix string, inC, inT, outC, outT, kernel, stride, padding, dilation int) (bool, error) {
+	if outC*outT*inC*kernel < gpuMinMACs || m.gpuState() == nil {
+		return false, nil
+	}
+	w, err := m.cachedFloat32(prefix+".weight_norm", func() ([]float32, error) {
+		w := make([]float32, len(wv))
+		return w, WeightNormConv1DWeight(w, wv, wg, outC, inC, kernel)
+	})
+	if err != nil {
+		return false, err
+	}
+	return m.gpuConv1D(out, x, res, w, bias, prefix, inC, inT, outC, outT, kernel, stride, padding, dilation)
 }

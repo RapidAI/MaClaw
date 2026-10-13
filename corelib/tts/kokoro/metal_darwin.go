@@ -48,7 +48,7 @@ func kokoroMetalInit() error {
 			kgErr = err
 			return
 		}
-		p, err := dev.CompileOpts(kokoroMetalSrc, []string{"adain_snake", "conv1d", "accum"}, false)
+		p, err := dev.CompileOpts(kokoroMetalSrc, []string{"adain_snake", "conv1d", "convt1d", "accum"}, false)
 		if err != nil {
 			kgErr = err
 			return
@@ -124,7 +124,7 @@ func (g *kokoroGPU) conv(key string, w, bias []float32, outC, inC, k int) (*kgCo
 }
 
 type kgAdaP struct{ C, T int32 }
-type kgConvP struct{ C, M, T, kern, pad, dil, K, Kpad, res int32 }
+type kgConvP struct{ C, M, T, kern, pad, dil, K, Kpad, res, Tin, stride int32 }
 type kgAccP struct {
 	n, mode int32
 	s       float32
@@ -142,7 +142,12 @@ func (g *kokoroGPU) encAdaIN(e *mtl.Encoder, x, y, gb, alpha *mtl.Buffer, gbOff,
 }
 
 func (g *kokoroGPU) encConv(e *mtl.Encoder, x, y *mtl.Buffer, c *kgConv, C, T, dil int, res bool) {
-	p := kgConvP{C: int32(C), M: int32(C), T: int32(T), kern: int32(c.k), pad: int32(paddingForKernel(c.k, dil)), dil: int32(dil), K: int32(c.K), Kpad: int32(c.Kpad)}
+	g.encConvG(e, x, y, c, C, C, T, T, 1, paddingForKernel(c.k, dil), dil, res)
+}
+
+func (g *kokoroGPU) encConvG(e *mtl.Encoder, x, y *mtl.Buffer, c *kgConv, inC, outC, inT, outT, stride, pad, dil int, res bool) {
+	p := kgConvP{C: int32(inC), M: int32(outC), T: int32(outT), kern: int32(c.k), pad: int32(pad), dil: int32(dil), K: int32(c.K), Kpad: int32(c.Kpad),
+		Tin: int32(inT), stride: int32(stride)}
 	if res {
 		p.res = 1
 	}
@@ -152,7 +157,7 @@ func (g *kokoroGPU) encConv(e *mtl.Encoder, x, y *mtl.Buffer, c *kgConv, C, T, d
 	e.SetBuffer(c.b, 0, 2)
 	e.SetBuffer(y, 0, 3)
 	e.SetBytes(unsafe.Pointer(&p), int(unsafe.Sizeof(p)), 4)
-	e.Dispatch((T+63)/64, (C+31)/32, 1, 128, 1, 1)
+	e.Dispatch((outT+63)/64, (outC+31)/32, 1, 128, 1, 1)
 }
 
 func (g *kokoroGPU) encAcc(e *mtl.Encoder, x, y *mtl.Buffer, n, mode int, s float32) {
@@ -360,4 +365,98 @@ func kokoroMetalSelfCheck() error {
 		return fmt.Errorf("max |gpu-cpu| = %g", maxd)
 	}
 	return nil
+}
+
+// gpuMinMACs is the work below which single conv ops stay on the CPU (the
+// per-op commit/wait round trip would dominate).
+const gpuMinMACs = 4 << 20
+
+// gpuConv1D runs one weight-normed conv1d (groups=1) on the GPU:
+// out = conv(x) (+ residual when res != nil). w is [outC][inC*k].
+func (m *Model) gpuConv1D(out, x, res []float32, w, bias []float32, key string, inC, inT, outC, outT, k, stride, pad, dil int) (bool, error) {
+	if outC*outT*inC*k < gpuMinMACs {
+		return false, nil
+	}
+	g := m.gpuState()
+	if g == nil {
+		return false, nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c, err := g.conv(key, w, bias, outC, inC, k)
+	if err != nil {
+		return false, err
+	}
+	bx, err := g.buf("op_x", inC*inT)
+	if err != nil {
+		return false, err
+	}
+	copy(bx.Float32s(), x)
+	by, err := g.buf("op_y", outC*outT)
+	if err != nil {
+		return false, err
+	}
+	if res != nil {
+		copy(by.Float32s(), res)
+	}
+	e := g.dev.Begin()
+	g.encConvG(e, bx, by, c, inC, outC, inT, outT, stride, pad, dil, res != nil)
+	if err := e.Wait(); err != nil {
+		return false, err
+	}
+	copy(out, by.Float32s()[:outC*outT])
+	return true, nil
+}
+
+// gpuConvT1D runs a groups=1 transposed conv1d; w is [inC][outC][k].
+func (m *Model) gpuConvT1D(out, x, w, bias []float32, key string, inC, inT, outC, outT, k, stride, pad int) (bool, error) {
+	if outC*outT*inC*k/stride < gpuMinMACs {
+		return false, nil
+	}
+	g := m.gpuState()
+	if g == nil {
+		return false, nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c, ok := g.convs[key]
+	if !ok {
+		wb, err := g.dev.NewBuffer(len(w) * 4)
+		if err != nil {
+			return false, err
+		}
+		copy(wb.Float32s(), w)
+		bb, err := g.dev.NewBuffer(outC * 4)
+		if err != nil {
+			return false, err
+		}
+		if bias != nil {
+			copy(bb.Float32s(), bias)
+		}
+		c = &kgConv{w: wb, b: bb, k: k}
+		g.convs[key] = c
+	}
+	bx, err := g.buf("op_x", inC*inT)
+	if err != nil {
+		return false, err
+	}
+	copy(bx.Float32s(), x)
+	by, err := g.buf("op_y", outC*outT)
+	if err != nil {
+		return false, err
+	}
+	p := struct{ inC, outC, inT, outT, kern, stride, pad, hasBias int32 }{int32(inC), int32(outC), int32(inT), int32(outT), int32(k), int32(stride), int32(pad), 1}
+	e := g.dev.Begin()
+	e.SetPipeline(g.pipe["convt1d"])
+	e.SetBuffer(bx, 0, 0)
+	e.SetBuffer(c.w, 0, 1)
+	e.SetBuffer(c.b, 0, 2)
+	e.SetBuffer(by, 0, 3)
+	e.SetBytes(unsafe.Pointer(&p), int(unsafe.Sizeof(p)), 4)
+	e.Dispatch((outT+63)/64, outC, 1, 64, 1, 1)
+	if err := e.Wait(); err != nil {
+		return false, err
+	}
+	copy(out, by.Float32s()[:outC*outT])
+	return true, nil
 }
